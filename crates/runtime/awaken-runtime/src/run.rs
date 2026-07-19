@@ -94,7 +94,7 @@ impl Runtime {
         thread: impl Into<String>,
         input: impl Into<RunInput>,
         context: RuntimeRunContext,
-        initiator: DelegationOrigin,
+        delegation_origin: DelegationOrigin,
         mut decide: F,
     ) -> Result<RunState, Error>
     where
@@ -106,7 +106,7 @@ impl Runtime {
             thread,
             input,
             context,
-            Some(initiator),
+            Some(delegation_origin),
             &mut decide,
         )
         .await
@@ -120,7 +120,7 @@ impl Runtime {
         thread: impl Into<String>,
         input: impl Into<RunInput>,
         context: RuntimeRunContext,
-        initiator: Option<DelegationOrigin>,
+        delegation_origin: Option<DelegationOrigin>,
         decide: &mut F,
     ) -> Result<RunState, Error>
     where
@@ -135,7 +135,7 @@ impl Runtime {
             config.snapshot().clone(),
             input.into().0,
         );
-        activation.initiator = initiator;
+        activation.delegation_origin = delegation_origin;
         self.drive_to_completion(run_id, activation, context, decide)
             .await
     }
@@ -223,7 +223,7 @@ impl Runtime {
             thread_id: ThreadId(thread),
             snapshot: config.snapshot().clone(),
             input: input.into().0,
-            initiator: None,
+            delegation_origin: None,
             model_ref_override: None,
         };
         Ok((run_id, activation))

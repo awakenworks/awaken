@@ -18,21 +18,23 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use awaken_agent_contract::agent::awaiting::{AwaitReason, ResumeTicket};
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
+use awaken_agent_contract::agent::state::{Scope, StateKey, Store};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
-use awaken_ext_goal::{DelegateGrader, GoalPlugin, GoalSpec, Grader, KeywordGrader};
+use awaken_ext_goal::{AgentToolGrader, GoalPlugin, GoalSpec, Grader, KeywordGrader};
 use awaken_ext_skills::{SkillRegistry, SkillSpec};
 use awaken_file_store::{FileStore, InMemoryFileStore};
 use awaken_run_ingress::{
     AnyDispatchStore, CompletionSink, DEFAULT_LEASE_MS, DispatchPool, DispatchQueue,
-    DispatchServiceConfig, DurableRunIngress, RunExecutionRequest, SubmitOptions, SystemClock,
+    DispatchServiceConfig, DurableRunIngress, RunDispatch, SubmitOptions, SystemClock,
     WorkerResolver,
 };
 use awaken_runtime::memory::{MemoryCommitCoordinator, MemoryStreamCheckpointStore};
 use awaken_runtime::{DirectRunIngress, RunIngress, Runtime};
 use awaken_runtime_contract::CancellationToken;
+use awaken_runtime_contract::RunDelegations;
 use awaken_runtime_contract::RuntimeCatalogInstaller;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::llm::LlmExecutor;
@@ -43,6 +45,7 @@ use awaken_runtime_contract::tool::{ToolExecutor, ToolExecutorProvider, ToolOutp
 // The Workdir-tier sandbox realized through the neutral provisioning contract:
 // `LocalProvider::create_sandbox` yields a `LocalSandbox` whose host-tier helpers
 // (rooted tools, repos, artifacts) the host composes into each session's runtime.
+use awaken_protocol_managed::DelegatedRun;
 use awaken_sandbox_local::{LocalProvider, LocalSandbox};
 use awaken_store_fs::{FsCommitCoordinator, FsStreamCheckpointStore};
 use awaken_store_sqlite::SqliteCommitCoordinator;
@@ -53,7 +56,7 @@ use crate::agent_catalog::AgentCatalog;
 use crate::background::BackgroundRuns;
 use crate::compact::compact_runner as build_compact_runner;
 use crate::config::{build_runtime, config_permission_ruleset, server_config, server_gate_with};
-use crate::delegate::HostDelegationExecutor;
+use crate::delegate::HostRunDelegationService;
 use crate::hub::{ThreadEvent, ThreadEventHub};
 use crate::judge::{DEFAULT_JUDGE_INSTRUCTIONS, default_judge_agent};
 use crate::memory::{DEFAULT_MEMORY_INSTRUCTIONS, MemoryExtraction, default_memory_agent};
@@ -87,7 +90,7 @@ fn now_ms() -> u64 {
 
 pub use crate::mcp::PreparedMcpServer;
 
-use crate::judge::HostSubagentRunner;
+use crate::judge::HostAgentTool;
 use crate::provisioning::StagedResources;
 
 mod build;
@@ -133,7 +136,7 @@ pub struct SharedHost {
     /// sandbox (`true`, the default — `默认共用`) or runs in a fresh, isolated one.
     /// The workspace-sharing knob for subagents; out-of-band housekeeping sub-runs
     /// (judge / memory / compaction) are always isolated regardless.
-    pub(crate) subagent_reuse_sandbox: bool,
+    pub(crate) agent_run_reuse_sandbox: bool,
     /// Runtime plugins this host activates on every thread, and their config
     /// sections (e.g. the tool state machine). Empty by default.
     pub(crate) plugin_ids: Vec<String>,

@@ -1,12 +1,13 @@
-//! Neutral value types and the [`SessionRuntime`] port the adapter drives:
+//! Neutral value types and the [`SessionRuntime`] interface the adapter drives:
 //! pending tools, turn outcomes, capabilities, session init, and run errors.
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::content::ContentBlock;
+use awaken_agent_contract::agent::delegation::DelegationStatus;
 use awaken_agent_contract::agent::message::Message;
-use awaken_agent_contract::agent::run::{EndCause, Failure, RunState};
+use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, RunState};
 
 use crate::mcp_binding::McpRefreshBinding;
 use crate::resource::SessionResource;
@@ -19,6 +20,16 @@ pub struct Pending {
     pub name: String,
     pub input: serde_json::Value,
     pub client_executed: bool,
+}
+
+/// Stable child-Run relationship projected at a session boundary. Runtime owns
+/// the relationship; Managed and other adapters only render it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DelegatedRun {
+    pub run_id: RunId,
+    pub parent_call_id: String,
+    pub agent_id: String,
+    pub status: DelegationStatus,
 }
 
 /// The result of running one settled step (a new turn, or a resume).
@@ -37,6 +48,7 @@ pub struct StepOutcome {
     /// during this turn (auto-recovery) — projected as a `session.status_rescheduled`
     /// event ahead of the turn's messages, so a client observes the recovery.
     pub rescheduled: bool,
+    delegated_runs: Vec<DelegatedRun>,
 }
 
 impl StepOutcome {
@@ -53,6 +65,7 @@ impl StepOutcome {
             pending,
             compacted,
             rescheduled,
+            delegated_runs: Vec::new(),
         }
     }
 
@@ -69,6 +82,7 @@ impl StepOutcome {
             pending: None,
             compacted,
             rescheduled,
+            delegated_runs: Vec::new(),
         }
     }
 
@@ -89,10 +103,21 @@ impl StepOutcome {
             RunState::Running | RunState::Awaiting | RunState::Ended(_) => None,
         }
     }
+
+    #[must_use]
+    pub fn with_delegated_runs(mut self, delegated_runs: Vec<DelegatedRun>) -> Self {
+        self.delegated_runs = delegated_runs;
+        self
+    }
+
+    #[must_use]
+    pub fn delegated_runs(&self) -> &[DelegatedRun] {
+        &self.delegated_runs
+    }
 }
 
 /// A human-in-the-loop tool decision, delivered by `user.tool_confirmation`.
-pub struct Decision {
+pub struct ToolPermissionDecision {
     pub allow: bool,
     pub note: Option<String>,
 }
@@ -268,7 +293,7 @@ pub trait SessionRuntime: Send + Sync {
         &self,
         thread: &str,
         tool_use_id: &str,
-        decision: Decision,
+        decision: ToolPermissionDecision,
     ) -> Result<StepOutcome, RunError>;
 
     /// Deliver a client-executed tool's result to the awaiting run and continue.
@@ -534,7 +559,7 @@ mod tests {
             &self,
             _thread: &str,
             _tool_use_id: &str,
-            _decision: Decision,
+            _decision: ToolPermissionDecision,
         ) -> Result<StepOutcome, RunError> {
             unreachable!("not exercised by the default-method tests")
         }

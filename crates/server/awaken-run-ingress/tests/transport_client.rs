@@ -21,7 +21,7 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_run_ingress::{
     DispatchError, DispatchOutcome, DispatchQueue, HttpDispatchQueue, Inbox, MemoryDispatchStore,
-    Outbox, PendingInput, RunExecutionRequest, SettleOutcome, SubmitOptions,
+    Outbox, PendingInput, RunDispatch, SettleOutcome, SubmitOptions,
 };
 use awaken_runtime_contract::resume::ResumeResult;
 use axum::extract::State;
@@ -40,10 +40,10 @@ async fn spawn_transport_server() -> (String, Arc<MemoryDispatchStore>) {
     let app = Router::new()
         .route("/v1/worker/dispatch/enqueue", post(enqueue))
         .route("/v1/worker/dispatch/claim", post(claim))
+        .route("/v1/worker/dispatch/claim_run", post(claim_run))
         .route("/v1/worker/dispatch/renew", post(renew))
         .route("/v1/worker/dispatch/renew_owned", post(renew_owned))
         .route("/v1/worker/dispatch/settle", post(settle))
-        .route("/v1/worker/dispatch/current_epoch", post(current_epoch))
         .with_state(store.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -63,8 +63,7 @@ async fn enqueue(
     State(store): State<Arc<MemoryDispatchStore>>,
     Json(req): Json<Value>,
 ) -> Json<Value> {
-    let request: RunExecutionRequest =
-        serde_json::from_value(req["request"].clone()).expect("request");
+    let request: RunDispatch = serde_json::from_value(req["request"].clone()).expect("request");
     let options: SubmitOptions =
         serde_json::from_value(req.get("options").cloned().unwrap_or(Value::Null))
             .unwrap_or_default();
@@ -84,6 +83,22 @@ async fn claim(
         )
         .await
         .expect("claim");
+    Json(json!({ "claimed": claimed }))
+}
+
+async fn claim_run(
+    State(store): State<Arc<MemoryDispatchStore>>,
+    Json(req): Json<Value>,
+) -> Json<Value> {
+    let claimed = store
+        .claim_run(
+            &run_id(&req),
+            req["owner"].as_str().unwrap(),
+            req["lease_ms"].as_u64().unwrap(),
+            req["now_ms"].as_u64().unwrap(),
+        )
+        .await
+        .expect("claim_run");
     Json(json!({ "claimed": claimed }))
 }
 
@@ -138,17 +153,6 @@ async fn settle(
     Json(json!({ "settled": outcome.applied() }))
 }
 
-async fn current_epoch(
-    State(store): State<Arc<MemoryDispatchStore>>,
-    Json(req): Json<Value>,
-) -> Json<Value> {
-    let epoch = store
-        .current_epoch(&run_id(&req))
-        .await
-        .expect("current_epoch");
-    Json(json!({ "epoch": epoch }))
-}
-
 // ── 1. The db-less remote-worker seam: enqueue → claim → fence → settle ──────────
 
 #[tokio::test]
@@ -159,7 +163,7 @@ async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
 
     // Enqueue a run over the wire; the server-side store records it.
     queue
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .expect("enqueue over transport");
     assert_eq!(
@@ -188,9 +192,6 @@ async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
             .is_none()
     );
 
-    // The commit fence's epoch read crosses the wire and returns the row's live epoch.
-    assert_eq!(queue.current_epoch(&run).await.unwrap(), Some(1));
-
     // A stale-epoch settle is fenced server-side — nothing changes.
     assert_eq!(
         queue
@@ -218,8 +219,6 @@ async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
         0,
         "the applied Done settle removed the dispatch"
     );
-    // The row is gone → the fence read returns `None` (fail-open) over the wire.
-    assert_eq!(queue.current_epoch(&run).await.unwrap(), None);
 }
 
 // ── 3. renew_lease FALSE path over the wire (lease stolen by recovery) ───────────
@@ -231,7 +230,7 @@ async fn renew_lease_returns_false_over_the_wire_when_the_lease_was_stolen() {
     let run = RunId("run-1".into());
 
     queue
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
 

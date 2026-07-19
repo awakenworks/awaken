@@ -17,6 +17,7 @@ use awaken_agent_contract::agent::run::RunState;
 use awaken_agent_contract::thread::commit::coordinator::{Coordinator, Error as CommitError};
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::run_store::RunStore;
+use awaken_run_ingress::{ClaimedRunCommit, DispatchQueue, RunClaim};
 
 use crate::host::{HostError, SharedHost};
 use crate::worker_http::respond;
@@ -26,6 +27,10 @@ use crate::worker_http::respond;
 pub fn commit_ingest_router(host: Arc<SharedHost>) -> Router {
     Router::new()
         .route("/v1/worker/commit", axum::routing::post(commit_ingest))
+        .route(
+            "/v1/worker/commit-claimed",
+            axum::routing::post(commit_claimed),
+        )
         .with_state(host)
 }
 
@@ -34,29 +39,61 @@ async fn commit_ingest(
     Json(commit): Json<ThreadCommit>,
 ) -> (StatusCode, Json<Value>) {
     let result = async {
-        // Resolve the thread's single-writer coordinator and apply the worker's
-        // staged commit through it — the server is the sole writer of committed truth.
-        let thread = commit.thread_id.0.clone();
-        let ctx = host.ctx_for(&thread, None).await?;
-        // Idempotent redelivery (at-least-once → exactly-once effect): if this run's
-        // fact is already committed to a terminal state, an earlier delivery landed —
-        // return success without re-applying, so a worker's retry is a no-op instead
-        // of a rejected double-commit. A awaiting (`Awaiting`) run is not terminal: a
-        // later commit is its wake, so it is applied normally.
-        if let Some(existing) = RunStore::get(&*ctx.commit, commit.run_id())
-            && matches!(existing.state, RunState::Ended(_))
-        {
-            return Ok(json!({ "sequence": 0 }));
-        }
-        let record = ctx
-            .commit
-            .commit(commit)
-            .await
-            .map_err(|e| HostError::internal(e.to_string()))?;
+        let record = apply_commit(&host, commit).await?;
         Ok(serde_json::to_value(record).expect("CommitRecord serializes"))
     }
     .await;
     respond(result)
+}
+
+#[derive(serde::Deserialize)]
+struct ClaimedCommitRequest {
+    claim: RunClaim,
+    commit: ThreadCommit,
+}
+
+/// Atomically validate a remote worker's claim and apply its ThreadCommit while
+/// the dispatch authority guard is live. Reclaim/settle/cancel cannot enter the
+/// store between the validation and the commit.
+async fn commit_claimed(
+    State(host): State<Arc<SharedHost>>,
+    Json(request): Json<ClaimedCommitRequest>,
+) -> (StatusCode, Json<Value>) {
+    let result = async {
+        let store = crate::dispatch_backend::shared_durable_store(None)?;
+        let guard = store
+            .lock_commit_epoch(&request.claim)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?;
+        let Some(_guard) = guard else {
+            return Err(HostError::bad_request("run claim is stale"));
+        };
+        let record = apply_commit(&host, request.commit).await?;
+        Ok(serde_json::to_value(record).expect("CommitRecord serializes"))
+    }
+    .await;
+    respond(result)
+}
+
+async fn apply_commit(
+    host: &Arc<SharedHost>,
+    commit: ThreadCommit,
+) -> Result<CommitRecord, HostError> {
+    // Resolve the thread's single-writer coordinator and apply the worker's
+    // staged commit through it — the server is the sole writer of committed truth.
+    let thread = commit.thread_id.0.clone();
+    let ctx = host.ctx_for(&thread, None).await?;
+    // Idempotent redelivery (at-least-once → exactly-once effect): if this run's
+    // fact is already terminal, an earlier delivery landed.
+    if let Some(existing) = RunStore::get(&*ctx.commit, commit.run_id())
+        && matches!(existing.state, RunState::Ended(_))
+    {
+        return Ok(CommitRecord { sequence: 0 });
+    }
+    ctx.commit
+        .commit(commit)
+        .await
+        .map_err(|error| HostError::internal(error.to_string()))
 }
 
 /// A database-less worker's [`Coordinator`]: `commit` posts the staged
@@ -65,6 +102,49 @@ async fn commit_ingest(
 pub struct RemoteCoordinator {
     base_url: String,
     client: reqwest::Client,
+}
+
+/// Atomic claimed-run commit used by a database-less worker. Unlike
+/// [`RemoteCoordinator`], this sends the claim and commit in one request.
+pub struct RemoteClaimedRunCommit {
+    base_url: String,
+    client: reqwest::Client,
+}
+
+impl RemoteClaimedRunCommit {
+    pub fn new(base_url: impl Into<String>) -> Self {
+        Self {
+            base_url: base_url.into().trim_end_matches('/').to_string(),
+            client: reqwest::Client::new(),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ClaimedRunCommit for RemoteClaimedRunCommit {
+    async fn commit(
+        &self,
+        claim: &RunClaim,
+        commit: ThreadCommit,
+    ) -> Result<CommitRecord, CommitError> {
+        let response = self
+            .client
+            .post(format!("{}/v1/worker/commit-claimed", self.base_url))
+            .json(&json!({ "claim": claim, "commit": commit }))
+            .send()
+            .await
+            .map_err(|error| CommitError::Rejected(format!("claimed commit transport: {error}")))?;
+        if !response.status().is_success() {
+            return Err(CommitError::Rejected(format!(
+                "claimed commit server returned {}",
+                response.status()
+            )));
+        }
+        response
+            .json()
+            .await
+            .map_err(|error| CommitError::Rejected(format!("commit record decode: {error}")))
+    }
 }
 
 impl RemoteCoordinator {

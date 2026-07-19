@@ -311,8 +311,13 @@ async fn delete_skill(
     State(state): State<Arc<SkillsApi>>,
     Path(id): Path<String>,
 ) -> axum::response::Response {
-    let removed = state.registry.lock().unwrap().remove(&id).is_some();
-    if removed {
+    // Remove the richer process-local projection first, then the durable source of
+    // truth. The lock must not cross the async store call. Previously only the
+    // projection was removed, so `retrieve` immediately resurrected the skill from
+    // the durable catalog and the delete receipt was false.
+    let removed_projection = state.registry.lock().unwrap().remove(&id).is_some();
+    let removed_durable = state.host.skills.store_delete(&id).await.unwrap_or(false);
+    if removed_projection || removed_durable {
         (
             StatusCode::OK,
             Json(json!({ "id": id, "type": "skill_deleted" })),

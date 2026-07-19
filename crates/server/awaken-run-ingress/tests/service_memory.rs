@@ -15,7 +15,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_run_ingress::{
     DispatchQueue, DispatchServiceConfig, DurableRunIngress, ManualClock, MemoryDispatchStore,
-    PendingInput, RunExecutionRequest, SystemClock,
+    PendingInput, RunDispatch, SystemClock,
 };
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::resume::ResumeResult;
@@ -114,7 +114,7 @@ async fn service_recovers_a_crashed_lease_on_its_clock() {
 
     // Simulate a crashed worker: a claimed run with a held lease, nothing run.
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
     assert!(
@@ -265,7 +265,7 @@ async fn service_dead_letters_a_poison_run() {
 
     // Drive two crash-recoveries by hand so attempt_count reaches the budget.
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
     assert!(store.claim("w", 100, 0).await.unwrap().is_some()); // fresh

@@ -155,7 +155,13 @@ async fn message_send_over_a_resolved_live_model() {
         .unwrap_or_else(|_| "https://api.anthropic.com/v1/".to_string());
     let model = std::env::var("ANTHROPIC_MODEL")
         .or_else(|_| std::env::var("KIMI_MODEL"))
-        .unwrap_or_else(|_| "claude-3-5-haiku-latest".to_string());
+        .unwrap_or_else(|_| {
+            if base.contains("api.kimi.com/coding") {
+                "kimi-for-coding".to_string()
+            } else {
+                "claude-3-5-haiku-latest".to_string()
+            }
+        });
 
     // Full chain: admin config → credential entry → resolve → build the executor
     // from the resolved inference → mount the server. Nothing here names the raw

@@ -5,6 +5,7 @@
 //! (ADR-0007): typed [`Tool`](awaken_runtime_contract::tool::Tool)s erased into
 //! the runtime's `RawTool` registry.
 
+mod agent;
 mod erasure;
 mod hand;
 mod task;
@@ -26,7 +27,7 @@ use awaken_runtime_contract::tool::ToolRecoveryPolicy;
 use serde::{Deserialize, Serialize};
 
 /// The delegation tool id. The model-visible descriptor and the runtime resolver
-/// that backs it (`DelegationExecutor::tool_id`) must agree on this one value.
+/// that backs it (`RunDelegationService::tool_id`) must agree on this one value.
 pub const AGENT_RUN: &str = "agent_run";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -99,7 +100,7 @@ pub fn builtin_tools() -> Vec<BuiltinTool> {
             descriptor: ToolDescriptor::pinned(
                 "builtin:delegation",
                 AGENT_RUN,
-                "Delegate a sub-run to another agent",
+                "Delegate a Run to another Agent",
                 agent_run_args(),
             )
             .with_recovery(ToolRecoveryPolicy::durable_request()),
@@ -162,11 +163,13 @@ fn agent_run_args() -> serde_json::Value {
         "type": "object",
         "properties": {
             "agent_id": { "type": "string", "description": "target agent id from the roster" },
-            "input": { "type": "string", "description": "task for the sub-agent" },
+            "input": { "type": "string", "description": "task for the target Agent" },
         },
         "required": ["agent_id", "input"],
     })
 }
+
+pub use agent::{AgentRunArgs, invoke_agent_tool};
 
 #[cfg(test)]
 mod tests {

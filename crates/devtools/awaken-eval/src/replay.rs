@@ -161,7 +161,7 @@ async fn replay(case: &Case) -> (String, bool, Vec<String>) {
             role: Role::User,
             content: vec![ContentBlock::text(case.input.clone())],
         }],
-        initiator: None,
+        delegation_origin: None,
         model_ref_override: None,
     };
 

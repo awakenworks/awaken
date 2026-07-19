@@ -22,7 +22,7 @@ Owner: [runtime-interface-boundaries.md](../design/runtime-interface-boundaries.
 
 - Status: active
 - Owner: [Boundary matrix](../design/runtime-interface-boundaries.md#boundary-matrix)
-- Fact: durable-ingress-to-runtime execution data crosses as `RunExecutionRequest`; live handles and commit wiring travel separately through execution context and binding roles.
+- Fact: durable-ingress-to-runtime execution data crosses as `RunDispatch`; live handles and commit wiring travel separately through execution context and binding roles.
 - Links: guardrails G1, G3, G5, and G6
 - Verification: dependency checks and durable ingress tests.
 

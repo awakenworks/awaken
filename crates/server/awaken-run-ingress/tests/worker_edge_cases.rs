@@ -26,8 +26,8 @@ use awaken_agent_contract::agent::message::Role;
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_run_ingress::{
-    DispatchQueue, DispatchWorker, Inbox, MemoryDispatchStore, RunExecutionRequest,
-    SqliteDispatchStore, SubmitOptions,
+    DispatchQueue, DispatchWorker, Inbox, MemoryDispatchStore, RunDispatch, SqliteDispatchStore,
+    SubmitOptions,
 };
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::resume::ResumeResult;
@@ -57,11 +57,11 @@ async fn duplicate_submit_same_run_id_drives_exactly_once() {
     let commit = Arc::new(MemoryCommitCoordinator::new());
 
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
     assert_eq!(
@@ -110,16 +110,13 @@ async fn dedupe_key_blocks_a_duplicate_dispatch_on_sqlite() {
     // the second claim — only the dedupe key should.
     store
         .enqueue_with(
-            RunExecutionRequest::new(harness::activation_on("d1", "t1")),
+            RunDispatch::new(harness::activation_on("d1", "t1")),
             key.clone(),
         )
         .await
         .unwrap();
     store
-        .enqueue_with(
-            RunExecutionRequest::new(harness::activation_on("d2", "t2")),
-            key,
-        )
+        .enqueue_with(RunDispatch::new(harness::activation_on("d2", "t2")), key)
         .await
         .unwrap();
 
@@ -154,7 +151,7 @@ async fn unbound_inbox_input_is_delivered_once_and_consumed_on_settle() {
         .unwrap();
 
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
     let worker =
@@ -224,7 +221,7 @@ async fn a_non_input_unbound_row_does_not_desync_the_drain() {
         .unwrap();
 
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
     let worker =
@@ -277,7 +274,7 @@ async fn stale_correlation_input_is_dropped_and_the_run_stays_awaiting() {
     let run = RunId("run-1".to_string());
 
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
     let worker =

@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
+use awaken_agent_contract::agent::delegation::{ChildRunCancellation, DelegationId};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_runtime_contract::capability::RuntimeCapabilitySource;
@@ -9,7 +10,7 @@ use awaken_runtime_contract::catalog::{
     InstalledCatalog, RuntimeCatalogInstall, RuntimeCatalogInstaller,
 };
 use awaken_runtime_contract::control::{Error as ControlError, LiveCommand, LiveRunControl};
-use awaken_runtime_contract::delegation::DelegationExecutor;
+use awaken_runtime_contract::delegation::{DelegationExecutionError, RunDelegationService};
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::pause::PauseSignal;
 use awaken_runtime_contract::permission::ToolGateHook;
@@ -60,9 +61,13 @@ pub struct Runtime {
     /// The authorization gate; absent means tools run ungated (test-only).
     gate: Option<Arc<dyn ToolGateHook>>,
     /// The delegation executor, if any. The engine routes the tool whose id is
-    /// `delegation_executor.tool_id()` to this interface instead of the tool registry, so a
+    /// `run_delegation.tool_id()` to this interface instead of the tool registry, so a
     /// delegate call runs (or awaits) as a first-class kernel concern.
-    delegation_executor: Option<Arc<dyn DelegationExecutor>>,
+    run_delegation: Option<Arc<dyn RunDelegationService>>,
+    /// Process-local delivery receipts for durable child-cancellation intents.
+    /// They suppress repeated network calls in one process; a restart clears
+    /// them and therefore redelivers the still-durable outbox entry once.
+    delivered_child_cancellations: Mutex<std::collections::HashSet<DelegationId>>,
     /// Installed plugin factories; the active subset for a run is chosen by the
     /// resolved spec's `plugin_ids` and merged under capability bounds (G30).
     plugins: Vec<Arc<dyn Plugin>>,
@@ -172,6 +177,27 @@ impl Runtime {
         &self.circuit_breaker
     }
 
+    pub(crate) async fn deliver_child_cancellation(
+        &self,
+        cancellation: ChildRunCancellation,
+    ) -> Result<bool, DelegationExecutionError> {
+        if self
+            .delivered_child_cancellations
+            .lock()
+            .contains(&cancellation.delegation_id)
+        {
+            return Ok(false);
+        }
+        let service = self.run_delegation().ok_or_else(|| {
+            DelegationExecutionError::new("delegation cancellation has no configured service")
+        })?;
+        service.cancel(cancellation.clone()).await?;
+        self.delivered_child_cancellations
+            .lock()
+            .insert(cancellation.delegation_id);
+        Ok(true)
+    }
+
     /// Inject the structure-only metrics recorder consulted at the model/tool
     /// chokepoints (composition-root wiring). The default is a no-op.
     #[must_use]
@@ -215,11 +241,11 @@ impl Runtime {
         self
     }
 
-    /// Inject the delegation executor. The tool it backs (`executor.tool_id()`) is
+    /// Inject Run delegation. The tool it backs (`service.tool_id()`) is
     /// executed by running a sub-agent (native or remote), not the tool registry.
     #[must_use]
-    pub fn with_delegation_executor(mut self, executor: Arc<dyn DelegationExecutor>) -> Self {
-        self.delegation_executor = Some(executor);
+    pub fn with_run_delegation(mut self, service: Arc<dyn RunDelegationService>) -> Self {
+        self.run_delegation = Some(service);
         self
     }
 
@@ -289,8 +315,8 @@ impl Runtime {
         self.gate.as_ref()
     }
 
-    pub(crate) fn delegation_executor(&self) -> Option<&Arc<dyn DelegationExecutor>> {
-        self.delegation_executor.as_ref()
+    pub(crate) fn run_delegation(&self) -> Option<&Arc<dyn RunDelegationService>> {
+        self.run_delegation.as_ref()
     }
 
     /// Track an in-flight run's cancellation token so `LiveRunControl` can reach
@@ -395,7 +421,19 @@ impl Runtime {
         awaken_agent_contract::agent::run::RunState,
         awaken_runtime_contract::execution::Error,
     > {
-        crate::engine::cancel_run(run_id, thread_id, context).await
+        crate::engine::cancel_run(self, run_id, thread_id, context).await
+    }
+
+    /// Retry every durable child-cancellation intent retained on `thread`.
+    /// Hosts call this when rebuilding or re-entering a session, so a process
+    /// crash between the parent's terminal commit and remote delivery cannot
+    /// permanently orphan an awaiting child.
+    pub async fn reconcile_delegation_cancellations(
+        &self,
+        thread_id: &awaken_agent_contract::agent::thread::Id,
+        reader: &dyn ThreadReader,
+    ) -> Result<usize, awaken_runtime_contract::execution::Error> {
+        crate::engine::reconcile_delegation_cancellations(self, thread_id, reader).await
     }
 
     /// Stop a not-running run with a terminal `Stopped(reason)` fact — a host stop
@@ -412,7 +450,7 @@ impl Runtime {
         awaken_agent_contract::agent::run::RunState,
         awaken_runtime_contract::execution::Error,
     > {
-        crate::engine::stop_run(run_id, thread_id, reason, context).await
+        crate::engine::stop_run(self, run_id, thread_id, reason, context).await
     }
 
     /// Perform a committed `ScheduledAction` (ADR-0020): run the deferred action

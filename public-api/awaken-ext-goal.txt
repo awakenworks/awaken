@@ -15,11 +15,11 @@ pub enum awaken_ext_goal::GraderRef
 pub awaken_ext_goal::GraderRef::Agent
 pub awaken_ext_goal::GraderRef::Agent::agent_id: alloc::string::String
 pub awaken_ext_goal::GraderRef::Default
-pub struct awaken_ext_goal::DelegateGrader
-impl awaken_ext_goal::DelegateGrader
-pub fn awaken_ext_goal::DelegateGrader::new(alloc::sync::Arc<dyn awaken_runtime_contract::subagent_runner::SubagentRunner>, impl core::convert::Into<alloc::string::String>) -> Self
-impl awaken_ext_goal::Grader for awaken_ext_goal::DelegateGrader
-pub fn awaken_ext_goal::DelegateGrader::grade<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 awaken_ext_goal::GoalSpec, &'life2 str, core::option::Option<&'life3 tokio_util::sync::cancellation_token::CancellationToken>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_ext_goal::Verdict, awaken_ext_goal::GraderError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
+pub struct awaken_ext_goal::AgentToolGrader
+impl awaken_ext_goal::AgentToolGrader
+pub fn awaken_ext_goal::AgentToolGrader::new(alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>, impl core::convert::Into<alloc::string::String>) -> Self
+impl awaken_ext_goal::Grader for awaken_ext_goal::AgentToolGrader
+pub fn awaken_ext_goal::AgentToolGrader::grade<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 awaken_ext_goal::GoalSpec, &'life2 str, core::option::Option<&'life3 tokio_util::sync::cancellation_token::CancellationToken>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_ext_goal::Verdict, awaken_ext_goal::GraderError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub struct awaken_ext_goal::GoalGuard
 impl awaken_ext_goal::GoalGuard
 pub fn awaken_ext_goal::GoalGuard::new(awaken_ext_goal::GoalSpec, alloc::sync::Arc<dyn awaken_ext_goal::Grader>) -> Self
@@ -49,8 +49,8 @@ pub awaken_ext_goal::Verdict::explanation: alloc::string::String
 pub awaken_ext_goal::Verdict::result: awaken_ext_goal::GradeResult
 pub trait awaken_ext_goal::Grader: core::marker::Send + core::marker::Sync
 pub fn awaken_ext_goal::Grader::grade<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 awaken_ext_goal::GoalSpec, &'life2 str, core::option::Option<&'life3 tokio_util::sync::cancellation_token::CancellationToken>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_ext_goal::Verdict, awaken_ext_goal::GraderError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
-impl awaken_ext_goal::Grader for awaken_ext_goal::DelegateGrader
-pub fn awaken_ext_goal::DelegateGrader::grade<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 awaken_ext_goal::GoalSpec, &'life2 str, core::option::Option<&'life3 tokio_util::sync::cancellation_token::CancellationToken>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_ext_goal::Verdict, awaken_ext_goal::GraderError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
+impl awaken_ext_goal::Grader for awaken_ext_goal::AgentToolGrader
+pub fn awaken_ext_goal::AgentToolGrader::grade<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 awaken_ext_goal::GoalSpec, &'life2 str, core::option::Option<&'life3 tokio_util::sync::cancellation_token::CancellationToken>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_ext_goal::Verdict, awaken_ext_goal::GraderError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 impl awaken_ext_goal::Grader for awaken_ext_goal::KeywordGrader
 pub fn awaken_ext_goal::KeywordGrader::grade<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 awaken_ext_goal::GoalSpec, &'life2 str, core::option::Option<&'life3 tokio_util::sync::cancellation_token::CancellationToken>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_ext_goal::Verdict, awaken_ext_goal::GraderError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub fn awaken_ext_goal::classify(&awaken_ext_goal::Verdict, u32, u32) -> awaken_ext_goal::GoalOutcome

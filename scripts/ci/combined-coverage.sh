@@ -10,7 +10,7 @@
 # Live-model e2e arms run only when ANTHROPIC_API_KEY (or KIMI_API_KEY) is set,
 # e.g. the Kimi coding endpoint:
 #   export ANTHROPIC_API_KEY=sk-...           ANTHROPIC_BASE_URL=https://api.kimi.com/coding/v1/
-#   export ANTHROPIC_MODEL=kimi-k2-0711-preview
+#   export ANTHROPIC_MODEL=kimi-for-coding
 #
 # Usage: scripts/ci/combined-coverage.sh   (from the repo root)
 set -u

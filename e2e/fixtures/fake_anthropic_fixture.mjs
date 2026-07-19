@@ -133,7 +133,7 @@ export const BEHAVIORS = {
   // with the system/context lines so recall injection is observable.
   memory(parsed) {
     const sys = systemLines(parsed);
-    if (sys.includes('memory extraction sub-agent')) {
+    if (sys.includes('memory extraction Agent')) {
       if (toolResults(parsed).length > 0) return text('memory saved');
       const tag = allUserText(parsed).split(/\s+/).find((w) => w.startsWith('fact-'));
       const [name, content] = tag ? [tag, `remember ${tag}`] : ['sky-color', 'the sky is green today'];
@@ -210,7 +210,7 @@ export const BEHAVIORS = {
     // with the whole main-turn transcript (which carries tool results), so we can't key
     // off a tool-result *count*; instead write_memory unless the LAST message is our
     // write_memory result (i.e. the tool just ran) — then finish.
-    if (systemText(parsed).includes('memory extraction sub-agent')) {
+    if (systemText(parsed).includes('memory extraction Agent')) {
       const msgs = parsed.messages ?? [];
       const last = msgs[msgs.length - 1];
       const lastIsToolResult = last && Array.isArray(last.content) && last.content.some((b) => b.type === 'tool_result');

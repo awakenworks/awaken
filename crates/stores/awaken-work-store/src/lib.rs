@@ -7,144 +7,31 @@
 //! Its own scope (`work_queue_item` table + `work_queue_schema_migrations` ledger),
 //! a distinct aggregate from the managed session config. The lease is the store's
 //! own transaction: SQLite claims under a `BEGIN IMMEDIATE` write lock, so a run is
-//! owned by one worker at a time without `FOR UPDATE SKIP LOCKED` (Postgres uses
-//! that in its backend). No secret is minted; `secret` stays `null` on the wire.
+//! owned by one worker at a time. PostgreSQL locks an environment's work rows so
+//! its single-active decision is atomic across processes. No secret is minted;
+//! `secret` stays `null` on the wire.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 use awaken_session_contract::work_queue::{
-    LeaseReceipt, QueueStats, WorkItem, WorkPayload, WorkQueue, WorkState,
+    HeartbeatResult, LeaseHeartbeat, LeaseReceipt, QueueStats, WorkItem, WorkQueue,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgRow};
 
-// The in-memory reference backend + the reclaim/poll `LeaseBook` the sqlite/postgres
-// backends share live here beside the durable siblings (issue A / Phase 1): the port +
+// The in-memory reference backend and process-local poll bookkeeping live here beside
+// the durable siblings. SQLite/PostgreSQL persist lease authority in their rows: the port +
 // value objects stay inward in `awaken-session-contract`.
 mod inmem;
 pub use inmem::{InMemoryWorkQueue, LEASE_TTL_MS, LeaseBook, POLLER_WINDOW_MS};
+mod schema;
+use schema::*;
 
-/// The frozen presence timestamp the managed wire uses (parity with the in-memory
-/// queue — timestamps carry presence, not wall time, in the open-tier projection).
-const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
-/// The lease TTL a heartbeat reports.
-const HEARTBEAT_TTL_SECONDS: u64 = 60;
-/// The store's table namespace / bundle prefix (`work_queue_item`,
-/// `work_queue_schema_migrations`).
-const NS: &str = "work_queue";
-
-/// The versioned schema bundle. One migration: the work item row. Columns are
-/// portable — the two adapters read/write identical rows, so SQLite and Postgres
-/// stay at parity.
-fn work_bundle() -> Result<MigrationBundle, MigrationError> {
-    MigrationBundle::new(
-        "awaken.work_queue",
-        vec![Migration::new(
-            1,
-            "self-hosted environment work queue: one row per work item",
-            "CREATE TABLE {prefix}_item (\
-             work_id             TEXT PRIMARY KEY, \
-             seq                 BIGINT NOT NULL, \
-             environment_id      TEXT NOT NULL, \
-             data_type           TEXT NOT NULL, \
-             data_id             TEXT NOT NULL, \
-             metadata_json       TEXT NOT NULL, \
-             state               TEXT NOT NULL, \
-             acknowledged_at     TEXT, \
-             latest_heartbeat_at TEXT, \
-             started_at          TEXT, \
-             stop_requested_at   TEXT, \
-             stopped_at          TEXT)",
-        )?],
-    )
-}
-
-fn state_from_wire(s: &str) -> WorkState {
-    // Single source of truth (the exact inverse of `WorkState::as_str`, in the contract).
-    // An UNRECOGNIZED persisted state fails CLOSED to `Stopped` (terminal, never
-    // re-claimed) rather than the old silent `Queued` default — mapping a corrupt/newer
-    // state to `Queued` would re-dispatch it and double-execute (exactly-once violation).
-    WorkState::from_wire(s).unwrap_or(WorkState::Stopped)
-}
-
-fn data_of(data_type: &str, data_id: String) -> WorkPayload {
-    match data_type {
-        "healthcheck" => WorkPayload::HealthCheck { id: data_id },
-        _ => WorkPayload::Session { id: data_id },
-    }
-}
-
-/// The columns a work row projects to a [`WorkItem`], in `SELECT` order.
-const COLS: &str = "work_id, environment_id, data_type, data_id, metadata_json, state, \
-     acknowledged_at, latest_heartbeat_at, started_at, stop_requested_at, stopped_at";
-
-fn metadata_str(m: &BTreeMap<String, String>) -> String {
-    serde_json::to_string(m).expect("work metadata serializes")
-}
-
-/// Ack stamps receipt: `queued` → `starting`; any other state is unchanged.
-fn ack_next_state(current: &WorkItem) -> &'static str {
-    if current.state == WorkState::Queued {
-        "starting"
-    } else {
-        current.state.as_str()
-    }
-}
-
-/// Assemble a [`WorkItem`] from already-extracted scalars — the one place the
-/// row shape is decoded, so the two adapters (rusqlite/sqlx) can't drift.
-#[allow(clippy::too_many_arguments)]
-fn build_item(
-    id: String,
-    environment_id: String,
-    data_type: &str,
-    data_id: String,
-    metadata_json: &str,
-    state: &str,
-    acknowledged_at: Option<String>,
-    latest_heartbeat_at: Option<String>,
-    started_at: Option<String>,
-    stop_requested_at: Option<String>,
-    stopped_at: Option<String>,
-) -> WorkItem {
-    WorkItem {
-        id,
-        environment_id,
-        data: data_of(data_type, data_id),
-        metadata: serde_json::from_str(metadata_json).unwrap_or_default(),
-        state: state_from_wire(state),
-        acknowledged_at,
-        latest_heartbeat_at,
-        started_at,
-        stop_requested_at,
-        stopped_at,
-    }
-}
-
-fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkItem> {
-    let metadata_json: String = row.get(4)?;
-    Ok(build_item(
-        row.get(0)?,
-        row.get(1)?,
-        &row.get::<_, String>(2)?,
-        row.get(3)?,
-        &metadata_json,
-        &row.get::<_, String>(5)?,
-        row.get(6)?,
-        row.get(7)?,
-        row.get(8)?,
-        row.get(9)?,
-        row.get(10)?,
-    ))
-}
-
-/// SQLite persistence for the environment work queue. The durable rows hold the
-/// work items; lease expiry + poll liveness are ephemeral (meaningless after a
-/// restart) so they live in the in-process [`LeaseBook`] shared with every backend.
+/// SQLite persistence for the environment work queue. Ownership, epoch and expiry
+/// are durable because they are safety authority; only poller liveness is ephemeral.
 pub struct SqliteWorkQueue {
     conn: Arc<Mutex<Connection>>,
     book: LeaseBook,
@@ -173,31 +60,17 @@ impl SqliteWorkQueue {
         })
     }
 
-    /// Reclaim `env_id`'s `active` rows whose lease has lapsed (worker gone) back to
-    /// `queued`, inside `tx`, so the next claim can re-lease them. Returns nothing;
-    /// the caller re-counts active afterward.
+    /// Reclaim `env_id`'s `active` rows whose durable lease has lapsed.
     fn reclaim_lapsed(&self, tx: &Transaction<'_>, env_id: &str, now_ms: u64) {
-        let mut stmt = tx
-            .prepare(
-                "SELECT work_id FROM work_queue_item WHERE environment_id = ?1 AND state = 'active'",
-            )
-            .expect("prepare active");
-        let active_ids: Vec<String> = stmt
-            .query_map(params![env_id], |r| r.get::<_, String>(0))
-            .expect("query active")
-            .map(|r| r.expect("row"))
-            .collect();
-        drop(stmt);
-        for wid in active_ids {
-            if !self.book.is_leased(&wid, now_ms) {
-                tx.execute(
-                    "UPDATE work_queue_item SET state = 'queued' WHERE work_id = ?1",
-                    params![wid],
-                )
-                .expect("reclaim");
-                self.book.release(&wid);
-            }
-        }
+        tx.execute(
+            "UPDATE work_queue_item \
+             SET state = 'queued', lease_owner = NULL, lease_expires_ms = NULL, \
+                 latest_heartbeat_at = NULL \
+             WHERE environment_id = ?1 AND state = 'active' \
+               AND (lease_expires_ms IS NULL OR lease_expires_ms <= ?2)",
+            params![env_id, db_millis(now_ms)],
+        )
+        .expect("reclaim lapsed leases");
     }
 
     /// Insert a queued row and return its work id. `session` sets `data_id` to the
@@ -304,13 +177,21 @@ impl WorkQueue for SqliteWorkQueue {
             .expect("find queued");
         let wid = wid?;
         tx.execute(
-            "UPDATE work_queue_item SET state = 'active', started_at = ?1 WHERE work_id = ?2",
-            params![OBJECT_AT, wid],
+            "UPDATE work_queue_item \
+             SET state = 'active', started_at = ?1, lease_owner = ?2, \
+                 lease_epoch = lease_epoch + 1, lease_expires_ms = ?3, \
+                 latest_heartbeat_at = NULL \
+             WHERE work_id = ?4",
+            params![
+                OBJECT_AT,
+                worker_id,
+                lease_expiry(now_ms, HEARTBEAT_TTL_SECONDS),
+                wid
+            ],
         )
         .expect("lease");
         let item = Self::owned(&tx, env_id, &wid);
         tx.commit().expect("commit claim");
-        self.book.lease(&wid, now_ms);
         item
     }
 
@@ -331,23 +212,63 @@ impl WorkQueue for SqliteWorkQueue {
         item
     }
 
-    async fn heartbeat(&self, env_id: &str, wid: &str, now_ms: u64) -> Option<LeaseReceipt> {
+    async fn heartbeat(
+        &self,
+        env_id: &str,
+        wid: &str,
+        worker_id: &str,
+        now_ms: u64,
+        heartbeat: LeaseHeartbeat,
+    ) -> HeartbeatResult {
         let mut guard = self.conn.lock().expect("work queue mutex poisoned");
         let tx = guard
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .expect("begin immediate");
-        let current = Self::owned(&tx, env_id, wid)?;
-        tx.execute(
-            "UPDATE work_queue_item SET latest_heartbeat_at = ?1 WHERE work_id = ?2",
-            params![OBJECT_AT, wid],
-        )
-        .expect("heartbeat");
+        let Some(current) = Self::owned(&tx, env_id, wid) else {
+            return HeartbeatResult::NotFound;
+        };
+        let owner: Option<String> = tx
+            .query_row(
+                "SELECT lease_owner FROM work_queue_item \
+                 WHERE work_id = ?1 AND environment_id = ?2",
+                params![wid, env_id],
+                |row| row.get(0),
+            )
+            .expect("read heartbeat owner");
+        if owner.as_deref() != Some(worker_id) {
+            return HeartbeatResult::PreconditionFailed;
+        }
+        if !heartbeat
+            .condition
+            .permits(current.latest_heartbeat_at.as_deref())
+        {
+            return HeartbeatResult::PreconditionFailed;
+        }
+        let extended = current.state.can_extend_lease();
+        let ttl_seconds = effective_ttl_seconds(heartbeat.desired_ttl_seconds);
+        let last_heartbeat = heartbeat_at(now_ms, current.latest_heartbeat_at.as_deref());
+        if extended {
+            tx.execute(
+                "UPDATE work_queue_item \
+                 SET latest_heartbeat_at = ?1, lease_expires_ms = ?2 \
+                 WHERE work_id = ?3 AND environment_id = ?4 AND state = 'active' \
+                   AND lease_owner = ?5",
+                params![
+                    &last_heartbeat,
+                    lease_expiry(now_ms, ttl_seconds),
+                    wid,
+                    env_id,
+                    worker_id
+                ],
+            )
+            .expect("heartbeat");
+        }
         tx.commit().expect("commit heartbeat");
-        self.book.lease(wid, now_ms); // extend the lease
-        Some(LeaseReceipt {
-            lease_extended: true,
+        HeartbeatResult::Accepted(LeaseReceipt {
+            last_heartbeat,
+            lease_extended: extended,
             state: current.state.as_str(),
-            ttl_seconds: HEARTBEAT_TTL_SECONDS,
+            ttl_seconds,
         })
     }
 
@@ -358,14 +279,14 @@ impl WorkQueue for SqliteWorkQueue {
             .expect("begin immediate");
         Self::owned(&tx, env_id, wid)?;
         tx.execute(
-            "UPDATE work_queue_item SET stop_requested_at = ?1, stopped_at = ?1, state = 'stopped' \
+            "UPDATE work_queue_item SET stop_requested_at = ?1, stopped_at = ?1, \
+             state = 'stopped', lease_owner = NULL, lease_expires_ms = NULL \
              WHERE work_id = ?2",
             params![OBJECT_AT, wid],
         )
         .expect("stop");
         let item = Self::owned(&tx, env_id, wid);
         tx.commit().expect("commit stop");
-        self.book.release(wid);
         item
     }
 
@@ -451,7 +372,7 @@ fn pg_row_to_item(row: &PgRow) -> WorkItem {
 /// A Postgres-backed [`WorkQueue`] — the network-DB sibling over the same
 /// `work_queue` migration scope, for distributed deployments. Claims run in a
 /// transaction that mirrors the SQLite semantics (the single-active-per-env cap);
-/// multi-worker fan-out (`FOR UPDATE SKIP LOCKED`, no cap) is the later step.
+/// the transaction locks the environment rows before the single-active decision.
 pub struct PostgresWorkQueue {
     pool: PgPool,
     book: LeaseBook,
@@ -480,6 +401,13 @@ impl PostgresWorkQueue {
 
     async fn insert(&self, env_id: &str, data_type: &str, session_id: Option<&str>) -> String {
         let mut tx = self.pool.begin().await.expect("begin");
+        // Serialize the portable MAX(seq)+1 allocator. This is infrequent control
+        // plane work and avoids a backend-specific sequence while remaining safe
+        // across processes.
+        sqlx::query("LOCK TABLE work_queue_item IN SHARE ROW EXCLUSIVE MODE")
+            .execute(&mut *tx)
+            .await
+            .expect("lock work id allocator");
         let next: i64 =
             sqlx::query_scalar("SELECT COALESCE(MAX(seq), -1) + 1 FROM work_queue_item")
                 .fetch_one(&mut *tx)
@@ -547,25 +475,27 @@ impl WorkQueue for PostgresWorkQueue {
     async fn claim(&self, env_id: &str, worker_id: &str, now_ms: u64) -> Option<WorkItem> {
         self.book.record_poll(env_id, worker_id, now_ms);
         let mut tx = self.pool.begin().await.expect("begin");
-        // Reclaim lapsed leases first (a crashed worker must not block the env): any
-        // `active` row whose in-process lease has expired returns to `queued`.
-        let active_ids: Vec<String> = sqlx::query_scalar(
-            "SELECT work_id FROM work_queue_item WHERE environment_id = $1 AND state = 'active'",
+        // Lock the environment's rows before count/select so concurrent pollers
+        // cannot both observe zero active work and lease different rows.
+        let _: Vec<String> = sqlx::query_scalar(
+            "SELECT work_id FROM work_queue_item WHERE environment_id = $1 FOR UPDATE",
         )
         .bind(env_id)
         .fetch_all(&mut *tx)
         .await
-        .expect("active ids");
-        for wid in &active_ids {
-            if !self.book.is_leased(wid, now_ms) {
-                sqlx::query("UPDATE work_queue_item SET state = 'queued' WHERE work_id = $1")
-                    .bind(wid)
-                    .execute(&mut *tx)
-                    .await
-                    .expect("reclaim");
-                self.book.release(wid);
-            }
-        }
+        .expect("lock environment work");
+        sqlx::query(
+            "UPDATE work_queue_item \
+             SET state = 'queued', lease_owner = NULL, lease_expires_ms = NULL, \
+                 latest_heartbeat_at = NULL \
+             WHERE environment_id = $1 AND state = 'active' \
+               AND (lease_expires_ms IS NULL OR lease_expires_ms <= $2)",
+        )
+        .bind(env_id)
+        .bind(db_millis(now_ms))
+        .execute(&mut *tx)
+        .await
+        .expect("reclaim lapsed leases");
         // Single active lease per environment (the open-tier single-worker cap).
         let active: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM work_queue_item WHERE environment_id = $1 AND state = 'active'",
@@ -581,7 +511,7 @@ impl WorkQueue for PostgresWorkQueue {
         let wid: Option<String> = sqlx::query_scalar(
             "SELECT work_id FROM work_queue_item \
              WHERE environment_id = $1 AND state = 'queued' \
-             ORDER BY seq ASC LIMIT 1 FOR UPDATE SKIP LOCKED",
+             ORDER BY seq ASC LIMIT 1",
         )
         .bind(env_id)
         .fetch_optional(&mut *tx)
@@ -589,15 +519,20 @@ impl WorkQueue for PostgresWorkQueue {
         .expect("find queued");
         let wid = wid?;
         sqlx::query(
-            "UPDATE work_queue_item SET state = 'active', started_at = $1 WHERE work_id = $2",
+            "UPDATE work_queue_item \
+             SET state = 'active', started_at = $1, lease_owner = $2, \
+                 lease_epoch = lease_epoch + 1, lease_expires_ms = $3, \
+                 latest_heartbeat_at = NULL \
+             WHERE work_id = $4",
         )
         .bind(OBJECT_AT)
+        .bind(worker_id)
+        .bind(lease_expiry(now_ms, HEARTBEAT_TTL_SECONDS))
         .bind(&wid)
         .execute(&mut *tx)
         .await
         .expect("lease");
         tx.commit().await.expect("commit claim");
-        self.book.lease(&wid, now_ms);
         self.fetch_owned(env_id, &wid).await
     }
 
@@ -618,30 +553,78 @@ impl WorkQueue for PostgresWorkQueue {
         self.fetch_owned(env_id, wid).await
     }
 
-    async fn heartbeat(&self, env_id: &str, wid: &str, now_ms: u64) -> Option<LeaseReceipt> {
-        let current = self.fetch_owned(env_id, wid).await?;
-        sqlx::query(
-            "UPDATE work_queue_item SET latest_heartbeat_at = $1 \
-             WHERE work_id = $2 AND environment_id = $3",
-        )
-        .bind(OBJECT_AT)
+    async fn heartbeat(
+        &self,
+        env_id: &str,
+        wid: &str,
+        worker_id: &str,
+        now_ms: u64,
+        heartbeat: LeaseHeartbeat,
+    ) -> HeartbeatResult {
+        let mut tx = self.pool.begin().await.expect("begin heartbeat");
+        let current = sqlx::query(&format!(
+            "SELECT {COLS} FROM work_queue_item \
+             WHERE work_id = $1 AND environment_id = $2 FOR UPDATE"
+        ))
         .bind(wid)
         .bind(env_id)
-        .execute(&self.pool)
+        .fetch_optional(&mut *tx)
         .await
-        .expect("heartbeat");
-        self.book.lease(wid, now_ms); // extend the lease
-        Some(LeaseReceipt {
-            lease_extended: true,
+        .expect("lock heartbeat row")
+        .map(|row| pg_row_to_item(&row));
+        let Some(current) = current else {
+            return HeartbeatResult::NotFound;
+        };
+        let owner: Option<String> = sqlx::query_scalar(
+            "SELECT lease_owner FROM work_queue_item \
+             WHERE work_id = $1 AND environment_id = $2",
+        )
+        .bind(wid)
+        .bind(env_id)
+        .fetch_one(&mut *tx)
+        .await
+        .expect("read heartbeat owner");
+        if owner.as_deref() != Some(worker_id) {
+            return HeartbeatResult::PreconditionFailed;
+        }
+        if !heartbeat
+            .condition
+            .permits(current.latest_heartbeat_at.as_deref())
+        {
+            return HeartbeatResult::PreconditionFailed;
+        }
+        let extended = current.state.can_extend_lease();
+        let ttl_seconds = effective_ttl_seconds(heartbeat.desired_ttl_seconds);
+        let last_heartbeat = heartbeat_at(now_ms, current.latest_heartbeat_at.as_deref());
+        if extended {
+            sqlx::query(
+                "UPDATE work_queue_item SET latest_heartbeat_at = $1, lease_expires_ms = $2 \
+                 WHERE work_id = $3 AND environment_id = $4 AND state = 'active' \
+                   AND lease_owner = $5",
+            )
+            .bind(&last_heartbeat)
+            .bind(lease_expiry(now_ms, ttl_seconds))
+            .bind(wid)
+            .bind(env_id)
+            .bind(worker_id)
+            .execute(&mut *tx)
+            .await
+            .expect("heartbeat");
+        }
+        tx.commit().await.expect("commit heartbeat");
+        HeartbeatResult::Accepted(LeaseReceipt {
+            last_heartbeat,
+            lease_extended: extended,
             state: current.state.as_str(),
-            ttl_seconds: HEARTBEAT_TTL_SECONDS,
+            ttl_seconds,
         })
     }
 
     async fn stop(&self, env_id: &str, wid: &str) -> Option<WorkItem> {
         self.fetch_owned(env_id, wid).await?;
         sqlx::query(
-            "UPDATE work_queue_item SET stop_requested_at = $1, stopped_at = $1, state = 'stopped' \
+            "UPDATE work_queue_item SET stop_requested_at = $1, stopped_at = $1, \
+             state = 'stopped', lease_owner = NULL, lease_expires_ms = NULL \
              WHERE work_id = $2 AND environment_id = $3",
         )
         .bind(OBJECT_AT)
@@ -650,7 +633,6 @@ impl WorkQueue for PostgresWorkQueue {
         .execute(&self.pool)
         .await
         .expect("stop");
-        self.book.release(wid);
         self.fetch_owned(env_id, wid).await
     }
 
@@ -717,6 +699,7 @@ impl WorkQueue for PostgresWorkQueue {
 mod tests {
     use super::LEASE_TTL_MS;
     use super::*;
+    use awaken_session_contract::work_queue::{WorkPayload, WorkState};
 
     fn q() -> SqliteWorkQueue {
         SqliteWorkQueue::open_in_memory().unwrap()
@@ -769,23 +752,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sqlite_lease_survives_process_store_reopen() {
+        let dir = std::env::temp_dir().join(format!(
+            "awaken-work-lease-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("queue.db");
+        let path = path.to_str().unwrap();
+        {
+            let q = SqliteWorkQueue::open(path).expect("open first store");
+            q.enqueue_session("env", "session").await;
+            assert!(q.claim("env", "worker-a", 0).await.is_some());
+        }
+        {
+            let reopened = SqliteWorkQueue::open(path).expect("reopen store");
+            assert!(
+                reopened
+                    .claim("env", "worker-b", LEASE_TTL_MS - 1)
+                    .await
+                    .is_none(),
+                "a restart must not erase a live lease"
+            );
+            assert!(
+                reopened
+                    .claim("env", "worker-b", LEASE_TTL_MS)
+                    .await
+                    .is_some(),
+                "the durable lease is reclaimable at its exact expiry"
+            );
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
     async fn ack_heartbeat_and_membership_match_the_in_memory_contract() {
         let q = q();
         let id = q.enqueue_session("env_a", "s1").await;
+        q.claim("env_a", "worker", 0).await.expect("claim");
         assert_eq!(
             q.ack("env_a", &id).await.expect("ack").state,
-            WorkState::Starting
+            WorkState::Active
         );
         assert!(
-            q.heartbeat("env_a", &id, 0)
+            q.heartbeat("env_a", &id, "worker", 0, LeaseHeartbeat::unconditional())
                 .await
+                .into_receipt()
                 .expect("hb")
                 .lease_extended
         );
         // Wrong env → none across the board.
         assert!(q.get("env_b", &id).await.is_none());
         assert!(q.ack("env_b", &id).await.is_none());
-        assert!(q.heartbeat("env_b", &id, 0).await.is_none());
+        assert!(
+            q.heartbeat("env_b", &id, "worker", 0, LeaseHeartbeat::unconditional())
+                .await
+                .is_not_found()
+        );
         assert!(q.stop("env_b", &id).await.is_none());
     }
 
@@ -888,14 +912,17 @@ mod tests {
             q.ack("env_a", &w1).await.expect("ack").state,
             WorkState::Starting
         );
-        assert!(
-            q.heartbeat("env_a", &w1, 0)
-                .await
-                .expect("hb")
-                .lease_extended
-        );
+        assert!(matches!(
+            q.heartbeat("env_a", &w1, "w", 0, LeaseHeartbeat::unconditional())
+                .await,
+            HeartbeatResult::PreconditionFailed
+        ));
         assert!(q.get("env_b", &w1).await.is_none(), "wrong env → none");
-        assert!(q.heartbeat("env_b", &w1, 0).await.is_none());
+        assert!(
+            q.heartbeat("env_b", &w1, "w", 0, LeaseHeartbeat::unconditional())
+                .await
+                .is_not_found()
+        );
         // stats reflect the active healthcheck + starting w1
         let st = q.stats("env_a", 0).await;
         assert!(st.pending >= 1 && st.workers_polling == 1);
@@ -915,10 +942,10 @@ mod tests {
         assert!(q.list("env_a").await.is_empty(), "remove_env purges");
     }
 
-    /// The whole point of `FOR UPDATE SKIP LOCKED` in the pg `claim`: under real
-    /// concurrent contention for one environment, the single-active-lease cap holds —
+    /// The environment-row lock in pg `claim` serializes the count-and-lease decision:
+    /// under real concurrent contention, the single-active-lease cap holds —
     /// with one queued item and N workers claiming at once, exactly ONE wins the lease
-    /// and the rest get `None` (they skip the row locked by the winner or see the cap).
+    /// and the rest get `None` after they observe the winner's active row.
     /// Distinct pool connections per task make the transactions genuinely concurrent.
     /// Skips when no Postgres is reachable (`AWAKEN_TEST_DATABASE_URL`), own schema.
     #[tokio::test]

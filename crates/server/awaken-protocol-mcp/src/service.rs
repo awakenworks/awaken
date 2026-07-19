@@ -22,7 +22,7 @@ use async_trait::async_trait;
 use awaken_agent_contract::agent::state::Store;
 use awaken_mcp_wire::jsonrpc::ServerRequestError;
 use awaken_mcp_wire::progress::McpProgressUpdate;
-use awaken_runtime_contract::permission::{GateOutcome, PermissionContext, ToolGateHook};
+use awaken_runtime_contract::permission::{GateOutcome, ToolGateHook};
 use awaken_runtime_contract::tool::{ToolCall, ToolError, ToolOutput};
 use mcp::transport::{InitializeResult, ServerCapabilities, ServerInfo, ServerToolCapabilities};
 use mcp::{CallToolParams, CallToolResult, ListToolsResult, McpToolDefinition, ToolContent};
@@ -209,7 +209,7 @@ impl McpToolService {
     /// has none) fail closed as model-visible errors.
     async fn gate_verdict(&self, call: &ToolCall) -> Option<Result<Value, ServerRequestError>> {
         let gate = self.gate.as_ref()?;
-        let ctx = PermissionContext {
+        let ctx = ToolCall {
             tool_id: call.tool_id.clone(),
             call_id: call.call_id.clone(),
             arguments: call.arguments.clone(),
@@ -222,7 +222,7 @@ impl McpToolService {
                 format!("blocked: {reason}"),
             ))),
             GateOutcome::SetResult(output) => Some(call_result(&output)),
-            GateOutcome::Suspend { .. } | GateOutcome::Schedule { .. } => {
+            GateOutcome::RequireConfirmation { .. } | GateOutcome::Schedule { .. } => {
                 Some(call_result(&ToolOutput::error(
                     call.call_id.clone(),
                     "tool call requires out-of-band approval, which is not available to an external MCP client",
@@ -550,7 +550,7 @@ mod tests {
 
     #[async_trait]
     impl ToolGateHook for DenyGate {
-        async fn gate(&self, ctx: &PermissionContext, _state: &Store) -> GateOutcome {
+        async fn gate(&self, ctx: &ToolCall, _state: &Store) -> GateOutcome {
             GateOutcome::Block {
                 reason: format!("{} is not allowed here", ctx.tool_id),
             }
@@ -581,7 +581,7 @@ mod tests {
 
     #[async_trait]
     impl ToolGateHook for SetResultGate {
-        async fn gate(&self, ctx: &PermissionContext, _state: &Store) -> GateOutcome {
+        async fn gate(&self, ctx: &ToolCall, _state: &Store) -> GateOutcome {
             GateOutcome::SetResult(ToolOutput::ok(ctx.call_id.clone(), "supplied by the gate"))
         }
     }
@@ -610,7 +610,7 @@ mod tests {
 
     #[async_trait]
     impl ToolGateHook for ScheduleGate {
-        async fn gate(&self, _ctx: &PermissionContext, _state: &Store) -> GateOutcome {
+        async fn gate(&self, _ctx: &ToolCall, _state: &Store) -> GateOutcome {
             GateOutcome::Schedule {
                 correlation_id: "corr-1".to_string(),
                 action_kind: None,
@@ -644,7 +644,7 @@ mod tests {
 
     #[async_trait]
     impl ToolGateHook for AllowGate {
-        async fn gate(&self, _ctx: &PermissionContext, _state: &Store) -> GateOutcome {
+        async fn gate(&self, _ctx: &ToolCall, _state: &Store) -> GateOutcome {
             GateOutcome::Allow
         }
     }

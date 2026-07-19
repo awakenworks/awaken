@@ -35,14 +35,14 @@ async fn main() {
     // 2. A permission policy (Claude-Code-style): allow `echo`, ask for anything
     //    else. The gate is the single authorization path.
     let ruleset = PermissionRuleset {
-        default_behavior: ToolPermissionBehavior::Ask,
+        default_behavior: ToolPermissionBehavior::RequireConfirmation,
         mode: Mode::Default,
         rules: vec![PermissionRule::new(
             ToolCallPattern::parse("echo").unwrap(),
             ToolPermissionBehavior::Allow,
         )],
     };
-    let gate = PermissionGate::new(Arc::new(RulePermissionPolicy::new(ruleset)));
+    let gate = PermissionGate::new(Arc::new(RuleBasedToolPermissionPolicy::new(ruleset)));
 
     // 3. Assemble the runtime from its ports: model + tool + gate. Swap
     //    `ScriptedLlm` for `awaken_provider_genai::GenAiExecutor::new()` to use a

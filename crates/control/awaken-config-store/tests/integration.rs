@@ -106,7 +106,7 @@ async fn config_compiles_stores_and_the_runtime_executes_the_snapshot() {
             role: Role::User,
             content: vec![ContentBlock::text("hi")],
         }],
-        initiator: None,
+        delegation_origin: None,
         model_ref_override: None,
     };
     let commit = Arc::new(MemoryCommitCoordinator::new());

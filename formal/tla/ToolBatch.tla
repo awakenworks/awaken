@@ -47,7 +47,7 @@ Init ==
 UnchangedCallData == UNCHANGED <<attempts, invokedAttempt, decision>>
 Committed == commitVersion' = commitVersion + 1
 
-RequestApproval(c) ==
+RequestToolPermission(c) ==
     /\ runState = "Running"
     /\ ticket = NoCall
     /\ callState[c] = "Requested"
@@ -55,7 +55,7 @@ RequestApproval(c) ==
     \* Run ticket authoritative while still modelling multiple calls per batch.
     /\ \A d \in Calls: callState[d] # "Executing"
     /\ runState' = "Awaiting"
-    /\ callState' = [callState EXCEPT ![c] = "AwaitingApproval"]
+    /\ callState' = [callState EXCEPT ![c] = "AwaitingToolPermission"]
     /\ ticket' = c
     /\ UnchangedCallData
     /\ UNCHANGED <<published, endedOnce>>
@@ -74,7 +74,7 @@ DirectStart(c) ==
 Approve(c) ==
     /\ runState = "Awaiting"
     /\ ticket = c
-    /\ callState[c] = "AwaitingApproval"
+    /\ callState[c] = "AwaitingToolPermission"
     /\ attempts[c] < MaxAttempts
     /\ runState' = "Running"
     /\ callState' = [callState EXCEPT ![c] = "Executing"]
@@ -87,7 +87,7 @@ Approve(c) ==
 Deny(c) ==
     /\ runState = "Awaiting"
     /\ ticket = c
-    /\ callState[c] = "AwaitingApproval"
+    /\ callState[c] = "AwaitingToolPermission"
     /\ runState' = "Running"
     /\ callState' = [callState EXCEPT ![c] = "Completed"]
     /\ ticket' = NoCall
@@ -98,7 +98,7 @@ Deny(c) ==
 SupplyResult(c) ==
     /\ runState = "Awaiting"
     /\ ticket = c
-    /\ callState[c] = "AwaitingApproval"
+    /\ callState[c] = "AwaitingToolPermission"
     /\ runState' = "Running"
     /\ callState' = [callState EXCEPT ![c] = "Completed"]
     /\ ticket' = NoCall
@@ -178,7 +178,7 @@ Cancel ==
     /\ Committed
 
 Next ==
-    \/ \E c \in Calls: RequestApproval(c)
+    \/ \E c \in Calls: RequestToolPermission(c)
     \/ \E c \in Calls: DirectStart(c)
     \/ \E c \in Calls: Approve(c)
     \/ \E c \in Calls: Deny(c)
@@ -206,7 +206,7 @@ TypeOK ==
 
 TicketIffAwaiting ==
     (runState = "Awaiting") \equiv
-        (ticket \in Calls /\ callState[ticket] = "AwaitingApproval")
+        (ticket \in Calls /\ callState[ticket] = "AwaitingToolPermission")
 
 ExecutionWasCommitted ==
     \A c \in Calls:
@@ -214,9 +214,9 @@ ExecutionWasCommitted ==
             /\ attempts[c] >= invokedAttempt[c]
             /\ commitVersion > 0
 
-ApprovalCannotBeBypassed ==
+ToolPermissionCannotBeBypassed ==
     \A c \in Calls:
-        callState[c] = "AwaitingApproval" =>
+        callState[c] = "AwaitingToolPermission" =>
             /\ attempts[c] = 0
             /\ invokedAttempt[c] = 0
 
@@ -236,7 +236,7 @@ Safety ==
     /\ TypeOK
     /\ TicketIffAwaiting
     /\ ExecutionWasCommitted
-    /\ ApprovalCannotBeBypassed
+    /\ ToolPermissionCannotBeBypassed
     /\ DeniedCallsNeverRun
     /\ TerminalCallsDoNotReopen
     /\ PublicationBarrier

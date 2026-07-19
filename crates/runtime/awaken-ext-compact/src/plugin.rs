@@ -2,7 +2,7 @@
 //!
 //! [`CompactPlugin`] contributes a `BeforeInference` [`PhaseHook`] symmetric with
 //! memory recall: on a long conversation it summarizes the older messages through
-//! an injected [`SubagentRunner`] sub-agent and injects the summary as **request-only**
+//! an injected ordinary Agent-backed tool and injects the summary as **request-only**
 //! context (never committed, G13). The main agent's `ContextPolicy::KeepLast` drops
 //! the older raw turns from the model view, so summary + kept tail cover the whole
 //! conversation. Summarization runs at most once per run, gated on the run-scoped
@@ -19,7 +19,7 @@ use awaken_runtime_contract::plugin::{
     CapabilityBound, ContextMessages, Contributions, HookReaction, IdBound, PhaseContext,
     PhaseHook, PhaseHookPoint, Plugin, PluginConfigError, PluginManifest,
 };
-use awaken_runtime_contract::subagent_runner::{SubagentRequest, SubagentRunner};
+use awaken_runtime_contract::tool::{RawTool, ToolCall, invoke_raw_tool};
 
 use crate::agent::{COMPACT_AGENT_ID, SUMMARIZE_PROMPT};
 use crate::config::CompactConfig;
@@ -80,24 +80,23 @@ pub fn compaction_count(state: &[Command]) -> usize {
 }
 
 /// Contributes the compaction hook. Constructed with the config and — to actually
-/// summarize — a [`SubagentRunner`] (the neutral aux-run port, ADR-0047 D5, shared
-/// with the goal judge); without one the hook is inert.
+/// summarize — an ordinary Agent-backed [`RawTool`]; without one the hook is inert.
 pub struct CompactPlugin {
     config: CompactConfig,
-    runner: Option<Arc<dyn SubagentRunner>>,
+    agent_tool: Option<Arc<dyn RawTool>>,
 }
 
 impl CompactPlugin {
     pub fn new(config: CompactConfig) -> Self {
         Self {
             config,
-            runner: None,
+            agent_tool: None,
         }
     }
 
     #[must_use]
-    pub fn with_runner(mut self, runner: Arc<dyn SubagentRunner>) -> Self {
-        self.runner = Some(runner);
+    pub fn with_agent_tool(mut self, tool: Arc<dyn RawTool>) -> Self {
+        self.agent_tool = Some(tool);
         self
     }
 
@@ -106,7 +105,7 @@ impl CompactPlugin {
         contributions.declare_state_key(ContextMessages::KEY);
         contributions.register_hook(Arc::new(CompactHook {
             config,
-            runner: self.runner.clone(),
+            agent_tool: self.agent_tool.clone(),
         }));
         contributions
     }
@@ -150,13 +149,13 @@ pub fn config_schema() -> serde_json::Value {
 
 struct CompactHook {
     config: CompactConfig,
-    runner: Option<Arc<dyn SubagentRunner>>,
+    agent_tool: Option<Arc<dyn RawTool>>,
 }
 
 impl CompactHook {
     /// The request-only summary block for a fold, or `None` when nothing folds.
     async fn compute(&self, conversation: &[Message]) -> Option<Vec<Message>> {
-        let runner = self.runner.as_ref()?;
+        let agent_tool = self.agent_tool.as_ref()?;
         // Token-aware when the model's window is known (fold at `trigger_ratio` of
         // it), else the message-count `threshold`.
         let fold_to = match self.config.max_tokens {
@@ -187,15 +186,24 @@ impl CompactHook {
             Role::User,
             prompt,
         ));
-        let reply = runner
-            .run(SubagentRequest {
-                agent_id: COMPACT_AGENT_ID.to_string(),
-                seed,
-                cancellation: None,
-            })
-            .await
-            .ok()?;
-        let summary = reply.text?;
+        let reply = invoke_raw_tool(
+            agent_tool.as_ref(),
+            ToolCall {
+                call_id: "compact-agent-run".into(),
+                tool_id: agent_tool.id().to_string(),
+                arguments: serde_json::json!({
+                    "agent_id": COMPACT_AGENT_ID,
+                    "seed": seed,
+                }),
+            },
+            None,
+        )
+        .await
+        .ok()?;
+        if reply.is_error {
+            return None;
+        }
+        let summary = reply.content;
         if summary.trim().is_empty() {
             return None;
         }
@@ -278,7 +286,15 @@ mod tests {
         }
     }
 
-    use awaken_runtime_contract::subagent_runner::{SubagentError, SubagentReply};
+    use awaken_runtime_contract::tool::{ToolCall, ToolError, ToolOutput};
+
+    fn agent_seed(call: &ToolCall) -> Vec<Message> {
+        serde_json::from_value(call.arguments["seed"].clone()).expect("agent tool seed")
+    }
+
+    fn agent_seed_len(call: &ToolCall) -> usize {
+        agent_seed(call).len()
+    }
 
     /// A stub aux-runner: records the seed length it was handed (the folded slice
     /// plus the appended summarize prompt) and returns a fixed summary.
@@ -286,12 +302,13 @@ mod tests {
         seen_len: std::sync::Mutex<usize>,
     }
     #[async_trait]
-    impl SubagentRunner for FixedSummarizer {
-        async fn run(&self, request: SubagentRequest) -> Result<SubagentReply, SubagentError> {
-            *self.seen_len.lock().unwrap() = request.seed.len();
-            Ok(SubagentReply {
-                text: Some("earlier: X".to_string()),
-            })
+    impl RawTool for FixedSummarizer {
+        fn id(&self) -> &str {
+            "test_agent"
+        }
+        async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
+            *self.seen_len.lock().unwrap() = agent_seed_len(&call);
+            Ok(ToolOutput::ok(call.call_id, "earlier: X"))
         }
     }
 
@@ -330,7 +347,7 @@ mod tests {
             keep_last: 8,
             ..Default::default()
         })
-        .with_runner(Arc::new(FixedSummarizer {
+        .with_agent_tool(Arc::new(FixedSummarizer {
             seen_len: std::sync::Mutex::new(0),
         }));
         let hook = &plugin.resolve().phase_hooks[0];
@@ -348,7 +365,7 @@ mod tests {
             keep_last: 2,
             ..Default::default()
         })
-        .with_runner(summarizer.clone());
+        .with_agent_tool(summarizer.clone());
         let hook = &plugin.resolve().phase_hooks[0];
         // 10 messages, keep_last 2 → summarize the first 8.
         let reaction = hook.on_phase(&phase_ctx(), &convo(10), &Store::new()).await;
@@ -368,16 +385,16 @@ mod tests {
         seen_prompt: std::sync::Mutex<String>,
     }
     #[async_trait]
-    impl SubagentRunner for PromptRecorder {
-        async fn run(&self, request: SubagentRequest) -> Result<SubagentReply, SubagentError> {
-            *self.seen_prompt.lock().unwrap() = request
-                .seed
+    impl RawTool for PromptRecorder {
+        fn id(&self) -> &str {
+            "test_agent"
+        }
+        async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
+            *self.seen_prompt.lock().unwrap() = agent_seed(&call)
                 .last()
                 .map(|m| m.text_content())
                 .unwrap_or_default();
-            Ok(SubagentReply {
-                text: Some("s".to_string()),
-            })
+            Ok(ToolOutput::ok(call.call_id, "s"))
         }
     }
 
@@ -392,7 +409,7 @@ mod tests {
             keep_last: 2,
             ..Default::default()
         })
-        .with_runner(recorder.clone());
+        .with_agent_tool(recorder.clone());
         default_plugin.resolve().phase_hooks[0]
             .on_phase(&phase_ctx(), &convo(10), &Store::new())
             .await;
@@ -406,7 +423,7 @@ mod tests {
             instructions: Some(custom.to_string()),
             ..Default::default()
         })
-        .with_runner(recorder.clone());
+        .with_agent_tool(recorder.clone());
         tuned_plugin.resolve().phase_hooks[0]
             .on_phase(&phase_ctx(), &convo(10), &Store::new())
             .await;
@@ -420,7 +437,7 @@ mod tests {
             keep_last: 2,
             ..Default::default()
         })
-        .with_runner(Arc::new(FixedSummarizer {
+        .with_agent_tool(Arc::new(FixedSummarizer {
             seen_len: std::sync::Mutex::new(0),
         }));
         let hook = &plugin.resolve().phase_hooks[0];
@@ -438,7 +455,7 @@ mod tests {
             keep_last: 8,
             ..Default::default()
         })
-        .with_runner(Arc::new(FixedSummarizer {
+        .with_agent_tool(Arc::new(FixedSummarizer {
             seen_len: std::sync::Mutex::new(0),
         }));
         let hook = &plugin.resolve().phase_hooks[0];
@@ -454,7 +471,7 @@ mod tests {
             keep_last: 2,
             ..Default::default()
         })
-        .with_runner(Arc::new(FixedSummarizer {
+        .with_agent_tool(Arc::new(FixedSummarizer {
             seen_len: std::sync::Mutex::new(0),
         }));
         let hook = &plugin.resolve().phase_hooks[0];
@@ -483,7 +500,7 @@ mod tests {
             trigger_ratio: 0.8,
             instructions: None,
         })
-        .with_runner(Arc::new(FixedSummarizer {
+        .with_agent_tool(Arc::new(FixedSummarizer {
             seen_len: std::sync::Mutex::new(0),
         }));
         let hook = &plugin.resolve().phase_hooks[0];
@@ -506,7 +523,7 @@ mod tests {
             trigger_ratio: 0.8,
             instructions: None,
         })
-        .with_runner(Arc::new(FixedSummarizer {
+        .with_agent_tool(Arc::new(FixedSummarizer {
             seen_len: std::sync::Mutex::new(0),
         }));
         let hook = &plugin.resolve().phase_hooks[0];
@@ -525,7 +542,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn without_a_runner_the_hook_is_inert() {
-        // No SubagentRunner wired: even a long conversation folds nothing. The hook
+        // No Agent-backed tool wired: even a long conversation folds nothing. The hook
         // still records the "evaluated, did not fold" entry, but stages no marker.
         let plugin = CompactPlugin::new(CompactConfig {
             threshold: 4,
@@ -546,29 +563,36 @@ mod tests {
     /// A runner that returns a blank (whitespace-only) summary.
     struct BlankSummarizer;
     #[async_trait]
-    impl SubagentRunner for BlankSummarizer {
-        async fn run(&self, _r: SubagentRequest) -> Result<SubagentReply, SubagentError> {
-            Ok(SubagentReply {
-                text: Some("   \n\t ".to_string()),
-            })
+    impl RawTool for BlankSummarizer {
+        fn id(&self) -> &str {
+            "test_agent"
+        }
+        async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
+            Ok(ToolOutput::ok(call.call_id, "   \n\t "))
         }
     }
 
     /// A runner that produces no assistant text at all.
     struct NoTextSummarizer;
     #[async_trait]
-    impl SubagentRunner for NoTextSummarizer {
-        async fn run(&self, _r: SubagentRequest) -> Result<SubagentReply, SubagentError> {
-            Ok(SubagentReply { text: None })
+    impl RawTool for NoTextSummarizer {
+        fn id(&self) -> &str {
+            "test_agent"
+        }
+        async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
+            Ok(ToolOutput::ok(call.call_id, ""))
         }
     }
 
     /// A runner that fails (unknown agent / transport error).
     struct ErrSummarizer;
     #[async_trait]
-    impl SubagentRunner for ErrSummarizer {
-        async fn run(&self, _r: SubagentRequest) -> Result<SubagentReply, SubagentError> {
-            Err(SubagentError("boom".to_string()))
+    impl RawTool for ErrSummarizer {
+        fn id(&self) -> &str {
+            "test_agent"
+        }
+        async fn invoke(&self, _call: ToolCall) -> Result<ToolOutput, ToolError> {
+            Err(ToolError::Execution("boom".to_string()))
         }
     }
 
@@ -577,7 +601,7 @@ mod tests {
         // Each degenerate runner outcome must yield a no-fold decision: no summary
         // block injected and no compaction marker staged (only the no-fold entry).
         for runner in [
-            Arc::new(BlankSummarizer) as Arc<dyn SubagentRunner>,
+            Arc::new(BlankSummarizer) as Arc<dyn RawTool>,
             Arc::new(NoTextSummarizer),
             Arc::new(ErrSummarizer),
         ] {
@@ -586,7 +610,7 @@ mod tests {
                 keep_last: 2,
                 ..Default::default()
             })
-            .with_runner(runner);
+            .with_agent_tool(runner);
             let hook = &plugin.resolve().phase_hooks[0];
             let reaction = hook.on_phase(&phase_ctx(), &convo(10), &Store::new()).await;
             assert!(injected(&reaction).is_empty(), "no summary block");
@@ -604,7 +628,7 @@ mod tests {
             keep_last: 8,
             ..Default::default()
         })
-        .with_runner(Arc::new(FixedSummarizer {
+        .with_agent_tool(Arc::new(FixedSummarizer {
             seen_len: std::sync::Mutex::new(0),
         }));
         let hook = &plugin.resolve().phase_hooks[0];

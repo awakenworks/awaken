@@ -59,8 +59,8 @@ BY Z3T(30) DEF Init, ExecutionWasCommitted
 LEMMA InitAttemptsAreCommitted == Init => AttemptsAreCommitted
 BY Z3T(30) DEF Init, AttemptsAreCommitted
 
-LEMMA InitApprovalCannotBeBypassed == Init => ApprovalCannotBeBypassed
-BY Z3T(30) DEF Init, ApprovalCannotBeBypassed
+LEMMA InitToolPermissionCannotBeBypassed == Init => ToolPermissionCannotBeBypassed
+BY Z3T(30) DEF Init, ToolPermissionCannotBeBypassed
 
 LEMMA InitDeniedCallsNeverRun == Init => DeniedCallsNeverRun
 BY Z3T(30) DEF Init, DeniedCallsNeverRun
@@ -92,7 +92,7 @@ BY Z3T(30) DEF Init, EndedIsAbsorbing
 THEOREM InitEstablishesSafety == RuntimeAssumptions /\ Init => Safety
 BY InitTypeOK, InitRunDispatchCoherence, InitTicketCoherence,
    InitExecutionWasCommitted, InitAttemptsAreCommitted,
-   InitApprovalCannotBeBypassed,
+   InitToolPermissionCannotBeBypassed,
    InitDeniedCallsNeverRun, InitRequestedCallsAreFresh,
    InitDeniedCallsAreTerminal, InitPublicationBarrier,
    InitDelegationCompletionIsToolOwned, InitOpenDelegationHasLiveChild,
@@ -103,7 +103,7 @@ LEMMA ClaimPreservesSafety ==
     \A candidate \in Owners:
         RuntimeAssumptions /\ Safety /\ Claim(candidate) => Safety'
 BY Z3T(30) DEF Safety, TypeOK, RunDispatchCoherence, TicketCoherence,
-    ExecutionWasCommitted, AttemptsAreCommitted, ApprovalCannotBeBypassed, DeniedCallsNeverRun,
+    ExecutionWasCommitted, AttemptsAreCommitted, ToolPermissionCannotBeBypassed, DeniedCallsNeverRun,
     RequestedCallsAreFresh, DeniedCallsAreTerminal, PublicationBarrier,
     DelegationCompletionIsToolOwned, OpenDelegationHasLiveChild,
     CancellationIsDurable, MessagesCannotApprove, EndedIsAbsorbing,
@@ -121,7 +121,7 @@ ActionSafetyDefs ==
     /\ TicketCoherence
     /\ ExecutionWasCommitted
     /\ AttemptsAreCommitted
-    /\ ApprovalCannotBeBypassed
+    /\ ToolPermissionCannotBeBypassed
     /\ DeniedCallsNeverRun
     /\ RequestedCallsAreFresh
     /\ DeniedCallsAreTerminal
@@ -136,7 +136,7 @@ LEMMA ReclaimPreservesSafety ==
     \A candidate \in Owners:
         RuntimeAssumptions /\ Safety /\ Reclaim(candidate) => Safety'
 BY Z3T(30) DEF ActionSafetyDefs, Safety, TypeOK, RunDispatchCoherence,
-    TicketCoherence, ExecutionWasCommitted, AttemptsAreCommitted, ApprovalCannotBeBypassed,
+    TicketCoherence, ExecutionWasCommitted, AttemptsAreCommitted, ToolPermissionCannotBeBypassed,
     DeniedCallsNeverRun, RequestedCallsAreFresh, DeniedCallsAreTerminal,
     PublicationBarrier, DelegationCompletionIsToolOwned, OpenDelegationHasLiveChild,
     CancellationIsDurable, MessagesCannotApprove, EndedIsAbsorbing,
@@ -144,15 +144,15 @@ BY Z3T(30) DEF ActionSafetyDefs, Safety, TypeOK, RunDispatchCoherence,
     ToolCallStates, TerminalToolCallStates, ToolDecisionStates,
     DelegatedChildStates, DelegationLinkStatuses, RuntimeAssumptions
 
-LEMMA RequestApprovalPreservesSafety ==
+LEMMA RequestToolPermissionPreservesSafety ==
     \A c \in Calls:
-        RuntimeAssumptions /\ Safety /\ RequestApproval(c) => Safety'
+        RuntimeAssumptions /\ Safety /\ RequestToolPermission(c) => Safety'
 BY Z3T(30) DEF ActionSafetyDefs, Safety, TypeOK, RunDispatchCoherence,
-    TicketCoherence, ExecutionWasCommitted, AttemptsAreCommitted, ApprovalCannotBeBypassed,
+    TicketCoherence, ExecutionWasCommitted, AttemptsAreCommitted, ToolPermissionCannotBeBypassed,
     DeniedCallsNeverRun, RequestedCallsAreFresh, DeniedCallsAreTerminal,
     PublicationBarrier, DelegationCompletionIsToolOwned, OpenDelegationHasLiveChild,
     CancellationIsDurable, MessagesCannotApprove, EndedIsAbsorbing,
-    RequestApproval, Committed, CoreRunStates, TicketKinds, DispatchStates,
+    RequestToolPermission, Committed, CoreRunStates, TicketKinds, DispatchStates,
     ToolCallStates, TerminalToolCallStates, ToolDecisionStates,
     DelegatedChildStates, DelegationLinkStatuses, RuntimeAssumptions
 
@@ -160,7 +160,7 @@ LEMMA ApprovePreservesSafety ==
     \A c \in Calls, candidate \in Owners:
         RuntimeAssumptions /\ Safety /\ Approve(c, candidate) => Safety'
 BY Z3T(30) DEF ActionSafetyDefs, Safety, TypeOK, RunDispatchCoherence,
-    TicketCoherence, ExecutionWasCommitted, AttemptsAreCommitted, ApprovalCannotBeBypassed,
+    TicketCoherence, ExecutionWasCommitted, AttemptsAreCommitted, ToolPermissionCannotBeBypassed,
     DeniedCallsNeverRun, RequestedCallsAreFresh, DeniedCallsAreTerminal,
     PublicationBarrier, DelegationCompletionIsToolOwned, OpenDelegationHasLiveChild,
     CancellationIsDurable, MessagesCannotApprove, EndedIsAbsorbing,
@@ -172,7 +172,7 @@ LEMMA DenyPreservesSafety ==
     \A c \in Calls, candidate \in Owners:
         RuntimeAssumptions /\ Safety /\ Deny(c, candidate) => Safety'
 BY Z3T(30) DEF ActionSafetyDefs, Safety, TypeOK, RunDispatchCoherence,
-    TicketCoherence, ExecutionWasCommitted, AttemptsAreCommitted, ApprovalCannotBeBypassed,
+    TicketCoherence, ExecutionWasCommitted, AttemptsAreCommitted, ToolPermissionCannotBeBypassed,
     DeniedCallsNeverRun, RequestedCallsAreFresh, DeniedCallsAreTerminal,
     PublicationBarrier, DelegationCompletionIsToolOwned, OpenDelegationHasLiveChild,
     CancellationIsDurable, MessagesCannotApprove, EndedIsAbsorbing,
@@ -185,7 +185,7 @@ LEMMA SupplyResultPreservesSafety ==
         RuntimeAssumptions /\ Safety /\ SupplyResult(c, candidate) => Safety'
 BY Z3T(30) DEF ActionSafetyDefs, Safety, TypeOK, RunDispatchCoherence,
     TicketCoherence, ExecutionWasCommitted, AttemptsAreCommitted,
-    ApprovalCannotBeBypassed, DeniedCallsNeverRun, RequestedCallsAreFresh,
+    ToolPermissionCannotBeBypassed, DeniedCallsNeverRun, RequestedCallsAreFresh,
     DeniedCallsAreTerminal, PublicationBarrier,
     DelegationCompletionIsToolOwned, OpenDelegationHasLiveChild,
     CancellationIsDurable, MessagesCannotApprove, EndedIsAbsorbing,
@@ -197,7 +197,7 @@ LEMMA DirectStartPreservesSafety ==
     \A c \in Calls:
         RuntimeAssumptions /\ Safety /\ DirectStart(c) => Safety'
 BY Z3T(30) DEF ActionSafetyDefs, Safety, TypeOK, RunDispatchCoherence,
-    TicketCoherence, ExecutionWasCommitted, AttemptsAreCommitted, ApprovalCannotBeBypassed,
+    TicketCoherence, ExecutionWasCommitted, AttemptsAreCommitted, ToolPermissionCannotBeBypassed,
     DeniedCallsNeverRun, RequestedCallsAreFresh, DeniedCallsAreTerminal,
     PublicationBarrier, DelegationCompletionIsToolOwned, OpenDelegationHasLiveChild,
     CancellationIsDurable, MessagesCannotApprove, EndedIsAbsorbing,
@@ -210,7 +210,7 @@ LEMMA CompleteImmediatePreservesSafety ==
         RuntimeAssumptions /\ Safety /\ CompleteImmediate(c) => Safety'
 BY Z3T(30) DEF ActionSafetyDefs, Safety, TypeOK, RunDispatchCoherence,
     TicketCoherence, ExecutionWasCommitted, AttemptsAreCommitted,
-    ApprovalCannotBeBypassed, DeniedCallsNeverRun, RequestedCallsAreFresh,
+    ToolPermissionCannotBeBypassed, DeniedCallsNeverRun, RequestedCallsAreFresh,
     DeniedCallsAreTerminal, PublicationBarrier,
     DelegationCompletionIsToolOwned, OpenDelegationHasLiveChild,
     CancellationIsDurable, MessagesCannotApprove, EndedIsAbsorbing,
@@ -222,7 +222,7 @@ LEMMA InvokePreservesSafety ==
     \A c \in Calls:
         RuntimeAssumptions /\ Safety /\ Invoke(c) => Safety'
 BY Z3T(30) DEF ActionSafetyDefs, Safety, TypeOK, RunDispatchCoherence,
-    TicketCoherence, ExecutionWasCommitted, AttemptsAreCommitted, ApprovalCannotBeBypassed,
+    TicketCoherence, ExecutionWasCommitted, AttemptsAreCommitted, ToolPermissionCannotBeBypassed,
     DeniedCallsNeverRun, RequestedCallsAreFresh, DeniedCallsAreTerminal,
     PublicationBarrier, DelegationCompletionIsToolOwned, OpenDelegationHasLiveChild,
     CancellationIsDurable, MessagesCannotApprove, EndedIsAbsorbing,
@@ -234,7 +234,7 @@ LEMMA CompletePreservesSafety ==
     \A c \in Calls:
         RuntimeAssumptions /\ Safety /\ Complete(c) => Safety'
 BY Z3T(30) DEF ActionSafetyDefs, Safety, TypeOK, RunDispatchCoherence,
-    TicketCoherence, ExecutionWasCommitted, AttemptsAreCommitted, ApprovalCannotBeBypassed,
+    TicketCoherence, ExecutionWasCommitted, AttemptsAreCommitted, ToolPermissionCannotBeBypassed,
     DeniedCallsNeverRun, RequestedCallsAreFresh, DeniedCallsAreTerminal,
     PublicationBarrier, DelegationCompletionIsToolOwned, OpenDelegationHasLiveChild,
     CancellationIsDurable, MessagesCannotApprove, EndedIsAbsorbing,
@@ -246,7 +246,7 @@ LEMMA RecoverReplaySafePreservesSafety ==
     \A c \in Calls:
         RuntimeAssumptions /\ Safety /\ RecoverReplaySafe(c) => Safety'
 BY Z3T(30) DEF ActionSafetyDefs, Safety, TypeOK, RunDispatchCoherence,
-    TicketCoherence, ExecutionWasCommitted, AttemptsAreCommitted, ApprovalCannotBeBypassed,
+    TicketCoherence, ExecutionWasCommitted, AttemptsAreCommitted, ToolPermissionCannotBeBypassed,
     DeniedCallsNeverRun, RequestedCallsAreFresh, DeniedCallsAreTerminal,
     PublicationBarrier, DelegationCompletionIsToolOwned, OpenDelegationHasLiveChild,
     CancellationIsDurable, MessagesCannotApprove, EndedIsAbsorbing,
@@ -258,7 +258,7 @@ LEMMA RecoverIndeterminatePreservesSafety ==
     \A c \in Calls:
         RuntimeAssumptions /\ Safety /\ RecoverIndeterminate(c) => Safety'
 BY Z3T(30) DEF ActionSafetyDefs, Safety, TypeOK, RunDispatchCoherence,
-    TicketCoherence, ExecutionWasCommitted, AttemptsAreCommitted, ApprovalCannotBeBypassed,
+    TicketCoherence, ExecutionWasCommitted, AttemptsAreCommitted, ToolPermissionCannotBeBypassed,
     DeniedCallsNeverRun, RequestedCallsAreFresh, DeniedCallsAreTerminal,
     PublicationBarrier, DelegationCompletionIsToolOwned, OpenDelegationHasLiveChild,
     CancellationIsDurable, MessagesCannotApprove, EndedIsAbsorbing,
@@ -269,7 +269,7 @@ BY Z3T(30) DEF ActionSafetyDefs, Safety, TypeOK, RunDispatchCoherence,
 LEMMA StartChildPreservesSafety ==
     RuntimeAssumptions /\ Safety /\ StartChild => Safety'
 BY Z3T(30) DEF ActionSafetyDefs, Safety, TypeOK, RunDispatchCoherence,
-    TicketCoherence, ExecutionWasCommitted, AttemptsAreCommitted, ApprovalCannotBeBypassed,
+    TicketCoherence, ExecutionWasCommitted, AttemptsAreCommitted, ToolPermissionCannotBeBypassed,
     DeniedCallsNeverRun, RequestedCallsAreFresh, DeniedCallsAreTerminal,
     PublicationBarrier, DelegationCompletionIsToolOwned, OpenDelegationHasLiveChild,
     CancellationIsDurable, MessagesCannotApprove, EndedIsAbsorbing,
@@ -280,7 +280,7 @@ BY Z3T(30) DEF ActionSafetyDefs, Safety, TypeOK, RunDispatchCoherence,
 LEMMA AwaitChildPreservesSafety ==
     RuntimeAssumptions /\ Safety /\ AwaitChild => Safety'
 BY Z3T(30) DEF ActionSafetyDefs, Safety, TypeOK, RunDispatchCoherence,
-    TicketCoherence, ExecutionWasCommitted, AttemptsAreCommitted, ApprovalCannotBeBypassed,
+    TicketCoherence, ExecutionWasCommitted, AttemptsAreCommitted, ToolPermissionCannotBeBypassed,
     DeniedCallsNeverRun, RequestedCallsAreFresh, DeniedCallsAreTerminal,
     PublicationBarrier, DelegationCompletionIsToolOwned, OpenDelegationHasLiveChild,
     CancellationIsDurable, MessagesCannotApprove, EndedIsAbsorbing,
@@ -291,7 +291,7 @@ BY Z3T(30) DEF ActionSafetyDefs, Safety, TypeOK, RunDispatchCoherence,
 LEMMA ResumeChildPreservesSafety ==
     RuntimeAssumptions /\ Safety /\ ResumeChild => Safety'
 BY Z3T(30) DEF ActionSafetyDefs, Safety, TypeOK, RunDispatchCoherence,
-    TicketCoherence, ExecutionWasCommitted, AttemptsAreCommitted, ApprovalCannotBeBypassed,
+    TicketCoherence, ExecutionWasCommitted, AttemptsAreCommitted, ToolPermissionCannotBeBypassed,
     DeniedCallsNeverRun, RequestedCallsAreFresh, DeniedCallsAreTerminal,
     PublicationBarrier, DelegationCompletionIsToolOwned, OpenDelegationHasLiveChild,
     CancellationIsDurable, MessagesCannotApprove, EndedIsAbsorbing,
@@ -303,7 +303,7 @@ LEMMA FinishChildPreservesSafety ==
     \A candidate \in Owners:
         RuntimeAssumptions /\ Safety /\ FinishChild(candidate) => Safety'
 BY Z3T(30) DEF ActionSafetyDefs, Safety, TypeOK, RunDispatchCoherence,
-    TicketCoherence, ExecutionWasCommitted, AttemptsAreCommitted, ApprovalCannotBeBypassed,
+    TicketCoherence, ExecutionWasCommitted, AttemptsAreCommitted, ToolPermissionCannotBeBypassed,
     DeniedCallsNeverRun, RequestedCallsAreFresh, DeniedCallsAreTerminal,
     PublicationBarrier, DelegationCompletionIsToolOwned, OpenDelegationHasLiveChild,
     CancellationIsDurable, MessagesCannotApprove, EndedIsAbsorbing,
@@ -314,7 +314,7 @@ BY Z3T(30) DEF ActionSafetyDefs, Safety, TypeOK, RunDispatchCoherence,
 LEMMA QueueMessagePreservesSafety ==
     RuntimeAssumptions /\ Safety /\ QueueMessage => Safety'
 BY Z3T(30) DEF ActionSafetyDefs, Safety, TypeOK, RunDispatchCoherence,
-    TicketCoherence, ExecutionWasCommitted, AttemptsAreCommitted, ApprovalCannotBeBypassed,
+    TicketCoherence, ExecutionWasCommitted, AttemptsAreCommitted, ToolPermissionCannotBeBypassed,
     DeniedCallsNeverRun, RequestedCallsAreFresh, DeniedCallsAreTerminal,
     PublicationBarrier, DelegationCompletionIsToolOwned, OpenDelegationHasLiveChild,
     CancellationIsDurable, MessagesCannotApprove, EndedIsAbsorbing,
@@ -325,7 +325,7 @@ BY Z3T(30) DEF ActionSafetyDefs, Safety, TypeOK, RunDispatchCoherence,
 LEMMA ConsumeMessagePreservesSafety ==
     RuntimeAssumptions /\ Safety /\ ConsumeMessage => Safety'
 BY Z3T(30) DEF ActionSafetyDefs, Safety, TypeOK, RunDispatchCoherence,
-    TicketCoherence, ExecutionWasCommitted, AttemptsAreCommitted, ApprovalCannotBeBypassed,
+    TicketCoherence, ExecutionWasCommitted, AttemptsAreCommitted, ToolPermissionCannotBeBypassed,
     DeniedCallsNeverRun, RequestedCallsAreFresh, DeniedCallsAreTerminal,
     PublicationBarrier, DelegationCompletionIsToolOwned, OpenDelegationHasLiveChild,
     CancellationIsDurable, MessagesCannotApprove, EndedIsAbsorbing,
@@ -336,7 +336,7 @@ BY Z3T(30) DEF ActionSafetyDefs, Safety, TypeOK, RunDispatchCoherence,
 LEMMA FinalizeBatchPreservesSafety ==
     RuntimeAssumptions /\ Safety /\ FinalizeBatch => Safety'
 BY Z3T(30) DEF ActionSafetyDefs, Safety, TypeOK, RunDispatchCoherence,
-    TicketCoherence, ExecutionWasCommitted, AttemptsAreCommitted, ApprovalCannotBeBypassed,
+    TicketCoherence, ExecutionWasCommitted, AttemptsAreCommitted, ToolPermissionCannotBeBypassed,
     DeniedCallsNeverRun, RequestedCallsAreFresh, DeniedCallsAreTerminal,
     PublicationBarrier, DelegationCompletionIsToolOwned, OpenDelegationHasLiveChild,
     CancellationIsDurable, MessagesCannotApprove, EndedIsAbsorbing,
@@ -347,7 +347,7 @@ BY Z3T(30) DEF ActionSafetyDefs, Safety, TypeOK, RunDispatchCoherence,
 LEMMA EndRunPreservesSafety ==
     RuntimeAssumptions /\ Safety /\ EndRun => Safety'
 BY Z3T(30) DEF ActionSafetyDefs, Safety, TypeOK, RunDispatchCoherence,
-    TicketCoherence, ExecutionWasCommitted, AttemptsAreCommitted, ApprovalCannotBeBypassed,
+    TicketCoherence, ExecutionWasCommitted, AttemptsAreCommitted, ToolPermissionCannotBeBypassed,
     DeniedCallsNeverRun, RequestedCallsAreFresh, DeniedCallsAreTerminal,
     PublicationBarrier, DelegationCompletionIsToolOwned, OpenDelegationHasLiveChild,
     CancellationIsDurable, MessagesCannotApprove, EndedIsAbsorbing,
@@ -358,7 +358,7 @@ BY Z3T(30) DEF ActionSafetyDefs, Safety, TypeOK, RunDispatchCoherence,
 LEMMA CancelPreservesSafety ==
     RuntimeAssumptions /\ Safety /\ Cancel => Safety'
 BY Z3T(30) DEF ActionSafetyDefs, Safety, TypeOK, RunDispatchCoherence,
-    TicketCoherence, ExecutionWasCommitted, AttemptsAreCommitted, ApprovalCannotBeBypassed,
+    TicketCoherence, ExecutionWasCommitted, AttemptsAreCommitted, ToolPermissionCannotBeBypassed,
     DeniedCallsNeverRun, RequestedCallsAreFresh, DeniedCallsAreTerminal,
     PublicationBarrier, DelegationCompletionIsToolOwned, OpenDelegationHasLiveChild,
     CancellationIsDurable, MessagesCannotApprove, EndedIsAbsorbing,
@@ -368,14 +368,14 @@ BY Z3T(30) DEF ActionSafetyDefs, Safety, TypeOK, RunDispatchCoherence,
 
 LEMMA UnchangedPreservesSafety == Safety /\ UNCHANGED vars => Safety'
 BY DEF Safety, TypeOK, RunDispatchCoherence, TicketCoherence,
-    ExecutionWasCommitted, AttemptsAreCommitted, ApprovalCannotBeBypassed, DeniedCallsNeverRun,
+    ExecutionWasCommitted, AttemptsAreCommitted, ToolPermissionCannotBeBypassed, DeniedCallsNeverRun,
     RequestedCallsAreFresh, DeniedCallsAreTerminal, PublicationBarrier,
     DelegationCompletionIsToolOwned, OpenDelegationHasLiveChild,
     CancellationIsDurable, MessagesCannotApprove, EndedIsAbsorbing, vars
 
 LEMMA NextPreservesSafety == RuntimeAssumptions /\ Safety /\ Next => Safety'
 BY ClaimPreservesSafety, ReclaimPreservesSafety,
-   RequestApprovalPreservesSafety, ApprovePreservesSafety,
+   RequestToolPermissionPreservesSafety, ApprovePreservesSafety,
    DenyPreservesSafety, SupplyResultPreservesSafety,
    DirectStartPreservesSafety, CompleteImmediatePreservesSafety,
    InvokePreservesSafety,
@@ -390,7 +390,7 @@ BY ClaimPreservesSafety, ReclaimPreservesSafety,
 
 LEMMA StutterPreservesSafety == Safety /\ UNCHANGED vars => Safety'
 BY DEF Safety, TypeOK, RunDispatchCoherence, TicketCoherence,
-    ExecutionWasCommitted, AttemptsAreCommitted, ApprovalCannotBeBypassed, DeniedCallsNeverRun,
+    ExecutionWasCommitted, AttemptsAreCommitted, ToolPermissionCannotBeBypassed, DeniedCallsNeverRun,
     RequestedCallsAreFresh, DeniedCallsAreTerminal, PublicationBarrier,
     DelegationCompletionIsToolOwned, OpenDelegationHasLiveChild,
     CancellationIsDurable, MessagesCannotApprove, EndedIsAbsorbing, vars

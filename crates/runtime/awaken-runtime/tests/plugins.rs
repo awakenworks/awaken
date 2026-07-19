@@ -23,7 +23,7 @@ use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
 };
-use awaken_runtime_contract::permission::{GateOutcome, PermissionContext, ToolGateHook};
+use awaken_runtime_contract::permission::{GateOutcome, ToolGateHook};
 use awaken_runtime_contract::plugin::{
     CapabilityBound, Contributions, HookReaction, IdBound, PhaseContext, PhaseHook, PhaseHookPoint,
     Plugin, PluginManifest,
@@ -176,7 +176,7 @@ impl ToolGateHook for NarrowGate {
     fn id(&self) -> &str {
         "narrow"
     }
-    async fn gate(&self, _ctx: &PermissionContext, _state: &Store) -> GateOutcome {
+    async fn gate(&self, _ctx: &ToolCall, _state: &Store) -> GateOutcome {
         GateOutcome::Block {
             reason: "plugin policy forbids echo".to_string(),
         }
@@ -209,7 +209,7 @@ struct DenyHostGate;
 
 #[async_trait::async_trait]
 impl ToolGateHook for DenyHostGate {
-    async fn gate(&self, _ctx: &PermissionContext, _state: &Store) -> GateOutcome {
+    async fn gate(&self, _ctx: &ToolCall, _state: &Store) -> GateOutcome {
         GateOutcome::Block {
             reason: "host denied".to_string(),
         }
@@ -227,7 +227,7 @@ impl ToolGateHook for RecordingGate {
     fn id(&self) -> &str {
         "recgate"
     }
-    async fn gate(&self, _ctx: &PermissionContext, _state: &Store) -> GateOutcome {
+    async fn gate(&self, _ctx: &ToolCall, _state: &Store) -> GateOutcome {
         self.consulted.fetch_add(1, Ordering::SeqCst);
         GateOutcome::Allow
     }
@@ -307,7 +307,7 @@ fn activation(plugin_ids: Vec<String>) -> RunActivation {
             role: Role::User,
             content: vec![ContentBlock::text("go")],
         }],
-        initiator: None,
+        delegation_origin: None,
         model_ref_override: None,
     }
 }

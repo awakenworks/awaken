@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::run::RunState;
 use awaken_run_ingress::{
-    AnyDispatchStore, DispatchOutcome, DispatchQueue, DurableRunIngress, Inbox, RunExecutionRequest,
+    AnyDispatchStore, DispatchOutcome, DispatchQueue, DurableRunIngress, Inbox, RunDispatch,
 };
 use awaken_runtime::RunIngress;
 use awaken_runtime_contract::resume::ResumeResult;
@@ -27,12 +27,12 @@ fn any_in_memory() -> AnyDispatchStore {
 async fn any_delegates_enqueue_claim_and_owner_scoped_lease() {
     let store = any_in_memory();
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
     // Re-enqueue is a no-op (idempotent), delegated through the wrapper.
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
 
@@ -64,11 +64,11 @@ async fn any_lets_two_owners_claim_distinct_runs() {
     // cannot both be in flight (see `any_serializes_one_thread_across_workers`).
     let store = any_in_memory();
     store
-        .enqueue(RunExecutionRequest::new(activation_on("run-1", "thread-1")))
+        .enqueue(RunDispatch::new(activation_on("run-1", "thread-1")))
         .await
         .unwrap();
     store
-        .enqueue(RunExecutionRequest::new(activation_on("run-2", "thread-2")))
+        .enqueue(RunDispatch::new(activation_on("run-2", "thread-2")))
         .await
         .unwrap();
 
@@ -103,7 +103,7 @@ async fn any_serializes_one_thread_across_workers() {
     // it, and it becomes claimable only after run-1 settles.
     let store = any_in_memory();
     store
-        .enqueue(RunExecutionRequest::new(activation_on("run-1", "thread-x")))
+        .enqueue(RunDispatch::new(activation_on("run-1", "thread-x")))
         .await
         .unwrap();
     let first = store
@@ -115,7 +115,7 @@ async fn any_serializes_one_thread_across_workers() {
 
     // A second run arrives on the same thread while run-1 runs.
     store
-        .enqueue(RunExecutionRequest::new(activation_on("run-2", "thread-x")))
+        .enqueue(RunDispatch::new(activation_on("run-2", "thread-x")))
         .await
         .unwrap();
     assert!(
@@ -201,7 +201,7 @@ async fn any_postgres_connect_and_claim() {
         .await
         .expect("connect postgres backend");
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .expect("enqueue over postgres");
     let claimed = store.claim("pg-owner", 1_000, 0).await.expect("claim");

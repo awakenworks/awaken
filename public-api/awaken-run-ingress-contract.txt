@@ -16,7 +16,7 @@ pub awaken_run_ingress_contract::dispatch::DispatchState::Leased
 pub awaken_run_ingress_contract::dispatch::DispatchState::Pending
 pub awaken_run_ingress_contract::dispatch::DispatchState::Superseded
 impl awaken_run_ingress_contract::dispatch::DispatchState
-pub fn awaken_run_ingress_contract::dispatch::DispatchState::from_db(&str) -> Self
+pub fn awaken_run_ingress_contract::dispatch::DispatchState::from_db(&str) -> core::option::Option<Self>
 pub enum awaken_run_ingress_contract::dispatch::SettleOutcome
 pub awaken_run_ingress_contract::dispatch::SettleOutcome::Applied
 pub awaken_run_ingress_contract::dispatch::SettleOutcome::Fenced
@@ -25,8 +25,11 @@ pub fn awaken_run_ingress_contract::dispatch::SettleOutcome::applied(self) -> bo
 pub struct awaken_run_ingress_contract::dispatch::Claimed
 pub awaken_run_ingress_contract::dispatch::Claimed::lease: awaken_run_ingress_contract::dispatch::Lease
 pub awaken_run_ingress_contract::dispatch::Claimed::pending: alloc::vec::Vec<awaken_run_ingress_contract::dispatch::PendingInput>
-pub awaken_run_ingress_contract::dispatch::Claimed::request: awaken_run_ingress_contract::request::RunExecutionRequest
+pub awaken_run_ingress_contract::dispatch::Claimed::request: awaken_run_ingress_contract::run_dispatch::RunDispatch
 pub awaken_run_ingress_contract::dispatch::Claimed::sandbox: core::option::Option<alloc::string::String>
+pub struct awaken_run_ingress_contract::dispatch::CommitEpochGuard
+impl awaken_run_ingress_contract::dispatch::CommitEpochGuard
+pub fn awaken_run_ingress_contract::dispatch::CommitEpochGuard::new(impl core::marker::Send + 'static) -> Self
 pub struct awaken_run_ingress_contract::dispatch::DispatchSummary
 pub awaken_run_ingress_contract::dispatch::DispatchSummary::attempt_count: u64
 pub awaken_run_ingress_contract::dispatch::DispatchSummary::run_id: awaken_agent_contract::agent::run::Id
@@ -37,6 +40,8 @@ pub awaken_run_ingress_contract::dispatch::Lease::epoch: u64
 pub awaken_run_ingress_contract::dispatch::Lease::expires_ms: u64
 pub awaken_run_ingress_contract::dispatch::Lease::owner: alloc::string::String
 pub awaken_run_ingress_contract::dispatch::Lease::run_id: awaken_agent_contract::agent::run::Id
+impl core::convert::From<&awaken_run_ingress_contract::dispatch::Lease> for awaken_run_ingress_contract::dispatch::RunClaim
+pub fn awaken_run_ingress_contract::dispatch::RunClaim::from(&awaken_run_ingress_contract::dispatch::Lease) -> Self
 pub struct awaken_run_ingress_contract::dispatch::PendingInput
 pub awaken_run_ingress_contract::dispatch::PendingInput::available_at_ms: core::option::Option<u64>
 pub awaken_run_ingress_contract::dispatch::PendingInput::correlation_id: alloc::string::String
@@ -47,6 +52,12 @@ pub awaken_run_ingress_contract::dispatch::PendingInput::thread_id: awaken_agent
 pub struct awaken_run_ingress_contract::dispatch::PendingRecord
 pub awaken_run_ingress_contract::dispatch::PendingRecord::input: awaken_run_ingress_contract::dispatch::PendingInput
 pub awaken_run_ingress_contract::dispatch::PendingRecord::revision: u64
+pub struct awaken_run_ingress_contract::dispatch::RunClaim
+pub awaken_run_ingress_contract::dispatch::RunClaim::epoch: u64
+pub awaken_run_ingress_contract::dispatch::RunClaim::owner: alloc::string::String
+pub awaken_run_ingress_contract::dispatch::RunClaim::run_id: awaken_agent_contract::agent::run::Id
+impl core::convert::From<&awaken_run_ingress_contract::dispatch::Lease> for awaken_run_ingress_contract::dispatch::RunClaim
+pub fn awaken_run_ingress_contract::dispatch::RunClaim::from(&awaken_run_ingress_contract::dispatch::Lease) -> Self
 pub struct awaken_run_ingress_contract::dispatch::SubmitOptions
 pub awaken_run_ingress_contract::dispatch::SubmitOptions::dedupe_key: core::option::Option<alloc::string::String>
 pub awaken_run_ingress_contract::dispatch::SubmitOptions::priority: i64
@@ -58,12 +69,14 @@ pub fn awaken_run_ingress_contract::dispatch::DispatchQueue::awaiting_run<'life0
 pub fn awaken_run_ingress_contract::dispatch::DispatchQueue::bind_sandbox<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::run::Id, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_run_ingress_contract::dispatch::DispatchQueue::cancel<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::run::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_agent_contract::agent::thread::Id>, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_run_ingress_contract::dispatch::DispatchQueue::claim<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, u64, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_run_ingress_contract::dispatch::Claimed>, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_run_ingress_contract::dispatch::DispatchQueue::current_epoch<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::run::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<u64>, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_run_ingress_contract::dispatch::DispatchQueue::claim_new_run<'life0, 'life1, 'async_trait>(&'life0 self, awaken_run_ingress_contract::run_dispatch::RunDispatch, &'life1 str, u64, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_run_ingress_contract::dispatch::Claimed>, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_run_ingress_contract::dispatch::DispatchQueue::claim_run<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::run::Id, &'life2 str, u64, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_run_ingress_contract::dispatch::Claimed>, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_run_ingress_contract::dispatch::DispatchQueue::dead_letters<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_agent_contract::agent::run::Id>, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_run_ingress_contract::dispatch::DispatchQueue::enqueue<'life0, 'async_trait>(&'life0 self, awaken_run_ingress_contract::request::RunExecutionRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_run_ingress_contract::dispatch::DispatchQueue::enqueue_with<'life0, 'async_trait>(&'life0 self, awaken_run_ingress_contract::request::RunExecutionRequest, awaken_run_ingress_contract::dispatch::SubmitOptions) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_run_ingress_contract::dispatch::DispatchQueue::holds_current_epoch<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::run::Id, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_run_ingress_contract::dispatch::DispatchQueue::deliver_and_claim<'life0, 'life1, 'async_trait>(&'life0 self, awaken_run_ingress_contract::dispatch::PendingInput, &'life1 str, u64, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_run_ingress_contract::dispatch::Claimed>, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_run_ingress_contract::dispatch::DispatchQueue::enqueue<'life0, 'async_trait>(&'life0 self, awaken_run_ingress_contract::run_dispatch::RunDispatch) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_run_ingress_contract::dispatch::DispatchQueue::enqueue_with<'life0, 'async_trait>(&'life0 self, awaken_run_ingress_contract::run_dispatch::RunDispatch, awaken_run_ingress_contract::dispatch::SubmitOptions) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_run_ingress_contract::dispatch::DispatchQueue::list_dispatches<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_run_ingress_contract::dispatch::DispatchSummary>, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_run_ingress_contract::dispatch::DispatchQueue::lock_commit_epoch<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_run_ingress_contract::dispatch::RunClaim) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_run_ingress_contract::dispatch::CommitEpochGuard>, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_run_ingress_contract::dispatch::DispatchQueue::purge_dead_letters<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_run_ingress_contract::dispatch::DispatchQueue::purge_dead_letters_before<'life0, 'async_trait>(&'life0 self, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_run_ingress_contract::dispatch::DispatchQueue::reap<'life0, 'async_trait>(&'life0 self, u64, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
@@ -80,15 +93,18 @@ pub fn awaken_run_ingress_contract::dispatch::Inbox::retract<'life0, 'life1, 'as
 pub trait awaken_run_ingress_contract::dispatch::Outbox: core::marker::Send + core::marker::Sync
 pub fn awaken_run_ingress_contract::dispatch::Outbox::relay<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_run_ingress_contract::dispatch::Outbox::stage<'life0, 'async_trait>(&'life0 self, awaken_run_ingress_contract::dispatch::PendingInput) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub mod awaken_run_ingress_contract::request
-pub struct awaken_run_ingress_contract::request::RunExecutionRequest
-pub awaken_run_ingress_contract::request::RunExecutionRequest::activation: awaken_runtime_contract::activation::RunActivation
-pub awaken_run_ingress_contract::request::RunExecutionRequest::traceparent: core::option::Option<alloc::string::String>
-impl awaken_run_ingress_contract::request::RunExecutionRequest
-pub fn awaken_run_ingress_contract::request::RunExecutionRequest::new(awaken_runtime_contract::activation::RunActivation) -> Self
-pub fn awaken_run_ingress_contract::request::RunExecutionRequest::run_id(&self) -> &awaken_agent_contract::agent::run::Id
-pub fn awaken_run_ingress_contract::request::RunExecutionRequest::thread_id(&self) -> &awaken_agent_contract::agent::thread::Id
-pub fn awaken_run_ingress_contract::request::RunExecutionRequest::with_traceparent(self, core::option::Option<alloc::string::String>) -> Self
+pub mod awaken_run_ingress_contract::run_dispatch
+pub struct awaken_run_ingress_contract::run_dispatch::RunDispatch
+pub awaken_run_ingress_contract::run_dispatch::RunDispatch::activation: awaken_runtime_contract::activation::RunActivation
+pub awaken_run_ingress_contract::run_dispatch::RunDispatch::session_thread_id: core::option::Option<awaken_agent_contract::agent::thread::Id>
+pub awaken_run_ingress_contract::run_dispatch::RunDispatch::traceparent: core::option::Option<alloc::string::String>
+impl awaken_run_ingress_contract::run_dispatch::RunDispatch
+pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::for_session(self, awaken_agent_contract::agent::thread::Id) -> Self
+pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::new(awaken_runtime_contract::activation::RunActivation) -> Self
+pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::run_id(&self) -> &awaken_agent_contract::agent::run::Id
+pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::session_thread_id(&self) -> &awaken_agent_contract::agent::thread::Id
+pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::thread_id(&self) -> &awaken_agent_contract::agent::thread::Id
+pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_traceparent(self, core::option::Option<alloc::string::String>) -> Self
 pub enum awaken_run_ingress_contract::CasOutcome
 pub awaken_run_ingress_contract::CasOutcome::Applied
 pub awaken_run_ingress_contract::CasOutcome::NotFound
@@ -105,7 +121,7 @@ pub awaken_run_ingress_contract::DispatchState::Leased
 pub awaken_run_ingress_contract::DispatchState::Pending
 pub awaken_run_ingress_contract::DispatchState::Superseded
 impl awaken_run_ingress_contract::dispatch::DispatchState
-pub fn awaken_run_ingress_contract::dispatch::DispatchState::from_db(&str) -> Self
+pub fn awaken_run_ingress_contract::dispatch::DispatchState::from_db(&str) -> core::option::Option<Self>
 pub enum awaken_run_ingress_contract::SettleOutcome
 pub awaken_run_ingress_contract::SettleOutcome::Applied
 pub awaken_run_ingress_contract::SettleOutcome::Fenced
@@ -114,8 +130,11 @@ pub fn awaken_run_ingress_contract::dispatch::SettleOutcome::applied(self) -> bo
 pub struct awaken_run_ingress_contract::Claimed
 pub awaken_run_ingress_contract::Claimed::lease: awaken_run_ingress_contract::dispatch::Lease
 pub awaken_run_ingress_contract::Claimed::pending: alloc::vec::Vec<awaken_run_ingress_contract::dispatch::PendingInput>
-pub awaken_run_ingress_contract::Claimed::request: awaken_run_ingress_contract::request::RunExecutionRequest
+pub awaken_run_ingress_contract::Claimed::request: awaken_run_ingress_contract::run_dispatch::RunDispatch
 pub awaken_run_ingress_contract::Claimed::sandbox: core::option::Option<alloc::string::String>
+pub struct awaken_run_ingress_contract::CommitEpochGuard
+impl awaken_run_ingress_contract::dispatch::CommitEpochGuard
+pub fn awaken_run_ingress_contract::dispatch::CommitEpochGuard::new(impl core::marker::Send + 'static) -> Self
 pub struct awaken_run_ingress_contract::DispatchSummary
 pub awaken_run_ingress_contract::DispatchSummary::attempt_count: u64
 pub awaken_run_ingress_contract::DispatchSummary::run_id: awaken_agent_contract::agent::run::Id
@@ -126,6 +145,8 @@ pub awaken_run_ingress_contract::Lease::epoch: u64
 pub awaken_run_ingress_contract::Lease::expires_ms: u64
 pub awaken_run_ingress_contract::Lease::owner: alloc::string::String
 pub awaken_run_ingress_contract::Lease::run_id: awaken_agent_contract::agent::run::Id
+impl core::convert::From<&awaken_run_ingress_contract::dispatch::Lease> for awaken_run_ingress_contract::dispatch::RunClaim
+pub fn awaken_run_ingress_contract::dispatch::RunClaim::from(&awaken_run_ingress_contract::dispatch::Lease) -> Self
 pub struct awaken_run_ingress_contract::PendingInput
 pub awaken_run_ingress_contract::PendingInput::available_at_ms: core::option::Option<u64>
 pub awaken_run_ingress_contract::PendingInput::correlation_id: alloc::string::String
@@ -136,14 +157,23 @@ pub awaken_run_ingress_contract::PendingInput::thread_id: awaken_agent_contract:
 pub struct awaken_run_ingress_contract::PendingRecord
 pub awaken_run_ingress_contract::PendingRecord::input: awaken_run_ingress_contract::dispatch::PendingInput
 pub awaken_run_ingress_contract::PendingRecord::revision: u64
-pub struct awaken_run_ingress_contract::RunExecutionRequest
-pub awaken_run_ingress_contract::RunExecutionRequest::activation: awaken_runtime_contract::activation::RunActivation
-pub awaken_run_ingress_contract::RunExecutionRequest::traceparent: core::option::Option<alloc::string::String>
-impl awaken_run_ingress_contract::request::RunExecutionRequest
-pub fn awaken_run_ingress_contract::request::RunExecutionRequest::new(awaken_runtime_contract::activation::RunActivation) -> Self
-pub fn awaken_run_ingress_contract::request::RunExecutionRequest::run_id(&self) -> &awaken_agent_contract::agent::run::Id
-pub fn awaken_run_ingress_contract::request::RunExecutionRequest::thread_id(&self) -> &awaken_agent_contract::agent::thread::Id
-pub fn awaken_run_ingress_contract::request::RunExecutionRequest::with_traceparent(self, core::option::Option<alloc::string::String>) -> Self
+pub struct awaken_run_ingress_contract::RunClaim
+pub awaken_run_ingress_contract::RunClaim::epoch: u64
+pub awaken_run_ingress_contract::RunClaim::owner: alloc::string::String
+pub awaken_run_ingress_contract::RunClaim::run_id: awaken_agent_contract::agent::run::Id
+impl core::convert::From<&awaken_run_ingress_contract::dispatch::Lease> for awaken_run_ingress_contract::dispatch::RunClaim
+pub fn awaken_run_ingress_contract::dispatch::RunClaim::from(&awaken_run_ingress_contract::dispatch::Lease) -> Self
+pub struct awaken_run_ingress_contract::RunDispatch
+pub awaken_run_ingress_contract::RunDispatch::activation: awaken_runtime_contract::activation::RunActivation
+pub awaken_run_ingress_contract::RunDispatch::session_thread_id: core::option::Option<awaken_agent_contract::agent::thread::Id>
+pub awaken_run_ingress_contract::RunDispatch::traceparent: core::option::Option<alloc::string::String>
+impl awaken_run_ingress_contract::run_dispatch::RunDispatch
+pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::for_session(self, awaken_agent_contract::agent::thread::Id) -> Self
+pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::new(awaken_runtime_contract::activation::RunActivation) -> Self
+pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::run_id(&self) -> &awaken_agent_contract::agent::run::Id
+pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::session_thread_id(&self) -> &awaken_agent_contract::agent::thread::Id
+pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::thread_id(&self) -> &awaken_agent_contract::agent::thread::Id
+pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_traceparent(self, core::option::Option<alloc::string::String>) -> Self
 pub struct awaken_run_ingress_contract::SubmitOptions
 pub awaken_run_ingress_contract::SubmitOptions::dedupe_key: core::option::Option<alloc::string::String>
 pub awaken_run_ingress_contract::SubmitOptions::priority: i64
@@ -155,12 +185,14 @@ pub fn awaken_run_ingress_contract::DispatchQueue::awaiting_run<'life0, 'life1, 
 pub fn awaken_run_ingress_contract::DispatchQueue::bind_sandbox<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::run::Id, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_run_ingress_contract::DispatchQueue::cancel<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::run::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_agent_contract::agent::thread::Id>, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_run_ingress_contract::DispatchQueue::claim<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, u64, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_run_ingress_contract::dispatch::Claimed>, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_run_ingress_contract::DispatchQueue::current_epoch<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::run::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<u64>, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_run_ingress_contract::DispatchQueue::claim_new_run<'life0, 'life1, 'async_trait>(&'life0 self, awaken_run_ingress_contract::run_dispatch::RunDispatch, &'life1 str, u64, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_run_ingress_contract::dispatch::Claimed>, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_run_ingress_contract::DispatchQueue::claim_run<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::run::Id, &'life2 str, u64, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_run_ingress_contract::dispatch::Claimed>, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_run_ingress_contract::DispatchQueue::dead_letters<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_agent_contract::agent::run::Id>, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_run_ingress_contract::DispatchQueue::enqueue<'life0, 'async_trait>(&'life0 self, awaken_run_ingress_contract::request::RunExecutionRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_run_ingress_contract::DispatchQueue::enqueue_with<'life0, 'async_trait>(&'life0 self, awaken_run_ingress_contract::request::RunExecutionRequest, awaken_run_ingress_contract::dispatch::SubmitOptions) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_run_ingress_contract::DispatchQueue::holds_current_epoch<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::run::Id, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_run_ingress_contract::DispatchQueue::deliver_and_claim<'life0, 'life1, 'async_trait>(&'life0 self, awaken_run_ingress_contract::dispatch::PendingInput, &'life1 str, u64, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_run_ingress_contract::dispatch::Claimed>, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_run_ingress_contract::DispatchQueue::enqueue<'life0, 'async_trait>(&'life0 self, awaken_run_ingress_contract::run_dispatch::RunDispatch) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_run_ingress_contract::DispatchQueue::enqueue_with<'life0, 'async_trait>(&'life0 self, awaken_run_ingress_contract::run_dispatch::RunDispatch, awaken_run_ingress_contract::dispatch::SubmitOptions) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_run_ingress_contract::DispatchQueue::list_dispatches<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_run_ingress_contract::dispatch::DispatchSummary>, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_run_ingress_contract::DispatchQueue::lock_commit_epoch<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_run_ingress_contract::dispatch::RunClaim) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_run_ingress_contract::dispatch::CommitEpochGuard>, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_run_ingress_contract::DispatchQueue::purge_dead_letters<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_run_ingress_contract::DispatchQueue::purge_dead_letters_before<'life0, 'async_trait>(&'life0 self, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_run_ingress_contract::DispatchQueue::reap<'life0, 'async_trait>(&'life0 self, u64, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait

@@ -78,6 +78,10 @@ struct FakeQueue {
     entries: Vec<(u64, Vec<ContentBlock>)>,
 }
 
+fn unsupported_runtime_operation() -> RunError {
+    RunError::internal("operation is outside the live-inbox test scope")
+}
+
 #[async_trait::async_trait]
 impl SessionRuntime for QueueFake {
     async fn run(
@@ -98,9 +102,9 @@ impl SessionRuntime for QueueFake {
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        _decision: awaken_protocol_managed::Decision,
+        _decision: awaken_protocol_managed::ToolPermissionDecision,
     ) -> Result<StepOutcome, RunError> {
-        unimplemented!("not exercised")
+        Err(unsupported_runtime_operation())
     }
 
     async fn resume_custom(
@@ -110,7 +114,7 @@ impl SessionRuntime for QueueFake {
         _content: &str,
         _is_error: bool,
     ) -> Result<StepOutcome, RunError> {
-        unimplemented!("not exercised")
+        Err(unsupported_runtime_operation())
     }
 
     async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
@@ -124,7 +128,7 @@ impl SessionRuntime for QueueFake {
         _rubric: &str,
         _max_iterations: u32,
     ) -> Result<OutcomeReport, RunError> {
-        unimplemented!("not exercised")
+        Err(unsupported_runtime_operation())
     }
 
     fn model(&self) -> String {
@@ -244,7 +248,7 @@ fn app(fake: Arc<QueueFake>) -> Router {
             &self,
             t: &str,
             i: &str,
-            d: awaken_protocol_managed::Decision,
+            d: awaken_protocol_managed::ToolPermissionDecision,
         ) -> Result<StepOutcome, RunError> {
             self.0.resume(t, i, d).await
         }

@@ -63,7 +63,7 @@ pub(super) async fn drive_resumed(
             .filter(|batch| batch.run_id == *run_id && batch.phase == ToolBatchPhase::Open)
     {
         let wait_kind = match ticket.reason {
-            AwaitReason::ToolPermission => ToolWaitKind::Approval,
+            AwaitReason::ToolPermission => ToolWaitKind::ToolPermission,
             AwaitReason::ScheduledAction => ToolWaitKind::ScheduledAction,
             _ => unreachable!("guarded by the resume reason above"),
         };
@@ -81,7 +81,7 @@ pub(super) async fn drive_resumed(
             stage_delegation_request(
                 runtime,
                 resolved,
-                ticket.initiator.as_ref(),
+                ticket.delegation_origin.as_ref(),
                 run_id,
                 &call,
                 &mut store,
@@ -123,15 +123,19 @@ pub(super) async fn drive_resumed(
             arguments: pending.arguments.clone(),
         };
         let delegation_started = runtime
-            .delegation_executor()
+            .run_delegation()
             .is_some_and(|executor| executor.tool_id() == call.tool_id);
         let result = match run_delegation(
             runtime,
-            context,
-            ticket.initiator.as_ref(),
-            &resolved.agent_id.0,
-            run_id,
+            DelegationParent {
+                context,
+                origin: ticket.delegation_origin.as_ref(),
+                agent_id: &resolved.agent_id.0,
+                run_id,
+                thread_id,
+            },
             &call,
+            &mut store,
         )
         .await
         {
@@ -140,14 +144,21 @@ pub(super) async fn drive_resumed(
                 ResumeResult::ToolResult(ToolOutput::ok(&call.call_id, text))
             }
             Some(Ok(DelegationStep::Awaiting { continuation })) => {
+                stage_delegation_awaiting(
+                    runtime,
+                    run_id,
+                    &call,
+                    &continuation,
+                    &mut store,
+                    &mut delegation_state,
+                )?;
                 let next_ticket = resume_ticket(
                     resolved,
                     run_id,
-                    ticket.initiator.as_ref(),
+                    ticket.delegation_origin.as_ref(),
                     &call.call_id,
                     &call,
                     AwaitReason::Delegation,
-                    Some(continuation),
                 );
                 let mut batch = ActiveToolBatch::load(&store)
                     .map_err(|error| Error::Execution(error.to_string()))?
@@ -165,6 +176,7 @@ pub(super) async fn drive_resumed(
                     .map_err(|error| Error::Execution(error.to_string()))?;
                 delegation_state.push(ActiveToolBatch::write(&Some(batch)));
                 return finish(
+                    runtime,
                     context,
                     thread_id,
                     run_id.clone(),
@@ -178,7 +190,7 @@ pub(super) async fn drive_resumed(
                 .await;
             }
             Some(Err(error)) => {
-                ResumeResult::ToolResult(ToolOutput::error(&call.call_id, error.to_string()))
+                ResumeResult::ToolResult(delegation_error_output(&call.call_id, error)?)
             }
             None => result,
         };
@@ -258,7 +270,7 @@ pub(super) async fn drive_resumed(
         run_id,
         thread_id,
         context,
-        ticket.initiator.as_ref(),
+        ticket.delegation_origin.as_ref(),
         transcript,
         resumed_new_messages,
         RESUME_STEP_BASE,
@@ -267,5 +279,5 @@ pub(super) async fn drive_resumed(
         seed_audit,
     )
     .await?;
-    finalize(context, thread_id, run_id.clone(), step_result).await
+    finalize(runtime, context, thread_id, run_id.clone(), step_result).await
 }

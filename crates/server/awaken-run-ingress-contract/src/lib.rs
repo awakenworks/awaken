@@ -4,15 +4,15 @@
 //! the `awaken-run-ingress` host so store backends and adapters can depend on the
 //! contract without the host crate (G2). It carries the neutral dispatch ports
 //! (`DispatchQueue` / `Inbox` / `Outbox`, bundled as `Dispatch`) and the
-//! serializable [`RunExecutionRequest`] a durable queue persists and replays — no
-//! live handles (G3). Live per-attempt wiring stays in the host.
+//! serializable [`RunDispatch`] a durable queue persists and replays — no live
+//! handles (G3). Worker wiring stays private to the host.
 
 pub mod dispatch;
-pub mod request;
+pub mod run_dispatch;
 
 pub use dispatch::{
-    CasOutcome, Claimed, Dispatch, DispatchError, DispatchOutcome, DispatchQueue, DispatchState,
-    DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, SettleOutcome,
-    SubmitOptions,
+    CasOutcome, Claimed, CommitEpochGuard, Dispatch, DispatchError, DispatchOutcome, DispatchQueue,
+    DispatchState, DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, RunClaim,
+    SettleOutcome, SubmitOptions,
 };
-pub use request::RunExecutionRequest;
+pub use run_dispatch::RunDispatch;

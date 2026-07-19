@@ -76,8 +76,8 @@ settle. `RunIngressCapabilities` reports `scheduled_wake = false` accordingly.
   commit source by construction. Memory-backed tests prove the logic; live
   Postgres tests prove the durable loop and a restart.
 - The durable-ingress work gated by ADR-0006 D4 and ADR-0008 now exists as a
-  first slice; a `RunExecutionRequest` is the serializable record a queue
-  persists, and `RunExecutionContext` rebuilds the live wiring per attempt.
+  first slice; a `RunDispatch` is the serializable record a queue
+  persists, and `WorkerContext` rebuilds the live wiring per worker attempt.
 - The in-memory store is the executable specification the Postgres store matches,
   the same pattern `MemoryCommitCoordinator`/`PostgresCommitCoordinator` use.
 - A crash strictly between commit and settle may drop one in-flight pending

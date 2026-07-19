@@ -17,10 +17,13 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 /// The fixture agent, as a `busybox nc` command: listen on the agent port and, per
 /// connection, read the prompt line and reply with the newline-wire message + turn_end
 /// (the same stand-in the namespace-tier ACP e2e uses, bridged onto a TCP socket).
+/// The short post-terminal delay prevents BusyBox `nc -k -e` from resetting the
+/// connection before the host drains the final frame.
 fn agent_argv(port: u16) -> Vec<String> {
     let script = "read _p; \
         printf '%s\\n' '{\"type\":\"message\",\"text\":\"sandboxed reply\"}'; \
-        printf '%s\\n' '{\"type\":\"turn_end\",\"reason\":\"natural_end\"}'";
+        printf '%s\\n' '{\"type\":\"turn_end\",\"reason\":\"natural_end\"}'; \
+        sleep 0.1";
     vec![
         "nc".into(),
         "-lk".into(),

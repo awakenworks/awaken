@@ -4,7 +4,7 @@
 //! G21). Visibility, selection, capability compatibility, and health never
 //! grant — their result types carry no decision (G9). The loop always calls the
 //! gate before executing a tool; a permission-backed gate maps a
-//! `PermissionDecision` onto a `GateOutcome`.
+//! `ToolPermissionVerdict` onto a `GateOutcome`.
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::state::Store;
@@ -12,29 +12,23 @@ use serde::{Deserialize, Serialize};
 
 use crate::tool::ToolOutput;
 
-/// Normalized data for one authorization decision. Carries no live handle, so a
-/// decision can be logged, replayed, and audited as plain data.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PermissionContext {
-    pub tool_id: String,
-    pub call_id: String,
-    pub arguments: serde_json::Value,
-}
+pub use crate::llm::ToolCall;
 
-/// Typed authorization decision. `Ask` awaits the call for a human/out-of-band
-/// approval correlated by `ticket_id`.
+/// A policy's verdict for one [`ToolCall`]. This is not the later human
+/// decision: `RequireConfirmation` causes the Run to commit a `ResumeTicket`,
+/// while a user or parent Run eventually supplies the decision that answers it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum PermissionDecision {
+pub enum ToolPermissionVerdict {
     Allow,
     Deny { reason: String },
-    Ask { ticket_id: String },
+    RequireConfirmation { correlation_id: String },
 }
 
 /// The authorization policy. Async because a real policy may consult an
 /// external system; it returns only a decision, never executes the tool.
 #[async_trait]
-pub trait PermissionPolicy: Send + Sync {
-    async fn decide(&self, ctx: &PermissionContext) -> PermissionDecision;
+pub trait ToolPermissionPolicy: Send + Sync {
+    async fn evaluate(&self, call: &ToolCall) -> ToolPermissionVerdict;
 }
 
 /// What the gate tells the loop to do with one tool call.
@@ -46,8 +40,8 @@ pub enum GateOutcome {
     Block { reason: String },
     /// Skip execution; the gate supplied the result directly.
     SetResult(ToolOutput),
-    /// Suspend the run pending an out-of-band decision (ticket correlation).
-    Suspend { ticket_id: String },
+    /// Suspend the Run pending an out-of-band permission decision.
+    RequireConfirmation { correlation_id: String },
     /// Defer this call as a committed `ScheduledAction` (ADR-0020): the run awaits
     /// and the action is performed later (in-process or by recovery), not decided
     /// by a human. `correlation_id` keys the committed request and its resume.
@@ -69,7 +63,7 @@ impl GateOutcome {
         match self {
             GateOutcome::Allow => "allow",
             GateOutcome::Block { .. } => "deny",
-            GateOutcome::Suspend { .. } => "ask",
+            GateOutcome::RequireConfirmation { .. } => "ask",
             GateOutcome::SetResult(_) => "set_result",
             GateOutcome::Schedule { .. } => "schedule",
         }
@@ -92,7 +86,7 @@ pub trait ToolGateHook: Send + Sync {
 
     /// Decide one tool call against the run's read-only state. Most gates ignore
     /// `state`; a state machine gate reads it to enforce a precondition.
-    async fn gate(&self, ctx: &PermissionContext, state: &Store) -> GateOutcome;
+    async fn gate(&self, call: &ToolCall, state: &Store) -> GateOutcome;
 }
 
 #[cfg(test)]
@@ -114,8 +108,8 @@ mod tests {
             "deny"
         );
         assert_eq!(
-            GateOutcome::Suspend {
-                ticket_id: "t".into()
+            GateOutcome::RequireConfirmation {
+                correlation_id: "t".into()
             }
             .decision_label(),
             "ask"

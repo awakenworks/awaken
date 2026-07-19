@@ -199,7 +199,7 @@ impl SharedHost {
         let state = self
             .execute_activation(&ctx, thread, activation, supersede, sink)
             .await?;
-        let result = self.finish_step(&ctx, &mut st, run_id, state, before, thread);
+        let result = self.finish_step(&ctx, &mut st, run_id, state, before, thread)?;
         drop(st);
         self.run_aux_after_step(&ctx, thread, &result.state).await;
         Ok(result)
@@ -389,7 +389,7 @@ impl SharedHost {
                 let store =
                     crate::dispatch_backend::shared_durable_store(self.store_dir.as_deref())?;
                 store
-                    .enqueue(awaken_run_ingress::RunExecutionRequest::new(activation))
+                    .enqueue(awaken_run_ingress::RunDispatch::new(activation))
                     .await
                     .map_err(|e| HostError::internal(e.to_string()))?;
             }
@@ -419,26 +419,61 @@ impl SharedHost {
             .ok_or_else(|| HostError::internal("awaiting run has no awaiting ticket"))?;
 
         // A awaiting delegation resumes through the kernel resolver with the user's
-        // input; the kernel routes it (not the tool registry) and the run continues
-        // or re-awaits.
+        // typed answer; the kernel routes it through the parent relationship to the
+        // child's own Run service. The user never resumes the child directly.
         if ticket.reason == AwaitReason::Delegation {
-            if ticket.call_id.as_deref() != Some(tool_use_id) {
-                return Err(HostError::bad_request(format!(
-                    "tool_use_id {tool_use_id:?} does not match the pending delegate"
-                )));
+            let mut parent_store = Store::new();
+            for command in ctx.commit.committed_state(&ctx.thread_id) {
+                if command.scope == Scope::Run && command.run_id.as_ref() == Some(&run_id) {
+                    parent_store.apply(&command);
+                }
             }
-            let input = match resume {
-                HostResume::ClientResult { content, .. } => content,
-                HostResume::Confirm { note, .. } => note.unwrap_or_default(),
+            let registry = RunDelegations::load(&parent_store)
+                .map_err(|error| HostError::internal(error.to_string()))?;
+            let child = child_ticket(ctx.as_ref(), registry.as_ref(), ticket.call_id.as_deref());
+            let result = if let Some(child_ticket) = child {
+                self.check_pending(&child_ticket, tool_use_id, resume.wants_client())?;
+                match resume {
+                    HostResume::ToolPermission { allow, note } => {
+                        if allow {
+                            ResumeResult::allow()
+                        } else {
+                            ResumeResult::deny(note)
+                        }
+                    }
+                    HostResume::ClientResult { content, is_error } => {
+                        let output = if is_error {
+                            ToolOutput::error(tool_use_id, content)
+                        } else {
+                            ToolOutput::ok(tool_use_id, content)
+                        };
+                        ResumeResult::ToolResult(output)
+                    }
+                }
+            } else {
+                // Remote adapters may expose an opaque follow-up without a locally
+                // committed child ticket. Keep that adapter boundary as typed user
+                // input while still validating the parent call identity.
+                if ticket.call_id.as_deref() != Some(tool_use_id) {
+                    return Err(HostError::bad_request(format!(
+                        "tool_use_id {tool_use_id:?} does not match the pending delegate"
+                    )));
+                }
+                let HostResume::ClientResult { content, .. } = resume else {
+                    return Err(HostError::bad_request(
+                        "awaiting remote Agent input requires a client result",
+                    ));
+                };
+                ResumeResult::Input(content)
             };
             let before = ctx.commit.committed_messages(&ctx.thread_id).len();
-            let command = ResumeCommand::from_ticket(&ticket, ResumeResult::Input(input), 0);
+            let command = ResumeCommand::from_ticket(&ticket, result, 0);
             let state = ctx
-                .runtime
-                .resume(command, &*ctx.commit, ctx.context())
+                .ingress
+                .resume(command, ctx.context())
                 .await
                 .map_err(|e| HostError::internal(e.to_string()))?;
-            let result = self.finish_step(&ctx, &mut st, run_id, state, before, thread);
+            let result = self.finish_step(&ctx, &mut st, run_id, state, before, thread)?;
             drop(st);
             self.run_aux_after_step(&ctx, thread, &result.state).await;
             return Ok(result);
@@ -446,7 +481,7 @@ impl SharedHost {
 
         self.check_pending(&ticket, tool_use_id, resume.wants_client())?;
         let result = match resume {
-            HostResume::Confirm { allow, note } => {
+            HostResume::ToolPermission { allow, note } => {
                 if allow {
                     ResumeResult::allow()
                 } else {
@@ -466,11 +501,11 @@ impl SharedHost {
         let before = ctx.commit.committed_messages(&ctx.thread_id).len();
         let command = ResumeCommand::from_ticket(&ticket, result, 0);
         let state = ctx
-            .runtime
-            .resume(command, &*ctx.commit, ctx.context())
+            .ingress
+            .resume(command, ctx.context())
             .await
             .map_err(|e| HostError::internal(e.to_string()))?;
-        let result = self.finish_step(&ctx, &mut st, run_id, state, before, thread);
+        let result = self.finish_step(&ctx, &mut st, run_id, state, before, thread)?;
         drop(st);
         self.run_aux_after_step(&ctx, thread, &result.state).await;
         Ok(result)
@@ -570,16 +605,46 @@ impl SharedHost {
         state: RunState,
         before: usize,
         thread: &str,
-    ) -> RunResult {
+    ) -> Result<RunResult, HostError> {
         let all = ctx.commit.committed_messages(&ctx.thread_id);
         let new_messages = all[before.min(all.len())..].to_vec();
+        let mut run_store = Store::new();
+        for command in ctx.commit.committed_state(&ctx.thread_id) {
+            if command.scope == Scope::Run && command.run_id.as_ref() == Some(&run_id) {
+                run_store.apply(&command);
+            }
+        }
+        let delegation_registry = RunDelegations::load(&run_store)
+            .map_err(|error| HostError::internal(error.to_string()))?;
         let (pending, awaiting) = match &state {
             RunState::Awaiting => {
                 st.awaiting_run = Some(run_id.clone());
-                let pending = ctx
-                    .commit
-                    .resume_ticket(&run_id)
-                    .and_then(|t| pending_from_ticket(&t, &self.client_tools));
+                let pending = ctx.commit.resume_ticket(&run_id).and_then(|ticket| {
+                    // A parent waiting on a child exposes the CHILD's ordinary
+                    // interaction request. The protocol still addresses the
+                    // parent session; it never obtains a bypass around the
+                    // parent-child relationship.
+                    let visible_child = if ticket.reason == AwaitReason::Delegation {
+                        child_ticket(ctx, delegation_registry.as_ref(), ticket.call_id.as_deref())
+                    } else {
+                        None
+                    };
+                    match visible_child {
+                        Some(child) => pending_from_ticket(&child, &self.client_tools),
+                        None if ticket.reason == AwaitReason::Delegation => {
+                            // A remote Agent may return an opaque InputRequired
+                            // continuation without a local child ticket. The parent
+                            // session mediates that user interaction, so it is
+                            // client-executed even though the initiating agent_run
+                            // tool itself is host-executed.
+                            pending_from_ticket(&ticket, &self.client_tools).map(|mut pending| {
+                                pending.client_executed = true;
+                                pending
+                            })
+                        }
+                        None => pending_from_ticket(&ticket, &self.client_tools),
+                    }
+                });
                 (pending, true)
             }
             _ => {
@@ -609,13 +674,28 @@ impl SharedHost {
             .expect("reschedule mutex poisoned")
             .as_ref()
             .is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed) > 0);
-        RunResult {
+        let delegated_runs = delegation_registry
+            .into_iter()
+            .flat_map(|registry| {
+                registry
+                    .delegations()
+                    .map(|delegation| DelegatedRun {
+                        run_id: delegation.child_run_id.clone(),
+                        parent_call_id: delegation.parent_call_id.clone(),
+                        agent_id: delegation.target_agent_id.clone(),
+                        status: delegation.status,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        Ok(RunResult {
             new_messages,
             state,
             pending,
             compacted,
             rescheduled,
-        }
+            delegated_runs,
+        })
     }
 
     /// Fail closed before resuming: the asserted `tool_use_id` must name the
@@ -653,6 +733,24 @@ impl SharedHost {
     }
 }
 
+/// Resolve the ordinary ticket owned by the child named by a parent's pending
+/// delegation call. Relationship identity stays in `RunDelegations`; the ticket
+/// stays in the child Run. This function only joins those two committed facts for
+/// the parent-facing interaction projection.
+fn child_ticket(
+    ctx: &SessionCtx,
+    registry: Option<&awaken_agent_contract::agent::delegation::DelegationRegistry>,
+    parent_call_id: Option<&str>,
+) -> Option<ResumeTicket> {
+    let parent_call_id = parent_call_id?;
+    let child_run_id = registry?
+        .delegations()
+        .find(|relationship| relationship.parent_call_id == parent_call_id)?
+        .child_run_id
+        .clone();
+    ctx.commit.resume_ticket(&child_run_id)
+}
+
 /// Read a string field from an opaque round detail, defaulting to empty.
 fn detail_str(detail: &serde_json::Value, key: &str) -> String {
     detail
@@ -670,10 +768,7 @@ fn pending_from_ticket(
 ) -> Option<PendingTool> {
     let tool_use_id = ticket.call_id.clone()?;
     let tool = ticket.pending_tool.clone()?;
-    // A awaiting delegation is client-executed from the caller's view: the user
-    // supplies the input, delivered back through `resume`.
-    let client_executed =
-        ticket.reason == AwaitReason::Delegation || client_tools.contains(&tool.tool_id);
+    let client_executed = client_tools.contains(&tool.tool_id);
     Some(PendingTool {
         tool_use_id,
         name: tool.tool_id,

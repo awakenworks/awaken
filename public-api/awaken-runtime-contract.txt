@@ -1,5 +1,6 @@
 pub mod awaken_runtime_contract
 pub use awaken_runtime_contract::CancellationToken
+pub use awaken_runtime_contract::ChildRunCancellation
 pub use awaken_runtime_contract::DelegationLimits
 pub use awaken_runtime_contract::Message
 pub use awaken_runtime_contract::MessageId
@@ -8,7 +9,7 @@ pub use awaken_runtime_contract::RunId
 pub use awaken_runtime_contract::Store
 pub mod awaken_runtime_contract::activation
 pub struct awaken_runtime_contract::activation::RunActivation
-pub awaken_runtime_contract::activation::RunActivation::initiator: core::option::Option<awaken_agent_contract::agent::delegation::DelegationOrigin>
+pub awaken_runtime_contract::activation::RunActivation::delegation_origin: core::option::Option<awaken_agent_contract::agent::delegation::DelegationOrigin>
 pub awaken_runtime_contract::activation::RunActivation::input: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
 pub awaken_runtime_contract::activation::RunActivation::model_ref_override: core::option::Option<alloc::string::String>
 pub awaken_runtime_contract::activation::RunActivation::run_id: awaken_agent_contract::agent::run::Id
@@ -17,7 +18,7 @@ pub awaken_runtime_contract::activation::RunActivation::thread_id: awaken_agent_
 impl awaken_runtime_contract::activation::RunActivation
 pub fn awaken_runtime_contract::activation::RunActivation::effective_model_ref(&self) -> &str
 pub fn awaken_runtime_contract::activation::RunActivation::new(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::thread::Id, awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> Self
-pub fn awaken_runtime_contract::activation::RunActivation::with_initiator(self, awaken_agent_contract::agent::delegation::DelegationOrigin) -> Self
+pub fn awaken_runtime_contract::activation::RunActivation::with_delegation_origin(self, awaken_agent_contract::agent::delegation::DelegationOrigin) -> Self
 pub fn awaken_runtime_contract::activation::RunActivation::with_model_ref_override(self, core::option::Option<alloc::string::String>) -> Self
 pub mod awaken_runtime_contract::boundary
 pub enum awaken_runtime_contract::boundary::BoundaryOutcome
@@ -127,43 +128,77 @@ impl awaken_runtime_contract::data_subject::DataSubjectResolver for awaken_runti
 pub fn awaken_runtime_contract::data_subject::NullResolver::consent_ceiling<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId, awaken_runtime_contract::data_subject::Purpose) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::capture::ContentCapture> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_contract::data_subject::NullResolver::erase<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::data_subject::ErasureReceipt, awaken_runtime_contract::data_subject::ErasureError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub mod awaken_runtime_contract::delegation
+pub use awaken_runtime_contract::delegation::ChildRunCancellation
 pub use awaken_runtime_contract::delegation::DelegationLimits
+pub enum awaken_runtime_contract::delegation::DelegationFailureKind
+pub awaken_runtime_contract::delegation::DelegationFailureKind::Retryable
+pub awaken_runtime_contract::delegation::DelegationFailureKind::Terminal
+pub enum awaken_runtime_contract::delegation::DelegationResultError
+pub awaken_runtime_contract::delegation::DelegationResultError::ChildRunMismatch
+pub awaken_runtime_contract::delegation::DelegationResultError::Conflict
+pub awaken_runtime_contract::delegation::DelegationResultError::NotFound
 pub enum awaken_runtime_contract::delegation::DelegationStep
 pub awaken_runtime_contract::delegation::DelegationStep::Awaiting
 pub awaken_runtime_contract::delegation::DelegationStep::Awaiting::continuation: serde_json::value::Value
 pub awaken_runtime_contract::delegation::DelegationStep::Ended
 pub awaken_runtime_contract::delegation::DelegationStep::Ended::text: alloc::string::String
 pub awaken_runtime_contract::delegation::DelegationStep::Ended::usage: awaken_runtime_contract::llm::ThreadUsage
-pub struct awaken_runtime_contract::delegation::DelegationExecutionError(pub alloc::string::String)
+pub enum awaken_runtime_contract::delegation::ResultRecord
+pub awaken_runtime_contract::delegation::ResultRecord::Duplicate
+pub awaken_runtime_contract::delegation::ResultRecord::Recorded
+pub struct awaken_runtime_contract::delegation::ChildRunResult
+pub awaken_runtime_contract::delegation::ChildRunResult::child_run_id: awaken_agent_contract::agent::run::Id
+pub awaken_runtime_contract::delegation::ChildRunResult::text: alloc::string::String
+pub awaken_runtime_contract::delegation::ChildRunResult::usage: awaken_runtime_contract::llm::ThreadUsage
+pub struct awaken_runtime_contract::delegation::ChildRunResultInbox
+impl awaken_runtime_contract::delegation::ChildRunResultInbox
+pub fn awaken_runtime_contract::delegation::ChildRunResultInbox::consume(&mut self, &awaken_agent_contract::agent::delegation::DelegationId) -> core::result::Result<awaken_runtime_contract::delegation::ChildRunResult, awaken_runtime_contract::delegation::DelegationResultError>
+pub fn awaken_runtime_contract::delegation::ChildRunResultInbox::discard_on_parent_end(&mut self) -> usize
+pub fn awaken_runtime_contract::delegation::ChildRunResultInbox::get(&self, &awaken_agent_contract::agent::delegation::DelegationId) -> core::option::Option<&awaken_runtime_contract::delegation::ChildRunResult>
+pub fn awaken_runtime_contract::delegation::ChildRunResultInbox::is_empty(&self) -> bool
+pub fn awaken_runtime_contract::delegation::ChildRunResultInbox::record(&mut self, awaken_agent_contract::agent::delegation::DelegationId, awaken_runtime_contract::delegation::ChildRunResult) -> core::result::Result<awaken_runtime_contract::delegation::ResultRecord, awaken_runtime_contract::delegation::DelegationResultError>
+pub struct awaken_runtime_contract::delegation::DelegationExecutionError
 impl awaken_runtime_contract::delegation::DelegationExecutionError
+pub const fn awaken_runtime_contract::delegation::DelegationExecutionError::is_retryable(&self) -> bool
+pub const fn awaken_runtime_contract::delegation::DelegationExecutionError::kind(&self) -> awaken_runtime_contract::delegation::DelegationFailureKind
 pub fn awaken_runtime_contract::delegation::DelegationExecutionError::new(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_runtime_contract::delegation::DelegationExecutionError::retryable(impl core::convert::Into<alloc::string::String>) -> Self
 pub struct awaken_runtime_contract::delegation::DelegationRequest
 pub awaken_runtime_contract::delegation::DelegationRequest::arguments: serde_json::value::Value
 pub awaken_runtime_contract::delegation::DelegationRequest::child_run_id: awaken_agent_contract::agent::run::Id
 pub awaken_runtime_contract::delegation::DelegationRequest::context: awaken_runtime_contract::runtime_context::RuntimeRunContext
 pub awaken_runtime_contract::delegation::DelegationRequest::origin: awaken_agent_contract::agent::delegation::DelegationOrigin
-pub awaken_runtime_contract::delegation::DelegationRequest::result_id: awaken_agent_contract::agent::delegation::DelegationResultId
+pub awaken_runtime_contract::delegation::DelegationRequest::parent_thread_id: awaken_agent_contract::agent::thread::Id
 pub struct awaken_runtime_contract::delegation::DelegationResume
 pub awaken_runtime_contract::delegation::DelegationResume::child_run_id: awaken_agent_contract::agent::run::Id
 pub awaken_runtime_contract::delegation::DelegationResume::context: awaken_runtime_contract::runtime_context::RuntimeRunContext
 pub awaken_runtime_contract::delegation::DelegationResume::continuation: serde_json::value::Value
-pub awaken_runtime_contract::delegation::DelegationResume::input: alloc::string::String
 pub awaken_runtime_contract::delegation::DelegationResume::origin: awaken_agent_contract::agent::delegation::DelegationOrigin
-pub awaken_runtime_contract::delegation::DelegationResume::result_id: awaken_agent_contract::agent::delegation::DelegationResultId
+pub awaken_runtime_contract::delegation::DelegationResume::parent_thread_id: awaken_agent_contract::agent::thread::Id
+pub awaken_runtime_contract::delegation::DelegationResume::result: awaken_runtime_contract::resume::ResumeResult
+pub struct awaken_runtime_contract::delegation::PendingChildRunResults
+impl awaken_agent_contract::agent::state::StateKey for awaken_runtime_contract::delegation::PendingChildRunResults
+pub type awaken_runtime_contract::delegation::PendingChildRunResults::Value = awaken_runtime_contract::delegation::ChildRunResultInbox
+pub const awaken_runtime_contract::delegation::PendingChildRunResults::KEY: &'static str
+pub const awaken_runtime_contract::delegation::PendingChildRunResults::MERGE: awaken_agent_contract::agent::state::MergePolicy
+pub const awaken_runtime_contract::delegation::PendingChildRunResults::SCOPE: awaken_agent_contract::agent::state::Scope
 pub struct awaken_runtime_contract::delegation::RunDelegations
 impl awaken_agent_contract::agent::state::StateKey for awaken_runtime_contract::delegation::RunDelegations
 pub type awaken_runtime_contract::delegation::RunDelegations::Value = core::option::Option<awaken_agent_contract::agent::delegation::DelegationRegistry>
 pub const awaken_runtime_contract::delegation::RunDelegations::KEY: &'static str
 pub const awaken_runtime_contract::delegation::RunDelegations::MERGE: awaken_agent_contract::agent::state::MergePolicy
 pub const awaken_runtime_contract::delegation::RunDelegations::SCOPE: awaken_agent_contract::agent::state::Scope
-pub trait awaken_runtime_contract::delegation::DelegationExecutor: core::marker::Send + core::marker::Sync
-pub fn awaken_runtime_contract::delegation::DelegationExecutor::resume<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::delegation::DelegationResume) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::delegation::DelegationStep, awaken_runtime_contract::delegation::DelegationExecutionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_runtime_contract::delegation::DelegationExecutor::start<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::delegation::DelegationRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::delegation::DelegationStep, awaken_runtime_contract::delegation::DelegationExecutionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_runtime_contract::delegation::DelegationExecutor::target_agent_id(&self, &serde_json::value::Value) -> core::result::Result<alloc::string::String, awaken_runtime_contract::delegation::DelegationExecutionError>
-pub fn awaken_runtime_contract::delegation::DelegationExecutor::tool_id(&self) -> &str
 pub trait awaken_runtime_contract::delegation::RemoteAgent: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::delegation::RemoteAgent::cancel<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 awaken_agent_contract::agent::run::Id, core::option::Option<&'life3 serde_json::value::Value>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_runtime_contract::delegation::DelegationExecutionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub fn awaken_runtime_contract::delegation::RemoteAgent::card<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<serde_json::value::Value, awaken_runtime_contract::delegation::DelegationExecutionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_contract::delegation::RemoteAgent::run<'life0, 'life1, 'life2, 'life3, 'life4, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, &'life3 str, core::option::Option<&'life4 tokio_util::sync::cancellation_token::CancellationToken>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::delegation::DelegationStep, awaken_runtime_contract::delegation::DelegationExecutionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait, 'life4: 'async_trait
+pub trait awaken_runtime_contract::delegation::RunDelegationService: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::delegation::RunDelegationService::cancel<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::agent::delegation::ChildRunCancellation) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_runtime_contract::delegation::DelegationExecutionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_runtime_contract::delegation::RunDelegationService::resume<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::delegation::DelegationResume) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::delegation::DelegationStep, awaken_runtime_contract::delegation::DelegationExecutionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_runtime_contract::delegation::RunDelegationService::start<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::delegation::DelegationRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::delegation::DelegationStep, awaken_runtime_contract::delegation::DelegationExecutionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_runtime_contract::delegation::RunDelegationService::supports_parallel_completion(&self, &serde_json::value::Value) -> bool
+pub fn awaken_runtime_contract::delegation::RunDelegationService::target_agent_id(&self, &serde_json::value::Value) -> core::result::Result<alloc::string::String, awaken_runtime_contract::delegation::DelegationExecutionError>
+pub fn awaken_runtime_contract::delegation::RunDelegationService::tool_id(&self) -> &str
 pub mod awaken_runtime_contract::execution
 pub enum awaken_runtime_contract::execution::Cancellation
 pub awaken_runtime_contract::execution::Cancellation::CooperativeToken
@@ -347,29 +382,29 @@ pub enum awaken_runtime_contract::permission::GateOutcome
 pub awaken_runtime_contract::permission::GateOutcome::Allow
 pub awaken_runtime_contract::permission::GateOutcome::Block
 pub awaken_runtime_contract::permission::GateOutcome::Block::reason: alloc::string::String
+pub awaken_runtime_contract::permission::GateOutcome::RequireConfirmation
+pub awaken_runtime_contract::permission::GateOutcome::RequireConfirmation::correlation_id: alloc::string::String
 pub awaken_runtime_contract::permission::GateOutcome::Schedule
 pub awaken_runtime_contract::permission::GateOutcome::Schedule::action_kind: core::option::Option<alloc::string::String>
 pub awaken_runtime_contract::permission::GateOutcome::Schedule::correlation_id: alloc::string::String
 pub awaken_runtime_contract::permission::GateOutcome::SetResult(awaken_runtime_contract::tool::ToolOutput)
-pub awaken_runtime_contract::permission::GateOutcome::Suspend
-pub awaken_runtime_contract::permission::GateOutcome::Suspend::ticket_id: alloc::string::String
 impl awaken_runtime_contract::permission::GateOutcome
 pub fn awaken_runtime_contract::permission::GateOutcome::decision_label(&self) -> &'static str
-pub enum awaken_runtime_contract::permission::PermissionDecision
-pub awaken_runtime_contract::permission::PermissionDecision::Allow
-pub awaken_runtime_contract::permission::PermissionDecision::Ask
-pub awaken_runtime_contract::permission::PermissionDecision::Ask::ticket_id: alloc::string::String
-pub awaken_runtime_contract::permission::PermissionDecision::Deny
-pub awaken_runtime_contract::permission::PermissionDecision::Deny::reason: alloc::string::String
-pub struct awaken_runtime_contract::permission::PermissionContext
-pub awaken_runtime_contract::permission::PermissionContext::arguments: serde_json::value::Value
-pub awaken_runtime_contract::permission::PermissionContext::call_id: alloc::string::String
-pub awaken_runtime_contract::permission::PermissionContext::tool_id: alloc::string::String
-pub trait awaken_runtime_contract::permission::PermissionPolicy: core::marker::Send + core::marker::Sync
-pub fn awaken_runtime_contract::permission::PermissionPolicy::decide<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::permission::PermissionContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::PermissionDecision> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub enum awaken_runtime_contract::permission::ToolPermissionVerdict
+pub awaken_runtime_contract::permission::ToolPermissionVerdict::Allow
+pub awaken_runtime_contract::permission::ToolPermissionVerdict::Deny
+pub awaken_runtime_contract::permission::ToolPermissionVerdict::Deny::reason: alloc::string::String
+pub awaken_runtime_contract::permission::ToolPermissionVerdict::RequireConfirmation
+pub awaken_runtime_contract::permission::ToolPermissionVerdict::RequireConfirmation::correlation_id: alloc::string::String
+pub struct awaken_runtime_contract::permission::ToolCall
+pub awaken_runtime_contract::permission::ToolCall::arguments: serde_json::value::Value
+pub awaken_runtime_contract::permission::ToolCall::call_id: alloc::string::String
+pub awaken_runtime_contract::permission::ToolCall::tool_id: alloc::string::String
 pub trait awaken_runtime_contract::permission::ToolGateHook: core::marker::Send + core::marker::Sync
-pub fn awaken_runtime_contract::permission::ToolGateHook::gate<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::permission::PermissionContext, &'life2 awaken_agent_contract::agent::state::Store) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::GateOutcome> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_runtime_contract::permission::ToolGateHook::gate<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall, &'life2 awaken_agent_contract::agent::state::Store) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::GateOutcome> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_runtime_contract::permission::ToolGateHook::id(&self) -> &str
+pub trait awaken_runtime_contract::permission::ToolPermissionPolicy: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::permission::ToolPermissionPolicy::evaluate<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::ToolPermissionVerdict> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub mod awaken_runtime_contract::plugin
 pub enum awaken_runtime_contract::plugin::BoundViolation
 pub awaken_runtime_contract::plugin::BoundViolation::ActionKind
@@ -719,16 +754,6 @@ pub awaken_runtime_contract::snapshot::ExecutableAgentSnapshot::id: awaken_runti
 pub awaken_runtime_contract::snapshot::ExecutableAgentSnapshot::resolved_spec: awaken_runtime_contract::resolved::ResolvedSpec
 pub awaken_runtime_contract::snapshot::ExecutableAgentSnapshot::root_agent_id: awaken_runtime_contract::snapshot::AgentId
 pub struct awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId(pub alloc::string::String)
-pub mod awaken_runtime_contract::subagent_runner
-pub struct awaken_runtime_contract::subagent_runner::SubagentError(pub alloc::string::String)
-pub struct awaken_runtime_contract::subagent_runner::SubagentReply
-pub awaken_runtime_contract::subagent_runner::SubagentReply::text: core::option::Option<alloc::string::String>
-pub struct awaken_runtime_contract::subagent_runner::SubagentRequest
-pub awaken_runtime_contract::subagent_runner::SubagentRequest::agent_id: alloc::string::String
-pub awaken_runtime_contract::subagent_runner::SubagentRequest::cancellation: core::option::Option<tokio_util::sync::cancellation_token::CancellationToken>
-pub awaken_runtime_contract::subagent_runner::SubagentRequest::seed: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
-pub trait awaken_runtime_contract::subagent_runner::SubagentRunner: core::marker::Send + core::marker::Sync
-pub fn awaken_runtime_contract::subagent_runner::SubagentRunner::run<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::subagent_runner::SubagentRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::subagent_runner::SubagentReply, awaken_runtime_contract::subagent_runner::SubagentError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub mod awaken_runtime_contract::tool
 pub enum awaken_runtime_contract::tool::ToolError
 pub awaken_runtime_contract::tool::ToolError::Execution(alloc::string::String)
@@ -787,6 +812,7 @@ pub fn awaken_runtime_contract::tool::ToolExecutor::invoke<'life0, 'life1, 'asyn
 pub fn awaken_runtime_contract::tool::ToolExecutor::recovery_capability(&self, &str) -> awaken_runtime_contract::tool::ToolRecoveryCapability
 pub trait awaken_runtime_contract::tool::ToolExecutorProvider: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::tool::ToolExecutorProvider::provide<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::activation::RunActivation) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolExecutor>>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub async fn awaken_runtime_contract::tool::invoke_raw_tool(&dyn awaken_runtime_contract::tool::RawTool, awaken_runtime_contract::llm::ToolCall, core::option::Option<&tokio_util::sync::cancellation_token::CancellationToken>) -> core::result::Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>
 pub mod awaken_runtime_contract::tool_batch
 pub enum awaken_runtime_contract::tool_batch::ToolBatchError
 pub awaken_runtime_contract::tool_batch::ToolBatchError::AttemptsExhausted
@@ -794,6 +820,7 @@ pub awaken_runtime_contract::tool_batch::ToolBatchError::DuplicateCall(alloc::st
 pub awaken_runtime_contract::tool_batch::ToolBatchError::Empty
 pub awaken_runtime_contract::tool_batch::ToolBatchError::Finalized
 pub awaken_runtime_contract::tool_batch::ToolBatchError::Incomplete
+pub awaken_runtime_contract::tool_batch::ToolBatchError::InvalidPersistedState(alloc::string::String)
 pub awaken_runtime_contract::tool_batch::ToolBatchError::InvalidTransition
 pub awaken_runtime_contract::tool_batch::ToolBatchError::UnknownCall(alloc::string::String)
 pub awaken_runtime_contract::tool_batch::ToolBatchError::WaitMismatch
@@ -812,10 +839,10 @@ pub awaken_runtime_contract::tool_batch::ToolCallPhase::Requested
 impl awaken_runtime_contract::tool_batch::ToolCallPhase
 pub fn awaken_runtime_contract::tool_batch::ToolCallPhase::is_terminal(&self) -> bool
 pub enum awaken_runtime_contract::tool_batch::ToolWaitKind
-pub awaken_runtime_contract::tool_batch::ToolWaitKind::Approval
 pub awaken_runtime_contract::tool_batch::ToolWaitKind::Delegation
 pub awaken_runtime_contract::tool_batch::ToolWaitKind::ExternalResult
 pub awaken_runtime_contract::tool_batch::ToolWaitKind::ScheduledAction
+pub awaken_runtime_contract::tool_batch::ToolWaitKind::ToolPermission
 pub struct awaken_runtime_contract::tool_batch::ActiveToolBatch
 impl awaken_agent_contract::agent::state::StateKey for awaken_runtime_contract::tool_batch::ActiveToolBatch
 pub type awaken_runtime_contract::tool_batch::ActiveToolBatch::Value = core::option::Option<awaken_runtime_contract::tool_batch::ToolBatch>
@@ -847,6 +874,9 @@ pub fn awaken_runtime_contract::tool_batch::ToolBatch::resume_executing(&mut sel
 pub fn awaken_runtime_contract::tool_batch::ToolBatch::seal_on_run_end(&mut self, &str)
 pub fn awaken_runtime_contract::tool_batch::ToolBatch::set_result_messages(&mut self, &str, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> core::result::Result<(), awaken_runtime_contract::tool_batch::ToolBatchError>
 pub fn awaken_runtime_contract::tool_batch::ToolBatch::set_result_state(&mut self, &str, alloc::vec::Vec<awaken_agent_contract::agent::state::Command>) -> core::result::Result<(), awaken_runtime_contract::tool_batch::ToolBatchError>
+pub fn awaken_runtime_contract::tool_batch::ToolBatch::validate(&self) -> core::result::Result<(), awaken_runtime_contract::tool_batch::ToolBatchError>
+impl<'de> serde_core::de::Deserialize<'de> for awaken_runtime_contract::tool_batch::ToolBatch
+pub fn awaken_runtime_contract::tool_batch::ToolBatch::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 pub struct awaken_runtime_contract::tool_batch::ToolBatchId(pub alloc::string::String)
 impl awaken_runtime_contract::tool_batch::ToolBatchId
 pub fn awaken_runtime_contract::tool_batch::ToolBatchId::for_step(&awaken_agent_contract::agent::run::Id, usize) -> Self
@@ -876,6 +906,13 @@ pub awaken_runtime_contract::ContentKind::InputMessages
 pub awaken_runtime_contract::ContentKind::OutputMessages
 pub awaken_runtime_contract::ContentKind::ToolArguments
 pub awaken_runtime_contract::ContentKind::ToolResult
+pub enum awaken_runtime_contract::DelegationFailureKind
+pub awaken_runtime_contract::DelegationFailureKind::Retryable
+pub awaken_runtime_contract::DelegationFailureKind::Terminal
+pub enum awaken_runtime_contract::DelegationResultError
+pub awaken_runtime_contract::DelegationResultError::ChildRunMismatch
+pub awaken_runtime_contract::DelegationResultError::Conflict
+pub awaken_runtime_contract::DelegationResultError::NotFound
 pub enum awaken_runtime_contract::DelegationStep
 pub awaken_runtime_contract::DelegationStep::Awaiting
 pub awaken_runtime_contract::DelegationStep::Awaiting::continuation: serde_json::value::Value
@@ -886,12 +923,12 @@ pub enum awaken_runtime_contract::GateOutcome
 pub awaken_runtime_contract::GateOutcome::Allow
 pub awaken_runtime_contract::GateOutcome::Block
 pub awaken_runtime_contract::GateOutcome::Block::reason: alloc::string::String
+pub awaken_runtime_contract::GateOutcome::RequireConfirmation
+pub awaken_runtime_contract::GateOutcome::RequireConfirmation::correlation_id: alloc::string::String
 pub awaken_runtime_contract::GateOutcome::Schedule
 pub awaken_runtime_contract::GateOutcome::Schedule::action_kind: core::option::Option<alloc::string::String>
 pub awaken_runtime_contract::GateOutcome::Schedule::correlation_id: alloc::string::String
 pub awaken_runtime_contract::GateOutcome::SetResult(awaken_runtime_contract::tool::ToolOutput)
-pub awaken_runtime_contract::GateOutcome::Suspend
-pub awaken_runtime_contract::GateOutcome::Suspend::ticket_id: alloc::string::String
 impl awaken_runtime_contract::permission::GateOutcome
 pub fn awaken_runtime_contract::permission::GateOutcome::decision_label(&self) -> &'static str
 pub enum awaken_runtime_contract::IdBound
@@ -906,12 +943,6 @@ pub fn awaken_runtime_contract::IdBound::allows(&self, &str) -> bool
 pub fn awaken_runtime_contract::IdBound::is_deny_all(&self) -> bool
 impl core::default::Default for awaken_runtime_contract::IdBound
 pub fn awaken_runtime_contract::IdBound::default() -> Self
-pub enum awaken_runtime_contract::PermissionDecision
-pub awaken_runtime_contract::PermissionDecision::Allow
-pub awaken_runtime_contract::PermissionDecision::Ask
-pub awaken_runtime_contract::PermissionDecision::Ask::ticket_id: alloc::string::String
-pub awaken_runtime_contract::PermissionDecision::Deny
-pub awaken_runtime_contract::PermissionDecision::Deny::reason: alloc::string::String
 pub enum awaken_runtime_contract::PhaseHookPoint
 pub awaken_runtime_contract::PhaseHookPoint::AfterInference
 pub awaken_runtime_contract::PhaseHookPoint::AfterTool
@@ -921,6 +952,9 @@ pub awaken_runtime_contract::PhaseHookPoint::StepStart
 pub enum awaken_runtime_contract::Purpose
 pub awaken_runtime_contract::Purpose::EvalRecording
 pub awaken_runtime_contract::Purpose::TelemetryContent
+pub enum awaken_runtime_contract::ResultRecord
+pub awaken_runtime_contract::ResultRecord::Duplicate
+pub awaken_runtime_contract::ResultRecord::Recorded
 pub enum awaken_runtime_contract::ResumeError
 pub awaken_runtime_contract::ResumeError::CorrelationMismatch
 pub awaken_runtime_contract::ResumeError::Expired
@@ -960,6 +994,12 @@ pub awaken_runtime_contract::ToolCallPhase::Indeterminate::reason: alloc::string
 pub awaken_runtime_contract::ToolCallPhase::Requested
 impl awaken_runtime_contract::tool_batch::ToolCallPhase
 pub fn awaken_runtime_contract::tool_batch::ToolCallPhase::is_terminal(&self) -> bool
+pub enum awaken_runtime_contract::ToolPermissionVerdict
+pub awaken_runtime_contract::ToolPermissionVerdict::Allow
+pub awaken_runtime_contract::ToolPermissionVerdict::Deny
+pub awaken_runtime_contract::ToolPermissionVerdict::Deny::reason: alloc::string::String
+pub awaken_runtime_contract::ToolPermissionVerdict::RequireConfirmation
+pub awaken_runtime_contract::ToolPermissionVerdict::RequireConfirmation::correlation_id: alloc::string::String
 pub enum awaken_runtime_contract::ToolRecoveryCapability
 pub awaken_runtime_contract::ToolRecoveryCapability::DurableRequest
 pub awaken_runtime_contract::ToolRecoveryCapability::Idempotent
@@ -973,10 +1013,10 @@ pub awaken_runtime_contract::ToolRecoveryMode::ReplaySafe
 impl awaken_runtime_contract::tool::ToolRecoveryMode
 pub const fn awaken_runtime_contract::tool::ToolRecoveryMode::is_supported_by(self, awaken_runtime_contract::tool::ToolRecoveryCapability) -> bool
 pub enum awaken_runtime_contract::ToolWaitKind
-pub awaken_runtime_contract::ToolWaitKind::Approval
 pub awaken_runtime_contract::ToolWaitKind::Delegation
 pub awaken_runtime_contract::ToolWaitKind::ExternalResult
 pub awaken_runtime_contract::ToolWaitKind::ScheduledAction
+pub awaken_runtime_contract::ToolWaitKind::ToolPermission
 pub enum awaken_runtime_contract::Wait
 pub awaken_runtime_contract::Wait::Auth
 pub awaken_runtime_contract::Wait::Both
@@ -1019,6 +1059,17 @@ pub struct awaken_runtime_contract::ChatResponse
 pub awaken_runtime_contract::ChatResponse::output: awaken_runtime_contract::llm::AssistantOutput
 pub awaken_runtime_contract::ChatResponse::stop_reason: core::option::Option<awaken_runtime_contract::llm::StopReason>
 pub awaken_runtime_contract::ChatResponse::usage: core::option::Option<awaken_runtime_contract::llm::TokenUsage>
+pub struct awaken_runtime_contract::ChildRunResult
+pub awaken_runtime_contract::ChildRunResult::child_run_id: awaken_agent_contract::agent::run::Id
+pub awaken_runtime_contract::ChildRunResult::text: alloc::string::String
+pub awaken_runtime_contract::ChildRunResult::usage: awaken_runtime_contract::llm::ThreadUsage
+pub struct awaken_runtime_contract::ChildRunResultInbox
+impl awaken_runtime_contract::delegation::ChildRunResultInbox
+pub fn awaken_runtime_contract::delegation::ChildRunResultInbox::consume(&mut self, &awaken_agent_contract::agent::delegation::DelegationId) -> core::result::Result<awaken_runtime_contract::delegation::ChildRunResult, awaken_runtime_contract::delegation::DelegationResultError>
+pub fn awaken_runtime_contract::delegation::ChildRunResultInbox::discard_on_parent_end(&mut self) -> usize
+pub fn awaken_runtime_contract::delegation::ChildRunResultInbox::get(&self, &awaken_agent_contract::agent::delegation::DelegationId) -> core::option::Option<&awaken_runtime_contract::delegation::ChildRunResult>
+pub fn awaken_runtime_contract::delegation::ChildRunResultInbox::is_empty(&self) -> bool
+pub fn awaken_runtime_contract::delegation::ChildRunResultInbox::record(&mut self, awaken_agent_contract::agent::delegation::DelegationId, awaken_runtime_contract::delegation::ChildRunResult) -> core::result::Result<awaken_runtime_contract::delegation::ResultRecord, awaken_runtime_contract::delegation::DelegationResultError>
 pub struct awaken_runtime_contract::Contributions
 pub awaken_runtime_contract::Contributions::action_kinds: alloc::vec::Vec<alloc::string::String>
 pub awaken_runtime_contract::Contributions::dynamic_tools: alloc::vec::Vec<awaken_runtime_contract::plugin::DynamicTool>
@@ -1038,22 +1089,25 @@ pub fn awaken_runtime_contract::Contributions::register_hook(&mut self, alloc::s
 pub struct awaken_runtime_contract::DataSubjectId(pub alloc::string::String)
 impl awaken_runtime_contract::data_subject::DataSubjectId
 pub fn awaken_runtime_contract::data_subject::DataSubjectId::as_str(&self) -> &str
-pub struct awaken_runtime_contract::DelegationExecutionError(pub alloc::string::String)
+pub struct awaken_runtime_contract::DelegationExecutionError
 impl awaken_runtime_contract::delegation::DelegationExecutionError
+pub const fn awaken_runtime_contract::delegation::DelegationExecutionError::is_retryable(&self) -> bool
+pub const fn awaken_runtime_contract::delegation::DelegationExecutionError::kind(&self) -> awaken_runtime_contract::delegation::DelegationFailureKind
 pub fn awaken_runtime_contract::delegation::DelegationExecutionError::new(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_runtime_contract::delegation::DelegationExecutionError::retryable(impl core::convert::Into<alloc::string::String>) -> Self
 pub struct awaken_runtime_contract::DelegationRequest
 pub awaken_runtime_contract::DelegationRequest::arguments: serde_json::value::Value
 pub awaken_runtime_contract::DelegationRequest::child_run_id: awaken_agent_contract::agent::run::Id
 pub awaken_runtime_contract::DelegationRequest::context: awaken_runtime_contract::runtime_context::RuntimeRunContext
 pub awaken_runtime_contract::DelegationRequest::origin: awaken_agent_contract::agent::delegation::DelegationOrigin
-pub awaken_runtime_contract::DelegationRequest::result_id: awaken_agent_contract::agent::delegation::DelegationResultId
+pub awaken_runtime_contract::DelegationRequest::parent_thread_id: awaken_agent_contract::agent::thread::Id
 pub struct awaken_runtime_contract::DelegationResume
 pub awaken_runtime_contract::DelegationResume::child_run_id: awaken_agent_contract::agent::run::Id
 pub awaken_runtime_contract::DelegationResume::context: awaken_runtime_contract::runtime_context::RuntimeRunContext
 pub awaken_runtime_contract::DelegationResume::continuation: serde_json::value::Value
-pub awaken_runtime_contract::DelegationResume::input: alloc::string::String
 pub awaken_runtime_contract::DelegationResume::origin: awaken_agent_contract::agent::delegation::DelegationOrigin
-pub awaken_runtime_contract::DelegationResume::result_id: awaken_agent_contract::agent::delegation::DelegationResultId
+pub awaken_runtime_contract::DelegationResume::parent_thread_id: awaken_agent_contract::agent::thread::Id
+pub awaken_runtime_contract::DelegationResume::result: awaken_runtime_contract::resume::ResumeResult
 pub struct awaken_runtime_contract::ErasureError(pub alloc::string::String)
 pub struct awaken_runtime_contract::ErasureReceipt
 pub awaken_runtime_contract::ErasureReceipt::records_removed: usize
@@ -1106,6 +1160,12 @@ impl awaken_runtime_contract::pause::PauseSignal
 pub fn awaken_runtime_contract::pause::PauseSignal::new() -> Self
 pub fn awaken_runtime_contract::pause::PauseSignal::request(&self)
 pub fn awaken_runtime_contract::pause::PauseSignal::requested(&self) -> bool
+pub struct awaken_runtime_contract::PendingChildRunResults
+impl awaken_agent_contract::agent::state::StateKey for awaken_runtime_contract::delegation::PendingChildRunResults
+pub type awaken_runtime_contract::delegation::PendingChildRunResults::Value = awaken_runtime_contract::delegation::ChildRunResultInbox
+pub const awaken_runtime_contract::delegation::PendingChildRunResults::KEY: &'static str
+pub const awaken_runtime_contract::delegation::PendingChildRunResults::MERGE: awaken_agent_contract::agent::state::MergePolicy
+pub const awaken_runtime_contract::delegation::PendingChildRunResults::SCOPE: awaken_agent_contract::agent::state::Scope
 pub struct awaken_runtime_contract::PluginManifest
 pub awaken_runtime_contract::PluginManifest::bound: awaken_runtime_contract::CapabilityBound
 pub awaken_runtime_contract::PluginManifest::config_sections: alloc::vec::Vec<alloc::string::String>
@@ -1153,7 +1213,7 @@ pub awaken_runtime_contract::ResumeCommand::thread_id: awaken_agent_contract::ag
 impl awaken_runtime_contract::resume::ResumeCommand
 pub fn awaken_runtime_contract::resume::ResumeCommand::from_ticket(&awaken_agent_contract::agent::awaiting::ResumeTicket, awaken_runtime_contract::resume::ResumeResult, u64) -> Self
 pub struct awaken_runtime_contract::RunActivation
-pub awaken_runtime_contract::RunActivation::initiator: core::option::Option<awaken_agent_contract::agent::delegation::DelegationOrigin>
+pub awaken_runtime_contract::RunActivation::delegation_origin: core::option::Option<awaken_agent_contract::agent::delegation::DelegationOrigin>
 pub awaken_runtime_contract::RunActivation::input: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
 pub awaken_runtime_contract::RunActivation::model_ref_override: core::option::Option<alloc::string::String>
 pub awaken_runtime_contract::RunActivation::run_id: awaken_agent_contract::agent::run::Id
@@ -1162,7 +1222,7 @@ pub awaken_runtime_contract::RunActivation::thread_id: awaken_agent_contract::ag
 impl awaken_runtime_contract::activation::RunActivation
 pub fn awaken_runtime_contract::activation::RunActivation::effective_model_ref(&self) -> &str
 pub fn awaken_runtime_contract::activation::RunActivation::new(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::thread::Id, awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> Self
-pub fn awaken_runtime_contract::activation::RunActivation::with_initiator(self, awaken_agent_contract::agent::delegation::DelegationOrigin) -> Self
+pub fn awaken_runtime_contract::activation::RunActivation::with_delegation_origin(self, awaken_agent_contract::agent::delegation::DelegationOrigin) -> Self
 pub fn awaken_runtime_contract::activation::RunActivation::with_model_ref_override(self, core::option::Option<alloc::string::String>) -> Self
 pub struct awaken_runtime_contract::RunDelegations
 impl awaken_agent_contract::agent::state::StateKey for awaken_runtime_contract::delegation::RunDelegations
@@ -1236,13 +1296,6 @@ pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_resched
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_stream_checkpoint(self, alloc::sync::Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_stream_sink(self, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_tool_executor(self, alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolExecutor>) -> Self
-pub struct awaken_runtime_contract::SubagentError(pub alloc::string::String)
-pub struct awaken_runtime_contract::SubagentReply
-pub awaken_runtime_contract::SubagentReply::text: core::option::Option<alloc::string::String>
-pub struct awaken_runtime_contract::SubagentRequest
-pub awaken_runtime_contract::SubagentRequest::agent_id: alloc::string::String
-pub awaken_runtime_contract::SubagentRequest::cancellation: core::option::Option<tokio_util::sync::cancellation_token::CancellationToken>
-pub awaken_runtime_contract::SubagentRequest::seed: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
 pub struct awaken_runtime_contract::ToolBatch
 pub awaken_runtime_contract::ToolBatch::calls: alloc::vec::Vec<awaken_runtime_contract::tool_batch::DurableToolCall>
 pub awaken_runtime_contract::ToolBatch::id: awaken_runtime_contract::tool_batch::ToolBatchId
@@ -1262,6 +1315,9 @@ pub fn awaken_runtime_contract::tool_batch::ToolBatch::resume_executing(&mut sel
 pub fn awaken_runtime_contract::tool_batch::ToolBatch::seal_on_run_end(&mut self, &str)
 pub fn awaken_runtime_contract::tool_batch::ToolBatch::set_result_messages(&mut self, &str, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> core::result::Result<(), awaken_runtime_contract::tool_batch::ToolBatchError>
 pub fn awaken_runtime_contract::tool_batch::ToolBatch::set_result_state(&mut self, &str, alloc::vec::Vec<awaken_agent_contract::agent::state::Command>) -> core::result::Result<(), awaken_runtime_contract::tool_batch::ToolBatchError>
+pub fn awaken_runtime_contract::tool_batch::ToolBatch::validate(&self) -> core::result::Result<(), awaken_runtime_contract::tool_batch::ToolBatchError>
+impl<'de> serde_core::de::Deserialize<'de> for awaken_runtime_contract::tool_batch::ToolBatch
+pub fn awaken_runtime_contract::tool_batch::ToolBatch::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 pub struct awaken_runtime_contract::ToolBatchId(pub alloc::string::String)
 impl awaken_runtime_contract::tool_batch::ToolBatchId
 pub fn awaken_runtime_contract::tool_batch::ToolBatchId::for_step(&awaken_agent_contract::agent::run::Id, usize) -> Self
@@ -1301,18 +1357,11 @@ pub fn awaken_runtime_contract::DataSubjectResolver::erase<'life0, 'life1, 'asyn
 impl awaken_runtime_contract::data_subject::DataSubjectResolver for awaken_runtime_contract::data_subject::NullResolver
 pub fn awaken_runtime_contract::data_subject::NullResolver::consent_ceiling<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId, awaken_runtime_contract::data_subject::Purpose) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::capture::ContentCapture> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_contract::data_subject::NullResolver::erase<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::data_subject::ErasureReceipt, awaken_runtime_contract::data_subject::ErasureError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub trait awaken_runtime_contract::DelegationExecutor: core::marker::Send + core::marker::Sync
-pub fn awaken_runtime_contract::DelegationExecutor::resume<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::delegation::DelegationResume) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::delegation::DelegationStep, awaken_runtime_contract::delegation::DelegationExecutionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_runtime_contract::DelegationExecutor::start<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::delegation::DelegationRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::delegation::DelegationStep, awaken_runtime_contract::delegation::DelegationExecutionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_runtime_contract::DelegationExecutor::target_agent_id(&self, &serde_json::value::Value) -> core::result::Result<alloc::string::String, awaken_runtime_contract::delegation::DelegationExecutionError>
-pub fn awaken_runtime_contract::DelegationExecutor::tool_id(&self) -> &str
 pub trait awaken_runtime_contract::LiveRunControl
 pub fn awaken_runtime_contract::LiveRunControl::deliver(&self, awaken_runtime_contract::control::LiveCommand) -> core::result::Result<(), awaken_runtime_contract::control::Error>
 pub trait awaken_runtime_contract::LlmExecutor: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::LlmExecutor::infer<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_runtime_contract::LlmExecutor::infer_streaming<'life0, 'life1, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest, &'life1 dyn awaken_runtime_contract::llm::DeltaSink) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub trait awaken_runtime_contract::PermissionPolicy: core::marker::Send + core::marker::Sync
-pub fn awaken_runtime_contract::PermissionPolicy::decide<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::permission::PermissionContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::PermissionDecision> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_runtime_contract::PhaseHook: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::PhaseHook::on_phase<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::plugin::PhaseContext, &'life2 [awaken_agent_contract::agent::message::Message], &'life3 awaken_agent_contract::agent::state::Store) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::plugin::HookReaction> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub fn awaken_runtime_contract::PhaseHook::point(&self) -> awaken_runtime_contract::PhaseHookPoint
@@ -1326,8 +1375,16 @@ pub fn awaken_runtime_contract::RawTool::id(&self) -> &str
 pub fn awaken_runtime_contract::RawTool::invoke<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_runtime_contract::RawTool::recovery_capability(&self) -> awaken_runtime_contract::tool::ToolRecoveryCapability
 pub trait awaken_runtime_contract::RemoteAgent: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::RemoteAgent::cancel<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 awaken_agent_contract::agent::run::Id, core::option::Option<&'life3 serde_json::value::Value>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_runtime_contract::delegation::DelegationExecutionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub fn awaken_runtime_contract::RemoteAgent::card<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<serde_json::value::Value, awaken_runtime_contract::delegation::DelegationExecutionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_contract::RemoteAgent::run<'life0, 'life1, 'life2, 'life3, 'life4, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, &'life3 str, core::option::Option<&'life4 tokio_util::sync::cancellation_token::CancellationToken>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::delegation::DelegationStep, awaken_runtime_contract::delegation::DelegationExecutionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait, 'life4: 'async_trait
+pub trait awaken_runtime_contract::RunDelegationService: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::RunDelegationService::cancel<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::agent::delegation::ChildRunCancellation) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_runtime_contract::delegation::DelegationExecutionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_runtime_contract::RunDelegationService::resume<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::delegation::DelegationResume) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::delegation::DelegationStep, awaken_runtime_contract::delegation::DelegationExecutionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_runtime_contract::RunDelegationService::start<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::delegation::DelegationRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::delegation::DelegationStep, awaken_runtime_contract::delegation::DelegationExecutionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_runtime_contract::RunDelegationService::supports_parallel_completion(&self, &serde_json::value::Value) -> bool
+pub fn awaken_runtime_contract::RunDelegationService::target_agent_id(&self, &serde_json::value::Value) -> core::result::Result<alloc::string::String, awaken_runtime_contract::delegation::DelegationExecutionError>
+pub fn awaken_runtime_contract::RunDelegationService::tool_id(&self) -> &str
 pub trait awaken_runtime_contract::RunEndGuard: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::RunEndGuard::evaluate<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::RunEndContext<'life2>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::RunEndDecision> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_runtime_contract::RunEndGuard::id(&self) -> &str
@@ -1338,8 +1395,6 @@ pub trait awaken_runtime_contract::RunResolver
 pub fn awaken_runtime_contract::RunResolver::resolve(&self, &awaken_runtime_contract::snapshot::ExecutableAgentSnapshot) -> core::result::Result<awaken_runtime_contract::resolved::ResolvedRun, awaken_runtime_contract::resolver::Error>
 pub trait awaken_runtime_contract::RuntimeCatalogInstaller
 pub fn awaken_runtime_contract::RuntimeCatalogInstaller::install_catalog(&self, awaken_runtime_contract::catalog::RuntimeCatalogInstall) -> core::result::Result<awaken_runtime_contract::catalog::InstalledCatalog, awaken_runtime_contract::catalog::Error>
-pub trait awaken_runtime_contract::SubagentRunner: core::marker::Send + core::marker::Sync
-pub fn awaken_runtime_contract::SubagentRunner::run<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::subagent_runner::SubagentRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::subagent_runner::SubagentReply, awaken_runtime_contract::subagent_runner::SubagentError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_runtime_contract::Tool: core::marker::Send + core::marker::Sync
 pub type awaken_runtime_contract::Tool::Args: serde_core::de::DeserializeOwned + core::marker::Send
 pub type awaken_runtime_contract::Tool::Output: serde_core::ser::Serialize + core::marker::Send
@@ -1350,7 +1405,9 @@ pub trait awaken_runtime_contract::ToolExecutor: core::marker::Send + core::mark
 pub fn awaken_runtime_contract::ToolExecutor::invoke<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_contract::ToolExecutor::recovery_capability(&self, &str) -> awaken_runtime_contract::tool::ToolRecoveryCapability
 pub trait awaken_runtime_contract::ToolGateHook: core::marker::Send + core::marker::Sync
-pub fn awaken_runtime_contract::ToolGateHook::gate<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::permission::PermissionContext, &'life2 awaken_agent_contract::agent::state::Store) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::GateOutcome> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_runtime_contract::ToolGateHook::gate<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall, &'life2 awaken_agent_contract::agent::state::Store) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::GateOutcome> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_runtime_contract::ToolGateHook::id(&self) -> &str
+pub trait awaken_runtime_contract::ToolPermissionPolicy: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::ToolPermissionPolicy::evaluate<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::ToolPermissionVerdict> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_contract::evaluate_boundary(&awaken_runtime_contract::runtime_context::RuntimeRunContext, &awaken_agent_contract::agent::run::Id, &[awaken_agent_contract::agent::message::Message]) -> awaken_runtime_contract::boundary::BoundaryOutcome
 pub fn awaken_runtime_contract::validate_resume(&awaken_agent_contract::agent::awaiting::ResumeTicket, &awaken_runtime_contract::resume::ResumeCommand) -> core::result::Result<(), awaken_runtime_contract::resume::ResumeError>

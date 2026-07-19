@@ -9,15 +9,46 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
+use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::thread::commit::coordinator::{
+    Coordinator as CommitCoordinator, Error as CommitError,
+};
+use awaken_agent_contract::thread::commit::staged::{CommitRecord, RunDisposition, ThreadCommit};
 use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_run_ingress::{
-    DispatchQueue, DurableRunIngress, Inbox, PendingInput, RunExecutionRequest, SqliteDispatchStore,
+    ClaimedCommitCoordinator, ClaimedRunCommit, DispatchQueue, DurableRunIngress, GuardedRunCommit,
+    Inbox, PendingInput, RunClaim, RunDispatch, SqliteDispatchStore,
 };
 use awaken_runtime::RunIngress;
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_store_sqlite::SqliteCommitCoordinator;
 
 use harness::{TICKET, activation, tool_runtime};
+
+struct BlockingCommit {
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+#[async_trait::async_trait]
+impl CommitCoordinator for BlockingCommit {
+    async fn commit(&self, _commit: ThreadCommit) -> Result<CommitRecord, CommitError> {
+        self.entered.notify_one();
+        self.release.notified().await;
+        Ok(CommitRecord { sequence: 1 })
+    }
+}
+
+fn running_commit(run_id: &str) -> ThreadCommit {
+    ThreadCommit::assemble(
+        ThreadId(harness::THREAD.to_string()),
+        RunDisposition::running(RunId(run_id.to_string())),
+        true,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    )
+}
 
 fn pending(message_id: &str, correlation: &str, allow: bool) -> PendingInput {
     harness::pending(
@@ -32,12 +63,12 @@ fn pending(message_id: &str, correlation: &str, allow: bool) -> PendingInput {
 async fn enqueue_is_idempotent_and_expired_lease_is_reclaimed() {
     let store = SqliteDispatchStore::open_in_memory().expect("open");
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
     // Re-enqueue is a no-op.
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
 
@@ -46,6 +77,46 @@ async fn enqueue_is_idempotent_and_expired_lease_is_reclaimed() {
     assert!(store.claim("b", 1_000, 500).await.unwrap().is_none());
     let recovered = store.claim("b", 1_000, 1_001).await.unwrap();
     assert_eq!(recovered.map(|c| c.lease.owner), Some("b".to_string()));
+}
+
+#[tokio::test]
+async fn sqlite_epoch_guard_blocks_reclaim_until_commit_returns() {
+    let store = Arc::new(SqliteDispatchStore::open_in_memory().expect("dispatch"));
+    store
+        .enqueue(RunDispatch::new(activation("guarded")))
+        .await
+        .unwrap();
+    let lease = store
+        .claim("owner-a", 100, 0)
+        .await
+        .unwrap()
+        .expect("claim")
+        .lease;
+    let inner = Arc::new(BlockingCommit {
+        entered: tokio::sync::Notify::new(),
+        release: tokio::sync::Notify::new(),
+    });
+    let service: Arc<dyn ClaimedRunCommit> =
+        Arc::new(GuardedRunCommit::new(inner.clone(), store.clone()));
+    let fenced = ClaimedCommitCoordinator::new(service, RunClaim::from(&lease));
+
+    let committing = tokio::spawn(async move { fenced.commit(running_commit("guarded")).await });
+    inner.entered.notified().await;
+
+    let reclaim_store = store.clone();
+    let mut reclaiming =
+        tokio::spawn(async move { reclaim_store.claim("owner-b", 100, 200).await });
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(30), &mut reclaiming)
+            .await
+            .is_err(),
+        "reclaim must wait while the exact commit epoch is held"
+    );
+
+    inner.release.notify_one();
+    committing.await.unwrap().expect("commit");
+    let reclaimed = reclaiming.await.unwrap().unwrap().expect("reclaim");
+    assert_eq!(reclaimed.lease.epoch, lease.epoch + 1);
 }
 
 #[tokio::test]
@@ -125,7 +196,7 @@ async fn sqlite_dispatch_opens_a_file_and_persists() {
     {
         let store = SqliteDispatchStore::open(&path).expect("open a");
         store
-            .enqueue(RunExecutionRequest::new(activation("run-1")))
+            .enqueue(RunDispatch::new(activation("run-1")))
             .await
             .unwrap();
     }
@@ -207,12 +278,6 @@ async fn supersession_on_sqlite() {
 async fn settle_fences_stale_epoch_on_sqlite() {
     let store = SqliteDispatchStore::open_in_memory().expect("open");
     harness::assert_settle_fences_stale_epoch(&store).await;
-}
-
-#[tokio::test]
-async fn current_epoch_tracks_the_fence_on_sqlite() {
-    let store = SqliteDispatchStore::open_in_memory().expect("open");
-    harness::assert_current_epoch_tracks_the_fence(&store).await;
 }
 
 #[tokio::test]

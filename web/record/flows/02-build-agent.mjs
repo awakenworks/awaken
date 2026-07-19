@@ -21,7 +21,7 @@ export async function run({ page, goto, say, clearCaption, click, type, wait }) 
   await type(page.getByPlaceholder("coding-agent"), AGENT_ID);
   await say("Pick a model from the catalog — only credentialed models are offered.", 3600);
   await click(page.locator("select").first());
-  await page.locator("select").first().selectOption("kimi-k2-0711-preview");
+  await page.locator("select").first().selectOption("kimi-for-coding");
   await wait(400);
 
   await say("Its behavior is just the system prompt — no code, no redeploy.", 3600);

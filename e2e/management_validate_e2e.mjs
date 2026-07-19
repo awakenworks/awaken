@@ -35,8 +35,12 @@ async function main() {
     console.log('SKIP management_validate_e2e: no ANTHROPIC_API_KEY / KIMI_API_KEY set.');
     return;
   }
-  const baseUrl = process.env.ANTHROPIC_BASE_URL || process.env.KIMI_BASE_URL || 'https://api.anthropic.com/v1/';
-  const model = process.env.ANTHROPIC_MODEL || process.env.KIMI_MODEL || 'claude-3-5-haiku-latest';
+  let baseUrl = process.env.ANTHROPIC_BASE_URL || process.env.KIMI_BASE_URL || 'https://api.anthropic.com/v1/';
+  if (baseUrl.includes('api.kimi.com/coding') && !baseUrl.replace(/\/$/, '').endsWith('/v1')) {
+    baseUrl = `${baseUrl.replace(/\/$/, '')}/v1/`;
+  }
+  const model = process.env.ANTHROPIC_MODEL || process.env.KIMI_MODEL ||
+    (baseUrl.includes('api.kimi.com/coding') ? 'kimi-for-coding' : 'claude-3-5-haiku-latest');
 
   try {
     await withScenarioServer('management', 'mcp', 38160, async (base) => {

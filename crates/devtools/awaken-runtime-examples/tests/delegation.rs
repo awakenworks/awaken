@@ -1,5 +1,5 @@
 //! Kernel-level guard for the delegation port: the runtime executes the delegation
-//! tool via an injected [`DelegationExecutor`] (not the tool registry), and awaits/resumes
+//! tool via an injected [`RunDelegationService`] (not the tool registry), and awaits/resumes
 //! it — no host orchestration. Proves delegation is a runtime concern.
 
 use std::sync::Arc;
@@ -7,8 +7,8 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::message::Role;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_runtime_contract::delegation::{
-    DelegationExecutionError, DelegationExecutor, DelegationRequest, DelegationResume,
-    DelegationStep,
+    DelegationExecutionError, DelegationRequest, DelegationResume, DelegationStep,
+    RunDelegationService,
 };
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, THREAD_USAGE_STATE_KEY, ThreadUsage,
@@ -70,7 +70,7 @@ fn block_text(block: &awaken_agent_contract::agent::content::ContentBlock) -> St
 struct DoneResolver;
 
 #[async_trait::async_trait]
-impl DelegationExecutor for DoneResolver {
+impl RunDelegationService for DoneResolver {
     fn tool_id(&self) -> &str {
         "agent_run"
     }
@@ -97,7 +97,7 @@ impl DelegationExecutor for DoneResolver {
 struct UsageResolver;
 
 #[async_trait::async_trait]
-impl DelegationExecutor for UsageResolver {
+impl RunDelegationService for UsageResolver {
     fn tool_id(&self) -> &str {
         "agent_run"
     }
@@ -132,7 +132,7 @@ impl DelegationExecutor for UsageResolver {
 struct AwaitingResolver;
 
 #[async_trait::async_trait]
-impl DelegationExecutor for AwaitingResolver {
+impl RunDelegationService for AwaitingResolver {
     fn tool_id(&self) -> &str {
         "agent_run"
     }
@@ -152,8 +152,15 @@ impl DelegationExecutor for AwaitingResolver {
             request.continuation["task"], "t-1",
             "the durable continuation round-trips"
         );
+        let input = match request.result {
+            ResumeResult::Input(text) => text,
+            ResumeResult::ToolResult(output) => output.content,
+            ResumeResult::Decision { allow, note } => {
+                note.unwrap_or_else(|| if allow { "allow" } else { "deny" }.into())
+            }
+        };
         Ok(DelegationStep::Ended {
-            text: format!("finished with: {}", request.input),
+            text: format!("finished with: {input}"),
             usage: ThreadUsage::default(),
         })
     }
@@ -173,11 +180,13 @@ fn config() -> RunnableConfig {
 }
 
 fn allow_all() -> PermissionGate {
-    PermissionGate::new(Arc::new(RulePermissionPolicy::new(PermissionRuleset {
-        default_behavior: ToolPermissionBehavior::Allow,
-        mode: Mode::Default,
-        rules: Vec::new(),
-    })))
+    PermissionGate::new(Arc::new(RuleBasedToolPermissionPolicy::new(
+        PermissionRuleset {
+            default_behavior: ToolPermissionBehavior::Allow,
+            mode: Mode::Default,
+            rules: Vec::new(),
+        },
+    )))
 }
 
 #[tokio::test]
@@ -185,7 +194,7 @@ async fn the_kernel_runs_agent_run_through_the_resolver() {
     let runtime = Runtime::new()
         .with_llm(Arc::new(CoordinatorLlm))
         .with_gate(Arc::new(allow_all()))
-        .with_delegation_executor(Arc::new(DoneResolver));
+        .with_run_delegation(Arc::new(DoneResolver));
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ctx = RuntimeRunContext::new()
@@ -215,7 +224,7 @@ async fn a_delegates_usage_folds_into_the_parent_thread_tally() {
     let runtime = Runtime::new()
         .with_llm(Arc::new(CoordinatorLlm))
         .with_gate(Arc::new(allow_all()))
-        .with_delegation_executor(Arc::new(UsageResolver));
+        .with_run_delegation(Arc::new(UsageResolver));
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ctx = RuntimeRunContext::new()
@@ -263,7 +272,7 @@ async fn an_awaiting_delegation_resumes_through_the_resolver() {
     let runtime = Runtime::new()
         .with_llm(Arc::new(CoordinatorLlm))
         .with_gate(Arc::new(allow_all()))
-        .with_delegation_executor(Arc::new(AwaitingResolver));
+        .with_run_delegation(Arc::new(AwaitingResolver));
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ctx = RuntimeRunContext::new()

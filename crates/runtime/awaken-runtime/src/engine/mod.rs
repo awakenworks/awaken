@@ -30,14 +30,15 @@ use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::boundary::{BoundaryOutcome, evaluate_boundary};
 use awaken_runtime_contract::delegation::{
-    DelegationExecutionError, DelegationRequest, DelegationResume, DelegationStep, RunDelegations,
+    ChildRunResult, DelegationExecutionError, DelegationRequest, DelegationResume, DelegationStep,
+    PendingChildRunResults, ResultRecord, RunDelegations,
 };
 use awaken_runtime_contract::execution::{Error, Result, RunExecutor};
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatMessage, ChatRequest, ChatResponse, DeltaSink, StopReason, ThreadUsage,
     ThreadUsageKey, ToolCall,
 };
-use awaken_runtime_contract::permission::{GateOutcome, PermissionContext};
+use awaken_runtime_contract::permission::GateOutcome;
 use awaken_runtime_contract::plugin::{
     AfterToolContext, ContextMessages, PhaseContext, PhaseHookPoint, PhaseKind,
     ResolvedExecutionEnv, RunEndContext, RunEndDecision,
@@ -59,12 +60,17 @@ mod content;
 mod convert;
 mod delegation;
 mod dispatch;
+mod finalize;
 mod inference;
 mod resume;
 pub(crate) use convert::*;
+pub(crate) use delegation::reconcile_delegation_cancellations;
 use delegation::{
-    resume_delegation, run_delegation, stage_delegation_completed, stage_delegation_request,
+    DelegationInvocation, DelegationParent, delegation_error_output, invoke_delegation,
+    persist_child_run_result, resume_delegation, run_delegation, stage_delegation_awaiting,
+    stage_delegation_completed, stage_delegation_request, stage_delegation_requests,
 };
+use finalize::finish;
 use inference::infer_with_retry;
 use resume::drive_resumed;
 
@@ -114,13 +120,13 @@ pub(crate) async fn run_agent_loop(
 
     let run_id = activation.run_id.clone();
     let thread_id = activation.thread_id.clone();
-    let initiator = activation.initiator.clone();
+    let delegation_origin = activation.delegation_origin.clone();
 
     // Cancellation observed before any model call: commit a terminal Cancelled
     // outcome instead of starting work.
     if context.is_cancelled() {
         let step = RunStepResult::cancelled(run_id.clone());
-        return finish(&context, &thread_id, run_id, step).await;
+        return finish(runtime, &context, &thread_id, run_id, step).await;
     }
 
     // Merge the active plugins under their capability bounds; a violation fails
@@ -129,7 +135,7 @@ pub(crate) async fn run_agent_loop(
         Ok(env) => env,
         Err(_) => {
             let step = RunStepResult::capability_bound(run_id.clone());
-            return finish(&context, &thread_id, run_id, step).await;
+            return finish(runtime, &context, &thread_id, run_id, step).await;
         }
     };
 
@@ -174,7 +180,7 @@ pub(crate) async fn run_agent_loop(
         &run_id,
         &thread_id,
         &context,
-        initiator.as_ref(),
+        delegation_origin.as_ref(),
         transcript,
         fresh_input,
         0,
@@ -183,7 +189,7 @@ pub(crate) async fn run_agent_loop(
         Vec::new(),
     )
     .await?;
-    finalize(&context, &thread_id, run_id, step_result).await
+    finalize(runtime, &context, &thread_id, run_id, step_result).await
 }
 
 /// Cancel a run that is not executing (a queued or awaiting run) by committing a
@@ -191,12 +197,13 @@ pub(crate) async fn run_agent_loop(
 /// any awaiting ticket, so an awaiting run can no longer be resumed. An in-flight run
 /// is cancelled cooperatively through `LiveRunControl` instead, not here.
 pub(crate) async fn cancel_run(
+    runtime: &Runtime,
     run_id: RunId,
     thread_id: ThreadId,
     context: RuntimeRunContext,
 ) -> Result<RunState> {
     let step = RunStepResult::cancelled(run_id.clone());
-    finish(&context, &thread_id, run_id, step).await
+    finish(runtime, &context, &thread_id, run_id, step).await
 }
 
 /// Stop a run by committing a terminal `Stopped(reason)` fact through the one
@@ -204,13 +211,14 @@ pub(crate) async fn cancel_run(
 /// run terminal. Like cancel, it clears any awaiting ticket, so a later resume or
 /// scheduled result for the run fails closed (RS-CTRL-002, ADR-0026).
 pub(crate) async fn stop_run(
+    runtime: &Runtime,
     run_id: RunId,
     thread_id: ThreadId,
     reason: String,
     context: RuntimeRunContext,
 ) -> Result<RunState> {
     let step = RunStepResult::stopped(run_id.clone(), reason);
-    finish(&context, &thread_id, run_id, step).await
+    finish(runtime, &context, &thread_id, run_id, step).await
 }
 
 /// Perform a committed `ScheduledAction` (ADR-0020): the run is awaiting on a
@@ -275,7 +283,7 @@ pub(crate) async fn resume_run(
         Ok(env) => env,
         Err(_) => {
             let step = RunStepResult::capability_bound(run_id.clone());
-            return finish(&context, &thread_id, run_id, step).await;
+            return finish(runtime, &context, &thread_id, run_id, step).await;
         }
     };
 
@@ -318,6 +326,7 @@ pub(crate) async fn resume_run(
 /// attempt becomes a `StateConflict` fault, drops any pause, and commits no
 /// state (G13). A run whose state did not commit cleanly must not be resumable.
 async fn finalize(
+    runtime: &Runtime,
     context: &RuntimeRunContext,
     thread_id: &ThreadId,
     run_id: RunId,
@@ -333,9 +342,9 @@ async fn finalize(
                 EndCause::Error(Failure::StateConflict),
             ),
         };
-        return finish(context, thread_id, run_id, failed).await;
+        return finish(runtime, context, thread_id, run_id, failed).await;
     }
-    finish(context, thread_id, run_id, step).await
+    finish(runtime, context, thread_id, run_id, step).await
 }
 
 /// What one attempt at driving the loop resolved to, ready to commit: the new
@@ -368,17 +377,6 @@ impl RunStepResult {
             staged_state: Vec::new(),
             audit: Vec::new(),
             disposition: RunDisposition::ended(run_id, cause),
-        }
-    }
-
-    /// A step result that leaves the run awaiting on `ticket` (no new messages) — used when
-    /// a resumed delegation awaits again for more input.
-    fn awaiting(ticket: ResumeTicket) -> Self {
-        Self {
-            new_messages: Vec::new(),
-            staged_state: Vec::new(),
-            audit: Vec::new(),
-            disposition: RunDisposition::awaiting(ticket),
         }
     }
 }
@@ -673,7 +671,7 @@ async fn drive(
     run_id: &RunId,
     thread_id: &ThreadId,
     context: &RuntimeRunContext,
-    initiator: Option<&DelegationOrigin>,
+    delegation_origin: Option<&DelegationOrigin>,
     transcript: Vec<Message>,
     new_messages: Vec<Message>,
     step_base: usize,
@@ -761,7 +759,7 @@ async fn drive(
         match dispatch::recover_tool_batch(
             runtime,
             context,
-            initiator,
+            delegation_origin,
             resolved,
             env,
             run_id,
@@ -842,7 +840,8 @@ async fn drive(
         // Request-only context the `BeforeInference` hooks wrote to state: the
         // kernel reads it here (single chokepoint) and prepends the flattened
         // per-producer blocks to this inference, never committing them (ADR-0055).
-        let prelude: Vec<Message> = ContextMessages::load_or_default(&store)
+        let prelude: Vec<Message> = ContextMessages::load(&store)
+            .map_err(|error| Error::Execution(error.to_string()))?
             .into_values()
             .flatten()
             .collect();
@@ -996,7 +995,10 @@ async fn drive(
                         ledger.push_message(message);
                     }
                     disposition = Some(RunDisposition::awaiting(pause_ticket(
-                        resolved, run_id, initiator, reason,
+                        resolved,
+                        run_id,
+                        delegation_origin,
+                        reason,
                     )));
                     emit(
                         context,
@@ -1069,7 +1071,7 @@ async fn drive(
         match dispatch::run_tool_calls(
             runtime,
             context,
-            initiator,
+            delegation_origin,
             resolved,
             env,
             run_id,
@@ -1458,7 +1460,7 @@ fn feedback_message(run_id: &RunId, nth: usize, feedback: String) -> Message {
 fn pause_ticket(
     resolved: &ResolvedRun,
     run_id: &RunId,
-    initiator: Option<&DelegationOrigin>,
+    delegation_origin: Option<&DelegationOrigin>,
     reason: AwaitReason,
 ) -> ResumeTicket {
     ResumeTicket {
@@ -1467,7 +1469,7 @@ fn pause_ticket(
         thread_id: ThreadId(String::new()), // filled in finish via the commit thread id
         snapshot_id: resolved.snapshot_id.0.clone(),
         catalog_fingerprint: resolved.spec.catalog_fingerprint.0.clone(),
-        initiator: initiator.cloned(),
+        delegation_origin: delegation_origin.cloned(),
         reason,
         call_id: None,
         pending_tool: None,
@@ -1475,30 +1477,28 @@ fn pause_ticket(
     }
 }
 
-/// Build the committed ticket for an awaiting tool call. `handle` carries opaque
-/// durable state for an awaiting delegation and is absent for ordinary tool waits.
+/// Build the committed ticket for an awaiting tool call. Adapter execution
+/// references live only in `RunDelegations`, their single durable owner.
 fn resume_ticket(
     resolved: &ResolvedRun,
     run_id: &RunId,
-    initiator: Option<&DelegationOrigin>,
-    ticket_id: &str,
+    delegation_origin: Option<&DelegationOrigin>,
+    correlation_id: &str,
     call: &ToolCall,
     reason: AwaitReason,
-    handle: Option<serde_json::Value>,
 ) -> ResumeTicket {
     ResumeTicket {
-        correlation_id: ticket_id.to_string(),
+        correlation_id: correlation_id.to_string(),
         run_id: run_id.clone(),
         thread_id: ThreadId(String::new()), // filled in finish via the commit thread id
         snapshot_id: resolved.snapshot_id.0.clone(),
         catalog_fingerprint: resolved.spec.catalog_fingerprint.0.clone(),
-        initiator: initiator.cloned(),
+        delegation_origin: delegation_origin.cloned(),
         reason,
         call_id: Some(call.call_id.clone()),
         pending_tool: Some(PendingTool {
             tool_id: call.tool_id.clone(),
             arguments: call.arguments.clone(),
-            resume_handle: handle,
         }),
         deadline_ms: None,
     }
@@ -1575,7 +1575,7 @@ async fn gate_decision(
     env: &ResolvedExecutionEnv,
     state: &Store,
 ) -> GateOutcome {
-    let ctx = PermissionContext {
+    let ctx = ToolCall {
         tool_id: call.tool_id.clone(),
         call_id: call.call_id.clone(),
         arguments: call.arguments.clone(),
@@ -1857,107 +1857,6 @@ async fn emit(context: &RuntimeRunContext, run_id: &RunId, kind: AgentEvent) {
             })
             .await;
     }
-}
-
-/// Stage and commit the terminal/awaiting step result, emit `RunFinished`, and
-/// return the outcome. Commit only runs when a coordinator is wired.
-async fn finish(
-    context: &RuntimeRunContext,
-    thread_id: &ThreadId,
-    run_id: RunId,
-    step: RunStepResult,
-) -> Result<RunState> {
-    let RunStepResult {
-        new_messages,
-        mut staged_state,
-        audit,
-        disposition,
-    } = step;
-
-    // The awaiting disposition owns its resume ticket, so state and ticket cannot
-    // disagree. Fill the authoritative thread id at the commit boundary.
-    let disposition = match disposition {
-        RunDisposition::Awaiting(mut ticket) => {
-            ticket.thread_id = thread_id.clone();
-            RunDisposition::Awaiting(ticket)
-        }
-        other => other,
-    };
-    debug_assert_eq!(disposition.run_id(), &run_id);
-    let run_state = disposition.state();
-
-    // Parent termination and child-cancellation intent are one ThreadCommit.
-    // Delivery may be retried by the adapter, but an ended parent can never lose
-    // the durable request or reopen a relationship.
-    if matches!(run_state, RunState::Ended(_)) {
-        let mut store = store_from_commands(
-            context
-                .reader
-                .as_ref()
-                .map(|reader| reader.committed_state(thread_id))
-                .unwrap_or_default(),
-            &run_id,
-        );
-        for command in &staged_state {
-            store.apply(command);
-        }
-        if let Some(mut batch) = ActiveToolBatch::load(&store)
-            .map_err(|error| Error::Execution(error.to_string()))?
-            .filter(|batch| batch.run_id == run_id && batch.phase != ToolBatchPhase::Finalized)
-        {
-            batch.seal_on_run_end("owning run ended before every tool call settled");
-            let command = ActiveToolBatch::write(&Some(batch));
-            store.apply(&command);
-            staged_state.push(command);
-        }
-        if let Some(mut registry) =
-            RunDelegations::load(&store).map_err(|error| Error::Execution(error.to_string()))?
-        {
-            registry.end_parent();
-            let command = RunDelegations::write(&Some(registry));
-            store.apply(&command);
-            staged_state.push(command);
-        }
-    }
-
-    if let Some(coordinator) = &context.commit {
-        // The finish boundary always transitions state (to Awaiting/Ended); the
-        // permission-audit drafts ride the same commit as the run's facts (G1).
-        let commit = ThreadCommit::assemble(
-            thread_id.clone(),
-            disposition,
-            true,
-            new_messages,
-            staged_state,
-            audit,
-        );
-        coordinator
-            .commit(commit)
-            .await
-            .map_err(|err| Error::Commit(err.to_string()))?;
-    }
-
-    // A fault is announced before the close signal, so a live consumer can
-    // categorize the failure by code while still keying stream teardown on
-    // the single terminal `RunFinished`.
-    if let RunState::Ended(EndCause::Error(failure)) = &run_state {
-        emit(
-            context,
-            &run_id,
-            AgentEvent::Fact(Fact::RunFailed {
-                code: failure.code().to_string(),
-                message: failure.message(),
-            }),
-        )
-        .await;
-    }
-    emit(
-        context,
-        &run_id,
-        AgentEvent::Fact(Fact::RunFinished { exhausted: false }),
-    )
-    .await;
-    Ok(run_state)
 }
 
 fn map_resolver_error(err: resolver::Error) -> Error {

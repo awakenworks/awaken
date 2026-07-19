@@ -31,14 +31,14 @@ use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
 use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::delegation::{
-    DelegationExecutionError, DelegationExecutor, DelegationRequest, DelegationResume,
-    DelegationStep, RunDelegations,
+    DelegationExecutionError, DelegationRequest, DelegationResume, DelegationStep,
+    PendingChildRunResults, RunDelegationService, RunDelegations,
 };
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ThreadUsage, ToolCall,
 };
-use awaken_runtime_contract::permission::{GateOutcome, PermissionContext, ToolGateHook};
+use awaken_runtime_contract::permission::{GateOutcome, ToolGateHook};
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor,
 };
@@ -105,6 +105,34 @@ impl CommitCoordinator for TracingCoordinator {
         let observed = commit.clone();
         let record = self.inner.commit(commit).await?;
         self.commits.lock().expect("trace lock").push(observed);
+        Ok(record)
+    }
+}
+
+/// Accept the child-result delivery commit, then simulate an owner crash before
+/// the parent can atomically consume it into ToolBatch.
+#[derive(Clone)]
+struct CrashAfterChildResult {
+    trace: TracingCoordinator,
+    armed: Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[async_trait::async_trait]
+impl CommitCoordinator for CrashAfterChildResult {
+    async fn commit(&self, commit: ThreadCommit) -> Result<CommitRecord, CommitError> {
+        if self.armed.swap(false, Ordering::SeqCst) {
+            return Err(CommitError::Rejected(
+                "simulated crash after child result delivery".to_string(),
+            ));
+        }
+        let arms_crash = commit
+            .state
+            .iter()
+            .any(|command| command.key.0 == PendingChildRunResults::KEY);
+        let record = self.trace.commit(commit).await?;
+        if arms_crash {
+            self.armed.store(true, Ordering::SeqCst);
+        }
         Ok(record)
     }
 }
@@ -220,9 +248,9 @@ struct SuspendGate;
 
 #[async_trait::async_trait]
 impl ToolGateHook for SuspendGate {
-    async fn gate(&self, _: &PermissionContext, _: &Store) -> GateOutcome {
-        GateOutcome::Suspend {
-            ticket_id: "formal-approval".to_string(),
+    async fn gate(&self, _: &ToolCall, _: &Store) -> GateOutcome {
+        GateOutcome::RequireConfirmation {
+            correlation_id: "formal-approval".to_string(),
         }
     }
 }
@@ -236,14 +264,58 @@ struct CompletingDelegation {
     invocations: Arc<AtomicUsize>,
 }
 
+struct CrashOnceDelegation {
+    trace: TracingCoordinator,
+    starts: AtomicUsize,
+}
+
 #[async_trait::async_trait]
-impl DelegationExecutor for CompletingDelegation {
+impl RunDelegationService for CrashOnceDelegation {
     fn tool_id(&self) -> &str {
         "agent_run"
     }
 
     fn target_agent_id(&self, _: &serde_json::Value) -> Result<String, DelegationExecutionError> {
         Ok("researcher".to_string())
+    }
+
+    async fn start(
+        &self,
+        request: DelegationRequest,
+    ) -> Result<DelegationStep, DelegationExecutionError> {
+        assert_execution_was_committed(&self.trace, &request.origin.parent_call_id);
+        if self.starts.fetch_add(1, Ordering::SeqCst) == 0 {
+            Err(DelegationExecutionError::retryable(
+                "formal child owner crash",
+            ))
+        } else {
+            Ok(DelegationStep::Ended {
+                text: "child recovered".into(),
+                usage: ThreadUsage::default(),
+            })
+        }
+    }
+
+    async fn resume(
+        &self,
+        _: DelegationResume,
+    ) -> Result<DelegationStep, DelegationExecutionError> {
+        unreachable!("the child never awaits")
+    }
+}
+
+#[async_trait::async_trait]
+impl RunDelegationService for CompletingDelegation {
+    fn tool_id(&self) -> &str {
+        "agent_run"
+    }
+
+    fn target_agent_id(&self, _: &serde_json::Value) -> Result<String, DelegationExecutionError> {
+        Ok("researcher".to_string())
+    }
+
+    fn supports_parallel_completion(&self, _: &serde_json::Value) -> bool {
+        true
     }
 
     async fn start(
@@ -273,7 +345,7 @@ impl DelegationExecutor for CompletingDelegation {
 }
 
 #[async_trait::async_trait]
-impl DelegationExecutor for AwaitingDelegation {
+impl RunDelegationService for AwaitingDelegation {
     fn tool_id(&self) -> &str {
         "agent_run"
     }
@@ -356,7 +428,7 @@ fn activation(snapshot: ExecutableAgentSnapshot) -> RunActivation {
             role: Role::User,
             content: vec![ContentBlock::text("run")],
         }],
-        initiator: None,
+        delegation_origin: None,
         model_ref_override: None,
     }
 }
@@ -443,7 +515,7 @@ struct TraceState {
 fn ticket_kind(commit: &ThreadCommit) -> String {
     match commit.resume_ticket().map(|ticket| &ticket.reason) {
         None => "None",
-        Some(AwaitReason::ToolPermission) => "Approval",
+        Some(AwaitReason::ToolPermission) => "ToolPermission",
         Some(AwaitReason::Delegation) => "Delegation",
         Some(AwaitReason::ScheduledAction) => "Scheduled",
         Some(_) => "External",
@@ -652,6 +724,37 @@ async fn ordinary_parallel_batch_produces_a_refinement_trace() {
 }
 
 #[tokio::test]
+async fn parallel_child_runs_produce_a_refinement_trace() {
+    let trace = TracingCoordinator::default();
+    let calls = vec![
+        tool_call("agent_parallel_a", "agent_run"),
+        tool_call("agent_parallel_b", "agent_run"),
+    ];
+    let snapshot = snapshot(&["agent_run"]);
+    let invocations = Arc::new(AtomicUsize::new(0));
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(CallsThenText::new(calls)))
+        .with_run_delegation(Arc::new(CompletingDelegation {
+            trace: trace.clone(),
+            invocations: invocations.clone(),
+        }));
+    install(&runtime, &snapshot);
+
+    let outcome = runtime
+        .execute(
+            activation(snapshot),
+            RuntimeRunContext::new()
+                .with_commit(Arc::new(trace.clone()))
+                .with_reader(Arc::new(trace.inner.clone())),
+        )
+        .await
+        .expect("parallel child trace runs");
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
+    assert_eq!(invocations.load(Ordering::SeqCst), 2);
+    emit_trace("parallel_child_runs", &trace);
+}
+
+#[tokio::test]
 async fn approval_resume_produces_a_refinement_trace() {
     let trace = TracingCoordinator::default();
     let snapshot = snapshot(&["approved_tool"]);
@@ -699,7 +802,7 @@ async fn delegated_child_cancel_produces_a_refinement_trace() {
             "agent_call",
             "agent_run",
         )])))
-        .with_delegation_executor(Arc::new(AwaitingDelegation {
+        .with_run_delegation(Arc::new(AwaitingDelegation {
             trace: trace.clone(),
         }));
     install(&runtime, &snapshot);
@@ -834,7 +937,7 @@ async fn durable_delegation_crash_recovery_reuses_the_child_relationship() {
     let invocations = Arc::new(AtomicUsize::new(0));
     let runtime = Runtime::new()
         .with_llm(Arc::new(TextOnly))
-        .with_delegation_executor(Arc::new(CompletingDelegation {
+        .with_run_delegation(Arc::new(CompletingDelegation {
             trace: trace.clone(),
             invocations: invocations.clone(),
         }));
@@ -856,6 +959,133 @@ async fn durable_delegation_crash_recovery_reuses_the_child_relationship() {
         Some(DelegationStatus::Completed)
     );
     emit_trace("durable_delegation_recovery", &trace);
+}
+
+#[tokio::test]
+async fn retryable_child_owner_crash_produces_a_refinement_trace() {
+    let trace = TracingCoordinator::default();
+    let snapshot = snapshot(&["agent_run"]);
+    let executor = Arc::new(CrashOnceDelegation {
+        trace: trace.clone(),
+        starts: AtomicUsize::new(0),
+    });
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(CallsThenText::new(vec![tool_call(
+            "child_crash_call",
+            "agent_run",
+        )])))
+        .with_run_delegation(executor.clone());
+    install(&runtime, &snapshot);
+    let context = RuntimeRunContext::new()
+        .with_commit(Arc::new(trace.clone()))
+        .with_reader(Arc::new(trace.inner.clone()));
+
+    assert!(
+        runtime
+            .execute(activation(snapshot.clone()), context.clone())
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        runtime
+            .execute(activation(snapshot), context)
+            .await
+            .expect("replacement child owner completes"),
+        RunState::Ended(EndCause::NaturalEnd)
+    );
+    assert_eq!(executor.starts.load(Ordering::SeqCst), 2);
+    emit_trace("child_crash_recovery", &trace);
+}
+
+#[tokio::test]
+async fn child_result_survives_crash_and_is_consumed_without_reinvocation() {
+    let trace = TracingCoordinator::default();
+    let call = tool_call("delivered_child_call", "agent_run");
+    let run_id = RunId(RUN_ID.to_string());
+    let origin =
+        DelegationOrigin::root_for_agent(run_id.clone(), call.call_id.clone(), "formal-agent");
+    let mut registry =
+        DelegationRegistry::new(run_id, "formal-agent", Vec::new(), 0, Default::default());
+    registry
+        .request(RequestDelegation {
+            id: origin.delegation_id.clone(),
+            parent_call_id: call.call_id.clone(),
+            target_agent_id: "researcher".to_string(),
+            child_run_id: origin.child_run_id(),
+        })
+        .expect("seed durable delegation relationship");
+    seed_executing_batch(
+        &trace,
+        call,
+        ToolRecoveryPolicy::durable_request(),
+        vec![RunDelegations::write(&Some(registry))],
+    )
+    .await;
+
+    let snapshot = snapshot(&["agent_run"]);
+    let invocations = Arc::new(AtomicUsize::new(0));
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(TextOnly))
+        .with_run_delegation(Arc::new(CompletingDelegation {
+            trace: trace.clone(),
+            invocations: invocations.clone(),
+        }));
+    install(&runtime, &snapshot);
+    let crashing = CrashAfterChildResult {
+        trace: trace.clone(),
+        armed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    };
+
+    let first = runtime
+        .execute(
+            activation(snapshot.clone()),
+            RuntimeRunContext::new()
+                .with_commit(Arc::new(crashing))
+                .with_reader(Arc::new(trace.inner.clone())),
+        )
+        .await;
+    assert!(first.is_err(), "the parent crashes after durable delivery");
+    assert_eq!(invocations.load(Ordering::SeqCst), 1);
+    let delivered = trace
+        .commits()
+        .iter()
+        .flat_map(|commit| &commit.state)
+        .any(|command| command.key.0 == PendingChildRunResults::KEY);
+    assert!(delivered, "the child result reached committed truth");
+
+    let recovered = runtime
+        .execute(
+            activation(snapshot),
+            RuntimeRunContext::new()
+                .with_commit(Arc::new(trace.clone()))
+                .with_reader(Arc::new(trace.inner.clone())),
+        )
+        .await
+        .expect("parent consumes the already-delivered child result");
+    assert_eq!(recovered, RunState::Ended(EndCause::NaturalEnd));
+    assert_eq!(
+        invocations.load(Ordering::SeqCst),
+        1,
+        "recovery must not invoke the child Run a second time"
+    );
+
+    let mut store = Store::new();
+    for commit in trace.commits() {
+        for command in commit.state {
+            store.apply(&command);
+        }
+    }
+    assert!(
+        PendingChildRunResults::load(&store)
+            .expect("valid result inbox")
+            .is_empty(),
+        "consumption removes the transient delivery envelope"
+    );
+    assert_eq!(
+        trace.latest_delegation_status("delivered_child_call"),
+        Some(DelegationStatus::Completed)
+    );
+    emit_trace("durable_child_result_recovery", &trace);
 }
 
 #[test]

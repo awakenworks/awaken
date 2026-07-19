@@ -17,7 +17,7 @@ test.skip(!KIMI, "needs KIMI_KEY to drive the admin assistant on a real model");
 async function configureKimi(request: APIRequestContext) {
   await request.put("/v1/config/providers/kimi", { data: { id: "kimi", slug: "kimi", display_name: "Kimi", version: 1 } });
   await request.put("/v1/config/endpoints/kimi-ep", { data: { id: "kimi-ep", provider_id: "kimi", dialect: "anthropic_messages", base_url: "https://api.kimi.com/coding/v1/", timeout_secs: 60, display_name: "Kimi", version: 1 } });
-  await request.post("/v1/config/offerings", { data: { model_id: "kimi-k2-0711-preview", provider_id: "kimi", protocol_endpoint_id: "kimi-ep", dialect: "anthropic_messages", upstream_model: null } });
+  await request.post("/v1/config/offerings", { data: { model_id: "kimi-for-coding", provider_id: "kimi", protocol_endpoint_id: "kimi-ep", dialect: "anthropic_messages", upstream_model: null } });
   await request.post("/v1/config/credentials", { data: { workspace_id: "wrkspc_default", kind: "vault", provider_id: "kimi", secret: KIMI } });
 }
 

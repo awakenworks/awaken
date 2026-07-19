@@ -3,6 +3,9 @@ pub enum awaken_ext_builtin_tools::Toolset
 pub awaken_ext_builtin_tools::Toolset::Delegation
 pub awaken_ext_builtin_tools::Toolset::Hand
 pub awaken_ext_builtin_tools::Toolset::Task
+pub struct awaken_ext_builtin_tools::AgentRunArgs
+pub awaken_ext_builtin_tools::AgentRunArgs::agent_id: alloc::string::String
+pub awaken_ext_builtin_tools::AgentRunArgs::seed: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
 pub struct awaken_ext_builtin_tools::BashArgs
 pub awaken_ext_builtin_tools::BashArgs::command: alloc::string::String
 pub struct awaken_ext_builtin_tools::BashTool
@@ -119,5 +122,6 @@ pub fn awaken_ext_builtin_tools::TaskCanceller::cancel<'life0, 'life1, 'async_tr
 pub fn awaken_ext_builtin_tools::builtin_tools() -> alloc::vec::Vec<awaken_ext_builtin_tools::BuiltinTool>
 pub fn awaken_ext_builtin_tools::erase<T: awaken_runtime_contract::tool::Tool + 'static>(T) -> alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>
 pub fn awaken_ext_builtin_tools::executable_hand_tools() -> alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>
+pub async fn awaken_ext_builtin_tools::invoke_agent_tool(&dyn awaken_runtime_contract::tool::RawTool, impl core::convert::Into<alloc::string::String>, awaken_ext_builtin_tools::AgentRunArgs, core::option::Option<&tokio_util::sync::cancellation_token::CancellationToken>) -> core::result::Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>
 pub fn awaken_ext_builtin_tools::task_tools(alloc::sync::Arc<dyn awaken_ext_builtin_tools::MessageSender>, alloc::sync::Arc<dyn awaken_ext_builtin_tools::TaskCanceller>, alloc::sync::Arc<dyn awaken_ext_builtin_tools::MessageRecovery>) -> alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>
 pub fn awaken_ext_builtin_tools::web_hand_tools() -> alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>

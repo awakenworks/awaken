@@ -11,6 +11,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
+use awaken_ext_builtin_tools::AgentRunArgs;
 use awaken_ext_builtin_tools::erase;
 use awaken_ext_memory::{
     MEMORY_PLUGIN_ID, MemoryDir, MemoryPlugin, RecallBounds, WriteMemoryTool,
@@ -24,9 +25,7 @@ use awaken_ext_skills::{
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
 };
-use awaken_runtime_contract::subagent_runner::{
-    SubagentError, SubagentReply, SubagentRequest, SubagentRunner,
-};
+use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
 use awaken_runtime_examples::prelude::*;
 
 /// A deterministic model that drives the whole combined surface: discover →
@@ -94,16 +93,23 @@ impl LlmExecutor for RecipeLlm {
 struct EchoFork;
 
 #[async_trait]
-impl SubagentRunner for EchoFork {
-    async fn run(&self, request: SubagentRequest) -> Result<SubagentReply, SubagentError> {
+impl RawTool for EchoFork {
+    fn id(&self) -> &str {
+        "agent_run"
+    }
+
+    async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
+        let request: AgentRunArgs = serde_json::from_value(call.arguments)
+            .map_err(|error| ToolError::InvalidArguments(error.to_string()))?;
         let prompt = request
             .seed
             .first()
             .map(|m| m.text_content())
             .unwrap_or_default();
-        Ok(SubagentReply {
-            text: Some(format!("forked[{}]: {prompt}", request.agent_id)),
-        })
+        Ok(ToolOutput::ok(
+            call.call_id,
+            format!("forked[{}]: {prompt}", request.agent_id),
+        ))
     }
 }
 
@@ -129,7 +135,7 @@ fn skill_registry() -> std::sync::Arc<InMemorySkillRegistry> {
 
 fn allow_all_gate() -> std::sync::Arc<PermissionGate> {
     std::sync::Arc::new(PermissionGate::new(std::sync::Arc::new(
-        RulePermissionPolicy::new(PermissionRuleset {
+        RuleBasedToolPermissionPolicy::new(PermissionRuleset {
             default_behavior: ToolPermissionBehavior::Allow,
             mode: Mode::Default,
             rules: Vec::new(),
@@ -198,7 +204,7 @@ async fn bare_runtime_assembles_memory_and_skills_from_public_parts() {
         .with_tool(std::sync::Arc::new(
             SkillTool::new(registry.clone())
                 .with_session_id("sess-1")
-                .with_fork_runner(std::sync::Arc::new(EchoFork)),
+                .with_agent_tool(std::sync::Arc::new(EchoFork)),
         ))
         .with_tool(erase(WriteMemoryTool::new(memory.clone())))
         .with_gate(std::sync::Arc::new(RecordingGate::new(

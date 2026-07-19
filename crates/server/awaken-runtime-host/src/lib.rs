@@ -15,6 +15,7 @@ mod acp_backend;
 mod acp_provision;
 mod acp_serve;
 mod agent_catalog;
+mod agent_runner;
 mod background;
 mod commit_backend;
 mod commit_ingest;
@@ -45,7 +46,6 @@ mod skill_catalog;
 mod skills;
 mod skills_api;
 mod store;
-mod subagent;
 mod worker_http;
 
 // The config-authoring plane now lives in the shared `awaken-config-service` crate
@@ -63,9 +63,9 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, RunState};
 use awaken_protocol_managed::{
-    AgentCapabilities, BuiltinTool, CustomTool, Decision, LiveInboxEntry, LiveInboxError,
-    LiveInboxSnapshot, OutcomeIteration, OutcomeReport, Pending, RunError, SessionRuntime,
-    StepOutcome,
+    AgentCapabilities, BuiltinTool, CustomTool, LiveInboxEntry, LiveInboxError, LiveInboxSnapshot,
+    OutcomeIteration, OutcomeReport, Pending, RunError, SessionRuntime, StepOutcome,
+    ToolPermissionDecision,
 };
 use awaken_protocol_transport::{
     DriverError, Pending as PortPending, ProtocolRuntime, Resume as PortResume,
@@ -110,7 +110,7 @@ pub use crate::tool_catalog::{
     RESERVED_ADMIN_SCOPE, ScopedToolCatalog, StaticToolCatalog, ToolCatalogSource,
 };
 // The per-plane resource routers the composition root merges over one host.
-pub use crate::commit_ingest::{RemoteCoordinator, commit_ingest_router};
+pub use crate::commit_ingest::{RemoteClaimedRunCommit, RemoteCoordinator, commit_ingest_router};
 pub use crate::deployment_config::{
     DeploymentConfig, DispatchBackend, SandboxTier, StoreKind, Wake,
 };
@@ -181,19 +181,22 @@ fn to_pending(pending: Option<PendingTool>) -> Option<Pending> {
 }
 
 fn to_step_outcome(result: RunResult) -> Result<StepOutcome, RunError> {
+    let delegated_runs = result.delegated_runs;
     match result.state {
         RunState::Awaiting => Ok(StepOutcome::awaiting(
             result.new_messages,
             to_pending(result.pending),
             result.compacted,
             result.rescheduled,
-        )),
+        )
+        .with_delegated_runs(delegated_runs)),
         RunState::Ended(cause) => Ok(StepOutcome::ended(
             result.new_messages,
             cause,
             result.compacted,
             result.rescheduled,
-        )),
+        )
+        .with_delegated_runs(delegated_runs)),
         RunState::Running => Err(RunError::internal(
             "runtime returned an unsettled Running state at the session boundary",
         )),
@@ -494,14 +497,14 @@ impl SessionRuntime for ManagedHost {
         &self,
         thread: &str,
         tool_use_id: &str,
-        decision: Decision,
+        decision: ToolPermissionDecision,
     ) -> Result<StepOutcome, RunError> {
         let result = self
             .host
             .resume(
                 thread,
                 tool_use_id,
-                HostResume::Confirm {
+                HostResume::ToolPermission {
                     allow: decision.allow,
                     note: decision.note,
                 },
@@ -1067,7 +1070,7 @@ impl ProtocolRuntime for ProtocolHost {
         resume: PortResume,
     ) -> Result<PortStepOutcome, DriverError> {
         let resume = match resume {
-            PortResume::Confirm { allow, note } => HostResume::Confirm { allow, note },
+            PortResume::Confirm { allow, note } => HostResume::ToolPermission { allow, note },
             PortResume::ClientResult { content, is_error } => {
                 HostResume::ClientResult { content, is_error }
             }

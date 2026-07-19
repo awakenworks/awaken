@@ -1,7 +1,7 @@
-//! Formal (property-based) verification of the shared `LeaseBook` — the process-local
-//! lease/reclaim + poll-liveness bookkeeping every work-queue backend (in-memory, sqlite,
-//! postgres) shares, so a drift here is a drift in exactly-once dispatch across all of
-//! them (ADR-0059 verification pass).
+//! Property verification of `LeaseBook`: the in-memory backend's lease/reclaim
+//! kernel and every backend's process-local poll-liveness bookkeeping. Durable
+//! SQLite/PostgreSQL lease safety is covered by backend conformance, restart and
+//! contention tests because its authority lives in database rows.
 //!
 //! The cause-effect unit test pins the TTL boundary at one instant; these properties
 //! assert the lease/poll predicates hold for ALL `(t0, now)` pairs the generator
@@ -58,7 +58,7 @@ proptest! {
         prop_assert!(!book.is_leased("w", t1 + LEASE_TTL_MS), "live past the second expiry");
     }
 
-    /// AN UNKNOWN ITEM IS NEVER LEASED (fail-open reclaim: no phantom lease blocks a claim).
+    /// AN UNKNOWN ITEM IS NEVER LEASED (no phantom lease blocks a claim).
     #[test]
     fn an_unknown_item_is_never_leased(now in 0u64..MAX_T) {
         let book = LeaseBook::default();

@@ -10,7 +10,7 @@ EXTENDS Naturals, Sequences, FiniteSets
 CONSTANTS Calls, AgentCalls, NoCall, MaxAttempts, MaxVersion
 
 RunStates == {"Running", "Awaiting", "Ended"}
-TicketKinds == {"None", "Approval", "Delegation", "Scheduled", "External"}
+TicketKinds == {"None", "ToolPermission", "Delegation", "Scheduled", "External"}
 CallStates == {"Requested", "Executing", "Awaiting", "Completed", "Indeterminate"}
 TerminalCallStates == {"Completed", "Indeterminate"}
 BatchStates == {"Absent", "Open", "Finalized"}
@@ -129,6 +129,26 @@ StartOrRetry(s, t, c) ==
           [s.attempts EXCEPT ![c] = @ + 1],
           s.batchState,
           [s.linkState EXCEPT ![c] = IF c \in AgentCalls THEN "Open" ELSE @],
+          s.version + 1)
+    /\ Bump(s, t)
+
+\* A terminal-only delegation batch commits every stable relationship and
+\* executor-entry fact together, then runs the child futures concurrently.
+\* Result commits remain ordered and use CompleteCall below.
+StartParallelDelegations(s, t) ==
+    /\ AgentCalls # {}
+    /\ s.runState = "Running"
+    /\ s.ticketKind = "None"
+    /\ s.batchState = "Open"
+    /\ \A c \in AgentCalls:
+         /\ s.callState[c] = "Requested"
+         /\ s.attempts[c] < MaxAttempts
+    /\ t = StateValue(
+          s.runState, s.ticketKind, s.ticketCall,
+          [c \in Calls |-> IF c \in AgentCalls THEN "Executing" ELSE s.callState[c]],
+          [c \in Calls |-> IF c \in AgentCalls THEN s.attempts[c] + 1 ELSE s.attempts[c]],
+          s.batchState,
+          [c \in Calls |-> IF c \in AgentCalls THEN "Open" ELSE s.linkState[c]],
           s.version + 1)
     /\ Bump(s, t)
 
@@ -255,6 +275,7 @@ NextState(s, t) ==
     \/ PersistBatch(s, t)
     \/ CommitNoop(s, t)
     \/ \E c \in Calls: StartOrRetry(s, t, c)
+    \/ StartParallelDelegations(s, t)
     \/ \E c \in Calls, kind \in TicketKinds \ {"None"}:
            AwaitCall(s, t, c, kind)
     \/ \E c \in Calls: ResumeExecuting(s, t, c)

@@ -10,12 +10,11 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use awaken_ext_builtin_tools::{AGENT_RUN, AgentRunArgs};
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::resolved::ModelBinding;
 use awaken_runtime_contract::runnable::RunnableConfig;
-use awaken_runtime_contract::subagent_runner::{
-    SubagentError, SubagentReply, SubagentRequest, SubagentRunner,
-};
+use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
 use awaken_sandbox_local::LocalProvider;
 
 use crate::agent_catalog::AgentCatalog;
@@ -38,12 +37,13 @@ pub fn default_judge_agent(model_ref: &str, agent_id: &str, instructions: &str) 
         .build()
 }
 
-/// Runs a judge sub-agent through the kernel for a
-/// [`DelegateGrader`](awaken_ext_goal::DelegateGrader): a fresh rooted runtime
+/// Ordinary Agent-backed tool used by the judge, compactor, and memory selector.
+/// A developer can provide another `RawTool` with the same `AgentRunArgs` shape;
+/// no subagent-specific Runtime contract exists.
 /// over the same model, driven to completion; its last assistant line is the
 /// judge's reply. The judge sees only its prompt (a fresh window), so its
 /// verdict is not biased by the doer's working state.
-pub(crate) struct HostSubagentRunner {
+pub(crate) struct HostAgentTool {
     pub(crate) llm: Arc<dyn LlmExecutor>,
     pub(crate) provider: LocalProvider,
     /// Aux agents (judge, and — as D5 lands — compactor/memory) are resolved by id
@@ -53,33 +53,36 @@ pub(crate) struct HostSubagentRunner {
 }
 
 #[async_trait::async_trait]
-impl SubagentRunner for HostSubagentRunner {
-    async fn run(&self, request: SubagentRequest) -> Result<SubagentReply, SubagentError> {
+impl RawTool for HostAgentTool {
+    fn id(&self) -> &str {
+        AGENT_RUN
+    }
+
+    async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
+        let request: AgentRunArgs = serde_json::from_value(call.arguments)
+            .map_err(|error| ToolError::InvalidArguments(error.to_string()))?;
         let n = self.seq.fetch_add(1, Ordering::SeqCst);
-        // The sub-agent sees only its seed (a fresh window); its cancellation is the
-        // parent run's, so cancelling the parent cancels the sub-run too.
-        let name = format!("{}-sub-{n}", request.agent_id);
+        let name = format!("{}-agent-run-{n}", request.agent_id);
         // Every sub-run behind this port is out-of-band housekeeping (judge,
         // compaction, memory selection), not the doer's turn — its usage stays
         // isolated on its own sub-thread rather than folding into the parent tally.
-        let (text, _usage) = crate::subagent::run_configured_agent(
+        let (text, _usage) = crate::agent_runner::run_configured_agent(
             &self.catalog,
-            crate::subagent::AgentRunSandbox::Fresh(&self.provider),
+            crate::agent_runner::AgentRunSandbox::Fresh(&self.provider),
             self.llm.clone(),
             &request.agent_id,
             &name,
             request.seed,
             Vec::new(),
-            request.cancellation,
             None,
             None,
             None,
             None,
-            crate::subagent::UsageRollup::Isolated,
+            None,
         )
         .await
-        .map_err(SubagentError)?;
-        Ok(SubagentReply { text: Some(text) })
+        .map_err(|error| ToolError::Execution(error.to_string()))?;
+        Ok(ToolOutput::ok(call.call_id, text))
     }
 }
 

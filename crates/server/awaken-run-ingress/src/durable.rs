@@ -13,10 +13,11 @@ use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
 use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
-use awaken_runtime::{RunIngress, Runtime};
+use awaken_runtime::{RunIngress, RunService, Runtime};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::control::{Error as ControlError, LiveCommand, LiveRunControl};
 use awaken_runtime_contract::execution::{Error as ExecError, Result as ExecResult};
+use awaken_runtime_contract::resume::ResumeCommand;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 
 use crate::Error;
@@ -24,9 +25,9 @@ use crate::capability::RunIngressCapabilities;
 use crate::clock::Clock;
 use crate::dispatch::{Dispatch, DispatchSummary, PendingInput, SubmitOptions};
 use crate::live_control::LiveRunControlService;
-use crate::request::RunExecutionRequest;
 use crate::service::{DispatchService, DispatchServiceConfig};
 use crate::worker::DispatchWorker;
+use awaken_run_ingress_contract::RunDispatch;
 
 /// Durable run ingress over a dispatch store. Holds the worker that turns durable
 /// dispatches into runtime attempts; the worker is shared (`Arc`) so an
@@ -83,7 +84,7 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
         stream_checkpoint: Option<
             Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>,
         >,
-        model_resolver: Option<crate::request::ModelResolverFn>,
+        model_resolver: Option<crate::worker_context::ModelResolverFn>,
     ) -> Self
     where
         C: CommitCoordinator + ThreadReader + RunStore + Send + Sync + 'static,
@@ -127,6 +128,18 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
         self.worker.clone()
     }
 
+    /// Replace the local guarded commit service with another atomic claimed-run
+    /// implementation. Database-less workers use this to send one combined
+    /// claim-and-commit request to the store-owning server.
+    #[must_use]
+    pub fn with_claimed_commit(mut self, commit: Arc<dyn crate::ClaimedRunCommit>) -> Self {
+        let worker = Arc::into_inner(self.worker)
+            .expect("claimed commit must be configured before sharing the worker")
+            .with_claimed_commit(commit);
+        self.worker = Arc::new(worker);
+        self
+    }
+
     /// A fail-closed live-control service over this ingress's worker (G18): cancel
     /// a live/queued/awaiting run, or wake a live one, by correlation id (ADR-0018).
     /// Shares the same worker/store/runtime, so it owns no second commit boundary.
@@ -155,7 +168,7 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
         self.worker
             .store()
             .enqueue_with(
-                RunExecutionRequest::new(activation)
+                RunDispatch::new(activation)
                     .with_traceparent(awaken_observability::current_traceparent()),
                 SubmitOptions {
                     supersede: true,
@@ -272,10 +285,10 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
 }
 
 #[async_trait]
-impl<S: Dispatch + 'static> RunIngress for DurableRunIngress<S> {
+impl<S: Dispatch + 'static> RunService for DurableRunIngress<S> {
     /// Foreground submit is additive over runtime control: it executes inline
     /// through the same `RunExecutor` a direct ingress uses (G6).
-    async fn submit(
+    async fn start(
         &self,
         activation: RunActivation,
         context: RuntimeRunContext,
@@ -284,6 +297,29 @@ impl<S: Dispatch + 'static> RunIngress for DurableRunIngress<S> {
         self.worker.runtime().execute(activation, context).await
     }
 
+    async fn resume(
+        &self,
+        command: ResumeCommand,
+        context: RuntimeRunContext,
+    ) -> ExecResult<RunState> {
+        let reader = context.reader.clone().ok_or_else(|| {
+            ExecError::Execution("RunService::resume requires committed-history wiring".to_string())
+        })?;
+        self.worker
+            .runtime()
+            .resume(command, reader.as_ref(), context)
+            .await
+    }
+
+    fn cancel(&self, run_id: &RunId) -> Result<(), ControlError> {
+        self.worker.runtime().deliver(LiveCommand::Cancel {
+            run_id: run_id.clone(),
+        })
+    }
+}
+
+#[async_trait]
+impl<S: Dispatch + 'static> RunIngress for DurableRunIngress<S> {
     /// Durable submit: persist the accepted run first (so it survives a crash),
     /// then drive it. A direct ingress fails this closed; durable ingress does
     /// not (G5).
@@ -292,7 +328,7 @@ impl<S: Dispatch + 'static> RunIngress for DurableRunIngress<S> {
         self.worker
             .store()
             .enqueue(
-                RunExecutionRequest::new(activation)
+                RunDispatch::new(activation)
                     .with_traceparent(awaken_observability::current_traceparent()),
             )
             .await
@@ -300,12 +336,6 @@ impl<S: Dispatch + 'static> RunIngress for DurableRunIngress<S> {
         let processed = self.worker.run_until_idle(0).await.map_err(exec_error)?;
         state_of(&processed, &run_id)
             .ok_or_else(|| ExecError::Execution("submitted run was not processed".into()))
-    }
-
-    fn cancel(&self, run_id: &RunId) -> Result<(), ControlError> {
-        self.worker.runtime().deliver(LiveCommand::Cancel {
-            run_id: run_id.clone(),
-        })
     }
 }
 

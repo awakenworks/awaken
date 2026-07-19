@@ -98,7 +98,7 @@ fn ticket(thread: &ThreadId, run: &RunId) -> ResumeTicket {
         thread_id: thread.clone(),
         snapshot_id: "conf-snap".to_string(),
         catalog_fingerprint: "conf-fp".to_string(),
-        initiator: None,
+        delegation_origin: None,
         reason: AwaitReason::ToolPermission,
         call_id: Some("conf-call".to_string()),
         pending_tool: None,

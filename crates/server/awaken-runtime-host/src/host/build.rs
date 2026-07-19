@@ -2,7 +2,7 @@
 //! `with_*` methods, per-thread registration, and the process dispatch pool.
 
 use super::*;
-use awaken_runtime_contract::delegation::{DelegationExecutor, RemoteAgent};
+use awaken_runtime_contract::delegation::{RemoteAgent, RunDelegationService};
 
 impl SharedHost {
     /// A host over `llm`. Configure it with the chainable `with_*` builders
@@ -29,7 +29,7 @@ impl SharedHost {
             skills: crate::skill_catalog::SkillCatalog::new(),
             delegates: crate::delegate::Delegates::new(),
             // Subagents share the parent's sandbox by default (`默认共用`).
-            subagent_reuse_sandbox: true,
+            agent_run_reuse_sandbox: true,
             plugin_ids: Vec::new(),
             plugin_config: std::collections::BTreeMap::new(),
             sessions: tokio::sync::Mutex::new(HashMap::new()),
@@ -140,8 +140,8 @@ impl SharedHost {
 
     /// Install a resolved `CompactConfig` and wire the `compactor` sub-agent.
     fn enable_compaction(mut self, config: CompactConfig) -> Self {
-        let runner = build_compact_runner(self.llm.clone(), &self.model_ref);
-        self.compaction = Some(crate::compact::Compaction { config, runner });
+        let agent_tool = build_compact_runner(self.llm.clone(), &self.model_ref);
+        self.compaction = Some(crate::compact::Compaction { config, agent_tool });
         self
     }
 
@@ -240,8 +240,8 @@ impl SharedHost {
     /// Whether native subagents (delegation / skill fork) reuse the parent agent's
     /// sandbox (`true`, the default) or run in a fresh, isolated one. Housekeeping
     /// sub-runs (judge / memory / compaction) stay isolated regardless.
-    pub fn with_subagent_reuse_sandbox(mut self, reuse: bool) -> Self {
-        self.subagent_reuse_sandbox = reuse;
+    pub fn with_agent_run_reuse_sandbox(mut self, reuse: bool) -> Self {
+        self.agent_run_reuse_sandbox = reuse;
         self
     }
 
@@ -322,13 +322,13 @@ impl SharedHost {
             &id,
             DEFAULT_JUDGE_INSTRUCTIONS,
         )));
-        let runner = Arc::new(HostSubagentRunner {
+        let agent_tool = Arc::new(HostAgentTool {
             llm: self.llm.clone(),
             provider: LocalProvider::new(sub_base("judge")),
             catalog,
             seq: AtomicU64::new(0),
         });
-        self.grader = Arc::new(DelegateGrader::new(runner, id));
+        self.grader = Arc::new(AgentToolGrader::new(agent_tool, id));
         self
     }
 
@@ -443,23 +443,39 @@ impl SharedHost {
     /// `None` when the host has no delegates. Injected into each thread's runtime.
     /// Build the per-session delegation executor. `sandbox` is the calling thread's
     /// live sandbox: a native delegate shares it by default (`默认共用`), so the parent
-    /// and its subagent collaborate in one workspace; `subagent_reuse_sandbox = false`
+    /// and its subagent collaborate in one workspace; `agent_run_reuse_sandbox = false`
     /// gives each delegate a fresh, isolated root instead.
-    pub(crate) fn delegation_executor(
+    pub(crate) fn run_delegation(
         &self,
         sandbox: Arc<LocalSandbox>,
-    ) -> Option<Arc<dyn DelegationExecutor>> {
+        commit: Arc<crate::store::HostCommit>,
+    ) -> Result<Option<Arc<dyn RunDelegationService>>, HostError> {
         if self.delegates.is_empty() {
-            return None;
+            return Ok(None);
         }
-        Some(Arc::new(HostDelegationExecutor::new(
+        let scheduler = if self.deployment.durable {
+            Some(crate::agent_runner::RunScheduler {
+                store: crate::dispatch_backend::shared_durable_store(self.store_dir.as_deref())?,
+                commit,
+                owner: crate::dispatch_backend::dispatch_owner(),
+                claimed_commit: self.upstream.as_ref().map(|url| {
+                    Arc::new(crate::commit_ingest::RemoteClaimedRunCommit::new(
+                        url.clone(),
+                    )) as Arc<dyn awaken_run_ingress::ClaimedRunCommit>
+                }),
+            })
+        } else {
+            None
+        };
+        Ok(Some(Arc::new(HostRunDelegationService::new(
             self.llm.clone(),
             self.model_ref.clone(),
             Arc::new(LocalProvider::new(sub_base("deleg"))),
             sandbox,
-            self.subagent_reuse_sandbox,
+            self.agent_run_reuse_sandbox,
             self.delegates.clone(),
-        )))
+            scheduler,
+        ))))
     }
 
     /// Spawn the one process-level [`DispatchPool`] (O2), once, when durable ingress

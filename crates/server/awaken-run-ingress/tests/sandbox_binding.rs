@@ -29,8 +29,8 @@
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_run_ingress::MemoryDispatchStore;
+use awaken_run_ingress_contract::RunDispatch;
 use awaken_run_ingress_contract::dispatch::{DispatchOutcome, DispatchQueue};
-use awaken_run_ingress_contract::request::RunExecutionRequest;
 use awaken_runtime_contract::activation::RunActivation;
 
 fn activation(run: &str, thread: &str) -> RunActivation {
@@ -67,13 +67,13 @@ fn activation(run: &str, thread: &str) -> RunActivation {
             fingerprint: fp,
         },
         input: vec![],
-        initiator: None,
+        delegation_origin: None,
         model_ref_override: None,
     }
 }
 
-fn req(run: &str, thread: &str) -> RunExecutionRequest {
-    RunExecutionRequest::new(activation(run, thread))
+fn req(run: &str, thread: &str) -> RunDispatch {
+    RunDispatch::new(activation(run, thread))
 }
 
 /// enqueue → claim (unbound) → bind_sandbox → the lease expires and a recovery

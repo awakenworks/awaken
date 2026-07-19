@@ -17,8 +17,7 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_run_ingress::{
-    AnyDispatchStore, Dispatch, DispatchQueue, MemoryDispatchStore, RunExecutionRequest,
-    SubmitOptions,
+    AnyDispatchStore, Dispatch, DispatchQueue, MemoryDispatchStore, RunDispatch, SubmitOptions,
 };
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::llm::{
@@ -119,7 +118,7 @@ async fn durable_operational_verbs_drive_the_dispatch_lifecycle() {
 
     // ── reap → dead-letter → purge, plus list_dispatches ─────────────────────
     // A fresh run, claimed under a 1ms lease → Leased.
-    mem.enqueue(RunExecutionRequest::new(activation("run-A", thread)))
+    mem.enqueue(RunDispatch::new(activation("run-A", thread)))
         .await
         .unwrap();
     assert!(
@@ -169,11 +168,11 @@ async fn durable_operational_verbs_drive_the_dispatch_lifecycle() {
     // ── supersede → superseded ───────────────────────────────────────────────
     // The store is clean; a newer submission on the thread marks the older pending
     // run superseded (never claimed again, ADR-0022).
-    mem.enqueue(RunExecutionRequest::new(activation("run-B", thread)))
+    mem.enqueue(RunDispatch::new(activation("run-B", thread)))
         .await
         .unwrap();
     mem.enqueue_with(
-        RunExecutionRequest::new(activation("run-C", thread)),
+        RunDispatch::new(activation("run-C", thread)),
         SubmitOptions {
             supersede: true,
             ..Default::default()

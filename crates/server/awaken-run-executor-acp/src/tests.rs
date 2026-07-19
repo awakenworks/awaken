@@ -117,7 +117,7 @@ pub(crate) fn activation() -> RunActivation {
             fingerprint: CatalogFingerprint("fp".into()),
         },
         input: vec![Message::text(MessageId("u1".into()), Role::User, "do it")],
-        initiator: None,
+        delegation_origin: None,
         model_ref_override: None,
     }
 }
@@ -637,18 +637,18 @@ fn session_home_binding_is_none_for_a_non_acp_backend() {
 
 #[tokio::test]
 async fn neutral_permission_resolver_projects_the_policy_decision() {
-    // The ACP permission port is decided by the single neutral `PermissionPolicy`:
+    // The ACP permission port is decided by the single neutral `ToolPermissionPolicy`:
     // Allow→Allow, Deny→Deny, and Ask fails safe to Deny (no synchronous HITL over
     // the held ACP turn yet).
     use awaken_protocol_acp::{PermissionAsk, PermissionResolver, PermissionVerdict};
     use awaken_runtime_contract::permission::{
-        PermissionContext, PermissionDecision, PermissionPolicy,
+        ToolCall, ToolPermissionPolicy, ToolPermissionVerdict,
     };
 
-    struct FixedPolicy(PermissionDecision);
+    struct FixedPolicy(ToolPermissionVerdict);
     #[async_trait]
-    impl PermissionPolicy for FixedPolicy {
-        async fn decide(&self, _ctx: &PermissionContext) -> PermissionDecision {
+    impl ToolPermissionPolicy for FixedPolicy {
+        async fn evaluate(&self, _ctx: &ToolCall) -> ToolPermissionVerdict {
             self.0.clone()
         }
     }
@@ -659,16 +659,16 @@ async fn neutral_permission_resolver_projects_the_policy_decision() {
         arguments: serde_json::json!({"cmd": "ls"}),
     };
     let cases = [
-        (PermissionDecision::Allow, PermissionVerdict::Allow),
+        (ToolPermissionVerdict::Allow, PermissionVerdict::Allow),
         (
-            PermissionDecision::Deny {
+            ToolPermissionVerdict::Deny {
                 reason: "policy".into(),
             },
             PermissionVerdict::Deny,
         ),
         (
-            PermissionDecision::Ask {
-                ticket_id: "tk".into(),
+            ToolPermissionVerdict::RequireConfirmation {
+                correlation_id: "tk".into(),
             },
             PermissionVerdict::Deny,
         ),

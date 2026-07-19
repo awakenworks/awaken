@@ -18,9 +18,9 @@ use awaken_runtime_contract::activation::RunActivation;
 use crate::Error;
 use crate::clock::Clock;
 use crate::dispatch::{Dispatch, PendingInput};
-use crate::request::RunExecutionRequest;
 use crate::wake::{LocalWakeSignal, WakeSignal};
 use crate::worker::DispatchWorker;
+use awaken_run_ingress_contract::RunDispatch;
 
 /// How the daemon paces itself.
 #[derive(Debug, Clone, Copy)]
@@ -110,7 +110,7 @@ impl<S: Dispatch + 'static> DispatchService<S> {
         self.worker
             .store()
             .enqueue(
-                RunExecutionRequest::new(activation)
+                RunDispatch::new(activation)
                     .with_traceparent(awaken_observability::current_traceparent()),
             )
             .await?;

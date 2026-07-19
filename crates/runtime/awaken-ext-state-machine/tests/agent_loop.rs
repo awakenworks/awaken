@@ -25,7 +25,7 @@ use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
 };
-use awaken_runtime_contract::permission::{GateOutcome, PermissionContext, ToolGateHook};
+use awaken_runtime_contract::permission::{GateOutcome, ToolGateHook};
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
@@ -148,7 +148,7 @@ fn activation() -> RunActivation {
             role: Role::User,
             content: vec![ContentBlock::text("edit a.rs")],
         }],
-        initiator: None,
+        delegation_origin: None,
         model_ref_override: None,
     }
 }
@@ -554,12 +554,12 @@ struct AwaitTheAwaitTool;
 impl ToolGateHook for AwaitTheAwaitTool {
     async fn gate(
         &self,
-        ctx: &PermissionContext,
+        ctx: &ToolCall,
         _state: &awaken_agent_contract::agent::state::Store,
     ) -> GateOutcome {
         if ctx.tool_id == "Await" {
-            GateOutcome::Suspend {
-                ticket_id: "await-ticket".to_string(),
+            GateOutcome::RequireConfirmation {
+                correlation_id: "await-ticket".to_string(),
             }
         } else {
             GateOutcome::Allow

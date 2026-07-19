@@ -9,7 +9,7 @@
 //
 // Run: (from e2e/)  node managed_usage_e2e.mjs
 //   live arm: ANTHROPIC_API_KEY=sk-kimi-… ANTHROPIC_BASE_URL=https://api.kimi.com/coding/v1/ \
-//             ANTHROPIC_MODEL=kimi-k2-0711-preview node managed_usage_e2e.mjs
+//             ANTHROPIC_MODEL=kimi-for-coding node managed_usage_e2e.mjs
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';

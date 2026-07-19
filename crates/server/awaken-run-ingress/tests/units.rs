@@ -10,10 +10,10 @@ use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::stream::sink::Sink;
 use awaken_run_ingress::{
     Clock, DispatchQueue, DispatchWorker, DurableRunIngress, ManualClock, MemoryDispatchStore,
-    RunExecutionContext, RunExecutionRequest, SystemClock,
+    RunDispatch, SystemClock,
 };
 use awaken_runtime::memory::{MemoryCommitCoordinator, MemoryStreamSink};
-use awaken_runtime::{RunIngress, Runtime};
+use awaken_runtime::{RunService, Runtime};
 use awaken_runtime_contract::control::Error as ControlError;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 
@@ -33,7 +33,7 @@ fn manual_clock_sets_and_advances_and_system_clock_reads() {
 
 #[test]
 fn request_exposes_run_and_thread_ids() {
-    let request = RunExecutionRequest::new(activation("run-7"));
+    let request = RunDispatch::new(activation("run-7"));
     assert_eq!(request.run_id().0, "run-7");
     assert_eq!(request.thread_id().0, THREAD);
 }
@@ -50,14 +50,13 @@ async fn the_admitting_traceparent_survives_the_enqueue_claim_queue_hop() {
 
     store
         .enqueue(
-            RunExecutionRequest::new(activation("traced"))
-                .with_traceparent(Some(traceparent.to_string())),
+            RunDispatch::new(activation("traced")).with_traceparent(Some(traceparent.to_string())),
         )
         .await
         .unwrap();
     // A second run with no captured context — proves the queue does not fabricate one.
     store
-        .enqueue(RunExecutionRequest::new(harness::activation_on(
+        .enqueue(RunDispatch::new(harness::activation_on(
             "untraced", "thread-2",
         )))
         .await
@@ -79,18 +78,6 @@ async fn the_admitting_traceparent_survives_the_enqueue_claim_queue_hop() {
     );
 }
 
-#[test]
-fn execution_context_keeps_its_commit_handle() {
-    let commit = Arc::new(MemoryCommitCoordinator::new());
-    let context = RunExecutionContext::new(commit.clone())
-        .with_stream_sink(Arc::new(MemoryStreamSink::new()));
-    // The commit handle is the same source the worker reads and writes through.
-    assert!(Arc::ptr_eq(
-        context.commit(),
-        &(commit as Arc<dyn awaken_agent_contract::thread::commit::coordinator::Coordinator>)
-    ));
-}
-
 #[tokio::test]
 async fn worker_builders_attach_a_stream_sink_and_lease() {
     let runtime = text_runtime();
@@ -102,7 +89,7 @@ async fn worker_builders_attach_a_stream_sink_and_lease() {
         .with_lease_ms(5_000);
 
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
     let processed = worker.tick(0).await.expect("tick");
@@ -143,7 +130,7 @@ async fn worker_resumes_a_durable_run_from_a_pre_seeded_checkpoint() {
         .with_stream_checkpoint(checkpoints.clone() as Arc<dyn StreamCheckpointStore>);
 
     store
-        .enqueue(RunExecutionRequest::new(activation("run-ckpt")))
+        .enqueue(RunDispatch::new(activation("run-ckpt")))
         .await
         .unwrap();
     let processed = worker.tick(0).await.expect("tick");
@@ -179,7 +166,7 @@ async fn durable_ingress_foreground_submit_and_cancel() {
     // Foreground submit executes inline through the runtime (additive, G6).
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let state = ingress
-        .submit(activation("run-fg"), context)
+        .start(activation("run-fg"), context)
         .await
         .expect("foreground submit");
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));

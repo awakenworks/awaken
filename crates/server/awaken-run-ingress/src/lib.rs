@@ -25,24 +25,25 @@ mod live_control;
 pub mod memory;
 mod pool;
 mod postgres;
-mod request;
 mod send_message;
 mod service;
 mod sqlite;
 mod transport_client;
 mod wake;
 mod worker;
+mod worker_context;
 
 pub use any::AnyDispatchStore;
 pub use capability::RunIngressCapabilities;
 // The database-less worker's HTTP dispatch client (drives claim/settle over the wire
 // to a cell server's dispatch_transport_router), extracted from awaken-runtime-host.
+pub use awaken_run_ingress_contract::RunDispatch;
 pub use clock::{Clock, ManualClock, SystemClock};
-pub use commit_fence::FencedCommitCoordinator;
+pub use commit_fence::{ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit};
 pub use dispatch::{
-    CasOutcome, Claimed, Dispatch, DispatchError, DispatchOutcome, DispatchQueue, DispatchState,
-    DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, SettleOutcome,
-    SubmitOptions,
+    CasOutcome, Claimed, CommitEpochGuard, Dispatch, DispatchError, DispatchOutcome, DispatchQueue,
+    DispatchState, DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, RunClaim,
+    SettleOutcome, SubmitOptions,
 };
 pub use dispatch_schema::dispatch_bundle;
 pub use durable::DurableRunIngress;
@@ -50,7 +51,6 @@ pub use live_control::{Error as LiveRunControlError, LiveRunControlService};
 pub use memory::MemoryDispatchStore;
 pub use pool::{CompletionSink, DispatchPool, WorkerResolver};
 pub use postgres::{PostgresDispatchStore, StoreError as PostgresStoreError};
-pub use request::{ModelResolverFn, RunExecutionContext, RunExecutionRequest};
 pub use send_message::OutboxMessageSender;
 pub use service::{DispatchService, DispatchServiceConfig};
 pub use sqlite::{SqliteDispatchStore, StoreError as SqliteStoreError};
@@ -59,6 +59,7 @@ pub use transport_client::{HttpDispatchQueue, worker_dispatch_store};
 pub use wake::NatsWakeSignal;
 pub use wake::{LocalWakeSignal, PgNotifyWake, WakeSignal};
 pub use worker::{DEFAULT_LEASE_MS, DispatchWorker};
+pub use worker_context::ModelResolverFn;
 
 /// A durable-ingress failure: either the dispatch store rejected an operation or
 /// a runtime attempt failed. Kept as two arms so a queue-storage failure never

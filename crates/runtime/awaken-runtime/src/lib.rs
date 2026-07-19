@@ -14,7 +14,7 @@ mod run;
 mod runtime;
 
 pub use circuit_breaker::CircuitBreakerConfig;
-pub use ingress::{DirectRunIngress, RunIngress};
+pub use ingress::{DirectRunIngress, RunIngress, RunService};
 pub use permission::PermissionGate;
 pub use retry::LlmRetryPolicy;
 pub use run::RunInput;

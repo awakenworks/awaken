@@ -9,7 +9,7 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_run_ingress::{AnyDispatchStore, Dispatch, MemoryDispatchStore, RunExecutionRequest};
+use awaken_run_ingress::{AnyDispatchStore, Dispatch, MemoryDispatchStore, RunDispatch};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult,
@@ -94,8 +94,7 @@ async fn a_db_less_worker_claims_renews_and_settles_over_http() {
     let router = dispatch_transport_router(host);
 
     // enqueue a run over the transport.
-    let request =
-        serde_json::to_value(RunExecutionRequest::new(activation("run-A", "t1"))).unwrap();
+    let request = serde_json::to_value(RunDispatch::new(activation("run-A", "t1"))).unwrap();
     let (s, _) = post(
         &router,
         "/v1/worker/dispatch/enqueue",

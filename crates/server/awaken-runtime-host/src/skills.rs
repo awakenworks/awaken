@@ -10,6 +10,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use awaken_ext_builtin_tools::{AGENT_RUN, AgentRunArgs};
 use awaken_ext_skills::{
     CompositeSkillRegistry, InMemorySkillRegistry, ListSkillsTool, PathActivations, RecordingGate,
     SkillFile, SkillProvenance, SkillRegistry, SkillSource, SkillSpec, SkillTool,
@@ -18,10 +19,7 @@ use awaken_ext_skills::{
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::permission::ToolGateHook;
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_runtime_contract::subagent_runner::{
-    SubagentError, SubagentReply, SubagentRequest, SubagentRunner,
-};
-use awaken_runtime_contract::tool::RawTool;
+use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
 use awaken_sandbox_local::{LocalProvider, LocalSandbox};
 
 /// The default workspace subdir the agent authors skills under, scanned live so a
@@ -73,8 +71,9 @@ impl SkillSource for SnapshotSkillSource {
 /// config, returning its reply. By default it shares the parent Agent's sandbox
 /// (`默认共用`), so a forked skill sees the same workspace; with
 /// `reuse_sandbox` off it gets a fresh, isolated root. Implements the neutral
-/// [`SubagentRunner`] port — the same one the goal judge and compactor use.
-struct ForkRunner {
+/// ordinary Agent-backed tool — the same generic capability used by the goal
+/// judge and compactor.
+struct ForkAgentTool {
     llm: Arc<dyn LlmExecutor>,
     model_ref: String,
     provider: LocalProvider,
@@ -85,36 +84,42 @@ struct ForkRunner {
 }
 
 #[async_trait::async_trait]
-impl SubagentRunner for ForkRunner {
-    async fn run(&self, request: SubagentRequest) -> Result<SubagentReply, SubagentError> {
+impl RawTool for ForkAgentTool {
+    fn id(&self) -> &str {
+        AGENT_RUN
+    }
+
+    async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
+        let request: AgentRunArgs = serde_json::from_value(call.arguments)
+            .map_err(|error| ToolError::InvalidArguments(error.to_string()))?;
         // The skill id names the sub-run; the seed is the resolved skill body. Skill
         // activation is out-of-band housekeeping, so its usage stays isolated (this
         // port surfaces only the reply text).
         let name = format!("skill-{}", request.agent_id);
         let sandbox = if self.reuse_sandbox {
-            crate::subagent::AgentRunSandbox::Shared(&self.sandbox)
+            crate::agent_runner::AgentRunSandbox::Shared(&self.sandbox)
         } else {
-            crate::subagent::AgentRunSandbox::Fresh(&self.provider)
+            crate::agent_runner::AgentRunSandbox::Fresh(&self.provider)
         };
         let delegates = std::collections::HashSet::new();
-        crate::subagent::run_agent(
+        crate::agent_runner::run_agent(
             self.llm.clone(),
-            crate::subagent::AgentExecution {
+            crate::agent_runner::AgentExecution {
                 agent_id: &request.agent_id,
                 model_ref: &self.model_ref,
                 delegates: &delegates,
-                delegation_executor: None,
+                run_delegation: None,
                 context: None,
+                scheduler: None,
             },
             sandbox,
-            crate::subagent::AgentRunIdentity::transient(&name),
+            crate::agent_runner::AgentRunIdentity::transient(&name),
             request.seed,
-            request.cancellation,
-            crate::subagent::UsageRollup::Isolated,
+            None,
         )
         .await
-        .map(|(text, _usage)| SubagentReply { text: Some(text) })
-        .map_err(SubagentError)
+        .map(|(text, _usage)| ToolOutput::ok(call.call_id, text))
+        .map_err(|error| ToolError::Execution(error.to_string()))
     }
 }
 
@@ -189,7 +194,7 @@ pub(crate) fn wire_skills(
     let gate: Arc<dyn ToolGateHook> = Arc::new(RecordingGate::new(base_gate, activations.clone()));
     let list: Arc<dyn RawTool> =
         Arc::new(ListSkillsTool::new(registry.clone()).with_path_activations(activations));
-    let fork_runner: Arc<dyn SubagentRunner> = Arc::new(ForkRunner {
+    let agent_tool: Arc<dyn RawTool> = Arc::new(ForkAgentTool {
         llm,
         model_ref: model_ref.to_string(),
         provider: LocalProvider::new(fork_base),
@@ -199,7 +204,7 @@ pub(crate) fn wire_skills(
     let activate: Arc<dyn RawTool> = Arc::new(
         SkillTool::new(registry.clone())
             .with_session_id(session_id)
-            .with_fork_runner(fork_runner),
+            .with_agent_tool(agent_tool),
     );
 
     Some(SkillWiring {

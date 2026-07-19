@@ -74,7 +74,7 @@ fn ticket(correlation: &str, run: &str, thread: &str) -> ResumeTicket {
         thread_id: ThreadId(thread.to_string()),
         snapshot_id: "snap".to_string(),
         catalog_fingerprint: "fp".to_string(),
-        initiator: None,
+        delegation_origin: None,
         reason: AwaitReason::ToolPermission,
         call_id: None,
         pending_tool: None,

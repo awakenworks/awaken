@@ -46,6 +46,7 @@ pub async fn awaken_protocol_a2a::client::get_task(&dyn awaken_protocol_a2a::cli
 pub async fn awaken_protocol_a2a::client::send_message(&dyn awaken_protocol_a2a::client::Transport, core::option::Option<&str>, &str, &str, &str) -> core::result::Result<awaken_protocol_a2a::types::Task, awaken_protocol_a2a::client::ClientError>
 pub fn awaken_protocol_a2a::client::task_cancel_path(&str) -> alloc::string::String
 pub fn awaken_protocol_a2a::client::task_path(&str) -> alloc::string::String
+pub async fn awaken_protocol_a2a::client::try_cancel_task(&dyn awaken_protocol_a2a::client::Transport, &str) -> core::result::Result<(), awaken_protocol_a2a::client::ClientError>
 pub mod awaken_protocol_a2a::encoder
 pub fn awaken_protocol_a2a::encoder::encode_task(&str, &[awaken_agent_contract::agent::message::Message], &awaken_protocol_transport::port::StepOutcome) -> awaken_protocol_a2a::types::Task
 pub mod awaken_protocol_a2a::request

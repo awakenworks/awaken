@@ -16,7 +16,7 @@ export async function run({ page, goto, say, clearCaption, click, type, wait }) 
   await type(inputs.nth(0), "kimi"); // Provider
   await type(inputs.nth(1), "kimi-ep"); // Endpoint id
   await type(inputs.nth(2), "https://api.kimi.com/coding/v1/"); // base_url
-  await type(page.getByPlaceholder("model-id"), "kimi-k2-0711-preview");
+  await type(page.getByPlaceholder("model-id"), "kimi-for-coding");
   await say("The context window feeds the compaction budget — published as a model attribute.", 3800);
   await type(page.getByPlaceholder("200000"), "262144"); // Context window
   await click(authorCard.getByRole("button", { name: /Author|写入/ }));

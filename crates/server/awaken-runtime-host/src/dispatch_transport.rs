@@ -7,7 +7,7 @@
 //! remote worker over this transport. It is the control-plane half of the cell's
 //! worker seam (the write-plane half is the commit ingest).
 //!
-//! Only the worker-needed verbs are exposed — `enqueue`, `claim`, `renew`,
+//! Only the worker-needed verbs are exposed — `enqueue`, `claim_new_run`, `claim`, `renew`,
 //! `renew_owned`, `settle`. The operational verbs (reap, dead-letter, purge,
 //! supersede, list) stay server-local on `durable_ops_router`; a worker never runs
 //! them.
@@ -22,7 +22,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use awaken_agent_contract::agent::run::Id as RunId;
-use awaken_run_ingress::{DispatchOutcome, DispatchQueue, RunExecutionRequest, SubmitOptions};
+use awaken_run_ingress::{
+    DispatchOutcome, DispatchQueue, PendingInput, RunDispatch, SubmitOptions,
+};
 
 use crate::dispatch_backend::shared_durable_store;
 use crate::host::{HostError, SharedHost};
@@ -34,11 +36,16 @@ use crate::worker_http::respond;
 pub fn dispatch_transport_router(host: Arc<SharedHost>) -> Router {
     Router::new()
         .route("/v1/worker/dispatch/enqueue", post(enqueue))
+        .route("/v1/worker/dispatch/claim_new_run", post(claim_new_run))
+        .route(
+            "/v1/worker/dispatch/deliver_and_claim",
+            post(deliver_and_claim),
+        )
         .route("/v1/worker/dispatch/claim", post(claim))
+        .route("/v1/worker/dispatch/claim_run", post(claim_run))
         .route("/v1/worker/dispatch/renew", post(renew))
         .route("/v1/worker/dispatch/renew_owned", post(renew_owned))
         .route("/v1/worker/dispatch/settle", post(settle))
-        .route("/v1/worker/dispatch/current_epoch", post(current_epoch))
         .with_state(host)
 }
 
@@ -50,7 +57,7 @@ fn store() -> Result<Arc<awaken_run_ingress::AnyDispatchStore>, HostError> {
 
 #[derive(Deserialize)]
 struct EnqueueReq {
-    request: RunExecutionRequest,
+    request: RunDispatch,
     #[serde(default)]
     options: Option<SubmitOptions>,
 }
@@ -65,6 +72,52 @@ async fn enqueue(
             .await
             .map_err(|e| HostError::internal(e.to_string()))?;
         Ok(json!({ "enqueued": true }))
+    }
+    .await;
+    respond(result)
+}
+
+#[derive(Deserialize)]
+struct ClaimNewRunReq {
+    request: RunDispatch,
+    owner: String,
+    lease_ms: u64,
+    now_ms: u64,
+}
+
+async fn claim_new_run(
+    State(_host): State<Arc<SharedHost>>,
+    Json(req): Json<ClaimNewRunReq>,
+) -> (StatusCode, Json<Value>) {
+    let result = async {
+        let claimed = store()?
+            .claim_new_run(req.request, &req.owner, req.lease_ms, req.now_ms)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?;
+        Ok(json!({ "claimed": claimed }))
+    }
+    .await;
+    respond(result)
+}
+
+#[derive(Deserialize)]
+struct DeliverAndClaimReq {
+    input: PendingInput,
+    owner: String,
+    lease_ms: u64,
+    now_ms: u64,
+}
+
+async fn deliver_and_claim(
+    State(_host): State<Arc<SharedHost>>,
+    Json(req): Json<DeliverAndClaimReq>,
+) -> (StatusCode, Json<Value>) {
+    let result = async {
+        let claimed = store()?
+            .deliver_and_claim(req.input, &req.owner, req.lease_ms, req.now_ms)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?;
+        Ok(json!({ "claimed": claimed }))
     }
     .await;
     respond(result)
@@ -88,6 +141,29 @@ async fn claim(
             .map_err(|e| HostError::internal(e.to_string()))?;
         // `Claimed` serializes (self-contained request + lease + pending); `None`
         // means nothing runnable, so the worker backs off and polls again.
+        Ok(json!({ "claimed": claimed }))
+    }
+    .await;
+    respond(result)
+}
+
+#[derive(Deserialize)]
+struct ClaimRunReq {
+    run_id: String,
+    owner: String,
+    lease_ms: u64,
+    now_ms: u64,
+}
+
+async fn claim_run(
+    State(_host): State<Arc<SharedHost>>,
+    Json(req): Json<ClaimRunReq>,
+) -> (StatusCode, Json<Value>) {
+    let result = async {
+        let claimed = store()?
+            .claim_run(&RunId(req.run_id), &req.owner, req.lease_ms, req.now_ms)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?;
         Ok(json!({ "claimed": claimed }))
     }
     .await;
@@ -164,34 +240,6 @@ async fn settle(
         // `settled` is the fence verdict: `true` = applied, `false` = the worker's
         // epoch was stale (re-claimed) and nothing changed, so it must abandon.
         Ok(json!({ "settled": outcome.applied() }))
-    }
-    .await;
-    respond(result)
-}
-
-#[derive(Deserialize)]
-struct EpochReq {
-    run_id: String,
-}
-
-/// The run's current lease epoch — the read a database-less worker's COMMIT fence
-/// needs. Without this route the worker's `HttpDispatchQueue` would fall back to the
-/// trait's fail-open default (`current_epoch → None`), so a superseded remote worker
-/// could double-apply side effects the co-located fence already blocks. Exposing it
-/// makes the commit fence real over the wire: the worker reads the epoch it holds
-/// against the store's current one before each durable write.
-async fn current_epoch(
-    State(_host): State<Arc<SharedHost>>,
-    Json(req): Json<EpochReq>,
-) -> (StatusCode, Json<Value>) {
-    let result = async {
-        let epoch = store()?
-            .current_epoch(&RunId(req.run_id))
-            .await
-            .map_err(|e| HostError::internal(e.to_string()))?;
-        // `null` when the row is gone (settled/never-enqueued) — the worker fence
-        // reads that as fail-open, exactly as the local path does.
-        Ok(json!({ "epoch": epoch }))
     }
     .await;
     respond(result)

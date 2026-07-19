@@ -5,8 +5,8 @@
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_protocol_managed::{
-    Decision, ManagedState, OutcomeReport, RunError, SessionInit, SessionRuntime, StepOutcome,
-    router,
+    ManagedState, OutcomeReport, RunError, SessionInit, SessionRuntime, StepOutcome,
+    ToolPermissionDecision, router,
 };
 use axum::Router;
 use axum::body::Body;
@@ -32,7 +32,12 @@ impl SessionRuntime for AcceptingFake {
     ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("unused"))
     }
-    async fn resume(&self, _t: &str, _tid: &str, _d: Decision) -> Result<StepOutcome, RunError> {
+    async fn resume(
+        &self,
+        _t: &str,
+        _tid: &str,
+        _d: ToolPermissionDecision,
+    ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("unused"))
     }
     async fn resume_custom(

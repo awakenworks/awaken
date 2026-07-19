@@ -8,7 +8,7 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime::memory::MemoryCommitCoordinator;
-use awaken_runtime::{DirectRunIngress, RunIngress, Runtime};
+use awaken_runtime::{DirectRunIngress, RunIngress, RunService, Runtime};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
 use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
@@ -112,7 +112,7 @@ fn activation() -> RunActivation {
             role: Role::User,
             content: vec![ContentBlock::text("hi")],
         }],
-        initiator: None,
+        delegation_origin: None,
         model_ref_override: None,
     }
 }
@@ -287,7 +287,7 @@ async fn direct_ingress_runs_inline_and_rejects_durable() {
     let ingress = DirectRunIngress::new(runtime);
 
     let outcome = ingress
-        .submit(activation(), RuntimeRunContext::new())
+        .start(activation(), RuntimeRunContext::new())
         .await
         .expect("inline run");
     assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));

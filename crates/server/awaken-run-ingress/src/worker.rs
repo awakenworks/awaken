@@ -15,7 +15,6 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
-use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::execution::RunExecutor;
@@ -25,8 +24,9 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 use crate::Error;
-use crate::dispatch::{Claimed, Dispatch, DispatchOutcome, PendingInput, SettleOutcome};
-use crate::request::RunExecutionContext;
+use crate::commit_fence::{ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit};
+use crate::dispatch::{Claimed, Dispatch, DispatchOutcome, PendingInput, RunClaim, SettleOutcome};
+use crate::worker_context::WorkerContext;
 
 /// Default lease: how long a claimed dispatch is owned before it is reclaimable.
 pub const DEFAULT_LEASE_MS: u64 = 30_000;
@@ -36,11 +36,12 @@ pub const DEFAULT_LEASE_MS: u64 = 30_000;
 pub struct DispatchWorker<S> {
     runtime: Arc<Runtime>,
     store: Arc<S>,
-    exec: RunExecutionContext,
+    exec: WorkerContext,
     reader: Arc<dyn ThreadReader>,
-    runs: Arc<dyn RunStore + Send + Sync>,
+    claimed_commit: Arc<dyn ClaimedRunCommit>,
     owner: String,
     lease_ms: u64,
+    cancellation: Option<CancellationToken>,
 }
 
 impl<S: Dispatch + 'static> DispatchWorker<S> {
@@ -55,19 +56,55 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         owner: impl Into<String>,
     ) -> Self
     where
-        C: CommitCoordinator + ThreadReader + RunStore + Send + Sync + 'static,
+        C: CommitCoordinator + ThreadReader + Send + Sync + 'static,
     {
+        let base_commit: Arc<dyn CommitCoordinator> = commit.clone();
+        let reader: Arc<dyn ThreadReader> = commit;
+        Self::from_parts(runtime, store, base_commit, reader, owner)
+    }
+
+    /// Build a worker when the write and read sides are already erased behind
+    /// their domain interfaces. This is the normal composition for a child Run:
+    /// it inherits the parent's durable commit/history authority but owns a
+    /// distinct dispatch row, claim, lease, and recovery lifecycle.
+    pub fn from_parts(
+        runtime: Arc<Runtime>,
+        store: Arc<S>,
+        commit: Arc<dyn CommitCoordinator>,
+        reader: Arc<dyn ThreadReader>,
+        owner: impl Into<String>,
+    ) -> Self {
+        let dispatch: Arc<dyn crate::dispatch::DispatchQueue> = store.clone();
         Self {
             runtime,
             store,
-            // The same store is the commit boundary and the history reader, so a
-            // durable fresh run continues the thread's conversation.
-            exec: RunExecutionContext::new(commit.clone()).with_reader(commit.clone()),
-            reader: commit.clone(),
-            runs: commit,
+            exec: WorkerContext::new(commit.clone()).with_reader(reader.clone()),
+            reader,
+            claimed_commit: Arc::new(GuardedRunCommit::new(commit, dispatch)),
             owner: owner.into(),
             lease_ms: DEFAULT_LEASE_MS,
+            cancellation: None,
         }
+    }
+
+    /// Inherit the same attempt capabilities as direct execution. The worker
+    /// still replaces commit authority with the exact claim fence; a supplied
+    /// cancellation token is preserved so parent cancellation reaches a live
+    /// child Run.
+    #[must_use]
+    pub fn with_context(mut self, context: RuntimeRunContext) -> Self {
+        self.cancellation = context.cancellation.clone();
+        self.exec = self.exec.with_context(context);
+        self
+    }
+
+    /// Override how a claimed worker commit is applied. Database-less workers
+    /// inject the server-side atomic implementation; local workers keep the
+    /// guarded store implementation installed by [`new`](Self::new).
+    #[must_use]
+    pub fn with_claimed_commit(mut self, commit: Arc<dyn ClaimedRunCommit>) -> Self {
+        self.claimed_commit = commit;
+        self
     }
 
     /// Attach a best-effort live stream sink to every attempt this worker runs.
@@ -105,7 +142,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     /// Install the model→executor resolver (R1), so a worker-driven run resolves its
     /// effective model ref to the configured executor without a config service.
     #[must_use]
-    pub fn with_model_resolver(mut self, resolve: crate::request::ModelResolverFn) -> Self {
+    pub fn with_model_resolver(mut self, resolve: crate::worker_context::ModelResolverFn) -> Self {
         self.exec = self.exec.with_model_resolver(resolve);
         self
     }
@@ -138,7 +175,8 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     /// A runtime context bound to this worker's commit boundary, for an
     /// out-of-band commit such as a durable cancel.
     pub(crate) fn execution_context(&self) -> RuntimeRunContext {
-        self.exec.runtime_context(CancellationToken::new())
+        self.exec
+            .runtime_context(self.cancellation.clone().unwrap_or_default())
     }
 
     /// A run context for the attempt on `run_id` claimed under lease `epoch`, whose
@@ -148,20 +186,16 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     /// model), else the runtime's bound (host default) executor.
     fn execution_context_with(
         &self,
-        run_id: &RunId,
-        epoch: u64,
+        claim: &RunClaim,
         model_executor: &Option<Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>,
     ) -> RuntimeRunContext {
         // The base commit boundary, wrapped per drive because the fence epoch is per
         // claim. `self.store` (the dispatch queue) reports the run's current epoch, so
         // a superseded owner's per-step commits are rejected.
-        let fenced: Arc<dyn CommitCoordinator> =
-            Arc::new(crate::commit_fence::FencedCommitCoordinator::new(
-                self.exec.commit().clone(),
-                self.store.clone(),
-                run_id.clone(),
-                epoch,
-            ));
+        let fenced: Arc<dyn CommitCoordinator> = Arc::new(ClaimedCommitCoordinator::new(
+            self.claimed_commit.clone(),
+            claim.clone(),
+        ));
         let ctx = self.execution_context().with_commit(fenced);
         match model_executor {
             Some(exec) => ctx.with_model_executor(exec.clone()),
@@ -174,17 +208,16 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     /// and fencing its commits by the claim's lease `epoch`.
     async fn perform_scheduled(
         &self,
-        run_id: &RunId,
-        epoch: u64,
+        claim: &RunClaim,
         now_ms: u64,
         model_executor: &Option<Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>,
     ) -> Result<RunState, Error> {
         Ok(self
             .runtime
             .perform_scheduled_action(
-                run_id,
+                &claim.run_id,
                 self.reader.as_ref(),
-                self.execution_context_with(run_id, epoch, model_executor),
+                self.execution_context_with(claim, model_executor),
                 now_ms,
             )
             .await?)
@@ -201,10 +234,70 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         Ok(self.store.claim(&self.owner, self.lease_ms, now_ms).await?)
     }
 
+    /// Claim one known Run under the same lease/fence policy without taking work
+    /// belonging to another session. Parent-mediated child execution uses this
+    /// after scheduling the child's stable identity.
+    pub async fn claim_run(&self, run_id: &RunId, now_ms: u64) -> Result<Option<Claimed>, Error> {
+        Ok(self
+            .store
+            .claim_run(run_id, &self.owner, self.lease_ms, now_ms)
+            .await?)
+    }
+
+    /// Atomically admit, claim, and drive a newly created Run. This closes the
+    /// enqueue/claim race with the process pool while preserving the same lease,
+    /// fencing, recovery, and settlement path as every other dispatch.
+    pub async fn start_run(
+        &self,
+        request: awaken_run_ingress_contract::RunDispatch,
+        now_ms: u64,
+    ) -> Result<Option<(RunId, RunState)>, Error> {
+        let Some(claimed) = self
+            .store
+            .claim_new_run(request, &self.owner, self.lease_ms, now_ms)
+            .await?
+        else {
+            return Ok(None);
+        };
+        self.drive_claimed(claimed, now_ms).await
+    }
+
+    /// Atomically deliver one durable input, claim its exact awaiting Run, and
+    /// drive the resume boundary. This is the resume-side counterpart of
+    /// [`start_run`](Self::start_run).
+    pub async fn resume_run(
+        &self,
+        input: PendingInput,
+        now_ms: u64,
+    ) -> Result<Option<(RunId, RunState)>, Error> {
+        let Some(claimed) = self
+            .store
+            .deliver_and_claim(input, &self.owner, self.lease_ms, now_ms)
+            .await?
+        else {
+            return Ok(None);
+        };
+        self.drive_claimed(claimed, now_ms).await
+    }
+
     /// Claim and process at most one runnable dispatch. Returns the processed
     /// run's id and resulting state, or `None` when the queue is idle.
     pub async fn tick(&self, now_ms: u64) -> Result<Option<(RunId, RunState)>, Error> {
         let Some(claimed) = self.claim_one(now_ms).await? else {
+            return Ok(None);
+        };
+        self.drive_claimed(claimed, now_ms).await
+    }
+
+    /// Claim and drive one exact Run. This preserves queue isolation for callers
+    /// that synchronously await a child boundary while the process pool remains
+    /// free to drain every other Run.
+    pub async fn tick_run(
+        &self,
+        run_id: &RunId,
+        now_ms: u64,
+    ) -> Result<Option<(RunId, RunState)>, Error> {
+        let Some(claimed) = self.claim_run(run_id, now_ms).await? else {
             return Ok(None);
         };
         self.drive_claimed(claimed, now_ms).await
@@ -232,6 +325,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         // owner (whose lease lapsed and was re-claimed under a higher epoch) is
         // rejected and abandons instead of clobbering the reclaimer's dispatch.
         let lease_epoch = claimed.lease.epoch;
+        let claim = RunClaim::from(&claimed.lease);
         // Resolve this run's model to an executor once, before the activation is
         // consumed, and route every inference in this drive through it: the run's
         // effective model (its per-run override, else its snapshot binding) resolved
@@ -257,7 +351,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             // crash recovery of a scheduled await (no pending input is expected).
             Some(ticket) if ticket.reason == AwaitReason::ScheduledAction => {
                 match self
-                    .perform_scheduled(&run_id, lease_epoch, now_ms, &model_executor)
+                    .perform_scheduled(&claim, now_ms, &model_executor)
                     .instrument(dispatch.clone())
                     .await
                 {
@@ -288,7 +382,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                             .resume(
                                 command,
                                 self.reader.as_ref(),
-                                self.execution_context_with(&run_id, lease_epoch, &model_executor),
+                                self.execution_context_with(&claim, &model_executor),
                             )
                             .instrument(dispatch.clone())
                             .await
@@ -325,8 +419,8 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             // No ticket: a fresh run, or a recovered run that already finished.
             // The committed run record disambiguates so recovery never re-runs a
             // terminal run, and any orphan pending is dropped on settle.
-            None => match self.runs.get(&run_id) {
-                Some(record) if matches!(record.state, RunState::Ended(_)) => {
+            None => match self.reader.run_state(&run_id) {
+                Some(state @ RunState::Ended(_)) => {
                     // A recovered fresh run that already committed a terminal record:
                     // its crashed prior attempt may have drained unbound idle-thread
                     // input (ADR-0021) into this run's committed transcript but died
@@ -361,7 +455,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                         .settle(&run_id, lease_epoch, DispatchOutcome::Done, &all_pending)
                         .await?
                         .applied()
-                        .then_some((run_id, record.state)));
+                        .then_some((run_id, state)));
                 }
                 _ => {
                     // Drain the thread inbox: input addressed to this thread with
@@ -402,7 +496,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                         .runtime
                         .execute(
                             activation,
-                            self.execution_context_with(&run_id, lease_epoch, &model_executor),
+                            self.execution_context_with(&claim, &model_executor),
                         )
                         .instrument(dispatch.clone())
                         .await
@@ -430,7 +524,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             match self.reader.resume_ticket(&run_id) {
                 Some(ticket) if ticket.reason == AwaitReason::ScheduledAction => {
                     state = match self
-                        .perform_scheduled(&run_id, lease_epoch, now_ms, &model_executor)
+                        .perform_scheduled(&claim, now_ms, &model_executor)
                         .await
                     {
                         Ok(state) => state,
@@ -499,12 +593,12 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         consumed: &[String],
         err: impl Into<Error>,
     ) -> Result<Option<(RunId, RunState)>, Error> {
-        match self.runs.get(run_id) {
-            Some(record) if matches!(record.state, RunState::Ended(_)) => Ok(self
+        match self.reader.run_state(run_id) {
+            Some(state @ RunState::Ended(_)) => Ok(self
                 .settle(run_id, epoch, DispatchOutcome::Done, consumed)
                 .await?
                 .applied()
-                .then_some((run_id.clone(), record.state))),
+                .then_some((run_id.clone(), state))),
             _ => Err(err.into()),
         }
     }

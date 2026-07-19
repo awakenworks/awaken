@@ -16,9 +16,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
-use awaken_run_ingress::{
-    DispatchQueue, DispatchWorker, Error, MemoryDispatchStore, RunExecutionRequest,
-};
+use awaken_run_ingress::{DispatchQueue, DispatchWorker, Error, MemoryDispatchStore, RunDispatch};
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
@@ -41,7 +39,7 @@ async fn a_genuine_drive_failure_is_reraised_and_the_dispatch_is_left_unsettled(
     let commit = Arc::new(FailingCommit::new(inner.clone(), true));
 
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
     let worker = DispatchWorker::new(runtime, store.clone(), commit, "solo").with_lease_ms(LEASE);
@@ -103,7 +101,7 @@ async fn a_failing_scheduled_action_is_reraised_and_left_unsettled() {
     );
 
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
 
@@ -149,7 +147,7 @@ async fn a_chain_of_scheduled_actions_is_performed_to_completion_in_one_drive() 
     let commit = Arc::new(MemoryCommitCoordinator::new());
 
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
     let worker = DispatchWorker::new(runtime, store.clone(), commit, "solo").with_lease_ms(LEASE);

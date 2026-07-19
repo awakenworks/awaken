@@ -17,7 +17,7 @@ use super::*;
 pub(super) async fn run_tool_calls(
     runtime: &Runtime,
     context: &RuntimeRunContext,
-    initiator: Option<&DelegationOrigin>,
+    delegation_origin: Option<&DelegationOrigin>,
     resolved: &ResolvedRun,
     env: &ResolvedExecutionEnv,
     run_id: &RunId,
@@ -30,7 +30,7 @@ pub(super) async fn run_tool_calls(
 ) -> Result<Option<RunDisposition>> {
     let policies = calls.iter().cloned().map(|call| {
         let policy = if runtime
-            .delegation_executor()
+            .run_delegation()
             .is_some_and(|executor| executor.tool_id() == call.tool_id)
         {
             // A delegated child is addressed by its stable RunId. Recovery
@@ -66,6 +66,44 @@ pub(super) async fn run_tool_calls(
     // unknown in-flight external effect.
     persist_batch(&batch, ledger, store, context, thread_id, run_id).await?;
 
+    let parallel_delegations = calls.len() > 1
+        && runtime.run_delegation().is_some_and(|executor| {
+            calls.iter().all(|call| {
+                call.tool_id == executor.tool_id()
+                    && executor.supports_parallel_completion(&call.arguments)
+            })
+        });
+    let mut precomputed_gates = std::collections::VecDeque::new();
+    if parallel_delegations {
+        for call in &calls {
+            let outcome = gate_decision(runtime, call, env, store).await;
+            if runtime.gate().is_some() {
+                ledger.audit.push(permission_audit(call, &outcome));
+            }
+            precomputed_gates.push_back(outcome);
+        }
+        if precomputed_gates
+            .iter()
+            .all(|outcome| matches!(outcome, GateOutcome::Allow))
+        {
+            return run_parallel_delegation_calls(
+                runtime,
+                context,
+                delegation_origin,
+                resolved,
+                env,
+                run_id,
+                thread_id,
+                step,
+                calls,
+                batch,
+                ledger,
+                store,
+            )
+            .await;
+        }
+    }
+
     for call in calls {
         // The reserved `tool_open` meta-tool (ADR-0053) loads a deferred tool for
         // later steps: it mutates this run's `opened` set and returns a result, so it
@@ -75,9 +113,12 @@ pub(super) async fn run_tool_calls(
         let output = if call.tool_id == awaken_runtime_contract::resolved::TOOL_OPEN_ID {
             open_deferred_tool(&resolved.spec.tool_presentation, &call, opened)
         } else {
-            let outcome = gate_decision(runtime, &call, env, store).await;
+            let (outcome, already_audited) = match precomputed_gates.pop_front() {
+                Some(outcome) => (outcome, true),
+                None => (gate_decision(runtime, &call, env, store).await, false),
+            };
             // Audit the decision of a real (policy-backed) gate (ADR-0030).
-            if runtime.gate().is_some() {
+            if !already_audited && runtime.gate().is_some() {
                 ledger.audit.push(permission_audit(&call, &outcome));
             }
             match outcome {
@@ -85,7 +126,7 @@ pub(super) async fn run_tool_calls(
                     delegation_started = stage_delegation_request(
                         runtime,
                         resolved,
-                        initiator,
+                        delegation_origin,
                         run_id,
                         &call,
                         store,
@@ -109,11 +150,15 @@ pub(super) async fn run_tool_calls(
                         entered_executor = true;
                         match run_delegation(
                             runtime,
-                            context,
-                            initiator,
-                            &resolved.agent_id.0,
-                            run_id,
+                            DelegationParent {
+                                context,
+                                origin: delegation_origin,
+                                agent_id: &resolved.agent_id.0,
+                                run_id,
+                                thread_id,
+                            },
                             &call,
+                            store,
                         )
                         .await
                         {
@@ -124,18 +169,25 @@ pub(super) async fn run_tool_calls(
                                 merge_thread_usage(store, &mut ledger.staged_state, &usage);
                                 ToolOutput::ok(&call.call_id, text)
                             }
-                            // The delegate awaiting needing input: await the parent on a
-                            // Delegation ticket carrying the opaque handle (durable), resumed
-                            // through the delegation executor.
+                            // The child needs input: await the parent on a Delegation ticket;
+                            // its opaque execution reference stays in the relationship and
+                            // is resumed through the delegation executor.
                             Some(Ok(DelegationStep::Awaiting { continuation })) => {
+                                stage_delegation_awaiting(
+                                    runtime,
+                                    run_id,
+                                    &call,
+                                    &continuation,
+                                    store,
+                                    &mut ledger.staged_state,
+                                )?;
                                 let ticket = resume_ticket(
                                     resolved,
                                     run_id,
-                                    initiator,
+                                    delegation_origin,
                                     &call.call_id,
                                     &call,
                                     AwaitReason::Delegation,
-                                    Some(continuation),
                                 );
                                 emit(
                                     context,
@@ -155,7 +207,7 @@ pub(super) async fn run_tool_calls(
                                 stage_batch(&batch, ledger, store);
                                 return Ok(Some(RunDisposition::awaiting(ticket)));
                             }
-                            Some(Err(err)) => ToolOutput::error(&call.call_id, err.to_string()),
+                            Some(Err(error)) => delegation_error_output(&call.call_id, error)?,
                             None => execute_tool(runtime, Some(env), &call, context).await,
                         }
                     }
@@ -164,17 +216,16 @@ pub(super) async fn run_tool_calls(
                     ToolOutput::error(&call.call_id, format!("blocked: {reason}"))
                 }
                 GateOutcome::SetResult(output) => output,
-                GateOutcome::Suspend { ticket_id } => {
+                GateOutcome::RequireConfirmation { correlation_id } => {
                     // Await the run on a structured ticket carrying the pending
                     // call so an allow decision can run it later.
                     let ticket = resume_ticket(
                         resolved,
                         run_id,
-                        initiator,
-                        &ticket_id,
+                        delegation_origin,
+                        &correlation_id,
                         &call,
                         AwaitReason::ToolPermission,
-                        None,
                     );
                     emit(
                         context,
@@ -187,7 +238,7 @@ pub(super) async fn run_tool_calls(
                     batch
                         .mark_awaiting(
                             &call.call_id,
-                            ToolWaitKind::Approval,
+                            ToolWaitKind::ToolPermission,
                             ticket.correlation_id.clone(),
                         )
                         .map_err(|error| Error::Execution(error.to_string()))?;
@@ -214,11 +265,10 @@ pub(super) async fn run_tool_calls(
                     let ticket = resume_ticket(
                         resolved,
                         run_id,
-                        initiator,
+                        delegation_origin,
                         &correlation_id,
                         &call,
                         AwaitReason::ScheduledAction,
-                        None,
                     );
                     emit(
                         context,
@@ -241,45 +291,22 @@ pub(super) async fn run_tool_calls(
             }
         };
 
-        if delegation_started {
-            stage_delegation_completed(runtime, run_id, &call, store, &mut ledger.staged_state)?;
-        }
-
-        if entered_executor {
-            batch
-                .complete(output.clone())
-                .map_err(|error| Error::Execution(error.to_string()))?;
-        } else {
-            batch
-                .complete_immediate(output.clone())
-                .map_err(|error| Error::Execution(error.to_string()))?;
-        }
-        // Post-execution reaction: fold the tool's own state into the live
-        // store, then let tool-outcome hooks stage transitions and reminders.
-        for command in &output.state {
-            store.apply(command);
-        }
-        let (reactions, reminders) =
-            collect_tool_reactions(env, run_id, step, &call, &output, store).await;
-        for command in &reactions {
-            store.apply(command);
-        }
-        let mut result_state = output.state.clone();
-        result_state.extend(reactions);
-        let mut result_messages = vec![tool_result_message(&call, &output)];
-        result_messages.extend(reminders);
-        batch
-            .set_result_messages(&call.call_id, result_messages)
-            .map_err(|error| Error::Execution(error.to_string()))?;
-        batch
-            .set_result_state(&call.call_id, result_state)
-            .map_err(|error| Error::Execution(error.to_string()))?;
-
-        // The output, tool-owned state, reactions, and terminal call phase become
-        // durable together. No later recovery re-enters this terminal call.
-        if !batch.is_complete() {
-            persist_batch(&batch, ledger, store, context, thread_id, run_id).await?;
-        }
+        record_fresh_output(
+            runtime,
+            env,
+            run_id,
+            thread_id,
+            context,
+            step,
+            &call,
+            output,
+            entered_executor,
+            delegation_started,
+            &mut batch,
+            ledger,
+            store,
+        )
+        .await?;
     }
 
     batch
@@ -297,6 +324,193 @@ pub(super) async fn run_tool_calls(
     Ok(None)
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn run_parallel_delegation_calls(
+    runtime: &Runtime,
+    context: &RuntimeRunContext,
+    delegation_origin: Option<&DelegationOrigin>,
+    resolved: &ResolvedRun,
+    env: &ResolvedExecutionEnv,
+    run_id: &RunId,
+    thread_id: &ThreadId,
+    step: usize,
+    calls: Vec<ToolCall>,
+    mut batch: ToolBatch,
+    ledger: &mut StepLedger,
+    store: &mut Store,
+) -> Result<Option<RunDisposition>> {
+    let delegation_started = stage_delegation_requests(
+        runtime,
+        resolved,
+        delegation_origin,
+        run_id,
+        &calls,
+        store,
+        &mut ledger.staged_state,
+    )?;
+    if !delegation_started {
+        return Err(Error::Execution(
+            "parallel delegation batch lost its configured executor".to_string(),
+        ));
+    }
+    for call in &calls {
+        let capability = recovery_capability(runtime, context, env, call);
+        let policy = batch
+            .calls
+            .iter()
+            .find(|entry| entry.call.call_id == call.call_id)
+            .expect("batch was built from calls")
+            .recovery_policy
+            .clone();
+        policy
+            .validate(capability)
+            .map_err(|error| Error::Execution(error.to_string()))?;
+        batch
+            .mark_executing(&call.call_id)
+            .map_err(|error| Error::Execution(error.to_string()))?;
+    }
+    // Every relationship and executor-entry fact is durable before any child
+    // future starts. A crash can therefore reconnect each stable child Run id.
+    persist_batch(&batch, ledger, store, context, thread_id, run_id).await?;
+
+    let committed_view = store.clone();
+    let parent = DelegationParent {
+        context,
+        origin: delegation_origin,
+        agent_id: &resolved.agent_id.0,
+        run_id,
+        thread_id,
+    };
+    let invocations = futures_util::future::join_all(
+        calls
+            .iter()
+            .map(|call| invoke_delegation(runtime, parent, call, &committed_view)),
+    )
+    .await;
+
+    for (call, invocation) in calls.iter().zip(invocations) {
+        let output = match invocation {
+            Some(Ok(DelegationInvocation {
+                id,
+                step: DelegationStep::Ended { text, usage },
+            })) => {
+                let result = persist_child_run_result(
+                    context,
+                    thread_id,
+                    RunDisposition::running(run_id.clone()),
+                    &id,
+                    store,
+                    ChildRunResult {
+                        child_run_id: id.child_run_id(),
+                        text,
+                        usage,
+                    },
+                )
+                .await
+                .map_err(|error| Error::Execution(error.to_string()))?;
+                merge_thread_usage(store, &mut ledger.staged_state, &result.usage);
+                ToolOutput::ok(&call.call_id, result.text)
+            }
+            Some(Ok(DelegationInvocation {
+                step: DelegationStep::Awaiting { continuation },
+                ..
+            })) => {
+                // The executor promised a terminal-only child. Persist the
+                // cancellation address and end fail-closed; representing several
+                // simultaneous human-input waits as one ticket would lose identity.
+                stage_delegation_awaiting(
+                    runtime,
+                    run_id,
+                    call,
+                    &continuation,
+                    store,
+                    &mut ledger.staged_state,
+                )?;
+                stage_batch(&batch, ledger, store);
+                return Ok(Some(RunDisposition::ended(
+                    run_id.clone(),
+                    EndCause::Indeterminate,
+                )));
+            }
+            Some(Err(error)) => delegation_error_output(&call.call_id, error)?,
+            None => {
+                return Err(Error::Execution(
+                    "parallel delegation call was not handled by its executor".to_string(),
+                ));
+            }
+        };
+        record_fresh_output(
+            runtime, env, run_id, thread_id, context, step, call, output, true, true, &mut batch,
+            ledger, store,
+        )
+        .await?;
+    }
+
+    batch
+        .finalize()
+        .map_err(|error| Error::Execution(error.to_string()))?;
+    for entry in &batch.calls {
+        ledger.staged_state.extend(entry.result_state.clone());
+        for message in &entry.result_messages {
+            ledger.push_message(message.clone());
+        }
+    }
+    persist_batch(&batch, ledger, store, context, thread_id, run_id).await?;
+    Ok(None)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn record_fresh_output(
+    runtime: &Runtime,
+    env: &ResolvedExecutionEnv,
+    run_id: &RunId,
+    thread_id: &ThreadId,
+    context: &RuntimeRunContext,
+    step: usize,
+    call: &ToolCall,
+    output: ToolOutput,
+    entered_executor: bool,
+    delegation_started: bool,
+    batch: &mut ToolBatch,
+    ledger: &mut StepLedger,
+    store: &mut Store,
+) -> Result<()> {
+    if delegation_started {
+        stage_delegation_completed(runtime, run_id, call, store, &mut ledger.staged_state)?;
+    }
+    if entered_executor {
+        batch
+            .complete(output.clone())
+            .map_err(|error| Error::Execution(error.to_string()))?;
+    } else {
+        batch
+            .complete_immediate(output.clone())
+            .map_err(|error| Error::Execution(error.to_string()))?;
+    }
+    for command in &output.state {
+        store.apply(command);
+    }
+    let (reactions, reminders) =
+        collect_tool_reactions(env, run_id, step, call, &output, store).await;
+    for command in &reactions {
+        store.apply(command);
+    }
+    let mut result_state = output.state.clone();
+    result_state.extend(reactions);
+    let mut result_messages = vec![tool_result_message(call, &output)];
+    result_messages.extend(reminders);
+    batch
+        .set_result_messages(&call.call_id, result_messages)
+        .map_err(|error| Error::Execution(error.to_string()))?;
+    batch
+        .set_result_state(&call.call_id, result_state)
+        .map_err(|error| Error::Execution(error.to_string()))?;
+    if !batch.is_complete() {
+        persist_batch(batch, ledger, store, context, thread_id, run_id).await?;
+    }
+    Ok(())
+}
+
 /// Recover an open batch committed by a prior owner. Requested calls have not
 /// entered an executor and may start normally. Executing calls follow their
 /// pinned policy; terminal calls are only published, never invoked again.
@@ -304,7 +518,7 @@ pub(super) async fn run_tool_calls(
 pub(super) async fn recover_tool_batch(
     runtime: &Runtime,
     context: &RuntimeRunContext,
-    initiator: Option<&DelegationOrigin>,
+    delegation_origin: Option<&DelegationOrigin>,
     resolved: &ResolvedRun,
     env: &ResolvedExecutionEnv,
     run_id: &RunId,
@@ -427,20 +641,19 @@ pub(super) async fn recover_tool_batch(
                     .await?;
                     continue;
                 }
-                GateOutcome::Suspend { ticket_id } => {
+                GateOutcome::RequireConfirmation { correlation_id } => {
                     let ticket = resume_ticket(
                         resolved,
                         run_id,
-                        initiator,
-                        &ticket_id,
+                        delegation_origin,
+                        &correlation_id,
                         &call,
                         AwaitReason::ToolPermission,
-                        None,
                     );
                     batch
                         .mark_awaiting(
                             &call.call_id,
-                            ToolWaitKind::Approval,
+                            ToolWaitKind::ToolPermission,
                             ticket.correlation_id.clone(),
                         )
                         .map_err(|error| Error::Execution(error.to_string()))?;
@@ -462,11 +675,10 @@ pub(super) async fn recover_tool_batch(
                     let ticket = resume_ticket(
                         resolved,
                         run_id,
-                        initiator,
+                        delegation_origin,
                         &correlation_id,
                         &call,
                         AwaitReason::ScheduledAction,
-                        None,
                     );
                     batch
                         .mark_awaiting(
@@ -485,7 +697,7 @@ pub(super) async fn recover_tool_batch(
         let delegation_started = stage_delegation_request(
             runtime,
             resolved,
-            initiator,
+            delegation_origin,
             run_id,
             &call,
             store,
@@ -518,11 +730,15 @@ pub(super) async fn recover_tool_batch(
         } else {
             match run_delegation(
                 runtime,
-                context,
-                initiator,
-                &resolved.agent_id.0,
-                run_id,
+                DelegationParent {
+                    context,
+                    origin: delegation_origin,
+                    agent_id: &resolved.agent_id.0,
+                    run_id,
+                    thread_id,
+                },
                 &call,
+                store,
             )
             .await
             {
@@ -531,14 +747,21 @@ pub(super) async fn recover_tool_batch(
                     ToolOutput::ok(&call.call_id, text)
                 }
                 Some(Ok(DelegationStep::Awaiting { continuation })) => {
+                    stage_delegation_awaiting(
+                        runtime,
+                        run_id,
+                        &call,
+                        &continuation,
+                        store,
+                        &mut ledger.staged_state,
+                    )?;
                     let ticket = resume_ticket(
                         resolved,
                         run_id,
-                        initiator,
+                        delegation_origin,
                         &call.call_id,
                         &call,
                         AwaitReason::Delegation,
-                        Some(continuation),
                     );
                     batch
                         .mark_awaiting(
@@ -550,7 +773,7 @@ pub(super) async fn recover_tool_batch(
                     stage_batch(&batch, ledger, store);
                     return Ok(Some(RunDisposition::awaiting(ticket)));
                 }
-                Some(Err(error)) => ToolOutput::error(&call.call_id, error.to_string()),
+                Some(Err(error)) => delegation_error_output(&call.call_id, error)?,
                 None => execute_tool(runtime, Some(env), &call, context).await,
             }
         };
@@ -625,7 +848,7 @@ fn recovery_capability(
     call: &ToolCall,
 ) -> ToolRecoveryCapability {
     if runtime
-        .delegation_executor()
+        .run_delegation()
         .is_some_and(|executor| executor.tool_id() == call.tool_id)
     {
         return ToolRecoveryCapability::DurableRequest;
@@ -663,7 +886,7 @@ fn abandon_delegation_on_indeterminate(
     store: &mut Store,
 ) -> Option<RunDisposition> {
     runtime
-        .delegation_executor()
+        .run_delegation()
         .is_some_and(|executor| executor.tool_id() == call.tool_id)
         .then(|| {
             stage_batch(batch, ledger, store);

@@ -8,7 +8,7 @@
 //! ```
 //!
 //! Env: `KIMI_API_KEY` (required), `KIMI_BASE_URL` (default Kimi coding endpoint),
-//! `KIMI_MODEL` (default `kimi-k2-0711-preview`).
+//! `KIMI_MODEL` (default `kimi-for-coding`).
 
 use std::sync::Arc;
 
@@ -39,7 +39,7 @@ fn live_env() -> (String, String, String) {
         .expect("set KIMI_API_KEY (the Kimi/Anthropic-compatible key) to run this test");
     let base = std::env::var("KIMI_BASE_URL")
         .unwrap_or_else(|_| "https://api.kimi.com/coding/v1/".to_string());
-    let model = std::env::var("KIMI_MODEL").unwrap_or_else(|_| "kimi-k2-0711-preview".to_string());
+    let model = std::env::var("KIMI_MODEL").unwrap_or_else(|_| "kimi-for-coding".to_string());
     (base, key, model)
 }
 

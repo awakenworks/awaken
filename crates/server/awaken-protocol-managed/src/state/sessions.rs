@@ -506,15 +506,16 @@ impl ManagedState {
 
     /// Dispose the host sandbox(es) for a session being torn down at a terminal
     /// edge: the main thread (the session id) plus each spawned child agent thread
-    /// (`{id}:thread:{n}`, the stable id `send_events` mints, sessions.rs child
-    /// projection). Best-effort — the terminal transition has already committed, so
+    /// (the Runtime relationship's stable child Run id). Best-effort — the terminal transition has already committed, so
     /// a dispose failure is logged, never propagated (it must not resurrect the
     /// session). `SessionRuntime::end_session` is a no-op for a thread that never
     /// materialized a sandbox, so deriving child ids is safe.
     async fn end_session_sandboxes(&self, id: &str, child_threads: &[serde_json::Value]) {
         let mut threads: Vec<String> = vec![id.to_string()];
-        for n in 0..child_threads.len() {
-            threads.push(format!("{id}:thread:{n}"));
+        for child in child_threads {
+            if let Some(child_run_id) = child["id"].as_str() {
+                threads.push(child_run_id.to_string());
+            }
         }
         for thread in threads {
             if let Err(err) = self.runtime.end_session(&thread).await {

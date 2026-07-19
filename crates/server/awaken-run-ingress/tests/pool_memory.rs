@@ -22,7 +22,7 @@ use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_run_ingress::{
     Clock, CompletionSink, DEFAULT_LEASE_MS, DispatchError, DispatchPool, DispatchQueue,
     DispatchServiceConfig, DispatchWorker, Error, Inbox, ManualClock, MemoryDispatchStore,
-    PendingInput, RunExecutionRequest, SystemClock, WakeSignal, WorkerResolver,
+    PendingInput, RunDispatch, SystemClock, WakeSignal, WorkerResolver,
 };
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
@@ -397,7 +397,7 @@ async fn dropped_wake_still_drains_via_poll() {
 
     // Enqueue directly — bypassing the pool's submit(), so no wake is delivered.
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
 
@@ -423,7 +423,7 @@ async fn crashed_lease_is_recovered_and_redriven() {
 
     // A crashed worker: the run is claimed with a 1s lease at t=0, nothing driven.
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
     assert!(
@@ -855,10 +855,7 @@ async fn the_maintenance_loop_reaps_a_poison_run_then_gcs_it() {
     // budget below. The pool's single drain will claim it first and block in its tool,
     // so the drain can never reach the poison.
     store
-        .enqueue(RunExecutionRequest::new(activation_on(
-            "busy",
-            "thread-busy",
-        )))
+        .enqueue(RunDispatch::new(activation_on("busy", "thread-busy")))
         .await
         .unwrap();
     assert!(store.claim("dead-a", 1_000, 0).await.unwrap().is_some());
@@ -867,10 +864,7 @@ async fn the_maintenance_loop_reaps_a_poison_run_then_gcs_it() {
     // expired lease. `busy`'s lease is still live during these claims, so each
     // recovery pick lands on the poison, not on `busy`.
     store
-        .enqueue(RunExecutionRequest::new(activation_on(
-            "poison",
-            "thread-poison",
-        )))
+        .enqueue(RunDispatch::new(activation_on("poison", "thread-poison")))
         .await
         .unwrap();
     assert!(store.claim("dead-b", 1, 5).await.unwrap().is_some()); // fresh -> attempt 0

@@ -13,17 +13,47 @@ use std::sync::atomic::Ordering;
 
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::thread::commit::coordinator::{
+    Coordinator as CommitCoordinator, Error as CommitError,
+};
+use awaken_agent_contract::thread::commit::staged::{CommitRecord, RunDisposition, ThreadCommit};
 use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_run_ingress::{
-    DispatchQueue, DispatchWorker, DurableRunIngress, Inbox, PendingInput, PostgresDispatchStore,
-    RunExecutionRequest, SubmitOptions,
+    ClaimedCommitCoordinator, ClaimedRunCommit, DispatchQueue, DispatchWorker, DurableRunIngress,
+    GuardedRunCommit, Inbox, PendingInput, PostgresDispatchStore, RunClaim, RunDispatch,
+    SubmitOptions,
 };
 use awaken_runtime::RunIngress;
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_store_postgres::PostgresCommitCoordinator;
 
 use harness::{THREAD, TICKET, activation, activation_on, blocking_tool_runtime, tool_runtime};
+
+struct BlockingCommit {
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+#[async_trait::async_trait]
+impl CommitCoordinator for BlockingCommit {
+    async fn commit(&self, _commit: ThreadCommit) -> Result<CommitRecord, CommitError> {
+        self.entered.notify_one();
+        self.release.notified().await;
+        Ok(CommitRecord { sequence: 1 })
+    }
+}
+
+fn running_commit(run_id: &str) -> ThreadCommit {
+    ThreadCommit::assemble(
+        ThreadId(THREAD.to_string()),
+        RunDisposition::running(RunId(run_id.to_string())),
+        true,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    )
+}
 
 /// Single-writer-per-thread (ADR-0022), topology-independent: two runs of the SAME
 /// thread are both pending; two claimers race concurrently. The V0012
@@ -50,7 +80,7 @@ async fn postgres_one_running_per_thread_under_concurrent_claimers() {
     for run in ["cg-1", "cg-2"] {
         store
             .enqueue_with(
-                RunExecutionRequest::new(activation_on(run, "cg-thread")),
+                RunDispatch::new(activation_on(run, "cg-thread")),
                 fresh.clone(),
             )
             .await
@@ -70,6 +100,68 @@ async fn postgres_one_running_per_thread_under_concurrent_claimers() {
         won, 1,
         "exactly one of two concurrent same-thread claims wins (single-writer)"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn postgres_epoch_guard_prevents_reclaim_until_commit_returns() {
+    let Some(pool) = harness::schema_pool("t_pg_commit_epoch_guard").await else {
+        return;
+    };
+    let store = Arc::new(
+        PostgresDispatchStore::with_pool(pool)
+            .await
+            .expect("dispatch"),
+    );
+    store
+        .enqueue(RunDispatch::new(activation("guarded")))
+        .await
+        .unwrap();
+    let lease = store
+        .claim("owner-a", 100, 0)
+        .await
+        .unwrap()
+        .expect("claim")
+        .lease;
+    let inner = Arc::new(BlockingCommit {
+        entered: tokio::sync::Notify::new(),
+        release: tokio::sync::Notify::new(),
+    });
+    let service: Arc<dyn ClaimedRunCommit> =
+        Arc::new(GuardedRunCommit::new(inner.clone(), store.clone()));
+    let fenced = ClaimedCommitCoordinator::new(service, RunClaim::from(&lease));
+    let committing = tokio::spawn(async move { fenced.commit(running_commit("guarded")).await });
+    inner.entered.notified().await;
+
+    let reclaim_store = store.clone();
+    let mut reclaiming =
+        tokio::spawn(async move { reclaim_store.claim("owner-b", 100, 200).await });
+    // Claim intentionally uses SKIP LOCKED. Depending on scheduling it either
+    // waits for the guard's transaction or immediately reports no claim; both
+    // are safe, but it must never hand the guarded row to owner-b.
+    let early = tokio::time::timeout(std::time::Duration::from_millis(50), &mut reclaiming).await;
+    let skipped_locked_row = match early {
+        Ok(result) => {
+            assert!(
+                result.unwrap().unwrap().is_none(),
+                "the guarded row cannot be reclaimed before its commit returns"
+            );
+            true
+        }
+        Err(_) => false,
+    };
+
+    inner.release.notify_one();
+    committing.await.unwrap().expect("commit");
+    let reclaimed = if skipped_locked_row {
+        store
+            .claim("owner-b", 100, 200)
+            .await
+            .unwrap()
+            .expect("reclaim after the guard releases")
+    } else {
+        reclaiming.await.unwrap().unwrap().expect("reclaim")
+    };
+    assert_eq!(reclaimed.lease.epoch, lease.epoch + 1);
 }
 
 fn pending(message_id: &str, correlation: &str, allow: bool) -> PendingInput {
@@ -146,7 +238,7 @@ async fn enqueued_dispatch_survives_a_restart() {
             .await
             .expect("dispatch a");
         store
-            .enqueue(RunExecutionRequest::new(activation("run-1")))
+            .enqueue(RunDispatch::new(activation("run-1")))
             .await
             .expect("enqueue");
     }
@@ -177,12 +269,12 @@ async fn postgres_connect_applies_migrations_and_claim_recovers_a_lease() {
         .await
         .expect("connect");
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .expect("enqueue");
     // Re-enqueue is idempotent.
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .expect("re-enqueue");
 
@@ -348,11 +440,11 @@ async fn two_workers_claim_distinct_runs_on_postgres() {
         .await
         .expect("dispatch");
     store
-        .enqueue(RunExecutionRequest::new(activation_on("run-1", "thread-1")))
+        .enqueue(RunDispatch::new(activation_on("run-1", "thread-1")))
         .await
         .unwrap();
     store
-        .enqueue(RunExecutionRequest::new(activation_on("run-2", "thread-2")))
+        .enqueue(RunDispatch::new(activation_on("run-2", "thread-2")))
         .await
         .unwrap();
 
@@ -405,17 +497,6 @@ async fn settle_fences_stale_epoch_on_postgres() {
         .await
         .expect("dispatch");
     harness::assert_settle_fences_stale_epoch(&store).await;
-}
-
-#[tokio::test]
-async fn current_epoch_tracks_the_fence_on_postgres() {
-    let Some(pool) = harness::schema_pool("t_pg_current_epoch").await else {
-        return;
-    };
-    let store = PostgresDispatchStore::with_pool(pool.clone())
-        .await
-        .expect("dispatch");
-    harness::assert_current_epoch_tracks_the_fence(&store).await;
 }
 
 #[tokio::test]
@@ -517,7 +598,7 @@ async fn postgres_mid_flight_reclaim_applies_never_replay_policy() {
     let (runtime, ran) = blocking_tool_runtime(release.clone());
     let run = RunId("run-1".to_string());
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .expect("enqueue");
 

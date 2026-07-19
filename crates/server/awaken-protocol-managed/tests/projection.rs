@@ -10,11 +10,12 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
+use awaken_agent_contract::agent::delegation::DelegationStatus;
 use awaken_agent_contract::agent::message::{Id, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Failure};
+use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId};
 use awaken_protocol_managed::{
-    Decision, ManagedState, OutcomeReport, RunError, SessionRuntime, SessionUsage, StepOutcome,
-    router,
+    DelegatedRun, ManagedState, OutcomeReport, RunError, SessionRuntime, SessionUsage, StepOutcome,
+    ToolPermissionDecision, router,
 };
 use axum::Router;
 use axum::body::Body;
@@ -133,7 +134,12 @@ impl SessionRuntime for ScriptFake {
     ) -> Result<StepOutcome, RunError> {
         Ok((self.make)())
     }
-    async fn resume(&self, _t: &str, _tid: &str, _d: Decision) -> Result<StepOutcome, RunError> {
+    async fn resume(
+        &self,
+        _t: &str,
+        _tid: &str,
+        _d: ToolPermissionDecision,
+    ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("no resume"))
     }
     async fn resume_custom(
@@ -509,6 +515,12 @@ async fn a_delegation_projects_the_child_thread_lifecycle() {
                 }],
             ),
         ])
+        .with_delegated_runs(vec![DelegatedRun {
+            run_id: RunId("child-run-stable".into()),
+            parent_call_id: "d1".into(),
+            agent_id: "researcher".into(),
+            status: DelegationStatus::Completed,
+        }])
     }))));
     let id = create(&app).await;
     send_user(&app, &id, "go").await;
@@ -536,6 +548,7 @@ async fn a_delegation_projects_the_child_thread_lifecycle() {
         .unwrap();
     assert_eq!(created["agent_name"], "researcher");
     let child_thread_id = created["session_thread_id"].as_str().unwrap().to_string();
+    assert_eq!(child_thread_id, "child-run-stable");
     // The input the coordinator sent and the reply it received are carried on the wire.
     let sent = list["data"]
         .as_array()

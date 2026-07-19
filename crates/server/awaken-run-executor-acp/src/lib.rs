@@ -44,9 +44,7 @@ use awaken_runtime_contract::execution::{
     Cancellation, Error, ExecutorCapabilities, Result, RunExecutor, Wait,
 };
 use awaken_runtime_contract::llm::{THREAD_USAGE_STATE_KEY, ThreadUsage, TokenUsage};
-use awaken_runtime_contract::permission::{
-    PermissionContext, PermissionDecision, PermissionPolicy,
-};
+use awaken_runtime_contract::permission::{ToolCall, ToolPermissionPolicy, ToolPermissionVerdict};
 use awaken_runtime_contract::resolved::Backend;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 
@@ -157,7 +155,7 @@ pub struct AcpRunExecutor {
     policy: SupervisePolicy,
     observer: Option<Arc<dyn LaunchObserver>>,
     /// Authorizes the external CLI's mid-turn tool requests. Defaults to allow (the
-    /// sandbox is the enforcement boundary); a host wires a neutral `PermissionPolicy`
+    /// sandbox is the enforcement boundary); a host wires a neutral `ToolPermissionPolicy`
     /// via [`with_permission_policy`](Self::with_permission_policy) to apply org
     /// policy / HITL uniformly across native and ACP runs.
     permission: Arc<dyn PermissionResolver>,
@@ -199,12 +197,12 @@ impl AcpRunExecutor {
     }
 
     /// Authorize the external CLI's tool requests through the single neutral
-    /// [`PermissionPolicy`] (G21) — the same authority that governs native tools —
+    /// [`ToolPermissionPolicy`] (G21) — the same authority that governs native tools —
     /// instead of the default allow. The CLI's `session/request_permission` is
     /// projected onto this policy and its decision projected back onto the agent's
     /// own allow/reject option.
     #[must_use]
-    pub fn with_permission_policy(mut self, policy: Arc<dyn PermissionPolicy>) -> Self {
+    pub fn with_permission_policy(mut self, policy: Arc<dyn ToolPermissionPolicy>) -> Self {
         self.permission = Arc::new(NeutralPermissionResolver { policy });
         self
     }
@@ -657,7 +655,7 @@ fn pause_ticket(activation: &RunActivation, run_id: &RunId, reason: AwaitReason)
             .catalog_fingerprint
             .0
             .clone(),
-        initiator: activation.initiator.clone(),
+        delegation_origin: activation.delegation_origin.clone(),
         reason,
         call_id: None,
         pending_tool: None,
@@ -666,29 +664,28 @@ fn pause_ticket(activation: &RunActivation, run_id: &RunId, reason: AwaitReason)
 }
 
 /// Bridges the ACP driver's [`PermissionResolver`] port onto the single neutral
-/// [`PermissionPolicy`] authority (G21). It projects the wire ask into a neutral
-/// [`PermissionContext`], asks the policy, and maps the decision back to a wire
+/// [`ToolPermissionPolicy`] authority (G21). It projects the wire ask into a neutral
+/// [`ToolCall`], asks the policy, and maps the decision back to a wire
 /// verdict — so an external CLI's tool requests are decided by the same policy that
 /// governs native tools. `Ask` (out-of-band/HITL) has no synchronous answer over
 /// the held ACP turn yet, so it fails safe to `Deny` (a turn-holding HITL resolve
 /// is a follow-up); `Allow`/`Deny` pass straight through.
 struct NeutralPermissionResolver {
-    policy: Arc<dyn PermissionPolicy>,
+    policy: Arc<dyn ToolPermissionPolicy>,
 }
 
 #[async_trait]
 impl PermissionResolver for NeutralPermissionResolver {
     async fn resolve(&self, ask: &PermissionAsk) -> PermissionVerdict {
-        let ctx = PermissionContext {
+        let ctx = ToolCall {
             tool_id: ask.tool.clone(),
             call_id: ask.call_id.clone(),
             arguments: ask.arguments.clone(),
         };
-        match self.policy.decide(&ctx).await {
-            PermissionDecision::Allow => PermissionVerdict::Allow,
-            PermissionDecision::Deny { .. } | PermissionDecision::Ask { .. } => {
-                PermissionVerdict::Deny
-            }
+        match self.policy.evaluate(&ctx).await {
+            ToolPermissionVerdict::Allow => PermissionVerdict::Allow,
+            ToolPermissionVerdict::Deny { .. }
+            | ToolPermissionVerdict::RequireConfirmation { .. } => PermissionVerdict::Deny,
         }
     }
 }

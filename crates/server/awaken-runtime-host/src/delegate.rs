@@ -1,6 +1,6 @@
-//! The host delegation executor: run a child Agent behind the `agent_run` tool.
+//! The host Run-delegation service: run a child Agent behind the `agent_run` tool.
 //!
-//! This is the composition-root implementation of the kernel's [`DelegationExecutor`].
+//! This is the composition-root implementation of [`RunDelegationService`].
 //! The kernel routes the delegation tool to it; here, native (in-process Agent Run)
 //! and remote agents are *peer* implementations chosen by `agent_id`. A remote agent
 //! is reached through the neutral [`RemoteAgent`] interface, so the wire (message shape,
@@ -14,13 +14,14 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_ext_builtin_tools::AGENT_RUN;
 use awaken_runtime_contract::delegation::{
-    DelegationExecutionError, DelegationExecutor, DelegationRequest, DelegationResume,
-    DelegationStep, RemoteAgent,
+    ChildRunCancellation, DelegationExecutionError, DelegationRequest, DelegationResume,
+    DelegationStep, RemoteAgent, RunDelegationService,
 };
 use awaken_runtime_contract::llm::LlmExecutor;
+use awaken_runtime_contract::resume::ResumeResult;
 use awaken_sandbox_local::{LocalProvider, LocalSandbox};
 
-use crate::subagent::AgentRunSandbox;
+use crate::agent_runner::{AgentRunBoundary, AgentRunSandbox, ChildRunRequest, RunScheduler};
 use serde_json::Value;
 
 use crate::host::{HostError, SharedHost};
@@ -44,7 +45,7 @@ pub(crate) struct Delegates {
     remotes: HashMap<String, Arc<dyn RemoteAgent>>,
     /// Per-Agent delegation rosters. Absence means that Agent has no delegation
     /// capability; being initiated by another Agent never implicitly copies the
-    /// initiator's roster.
+    /// delegation_origin's roster.
     agent_rosters: HashMap<String, HashSet<String>>,
 }
 
@@ -109,7 +110,7 @@ fn delegate_args(arguments: &Value) -> (String, String) {
 /// Runs delegates behind `agent_run`: local and remote Agents share the same
 /// first-class child Run identity and lifecycle; only placement differs.
 #[derive(Clone)]
-pub(crate) struct HostDelegationExecutor {
+pub(crate) struct HostRunDelegationService {
     llm: Arc<dyn LlmExecutor>,
     model_ref: String,
     provider: Arc<LocalProvider>,
@@ -120,13 +121,14 @@ pub(crate) struct HostDelegationExecutor {
     /// isolated one. Sandbox placement does not change child Run semantics.
     reuse_sandbox: bool,
     /// Delegates this Agent may call, regardless of local/remote placement.
-    roster: HashSet<String>,
+    root_roster: HashSet<String>,
     /// All configured Agent identities, per-Agent rosters, and remote adapters.
-    /// A child receives its own roster, never an implicit copy of its initiator's.
+    /// A child receives its own roster, never an implicit copy of its delegation_origin's.
     delegates: Delegates,
+    scheduler: Option<RunScheduler>,
 }
 
-impl HostDelegationExecutor {
+impl HostRunDelegationService {
     pub(crate) fn new(
         llm: Arc<dyn LlmExecutor>,
         model_ref: String,
@@ -134,29 +136,42 @@ impl HostDelegationExecutor {
         sandbox: Arc<LocalSandbox>,
         reuse_sandbox: bool,
         delegates: Delegates,
+        scheduler: Option<RunScheduler>,
     ) -> Self {
-        let roster = delegates.ids.clone();
+        let root_roster = delegates.ids.clone();
         Self {
             llm,
             model_ref,
             provider,
             sandbox,
             reuse_sandbox,
-            roster,
+            root_roster,
             delegates,
+            scheduler,
         }
     }
 
-    /// Run a native delegate as an ordinary Agent under a first-class child Run id.
+    fn may_delegate_to(
+        &self,
+        origin: &awaken_agent_contract::agent::delegation::DelegationOrigin,
+        target: &str,
+    ) -> bool {
+        origin
+            .agent_lineage
+            .last()
+            .and_then(|agent| self.delegates.agent_rosters.get(agent))
+            .unwrap_or(&self.root_roster)
+            .contains(target)
+    }
+
+    /// Drive a native delegate to one ordinary Run boundary.
     /// It receives that Agent's configured delegation roster; it may recursively
     /// delegate when its own config allows it. Sandbox placement is the only local
     /// execution choice made here.
-    async fn native_run(
+    async fn native_boundary(
         &self,
         agent_id: &str,
-        child_run_id: &awaken_agent_contract::agent::run::Id,
-        origin: awaken_agent_contract::agent::delegation::DelegationOrigin,
-        input: &str,
+        request: ChildRunRequest,
         context: awaken_runtime_contract::runtime_context::RuntimeRunContext,
     ) -> Result<DelegationStep, DelegationExecutionError> {
         let sandbox = if self.reuse_sandbox {
@@ -164,6 +179,7 @@ impl HostDelegationExecutor {
         } else {
             AgentRunSandbox::Fresh(&self.provider)
         };
+        let child_run_id = request.run_id.clone();
         // The child keeps its own committed usage; the returned value additionally
         // rolls that usage into the initiating Run's accounting projection.
         let delegates = self
@@ -172,38 +188,59 @@ impl HostDelegationExecutor {
             .get(agent_id)
             .cloned()
             .unwrap_or_default();
-        let delegation_executor = if delegates.is_empty() {
+        let run_delegation = if delegates.is_empty() {
             None
         } else {
-            let mut child_executor = self.clone();
-            child_executor.roster.clone_from(&delegates);
-            Some(Arc::new(child_executor) as Arc<dyn DelegationExecutor>)
+            Some(Arc::new(self.clone()) as Arc<dyn RunDelegationService>)
         };
-        let (text, usage) = crate::subagent::run_agent(
+        let boundary = crate::agent_runner::run_agent_until_boundary(
             self.llm.clone(),
-            crate::subagent::AgentExecution {
+            crate::agent_runner::AgentExecution {
                 agent_id,
                 model_ref: &self.model_ref,
                 delegates: &delegates,
-                delegation_executor,
+                run_delegation,
                 context: Some(context),
+                scheduler: self.scheduler.clone(),
             },
             sandbox,
-            crate::subagent::AgentRunIdentity::child(child_run_id, origin),
-            input,
-            None,
-            crate::subagent::UsageRollup::FoldIntoParent,
+            request,
         )
         .await
-        .map_err(DelegationExecutionError::new)?;
-        Ok(DelegationStep::Ended { text, usage })
+        .map_err(|error| {
+            if error.is_retryable() {
+                DelegationExecutionError::retryable(error.to_string())
+            } else {
+                DelegationExecutionError::new(error.to_string())
+            }
+        })?;
+        Ok(match boundary {
+            AgentRunBoundary::Ended { text, usage } => DelegationStep::Ended { text, usage },
+            AgentRunBoundary::Awaiting => DelegationStep::Awaiting {
+                continuation: serde_json::json!({
+                    "kind": "local_run",
+                    "agent_id": agent_id,
+                    "child_run_id": child_run_id.0,
+                }),
+            },
+        })
     }
 }
 
 #[async_trait]
-impl DelegationExecutor for HostDelegationExecutor {
+impl RunDelegationService for HostRunDelegationService {
     fn tool_id(&self) -> &str {
         AGENT_RUN
+    }
+
+    fn supports_parallel_completion(&self, arguments: &Value) -> bool {
+        let (agent_id, _) = delegate_args(arguments);
+        // A child is an ordinary Run and may reach HITL. Until it settles, the
+        // parent cannot promise terminal-only completion to the batch barrier.
+        // Independently dispatched children regain parallelism at the RunService
+        // scheduler rather than by making this false promise.
+        let _ = agent_id;
+        false
     }
 
     async fn start(
@@ -211,7 +248,7 @@ impl DelegationExecutor for HostDelegationExecutor {
         request: DelegationRequest,
     ) -> Result<DelegationStep, DelegationExecutionError> {
         let (agent_id, input) = delegate_args(&request.arguments);
-        if !self.roster.contains(&agent_id) {
+        if !self.may_delegate_to(&request.origin, &agent_id) {
             return Err(DelegationExecutionError::new(format!(
                 "delegate agent {agent_id:?} is not in this Agent's roster"
             )));
@@ -226,11 +263,15 @@ impl DelegationExecutor for HostDelegationExecutor {
                 )
                 .await;
         }
-        self.native_run(
+        self.native_boundary(
             &agent_id,
-            &request.child_run_id,
-            request.origin,
-            &input,
+            ChildRunRequest {
+                run_id: request.child_run_id,
+                origin: request.origin,
+                seed: Some(input.into()),
+                resume: None,
+                parent_thread_id: request.parent_thread_id,
+            },
             request.context,
         )
         .await
@@ -240,8 +281,8 @@ impl DelegationExecutor for HostDelegationExecutor {
         &self,
         request: DelegationResume,
     ) -> Result<DelegationStep, DelegationExecutionError> {
-        // The handle names the remote agent whose task awaiting for input; deliver
-        // the user's input as a follow-up turn on the same context.
+        // The continuation identifies placement only; lifecycle authority remains
+        // the child Run's committed state and ResumeTicket.
         let agent_id = request
             .continuation
             .get("agent_id")
@@ -249,15 +290,56 @@ impl DelegationExecutor for HostDelegationExecutor {
             .ok_or_else(|| {
                 DelegationExecutionError::new("delegation continuation is missing agent_id")
             })?;
-        let remote = self.delegates.remotes.get(agent_id).ok_or_else(|| {
-            DelegationExecutionError::new(format!("agent {agent_id:?} is not a remote agent"))
-        })?;
+        if let Some(remote) = self.delegates.remotes.get(agent_id) {
+            let input = match request.result {
+                ResumeResult::ToolResult(output) => output.content,
+                ResumeResult::Input(text) => text,
+                ResumeResult::Decision { allow, note } => {
+                    note.unwrap_or_else(|| if allow { "allow" } else { "deny" }.to_string())
+                }
+            };
+            return remote
+                .run(
+                    agent_id,
+                    &request.child_run_id.0,
+                    &input,
+                    request.context.cancellation.as_ref(),
+                )
+                .await;
+        }
+        if !self.may_delegate_to(&request.origin, agent_id) {
+            return Err(DelegationExecutionError::new(format!(
+                "delegate agent {agent_id:?} is not in this Agent's roster"
+            )));
+        }
+        self.native_boundary(
+            agent_id,
+            ChildRunRequest {
+                run_id: request.child_run_id,
+                origin: request.origin,
+                seed: None,
+                resume: Some(request.result),
+                parent_thread_id: request.parent_thread_id,
+            },
+            request.context,
+        )
+        .await
+    }
+
+    async fn cancel(
+        &self,
+        cancellation: ChildRunCancellation,
+    ) -> Result<(), DelegationExecutionError> {
+        let Some(remote) = self.delegates.remotes.get(&cancellation.target_agent_id) else {
+            // A native child shares the parent's cancellation token while live;
+            // after a crash it has no independent remote process to signal.
+            return Ok(());
+        };
         remote
-            .run(
-                agent_id,
-                &request.child_run_id.0,
-                &request.input,
-                request.context.cancellation.as_ref(),
+            .cancel(
+                &cancellation.target_agent_id,
+                &cancellation.child_run_id,
+                cancellation.execution_reference.as_ref(),
             )
             .await
     }

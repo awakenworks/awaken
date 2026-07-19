@@ -22,7 +22,7 @@ use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInst
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
 };
-use awaken_runtime_contract::permission::{GateOutcome, PermissionContext, ToolGateHook};
+use awaken_runtime_contract::permission::{GateOutcome, ToolGateHook};
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor,
 };
@@ -106,11 +106,11 @@ struct SuspendGate;
 impl ToolGateHook for SuspendGate {
     async fn gate(
         &self,
-        _c: &PermissionContext,
+        _c: &ToolCall,
         _state: &awaken_agent_contract::agent::state::Store,
     ) -> GateOutcome {
-        GateOutcome::Suspend {
-            ticket_id: TICKET.to_string(),
+        GateOutcome::RequireConfirmation {
+            correlation_id: TICKET.to_string(),
         }
     }
 }
@@ -121,7 +121,7 @@ struct ScheduleGate;
 impl ToolGateHook for ScheduleGate {
     async fn gate(
         &self,
-        _c: &PermissionContext,
+        _c: &ToolCall,
         _state: &awaken_agent_contract::agent::state::Store,
     ) -> GateOutcome {
         GateOutcome::Schedule {
@@ -390,7 +390,7 @@ pub fn activation_on(run: &str, thread: &str) -> RunActivation {
             role: Role::User,
             content: vec![ContentBlock::text("go")],
         }],
-        initiator: None,
+        delegation_origin: None,
         model_ref_override: None,
     }
 }
@@ -588,12 +588,42 @@ impl FlakyDispatchStore {
 
 #[async_trait::async_trait]
 impl awaken_run_ingress::DispatchQueue for FlakyDispatchStore {
+    async fn lock_commit_epoch(
+        &self,
+        claim: &awaken_run_ingress::RunClaim,
+    ) -> Result<Option<awaken_run_ingress::CommitEpochGuard>, awaken_run_ingress::DispatchError>
+    {
+        self.inner.lock_commit_epoch(claim).await
+    }
+
     async fn enqueue_with(
         &self,
-        request: awaken_run_ingress::RunExecutionRequest,
+        request: awaken_run_ingress::RunDispatch,
         options: awaken_run_ingress::SubmitOptions,
     ) -> Result<(), awaken_run_ingress::DispatchError> {
         self.inner.enqueue_with(request, options).await
+    }
+    async fn claim_new_run(
+        &self,
+        request: awaken_run_ingress::RunDispatch,
+        owner: &str,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<awaken_run_ingress::Claimed>, awaken_run_ingress::DispatchError> {
+        self.inner
+            .claim_new_run(request, owner, lease_ms, now_ms)
+            .await
+    }
+    async fn deliver_and_claim(
+        &self,
+        input: awaken_run_ingress::PendingInput,
+        owner: &str,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<awaken_run_ingress::Claimed>, awaken_run_ingress::DispatchError> {
+        self.inner
+            .deliver_and_claim(input, owner, lease_ms, now_ms)
+            .await
     }
     async fn claim(
         &self,
@@ -608,6 +638,15 @@ impl awaken_run_ingress::DispatchQueue for FlakyDispatchStore {
             ));
         }
         self.inner.claim(owner, lease_ms, now_ms).await
+    }
+    async fn claim_run(
+        &self,
+        run_id: &RunId,
+        owner: &str,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<awaken_run_ingress::Claimed>, awaken_run_ingress::DispatchError> {
+        self.inner.claim_run(run_id, owner, lease_ms, now_ms).await
     }
     async fn renew_lease(
         &self,
@@ -636,13 +675,6 @@ impl awaken_run_ingress::DispatchQueue for FlakyDispatchStore {
         consumed: &[String],
     ) -> Result<awaken_run_ingress::SettleOutcome, awaken_run_ingress::DispatchError> {
         self.inner.settle(run_id, epoch, outcome, consumed).await
-    }
-    async fn current_epoch(
-        &self,
-        run_id: &RunId,
-    ) -> Result<Option<u64>, awaken_run_ingress::DispatchError> {
-        // Wraps a real store: keep the fence live by delegating.
-        self.inner.current_epoch(run_id).await
     }
     async fn reap(
         &self,
@@ -878,10 +910,10 @@ pub async fn assert_cross_thread_outbox<S: awaken_run_ingress::Dispatch>(store: 
 /// Shared spec for scheduled delivery (M4): a future-dated pending input is not
 /// claimable until its time has come; every backend must gate the wake the same.
 pub async fn assert_scheduled_due<S: awaken_run_ingress::Dispatch>(store: &S) {
-    use awaken_run_ingress::{DispatchOutcome, PendingInput, RunExecutionRequest};
+    use awaken_run_ingress::{DispatchOutcome, PendingInput, RunDispatch};
     let run = RunId("run-1".to_string());
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
     // Claim the fresh run, then await it so it can be woken by a delivery.
@@ -926,10 +958,10 @@ pub async fn assert_scheduled_due<S: awaken_run_ingress::Dispatch>(store: &S) {
 /// past its budget is dead-lettered and no longer claimed, and `requeue` brings
 /// it back. Every backend must match.
 pub async fn assert_dead_letter<S: awaken_run_ingress::Dispatch>(store: &S) {
-    use awaken_run_ingress::RunExecutionRequest;
+    use awaken_run_ingress::RunDispatch;
     let run = RunId("run-1".to_string());
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
 
@@ -962,12 +994,12 @@ pub async fn assert_dead_letter<S: awaken_run_ingress::Dispatch>(store: &S) {
 /// (returns its thread id and is removed); a running one is not. Every backend
 /// must match.
 pub async fn assert_cancel<S: awaken_run_ingress::Dispatch>(store: &S) {
-    use awaken_run_ingress::RunExecutionRequest;
+    use awaken_run_ingress::RunDispatch;
     let thread = Some(ThreadId(THREAD.to_string()));
 
     // A pending run is cancellable and then gone.
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
     assert_eq!(
@@ -983,7 +1015,7 @@ pub async fn assert_cancel<S: awaken_run_ingress::Dispatch>(store: &S) {
 
     // A running run is not durably cancellable (use live control instead).
     store
-        .enqueue(RunExecutionRequest::new(activation("run-2")))
+        .enqueue(RunDispatch::new(activation("run-2")))
         .await
         .unwrap();
     assert!(store.claim("w", 1_000, 0).await.unwrap().is_some());
@@ -1008,7 +1040,7 @@ pub async fn assert_cancel<S: awaken_run_ingress::Dispatch>(store: &S) {
     let thread_id = ThreadId(THREAD.to_string());
     assert!(store.awaiting_run(&thread_id).await.unwrap().is_none());
     store
-        .enqueue(RunExecutionRequest::new(activation("run-3")))
+        .enqueue(RunDispatch::new(activation("run-3")))
         .await
         .unwrap();
     assert!(store.claim("w", 1_000, 0).await.unwrap().is_some());
@@ -1029,11 +1061,11 @@ pub async fn assert_cancel<S: awaken_run_ingress::Dispatch>(store: &S) {
 
 /// Shared spec for priority, dedupe, and dead-letter GC. Every backend matches.
 pub async fn assert_priority_dedupe_gc<S: awaken_run_ingress::Dispatch>(store: &S) {
-    use awaken_run_ingress::{DispatchOutcome, RunExecutionRequest, SubmitOptions};
+    use awaken_run_ingress::{DispatchOutcome, RunDispatch, SubmitOptions};
     // Each run on its own thread: priority/dedupe/GC are thread-orthogonal, and
     // single-writer-per-thread (ADR-0022) forbids claiming two runs of one thread at
     // once, which these assertions do.
-    let req = |id: &str| RunExecutionRequest::new(activation_on(id, id));
+    let req = |id: &str| RunDispatch::new(activation_on(id, id));
 
     // Priority: the higher-priority fresh run is claimed first.
     store
@@ -1126,11 +1158,11 @@ pub async fn assert_priority_dedupe_gc<S: awaken_run_ingress::Dispatch>(store: &
 /// Shared spec for the dispatch query surface (ADR-0025): list_dispatches reports
 /// each row's status and attempts. Every backend matches.
 pub async fn assert_list_dispatches<S: awaken_run_ingress::Dispatch>(store: &S) {
-    use awaken_run_ingress::{DispatchState, RunExecutionRequest};
+    use awaken_run_ingress::{DispatchState, RunDispatch};
 
     // A fresh run is Pending; once claimed it is Running.
     store
-        .enqueue(RunExecutionRequest::new(activation("r1")))
+        .enqueue(RunDispatch::new(activation("r1")))
         .await
         .unwrap();
     let listed = store.list_dispatches().await.unwrap();
@@ -1147,14 +1179,14 @@ pub async fn assert_list_dispatches<S: awaken_run_ingress::Dispatch>(store: &S) 
 /// Shared spec for the daemon's bulk lease renewal (ADR-0024): renewing an owner's
 /// in-flight leases keeps them from being reclaimed. Every backend matches.
 pub async fn assert_renew_owned_leases<S: awaken_run_ingress::Dispatch>(store: &S) {
-    use awaken_run_ingress::RunExecutionRequest;
+    use awaken_run_ingress::RunDispatch;
 
     // owner-a claims two runs at t=0 with a 100ms lease (expire at 100). Distinct
     // threads: single-writer-per-thread (ADR-0022) means one owner holds at most one
     // in-flight run per thread, so "owner-a holds two leases" needs two threads.
     for run in ["r1", "r2"] {
         store
-            .enqueue(RunExecutionRequest::new(activation_on(run, run)))
+            .enqueue(RunDispatch::new(activation_on(run, run)))
             .await
             .unwrap();
         assert!(store.claim("owner-a", 100, 0).await.unwrap().is_some());
@@ -1179,11 +1211,11 @@ pub async fn assert_renew_owned_leases<S: awaken_run_ingress::Dispatch>(store: &
 /// out — is left untouched and its original lease still expires on schedule. Every
 /// backend matches.
 pub async fn assert_renew_skips_far_from_expiry<S: awaken_run_ingress::Dispatch>(store: &S) {
-    use awaken_run_ingress::RunExecutionRequest;
+    use awaken_run_ingress::RunDispatch;
 
     // owner-a claims r1 at t=0 with a 100ms lease (expires at 100).
     store
-        .enqueue(RunExecutionRequest::new(activation("r1")))
+        .enqueue(RunDispatch::new(activation("r1")))
         .await
         .unwrap();
     assert!(store.claim("owner-a", 100, 0).await.unwrap().is_some());
@@ -1207,12 +1239,12 @@ pub async fn assert_renew_skips_far_from_expiry<S: awaken_run_ingress::Dispatch>
 /// Shared spec for time-windowed dead-letter GC (ADR-0023): GC removes only
 /// dead-letters older than the cutoff; younger ones stay. Every backend matches.
 pub async fn assert_dead_letter_ttl_gc<S: awaken_run_ingress::Dispatch>(store: &S) {
-    use awaken_run_ingress::RunExecutionRequest;
+    use awaken_run_ingress::RunDispatch;
 
     // A run is dead-lettered at t=1000 (claimed with a 1ms lease at t=0, then
     // reaped at budget 0 once the lease has expired).
     store
-        .enqueue(RunExecutionRequest::new(activation("poison")))
+        .enqueue(RunDispatch::new(activation("poison")))
         .await
         .unwrap();
     assert!(store.claim("w", 1, 0).await.unwrap().is_some());
@@ -1237,11 +1269,11 @@ pub async fn assert_dead_letter_ttl_gc<S: awaken_run_ingress::Dispatch>(store: &
 /// the thread's prior awaiting work; only the newest run stays claimable. Every
 /// backend matches.
 pub async fn assert_supersession<S: awaken_run_ingress::Dispatch>(store: &S) {
-    use awaken_run_ingress::{DispatchOutcome, RunExecutionRequest, SubmitOptions};
+    use awaken_run_ingress::{DispatchOutcome, RunDispatch, SubmitOptions};
 
     // An older run awaits on the thread.
     store
-        .enqueue(RunExecutionRequest::new(activation("old")))
+        .enqueue(RunDispatch::new(activation("old")))
         .await
         .unwrap();
     assert!(store.claim("w", 1_000, 0).await.unwrap().is_some());
@@ -1253,7 +1285,7 @@ pub async fn assert_supersession<S: awaken_run_ingress::Dispatch>(store: &S) {
     // A superseding submit on the same thread supersedes the awaiting run.
     store
         .enqueue_with(
-            RunExecutionRequest::new(activation("new")),
+            RunDispatch::new(activation("new")),
             SubmitOptions {
                 supersede: true,
                 ..Default::default()
@@ -1283,7 +1315,7 @@ pub async fn assert_supersession<S: awaken_run_ingress::Dispatch>(store: &S) {
 /// Shared spec for the idle-thread inbox (ADR-0021): unbound input is listed for
 /// its thread, and a Done settle that consumed it removes it. Every backend matches.
 pub async fn assert_idle_thread_inbox<S: awaken_run_ingress::Dispatch>(store: &S) {
-    use awaken_run_ingress::{DispatchOutcome, RunExecutionRequest};
+    use awaken_run_ingress::{DispatchOutcome, RunDispatch};
     use awaken_runtime_contract::resume::ResumeResult;
 
     // Unbound idle-thread input (empty run/correlation) is listed for the thread.
@@ -1299,7 +1331,7 @@ pub async fn assert_idle_thread_inbox<S: awaken_run_ingress::Dispatch>(store: &S
 
     // A fresh run drains it: a Done settle that consumed it removes it.
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
     store.claim("w", 1_000, 0).await.unwrap();
@@ -1327,10 +1359,10 @@ pub async fn assert_idle_thread_inbox<S: awaken_run_ingress::Dispatch>(store: &S
 /// extends its lease so another node's recovery cannot steal it; a non-owner
 /// cannot renew; an un-renewed lease still expires. Every backend matches.
 pub async fn assert_lease_renewal<S: awaken_run_ingress::Dispatch>(store: &S) {
-    use awaken_run_ingress::RunExecutionRequest;
+    use awaken_run_ingress::RunDispatch;
     let run = RunId("run-1".to_string());
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
     assert!(store.claim("owner-a", 100, 0).await.unwrap().is_some());
@@ -1361,10 +1393,10 @@ pub async fn assert_lease_renewal<S: awaken_run_ingress::Dispatch>(store: &S) {
 /// stale owner whose lease lapsed and was re-claimed cannot settle the dispatch out
 /// from under the reclaimer — its settle is fenced and changes nothing.
 pub async fn assert_settle_fences_stale_epoch<S: awaken_run_ingress::Dispatch>(store: &S) {
-    use awaken_run_ingress::{DispatchOutcome, RunExecutionRequest, SettleOutcome};
+    use awaken_run_ingress::{DispatchOutcome, RunDispatch, SettleOutcome};
     let run = RunId("run-1".to_string());
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
 
@@ -1436,7 +1468,7 @@ pub async fn assert_settle_fences_stale_epoch<S: awaken_run_ingress::Dispatch>(s
 /// Status::DeadLetter` in memory). Without this a poison run's key would wedge the
 /// work forever: the retry could never be enqueued. Every backend must match.
 pub async fn assert_dedupe_ignores_dead_lettered<S: awaken_run_ingress::Dispatch>(store: &S) {
-    use awaken_run_ingress::{RunExecutionRequest, SubmitOptions};
+    use awaken_run_ingress::{RunDispatch, SubmitOptions};
     let key = || SubmitOptions {
         dedupe_key: Some("k".to_string()),
         ..Default::default()
@@ -1445,7 +1477,7 @@ pub async fn assert_dedupe_ignores_dead_lettered<S: awaken_run_ingress::Dispatch
     // A first run takes the key, is claimed with a 1ms lease, then reaped (budget 0)
     // into the dead-letter status once its lease expires.
     store
-        .enqueue_with(RunExecutionRequest::new(activation("run-1")), key())
+        .enqueue_with(RunDispatch::new(activation("run-1")), key())
         .await
         .unwrap();
     assert!(store.claim("w", 1, 0).await.unwrap().is_some());
@@ -1458,7 +1490,7 @@ pub async fn assert_dedupe_ignores_dead_lettered<S: awaken_run_ingress::Dispatch
     // A re-submit under the SAME key is NOT deduped away — the only holder is dead —
     // so run-2 enqueues and is the claimable work (run-1, dead-lettered, is not).
     store
-        .enqueue_with(RunExecutionRequest::new(activation("run-2")), key())
+        .enqueue_with(RunDispatch::new(activation("run-2")), key())
         .await
         .unwrap();
     assert_eq!(
@@ -1474,78 +1506,6 @@ pub async fn assert_dedupe_ignores_dead_lettered<S: awaken_run_ingress::Dispatch
     );
 }
 
-/// Shared spec (every backend must match): `current_epoch` / `holds_current_epoch`
-/// track the same fence token the settle path uses, so the COMMIT fence reads the
-/// truth. Cause: the run is un-enqueued / claimed / reclaimed / settled. Effect: the
-/// reported epoch is None / 1 / 2 / None, and a caller holding a lower epoch than the
-/// current one is refused (`holds == false`) while the current owner — and any read
-/// that cannot see a row — is allowed (fail-open), which is exactly what the commit
-/// fence needs to reject a superseded owner without ever blocking a legitimate write.
-pub async fn assert_current_epoch_tracks_the_fence<S: awaken_run_ingress::Dispatch>(store: &S) {
-    use awaken_run_ingress::{DispatchOutcome, RunExecutionRequest};
-    let run = RunId("run-1".to_string());
-
-    // No row yet: the epoch is unknown, and the fence fails OPEN (a write is never
-    // rejected just because the store cannot see the run).
-    assert_eq!(store.current_epoch(&run).await.unwrap(), None);
-    assert!(store.holds_current_epoch(&run, 0).await.unwrap());
-
-    store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
-        .await
-        .unwrap();
-    // Enqueued but never claimed: epoch 0.
-    assert_eq!(store.current_epoch(&run).await.unwrap(), Some(0));
-
-    // Owner A claims: epoch 1. A holds it; a stale epoch 0 does not.
-    let a = store
-        .claim("owner-a", 100, 0)
-        .await
-        .unwrap()
-        .expect("A claims");
-    assert_eq!(a.lease.epoch, 1);
-    assert_eq!(store.current_epoch(&run).await.unwrap(), Some(1));
-    assert!(store.holds_current_epoch(&run, 1).await.unwrap());
-    assert!(!store.holds_current_epoch(&run, 0).await.unwrap());
-
-    // A's lease lapses; B reclaims: epoch 2. A (epoch 1) is now SUPERSEDED — its
-    // commits must be fenced — while B (epoch 2) holds the fence.
-    let b = store
-        .claim("owner-b", 100, 200)
-        .await
-        .unwrap()
-        .expect("B reclaims");
-    assert_eq!(b.lease.epoch, 2);
-    assert_eq!(store.current_epoch(&run).await.unwrap(), Some(2));
-    assert!(
-        !store
-            .holds_current_epoch(&run, a.lease.epoch)
-            .await
-            .unwrap(),
-        "the superseded owner no longer holds the fence"
-    );
-    assert!(
-        store
-            .holds_current_epoch(&run, b.lease.epoch)
-            .await
-            .unwrap()
-    );
-
-    // B settles Done: the row is gone, so the epoch is unknown again and the fence
-    // fails open (B's own terminal commit, which races its settle, is never rejected).
-    store
-        .settle(&run, b.lease.epoch, DispatchOutcome::Done, &[])
-        .await
-        .unwrap();
-    assert_eq!(store.current_epoch(&run).await.unwrap(), None);
-    assert!(
-        store
-            .holds_current_epoch(&run, b.lease.epoch)
-            .await
-            .unwrap()
-    );
-}
-
 /// Shared spec (single-writer-per-thread, ADR-0022, on the WAKE path): an awaiting run
 /// with due input is NOT woken while its own thread already has another run in
 /// flight — waking it would put two concurrent runs on one thread. The suppressed
@@ -1554,12 +1514,12 @@ pub async fn assert_current_epoch_tracks_the_fence<S: awaken_run_ingress::Dispat
 pub async fn assert_wake_suppressed_while_thread_running<S: awaken_run_ingress::Dispatch>(
     store: &S,
 ) {
-    use awaken_run_ingress::{DispatchOutcome, RunExecutionRequest};
+    use awaken_run_ingress::{DispatchOutcome, RunDispatch};
     use awaken_runtime_contract::resume::ResumeResult;
 
     // run-1 awaits on the thread.
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
     assert!(store.claim("w", 10_000, 0).await.unwrap().is_some());
@@ -1575,7 +1535,7 @@ pub async fn assert_wake_suppressed_while_thread_running<S: awaken_run_ingress::
 
     // run-2 (same thread) is claimed and left in flight, so the thread is now busy.
     store
-        .enqueue(RunExecutionRequest::new(activation("run-2")))
+        .enqueue(RunDispatch::new(activation("run-2")))
         .await
         .unwrap();
     assert!(
@@ -1625,9 +1585,9 @@ pub async fn assert_concurrent_recovery_yields_one_winner<S>(store: Arc<S>)
 where
     S: awaken_run_ingress::Dispatch + Send + Sync + 'static,
 {
-    use awaken_run_ingress::RunExecutionRequest;
+    use awaken_run_ingress::RunDispatch;
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
     // Owner A claims with a short lease (ttl 100 from t=0); it has lapsed by t=200.
@@ -1663,10 +1623,10 @@ where
 /// Shared spec: a `Awaiting` settle is fenced the same way — a stale owner cannot
 /// re-await (and reset the crash-retry budget / clear the lease) behind a reclaimer.
 pub async fn assert_awaiting_settle_fences_stale_epoch<S: awaken_run_ingress::Dispatch>(store: &S) {
-    use awaken_run_ingress::{DispatchOutcome, RunExecutionRequest, SettleOutcome};
+    use awaken_run_ingress::{DispatchOutcome, RunDispatch, SettleOutcome};
     let run = RunId("run-1".to_string());
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
 

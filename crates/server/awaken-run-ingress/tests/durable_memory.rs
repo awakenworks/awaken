@@ -16,7 +16,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_ext_builtin_tools::MessageSender;
 use awaken_run_ingress::{
     DispatchOutcome, DispatchQueue, DispatchWorker, DurableRunIngress, Inbox, MemoryDispatchStore,
-    OutboxMessageSender, PendingInput, RunExecutionRequest, RunIngressCapabilities,
+    OutboxMessageSender, PendingInput, RunDispatch, RunIngressCapabilities,
 };
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime::{DirectRunIngress, RunIngress};
@@ -345,7 +345,7 @@ async fn duplicate_pending_delivery_is_idempotent() {
 async fn expired_lease_is_reclaimable_for_recovery() {
     let store = MemoryDispatchStore::new();
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
 
@@ -378,7 +378,7 @@ async fn worker_recovery_runs_a_crashed_dispatch_to_completion() {
     // Simulate a worker that claimed a run, then crashed before executing it:
     // enqueue and claim directly, leaving a held lease and no committed run.
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
     assert!(
@@ -416,7 +416,7 @@ async fn settle_done_clears_pending_and_dispatch() {
     // A store-level invariant: settling Done removes the dispatch and any pending.
     let store = MemoryDispatchStore::new();
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
     store
@@ -687,7 +687,7 @@ async fn cancel_durable_for_a_queued_run_that_never_ran() {
     // Enqueue without driving, then cancel: a terminal Cancelled is committed
     // even though the run never executed.
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
     assert!(
@@ -800,7 +800,7 @@ async fn ingress_dead_letter_and_purge_ops() {
 
     // A crashed run reaped through the ingress API.
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
     assert!(store.claim("w", 1, 0).await.unwrap().is_some());
@@ -872,7 +872,7 @@ async fn a_recovered_scheduled_action_is_performed() {
     // Its dispatch is a crashed in-flight claim: 'running', lease expired at 10,
     // never settled.
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
     store.claim("dead-worker", 10, 0).await.unwrap();
@@ -957,11 +957,6 @@ async fn settle_fences_stale_epoch_store_spec() {
 }
 
 #[tokio::test]
-async fn current_epoch_tracks_the_fence_store_spec() {
-    harness::assert_current_epoch_tracks_the_fence(&MemoryDispatchStore::new()).await;
-}
-
-#[tokio::test]
 async fn a_superseded_owners_commit_is_fenced_while_the_current_owners_lands() {
     // dispatch-fencing-token-gap closed. A run commits per step while it executes, so a
     // stale owner — its lease lapsed and a peer re-claimed under a higher epoch — must
@@ -971,13 +966,15 @@ async fn a_superseded_owners_commit_is_fenced_while_the_current_owners_lands() {
     // of the already-covered settle fence.
     use awaken_agent_contract::thread::commit::coordinator::Coordinator;
     use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
-    use awaken_run_ingress::FencedCommitCoordinator;
+    use awaken_run_ingress::{
+        ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit, RunClaim,
+    };
 
     let store = Arc::new(MemoryDispatchStore::new());
     let inner = Arc::new(MemoryCommitCoordinator::new());
 
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
     // Owner A claims (epoch 1); its lease lapses; owner B reclaims (epoch 2).
@@ -1006,8 +1003,9 @@ async fn a_superseded_owners_commit_is_fenced_while_the_current_owners_lands() {
     let run = RunId("run-1".to_string());
 
     // A (stale epoch 1) is fenced — nothing reaches the durable boundary.
-    let fenced_a =
-        FencedCommitCoordinator::new(inner.clone(), store.clone(), run.clone(), a.lease.epoch);
+    let service: Arc<dyn ClaimedRunCommit> =
+        Arc::new(GuardedRunCommit::new(inner.clone(), store.clone()));
+    let fenced_a = ClaimedCommitCoordinator::new(service.clone(), RunClaim::from(&a.lease));
     assert!(
         fenced_a.commit(plan(&run)).await.is_err(),
         "a superseded owner's commit must be fenced"
@@ -1019,24 +1017,29 @@ async fn a_superseded_owners_commit_is_fenced_while_the_current_owners_lands() {
     );
 
     // B (current epoch 2) commits through.
-    let fenced_b =
-        FencedCommitCoordinator::new(inner.clone(), store.clone(), run.clone(), b.lease.epoch);
+    let fenced_b = ClaimedCommitCoordinator::new(service.clone(), RunClaim::from(&b.lease));
     fenced_b
         .commit(plan(&run))
         .await
         .expect("the current owner commits");
     assert_eq!(inner.commit_count(), 1, "the current owner's commit landed");
 
-    // Fail-open: a run the store has no row for (already settled, or a backend that
-    // cannot read the fence) is never blocked — the fence only rejects a DEFINITE
-    // supersession, so it can never strand a legitimate write.
+    // Fail-closed: a run with no live dispatch has no execution capability.
     let ghost = RunId("ghost".to_string());
-    let fenced_ghost = FencedCommitCoordinator::new(inner.clone(), store.clone(), ghost.clone(), 7);
-    fenced_ghost
-        .commit(plan(&ghost))
-        .await
-        .expect("an unknown run fails open");
-    assert_eq!(inner.commit_count(), 2, "the fail-open commit landed");
+    let fenced_ghost = ClaimedCommitCoordinator::new(
+        service,
+        RunClaim {
+            run_id: ghost.clone(),
+            owner: "ghost-owner".to_string(),
+            epoch: 7,
+        },
+    );
+    assert!(fenced_ghost.commit(plan(&ghost)).await.is_err());
+    assert_eq!(
+        inner.commit_count(),
+        1,
+        "the unauthorized commit was fenced"
+    );
 }
 
 #[tokio::test]
@@ -1127,7 +1130,7 @@ async fn ingress_lists_dispatches_and_purges_aged_dead_letters() {
     let ingress = DurableRunIngress::new(runtime, store.clone(), commit);
 
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
     let listed = ingress.list_dispatches().await.unwrap();

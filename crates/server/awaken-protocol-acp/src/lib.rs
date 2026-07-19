@@ -192,7 +192,7 @@ pub enum PermissionVerdict {
 
 /// Resolves an agent permission request. Injected like [`RunFactAppender`]: this
 /// low wire crate defines the narrow port; the executor supplies an adapter that
-/// bridges it to the single neutral `PermissionPolicy` authority (G21). This is a
+/// bridges it to the single neutral `ToolPermissionPolicy` authority (G21). This is a
 /// projection seam, **not** a parallel policy — the driver never decides, it asks.
 #[async_trait]
 pub trait PermissionResolver: Send + Sync {
@@ -234,7 +234,7 @@ pub struct SessionMcpServer {
 /// codec reads/updates it across the handshake; the newline stand-in ignores all
 /// but nothing (it has no session/permission concept).
 pub struct TurnConfig<'a> {
-    /// Authorizes the agent's mid-turn tool requests (the neutral `PermissionPolicy`
+    /// Authorizes the agent's mid-turn tool requests (the neutral `ToolPermissionPolicy`
     /// behind an executor adapter).
     pub resolver: &'a dyn PermissionResolver,
     /// MCP servers to hand the CLI at `session/new` (the `AcpSession` interface, for
@@ -544,7 +544,7 @@ impl Supervisor {
 
     /// [`supervise`](Self::supervise) with the [`TurnConfig`]: the executor wires
     /// its neutral permission resolver and the ACP session to resume here, so an
-    /// external CLI's tool requests are decided by the single `PermissionPolicy`
+    /// external CLI's tool requests are decided by the single `ToolPermissionPolicy`
     /// and its session survives the per-turn relaunch.
     #[allow(clippy::too_many_arguments)]
     pub async fn supervise_with_config(

@@ -100,7 +100,7 @@ fn ticket(run: &str, thread: &str) -> ResumeTicket {
         thread_id: ThreadId(thread.to_string()),
         snapshot_id: "snap-1".to_string(),
         catalog_fingerprint: "fp-1".to_string(),
-        initiator: None,
+        delegation_origin: None,
         reason: AwaitReason::ToolPermission,
         call_id: Some("call-1".to_string()),
         pending_tool: None,

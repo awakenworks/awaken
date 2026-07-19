@@ -1,8 +1,9 @@
 //! In-memory reference [`WorkQueue`] backend + the shared lease bookkeeping.
 //!
 //! [`InMemoryWorkQueue`] is the open-tier single-process default the routes wire when
-//! no durable backend is configured; [`LeaseBook`] is the process-local reclaim + poll
-//! bookkeeping the sqlite/postgres backends share, so the three can't drift. All three
+//! no durable backend is configured; [`LeaseBook`] is its process-local lease model and
+//! the poll-liveness bookkeeping used by the durable stores. Durable stores keep lease
+//! safety authority in their rows. All three
 //! backends live in this crate, beside the durable siblings; the neutral port + value
 //! objects they operate on live inward in `awaken-session-contract`.
 
@@ -12,8 +13,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use awaken_session_contract::work_queue::{
-    LeaseReceipt, OBJECT_AT, QueueStats, WorkItem, WorkPayload, WorkQueue, WorkState,
+    HeartbeatResult, LeaseHeartbeat, LeaseReceipt, OBJECT_AT, QueueStats, WorkItem, WorkPayload,
+    WorkQueue, WorkState,
 };
+
+use super::heartbeat_at;
 
 /// The lease TTL a heartbeat reports (seconds).
 const HEARTBEAT_TTL_SECONDS: u64 = 60;
@@ -23,16 +27,15 @@ pub const LEASE_TTL_MS: u64 = HEARTBEAT_TTL_SECONDS * 1000;
 /// The liveness window for `workers_polling`: a worker counts as polling if it
 /// polled within this many ms of now (the SDK's ~30s window).
 pub const POLLER_WINDOW_MS: u64 = 30_000;
-/// Ephemeral lease + poll bookkeeping shared by every backend. Leases and poll
-/// liveness are inherently short-lived (a lease is held by a heartbeating worker;
-/// a poll counts for ~30s) and meaningless after a restart, so they live in
-/// process — no durable column — keeping the wire and the schema unchanged. This
-/// is the single source of the reclaim + `workers_polling` logic, so the three
-/// backends can't drift.
+/// Process-local bookkeeping. The in-memory backend uses both maps; durable stores
+/// use only `polls`, because their lease owner/epoch/expiry must survive restarts and
+/// coordinate across processes in the database.
 #[derive(Default)]
 pub struct LeaseBook {
     /// work_id → lease expiry (ms). Absent ⇒ no live lease (reclaimable).
     leases: Mutex<BTreeMap<String, u64>>,
+    /// work_id → worker identity that owns the current lease.
+    owners: Mutex<BTreeMap<String, String>>,
     /// env_id → (worker_id → last poll ms).
     polls: Mutex<BTreeMap<String, BTreeMap<String, u64>>>,
 }
@@ -57,14 +60,37 @@ impl LeaseBook {
     }
     /// Start/extend `wid`'s lease to `now_ms + LEASE_TTL_MS`.
     pub fn lease(&self, wid: &str, now_ms: u64) {
+        self.lease_for(wid, now_ms, LEASE_TTL_MS);
+    }
+
+    /// Bind the current lease to the worker that claimed it.
+    pub fn own(&self, wid: &str, worker_id: &str) {
+        self.owners
+            .lock()
+            .unwrap()
+            .insert(wid.to_string(), worker_id.to_string());
+    }
+
+    /// Whether `worker_id` owns `wid`'s current lease.
+    pub fn is_owned_by(&self, wid: &str, worker_id: &str) -> bool {
+        self.owners
+            .lock()
+            .unwrap()
+            .get(wid)
+            .is_some_and(|owner| owner == worker_id)
+    }
+
+    /// Start/extend `wid`'s lease by the requested duration.
+    pub fn lease_for(&self, wid: &str, now_ms: u64, ttl_ms: u64) {
         self.leases
             .lock()
             .unwrap()
-            .insert(wid.to_string(), now_ms + LEASE_TTL_MS);
+            .insert(wid.to_string(), now_ms.saturating_add(ttl_ms));
     }
     /// Drop `wid`'s lease (on stop / reclaim).
     pub fn release(&self, wid: &str) {
         self.leases.lock().unwrap().remove(wid);
+        self.owners.lock().unwrap().remove(wid);
     }
     /// Distinct workers that polled `env_id` within `POLLER_WINDOW_MS` of `now_ms`.
     pub fn workers_polling(&self, env_id: &str, now_ms: u64) -> i64 {
@@ -84,6 +110,10 @@ impl LeaseBook {
         let mut leases = self.leases.lock().unwrap();
         for wid in work_ids {
             leases.remove(wid);
+        }
+        let mut owners = self.owners.lock().unwrap();
+        for wid in work_ids {
+            owners.remove(wid);
         }
         self.polls.lock().unwrap().remove(env_id);
     }
@@ -201,6 +231,7 @@ impl WorkQueue for InMemoryWorkQueue {
                 && !self.book.is_leased(wid, now_ms)
             {
                 w.state = WorkState::Queued;
+                w.latest_heartbeat_at = None;
                 self.book.release(wid);
             }
         }
@@ -215,44 +246,72 @@ impl WorkQueue for InMemoryWorkQueue {
         // Lease the oldest queued item (ascending id == enqueue order).
         let wid = works
             .iter()
-            .filter(|(_, w)| w.environment_id == env_id && w.state == WorkState::Queued)
+            .filter(|(_, w)| w.environment_id == env_id && w.state.is_claimable())
             .map(|(id, _)| id.clone())
             .min()?;
         let w = works.get_mut(&wid).expect("just found");
         w.state = WorkState::Active;
         w.started_at = Some(OBJECT_AT.to_string());
+        w.latest_heartbeat_at = None;
         self.book.lease(&wid, now_ms);
+        self.book.own(&wid, worker_id);
         Some(w.clone())
     }
 
     async fn ack(&self, env_id: &str, wid: &str) -> Option<WorkItem> {
         self.with_owned(env_id, wid, |w| {
             w.acknowledged_at = Some(OBJECT_AT.to_string());
-            if w.state == WorkState::Queued {
-                w.state = WorkState::Starting;
-            }
+            w.state = w.state.after_ack();
             w.clone()
         })
     }
 
-    async fn heartbeat(&self, env_id: &str, wid: &str, now_ms: u64) -> Option<LeaseReceipt> {
-        let hb = self.with_owned(env_id, wid, |w| {
-            w.latest_heartbeat_at = Some(OBJECT_AT.to_string());
-            LeaseReceipt {
-                lease_extended: true,
-                state: w.state.as_str(),
-                ttl_seconds: HEARTBEAT_TTL_SECONDS,
+    async fn heartbeat(
+        &self,
+        env_id: &str,
+        wid: &str,
+        worker_id: &str,
+        now_ms: u64,
+        heartbeat: LeaseHeartbeat,
+    ) -> HeartbeatResult {
+        self.with_owned(env_id, wid, |w| {
+            if !self.book.is_owned_by(wid, worker_id) {
+                return HeartbeatResult::PreconditionFailed;
             }
-        })?;
-        self.book.lease(wid, now_ms); // extend the lease
-        Some(hb)
+            if !heartbeat
+                .condition
+                .permits(w.latest_heartbeat_at.as_deref())
+            {
+                return HeartbeatResult::PreconditionFailed;
+            }
+            let extended = w.state.can_extend_lease();
+            let last_heartbeat = heartbeat_at(now_ms, w.latest_heartbeat_at.as_deref());
+            if extended {
+                w.latest_heartbeat_at = Some(last_heartbeat.clone());
+                let ttl = heartbeat
+                    .desired_ttl_seconds
+                    .unwrap_or(HEARTBEAT_TTL_SECONDS)
+                    .max(1);
+                self.book.lease_for(wid, now_ms, ttl.saturating_mul(1000));
+            }
+            HeartbeatResult::Accepted(LeaseReceipt {
+                last_heartbeat,
+                lease_extended: extended,
+                state: w.state.as_str(),
+                ttl_seconds: heartbeat
+                    .desired_ttl_seconds
+                    .unwrap_or(HEARTBEAT_TTL_SECONDS)
+                    .max(1),
+            })
+        })
+        .unwrap_or(HeartbeatResult::NotFound)
     }
 
     async fn stop(&self, env_id: &str, wid: &str) -> Option<WorkItem> {
         let out = self.with_owned(env_id, wid, |w| {
             w.stop_requested_at = Some(OBJECT_AT.to_string());
             w.stopped_at = Some(OBJECT_AT.to_string());
-            w.state = WorkState::Stopped;
+            w.state = w.state.after_stop();
             w.clone()
         })?;
         self.book.release(wid);
@@ -393,10 +452,17 @@ mod tests {
         assert_eq!(reclaimed.state, WorkState::Active);
         // A heartbeat before expiry keeps the lease alive (no reclaim).
         assert!(
-            q.heartbeat("env_a", &w1, LEASE_TTL_MS + 2)
-                .await
-                .expect("hb")
-                .lease_extended
+            q.heartbeat(
+                "env_a",
+                &w1,
+                "b",
+                LEASE_TTL_MS + 2,
+                LeaseHeartbeat::unconditional(),
+            )
+            .await
+            .into_receipt()
+            .expect("hb")
+            .lease_extended
         );
         assert!(
             q.claim("env_a", "c", LEASE_TTL_MS + 3).await.is_none(),
@@ -405,10 +471,10 @@ mod tests {
     }
 
     /// Cause-effect boundary (BVA on the lease-expiry edge): reclaim fires at
-    /// `now_ms >= lease_expiry` because the shared `LeaseBook::is_leased` is a strict
+    /// `now_ms >= lease_expiry` because `LeaseBook::is_leased` is a strict
     /// `expiry > now`. So a lapsed worker's item is reclaimable at the *exact* TTL
     /// boundary, not one ms later — pinning the `>`-vs-`>=` off-by-one a refactor of the
-    /// LeaseBook shared across all three backends could silently flip. Worker A leases
+    /// in-memory lease kernel could silently flip. Worker A leases
     /// at now=0, so its lease expires at exactly `LEASE_TTL_MS`.
     #[tokio::test]
     async fn lease_reclaim_is_exact_at_the_ttl_boundary() {
@@ -442,7 +508,12 @@ mod tests {
     async fn heartbeat_extends_and_reports_ttl() {
         let q = q();
         let id = q.enqueue_session("env_a", "s1").await;
-        let hb = q.heartbeat("env_a", &id, 0).await.expect("heartbeat");
+        q.claim("env_a", "worker", 0).await.expect("claim");
+        let hb = q
+            .heartbeat("env_a", &id, "worker", 0, LeaseHeartbeat::unconditional())
+            .await
+            .into_receipt()
+            .expect("heartbeat");
         assert!(hb.lease_extended);
         assert_eq!(hb.ttl_seconds, HEARTBEAT_TTL_SECONDS);
     }
@@ -453,7 +524,11 @@ mod tests {
         let id = q.enqueue_session("env_a", "s1").await;
         assert!(q.get("env_b", &id).await.is_none(), "wrong env → none");
         assert!(q.ack("env_b", &id).await.is_none());
-        assert!(q.heartbeat("env_b", &id, 0).await.is_none());
+        assert!(
+            q.heartbeat("env_b", &id, "worker", 0, LeaseHeartbeat::unconditional())
+                .await
+                .is_not_found()
+        );
         assert!(q.stop("env_b", &id).await.is_none());
     }
 

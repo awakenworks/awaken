@@ -134,7 +134,8 @@ pub fn validate_resume(ticket: &ResumeTicket, command: &ResumeCommand) -> Result
     {
         return Err(ResumeError::ResultKindMismatch);
     }
-    if let ResumeResult::ToolResult(output) = &command.result
+    if ticket.reason != awaken_agent_contract::agent::awaiting::AwaitReason::Delegation
+        && let ResumeResult::ToolResult(output) = &command.result
         && ticket.call_id.as_deref() != Some(output.call_id.as_str())
     {
         return Err(ResumeError::ToolCallMismatch);
@@ -154,7 +155,7 @@ mod tests {
             thread_id: ThreadId("thread-1".to_string()),
             snapshot_id: "snap-1".to_string(),
             catalog_fingerprint: "fp-1".to_string(),
-            initiator: None,
+            delegation_origin: None,
             reason: AwaitReason::ToolPermission,
             call_id: Some("call-1".to_string()),
             pending_tool: None,

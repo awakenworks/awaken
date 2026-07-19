@@ -32,10 +32,10 @@ use awaken_runtime_contract::activation::RunActivation;
 use crate::Error;
 use crate::clock::Clock;
 use crate::dispatch::{Dispatch, PendingInput};
-use crate::request::RunExecutionRequest;
 use crate::service::DispatchServiceConfig;
 use crate::wake::{LocalWakeSignal, WakeSignal};
 use crate::worker::DispatchWorker;
+use awaken_run_ingress_contract::RunDispatch;
 
 /// Resolves the worker that owns a thread's runtime. The pool claims from the one
 /// shared queue, then asks the resolver for the session worker carrying the
@@ -243,7 +243,7 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
     pub async fn submit(&self, activation: RunActivation) -> Result<(), Error> {
         self.store
             .enqueue(
-                RunExecutionRequest::new(activation)
+                RunDispatch::new(activation)
                     .with_traceparent(awaken_observability::current_traceparent()),
             )
             .await?;
@@ -370,7 +370,7 @@ async fn claim_and_drive<S: Dispatch + 'static>(
     // Route to the runtime that owns this run's thread, then drive+settle there.
     // The resolved worker shares this store and owner, so the settle it performs
     // acts on the same row this task just claimed.
-    let thread_id = claimed.request.thread_id().clone();
+    let thread_id = claimed.request.session_thread_id().clone();
     // The claimed run carries its own agent identity; hand it to the resolver so a
     // cold worker opens the session bound to THAT agent's published config (its own
     // catalog), not the host default — the run then resolves against a matching

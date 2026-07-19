@@ -95,6 +95,24 @@ impl SkillCatalog {
         }
     }
 
+    /// Delete one delivered skill and refresh every synchronous projection. Tagged
+    /// catalog ids are resolved through the cache to the durable stem; raw legacy
+    /// ids are accepted directly. `None` means no durable store is configured.
+    pub(crate) async fn store_delete(&self, id: &str) -> Option<bool> {
+        let store = self.store.as_ref()?;
+        let durable_id = self
+            .cache_snapshot()
+            .into_iter()
+            .find(|(stem, _)| awaken_skill_store::catalog_id(stem) == id || stem == id)
+            .map_or_else(|| id.to_string(), |(stem, _)| stem);
+        let removed = store
+            .delete(HOST_SKILL_WORKSPACE, &durable_id)
+            .await
+            .expect("delete durable skill");
+        self.reload_cache().await;
+        Some(removed)
+    }
+
     /// Refresh the in-memory delivered-catalog snapshot from the async store. Called
     /// on a write and at each session's setup so the sync read paths (advertisement,
     /// run-loop scan) see the current catalog.

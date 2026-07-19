@@ -22,7 +22,6 @@ pub mod resume;
 pub mod runnable;
 pub mod runtime_context;
 pub mod snapshot;
-pub mod subagent_runner;
 pub mod tool;
 pub mod tool_batch;
 
@@ -36,14 +35,16 @@ pub use data_subject::{
     NullResolver, Purpose,
 };
 pub use delegation::{
-    DelegationExecutionError, DelegationExecutor, DelegationLimits, DelegationRequest,
-    DelegationResume, DelegationStep, RemoteAgent, RunDelegations,
+    ChildRunCancellation, ChildRunResult, ChildRunResultInbox, DelegationExecutionError,
+    DelegationFailureKind, DelegationLimits, DelegationRequest, DelegationResultError,
+    DelegationResume, DelegationStep, PendingChildRunResults, RemoteAgent, ResultRecord,
+    RunDelegationService, RunDelegations,
 };
 pub use execution::{Cancellation, ExecutorCapabilities, RunExecutor, Wait};
 pub use live_inbox::{LiveInbox, LiveInboxMessage, LiveInboxMessageId};
 pub use llm::{ChatRequest, ChatResponse, LlmExecutor};
 pub use pause::PauseSignal;
-pub use permission::{GateOutcome, PermissionDecision, PermissionPolicy, ToolGateHook};
+pub use permission::{GateOutcome, ToolGateHook, ToolPermissionPolicy, ToolPermissionVerdict};
 pub use plugin::{
     CapabilityBound, Contributions, IdBound, PhaseHook, PhaseHookPoint, Plugin, PluginManifest,
     ResolvedExecutionEnv, RunEndContext, RunEndDecision, RunEndGuard,
@@ -54,7 +55,6 @@ pub use plugin::{
 pub use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 pub use awaken_agent_contract::agent::run::Id as RunId;
 pub use awaken_agent_contract::agent::state::Store;
-pub use subagent_runner::{SubagentError, SubagentReply, SubagentRequest, SubagentRunner};
 // The cancellation token surfaced through `RunEndContext`/`RuntimeRunContext`;
 // re-exported so an extension forwards it without a direct `tokio-util` edge.
 pub use resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};

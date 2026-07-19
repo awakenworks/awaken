@@ -18,7 +18,7 @@ use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
 };
-use awaken_runtime_contract::permission::{GateOutcome, PermissionContext, ToolGateHook};
+use awaken_runtime_contract::permission::{GateOutcome, ToolGateHook};
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor,
 };
@@ -90,7 +90,7 @@ struct ConstGate(GateOutcome);
 impl ToolGateHook for ConstGate {
     async fn gate(
         &self,
-        _ctx: &PermissionContext,
+        _ctx: &ToolCall,
         _state: &awaken_agent_contract::agent::state::Store,
     ) -> GateOutcome {
         self.0.clone()
@@ -155,7 +155,7 @@ fn activation() -> RunActivation {
             role: Role::User,
             content: vec![ContentBlock::text("please echo")],
         }],
-        initiator: None,
+        delegation_origin: None,
         model_ref_override: None,
     }
 }
@@ -223,8 +223,8 @@ async fn ask_decision_puts_the_run_in_awaiting() {
         .with_tool(Arc::new(EchoTool {
             ran: Arc::new(AtomicUsize::new(0)),
         }))
-        .with_gate(Arc::new(ConstGate(GateOutcome::Suspend {
-            ticket_id: "ticket-1".to_string(),
+        .with_gate(Arc::new(ConstGate(GateOutcome::RequireConfirmation {
+            correlation_id: "ticket-1".to_string(),
         })));
     install(&runtime);
 

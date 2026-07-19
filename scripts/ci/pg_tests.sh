@@ -66,6 +66,7 @@ cargo test -p awaken-credential-vault --test repo_conformance || status=1
 cargo test -p awaken-data-subject --test repo_conformance || status=1
 cargo test -p awaken-memory-store --test conformance || status=1
 cargo test -p awaken-skill-store --test conformance || status=1
+cargo test -p awaken-work-store || status=1
 
 if [ "$status" -ne 0 ]; then
   echo "✗ Postgres-backed tests failed (see above)"; exit 1

@@ -126,7 +126,7 @@ async function main() {
       .map((e) => (e.content ?? []).map((c) => c.text ?? '').join(''));
     assert.ok(
       messages.some((m) => m.includes(MARKER)),
-      `the containerized agent's reply must round-trip to the SDK: ${JSON.stringify(events.map((e) => e.type))}`,
+      `the containerized agent's reply must round-trip to the SDK: ${JSON.stringify(events)}`,
     );
 
     console.log(

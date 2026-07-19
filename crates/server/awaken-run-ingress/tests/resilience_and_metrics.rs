@@ -15,7 +15,7 @@ use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_run_ingress::{
     DispatchQueue, DispatchService, DispatchServiceConfig, DispatchWorker, MemoryDispatchStore,
-    RunExecutionRequest, SystemClock,
+    RunDispatch, SystemClock,
 };
 use awaken_runtime::memory::MemoryCommitCoordinator;
 
@@ -84,7 +84,7 @@ async fn a_terminal_drive_meters_one_claim_one_drive_and_one_done_settle() {
     let commit = Arc::new(MemoryCommitCoordinator::new());
 
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
     let worker = DispatchWorker::new(runtime, store, commit, "solo");
@@ -124,7 +124,7 @@ async fn an_awaiting_drive_meters_one_claim_one_drive_and_one_awaiting_settle() 
     let commit = Arc::new(MemoryCommitCoordinator::new());
 
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
     let worker = DispatchWorker::new(runtime, store, commit, "solo");
@@ -182,7 +182,7 @@ async fn an_early_terminal_recovery_return_is_still_fully_metered() {
     metrics.settled_done.store(0, Ordering::SeqCst);
 
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
     let worker = DispatchWorker::new(runtime, store.clone(), commit, "recovery");

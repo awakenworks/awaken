@@ -6,7 +6,7 @@ use super::*;
 impl ManagedState {
     /// The session's primary thread projection (`BetaManagedAgentsSessionThread`).
     /// A session has one primary thread addressed by `<session_id>:primary`;
-    /// sub-threads spawned by a multiagent turn would extend this list.
+    /// delegated child Runs extend this list under their stable Run ids.
     fn primary_thread(record: &SessionRecord) -> serde_json::Value {
         let session = &record.session;
         serde_json::json!({

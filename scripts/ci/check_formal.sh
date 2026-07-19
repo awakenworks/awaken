@@ -14,6 +14,8 @@ trap 'rm -rf "$formal_tmp_root"' EXIT
 rust_trace_dir="$formal_tmp_root/rust-traces"
 rendered_trace_dir="$formal_tmp_root/rendered-traces"
 
+python3 scripts/ci/check_formal_coverage.py
+
 AWAKEN_FORMAL_TRACE_DIR="$rust_trace_dir" \
   cargo test -p awaken-runtime --test formal_refinement
 python3 scripts/ci/render_runtime_refinement_traces.py \
@@ -28,10 +30,24 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness only_unsettled_relationships_occupy_a_parallel_slot
   cargo kani -p awaken-agent-contract \
     --harness every_relationship_effect_has_one_documented_precondition
+  cargo kani -p awaken-agent-contract \
+    --harness delegation_admission_requires_every_budget_and_lineage_guard
+  cargo kani -p awaken-agent-contract \
+    --harness cancellation_delivery_is_enabled_only_by_durable_intent
   cargo kani -p awaken-session-contract \
     --harness awaiting_constructor_cannot_create_a_terminal_or_failed_outcome
   cargo kani -p awaken-session-contract \
     --harness ended_constructor_carries_the_only_failure_authority_and_no_pending_tool
+  cargo kani -p awaken-session-contract \
+    --harness only_queued_work_is_claimable
+  cargo kani -p awaken-session-contract \
+    --harness only_active_work_accepts_lease_extension
+  cargo kani -p awaken-session-contract \
+    --harness stop_is_absorbing_for_every_work_state
+  cargo kani -p awaken-session-contract \
+    --harness first_heartbeat_is_authorized_exactly_once
+  cargo kani -p awaken-session-contract \
+    --harness matching_heartbeat_rejects_every_other_receipt
   cargo kani -p awaken-runtime-contract \
     --harness terminal_calls_are_never_reentered
   cargo kani -p awaken-runtime-contract \
@@ -42,6 +58,10 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness terminal_tool_calls_only_accept_result_staging
   cargo kani -p awaken-runtime-contract \
     --harness run_end_sealing_targets_exactly_nonterminal_calls
+  cargo kani -p awaken-runtime-contract \
+    --harness child_result_is_consumed_only_from_ready
+  cargo kani -p awaken-runtime-contract \
+    --harness terminal_delivery_phases_never_reopen
 else
   echo "skipped Kani: install with 'cargo install --locked kani-verifier && cargo kani setup'"
   missing=1
@@ -55,6 +75,7 @@ if [ -n "$tlapm_bin" ] && [ -x "$tlapm_bin" ]; then
   "$tlapm_bin" -I formal/tla formal/tla/RuntimeSystemProof.tla
   "$tlapm_bin" -I formal/tla formal/tla/RuntimeImplementationProof.tla
   "$tlapm_bin" -I formal/tla formal/tla/RustCommitSystemProof.tla
+  "$tlapm_bin" -I formal/tla formal/tla/WorkQueueProof.tla
 else
   echo "skipped TLAPS: set TLAPM_BIN or install tlapm"
   missing=1
@@ -66,6 +87,9 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/run-ingress" \
     -config formal/tla/RunIngress.cfg formal/tla/RunIngress.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/work-queue" \
+    -config formal/tla/WorkQueue.cfg formal/tla/WorkQueue.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/delegation" \
     -config formal/tla/Delegation.cfg formal/tla/Delegation.tla

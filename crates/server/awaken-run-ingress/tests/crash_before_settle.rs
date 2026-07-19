@@ -38,7 +38,7 @@ use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_run_ingress::{
     Dispatch, DispatchOutcome, DispatchQueue, DispatchWorker, Inbox, MemoryDispatchStore,
-    RunExecutionRequest, SqliteDispatchStore,
+    RunDispatch, SqliteDispatchStore,
 };
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::resume::ResumeResult;
@@ -76,7 +76,7 @@ async fn crash_before_settle_re_delivers_bound_pending_exactly_once() {
 
     // The fresh run awaits on the gate; the gated tool has not run.
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
     assert_eq!(
@@ -163,7 +163,7 @@ async fn assert_bound_pending_survives_claim_without_settle<S: Dispatch>(store: 
 
     // Await the run so a wake claim will hand its bound pending.
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
     assert!(store.claim("w", LEASE, 0).await.unwrap().is_some());
@@ -274,7 +274,7 @@ async fn crash_before_settle_re_delivers_unbound_inbox_input_exactly_once() {
     // settling — the unbound input is a worker-time drain, so a bare claim never
     // touches it.
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
     let crashed = store
@@ -335,7 +335,7 @@ async fn crash_before_settle_re_delivers_unbound_inbox_input_exactly_once() {
     // committed history is replayed as context — that is history, not re-delivery —
     // so we assert on the message id, not the echoed text.)
     store
-        .enqueue(RunExecutionRequest::new(harness::activation("run-2")))
+        .enqueue(RunDispatch::new(harness::activation("run-2")))
         .await
         .unwrap();
     let next = worker.tick(LEASE + 2).await.unwrap();
@@ -392,7 +392,7 @@ async fn recovering_a_terminal_run_consumes_its_delivered_unbound_input() {
     // process dies before settle (we commit by hand, exactly as the worker would,
     // and never settle).
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
     let _crashed = store
@@ -453,7 +453,7 @@ async fn recovering_a_terminal_run_consumes_its_delivered_unbound_input() {
     // A later fresh run on the same thread does NOT drain u1 again: exactly one
     // committed delivery of the user's input across the whole thread.
     store
-        .enqueue(RunExecutionRequest::new(harness::activation("run-2")))
+        .enqueue(RunDispatch::new(harness::activation("run-2")))
         .await
         .unwrap();
     assert_eq!(
@@ -487,7 +487,7 @@ async fn recovering_a_terminal_run_keeps_undelivered_unbound_input() {
     let run = RunId("run-1".to_string());
 
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
     let _crashed = store
@@ -552,7 +552,7 @@ async fn assert_unbound_consumed_on_settle_not_on_read<S: Dispatch>(store: &S) {
     // A settle that does NOT name u1 leaves it — this is the crash case, where the
     // owner drained u1 in memory but died before recording it in the settle.
     store
-        .enqueue(RunExecutionRequest::new(activation("run-1")))
+        .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
     assert!(store.claim("w", LEASE, 0).await.unwrap().is_some());
@@ -567,7 +567,7 @@ async fn assert_unbound_consumed_on_settle_not_on_read<S: Dispatch>(store: &S) {
 
     // Only a settle that NAMES it consumes it.
     store
-        .enqueue(RunExecutionRequest::new(harness::activation("run-2")))
+        .enqueue(RunDispatch::new(harness::activation("run-2")))
         .await
         .unwrap();
     assert!(store.claim("w", LEASE, 0).await.unwrap().is_some());
@@ -647,7 +647,7 @@ async fn commit_is_atomic_and_survives_replay_with_no_orphans() {
             DispatchWorker::new(runtime, store.clone(), commit.clone(), "w").with_lease_ms(LEASE);
 
         store
-            .enqueue(RunExecutionRequest::new(activation("run-1")))
+            .enqueue(RunDispatch::new(activation("run-1")))
             .await
             .unwrap();
         assert_eq!(

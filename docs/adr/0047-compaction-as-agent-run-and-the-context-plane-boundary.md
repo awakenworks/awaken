@@ -174,7 +174,7 @@ This is its own initiative; compaction is its first client.
 ### D5: Converge the three aux-agent ports into one run-subagent port (deferred)
 
 `Summarizer` (ext-compact, `plugin.rs:29`), `DelegateRunner` (ext-goal,
-`lib.rs:218`), and `DelegationExecutor` / `agent_run` (delegation) are three traits
+`lib.rs:218`), and `RunDelegationService` / `agent_run` (delegation) are three traits
 whose host impls all bottom out in `run_configured_agent`. Collapse them into a
 single neutral "run a sub-agent" capability port; remote A2A delegates
 (`delegate.rs:87`, `remote_run`) stay separate (network semantics). Fewer ports,

@@ -69,7 +69,7 @@ pub fn awaken_run_executor_acp::AcpRunExecutor::model_switch(&self) -> awaken_ru
 impl awaken_run_executor_acp::AcpRunExecutor
 pub fn awaken_run_executor_acp::AcpRunExecutor::new(alloc::sync::Arc<dyn awaken_run_executor_acp::AgentChannelSource>) -> Self
 pub fn awaken_run_executor_acp::AcpRunExecutor::with_launch_observer(self, alloc::sync::Arc<dyn awaken_protocol_acp::LaunchObserver>) -> Self
-pub fn awaken_run_executor_acp::AcpRunExecutor::with_permission_policy(self, alloc::sync::Arc<dyn awaken_runtime_contract::permission::PermissionPolicy>) -> Self
+pub fn awaken_run_executor_acp::AcpRunExecutor::with_permission_policy(self, alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy>) -> Self
 pub fn awaken_run_executor_acp::AcpRunExecutor::with_session_home(self, alloc::sync::Arc<dyn awaken_run_executor_acp::SessionHomeProvider>) -> Self
 pub fn awaken_run_executor_acp::AcpRunExecutor::with_session_mode(self, impl core::convert::Into<alloc::string::String>) -> Self
 impl awaken_runtime_contract::execution::RunExecutor for awaken_run_executor_acp::AcpRunExecutor

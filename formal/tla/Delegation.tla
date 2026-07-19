@@ -3,7 +3,7 @@ EXTENDS Naturals, FiniteSets, RuntimeVocabulary
 
 \* Run-scoped relationship registry. Tool execution/result delivery is modeled
 \* once by ToolBatch; this module owns only identity, budgets, lineage, child
-\* lifecycle observation, and durable cancellation.
+\* lifecycle observation, reliable result delivery, and durable cancellation.
 CONSTANTS
     Children,
     LocalChildren,
@@ -22,18 +22,23 @@ VARIABLES
     parentEnded,
     childState,
     linkStatus,
+    resultState,
     childOwner,
     childEpoch,
+    cancelDelivered,
     started
 
-vars == <<parentEnded, childState, linkStatus, childOwner, childEpoch, started>>
+vars == <<parentEnded, childState, linkStatus, resultState, childOwner, childEpoch,
+          cancelDelivered, started>>
 
 Init ==
     /\ parentEnded = FALSE
     /\ childState = [c \in Children |-> "Absent"]
     /\ linkStatus = [c \in Children |-> "Absent"]
+    /\ resultState = [c \in Children |-> "None"]
     /\ childOwner = [c \in Children |-> NoOwner]
     /\ childEpoch = [c \in Children |-> 0]
+    /\ cancelDelivered = [c \in Children |-> FALSE]
     /\ started = 0
 
 Created == {c \in Children: linkStatus[c] # "Absent"}
@@ -49,7 +54,8 @@ Request(child) ==
     /\ started < MaxTotal
     /\ linkStatus' = [linkStatus EXCEPT ![child] = "Open"]
     /\ started' = started + 1
-    /\ UNCHANGED <<parentEnded, childState, childOwner, childEpoch>>
+    /\ UNCHANGED <<parentEnded, childState, resultState, childOwner, childEpoch,
+                    cancelDelivered>>
 
 DuplicateRequest(child) ==
     /\ linkStatus[child] # "Absent"
@@ -62,13 +68,14 @@ StartChild(child, owner) ==
     /\ childState' = [childState EXCEPT ![child] = "Running"]
     /\ childOwner' = [childOwner EXCEPT ![child] = owner]
     /\ childEpoch' = [childEpoch EXCEPT ![child] = @ + 1]
-    /\ UNCHANGED <<parentEnded, linkStatus, started>>
+    /\ UNCHANGED <<parentEnded, linkStatus, resultState, cancelDelivered, started>>
 
 CrashChild(child, owner) ==
     /\ childOwner[child] = owner
-    /\ childState[child] \in {"Running", "Awaiting"}
+    /\ childState[child] = "Running"
     /\ childOwner' = [childOwner EXCEPT ![child] = NoOwner]
-    /\ UNCHANGED <<parentEnded, childState, linkStatus, childEpoch, started>>
+    /\ UNCHANGED <<parentEnded, childState, linkStatus, resultState, childEpoch,
+                    cancelDelivered, started>>
 
 ReclaimChild(child, owner) ==
     /\ childState[child] \in {"Running", "Awaiting"}
@@ -76,7 +83,8 @@ ReclaimChild(child, owner) ==
     /\ childEpoch[child] < MaxEpoch
     /\ childOwner' = [childOwner EXCEPT ![child] = owner]
     /\ childEpoch' = [childEpoch EXCEPT ![child] = @ + 1]
-    /\ UNCHANGED <<parentEnded, childState, linkStatus, started>>
+    /\ UNCHANGED <<parentEnded, childState, linkStatus, resultState,
+                    cancelDelivered, started>>
 
 AwaitChild(child, owner) ==
     /\ ~parentEnded
@@ -84,32 +92,68 @@ AwaitChild(child, owner) ==
     /\ childState[child] = "Running"
     /\ childOwner[child] = owner
     /\ childState' = [childState EXCEPT ![child] = "Awaiting"]
-    /\ UNCHANGED <<parentEnded, linkStatus, childOwner, childEpoch, started>>
+    /\ childOwner' = [childOwner EXCEPT ![child] = NoOwner]
+    /\ UNCHANGED <<parentEnded, linkStatus, resultState, childEpoch,
+                    cancelDelivered, started>>
 
+\* Input delivery and resume claim are one durable dispatch transaction: an
+\* awaiting child cannot become generally runnable between the two operations.
 ResumeChild(child, owner) ==
     /\ ~parentEnded
     /\ linkStatus[child] = "Open"
     /\ childState[child] = "Awaiting"
-    /\ childOwner[child] = owner
+    /\ childOwner[child] = NoOwner
+    /\ childEpoch[child] < MaxEpoch
     /\ childState' = [childState EXCEPT ![child] = "Running"]
-    /\ UNCHANGED <<parentEnded, linkStatus, childOwner, childEpoch, started>>
+    /\ childOwner' = [childOwner EXCEPT ![child] = owner]
+    /\ childEpoch' = [childEpoch EXCEPT ![child] = @ + 1]
+    /\ UNCHANGED <<parentEnded, linkStatus, resultState,
+                    cancelDelivered, started>>
 
 FinishChild(child, owner) ==
-    /\ ~parentEnded
-    /\ linkStatus[child] = "Open"
-    /\ childState[child] \in {"Running", "Awaiting"}
-    /\ childOwner[child] = owner
+    /\ linkStatus[child] \in {"Open", "CancelRequested"}
+    /\ \/ /\ childState[child] = "Running"
+           /\ childOwner[child] = owner
+       \/ /\ childState[child] = "Awaiting"
+           /\ childOwner[child] = NoOwner
     /\ childState' = [childState EXCEPT ![child] = "Ended"]
     /\ childOwner' = [childOwner EXCEPT ![child] = NoOwner]
+    /\ resultState' = [resultState EXCEPT ![child] =
+         IF parentEnded THEN "Discarded" ELSE "Ready"]
+    /\ UNCHANGED <<parentEnded, linkStatus, childEpoch, cancelDelivered, started>>
+
+\* Parent consumption is a distinct durable boundary from child completion.
+\* The implementation removes the delivery envelope in the same ThreadCommit
+\* that installs the ToolBatch result and completes the relationship.
+ConsumeResult(child) ==
+    /\ ~parentEnded
+    /\ linkStatus[child] = "Open"
+    /\ childState[child] = "Ended"
+    /\ resultState[child] = "Ready"
     /\ linkStatus' = [linkStatus EXCEPT ![child] = "Completed"]
-    /\ UNCHANGED <<parentEnded, childEpoch, started>>
+    /\ resultState' = [resultState EXCEPT ![child] = "Consumed"]
+    /\ UNCHANGED <<parentEnded, childState, childOwner, childEpoch,
+                    cancelDelivered, started>>
 
 EndParent ==
     /\ ~parentEnded
     /\ parentEnded' = TRUE
     /\ linkStatus' = [c \in Children |->
          IF linkStatus[c] = "Open" THEN "CancelRequested" ELSE linkStatus[c]]
-    /\ UNCHANGED <<childState, childOwner, childEpoch, started>>
+    /\ resultState' = [c \in Children |->
+         IF resultState[c] = "Ready" THEN "Discarded" ELSE resultState[c]]
+    /\ UNCHANGED <<childState, childOwner, childEpoch, cancelDelivered, started>>
+
+\* Delivery follows the durable parent commit. Re-execution is harmless because
+\* adapters address the same child/task identity; eventual network success is an
+\* environmental liveness assumption, not claimed by this safety model.
+DeliverCancellation(child) ==
+    /\ parentEnded
+    /\ linkStatus[child] = "CancelRequested"
+    /\ ~cancelDelivered[child]
+    /\ cancelDelivered' = [cancelDelivered EXCEPT ![child] = TRUE]
+    /\ UNCHANGED <<parentEnded, childState, linkStatus, resultState, childOwner,
+                    childEpoch, started>>
 
 Next ==
     \/ \E child \in Children: Request(child)
@@ -120,7 +164,9 @@ Next ==
     \/ \E child \in Children, owner \in Owners: AwaitChild(child, owner)
     \/ \E child \in Children, owner \in Owners: ResumeChild(child, owner)
     \/ \E child \in Children, owner \in Owners: FinishChild(child, owner)
+    \/ \E child \in Children: ConsumeResult(child)
     \/ EndParent
+    \/ \E child \in Children: DeliverCancellation(child)
 
 Spec == Init /\ [][Next]_vars
 
@@ -128,8 +174,10 @@ TypeOK ==
     /\ parentEnded \in BOOLEAN
     /\ childState \in [Children -> DelegatedChildStates]
     /\ linkStatus \in [Children -> DelegationLinkStatuses]
+    /\ resultState \in [Children -> {"None", "Ready", "Consumed", "Discarded"}]
     /\ childOwner \in [Children -> Owners \cup {NoOwner}]
     /\ childEpoch \in [Children -> 0..MaxEpoch]
+    /\ cancelDelivered \in [Children -> BOOLEAN]
     /\ started \in 0..MaxTotal
 
 KindsPartitionChildren ==
@@ -151,13 +199,31 @@ ConstraintsHold ==
 
 CompletedRelationshipHasEndedChild ==
     \A c \in Children:
-        linkStatus[c] = "Completed" => childState[c] = "Ended"
+        linkStatus[c] = "Completed" =>
+            /\ childState[c] = "Ended"
+            /\ resultState[c] = "Consumed"
+
+ReadyResultIsDeliverable ==
+    \A c \in Children:
+        resultState[c] = "Ready" =>
+            /\ childState[c] = "Ended"
+            /\ linkStatus[c] = "Open"
+            /\ ~parentEnded
+
+EndedParentHasNoDeliverableResult ==
+    parentEnded => \A c \in Children: resultState[c] # "Ready"
 
 EndedParentIsClosed == parentEnded => \A c \in Children: linkStatus[c] # "Open"
 
 CancellationIsDurable ==
     \A c \in Children:
         linkStatus[c] = "CancelRequested" => parentEnded
+
+CancellationDeliveryFollowsIntent ==
+    \A c \in Children:
+        cancelDelivered[c] =>
+            /\ parentEnded
+            /\ linkStatus[c] = "CancelRequested"
 
 EndedChildrenHaveNoOwner ==
     \A c \in Children:

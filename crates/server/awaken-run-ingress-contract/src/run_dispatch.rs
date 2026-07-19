@@ -1,9 +1,8 @@
-//! The serializable durable-run instruction.
+//! One Run accepted into durable dispatch.
 //!
-//! [`RunExecutionRequest`] is exactly the data a durable dispatch queue persists
-//! and replays — it carries no live handles (G3/G4), so a crash loses nothing the
-//! queue cannot rebuild. The per-attempt live wiring (`RunExecutionContext`) stays
-//! in the `awaken-run-ingress` host.
+//! [`RunDispatch`] is exactly the data a durable queue persists and replays. It
+//! carries no live handles (G3/G4), so any worker can rebuild the Run after a
+//! crash. Live worker dependencies stay in the `awaken-run-ingress` host.
 
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
@@ -14,8 +13,14 @@ use serde::{Deserialize, Serialize};
 /// registry, or live handle (G3); the runtime builds live execution objects from
 /// the activation's pinned snapshot on each attempt (G4).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RunExecutionRequest {
+pub struct RunDispatch {
     pub activation: RunActivation,
+    /// Session whose runtime capabilities and commit/history boundary must drive
+    /// this Run after recovery. Ordinary Runs omit it and route by their own
+    /// thread. A child Run names its parent's session while retaining its own
+    /// activation thread and first-class lifecycle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_thread_id: Option<ThreadId>,
     /// W3C `traceparent` captured when the run was admitted, so a durably-dispatched
     /// execution continues the admitting request's distributed trace across the
     /// queue boundary. Absent when admitted without an active trace (or by an older
@@ -24,12 +29,20 @@ pub struct RunExecutionRequest {
     pub traceparent: Option<String>,
 }
 
-impl RunExecutionRequest {
+impl RunDispatch {
     pub fn new(activation: RunActivation) -> Self {
         Self {
             activation,
+            session_thread_id: None,
             traceparent: None,
         }
+    }
+
+    /// Route execution through an existing session without changing the Run's
+    /// own thread identity used by lifecycle and queue single-writer rules.
+    pub fn for_session(mut self, thread_id: ThreadId) -> Self {
+        self.session_thread_id = Some(thread_id);
+        self
     }
 
     /// Attach the admitting request's W3C `traceparent` (see the field docs).
@@ -44,6 +57,12 @@ impl RunExecutionRequest {
 
     pub fn thread_id(&self) -> &ThreadId {
         &self.activation.thread_id
+    }
+
+    pub fn session_thread_id(&self) -> &ThreadId {
+        self.session_thread_id
+            .as_ref()
+            .unwrap_or(&self.activation.thread_id)
     }
 }
 
@@ -87,9 +106,9 @@ mod tests {
     /// live handle), and the accessors read the same ids back out.
     #[test]
     fn round_trips_through_serde_with_its_accessors_intact() {
-        let req = RunExecutionRequest::new(activation()).with_traceparent(Some("00-abc-01".into()));
+        let req = RunDispatch::new(activation()).with_traceparent(Some("00-abc-01".into()));
         let json = serde_json::to_string(&req).expect("serializes");
-        let back: RunExecutionRequest = serde_json::from_str(&json).expect("deserializes");
+        let back: RunDispatch = serde_json::from_str(&json).expect("deserializes");
         assert_eq!(back, req, "round-trip is lossless");
         assert_eq!(back.run_id(), req.run_id());
         assert_eq!(back.thread_id(), req.thread_id());
@@ -102,7 +121,7 @@ mod tests {
     /// guarantee.
     #[test]
     fn a_none_traceparent_is_omitted_and_a_legacy_row_loads_as_none() {
-        let req = RunExecutionRequest::new(activation());
+        let req = RunDispatch::new(activation());
         assert!(req.traceparent.is_none());
         let json = serde_json::to_string(&req).expect("serializes");
         assert!(
@@ -111,7 +130,7 @@ mod tests {
         );
         // The same row (no traceparent key) is exactly what a pre-field writer
         // produced; it must load as None.
-        let back: RunExecutionRequest = serde_json::from_str(&json).expect("legacy row loads");
+        let back: RunDispatch = serde_json::from_str(&json).expect("legacy row loads");
         assert!(back.traceparent.is_none());
     }
 
@@ -155,7 +174,7 @@ mod tests {
 
     #[test]
     fn a_frozen_legacy_queue_row_still_deserializes_intact() {
-        let back: RunExecutionRequest =
+        let back: RunDispatch =
             serde_json::from_str(LEGACY_QUEUE_ROW).expect("a persisted legacy row must still load");
         // The envelope's own newer field defaults.
         assert!(back.traceparent.is_none());
@@ -173,7 +192,7 @@ mod tests {
     /// shape moved and `LEGACY_QUEUE_ROW` — plus every deployed peer — is now behind.
     #[test]
     fn todays_default_writer_still_emits_the_frozen_legacy_shape() {
-        let today = serde_json::to_value(RunExecutionRequest::new(activation())).expect("value");
+        let today = serde_json::to_value(RunDispatch::new(activation())).expect("value");
         let frozen: serde_json::Value =
             serde_json::from_str(LEGACY_QUEUE_ROW).expect("frozen parses");
         assert_eq!(
@@ -184,7 +203,7 @@ mod tests {
 
     #[test]
     fn non_default_delegation_limits_round_trip_on_the_queue_wire() {
-        let mut request = RunExecutionRequest::new(activation());
+        let mut request = RunDispatch::new(activation());
         request.activation.snapshot.resolved_spec.delegation_limits =
             awaken_agent_contract::agent::delegation::DelegationLimits::new(3, 4, 5);
 
@@ -197,7 +216,7 @@ mod tests {
                 "max_total": 5
             })
         );
-        let restored: RunExecutionRequest = serde_json::from_value(wire).expect("deserializes");
+        let restored: RunDispatch = serde_json::from_value(wire).expect("deserializes");
         assert_eq!(
             restored.activation.snapshot.resolved_spec.delegation_limits,
             awaken_agent_contract::agent::delegation::DelegationLimits::new(3, 4, 5)

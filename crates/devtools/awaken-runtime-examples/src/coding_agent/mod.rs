@@ -27,7 +27,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_ext_builtin_tools::{Toolset, builtin_tools, executable_hand_tools};
 use awaken_ext_permission::{
-    Mode, PermissionRule, PermissionRuleset, RulePermissionPolicy, ToolCallPattern,
+    Mode, PermissionRule, PermissionRuleset, RuleBasedToolPermissionPolicy, ToolCallPattern,
     ToolPermissionBehavior,
 };
 use awaken_runtime::memory::MemoryCommitCoordinator;
@@ -71,15 +71,15 @@ pub fn coding_config(model_ref: &str) -> RunnableConfig {
 
 /// The permission policy: read/glob/grep allowed, everything else (write, edit,
 /// bash) asked, so a mutation awaits for the caller's approval (ADR-0030).
-pub fn coding_policy() -> RulePermissionPolicy {
+pub fn coding_policy() -> RuleBasedToolPermissionPolicy {
     let allow = |name: &str| {
         PermissionRule::new(
             ToolCallPattern::parse(name).expect("static pattern"),
             ToolPermissionBehavior::Allow,
         )
     };
-    RulePermissionPolicy::new(PermissionRuleset {
-        default_behavior: ToolPermissionBehavior::Ask,
+    RuleBasedToolPermissionPolicy::new(PermissionRuleset {
+        default_behavior: ToolPermissionBehavior::RequireConfirmation,
         mode: Mode::Default,
         rules: vec![allow("read"), allow("glob"), allow("grep")],
     })
@@ -206,7 +206,7 @@ mod tests {
     #[tokio::test]
     async fn the_policy_allows_reads_and_asks_before_mutations() {
         use awaken_runtime_contract::permission::{
-            PermissionContext, PermissionDecision, PermissionPolicy,
+            ToolCall, ToolPermissionPolicy, ToolPermissionVerdict,
         };
         let policy = coding_policy();
         let decide = |tool: &str| {
@@ -214,7 +214,7 @@ mod tests {
             let tool = tool.to_string();
             async move {
                 policy
-                    .decide(&PermissionContext {
+                    .evaluate(&ToolCall {
                         tool_id: tool,
                         call_id: "c1".to_string(),
                         arguments: serde_json::json!({}),
@@ -225,14 +225,17 @@ mod tests {
         // Read-only tools are pre-allowed (no prompt).
         for ro in ["read", "glob", "grep"] {
             assert!(
-                matches!(decide(ro).await, PermissionDecision::Allow),
+                matches!(decide(ro).await, ToolPermissionVerdict::Allow),
                 "{ro} should be allowed"
             );
         }
         // Mutating / unlisted tools fall through to the default: Ask.
         for mutate in ["write", "edit", "bash"] {
             assert!(
-                matches!(decide(mutate).await, PermissionDecision::Ask { .. }),
+                matches!(
+                    decide(mutate).await,
+                    ToolPermissionVerdict::RequireConfirmation { .. }
+                ),
                 "{mutate} should await for approval"
             );
         }

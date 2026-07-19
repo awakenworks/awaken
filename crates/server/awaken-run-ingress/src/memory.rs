@@ -6,7 +6,7 @@
 //! claim/lease/wake/recovery rules; the Postgres store must match it.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::run::Id as RunId;
@@ -14,11 +14,11 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime_contract::resume::ResumeResult;
 
 use crate::dispatch::{
-    CasOutcome, Claimed, DispatchError, DispatchOutcome, DispatchQueue, DispatchState,
-    DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, SettleOutcome,
-    SubmitOptions,
+    CasOutcome, Claimed, CommitEpochGuard, DispatchError, DispatchOutcome, DispatchQueue,
+    DispatchState, DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, RunClaim,
+    SettleOutcome, SubmitOptions,
 };
-use crate::request::RunExecutionRequest;
+use awaken_run_ingress_contract::RunDispatch;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RowState {
@@ -43,7 +43,7 @@ impl RowState {
 
 #[derive(Debug, Clone)]
 struct Row {
-    request: RunExecutionRequest,
+    request: RunDispatch,
     state: RowState,
     lease: Option<Lease>,
     /// Consecutive crash-recoveries without a settle; reset when the run awaits.
@@ -80,9 +80,19 @@ struct State {
 }
 
 /// In-memory durable-ingress store. Cloneable handles share one state.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct MemoryDispatchStore {
     state: Mutex<State>,
+    authority: Arc<tokio::sync::Mutex<()>>,
+}
+
+impl Default for MemoryDispatchStore {
+    fn default() -> Self {
+        Self {
+            state: Mutex::new(State::default()),
+            authority: Arc::new(tokio::sync::Mutex::new(())),
+        }
+    }
 }
 
 impl MemoryDispatchStore {
@@ -189,11 +199,97 @@ fn select(state: &State, now_ms: u64) -> Option<RunId> {
     best.map(|(run, _)| run.clone())
 }
 
+/// Whether one exact row is runnable under the same policy as [`select`]. The
+/// boolean says that the claim is crash recovery and must spend retry budget.
+fn runnable(state: &State, run_id: &RunId, now_ms: u64) -> Option<bool> {
+    let row = state.rows.get(run_id)?;
+    if row.state == RowState::Leased
+        && row
+            .lease
+            .as_ref()
+            .is_some_and(|lease| lease.expires_ms <= now_ms)
+    {
+        return Some(true);
+    }
+    let thread_busy = state.rows.values().any(|candidate| {
+        candidate.state == RowState::Leased
+            && candidate.request.thread_id() == row.request.thread_id()
+    });
+    if thread_busy {
+        return None;
+    }
+    if row.state == RowState::Awaiting
+        && state
+            .pending
+            .iter()
+            .any(|pending| pending.input.run_id == *run_id && is_due(&pending.input, now_ms))
+    {
+        return Some(false);
+    }
+    (row.state == RowState::Pending).then_some(false)
+}
+
+fn claim_exact(
+    state: &mut State,
+    requested_run: &RunId,
+    owner: &str,
+    lease_ms: u64,
+    now_ms: u64,
+) -> Option<Claimed> {
+    let was_recovery = runnable(state, requested_run, now_ms)?;
+    let run_id = requested_run.clone();
+    let (request, sandbox, lease) = {
+        let row = state.rows.get_mut(&run_id).expect("runnable row exists");
+        row.lease_epoch += 1;
+        let lease = Lease {
+            run_id: run_id.clone(),
+            owner: owner.to_string(),
+            expires_ms: now_ms + lease_ms,
+            epoch: row.lease_epoch,
+        };
+        row.state = RowState::Leased;
+        row.lease = Some(lease.clone());
+        if was_recovery {
+            row.attempt_count += 1;
+        }
+        (row.request.clone(), row.sandbox.clone(), lease)
+    };
+    let pending = state
+        .pending
+        .iter()
+        .filter(|pending| pending.input.run_id == run_id && is_due(&pending.input, now_ms))
+        .map(|pending| pending.input.clone())
+        .collect();
+    Some(Claimed {
+        request,
+        lease,
+        pending,
+        sandbox,
+    })
+}
+
 #[async_trait]
 impl DispatchQueue for MemoryDispatchStore {
+    async fn lock_commit_epoch(
+        &self,
+        claim: &RunClaim,
+    ) -> Result<Option<CommitEpochGuard>, DispatchError> {
+        let guard = self.authority.clone().lock_owned().await;
+        let state = lock(&self.state)?;
+        let matches = state.rows.get(&claim.run_id).is_some_and(|row| {
+            row.lease_epoch == claim.epoch
+                && row
+                    .lease
+                    .as_ref()
+                    .is_some_and(|lease| lease.owner == claim.owner)
+        });
+        drop(state);
+        Ok(matches.then(|| CommitEpochGuard::new(guard)))
+    }
+
     async fn enqueue_with(
         &self,
-        request: RunExecutionRequest,
+        request: RunDispatch,
         options: SubmitOptions,
     ) -> Result<(), DispatchError> {
         let mut state = lock(&self.state)?;
@@ -252,12 +348,64 @@ impl DispatchQueue for MemoryDispatchStore {
         Ok(())
     }
 
+    async fn claim_new_run(
+        &self,
+        request: RunDispatch,
+        owner: &str,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        let _authority = self.authority.lock().await;
+        let mut state = lock(&self.state)?;
+        let run_id = request.run_id().clone();
+        if !state.rows.contains_key(&run_id) {
+            state.rows.insert(
+                run_id.clone(),
+                Row {
+                    request,
+                    state: RowState::Pending,
+                    lease: None,
+                    attempt_count: 0,
+                    priority: 0,
+                    epoch: 0,
+                    lease_epoch: 0,
+                    dedupe_key: None,
+                    dead_lettered_at: None,
+                    sandbox: None,
+                },
+            );
+            state.order.push(run_id.clone());
+        }
+        Ok(claim_exact(&mut state, &run_id, owner, lease_ms, now_ms))
+    }
+
+    async fn deliver_and_claim(
+        &self,
+        input: PendingInput,
+        owner: &str,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        let _authority = self.authority.lock().await;
+        let mut state = lock(&self.state)?;
+        let run_id = input.run_id.clone();
+        if !state
+            .pending
+            .iter()
+            .any(|pending| pending.input.message_id == input.message_id)
+        {
+            state.pending.push(PendingRow { input, revision: 1 });
+        }
+        Ok(claim_exact(&mut state, &run_id, owner, lease_ms, now_ms))
+    }
+
     async fn claim(
         &self,
         owner: &str,
         lease_ms: u64,
         now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
+        let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
 
         let Some(run_id) = select(&state, now_ms) else {
@@ -304,6 +452,24 @@ impl DispatchQueue for MemoryDispatchStore {
             pending,
             sandbox,
         }))
+    }
+
+    async fn claim_run(
+        &self,
+        requested_run: &RunId,
+        owner: &str,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        let _authority = self.authority.lock().await;
+        let mut state = lock(&self.state)?;
+        Ok(claim_exact(
+            &mut state,
+            requested_run,
+            owner,
+            lease_ms,
+            now_ms,
+        ))
     }
 
     async fn bind_sandbox(&self, run_id: &RunId, sandbox_ref: &str) -> Result<(), DispatchError> {
@@ -363,14 +529,6 @@ impl DispatchQueue for MemoryDispatchStore {
         Ok(renewed)
     }
 
-    async fn current_epoch(&self, run_id: &RunId) -> Result<Option<u64>, DispatchError> {
-        // The row's live fence token (bumped on every claim); `None` once the row is
-        // gone. Same field the settle fence above compares against — the commit fence
-        // reads it here.
-        let state = lock(&self.state)?;
-        Ok(state.rows.get(run_id).map(|r| r.lease_epoch))
-    }
-
     async fn settle(
         &self,
         run_id: &RunId,
@@ -378,6 +536,7 @@ impl DispatchQueue for MemoryDispatchStore {
         outcome: DispatchOutcome,
         consumed: &[String],
     ) -> Result<SettleOutcome, DispatchError> {
+        let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
         // Fence: apply only while the caller still holds the current epoch. A stale
         // owner (lower epoch, or a gone row) changes nothing — the reclaimer's
@@ -414,6 +573,7 @@ impl DispatchQueue for MemoryDispatchStore {
     }
 
     async fn reap(&self, max_attempts: u64, now_ms: u64) -> Result<usize, DispatchError> {
+        let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
         let mut reaped = 0;
         for row in state.rows.values_mut() {
@@ -489,6 +649,7 @@ impl DispatchQueue for MemoryDispatchStore {
     }
 
     async fn cancel(&self, run_id: &RunId) -> Result<Option<ThreadId>, DispatchError> {
+        let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
         let cancellable = matches!(
             state.rows.get(run_id).map(|r| r.state),

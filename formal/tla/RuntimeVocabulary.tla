@@ -8,7 +8,7 @@ CoreRunStates == {"Running", "Awaiting", "Ended"}
 ToolCallStates == {
     "Requested",
     "Executing",
-    "AwaitingApproval",
+    "AwaitingToolPermission",
     "Completed",
     "Indeterminate"
 }

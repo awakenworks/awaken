@@ -18,12 +18,12 @@ use awaken_runtime_contract::resume::ResumeResult;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::dispatch::{
-    CasOutcome, Claimed, DispatchError, DispatchOutcome, DispatchQueue, DispatchState,
-    DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, SettleOutcome,
-    SubmitOptions,
+    CasOutcome, Claimed, CommitEpochGuard, DispatchError, DispatchOutcome, DispatchQueue,
+    DispatchState, DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, RunClaim,
+    SettleOutcome, SubmitOptions,
 };
 use crate::dispatch_schema::dispatch_bundle;
-use crate::request::RunExecutionRequest;
+use awaken_run_ingress_contract::RunDispatch;
 
 /// Errors from constructing or migrating the dispatch store. Claim/settle-time
 /// failures use the neutral [`DispatchError`].
@@ -42,6 +42,10 @@ const NS: &str = "runtime";
 
 pub struct SqliteDispatchStore {
     conn: Arc<Mutex<Connection>>,
+    /// Serializes every dispatch operation with a fenced commit. SQLite is a
+    /// single-process backend; an owned guard can therefore span the separate
+    /// commit database write without exposing a non-Send rusqlite transaction.
+    authority: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl SqliteDispatchStore {
@@ -65,12 +69,23 @@ impl SqliteDispatchStore {
             .map_err(|err| StoreError::Migrate(err.to_string()))?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
+            authority: Arc::new(tokio::sync::Mutex::new(())),
         })
     }
 
     /// Run a closure with the locked connection on a blocking thread. The closure
     /// receives the runtime table namespace.
     async fn with_conn<T, F>(&self, f: F) -> Result<T, DispatchError>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut Connection, &str) -> Result<T, DispatchError> + Send + 'static,
+    {
+        let _authority = self.authority.lock().await;
+        self.with_conn_unlocked(f).await
+    }
+
+    /// Execute while the caller already owns `authority`.
+    async fn with_conn_unlocked<T, F>(&self, f: F) -> Result<T, DispatchError>
     where
         T: Send + 'static,
         F: FnOnce(&mut Connection, &str) -> Result<T, DispatchError> + Send + 'static,
@@ -112,7 +127,7 @@ impl SqliteDispatchStore {
 impl DispatchQueue for SqliteDispatchStore {
     async fn enqueue_with(
         &self,
-        request: RunExecutionRequest,
+        request: RunDispatch,
         options: SubmitOptions,
     ) -> Result<(), DispatchError> {
         let run_id = request.run_id().0.clone();
@@ -173,6 +188,115 @@ impl DispatchQueue for SqliteDispatchStore {
             Ok(())
         })
         .await
+    }
+
+    async fn claim_new_run(
+        &self,
+        request: RunDispatch,
+        owner: &str,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        let run_id = request.run_id().0.clone();
+        let thread_id = request.thread_id().0.clone();
+        let request_json = json(&request)?;
+        let owner = owner.to_string();
+        let expires = now_ms + lease_ms;
+        self.with_conn(move |conn, p| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(reject)?;
+            let inserted = tx
+                .execute(
+                    &format!(
+                        "INSERT INTO {p}_dispatch \
+                         (run_id, thread_id, request, status, lease_owner, lease_until, lease_epoch) \
+                         VALUES (?1,?2,?3,'running',?4,?5,1) \
+                         ON CONFLICT(run_id) DO NOTHING"
+                    ),
+                    params![run_id, thread_id, request_json, owner, expires as i64],
+                )
+                .map_err(reject)?;
+            if inserted == 1 {
+                tx.commit().map_err(reject)?;
+                return Ok(Some(Claimed {
+                    request,
+                    lease: Lease {
+                        run_id: RunId(run_id),
+                        owner,
+                        expires_ms: expires,
+                        epoch: 1,
+                    },
+                    pending: Vec::new(),
+                    sandbox: None,
+                }));
+            }
+
+            // A retry follows the same exact-claim kernel as explicit recovery.
+            let claimed =
+                claim_exact_transaction(&tx, p, &run_id, &owner, lease_ms, now_ms)?;
+            tx.commit().map_err(reject)?;
+            Ok(claimed)
+        })
+        .await
+    }
+
+    async fn deliver_and_claim(
+        &self,
+        input: PendingInput,
+        owner: &str,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        let run_id = input.run_id.0.clone();
+        let owner = owner.to_string();
+        let result_json = json(&input.result)?;
+        self.with_conn(move |conn, p| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(reject)?;
+            tx.execute(
+                &format!(
+                    "INSERT INTO {p}_pending \
+                     (message_id, run_id, thread_id, correlation_id, result, available_at) \
+                     VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(message_id) DO NOTHING"
+                ),
+                params![
+                    input.message_id,
+                    input.run_id.0,
+                    input.thread_id.0,
+                    input.correlation_id,
+                    result_json,
+                    input.available_at_ms.map(|time| time as i64)
+                ],
+            )
+            .map_err(reject)?;
+            let claimed = claim_exact_transaction(&tx, p, &run_id, &owner, lease_ms, now_ms)?;
+            tx.commit().map_err(reject)?;
+            Ok(claimed)
+        })
+        .await
+    }
+
+    async fn lock_commit_epoch(
+        &self,
+        claim: &RunClaim,
+    ) -> Result<Option<CommitEpochGuard>, DispatchError> {
+        let guard = self.authority.clone().lock_owned().await;
+        let run = claim.run_id.0.clone();
+        let current: Option<(u64, Option<String>)> = self
+            .with_conn_unlocked(move |conn, p| {
+                conn.query_row(
+                    &format!("SELECT lease_epoch, lease_owner FROM {p}_dispatch WHERE run_id = ?1"),
+                    params![run],
+                    |row| Ok((row.get::<_, i64>(0)?.max(0) as u64, row.get(1)?)),
+                )
+                .optional()
+                .map_err(reject)
+            })
+            .await?;
+        Ok((current == Some((claim.epoch, Some(claim.owner.clone()))))
+            .then(|| CommitEpochGuard::new(guard)))
     }
 
     async fn claim(
@@ -245,7 +369,7 @@ impl DispatchQueue for SqliteDispatchStore {
             let Some((run_id, request_json, sandbox)) = picked else {
                 return Ok(None);
             };
-            let request: RunExecutionRequest =
+            let request: RunDispatch =
                 serde_json::from_str(&request_json).map_err(json_err)?;
 
             let expires = now_ms + lease_ms;
@@ -324,6 +448,27 @@ impl DispatchQueue for SqliteDispatchStore {
         .await
     }
 
+    async fn claim_run(
+        &self,
+        requested_run: &RunId,
+        owner: &str,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        let requested_run = requested_run.0.clone();
+        let owner = owner.to_string();
+        self.with_conn(move |conn, p| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(reject)?;
+            let claimed =
+                claim_exact_transaction(&tx, p, &requested_run, &owner, lease_ms, now_ms)?;
+            tx.commit().map_err(reject)?;
+            Ok(claimed)
+        })
+        .await
+    }
+
     async fn renew_lease(
         &self,
         run_id: &RunId,
@@ -387,25 +532,6 @@ impl DispatchQueue for SqliteDispatchStore {
                 )
                 .map_err(reject)?;
             Ok(n)
-        })
-        .await
-    }
-
-    async fn current_epoch(&self, run_id: &RunId) -> Result<Option<u64>, DispatchError> {
-        // The row's live `lease_epoch` fence token; `None` once the row is gone. The
-        // same column the settle fence below matches on — read here for the commit
-        // fence.
-        let run_id = run_id.0.clone();
-        self.with_conn(move |conn, p| {
-            let epoch: Option<i64> = conn
-                .query_row(
-                    &format!("SELECT lease_epoch FROM {p}_dispatch WHERE run_id = ?1"),
-                    params![run_id],
-                    |r| r.get(0),
-                )
-                .optional()
-                .map_err(reject)?;
-            Ok(epoch.map(|e| e as u64))
         })
         .await
     }
@@ -519,17 +645,26 @@ impl DispatchQueue for SqliteDispatchStore {
                 .map_err(reject)?;
             let rows = stmt
                 .query_map([], |r| {
-                    Ok(DispatchSummary {
-                        run_id: RunId(r.get::<_, String>(0)?),
-                        thread_id: ThreadId(r.get::<_, String>(1)?),
-                        state: DispatchState::from_db(&r.get::<_, String>(2)?),
-                        attempt_count: r.get::<_, i64>(3)? as u64,
-                    })
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, i64>(3)?,
+                    ))
                 })
                 .map_err(reject)?;
             let mut out = Vec::new();
             for row in rows {
-                out.push(row.map_err(reject)?);
+                let (run_id, thread_id, status, attempt_count) = row.map_err(reject)?;
+                let state = DispatchState::from_db(&status).ok_or_else(|| {
+                    DispatchError::Rejected(format!("unknown persisted dispatch state {status}"))
+                })?;
+                out.push(DispatchSummary {
+                    run_id: RunId(run_id),
+                    thread_id: ThreadId(thread_id),
+                    state,
+                    attempt_count: attempt_count as u64,
+                });
             }
             Ok(out)
         })
@@ -875,6 +1010,112 @@ fn current_revision(
     .optional()
     .map_err(reject)
     .map(|opt| opt.map(|r| r as u64))
+}
+
+fn pending_for_run(
+    tx: &rusqlite::Transaction<'_>,
+    prefix: &str,
+    run_id: &str,
+    now_ms: u64,
+) -> Result<Vec<PendingInput>, DispatchError> {
+    let mut stmt = tx
+        .prepare(&format!(
+            "SELECT message_id, thread_id, correlation_id, result, available_at \
+             FROM {prefix}_pending WHERE run_id = ?1 \
+             AND (available_at IS NULL OR available_at <= ?2) ORDER BY created_at"
+        ))
+        .map_err(reject)?;
+    let rows = stmt
+        .query_map(params![run_id, now_ms as i64], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<i64>>(4)?,
+            ))
+        })
+        .map_err(reject)?;
+    let mut pending = Vec::new();
+    for row in rows {
+        let (message_id, thread_id, correlation_id, result, available_at) = row.map_err(reject)?;
+        pending.push(PendingInput {
+            message_id,
+            run_id: RunId(run_id.to_string()),
+            thread_id: ThreadId(thread_id),
+            correlation_id,
+            available_at_ms: available_at.map(|time| time as u64),
+            result: serde_json::from_str(&result).map_err(json_err)?,
+        });
+    }
+    Ok(pending)
+}
+
+fn claim_exact_transaction(
+    tx: &rusqlite::Transaction<'_>,
+    prefix: &str,
+    requested_run: &str,
+    owner: &str,
+    lease_ms: u64,
+    now_ms: u64,
+) -> Result<Option<Claimed>, DispatchError> {
+    let not_running = format!(
+        "NOT EXISTS (SELECT 1 FROM {prefix}_dispatch r \
+         WHERE r.thread_id = d.thread_id AND r.status = 'running')"
+    );
+    let sql = format!(
+        "SELECT d.request, d.sandbox, d.status FROM {prefix}_dispatch d \
+         WHERE d.run_id = ?1 AND ( \
+           (d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until < ?2) \
+           OR (d.status = 'awaiting' AND EXISTS ( \
+             SELECT 1 FROM {prefix}_pending pe WHERE pe.run_id = d.run_id \
+             AND (pe.available_at IS NULL OR pe.available_at <= ?2)) AND {not_running}) \
+           OR (d.status = 'pending' AND {not_running}) \
+         ) LIMIT 1"
+    );
+    let picked: Option<(String, Option<String>, String)> = tx
+        .query_row(&sql, params![requested_run, now_ms as i64], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .optional()
+        .map_err(reject)?;
+    let Some((request_json, sandbox, status)) = picked else {
+        return Ok(None);
+    };
+    let request: RunDispatch = serde_json::from_str(&request_json).map_err(json_err)?;
+    let expires = now_ms + lease_ms;
+    tx.execute(
+        &format!(
+            "UPDATE {prefix}_dispatch SET status = 'running', lease_owner = ?1, \
+             lease_until = ?2, attempt_count = attempt_count + ?3, \
+             lease_epoch = lease_epoch + 1 WHERE run_id = ?4"
+        ),
+        params![
+            owner,
+            expires as i64,
+            i64::from(status == "running"),
+            requested_run
+        ],
+    )
+    .map_err(reject)?;
+    let lease_epoch: i64 = tx
+        .query_row(
+            &format!("SELECT lease_epoch FROM {prefix}_dispatch WHERE run_id = ?1"),
+            params![requested_run],
+            |row| row.get(0),
+        )
+        .map_err(reject)?;
+    Ok(Some(Claimed {
+        request,
+        lease: Lease {
+            run_id: RunId(requested_run.to_string()),
+            owner: owner.to_string(),
+            expires_ms: expires,
+            epoch: lease_epoch as u64,
+        },
+        pending: pending_for_run(tx, prefix, requested_run, now_ms)?,
+        sandbox,
+    }))
 }
 
 fn json<T: serde::Serialize>(value: &T) -> Result<String, DispatchError> {

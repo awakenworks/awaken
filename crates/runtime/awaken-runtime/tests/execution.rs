@@ -89,7 +89,7 @@ fn activation(fingerprint: &str) -> RunActivation {
             role: Role::User,
             content: vec![ContentBlock::text("hello")],
         }],
-        initiator: None,
+        delegation_origin: None,
         model_ref_override: None,
     }
 }

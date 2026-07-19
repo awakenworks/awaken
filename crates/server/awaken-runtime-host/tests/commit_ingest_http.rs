@@ -12,10 +12,22 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator;
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
+use awaken_run_ingress::{
+    AnyDispatchStore, ClaimedRunCommit, Dispatch, DispatchQueue, MemoryDispatchStore, RunClaim,
+    RunDispatch,
+};
+use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult,
 };
-use awaken_runtime_host::{RemoteCoordinator, SharedHost, commit_ingest_router};
+use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
+use awaken_runtime_contract::snapshot::{
+    AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
+};
+use awaken_runtime_host::{
+    RemoteClaimedRunCommit, RemoteCoordinator, SharedHost, commit_ingest_router,
+    init_shared_dispatch_store,
+};
 
 struct OkModel;
 
@@ -41,6 +53,46 @@ fn thread_commit() -> ThreadCommit {
         )],
         state: vec![],
         events: vec![],
+    }
+}
+
+fn activation(run: &str, thread: &str) -> RunActivation {
+    RunActivation::new(
+        RunId(run.into()),
+        ThreadId(thread.into()),
+        ExecutableAgentSnapshot {
+            id: ExecutableAgentSnapshotId("snap".into()),
+            root_agent_id: AgentId("agent".into()),
+            resolved_spec: ResolvedSpec {
+                model_candidates: Vec::new(),
+                catalog_fingerprint: CatalogFingerprint("fp".into()),
+                instructions: "test".into(),
+                max_steps: 2,
+                delegation_limits: Default::default(),
+                model_binding: ModelBinding::new("provider", "model", "local"),
+                tool_descriptors: Vec::new(),
+                plugin_ids: Vec::new(),
+                plugin_config: Default::default(),
+                context_policy: Default::default(),
+                tool_presentation: Default::default(),
+            },
+            fingerprint: CatalogFingerprint("fp".into()),
+        },
+        Vec::new(),
+    )
+}
+
+fn claimed_commit(run: &str, thread: &str, text: &str) -> ThreadCommit {
+    ThreadCommit {
+        thread_id: ThreadId(thread.into()),
+        run: RunDisposition::ended(RunId(run.into()), EndCause::NaturalEnd),
+        messages: vec![Message::text(
+            MessageId(format!("message-{run}")),
+            Role::Assistant,
+            text,
+        )],
+        state: Vec::new(),
+        events: Vec::new(),
     }
 }
 
@@ -90,4 +142,56 @@ async fn db_less_worker_pushes_facts_and_the_server_commits_them() {
         1,
         "a redelivered commit is a no-op (idempotent), not a duplicate: {after:?}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn remote_claim_and_commit_is_one_atomic_server_operation() {
+    let memory = Arc::new(MemoryDispatchStore::new());
+    init_shared_dispatch_store(Arc::new(AnyDispatchStore::from_dispatch(
+        memory.clone() as Arc<dyn Dispatch>
+    )));
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let router = commit_ingest_router(host.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+
+    memory
+        .enqueue(RunDispatch::new(activation("atomic-run", "atomic-thread")))
+        .await
+        .unwrap();
+    let stale = memory
+        .claim("worker-a", 100, 0)
+        .await
+        .unwrap()
+        .expect("first claim");
+    let current = memory
+        .claim("worker-b", 100, 200)
+        .await
+        .unwrap()
+        .expect("recovery claim");
+    let remote = RemoteClaimedRunCommit::new(format!("http://{addr}"));
+
+    assert!(
+        remote
+            .commit(
+                &RunClaim::from(&stale.lease),
+                claimed_commit("atomic-run", "atomic-thread", "stale"),
+            )
+            .await
+            .is_err(),
+        "a stale remote claim is rejected before its ThreadCommit"
+    );
+    assert!(host.committed_messages("atomic-thread").await.is_empty());
+
+    remote
+        .commit(
+            &RunClaim::from(&current.lease),
+            claimed_commit("atomic-run", "atomic-thread", "current"),
+        )
+        .await
+        .expect("current claim commits atomically");
+    let messages = host.committed_messages("atomic-thread").await;
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].text_content(), "current");
 }

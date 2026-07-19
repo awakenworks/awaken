@@ -27,6 +27,7 @@ pub struct RunResult {
     /// `true` when the runtime transparently retried a transient inference failure
     /// during this turn (auto-recovery), read from the run's reschedule counter.
     pub rescheduled: bool,
+    pub delegated_runs: Vec<awaken_protocol_managed::DelegatedRun>,
 }
 
 /// The neutral resume command: answer a built-in tool's permission gate, or
@@ -34,7 +35,7 @@ pub struct RunResult {
 pub enum HostResume {
     /// Built-in tool awaiting approval (Managed `user.tool_confirmation`; AI SDK
     /// `approval-responded` / `output-denied`).
-    Confirm { allow: bool, note: Option<String> },
+    ToolPermission { allow: bool, note: Option<String> },
     /// Client-executed tool result (Managed `user.custom_tool_result`; AI SDK
     /// `output-available` / `output-error` on a client tool part).
     ClientResult { content: String, is_error: bool },

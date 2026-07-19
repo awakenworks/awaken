@@ -232,7 +232,7 @@ mod tests {
                 fingerprint: CatalogFingerprint("fp".into()),
             },
             input: Vec::new(),
-            initiator: None,
+            delegation_origin: None,
             model_ref_override: None,
         };
         assert_eq!(r.model(&act).unwrap().model, "run-model");

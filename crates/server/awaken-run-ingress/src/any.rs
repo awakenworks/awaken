@@ -21,12 +21,13 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime_contract::resume::ResumeResult;
 
 use crate::dispatch::{
-    CasOutcome, Claimed, Dispatch, DispatchError, DispatchOutcome, DispatchQueue, DispatchSummary,
-    Inbox, Outbox, PendingInput, PendingRecord, SettleOutcome, SubmitOptions,
+    CasOutcome, Claimed, CommitEpochGuard, Dispatch, DispatchError, DispatchOutcome, DispatchQueue,
+    DispatchSummary, Inbox, Outbox, PendingInput, PendingRecord, RunClaim, SettleOutcome,
+    SubmitOptions,
 };
 use crate::postgres::PostgresDispatchStore;
-use crate::request::RunExecutionRequest;
 use crate::sqlite::SqliteDispatchStore;
+use awaken_run_ingress_contract::RunDispatch;
 
 /// The active durable-dispatch backend behind one concrete type. Both a SQLite
 /// and a Postgres store satisfy the full `Dispatch` bundle; this holds whichever
@@ -128,12 +129,39 @@ macro_rules! delegate {
 
 #[async_trait]
 impl DispatchQueue for AnyDispatchStore {
+    async fn lock_commit_epoch(
+        &self,
+        claim: &RunClaim,
+    ) -> Result<Option<CommitEpochGuard>, DispatchError> {
+        delegate!(self, lock_commit_epoch(claim))
+    }
+
     async fn enqueue_with(
         &self,
-        request: RunExecutionRequest,
+        request: RunDispatch,
         options: SubmitOptions,
     ) -> Result<(), DispatchError> {
         delegate!(self, enqueue_with(request, options))
+    }
+
+    async fn claim_new_run(
+        &self,
+        request: RunDispatch,
+        owner: &str,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        delegate!(self, claim_new_run(request, owner, lease_ms, now_ms))
+    }
+
+    async fn deliver_and_claim(
+        &self,
+        input: PendingInput,
+        owner: &str,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        delegate!(self, deliver_and_claim(input, owner, lease_ms, now_ms))
     }
 
     async fn claim(
@@ -143,6 +171,16 @@ impl DispatchQueue for AnyDispatchStore {
         now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
         delegate!(self, claim(owner, lease_ms, now_ms))
+    }
+
+    async fn claim_run(
+        &self,
+        run_id: &RunId,
+        owner: &str,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        delegate!(self, claim_run(run_id, owner, lease_ms, now_ms))
     }
 
     async fn renew_lease(
@@ -172,12 +210,6 @@ impl DispatchQueue for AnyDispatchStore {
         consumed: &[String],
     ) -> Result<SettleOutcome, DispatchError> {
         delegate!(self, settle(run_id, epoch, outcome, consumed))
-    }
-
-    async fn current_epoch(&self, run_id: &RunId) -> Result<Option<u64>, DispatchError> {
-        // Must forward, not use the trait's fail-open default: the commit fence (and
-        // its HTTP transport) reads the real backend's epoch through this wrapper.
-        delegate!(self, current_epoch(run_id))
     }
 
     async fn reap(&self, max_attempts: u64, now_ms: u64) -> Result<usize, DispatchError> {

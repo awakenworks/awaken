@@ -18,7 +18,7 @@ CONSTANTS
     MaxVersion
 
 OpKinds == {
-    "Claim", "Reclaim", "RequestApproval", "Approve", "Deny", "SupplyResult",
+    "Claim", "Reclaim", "RequestToolPermission", "Approve", "Deny", "SupplyResult",
     "DirectStart", "CompleteImmediate", "Complete", "RecoverReplaySafe",
     "RecoverIndeterminate", "StartChild", "AwaitChild", "ResumeChild",
     "FinishChild", "DuplicateChildCompletion",
@@ -27,7 +27,7 @@ OpKinds == {
 }
 
 CallOps == {
-    "RequestApproval", "Approve", "Deny", "SupplyResult", "DirectStart",
+    "RequestToolPermission", "Approve", "Deny", "SupplyResult", "DirectStart",
     "CompleteImmediate", "Complete",
     "RecoverReplaySafe", "RecoverIndeterminate"
 }
@@ -159,9 +159,9 @@ ApplyReclaim ==
     /\ ABS!Reclaim(pendingOwner)
     /\ ClearPrepared
 
-ApplyRequestApproval ==
-    /\ Prepared("RequestApproval")
-    /\ ABS!RequestApproval(pendingCall)
+ApplyRequestToolPermission ==
+    /\ Prepared("RequestToolPermission")
+    /\ ABS!RequestToolPermission(pendingCall)
     /\ ClearPrepared
 
 ApplyApprove ==
@@ -275,7 +275,7 @@ Next ==
     \/ CrashPrepared
     \/ ApplyClaim
     \/ ApplyReclaim
-    \/ ApplyRequestApproval
+    \/ ApplyRequestToolPermission
     \/ ApplyApprove
     \/ ApplyDeny
     \/ ApplySupplyResult

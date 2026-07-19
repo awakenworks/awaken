@@ -64,9 +64,9 @@ pub use awaken_session_contract::{
 };
 pub use awaken_session_store::{InMemoryScopedSessionStore, InMemorySessionRepository};
 pub use state::{
-    AgentCapabilities, BuiltinTool, CustomTool, Decision, LiveInboxEntry, LiveInboxError,
+    AgentCapabilities, BuiltinTool, CustomTool, DelegatedRun, LiveInboxEntry, LiveInboxError,
     LiveInboxSnapshot, ManagedState, McpServerBinding, OutcomeIteration, OutcomeReport, Pending,
     RunError, RunErrorKind, SessionInit, SessionLifecycleSink, SessionResource, SessionRuntime,
-    SessionUsage, StateError, StepOutcome,
+    SessionUsage, StateError, StepOutcome, ToolPermissionDecision,
 };
 pub use work_queue::{WorkItem, WorkQueue, WorkState};
