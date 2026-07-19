@@ -157,7 +157,18 @@ impl SharedHost {
     /// no store; the server stays the single writer.
     #[must_use]
     pub fn with_upstream(mut self, url: impl Into<String>) -> Self {
-        self.upstream = Some(url.into());
+        self.upstream = Some(crate::worker_security::WorkerUpstream::new(url));
+        self
+    }
+
+    /// Configure an authenticated worker upstream shared by dispatch and commit
+    /// clients (for example a client carrying an mTLS identity).
+    #[must_use]
+    pub fn with_worker_upstream(
+        mut self,
+        upstream: crate::worker_security::WorkerUpstream,
+    ) -> Self {
+        self.upstream = Some(upstream);
         self
     }
 
@@ -458,10 +469,11 @@ impl SharedHost {
                 store: crate::dispatch_backend::shared_durable_store(self.store_dir.as_deref())?,
                 commit,
                 owner: crate::dispatch_backend::dispatch_owner(),
-                claimed_commit: self.upstream.as_ref().map(|url| {
-                    Arc::new(crate::commit_ingest::RemoteClaimedRunCommit::new(
-                        url.clone(),
-                    )) as Arc<dyn awaken_run_ingress::ClaimedRunCommit>
+                claimed_commit: self.upstream.as_ref().map(|upstream| {
+                    Arc::new(
+                        crate::commit_ingest::RemoteClaimedRunCommit::new(upstream.base_url())
+                            .with_client(upstream.client().clone()),
+                    ) as Arc<dyn awaken_run_ingress::ClaimedRunCommit>
                 }),
             })
         } else {

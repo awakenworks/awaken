@@ -22,7 +22,7 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_run_ingress::{
     DispatchError, DispatchOutcome, DispatchQueue, HttpDispatchQueue, Inbox, MemoryDispatchStore,
-    Outbox, PendingInput, RunDispatch, SettleOutcome, SubmitOptions,
+    ModelAccessRef, Outbox, PendingInput, RunDispatch, SettleOutcome, SubmitOptions,
 };
 use awaken_runtime_contract::resume::ResumeResult;
 use axum::extract::State;
@@ -208,7 +208,10 @@ async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
 
     // Enqueue a run over the wire; the server-side store records it.
     queue
-        .enqueue(RunDispatch::new(activation("run-1")))
+        .enqueue(
+            RunDispatch::new(activation("run-1"))
+                .with_model_access(ModelAccessRef::new("cloud-gateway", "grant-http")),
+        )
         .await
         .expect("enqueue over transport");
     assert_eq!(
@@ -226,6 +229,11 @@ async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
         .expect("claim ok")
         .expect("a runnable dispatch");
     assert_eq!(claimed.request.run_id(), &run);
+    assert_eq!(
+        claimed.request.model_access,
+        Some(ModelAccessRef::new("cloud-gateway", "grant-http")),
+        "the opaque grant survives the worker HTTP boundary"
+    );
     assert_eq!(claimed.lease.owner, "worker-A");
     assert_eq!(claimed.lease.epoch, 1);
 

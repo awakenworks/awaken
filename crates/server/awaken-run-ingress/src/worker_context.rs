@@ -10,6 +10,7 @@ use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
+use awaken_run_ingress_contract::ModelAccessRef;
 use awaken_runtime_contract::live_inbox::LiveInbox;
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::pause::PauseSignal;
@@ -22,7 +23,8 @@ use tokio_util::sync::CancellationToken;
 /// `None` = no provider or an unresolved ref, so the run falls back to the runtime's
 /// bound (host default) executor. This is the *provider* seam: the worker names a
 /// model and gets back an executor, never learning how the model is reached.
-pub type ModelResolverFn = Arc<dyn Fn(&str) -> Option<Arc<dyn LlmExecutor>> + Send + Sync>;
+pub type ModelResolverFn =
+    Arc<dyn Fn(&str, Option<&ModelAccessRef>) -> Option<Arc<dyn LlmExecutor>> + Send + Sync>;
 
 // The serializable durable-run instruction moved to the dispatch contract
 // (ADR-0039 2.1); re-exported so `awaken_run_ingress_contract::RunDispatch` is stable.
@@ -80,10 +82,14 @@ impl WorkerContext {
 
     /// Resolve `model_ref` to its executor via the injected provider, or `None` to
     /// fall back to the runtime's bound default (no provider / unresolved ref).
-    pub(crate) fn resolve_model(&self, model_ref: &str) -> Option<Arc<dyn LlmExecutor>> {
+    pub(crate) fn resolve_model(
+        &self,
+        model_ref: &str,
+        model_access: Option<&ModelAccessRef>,
+    ) -> Option<Arc<dyn LlmExecutor>> {
         self.model_resolver
             .as_ref()
-            .and_then(|resolve| resolve(model_ref))
+            .and_then(|resolve| resolve(model_ref, model_access))
     }
 
     /// Provide the per-session live inbox so worker-driven runs drain mid-run
@@ -174,9 +180,9 @@ mod resolve_seam_tests {
     fn returns_the_injected_providers_executor() {
         let labeled: Arc<dyn LlmExecutor> = Arc::new(Labeled("resolved"));
         let l = labeled.clone();
-        let c = ctx().with_model_resolver(Arc::new(move |_ref| Some(l.clone())));
+        let c = ctx().with_model_resolver(Arc::new(move |_ref, _access| Some(l.clone())));
         assert!(Arc::ptr_eq(
-            &c.resolve_model("any-model").unwrap(),
+            &c.resolve_model("any-model", None).unwrap(),
             &labeled
         ));
     }
@@ -184,12 +190,12 @@ mod resolve_seam_tests {
     #[test]
     fn is_none_without_a_resolver() {
         // No provider injected → None → the run uses the runtime's bound default.
-        assert!(ctx().resolve_model("any-model").is_none());
+        assert!(ctx().resolve_model("any-model", None).is_none());
     }
 
     #[test]
     fn is_none_when_the_resolver_declines_the_ref() {
-        let c = ctx().with_model_resolver(Arc::new(|_ref| None));
-        assert!(c.resolve_model("unknown-model").is_none());
+        let c = ctx().with_model_resolver(Arc::new(|_ref, _access| None));
+        assert!(c.resolve_model("unknown-model", None).is_none());
     }
 }

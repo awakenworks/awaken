@@ -119,11 +119,12 @@ pub use crate::deployment_config::{
 };
 pub use crate::dispatch_transport::{
     WorkerDispatchService, dispatch_transport_router, dispatch_transport_router_with_service,
+    worker_dispatch_store_with_upstream,
 };
 pub use crate::worker_security::{
     FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, ManualWorkerClock, SystemWorkerClock,
     VerifiedWorkerContext, WORKER_ID_HEADER, WorkerAuthError, WorkerClock, WorkerLeasePolicy,
-    WorkerRequestAuthenticator,
+    WorkerRequestAuthenticator, WorkerUpstream,
 };
 // The worker HTTP dispatch client now lives in awaken-run-ingress; re-exported so
 // composition roots keep using `awaken_runtime_host::{HttpDispatchQueue, worker_dispatch_store}`.

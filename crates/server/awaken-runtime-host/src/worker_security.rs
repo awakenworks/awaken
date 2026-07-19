@@ -14,6 +14,55 @@ use axum::http::request::Parts;
 /// Compatibility identity header used by the local HTTP client and authenticator.
 pub const WORKER_ID_HEADER: &str = "x-awaken-worker-id";
 
+/// Client-side worker transport configuration. A managed composition injects a
+/// TLS-configured client and the identity bound to its WorkerLease; the same
+/// values are then used for dispatch, claimed commit, and ordinary commit calls.
+#[derive(Clone)]
+pub struct WorkerUpstream {
+    base_url: String,
+    client: reqwest::Client,
+    worker_id: String,
+}
+
+impl WorkerUpstream {
+    #[must_use]
+    pub fn new(base_url: impl Into<String>) -> Self {
+        Self {
+            base_url: base_url.into().trim_end_matches('/').to_string(),
+            client: reqwest::Client::new(),
+            worker_id: std::env::var("AWAKEN_WORKER_ID")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| "awaken-worker".to_string()),
+        }
+    }
+
+    #[must_use]
+    pub fn with_client(mut self, client: reqwest::Client) -> Self {
+        self.client = client;
+        self
+    }
+
+    #[must_use]
+    pub fn with_worker_id(mut self, worker_id: impl Into<String>) -> Self {
+        self.worker_id = worker_id.into();
+        self
+    }
+
+    #[must_use]
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    pub(crate) fn client(&self) -> &reqwest::Client {
+        &self.client
+    }
+
+    pub(crate) fn worker_id(&self) -> &str {
+        &self.worker_id
+    }
+}
+
 /// Process-local proof that a worker request passed the configured authenticator.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedWorkerContext {

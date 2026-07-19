@@ -151,7 +151,7 @@ pub struct SharedHost {
     /// every thread's commit boundary is a [`HostCommit::Remote`] that posts facts to
     /// the server's commit ingest — the worker holds no store. Set via
     /// [`with_upstream`](Self::with_upstream); `None` is a store-owning server/host.
-    pub(crate) upstream: Option<String>,
+    pub(crate) upstream: Option<crate::worker_security::WorkerUpstream>,
     /// The deployment axes (store/dispatch backend, durable ingress, wake), parsed
     /// once from the environment at construction. The runtime reads this typed
     /// config instead of reaching into process env at each call site.

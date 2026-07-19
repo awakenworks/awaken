@@ -333,7 +333,9 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         // credentials or a gateway offering). `None` leaves the runtime's bound (host
         // default) executor, so a single-model deployment is unaffected.
         let effective_model = claimed.request.activation.effective_model_ref().to_string();
-        let model_executor = self.exec.resolve_model(&effective_model);
+        let model_executor = self
+            .exec
+            .resolve_model(&effective_model, claimed.request.model_access.as_ref());
         // Continue the admitting request's trace across the durable queue boundary:
         // this `wake.dispatch` span's remote parent is the persisted traceparent, so
         // the run driven below (`runtime.run` → …) nests under the trace that

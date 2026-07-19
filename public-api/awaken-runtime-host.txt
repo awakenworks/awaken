@@ -270,6 +270,7 @@ pub fn awaken_runtime_host::SharedHost::with_store_dir(self, impl core::convert:
 pub fn awaken_runtime_host::SharedHost::with_tool_executor_provider(self, alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolExecutorProvider>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_trusted_acp_mcp(self, bool) -> Self
 pub fn awaken_runtime_host::SharedHost::with_upstream(self, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_runtime_host::SharedHost::with_worker_upstream(self, awaken_runtime_host::WorkerUpstream) -> Self
 impl awaken_runtime_host::SharedHost
 pub fn awaken_runtime_host::SharedHost::builtin_tools(&self) -> alloc::vec::Vec<(alloc::string::String, bool)>
 pub async fn awaken_runtime_host::SharedHost::create_memory_store(&self) -> alloc::string::String
@@ -313,9 +314,16 @@ pub struct awaken_runtime_host::WorkerDispatchService
 impl awaken_runtime_host::WorkerDispatchService
 pub fn awaken_runtime_host::WorkerDispatchService::local(alloc::sync::Arc<dyn awaken_run_ingress_contract::dispatch::DispatchQueue>) -> Self
 pub fn awaken_runtime_host::WorkerDispatchService::new(alloc::sync::Arc<dyn awaken_run_ingress_contract::dispatch::DispatchQueue>, alloc::sync::Arc<dyn awaken_runtime_host::WorkerRequestAuthenticator>, alloc::sync::Arc<dyn awaken_runtime_host::WorkerClock>, alloc::sync::Arc<dyn awaken_runtime_host::WorkerLeasePolicy>) -> Self
+pub struct awaken_runtime_host::WorkerUpstream
+impl awaken_runtime_host::WorkerUpstream
+pub fn awaken_runtime_host::WorkerUpstream::base_url(&self) -> &str
+pub fn awaken_runtime_host::WorkerUpstream::new(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_runtime_host::WorkerUpstream::with_client(self, reqwest::async_impl::client::Client) -> Self
+pub fn awaken_runtime_host::WorkerUpstream::with_worker_id(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub const awaken_runtime_host::WORKER_ID_HEADER: &str
 pub trait awaken_runtime_host::ExecutorProvider: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_host::ExecutorProvider::executor_for(&self, &str) -> core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>
+pub fn awaken_runtime_host::ExecutorProvider::executor_for_run(&self, &str, core::option::Option<&awaken_run_ingress_contract::run_dispatch::ModelAccessRef>) -> core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>
 pub trait awaken_runtime_host::WorkerClock: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_host::WorkerClock::now_ms(&self) -> u64
 impl awaken_runtime_host::WorkerClock for awaken_runtime_host::ManualWorkerClock
@@ -350,3 +358,4 @@ pub fn awaken_runtime_host::memory_stores_router(alloc::sync::Arc<awaken_runtime
 pub fn awaken_runtime_host::platform_plugin_capabilities() -> alloc::vec::Vec<awaken_runtime_contract::capability::PluginCapability>
 pub async fn awaken_runtime_host::resolve_sandbox_tier(awaken_runtime_host::SandboxTier, &std::path::Path) -> core::result::Result<awaken_runtime_host::SandboxTier, alloc::string::String>
 pub fn awaken_runtime_host::skills_router(alloc::sync::Arc<awaken_runtime_host::SharedHost>) -> axum::routing::Router
+pub fn awaken_runtime_host::worker_dispatch_store_with_upstream(&awaken_runtime_host::WorkerUpstream) -> alloc::sync::Arc<awaken_run_ingress::any::AnyDispatchStore>

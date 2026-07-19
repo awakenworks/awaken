@@ -8,6 +8,7 @@
 mod harness;
 
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::Ordering;
 
 use awaken_agent_contract::agent::message::Role;
@@ -16,7 +17,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_ext_builtin_tools::MessageSender;
 use awaken_run_ingress::{
     DispatchOutcome, DispatchQueue, DispatchWorker, DurableRunIngress, Inbox, MemoryDispatchStore,
-    OutboxMessageSender, PendingInput, RunDispatch, RunIngressCapabilities,
+    ModelAccessRef, OutboxMessageSender, PendingInput, RunDispatch, RunIngressCapabilities,
 };
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime::{DirectRunIngress, RunIngress};
@@ -109,7 +110,7 @@ async fn a_worker_routes_inference_through_the_resolved_model_executor() {
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let resolver: awaken_run_ingress::ModelResolverFn =
-        Arc::new(|_model_ref| Some(Arc::new(Labeled) as Arc<dyn LlmExecutor>));
+        Arc::new(|_model_ref, _access| Some(Arc::new(Labeled) as Arc<dyn LlmExecutor>));
     let ingress = DurableRunIngress::with_owner_and_resolver(
         text_runtime(), // its bound model would reply "done"
         store.clone(),
@@ -130,6 +131,63 @@ async fn a_worker_routes_inference_through_the_resolved_model_executor() {
         messages.last().unwrap().text_content(),
         "RESOLVED",
         "the worker ran the resolved model, not the runtime's bound default"
+    );
+}
+
+#[tokio::test]
+async fn a_secretless_worker_passes_the_durable_model_access_grant_to_its_resolver() {
+    use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
+
+    struct Gateway;
+    #[async_trait::async_trait]
+    impl LlmExecutor for Gateway {
+        async fn infer(
+            &self,
+            _request: ChatRequest,
+        ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+            Ok(ChatResponse {
+                output: AssistantOutput::text("GATEWAY"),
+                usage: None,
+                stop_reason: None,
+            })
+        }
+    }
+
+    let seen = Arc::new(Mutex::new(None));
+    let capture = seen.clone();
+    let resolver: awaken_run_ingress::ModelResolverFn = Arc::new(move |_model_ref, access| {
+        *capture.lock().expect("grant capture mutex") = access.cloned();
+        Some(Arc::new(Gateway) as Arc<dyn LlmExecutor>)
+    });
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let ingress = DurableRunIngress::with_owner_and_resolver(
+        text_runtime(),
+        store,
+        commit.clone(),
+        "secretless-worker",
+        None,
+        Some(resolver),
+    );
+    let access = ModelAccessRef::new("cloud-gateway", "grant-17");
+    let request = RunDispatch::new(activation("run-gateway")).with_model_access(access.clone());
+    let (_, state) = ingress
+        .worker()
+        .start_run(request, 0)
+        .await
+        .expect("worker drive succeeds")
+        .expect("new run is claimed");
+
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
+    assert_eq!(*seen.lock().expect("grant capture mutex"), Some(access));
+    assert_eq!(
+        commit
+            .committed()
+            .messages
+            .last()
+            .expect("assistant reply")
+            .text_content(),
+        "GATEWAY"
     );
 }
 
@@ -159,10 +217,11 @@ async fn a_per_run_model_override_routes_the_worker_to_the_overridden_model() {
 
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let resolver: awaken_run_ingress::ModelResolverFn = Arc::new(|model_ref| match model_ref {
-        "alt" => Some(Arc::new(Fixed("ALT")) as Arc<dyn LlmExecutor>),
-        _ => Some(Arc::new(Fixed("BOUND")) as Arc<dyn LlmExecutor>),
-    });
+    let resolver: awaken_run_ingress::ModelResolverFn =
+        Arc::new(|model_ref, _access| match model_ref {
+            "alt" => Some(Arc::new(Fixed("ALT")) as Arc<dyn LlmExecutor>),
+            _ => Some(Arc::new(Fixed("BOUND")) as Arc<dyn LlmExecutor>),
+        });
     let ingress = DurableRunIngress::with_owner_and_resolver(
         text_runtime(),
         store.clone(),

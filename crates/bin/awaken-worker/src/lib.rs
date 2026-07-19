@@ -22,9 +22,10 @@ use std::sync::Arc;
 
 mod admin;
 
-use awaken_server::SharedHost;
+use awaken_runtime_host::WorkerUpstream;
 use awaken_server::config_executor::ConfigExecutorProvider;
 use awaken_server::no_model::NoModelConfiguredExecutor;
+use awaken_server::{ExecutorProvider, SharedHost};
 
 /// Run this process as a database-less **worker** of the cell server at `upstream`.
 ///
@@ -44,17 +45,6 @@ use awaken_server::no_model::NoModelConfiguredExecutor;
 /// Requires `AWAKEN_INGRESS=durable` (the pool's enable gate); the injected remote
 /// store routes the drain over HTTP instead of a local queue.
 pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error>> {
-    // Route the dispatch pool's claim/settle over HTTP to the cell server.
-    awaken_runtime_host::init_shared_dispatch_store(awaken_runtime_host::worker_dispatch_store(
-        upstream,
-    ));
-
-    // The base host. A run's model is resolved per attempt through the injected
-    // ExecutorProvider, which owns how the model is reached (local credentials or a
-    // gateway offering) — the runtime only names a model and gets back an executor.
-    let mut host =
-        SharedHost::new(Arc::new(NoModelConfiguredExecutor), "worker").with_upstream(upstream);
-
     // Gateway-only mode (`AWAKEN_WORKER_GATEWAY_ONLY=1`): a genuinely SECRETLESS
     // worker. It opens no credential vault and needs no seal key — every run's model
     // must resolve without a local secret (a cloud-managed gateway offering); a model
@@ -63,7 +53,14 @@ pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error>> {
     // resolves locally-credentialed models from the shared control plane, which
     // requires the vault + seal key.
     let gateway_only = std::env::var("AWAKEN_WORKER_GATEWAY_ONLY").as_deref() == Ok("1");
-    if !gateway_only {
+    if gateway_only {
+        run_configured(
+            WorkerUpstream::new(upstream),
+            None,
+            "secretless (gateway-only; awaiting an injected gateway provider)",
+        )
+        .await
+    } else {
         // The shared control-plane stores this worker resolves locally-credentialed models from
         // — opened the same way the Serve composition opens them (durable under
         // AWAKEN_MGMT_DIR, else in-memory; needs the seal key to unseal credentials).
@@ -74,7 +71,62 @@ pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error>> {
             stores.secrets,
             awaken_control::BOOTSTRAP_WORKSPACE,
         );
-        host = host.with_executor_provider(Arc::new(config_exec_provider));
+        run_configured(
+            WorkerUpstream::new(upstream),
+            Some(Arc::new(config_exec_provider)),
+            "per-run model resolution from the config plane",
+        )
+        .await
+    }
+}
+
+/// Run a genuinely secretless worker with a deployment-provided executor
+/// provider. The provider receives each durable run's opaque `model_access`
+/// reference through [`ExecutorProvider::executor_for_run`]; it can return a
+/// cloud-managed gateway executor that renews/revokes grants while the worker
+/// never opens a credential vault or handles a provider key.
+pub async fn run_with_executor_provider(
+    upstream: &str,
+    provider: Arc<dyn ExecutorProvider>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    run_configured(
+        WorkerUpstream::new(upstream),
+        Some(provider),
+        "secretless (injected gateway executor provider; no vault/seal key)",
+    )
+    .await
+}
+
+/// Secretless worker composition with one shared authenticated transport. The
+/// supplied upstream may carry a WorkerLease-bound identity and an mTLS client;
+/// it is reused for claim/settle and both commit paths.
+pub async fn run_with_executor_provider_and_upstream(
+    upstream: WorkerUpstream,
+    provider: Arc<dyn ExecutorProvider>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    run_configured(
+        upstream,
+        Some(provider),
+        "secretless (injected gateway provider and authenticated upstream)",
+    )
+    .await
+}
+
+async fn run_configured(
+    upstream: WorkerUpstream,
+    provider: Option<Arc<dyn ExecutorProvider>>,
+    posture: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let upstream_url = upstream.base_url().to_string();
+    // Route the dispatch pool's claim/settle over HTTP to the cell server.
+    awaken_runtime_host::init_shared_dispatch_store(
+        awaken_runtime_host::worker_dispatch_store_with_upstream(&upstream),
+    );
+
+    let mut host = SharedHost::new(Arc::new(NoModelConfiguredExecutor), "worker")
+        .with_worker_upstream(upstream);
+    if let Some(provider) = provider {
+        host = host.with_executor_provider(provider);
     }
 
     // Warm-load the published config catalog from the shared control plane, so a run
@@ -92,12 +144,7 @@ pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error>> {
 
     let host = Arc::new(host);
     host.ensure_dispatch_pool();
-    let posture = if gateway_only {
-        "secretless (gateway-only; no vault/seal key)"
-    } else {
-        "per-run model resolution from the config plane"
-    };
-    eprintln!("awaken-worker draining from {upstream} ({posture})");
+    eprintln!("awaken-worker draining from {upstream_url} ({posture})");
 
     // The cloud-native admin surface on a SEPARATE port from any data path: an
     // orchestrator gates routing on `/readyz` and calls `POST /admin/drain` in a

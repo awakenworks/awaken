@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use awaken_run_ingress::ModelAccessRef;
 use awaken_runtime_contract::llm::LlmExecutor;
 
 /// Resolves a bound model ref to its executor (R1). `None` from `executor_for`
@@ -19,6 +20,20 @@ use awaken_runtime_contract::llm::LlmExecutor;
 pub trait ExecutorProvider: Send + Sync {
     /// The executor for `model_ref`, or `None` to fall back to the host default.
     fn executor_for(&self, model_ref: &str) -> Option<Arc<dyn LlmExecutor>>;
+
+    /// Resolve one durable run, including its opaque model-access capability.
+    /// Existing local-credential providers inherit the compatibility default and
+    /// ignore the capability. Secretless gateway providers override this method
+    /// and build an executor that presents/renews the referenced grant without
+    /// exposing a provider key to the worker.
+    fn executor_for_run(
+        &self,
+        model_ref: &str,
+        model_access: Option<&ModelAccessRef>,
+    ) -> Option<Arc<dyn LlmExecutor>> {
+        let _ = model_access;
+        self.executor_for(model_ref)
+    }
 }
 
 /// The host's per-thread model binding: which model ref each thread runs, and how
@@ -85,9 +100,18 @@ impl ThreadModelBinding {
     /// executor, resolved each attempt from the run's own binding rather than a
     /// session-build-time registry lookup.
     pub(crate) fn executor_for(&self, model_ref: &str) -> Option<Arc<dyn LlmExecutor>> {
+        self.executor_for_run(model_ref, None)
+    }
+
+    /// Resolve a durable run with its opaque access capability.
+    pub(crate) fn executor_for_run(
+        &self,
+        model_ref: &str,
+        model_access: Option<&ModelAccessRef>,
+    ) -> Option<Arc<dyn LlmExecutor>> {
         self.provider
             .as_ref()
-            .and_then(|provider| provider.executor_for(model_ref))
+            .and_then(|provider| provider.executor_for_run(model_ref, model_access))
     }
 }
 
@@ -165,6 +189,45 @@ mod tests {
     fn no_provider_means_executor_for_is_always_none() {
         let binding = ThreadModelBinding::new();
         assert!(binding.executor_for("whatever").is_none());
+    }
+
+    #[test]
+    fn durable_run_resolution_forwards_the_opaque_gateway_grant() {
+        struct GatewayProvider {
+            seen: Arc<Mutex<Option<ModelAccessRef>>>,
+            executor: Arc<dyn LlmExecutor>,
+        }
+
+        impl ExecutorProvider for GatewayProvider {
+            fn executor_for(&self, _model_ref: &str) -> Option<Arc<dyn LlmExecutor>> {
+                None
+            }
+
+            fn executor_for_run(
+                &self,
+                model_ref: &str,
+                model_access: Option<&ModelAccessRef>,
+            ) -> Option<Arc<dyn LlmExecutor>> {
+                assert_eq!(model_ref, "gateway-model");
+                *self.seen.lock().expect("grant capture mutex") = model_access.cloned();
+                Some(self.executor.clone())
+            }
+        }
+
+        let seen = Arc::new(Mutex::new(None));
+        let executor: Arc<dyn LlmExecutor> = Arc::new(LabeledModel("gateway"));
+        let mut binding = ThreadModelBinding::new();
+        binding.set_provider(Arc::new(GatewayProvider {
+            seen: seen.clone(),
+            executor: executor.clone(),
+        }));
+        let grant = ModelAccessRef::new("cloud-gateway", "grant-42");
+
+        let resolved = binding
+            .executor_for_run("gateway-model", Some(&grant))
+            .expect("gateway provider resolves the run");
+        assert!(Arc::ptr_eq(&resolved, &executor));
+        assert_eq!(*seen.lock().expect("grant capture mutex"), Some(grant));
     }
 
     #[test]

@@ -15,13 +15,21 @@ impl SharedHost {
         match plan_commit(
             self.deployment.store,
             self.store_dir.as_deref(),
-            self.upstream.as_deref(),
+            self.upstream.as_ref().map(|upstream| upstream.base_url()),
             thread,
         ) {
             // Database-less worker: every thread commits to the cell server's ingest.
-            CommitPlan::Remote(url) => Ok(HostCommit::Remote(
-                crate::commit_ingest::RemoteCoordinator::new(url),
-            )),
+            CommitPlan::Remote(url) => {
+                let upstream = self
+                    .upstream
+                    .as_ref()
+                    .expect("remote commit plan has an upstream");
+                Ok(HostCommit::Remote(
+                    crate::commit_ingest::RemoteCoordinator::new(url)
+                        .with_client(upstream.client().clone())
+                        .with_worker_id(upstream.worker_id()),
+                ))
+            }
             // Shared Postgres commit backend (ADR-0022 D6): one coordinator keyed by
             // thread, connected once at startup (the non-Send sqlx connect stays out of
             // the run loop). Fails closed when uninitialised, independent of a store dir.
@@ -125,9 +133,10 @@ impl SharedHost {
             Some(stream_checkpoint),
             model_resolver,
         );
-        if let Some(url) = &self.upstream {
+        if let Some(upstream) = &self.upstream {
             ingress = ingress.with_claimed_commit(Arc::new(
-                crate::commit_ingest::RemoteClaimedRunCommit::new(url.clone()),
+                crate::commit_ingest::RemoteClaimedRunCommit::new(upstream.base_url())
+                    .with_client(upstream.client().clone()),
             ));
         }
         let ingress = Arc::new(ingress);
@@ -147,7 +156,9 @@ impl SharedHost {
     pub(crate) fn worker_model_resolver(&self) -> Option<awaken_run_ingress::ModelResolverFn> {
         self.model_route.provider().map(|provider| {
             let resolve: awaken_run_ingress::ModelResolverFn =
-                Arc::new(move |model_ref: &str| provider.executor_for(model_ref));
+                Arc::new(move |model_ref: &str, model_access| {
+                    provider.executor_for_run(model_ref, model_access)
+                });
             resolve
         })
     }

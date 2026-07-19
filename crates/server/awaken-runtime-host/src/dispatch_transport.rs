@@ -17,7 +17,8 @@ use serde_json::{Value, json};
 
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_run_ingress::{
-    DispatchOutcome, DispatchQueue, PendingInput, RunClaim, RunDispatch, SubmitOptions,
+    AnyDispatchStore, Dispatch, DispatchOutcome, DispatchQueue, HttpDispatchQueue, PendingInput,
+    RunClaim, RunDispatch, SubmitOptions,
 };
 
 use crate::dispatch_backend::shared_durable_store;
@@ -25,8 +26,18 @@ use crate::host::{HostError, SharedHost};
 use crate::worker_http::respond;
 use crate::worker_security::{
     FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, SystemWorkerClock, VerifiedWorkerContext,
-    WorkerClock, WorkerLeasePolicy, WorkerRequestAuthenticator,
+    WorkerClock, WorkerLeasePolicy, WorkerRequestAuthenticator, WorkerUpstream,
 };
+
+/// Build the database-less worker's dispatch store from the same authenticated
+/// upstream configuration used by its commit clients.
+pub fn worker_dispatch_store_with_upstream(upstream: &WorkerUpstream) -> Arc<AnyDispatchStore> {
+    Arc::new(AnyDispatchStore::from_dispatch(Arc::new(
+        HttpDispatchQueue::new(upstream.base_url())
+            .with_client(upstream.client().clone())
+            .with_worker_id(upstream.worker_id()),
+    ) as Arc<dyn Dispatch>))
+}
 
 /// Explicit application service mounted by the worker HTTP adapter.
 pub struct WorkerDispatchService {
