@@ -9,8 +9,8 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_credential_vault::InMemorySecretStore;
 use awaken_credential_vault::repo::InMemoryCredentialRepo;
 use awaken_protocol_managed::{
-    Decision, ManagedState, OutcomeReport, RunError, RunErrorKind, SessionInit,
-    SessionLifecycleSink, SessionRuntime, StepOutcome, VaultState, router, vault_router,
+    ManagedState, OutcomeReport, RunError, RunErrorKind, SessionInit, SessionLifecycleSink,
+    SessionRuntime, StepOutcome, ToolPermissionDecision, VaultState, router, vault_router,
 };
 use axum::Router;
 use axum::body::Body;
@@ -44,7 +44,12 @@ impl SessionRuntime for PreparingFake {
     ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("unused"))
     }
-    async fn resume(&self, _t: &str, _tid: &str, _d: Decision) -> Result<StepOutcome, RunError> {
+    async fn resume(
+        &self,
+        _t: &str,
+        _tid: &str,
+        _d: ToolPermissionDecision,
+    ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("unused"))
     }
     async fn resume_custom(
@@ -417,7 +422,7 @@ async fn minting_skips_session_ids_that_own_committed_truth() {
             &self,
             _thread: &str,
             _tool_use_id: &str,
-            _decision: Decision,
+            _decision: ToolPermissionDecision,
         ) -> Result<StepOutcome, RunError> {
             unreachable!()
         }

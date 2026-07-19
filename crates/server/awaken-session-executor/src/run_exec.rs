@@ -7,12 +7,11 @@
 
 use std::sync::Arc;
 
+use crate::host::{HostError, SessionCtx, SharedHost};
 use awaken_agent_contract::agent::run::RunState;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
-
-use crate::host::{HostError, SessionCtx, SharedHost};
 
 impl SharedHost {
     /// Execute `activation` for `thread`: the ACP executor when the session chose
@@ -86,7 +85,7 @@ impl SharedHost {
             }
             let result = ctx
                 .ingress
-                .submit(activation, context)
+                .start(activation, context)
                 .await
                 .map_err(|e| HostError::internal(e.to_string()));
             ctx.close_live_inbox();

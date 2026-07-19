@@ -21,9 +21,8 @@ pub enum AwaitReason {
     /// by a human) and recovered from the committed request for consistency
     /// (ADR-0020).
     ScheduledAction,
-    /// A delegated sub-agent needs more input; the pending tool's
-    /// `resume_handle` carries the opaque state to resume it. Neutral — the kernel
-    /// does not name the delegate's transport.
+    /// A delegated sub-agent needs more input. Its opaque execution reference
+    /// is owned by the durable parent/child relationship, not duplicated here.
     Delegation,
 }
 
@@ -61,8 +60,8 @@ pub struct ResumeTicket {
     pub catalog_fingerprint: String,
     /// Stable origin of this Run. A delegated Run keeps it across every await,
     /// process restart, and resume; a directly admitted Run stores `None`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub initiator: Option<crate::agent::delegation::DelegationOrigin>,
+    #[serde(default, alias = "initiator", skip_serializing_if = "Option::is_none")]
+    pub delegation_origin: Option<crate::agent::delegation::DelegationOrigin>,
     pub reason: AwaitReason,
     /// The tool call awaiting a result, when the wait is a tool decision.
     pub call_id: Option<String>,
@@ -79,11 +78,6 @@ pub struct ResumeTicket {
 pub struct PendingTool {
     pub tool_id: String,
     pub arguments: serde_json::Value,
-    /// Opaque durable state for an awaiting delegation (`AwaitReason::Delegation`),
-    /// e.g. a remote task id. The kernel stores it but never interprets it; the
-    /// resolver reads it on resume. Absent for ordinary tool waits.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resume_handle: Option<serde_json::Value>,
 }
 
 #[cfg(test)]
@@ -112,17 +106,11 @@ mod tests {
     }
 
     #[test]
-    fn pending_tool_omits_resume_handle_when_absent() {
+    fn pending_tool_and_ticket_round_trip() {
         let pt = PendingTool {
             tool_id: "t".into(),
             arguments: serde_json::json!({"a": 1}),
-            resume_handle: None,
         };
-        let json = serde_json::to_value(&pt).unwrap();
-        assert!(
-            json.get("resume_handle").is_none(),
-            "absent handle is skipped on the wire"
-        );
         // A ticket without a pending_tool round-trips (serde default fills None).
         let ticket = ResumeTicket {
             correlation_id: "c".into(),
@@ -130,7 +118,7 @@ mod tests {
             thread_id: crate::agent::thread::Id("th".into()),
             snapshot_id: "s".into(),
             catalog_fingerprint: "f".into(),
-            initiator: None,
+            delegation_origin: None,
             reason: AwaitReason::ToolPermission,
             call_id: Some("call".into()),
             pending_tool: Some(pt),

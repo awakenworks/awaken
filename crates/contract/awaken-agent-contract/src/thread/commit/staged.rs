@@ -126,7 +126,7 @@ struct ThreadCommitWire {
     messages: Vec<crate::agent::message::Message>,
     state: Vec<crate::agent::state::Command>,
     events: Vec<crate::audit::draft::Draft>,
-    #[serde(default, rename = "waiting")]
+    #[serde(default, alias = "waiting")]
     resume_ticket: Option<crate::agent::awaiting::ResumeTicket>,
 }
 
@@ -366,7 +366,7 @@ mod assemble_tests {
             thread_id: ThreadId(thread.into()),
             snapshot_id: "snap".into(),
             catalog_fingerprint: "fp".into(),
-            initiator: None,
+            delegation_origin: None,
             reason: AwaitReason::UserInput,
             call_id: None,
             pending_tool: None,
@@ -468,7 +468,8 @@ mod assemble_tests {
 
         let encoded = serde_json::to_value(&commit).unwrap();
         assert_eq!(encoded["run_fact"]["phase"], "Awaiting");
-        assert!(encoded.get("waiting").is_some());
+        assert!(encoded.get("resume_ticket").is_some());
+        assert!(encoded.get("waiting").is_none());
         assert!(encoded.get("run").is_none());
     }
 

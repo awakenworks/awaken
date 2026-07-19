@@ -102,11 +102,10 @@ async fn a_delegate_call_is_fulfilled_over_the_a2a_wire() {
     );
 }
 
-/// A remote failure surfaces to the parent as a tool error (not a panic): the
-/// transport returns a non-`Task` body, and the delegation resumes with an error
-/// the model can see.
+/// A retryable remote transport failure returns control to the scheduler instead
+/// of fabricating a terminal tool result for the parent model.
 #[tokio::test]
-async fn a_remote_transport_failure_surfaces_as_a_tool_error() {
+async fn a_remote_transport_failure_preserves_the_open_child_run() {
     struct BrokenTransport;
     #[async_trait::async_trait]
     impl Transport for BrokenTransport {
@@ -125,18 +124,24 @@ async fn a_remote_transport_failure_surfaces_as_a_tool_error() {
         Arc::new(A2aRemoteAgent::new(Arc::new(BrokenTransport))),
     );
 
-    // The turn still completes: the delegate call awaiting, the remote failed, and
-    // the parent resumed with the error as the tool result.
-    host.run(None, "t", vec![user("u1", "research the answer")])
+    let error = match host
+        .run(None, "t", vec![user("u1", "research the answer")])
         .await
-        .unwrap();
+    {
+        Ok(_) => panic!("a retryable transport failure must reach the run scheduler"),
+        Err(error) => error,
+    };
+    assert!(
+        error.to_string().contains("connection refused"),
+        "the scheduler receives the transport cause: {error}"
+    );
 
     let history = host.committed_messages("t").await;
     assert!(
-        history
+        !history
             .iter()
             .any(|m| matches!(m.role, Role::Assistant) && text_of(m).contains("delegate said:")),
-        "the parent completes even when the remote agent is unreachable"
+        "a transient child failure must not be committed as a completed delegation"
     );
 }
 

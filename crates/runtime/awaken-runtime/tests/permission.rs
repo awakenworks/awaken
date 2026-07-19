@@ -1,5 +1,5 @@
 //! The permission axis end to end (ADR-0030): a `PermissionGate` backed by a
-//! `PermissionPolicy` gates every protected tool call. allow runs the tool; deny
+//! `ToolPermissionPolicy` gates every protected tool call. allow runs the tool; deny
 //! blocks it (and only permission can grant — visibility/registration do not,
 //! G9); ask awaits on a decision ticket that a later allow resumes; every decision
 //! is audited as a committed `PermissionDecided` event.
@@ -21,9 +21,7 @@ use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
 };
-use awaken_runtime_contract::permission::{
-    PermissionContext, PermissionDecision, PermissionPolicy,
-};
+use awaken_runtime_contract::permission::{ToolPermissionPolicy, ToolPermissionVerdict};
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor, ToolFacet,
     ToolPresentation,
@@ -80,10 +78,10 @@ impl RawTool for EchoTool {
 
 /// A policy that returns one fixed decision — the runtime axis under test, not
 /// rule evaluation (that lives in `awaken-ext-permission`).
-struct FixedPolicy(PermissionDecision);
+struct FixedPolicy(ToolPermissionVerdict);
 #[async_trait::async_trait]
-impl PermissionPolicy for FixedPolicy {
-    async fn decide(&self, _ctx: &PermissionContext) -> PermissionDecision {
+impl ToolPermissionPolicy for FixedPolicy {
+    async fn evaluate(&self, _ctx: &ToolCall) -> ToolPermissionVerdict {
         self.0.clone()
     }
 }
@@ -119,7 +117,7 @@ fn snapshot() -> ExecutableAgentSnapshot {
     }
 }
 
-fn runtime(ran: Arc<AtomicUsize>, decision: PermissionDecision) -> Runtime {
+fn runtime(ran: Arc<AtomicUsize>, decision: ToolPermissionVerdict) -> Runtime {
     let runtime = Runtime::new()
         .with_llm(Arc::new(ToolThenText {
             calls: AtomicUsize::new(0),
@@ -156,7 +154,7 @@ fn activation() -> RunActivation {
             role: Role::User,
             content: vec![ContentBlock::text("go")],
         }],
-        initiator: None,
+        delegation_origin: None,
         model_ref_override: None,
     }
 }
@@ -178,7 +176,7 @@ fn audited_decisions(commit: &MemoryCommitCoordinator) -> Vec<String> {
 #[tokio::test]
 async fn allow_runs_the_tool_and_audits() {
     let ran = Arc::new(AtomicUsize::new(0));
-    let runtime = runtime(ran.clone(), PermissionDecision::Allow);
+    let runtime = runtime(ran.clone(), ToolPermissionVerdict::Allow);
     let commit = Arc::new(MemoryCommitCoordinator::new());
 
     let state = runtime
@@ -197,7 +195,7 @@ async fn deny_blocks_the_tool_and_only_permission_grants() {
     let ran = Arc::new(AtomicUsize::new(0));
     let runtime = runtime(
         ran.clone(),
-        PermissionDecision::Deny {
+        ToolPermissionVerdict::Deny {
             reason: "nope".to_string(),
         },
     );
@@ -217,8 +215,8 @@ async fn ask_awaits_then_a_resumed_allow_runs_the_tool() {
     let ran = Arc::new(AtomicUsize::new(0));
     let runtime = runtime(
         ran.clone(),
-        PermissionDecision::Ask {
-            ticket_id: TICKET.to_string(),
+        ToolPermissionVerdict::RequireConfirmation {
+            correlation_id: TICKET.to_string(),
         },
     );
     let commit = Arc::new(MemoryCommitCoordinator::new());
@@ -294,15 +292,15 @@ struct RecordingDenyCanonical {
     seen: Arc<std::sync::Mutex<Vec<String>>>,
 }
 #[async_trait::async_trait]
-impl PermissionPolicy for RecordingDenyCanonical {
-    async fn decide(&self, ctx: &PermissionContext) -> PermissionDecision {
+impl ToolPermissionPolicy for RecordingDenyCanonical {
+    async fn evaluate(&self, ctx: &ToolCall) -> ToolPermissionVerdict {
         self.seen.lock().unwrap().push(ctx.tool_id.clone());
         if ctx.tool_id == "echo" {
-            PermissionDecision::Deny {
+            ToolPermissionVerdict::Deny {
                 reason: "canonical echo denied".to_string(),
             }
         } else {
-            PermissionDecision::Allow
+            ToolPermissionVerdict::Allow
         }
     }
 }

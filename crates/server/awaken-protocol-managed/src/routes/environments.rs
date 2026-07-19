@@ -14,7 +14,7 @@
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::json;
@@ -28,7 +28,7 @@ use crate::types::environment::{
 use crate::types::{ErrorResponse, Page, PageQuery, paginate};
 use awaken_work_store::InMemoryWorkQueue;
 
-use crate::work_queue::{OBJECT_AT, WorkQueue};
+use crate::work_queue::{HeartbeatResult, LeaseHeartbeat, WorkQueue};
 
 /// The self-hosted environment registry + work queue, both behind ports so a
 /// durable backend (sqlite/postgres) serves standalone and distributed deployments
@@ -255,16 +255,19 @@ async fn list_work(
 async fn poll_work(
     State(state): State<Arc<EnvironmentState>>,
     Path(id): Path<String>,
+    headers: HeaderMap,
     Query(poll): Query<PollParams>,
 ) -> Result<Json<Option<Work>>, WireError> {
     require_env(&state, &id).await?;
-    // The `worker_id` the SDK poller sends identifies the caller for the
-    // `workers_polling` liveness count; absent, the poll is anonymous ("").
-    let worker_id = poll.worker_id.unwrap_or_default();
+    // The official SDK sends worker identity in `Anthropic-Worker-ID`, not in
+    // the query string. Keep the query-only fields parsed as well so the wire
+    // contract is explicit even where this open-tier queue is non-blocking.
+    let worker_id = worker_id(&headers);
+    let _ = (poll.block_ms, poll.reclaim_older_than_ms);
     Ok(Json(
         state
             .work
-            .claim(&id, &worker_id, now_ms())
+            .claim(&id, worker_id, now_ms())
             .await
             .as_ref()
             .map(crate::work_queue::project_work),
@@ -274,7 +277,14 @@ async fn poll_work(
 /// The poll query: the worker's identity for the `workers_polling` liveness count.
 #[derive(serde::Deserialize)]
 struct PollParams {
-    worker_id: Option<String>,
+    block_ms: Option<u64>,
+    reclaim_older_than_ms: Option<u64>,
+}
+
+#[derive(serde::Deserialize)]
+struct HeartbeatParams {
+    desired_ttl_seconds: Option<u64>,
+    expected_last_heartbeat: Option<String>,
 }
 
 /// `GET /v1/environments/:id/work/stats` — the queue's depth + pending count.
@@ -338,20 +348,49 @@ async fn ack_work(
 async fn heartbeat_work(
     State(state): State<Arc<EnvironmentState>>,
     Path((id, wid)): Path<(String, String)>,
+    headers: HeaderMap,
+    Query(params): Query<HeartbeatParams>,
 ) -> Result<Json<WorkHeartbeat>, WireError> {
     require_env(&state, &id).await?;
-    let hb = state
+    let command = LeaseHeartbeat {
+        condition: crate::work_queue::HeartbeatCondition::from_wire(
+            params.expected_last_heartbeat.as_deref(),
+        ),
+        desired_ttl_seconds: params.desired_ttl_seconds,
+    };
+    let hb = match state
         .work
-        .heartbeat(&id, &wid, now_ms())
+        .heartbeat(&id, &wid, worker_id(&headers), now_ms(), command)
         .await
-        .ok_or_else(|| not_found("work"))?;
+    {
+        HeartbeatResult::Accepted(receipt) => receipt,
+        HeartbeatResult::PreconditionFailed => {
+            return Err((
+                StatusCode::PRECONDITION_FAILED,
+                Json(ErrorResponse::new(
+                    "precondition_error",
+                    "expected_last_heartbeat does not match",
+                )),
+            ));
+        }
+        HeartbeatResult::NotFound => return Err(not_found("work")),
+    };
     Ok(Json(WorkHeartbeat {
         object_type: "work_heartbeat",
-        last_heartbeat: OBJECT_AT,
+        last_heartbeat: hb.last_heartbeat,
         lease_extended: hb.lease_extended,
         state: hb.state,
         ttl_seconds: hb.ttl_seconds,
     }))
+}
+
+/// The Managed worker identity carried consistently on poll and worker-owned
+/// lease mutations. It is compared atomically with the claim owner by WorkQueue.
+fn worker_id(headers: &HeaderMap) -> &str {
+    headers
+        .get("anthropic-worker-id")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
 }
 
 /// Wall-clock now in epoch ms — read only at this HTTP edge and passed into the

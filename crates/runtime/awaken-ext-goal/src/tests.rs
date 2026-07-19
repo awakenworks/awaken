@@ -6,9 +6,8 @@
 
 use super::*;
 use awaken_runtime_contract::plugin::{IdBound, ResolvedExecutionEnv, enforce_bound};
-use awaken_runtime_contract::{
-    MessageId, RunId, SubagentError, SubagentReply, SubagentRequest, SubagentRunner,
-};
+use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
+use awaken_runtime_contract::{MessageId, RunId};
 
 // ── Test graders ────────────────────────────────────────────────────────────
 
@@ -384,15 +383,23 @@ impl StubRunner {
 }
 
 #[async_trait]
-impl SubagentRunner for StubRunner {
-    async fn run(&self, request: SubagentRequest) -> Result<SubagentReply, SubagentError> {
-        *self.seen_agent.lock().unwrap() = Some(request.agent_id);
+impl RawTool for StubRunner {
+    fn id(&self) -> &str {
+        "test_agent"
+    }
+
+    async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
+        let agent_id = call.arguments["agent_id"]
+            .as_str()
+            .ok_or_else(|| ToolError::InvalidArguments("agent_id is missing".into()))?;
+        *self.seen_agent.lock().unwrap() = Some(agent_id.to_string());
         if self.fail {
-            return Err(SubagentError("backend exploded".into()));
+            return Err(ToolError::Execution("backend exploded".into()));
         }
-        Ok(SubagentReply {
-            text: self.reply.clone(),
-        })
+        Ok(ToolOutput::ok(
+            call.call_id,
+            self.reply.clone().unwrap_or_default(),
+        ))
     }
 }
 
@@ -404,8 +411,8 @@ fn agent_goal(grader: GraderRef) -> GoalSpec {
 }
 
 #[tokio::test]
-async fn delegate_grader_parses_a_satisfied_verdict() {
-    let grader = DelegateGrader::new(
+async fn agent_tool_grader_parses_a_satisfied_verdict() {
+    let grader = AgentToolGrader::new(
         Arc::new(StubRunner::replying(
             r#"{"result": "satisfied", "explanation": "all good"}"#,
         )),
@@ -420,8 +427,8 @@ async fn delegate_grader_parses_a_satisfied_verdict() {
 }
 
 #[tokio::test]
-async fn delegate_grader_parses_a_needs_revision_verdict_amid_prose() {
-    let grader = DelegateGrader::new(
+async fn agent_tool_grader_parses_a_needs_revision_verdict_amid_prose() {
+    let grader = AgentToolGrader::new(
         Arc::new(StubRunner::replying(
             "Verdict: {\"result\": \"needs_revision\", \"explanation\": \"add an edge case\"}.",
         )),
@@ -436,8 +443,8 @@ async fn delegate_grader_parses_a_needs_revision_verdict_amid_prose() {
 }
 
 #[tokio::test]
-async fn delegate_grader_parses_a_failed_verdict() {
-    let grader = DelegateGrader::new(
+async fn agent_tool_grader_parses_a_failed_verdict() {
+    let grader = AgentToolGrader::new(
         Arc::new(StubRunner::replying(
             r#"{"result": "failed", "explanation": "rubric does not fit"}"#,
         )),
@@ -451,8 +458,8 @@ async fn delegate_grader_parses_a_failed_verdict() {
 }
 
 #[tokio::test]
-async fn delegate_grader_reports_a_malformed_reply_as_error() {
-    let grader = DelegateGrader::new(
+async fn agent_tool_grader_reports_a_malformed_reply_as_error() {
+    let grader = AgentToolGrader::new(
         Arc::new(StubRunner::replying("I cannot produce JSON")),
         "judge",
     );
@@ -465,8 +472,8 @@ async fn delegate_grader_reports_a_malformed_reply_as_error() {
 }
 
 #[tokio::test]
-async fn delegate_grader_reports_a_run_failure_as_error() {
-    let grader = DelegateGrader::new(
+async fn agent_tool_grader_reports_a_run_failure_as_error() {
+    let grader = AgentToolGrader::new(
         Arc::new(StubRunner {
             fail: true,
             ..StubRunner::default()
@@ -482,12 +489,12 @@ async fn delegate_grader_reports_a_run_failure_as_error() {
 }
 
 #[tokio::test]
-async fn delegate_grader_routes_default_and_explicit_agent() {
+async fn agent_tool_grader_routes_default_and_explicit_agent() {
     // Default → the configured default judge.
     let runner = Arc::new(StubRunner::replying(
         r#"{"result": "satisfied", "explanation": "ok"}"#,
     ));
-    let grader = DelegateGrader::new(runner.clone(), "default-judge");
+    let grader = AgentToolGrader::new(runner.clone(), "default-judge");
     grader
         .grade(&agent_goal(GraderRef::Default), "done", None)
         .await
@@ -501,7 +508,7 @@ async fn delegate_grader_routes_default_and_explicit_agent() {
     let runner = Arc::new(StubRunner::replying(
         r#"{"result": "satisfied", "explanation": "ok"}"#,
     ));
-    let grader = DelegateGrader::new(runner.clone(), "default-judge");
+    let grader = AgentToolGrader::new(runner.clone(), "default-judge");
     let goal = agent_goal(GraderRef::Agent {
         agent_id: "specialist".into(),
     });
@@ -513,32 +520,25 @@ async fn delegate_grader_routes_default_and_explicit_agent() {
 }
 
 #[tokio::test]
-async fn delegate_grader_forwards_cancellation_into_the_judge() {
-    // A runner that records whether the parent cancellation reached it.
-    #[derive(Default)]
-    struct CancelCapturingRunner {
-        saw_cancellation: std::sync::Mutex<bool>,
-    }
+async fn agent_tool_grader_cancels_the_ordinary_tool_future() {
+    struct BlockingAgentTool;
     #[async_trait]
-    impl SubagentRunner for CancelCapturingRunner {
-        async fn run(&self, request: SubagentRequest) -> Result<SubagentReply, SubagentError> {
-            *self.saw_cancellation.lock().unwrap() = request.cancellation.is_some();
-            Ok(SubagentReply {
-                text: Some(r#"{"result": "satisfied", "explanation": "ok"}"#.into()),
-            })
+    impl RawTool for BlockingAgentTool {
+        fn id(&self) -> &str {
+            "test_agent"
+        }
+        async fn invoke(&self, _call: ToolCall) -> Result<ToolOutput, ToolError> {
+            std::future::pending().await
         }
     }
-    let runner = Arc::new(CancelCapturingRunner::default());
-    let grader = DelegateGrader::new(runner.clone(), "judge");
+    let grader = AgentToolGrader::new(Arc::new(BlockingAgentTool), "judge");
     let token = CancellationToken::new();
-    grader
+    token.cancel();
+    let error = grader
         .grade(&agent_goal(GraderRef::Default), "done", Some(&token))
         .await
-        .unwrap();
-    assert!(
-        *runner.saw_cancellation.lock().unwrap(),
-        "parent cancellation must reach the judge sub-run (no orphaned judge)"
-    );
+        .expect_err("cancelled Agent tool fails closed");
+    assert!(error.0.contains("cancelled"));
 }
 
 #[test]

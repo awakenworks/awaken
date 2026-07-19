@@ -116,7 +116,7 @@ fn activation(cli: &str, prompt: &str) -> RunActivation {
             fingerprint: CatalogFingerprint("fp".into()),
         },
         input: vec![Message::text(MessageId("u1".into()), Role::User, prompt)],
-        initiator: None,
+        delegation_origin: None,
         model_ref_override: None,
     }
 }

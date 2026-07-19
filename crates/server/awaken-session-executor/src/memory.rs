@@ -14,32 +14,32 @@ use std::time::Duration;
 use async_trait::async_trait;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_ext_builtin_tools::erase;
+use awaken_ext_builtin_tools::{AgentRunArgs, erase, invoke_agent_tool};
 use awaken_ext_memory::{
     DEFAULT_SELECTOR_INSTRUCTIONS, EXTRACT_PROMPT, MEMORY_AGENT_ID, MemoryDir, RecallBounds,
     RecallSelector, SELECTOR_AGENT_ID, WriteMemoryTool, default_selector_agent, parse_indices,
     select_input,
 };
 use awaken_runtime_contract::llm::LlmExecutor;
-use awaken_runtime_contract::subagent_runner::{SubagentRequest, SubagentRunner};
+use awaken_runtime_contract::tool::RawTool;
 use awaken_sandbox_local::LocalProvider;
 
 use crate::agent_catalog::AgentCatalog;
+use crate::agent_runner::run_configured_agent;
 use crate::background::BackgroundRuns;
-use crate::judge::HostSubagentRunner;
-use crate::subagent::{UsageRollup, run_configured_agent};
+use crate::judge::HostAgentTool;
 
 // The config pieces the host wires (registering the default extractor agent).
 pub use awaken_ext_memory::{DEFAULT_MEMORY_INSTRUCTIONS, default_memory_agent};
 
 /// A [`RecallSelector`] backed by the `memory-selector` sub-agent: a single-step,
 /// tool-free, plugin-free run driven through the shared aux-run port
-/// ([`SubagentRunner`] — the same one the judge and compactor use) rather than the
-/// Agent Run substrate directly. Its configuration activates no plugins, so memory
+/// through the same ordinary Agent-backed tool used by the judge and compactor.
+/// Its configuration activates no plugins, so memory
 /// recall cannot recursively invoke itself; the port keeps its usage outside the
 /// user session's accounting projection (housekeeping, not delegated work).
 pub(crate) struct AgentSelector {
-    runner: Arc<dyn SubagentRunner>,
+    agent_tool: Arc<dyn RawTool>,
 }
 
 impl AgentSelector {
@@ -52,7 +52,7 @@ impl AgentSelector {
             .join("awaken-server")
             .join(format!("{}-mem-select", std::process::id()));
         Self {
-            runner: Arc::new(HostSubagentRunner {
+            agent_tool: Arc::new(HostAgentTool {
                 llm,
                 provider: LocalProvider::new(base),
                 catalog,
@@ -69,21 +69,24 @@ impl RecallSelector for AgentSelector {
         // Fire the selector through the shared port; a runner error degrades to
         // "select nothing" (recall falls back to no memories rather than failing the
         // turn). The port surfaces only the reply text, its usage stays isolated.
-        let reply = self
-            .runner
-            .run(SubagentRequest {
+        let reply = invoke_agent_tool(
+            self.agent_tool.as_ref(),
+            "memory-selector-agent-run",
+            AgentRunArgs {
                 agent_id: SELECTOR_AGENT_ID.to_string(),
                 seed: vec![Message {
                     id: MessageId("mem-select".into()),
                     role: Role::User,
                     content: vec![ContentBlock::text(input)],
                 }],
-                cancellation: None,
-            })
-            .await
-            .ok()
-            .and_then(|reply| reply.text)
-            .unwrap_or_default();
+            },
+            None,
+        )
+        .await
+        .ok()
+        .filter(|output| !output.is_error)
+        .map(|output| output.content)
+        .unwrap_or_default();
         parse_indices(&reply, manifest.len(), max)
     }
 }
@@ -152,12 +155,12 @@ impl MemoryExtraction {
             .spawn(async move {
                 let tool = erase(WriteMemoryTool::new(store));
                 // The extractor injects a per-run `write_memory` tool scoped to this
-                // store, which the thin `SubagentRunner` port deliberately does not
+                // store, which the ordinary Agent tool deliberately does not
                 // carry — so it runs on the substrate directly. Fire-and-forget, and
                 // its usage stays isolated (background housekeeping, not turn work).
                 let _ = run_configured_agent(
                     &catalog,
-                    crate::subagent::AgentRunSandbox::Fresh(&provider),
+                    crate::agent_runner::AgentRunSandbox::Fresh(&provider),
                     llm,
                     MEMORY_AGENT_ID,
                     &mem_thread,
@@ -168,7 +171,6 @@ impl MemoryExtraction {
                     None,
                     None,
                     None,
-                    UsageRollup::Isolated,
                 )
                 .await;
             })

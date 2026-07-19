@@ -9,8 +9,8 @@ pub struct RunActivation {
     /// Durable parent/call identity when this Run was created by an Agent tool.
     /// This belongs to the serializable activation, not `RuntimeRunContext`:
     /// recovery must retain the same origin even when every live handle changes.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub initiator: Option<awaken_agent_contract::agent::delegation::DelegationOrigin>,
+    #[serde(default, alias = "initiator", skip_serializing_if = "Option::is_none")]
+    pub delegation_origin: Option<awaken_agent_contract::agent::delegation::DelegationOrigin>,
     /// Per-run model override (R5): the model ref to run THIS attempt on, when it
     /// differs from the agent's published binding. Deliberately OFF the fingerprinted
     /// snapshot — a per-turn model switch is a run-time choice, not a catalog change,
@@ -29,7 +29,7 @@ impl RunActivation {
     /// model and is handed the executor, never learning how the model is reached.
     ///
     /// Distributed *trace* propagation is NOT carried here either: the admitting request's
-    /// W3C `traceparent` rides the ingress envelope (`RunExecutionRequest`) across
+    /// W3C `traceparent` rides the ingress envelope (`RunDispatch`) across
     /// the durable queue and is restored as the `wake.dispatch` span's remote
     /// parent, so a durably-drained run still nests under the trace that submitted
     /// it. The runtime core never reads a trace field.
@@ -45,7 +45,7 @@ impl RunActivation {
             thread_id,
             snapshot,
             input,
-            initiator: None,
+            delegation_origin: None,
             model_ref_override: None,
         }
     }
@@ -88,11 +88,11 @@ impl RunActivation {
 
     /// Attach the stable relationship that created a delegated child Run.
     #[must_use]
-    pub fn with_initiator(
+    pub fn with_delegation_origin(
         mut self,
-        initiator: awaken_agent_contract::agent::delegation::DelegationOrigin,
+        delegation_origin: awaken_agent_contract::agent::delegation::DelegationOrigin,
     ) -> Self {
-        self.initiator = Some(initiator);
+        self.delegation_origin = Some(delegation_origin);
         self
     }
 
@@ -230,9 +230,17 @@ mod serde_contract {
             "call",
             "coordinator",
         );
-        let activation = RunActivation::for_binding("bound").with_initiator(origin.clone());
-        let bytes = serde_json::to_vec(&activation).unwrap();
-        let recovered: RunActivation = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(recovered.initiator, Some(origin));
+        let activation = RunActivation::for_binding("bound").with_delegation_origin(origin.clone());
+        let mut value = serde_json::to_value(&activation).unwrap();
+        assert!(value.get("delegation_origin").is_some());
+        assert!(value.get("initiator").is_none());
+        let recovered: RunActivation = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(recovered.delegation_origin, Some(origin));
+
+        let object = value.as_object_mut().unwrap();
+        let legacy = object.remove("delegation_origin").unwrap();
+        object.insert("initiator".into(), legacy);
+        let recovered_legacy: RunActivation = serde_json::from_value(value).unwrap();
+        assert!(recovered_legacy.delegation_origin.is_some());
     }
 }

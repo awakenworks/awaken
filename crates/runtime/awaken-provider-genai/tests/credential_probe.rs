@@ -3,7 +3,7 @@
 //!
 //! ```sh
 //! KIMI_API_KEY=sk-... KIMI_BASE_URL=https://api.kimi.com/coding/v1/ \
-//! KIMI_MODEL=kimi-k2-0711-preview \
+//! KIMI_MODEL=kimi-for-coding \
 //! cargo test -p awaken-provider-genai --test credential_probe -- --ignored --nocapture
 //! ```
 //!
@@ -21,7 +21,13 @@ fn env() -> (String, String, String) {
         .unwrap_or_else(|_| "https://api.anthropic.com/v1/".to_string());
     let model = std::env::var("ANTHROPIC_MODEL")
         .or_else(|_| std::env::var("KIMI_MODEL"))
-        .unwrap_or_else(|_| "claude-3-5-haiku-latest".to_string());
+        .unwrap_or_else(|_| {
+            if base.contains("api.kimi.com/coding") {
+                "kimi-for-coding".to_string()
+            } else {
+                "claude-3-5-haiku-latest".to_string()
+            }
+        });
     (key, base, model)
 }
 

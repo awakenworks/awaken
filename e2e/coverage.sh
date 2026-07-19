@@ -7,7 +7,7 @@
 # e.g. the Kimi coding endpoint:
 #   export ANTHROPIC_API_KEY=sk-...           # Kimi coding key
 #   export ANTHROPIC_BASE_URL=https://api.kimi.com/coding/v1/
-#   export ANTHROPIC_MODEL=kimi-k2-0711-preview
+#   export ANTHROPIC_MODEL=kimi-for-coding
 #
 # Two figures are reported:
 #   * overall      — every crate linked into the server binary.

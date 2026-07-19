@@ -97,7 +97,7 @@ pub mod prelude {
     pub use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
     pub use awaken_agent_contract::agent::thread::Id as ThreadId;
     pub use awaken_ext_permission::{
-        Mode, PermissionRule, PermissionRuleset, RulePermissionPolicy, ToolCallPattern,
+        Mode, PermissionRule, PermissionRuleset, RuleBasedToolPermissionPolicy, ToolCallPattern,
         ToolPermissionBehavior,
     };
     pub use awaken_runtime::memory::MemoryCommitCoordinator;

@@ -3,7 +3,7 @@
 //! The "how to build a run" concern, kept out of the session substrate: the
 //! permission policy, the advertised tool descriptors, the `RunnableConfig`, and
 //! the per-thread `Runtime`. The session substrate (`host`) and the sub-agent
-//! helper (`subagent`) both depend on this leaf rather than each other.
+//! helper (`agent_runner`) both depend on this leaf rather than each other.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -12,7 +12,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Message, Role};
 use awaken_ext_builtin_tools::{Toolset, builtin_tools, executable_hand_tools};
 use awaken_ext_permission::{
-    Mode, PermissionRule, PermissionRuleset, RulePermissionPolicy, ToolCallPattern,
+    Mode, PermissionRule, PermissionRuleset, RuleBasedToolPermissionPolicy, ToolCallPattern,
     ToolPermissionBehavior,
 };
 use awaken_ext_state_machine::{STATE_MACHINE_PLUGIN_ID, StateMachinePlugin};
@@ -78,9 +78,9 @@ fn base_allow_rules(extra_allowed: &[String]) -> Vec<PermissionRule> {
     rules
 }
 
-fn server_policy(extra_allowed: &[String]) -> RulePermissionPolicy {
-    RulePermissionPolicy::new(PermissionRuleset {
-        default_behavior: ToolPermissionBehavior::Ask,
+fn server_policy(extra_allowed: &[String]) -> RuleBasedToolPermissionPolicy {
+    RuleBasedToolPermissionPolicy::new(PermissionRuleset {
+        default_behavior: ToolPermissionBehavior::RequireConfirmation,
         mode: Mode::Default,
         rules: base_allow_rules(extra_allowed),
     })
@@ -112,7 +112,7 @@ pub(crate) fn effective_ruleset(
     let (default_behavior, mode) = authored
         .as_ref()
         .map(|rs| (rs.default_behavior, rs.mode))
-        .unwrap_or((ToolPermissionBehavior::Ask, Mode::Default));
+        .unwrap_or((ToolPermissionBehavior::RequireConfirmation, Mode::Default));
     if let Some(rs) = authored {
         rules.extend(rs.rules);
     }
@@ -128,9 +128,9 @@ pub(crate) fn server_gate_with(
     authored: Option<PermissionRuleset>,
     extra_allowed: &[String],
 ) -> Arc<dyn awaken_runtime_contract::permission::ToolGateHook> {
-    Arc::new(PermissionGate::new(Arc::new(RulePermissionPolicy::new(
-        effective_ruleset(authored, extra_allowed),
-    ))))
+    Arc::new(PermissionGate::new(Arc::new(
+        RuleBasedToolPermissionPolicy::new(effective_ruleset(authored, extra_allowed)),
+    )))
 }
 
 fn hand_tool_descriptors() -> Vec<ToolDescriptor> {
@@ -421,7 +421,7 @@ mod tests {
         );
         assert_eq!(
             base.decide("write", &serde_json::json!({})),
-            ToolPermissionBehavior::Ask
+            ToolPermissionBehavior::RequireConfirmation
         );
 
         // Authored: allow bash but deny rm; default stays ask. Baseline read still allowed.

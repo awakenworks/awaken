@@ -179,6 +179,25 @@ pub trait RawTool: Send + Sync {
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError>;
 }
 
+/// Invoke an ordinary tool while honoring the Run's cooperative cancellation.
+/// This helper is intentionally tool-agnostic: extensions construct their own
+/// [`ToolCall`] payloads and do not depend on one another's concrete tool crates.
+pub async fn invoke_raw_tool(
+    tool: &dyn RawTool,
+    call: ToolCall,
+    cancellation: Option<&crate::CancellationToken>,
+) -> Result<ToolOutput, ToolError> {
+    match cancellation {
+        Some(token) => {
+            tokio::select! {
+                result = tool.invoke(call) => result,
+                _ = token.cancelled() => Err(ToolError::Execution("tool invocation cancelled".into())),
+            }
+        }
+        None => tool.invoke(call).await,
+    }
+}
+
 /// Preferred typed tool API. Authors implement this with concrete argument and
 /// output types; an adapter erases it into a `RawTool` for execution.
 #[async_trait]

@@ -117,14 +117,20 @@ impl SharedHost {
         // The recovered dispatch a crash left mid-flight is re-executed by this
         // worker; giving it the same checkpoint store lets that re-execution resume
         // the interrupted step from its flushed partial (Phase 3 cross-process).
-        let ingress = Arc::new(DurableRunIngress::with_owner_and_resolver(
+        let mut ingress = DurableRunIngress::with_owner_and_resolver(
             runtime,
             store,
             commit,
             crate::dispatch_backend::dispatch_owner(),
             Some(stream_checkpoint),
             model_resolver,
-        ));
+        );
+        if let Some(url) = &self.upstream {
+            ingress = ingress.with_claimed_commit(Arc::new(
+                crate::commit_ingest::RemoteClaimedRunCommit::new(url.clone()),
+            ));
+        }
+        let ingress = Arc::new(ingress);
         // No per-session recovery sweep here: this session's worker shares one queue
         // with every other, so a claim would grab foreign threads' runs. The
         // process-level `DispatchPool` owns recovery — it claims each crashed run and
@@ -134,7 +140,7 @@ impl SharedHost {
     }
 
     /// Wrap this host's `ExecutorProvider` (if installed) into the neutral
-    /// `model_ref → executor` closure a worker's `RunExecutionContext` carries, so a
+    /// `model_ref → executor` closure a worker's `WorkerContext` carries, so a
     /// database-less worker resolves the run's configured model per attempt (R1).
     /// `None` when no provider is installed — the worker stays on the runtime's bound
     /// default (a single-model deployment is unaffected).
@@ -153,7 +159,13 @@ impl SharedHost {
     ) -> Result<Arc<SessionCtx>, HostError> {
         let mut sessions = self.sessions.lock().await;
         if let Some(ctx) = sessions.get(thread) {
-            return Ok(ctx.clone());
+            let ctx = ctx.clone();
+            drop(sessions);
+            let _ = ctx
+                .runtime
+                .reconcile_delegation_cancellations(&ctx.thread_id, ctx.commit.as_ref())
+                .await;
+            return Ok(ctx);
         }
         let env = Arc::new(
             self.provider
@@ -273,8 +285,8 @@ impl SharedHost {
         }
         // Delegation is a runtime concern: inject the executor so the kernel runs
         // `agent_run` as a sub-agent (native or remote), not the tool registry.
-        if let Some(executor) = self.delegation_executor(env.clone()) {
-            runtime = runtime.with_delegation_executor(executor);
+        if let Some(service) = self.run_delegation(env.clone(), commit.clone())? {
+            runtime = runtime.with_run_delegation(service);
         }
         // Skills are fronted by two stable tools (ADR-0036); all skill behavior is
         // in `awaken-ext-skills`. The host only wires the pieces it alone owns —
@@ -300,7 +312,7 @@ impl SharedHost {
             // pre-authorized MCP tools (identical to `server_gate()` without MCP).
             base_gate.clone(),
             sub_base("skill-fork"),
-            self.subagent_reuse_sandbox,
+            self.agent_run_reuse_sandbox,
             &skills_subdir,
         ) {
             runtime = runtime
@@ -332,7 +344,7 @@ impl SharedHost {
             Some(compaction) => {
                 let keep_last = compaction.config.keep_last;
                 let plugin = CompactPlugin::new(compaction.config.clone())
-                    .with_runner(compaction.runner.clone());
+                    .with_agent_tool(compaction.agent_tool.clone());
                 runtime = runtime.with_plugin(Arc::new(plugin));
                 plugin_ids.push(awaken_ext_compact::COMPACT_PLUGIN_ID.to_string());
                 awaken_runtime_contract::resolved::ContextPolicy::KeepLast { keep_last }
@@ -451,6 +463,14 @@ impl SharedHost {
             state: tokio::sync::Mutex::new(state),
         });
         sessions.insert(thread.to_string(), ctx.clone());
+        drop(sessions);
+        // A prior process may have crashed after atomically ending the parent
+        // and before delivering its remote child cancellations. Re-entering the
+        // session redelivers those idempotent outbox entries.
+        let _ = ctx
+            .runtime
+            .reconcile_delegation_cancellations(&ctx.thread_id, ctx.commit.as_ref())
+            .await;
         // Deliver the session's staged resource prompts (ADR-0038 A3a) as system
         // context on the first turn, so the model knows what it has mounted and where.
         let prompts = self.thread_resource_prompts(thread);

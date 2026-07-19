@@ -23,8 +23,9 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
+use awaken_agent_contract::agent::delegation::DelegationStatus;
 use awaken_agent_contract::agent::message::{Id, Message, Role};
-use awaken_agent_contract::agent::run::EndCause;
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId};
 use awaken_agent_contract::event::{AgentEvent, Delta};
 use awaken_agent_contract::stream::event::Event as StreamEvent;
 use awaken_agent_contract::stream::sink::Sink;
@@ -32,7 +33,8 @@ use awaken_protocol_managed::types::{
     OutboundKind, PreviewContent, PreviewDelta, PreviewFrame, SendEventsResponse, StreamFrame,
 };
 use awaken_protocol_managed::{
-    Decision, ManagedState, OutcomeReport, RunError, SessionRuntime, StepOutcome, router,
+    DelegatedRun, ManagedState, OutcomeReport, RunError, SessionRuntime, StepOutcome,
+    ToolPermissionDecision, router,
 };
 use axum::Router;
 use axum::body::Body;
@@ -61,7 +63,12 @@ impl SessionRuntime for EchoFake {
             format!("echo: {text}"),
         )]))
     }
-    async fn resume(&self, _t: &str, _tid: &str, _d: Decision) -> Result<StepOutcome, RunError> {
+    async fn resume(
+        &self,
+        _t: &str,
+        _tid: &str,
+        _d: ToolPermissionDecision,
+    ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("no resume"))
     }
     async fn resume_custom(
@@ -137,7 +144,12 @@ impl SessionRuntime for StreamingFake {
             self.chunks.concat(),
         )]))
     }
-    async fn resume(&self, _t: &str, _tid: &str, _d: Decision) -> Result<StepOutcome, RunError> {
+    async fn resume(
+        &self,
+        _t: &str,
+        _tid: &str,
+        _d: ToolPermissionDecision,
+    ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("no resume"))
     }
     async fn resume_custom(
@@ -200,9 +212,20 @@ impl SessionRuntime for DelegateFake {
                     content: vec![ContentBlock::text("here are the docs")],
                 }],
             ),
-        ]))
+        ])
+        .with_delegated_runs(vec![DelegatedRun {
+            run_id: RunId("child-run-stream".into()),
+            parent_call_id: "d1".into(),
+            agent_id: "researcher".into(),
+            status: DelegationStatus::Completed,
+        }]))
     }
-    async fn resume(&self, _t: &str, _tid: &str, _d: Decision) -> Result<StepOutcome, RunError> {
+    async fn resume(
+        &self,
+        _t: &str,
+        _tid: &str,
+        _d: ToolPermissionDecision,
+    ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("no resume"))
     }
     async fn resume_custom(
@@ -540,7 +563,7 @@ async fn archiving_a_child_thread_streams_thread_status_terminated() {
     let app = router(Arc::new(ManagedState::new(DelegateFake)));
     let id = http_create(&app).await;
 
-    // A turn delegates once → a child thread `<id>:thread:0` is created.
+    // A turn delegates once → its stable child Run thread is created.
     http_json(
         &app,
         "POST",
@@ -613,8 +636,8 @@ async fn archive_thread_broadcasts_to_an_open_live_stream() {
     let (_snap, mut rx) = state.stream_subscribe(&id).expect("subscribe");
     let (_caught_up, _) = drain(&mut rx);
 
-    let child_id = format!("{id}:thread:0");
-    state.archive_thread(&id, &child_id).expect("archive child");
+    let child_id = "child-run-stream";
+    state.archive_thread(&id, child_id).expect("archive child");
 
     // The terminate was broadcast — the open stream receives it live.
     let (frames, _) = drain(&mut rx);

@@ -267,7 +267,7 @@ mod tests {
                 fingerprint: CatalogFingerprint("fp".into()),
             },
             input: vec![Message::text(MessageId("u".into()), Role::User, "go")],
-            initiator: None,
+            delegation_origin: None,
             model_ref_override: None,
         }
     }

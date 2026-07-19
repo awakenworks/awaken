@@ -13,7 +13,7 @@ export async function run({ page, goto, say, clearCaption, click, type, wait, cu
   await say("What an agent CAN do is configuration — pick tools, shape them, gate them.", 4200);
   await type(page.getByPlaceholder("coding-agent"), AGENT_ID);
   await click(page.locator("select").first());
-  await page.locator("select").first().selectOption("kimi-k2-0711-preview");
+  await page.locator("select").first().selectOption("kimi-for-coding");
   await type(page.locator("textarea").first(), SYSTEM, { delay: 12 });
 
   // Tools section.

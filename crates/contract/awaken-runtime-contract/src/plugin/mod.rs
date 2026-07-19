@@ -178,7 +178,7 @@ mod tests {
         }
         async fn gate(
             &self,
-            _ctx: &crate::permission::PermissionContext,
+            _ctx: &crate::permission::ToolCall,
             _state: &Store,
         ) -> crate::permission::GateOutcome {
             crate::permission::GateOutcome::Allow

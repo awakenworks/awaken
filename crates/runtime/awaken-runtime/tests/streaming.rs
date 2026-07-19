@@ -111,7 +111,7 @@ async fn run(chunks: Vec<&'static str>) -> (MemoryCommitCoordinator, MemoryStrea
             role: Role::User,
             content: vec![ContentBlock::text("hi")],
         }],
-        initiator: None,
+        delegation_origin: None,
         model_ref_override: None,
     };
     let outcome = runtime.execute(activation, context).await.expect("runs");

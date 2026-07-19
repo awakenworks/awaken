@@ -158,7 +158,7 @@ fan-in collapse (tens of thousands of connections instead of tens of millions).
 - **Ingress** — client submit + SSE subscribe.
 
 Mostly buildable on what awaken has: the neutral `RunExecutor`, `AcpRunExecutor`,
-the `DispatchQueue`/`RunIngress` port, self-contained `RunExecutionRequest`, the
+the `DispatchQueue`/`RunIngress` port, self-contained `RunDispatch`, the
 co-located pool, and `durable_ops_router`. A single cell reaches tens of
 thousands of concurrent runs because only facts cross the hub.
 
@@ -242,7 +242,7 @@ Order: scale workers first (cheapest) → swap store (single-cell write bottlene
 | State | Task | awaken landing |
 |---|---|---|
 | have | neutral execution port + AcpRunExecutor | `awaken-run-executor-acp` (`AgentChannelSource` opens the channel) |
-| have | dispatch queue port + self-contained activation | `RunIngress` / `DispatchQueue` / `RunExecutionRequest` |
+| have | dispatch queue port + self-contained activation | `RunIngress` / `DispatchQueue` / `RunDispatch` |
 | have | co-located pool + HTTP ops surface | `SharedHost::ensure_dispatch_pool`, `durable_ops_router` |
 | have | single-writer commit, ACP subprocess launch | commit coordinator, `subprocess.rs` (env_clear + passthrough) |
 | **done · read side** | **server→client live streaming across all three frontends** — managed live previews (`event_start`/`event_delta`), ai-sdk/ag-ui already streaming. The in-process per-session broadcast is the **read-side prototype** of the cross-node event sink (same multiplex/fan-out shape) | `awaken-protocol-managed` (`preview.rs`, live SSE), the `run_streaming` seam |

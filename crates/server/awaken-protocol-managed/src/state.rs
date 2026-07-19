@@ -53,9 +53,9 @@ pub(crate) use helpers::{content_text, rubric_text, session_usage_value};
 pub use resource::SessionResource;
 pub(crate) use resource::{parse_session_resource, resource_dto};
 pub use types::{
-    AgentCapabilities, BuiltinTool, CustomTool, Decision, LiveInboxEntry, LiveInboxError,
+    AgentCapabilities, BuiltinTool, CustomTool, DelegatedRun, LiveInboxEntry, LiveInboxError,
     LiveInboxSnapshot, McpServerBinding, OutcomeIteration, OutcomeReport, Pending, RunError,
-    RunErrorKind, SessionInit, SessionRuntime, SessionUsage, StepOutcome,
+    RunErrorKind, SessionInit, SessionRuntime, SessionUsage, StepOutcome, ToolPermissionDecision,
 };
 
 struct SessionRecord {
@@ -315,7 +315,7 @@ mod tests {
             &self,
             _thread: &str,
             _tool_use_id: &str,
-            _decision: Decision,
+            _decision: ToolPermissionDecision,
         ) -> Result<StepOutcome, RunError> {
             unreachable!()
         }
@@ -374,7 +374,7 @@ mod tests {
             &self,
             _thread: &str,
             _tool_use_id: &str,
-            _decision: Decision,
+            _decision: ToolPermissionDecision,
         ) -> Result<StepOutcome, RunError> {
             unreachable!()
         }
@@ -474,7 +474,7 @@ mod tests {
             &self,
             _thread: &str,
             _tool_use_id: &str,
-            _decision: Decision,
+            _decision: ToolPermissionDecision,
         ) -> Result<StepOutcome, RunError> {
             unreachable!()
         }

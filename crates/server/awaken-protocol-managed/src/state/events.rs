@@ -2,6 +2,7 @@
 //! the live-inbox surface, and `send_events`/`list_events`.
 
 use super::*;
+use awaken_agent_contract::agent::delegation::DelegationStatus;
 
 impl ManagedState {
     /// Append one step's projected events to the session, minting ids where the
@@ -21,52 +22,49 @@ impl ManagedState {
             .pending()
             .map(|p| (p.tool_use_id.as_str(), p.client_executed));
         let projected = project_step(&outcome, pending);
-        // Delegation runs inline as an `agent_run` tool call; each one spawns a
-        // subagent child thread (ADR-0047 D4). Collect each delegate's name, the
-        // input it was sent, and the reply it returned (matched by tool-use id),
-        // before the projected events are consumed.
+        // Child-thread identity comes from the Runtime relationship aggregate.
+        // Messages supply only the child thread's sent/received content.
         struct DelegateCall {
+            run_id: String,
             agent_name: String,
-            tool_use_id: Option<String>,
             sent: Vec<ContentBlock>,
             received: Vec<ContentBlock>,
+            status: DelegationStatus,
         }
-        let mut delegates: Vec<DelegateCall> = projected
+        let delegates: Vec<DelegateCall> = outcome
+            .delegated_runs()
             .iter()
-            .filter_map(|e| match &e.kind {
-                OutboundKind::AgentToolUse { name, input, .. } if name == "agent_run" => {
-                    Some(DelegateCall {
-                        agent_name: input
-                            .get("agent_id")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_default()
-                            .to_string(),
-                        tool_use_id: e.id.clone(),
-                        sent: vec![ContentBlock::text(
+            .map(|delegation| {
+                let sent = projected.iter().find_map(|event| match &event.kind {
+                    OutboundKind::AgentToolUse { input, .. }
+                        if event.id.as_deref() == Some(&delegation.parent_call_id) =>
+                    {
+                        Some(vec![ContentBlock::text(
                             input
                                 .get("input")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or_default(),
-                        )],
-                        received: Vec::new(),
-                    })
+                        )])
+                    }
+                    _ => None,
+                });
+                let received = projected.iter().find_map(|event| match &event.kind {
+                    OutboundKind::AgentToolResult {
+                        tool_use_id,
+                        content,
+                        ..
+                    } if tool_use_id == &delegation.parent_call_id => Some(content.clone()),
+                    _ => None,
+                });
+                DelegateCall {
+                    run_id: delegation.run_id.0.clone(),
+                    agent_name: delegation.agent_id.clone(),
+                    sent: sent.unwrap_or_default(),
+                    received: received.unwrap_or_default(),
+                    status: delegation.status,
                 }
-                _ => None,
             })
             .collect();
-        for e in &projected {
-            if let OutboundKind::AgentToolResult {
-                tool_use_id,
-                content,
-                ..
-            } = &e.kind
-                && let Some(d) = delegates
-                    .iter_mut()
-                    .find(|d| d.tool_use_id.as_deref() == Some(tool_use_id.as_str()))
-            {
-                d.received = content.clone();
-            }
-        }
         let mut sessions = self.sessions.lock().unwrap();
         let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
         // Everything appended from here is republished on the live broadcast at the end.
@@ -129,44 +127,59 @@ impl ManagedState {
                 processed_at: Some(PROCESSED_AT.to_string()),
             });
         }
-        // Register a child thread per delegate call and project its full inline
-        // lifecycle: `created` → `status_running` → the input sent to the delegate →
-        // the reply received → `status_idle`. The child thread stays enumerable via
-        // the thread API; its terminal `status_terminated` is the archive transition
-        // (see `threads.rs`), not the end of this one-shot delegation.
+        // Upsert by the actual child Run id. A synchronous child reaches idle in this
+        // step; an awaiting child remains running and completes on the later resume
+        // without a second `thread_created` event.
         for d in delegates {
-            let thread_id = format!("{}:thread:{}", session_id, record.child_threads.len());
-            record.child_threads.push(Self::child_thread(
-                &record.session,
-                &thread_id,
-                &d.agent_name,
-            ));
+            let thread_id = d.run_id;
             let name = d.agent_name;
-            for kind in [
-                OutboundKind::SessionThreadCreated {
-                    session_thread_id: thread_id.clone(),
-                    agent_name: name.clone(),
-                },
-                OutboundKind::SessionThreadStatusRunning {
-                    session_thread_id: thread_id.clone(),
-                    agent_name: name.clone(),
-                },
-                OutboundKind::AgentThreadMessageSent {
-                    to_session_thread_id: thread_id.clone(),
-                    to_agent_name: name.clone(),
-                    content: d.sent,
-                },
-                OutboundKind::AgentThreadMessageReceived {
-                    from_session_thread_id: thread_id.clone(),
-                    from_agent_name: name.clone(),
-                    content: d.received,
-                },
-                OutboundKind::SessionThreadStatusIdle {
-                    session_thread_id: thread_id.clone(),
-                    agent_name: name.clone(),
-                    stop_reason: StopReason::EndTurn,
-                },
-            ] {
+            let existing = record
+                .child_threads
+                .iter()
+                .position(|thread| thread["id"] == thread_id);
+            let is_new = existing.is_none();
+            let index = existing.unwrap_or_else(|| {
+                let mut child = Self::child_thread(&record.session, &thread_id, &name);
+                child["status"] = serde_json::json!("running");
+                record.child_threads.push(child);
+                record.child_threads.len() - 1
+            });
+            let was_idle = record.child_threads[index]["status"] == "idle";
+            let completed = d.status == DelegationStatus::Completed;
+            let mut kinds = Vec::new();
+            if is_new {
+                kinds.extend([
+                    OutboundKind::SessionThreadCreated {
+                        session_thread_id: thread_id.clone(),
+                        agent_name: name.clone(),
+                    },
+                    OutboundKind::SessionThreadStatusRunning {
+                        session_thread_id: thread_id.clone(),
+                        agent_name: name.clone(),
+                    },
+                    OutboundKind::AgentThreadMessageSent {
+                        to_session_thread_id: thread_id.clone(),
+                        to_agent_name: name.clone(),
+                        content: d.sent,
+                    },
+                ]);
+            }
+            if completed && !was_idle {
+                record.child_threads[index]["status"] = serde_json::json!("idle");
+                kinds.extend([
+                    OutboundKind::AgentThreadMessageReceived {
+                        from_session_thread_id: thread_id.clone(),
+                        from_agent_name: name.clone(),
+                        content: d.received,
+                    },
+                    OutboundKind::SessionThreadStatusIdle {
+                        session_thread_id: thread_id.clone(),
+                        agent_name: name.clone(),
+                        stop_reason: StopReason::EndTurn,
+                    },
+                ]);
+            }
+            for kind in kinds {
                 record.events.push(Event {
                     id: self.next_event_id(),
                     kind,
@@ -365,7 +378,7 @@ impl ManagedState {
                     result,
                     deny_message,
                 } => {
-                    let decision = Decision {
+                    let decision = ToolPermissionDecision {
                         allow: matches!(result, ConfirmResult::Allow),
                         note: deny_message.clone(),
                     };

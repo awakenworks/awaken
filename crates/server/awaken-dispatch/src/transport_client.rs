@@ -2,8 +2,9 @@
 //! claim/settle verbs are HTTP calls to a cell server's `dispatch_transport_router`,
 //! so a worker drives runs without ever opening the store.
 //!
-//! Only the worker verbs cross the wire — `enqueue`, `claim`, `renew_lease`,
-//! `renew_owned_leases`, `settle` (plus the `current_epoch` fence read). The
+//! Only the worker verbs cross the wire — `enqueue`, `claim_new_run`, `claim`,
+//! `renew_lease`, `renew_owned_leases`, and `settle`. Claimed commits use the separate atomic
+//! server operation; this transport exposes no check-then-commit fence read. The
 //! operational verbs (reap, dead-letter, purge, supersede, cancel, requeue,
 //! awaiting-run, list-dispatches) and the `Inbox`/`Outbox` write + relay aggregates
 //! are server-local: the worker never runs them, so they fail closed (`Rejected`)
@@ -17,8 +18,9 @@ use async_trait::async_trait;
 use serde_json::json;
 
 use crate::{
-    CasOutcome, Claimed, DispatchError, DispatchOutcome, DispatchQueue, DispatchSummary, Inbox,
-    Outbox, PendingInput, PendingRecord, RunExecutionRequest, SettleOutcome, SubmitOptions,
+    CasOutcome, Claimed, CommitEpochGuard, DispatchError, DispatchOutcome, DispatchQueue,
+    DispatchSummary, Inbox, Outbox, PendingInput, PendingRecord, RunClaim, RunDispatch,
+    SettleOutcome, SubmitOptions,
 };
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
@@ -85,9 +87,18 @@ impl HttpDispatchQueue {
 
 #[async_trait]
 impl DispatchQueue for HttpDispatchQueue {
+    async fn lock_commit_epoch(
+        &self,
+        _claim: &RunClaim,
+    ) -> Result<Option<CommitEpochGuard>, DispatchError> {
+        Err(DispatchError::Rejected(
+            "remote claims require the atomic claimed-commit endpoint".to_string(),
+        ))
+    }
+
     async fn enqueue_with(
         &self,
-        request: RunExecutionRequest,
+        request: RunDispatch,
         options: SubmitOptions,
     ) -> Result<(), DispatchError> {
         self.post(
@@ -96,6 +107,60 @@ impl DispatchQueue for HttpDispatchQueue {
         )
         .await?;
         Ok(())
+    }
+
+    async fn claim_new_run(
+        &self,
+        request: RunDispatch,
+        owner: &str,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        let value = self
+            .post(
+                "/v1/worker/dispatch/claim_new_run",
+                json!({
+                    "request": request,
+                    "owner": owner,
+                    "lease_ms": lease_ms,
+                    "now_ms": now_ms
+                }),
+            )
+            .await?;
+        serde_json::from_value(
+            value
+                .get("claimed")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
+        )
+        .map_err(|error| DispatchError::Rejected(format!("decode claimed: {error}")))
+    }
+
+    async fn deliver_and_claim(
+        &self,
+        input: PendingInput,
+        owner: &str,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        let value = self
+            .post(
+                "/v1/worker/dispatch/deliver_and_claim",
+                json!({
+                    "input": input,
+                    "owner": owner,
+                    "lease_ms": lease_ms,
+                    "now_ms": now_ms
+                }),
+            )
+            .await?;
+        serde_json::from_value(
+            value
+                .get("claimed")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
+        )
+        .map_err(|error| DispatchError::Rejected(format!("decode claimed: {error}")))
     }
 
     async fn claim(
@@ -112,6 +177,33 @@ impl DispatchQueue for HttpDispatchQueue {
             .await?;
         serde_json::from_value(v.get("claimed").cloned().unwrap_or(serde_json::Value::Null))
             .map_err(|e| DispatchError::Rejected(format!("decode claimed: {e}")))
+    }
+
+    async fn claim_run(
+        &self,
+        run_id: &RunId,
+        owner: &str,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        let value = self
+            .post(
+                "/v1/worker/dispatch/claim_run",
+                json!({
+                    "run_id": run_id.0,
+                    "owner": owner,
+                    "lease_ms": lease_ms,
+                    "now_ms": now_ms
+                }),
+            )
+            .await?;
+        serde_json::from_value(
+            value
+                .get("claimed")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
+        )
+        .map_err(|error| DispatchError::Rejected(format!("decode claimed: {error}")))
     }
 
     async fn renew_lease(
@@ -166,20 +258,6 @@ impl DispatchQueue for HttpDispatchQueue {
                 SettleOutcome::Fenced
             },
         )
-    }
-
-    async fn current_epoch(&self, run_id: &RunId) -> Result<Option<u64>, DispatchError> {
-        // The COMMIT fence's read over the wire: without this the trait default would
-        // return `None` (fail-open) and a superseded db-less worker could double-apply
-        // side effects the co-located fence blocks. `null` from the server means the
-        // row is gone → fail-open, identical to the local store's behaviour.
-        let v = self
-            .post(
-                "/v1/worker/dispatch/current_epoch",
-                json!({ "run_id": run_id.0 }),
-            )
-            .await?;
-        Ok(v.get("epoch").and_then(serde_json::Value::as_u64))
     }
 
     // --- server-local operational verbs: the SERVER owns dead-letter/recovery GC.

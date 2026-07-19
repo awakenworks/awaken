@@ -10,7 +10,7 @@ pub const COMPACT_AGENT_ID: &str = "compactor";
 /// Default compaction instructions. A host may override by registering its own
 /// `compactor` config.
 pub const DEFAULT_COMPACT_INSTRUCTIONS: &str = "\
-You are a conversation-compaction sub-agent. You are given the earlier part of a \
+You are a conversation-compaction Agent. You are given the earlier part of a \
 conversation that is about to be dropped from the working context. Write a concise \
 summary that preserves the durable facts a continuation needs: decisions made, \
 constraints, open questions, and important results. Omit small talk and \
@@ -37,10 +37,7 @@ mod tests {
         let cfg = default_compact_agent("stub", DEFAULT_COMPACT_INSTRUCTIONS);
         assert_eq!(cfg.snapshot().root_agent_id.0, COMPACT_AGENT_ID);
         let spec = &cfg.snapshot().resolved_spec;
-        assert!(
-            spec.instructions
-                .contains("conversation-compaction sub-agent")
-        );
+        assert!(spec.instructions.contains("conversation-compaction Agent"));
         assert!(spec.tool_descriptors.is_empty());
     }
 }

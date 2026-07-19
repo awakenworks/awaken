@@ -5,9 +5,7 @@
 //! the loop stops (the run-end guard hook); this crate owns the break decision.
 //!
 //! The grader is async: [`KeywordGrader`] is a deterministic offline judge, while
-//! [`DelegateGrader`] runs a real judge sub-agent through a host-supplied
-//! [`SubagentRunner`]. This crate depends only on the runtime contract; the host
-//! wires the concrete delegation.
+//! [`AgentToolGrader`] invokes a host-supplied ordinary Agent-backed tool.
 
 use std::sync::Arc;
 
@@ -16,10 +14,8 @@ use awaken_runtime_contract::plugin::{
     CapabilityBound, Contributions, IdBound, Plugin, PluginConfigError, PluginManifest,
     RunEndContext, RunEndDecision, RunEndGuard,
 };
-use awaken_runtime_contract::{
-    CancellationToken, Message, MessageId, Role, SubagentError, SubagentReply, SubagentRequest,
-    SubagentRunner,
-};
+use awaken_runtime_contract::tool::{RawTool, ToolCall, invoke_raw_tool};
+use awaken_runtime_contract::{CancellationToken, Message, MessageId, Role};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -177,24 +173,23 @@ impl Grader for KeywordGrader {
     }
 }
 
-/// A grader backed by a real judge sub-agent, run through the neutral
-/// [`SubagentRunner`] (ADR-0047 D5 — the shared aux-run port, not a per-extension
-/// one). It routes to the judge named by the goal's [`GraderRef`] (`Default` → the
+/// A grader backed by an ordinary Agent tool. It routes to the judge named by
+/// the goal's [`GraderRef`] (`Default` → the
 /// configured default judge, `Agent` → a specific one), runs it in its own child
 /// context, and parses a structured [`Verdict`] from the reply. A run/parse
 /// failure is a [`GraderError`]; the fail-open policy lives in the guard, so this
 /// stays a faithful judge.
-pub struct DelegateGrader {
-    runner: Arc<dyn SubagentRunner>,
+pub struct AgentToolGrader {
+    agent_tool: Arc<dyn RawTool>,
     default_judge_agent_id: String,
 }
 
-impl DelegateGrader {
-    /// Grade through `runner`, defaulting to `default_judge_agent_id` when a goal
+impl AgentToolGrader {
+    /// Grade through `agent_tool`, defaulting to `default_judge_agent_id` when a goal
     /// selects [`GraderRef::Default`].
-    pub fn new(runner: Arc<dyn SubagentRunner>, default_judge_agent_id: impl Into<String>) -> Self {
+    pub fn new(agent_tool: Arc<dyn RawTool>, default_judge_agent_id: impl Into<String>) -> Self {
         Self {
-            runner,
+            agent_tool,
             default_judge_agent_id: default_judge_agent_id.into(),
         }
     }
@@ -251,28 +246,35 @@ fn parse_verdict(reply: Option<&str>) -> Result<Verdict, GraderError> {
 }
 
 #[async_trait]
-impl Grader for DelegateGrader {
+impl Grader for AgentToolGrader {
     async fn grade(
         &self,
         goal: &GoalSpec,
         deliverable: &str,
         cancellation: Option<&CancellationToken>,
     ) -> Result<Verdict, GraderError> {
-        let request = SubagentRequest {
-            agent_id: self.judge_agent_id(goal).to_string(),
-            seed: vec![Message::text(
-                MessageId("judge-prompt".into()),
-                Role::User,
-                judge_prompt(goal, deliverable),
-            )],
-            cancellation: cancellation.cloned(),
-        };
-        let SubagentReply { text } = self
-            .runner
-            .run(request)
-            .await
-            .map_err(|SubagentError(reason)| GraderError(format!("judge run failed: {reason}")))?;
-        parse_verdict(text.as_deref())
+        let output = invoke_raw_tool(
+            self.agent_tool.as_ref(),
+            ToolCall {
+                call_id: "goal-judge-agent-run".into(),
+                tool_id: self.agent_tool.id().to_string(),
+                arguments: serde_json::json!({
+                    "agent_id": self.judge_agent_id(goal),
+                    "seed": vec![Message::text(
+                    MessageId("judge-prompt".into()),
+                    Role::User,
+                    judge_prompt(goal, deliverable),
+                    )],
+                }),
+            },
+            cancellation,
+        )
+        .await
+        .map_err(|error| GraderError(format!("judge run failed: {error}")))?;
+        if output.is_error {
+            return Err(GraderError(format!("judge run failed: {}", output.content)));
+        }
+        parse_verdict(Some(&output.content))
     }
 }
 

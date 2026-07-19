@@ -127,7 +127,7 @@ fn activation() -> RunActivation {
             role: Role::User,
             content: vec![ContentBlock::text("hello secret-token")],
         }],
-        initiator: None,
+        delegation_origin: None,
         model_ref_override: None,
     }
 }

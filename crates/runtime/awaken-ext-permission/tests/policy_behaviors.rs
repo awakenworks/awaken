@@ -6,12 +6,10 @@
 //! `actions::` mutation helpers are intentionally out of scope for this crate.
 
 use awaken_ext_permission::{
-    Mode, PermissionRule, PermissionRuleset, RulePermissionPolicy, ToolCallPattern,
+    Mode, PermissionRule, PermissionRuleset, RuleBasedToolPermissionPolicy, ToolCallPattern,
     ToolPermissionBehavior, parse_ruleset, permission_config_schema,
 };
-use awaken_runtime_contract::permission::{
-    PermissionContext, PermissionDecision, PermissionPolicy,
-};
+use awaken_runtime_contract::permission::{ToolCall, ToolPermissionPolicy, ToolPermissionVerdict};
 use serde_json::json;
 
 fn rule(spec: &str, behavior: ToolPermissionBehavior) -> PermissionRule {
@@ -68,7 +66,7 @@ fn glob_char_class_matches_set() {
 #[test]
 fn pattern_deny_overrides_tool_allow() {
     let set = ruleset(
-        ToolPermissionBehavior::Ask,
+        ToolPermissionBehavior::RequireConfirmation,
         vec![
             rule("Bash", ToolPermissionBehavior::Allow),
             rule("Bash(rm *)", ToolPermissionBehavior::Deny),
@@ -89,9 +87,9 @@ fn pattern_deny_overrides_tool_allow() {
 #[test]
 fn higher_specificity_allow_wins_within_same_tier() {
     let set = ruleset(
-        ToolPermissionBehavior::Ask,
+        ToolPermissionBehavior::RequireConfirmation,
         vec![
-            rule("Bash", ToolPermissionBehavior::Ask),
+            rule("Bash", ToolPermissionBehavior::RequireConfirmation),
             rule("Bash(npm *)", ToolPermissionBehavior::Allow),
         ],
     );
@@ -101,7 +99,7 @@ fn higher_specificity_allow_wins_within_same_tier() {
     );
     assert_eq!(
         set.decide("Bash", &json!({"command": "cargo build"})),
-        ToolPermissionBehavior::Ask
+        ToolPermissionBehavior::RequireConfirmation
     );
 }
 
@@ -110,7 +108,7 @@ fn deny_wins_amid_multiple_allow_rules() {
     // Ported from `multiple_rules_deny_wins_over_allow`: an allow-all, a specific
     // deny, and a specific allow together — deny is still absolute.
     let set = ruleset(
-        ToolPermissionBehavior::Ask,
+        ToolPermissionBehavior::RequireConfirmation,
         vec![
             rule("Bash", ToolPermissionBehavior::Allow),
             rule("Bash(rm *)", ToolPermissionBehavior::Deny),
@@ -134,7 +132,7 @@ fn deny_wins_amid_multiple_allow_rules() {
 #[test]
 fn mcp_glob_deny_and_default_fallthrough() {
     let set = ruleset(
-        ToolPermissionBehavior::Ask,
+        ToolPermissionBehavior::RequireConfirmation,
         vec![rule("mcp__dangerous__*", ToolPermissionBehavior::Deny)],
     );
     assert_eq!(
@@ -144,14 +142,14 @@ fn mcp_glob_deny_and_default_fallthrough() {
     // A non-matching tool falls to the default.
     assert_eq!(
         set.decide("mcp__safe__read", &json!({})),
-        ToolPermissionBehavior::Ask
+        ToolPermissionBehavior::RequireConfirmation
     );
 }
 
 #[test]
 fn field_condition_deny_by_path() {
     let set = ruleset(
-        ToolPermissionBehavior::Ask,
+        ToolPermissionBehavior::RequireConfirmation,
         vec![rule(
             "Edit(file_path ~ \"/etc/*\")",
             ToolPermissionBehavior::Deny,
@@ -163,7 +161,7 @@ fn field_condition_deny_by_path() {
     );
     assert_eq!(
         set.decide("Edit", &json!({"file_path": "src/main.rs"})),
-        ToolPermissionBehavior::Ask
+        ToolPermissionBehavior::RequireConfirmation
     );
 }
 
@@ -184,10 +182,10 @@ fn unsupported_regex_operator_is_rejected_not_silently_failing_open() {
 
 #[test]
 fn ask_falls_through_when_no_rule_matches() {
-    let set = ruleset(ToolPermissionBehavior::Ask, vec![]);
+    let set = ruleset(ToolPermissionBehavior::RequireConfirmation, vec![]);
     assert_eq!(
         set.decide("Bash", &json!({"command": "echo hi"})),
-        ToolPermissionBehavior::Ask
+        ToolPermissionBehavior::RequireConfirmation
     );
 }
 
@@ -219,7 +217,7 @@ fn low_specificity_deny_beats_high_specificity_allow() {
     // ranked by specificity instead of short-circuiting, the specific allow
     // would fail open here.
     let set = ruleset(
-        ToolPermissionBehavior::Ask,
+        ToolPermissionBehavior::RequireConfirmation,
         vec![
             // High specificity (tool + primary arg) allow.
             rule("Bash(npm *)", ToolPermissionBehavior::Allow),
@@ -239,14 +237,14 @@ fn deny_wins_irrespective_of_rule_order() {
     // Deny short-circuits regardless of whether it appears before or after the
     // allow it overrides — order must not flip a deny into an allow.
     let deny_first = ruleset(
-        ToolPermissionBehavior::Ask,
+        ToolPermissionBehavior::RequireConfirmation,
         vec![
             rule("Bash", ToolPermissionBehavior::Deny),
             rule("Bash(npm *)", ToolPermissionBehavior::Allow),
         ],
     );
     let allow_first = ruleset(
-        ToolPermissionBehavior::Ask,
+        ToolPermissionBehavior::RequireConfirmation,
         vec![
             rule("Bash(npm *)", ToolPermissionBehavior::Allow),
             rule("Bash", ToolPermissionBehavior::Deny),
@@ -284,13 +282,13 @@ fn accept_edits_mode_falls_to_default_like_default_mode() {
     // AcceptEdits has no edit-tool side-effect class in this crate, so an
     // unmatched call must fall to `default_behavior` (NOT be denied like Plan).
     let set = PermissionRuleset {
-        default_behavior: ToolPermissionBehavior::Ask,
+        default_behavior: ToolPermissionBehavior::RequireConfirmation,
         mode: Mode::AcceptEdits,
         rules: vec![rule("Read", ToolPermissionBehavior::Allow)],
     };
     assert_eq!(
         set.decide("Edit", &json!({"file_path": "src/x.rs"})),
-        ToolPermissionBehavior::Ask,
+        ToolPermissionBehavior::RequireConfirmation,
         "unmatched under AcceptEdits falls to default, not deny"
     );
     assert_eq!(
@@ -308,7 +306,7 @@ fn plan_mode_honors_matched_rules_over_its_deny_default() {
         mode: Mode::Plan,
         rules: vec![
             rule("Read", ToolPermissionBehavior::Allow),
-            rule("Bash(git *)", ToolPermissionBehavior::Ask),
+            rule("Bash(git *)", ToolPermissionBehavior::RequireConfirmation),
             rule("Bash(rm *)", ToolPermissionBehavior::Deny),
         ],
     };
@@ -318,7 +316,7 @@ fn plan_mode_honors_matched_rules_over_its_deny_default() {
     );
     assert_eq!(
         set.decide("Bash", &json!({"command": "git status"})),
-        ToolPermissionBehavior::Ask,
+        ToolPermissionBehavior::RequireConfirmation,
         "a matched ask is honored, not turned into plan's deny"
     );
     assert_eq!(
@@ -412,7 +410,7 @@ fn negated_deny_matches_present_field_but_not_a_missing_one() {
     // → the deny does not fire and the call falls to the default. See the
     // report's design note: negated deny rules do not catch missing fields.
     let set = ruleset(
-        ToolPermissionBehavior::Ask,
+        ToolPermissionBehavior::RequireConfirmation,
         vec![rule(
             "Bash(command !~ \"ls*\")",
             ToolPermissionBehavior::Deny,
@@ -426,12 +424,12 @@ fn negated_deny_matches_present_field_but_not_a_missing_one() {
     // Present + ls* → not denied, falls to default ask.
     assert_eq!(
         set.decide("Bash", &json!({"command": "ls -la"})),
-        ToolPermissionBehavior::Ask
+        ToolPermissionBehavior::RequireConfirmation
     );
     // Missing field → deny does NOT fire; falls to default ask (documented gap).
     assert_eq!(
         set.decide("Bash", &json!({})),
-        ToolPermissionBehavior::Ask,
+        ToolPermissionBehavior::RequireConfirmation,
         "a negated deny does not catch a call that omits the field"
     );
 }
@@ -446,13 +444,13 @@ fn equal_specificity_first_rule_wins_allow_vs_ask() {
         ToolPermissionBehavior::Deny,
         vec![
             rule("Bash(npm *)", ToolPermissionBehavior::Allow),
-            rule("Bash(npm *)", ToolPermissionBehavior::Ask),
+            rule("Bash(npm *)", ToolPermissionBehavior::RequireConfirmation),
         ],
     );
     let ask_first = ruleset(
         ToolPermissionBehavior::Deny,
         vec![
-            rule("Bash(npm *)", ToolPermissionBehavior::Ask),
+            rule("Bash(npm *)", ToolPermissionBehavior::RequireConfirmation),
             rule("Bash(npm *)", ToolPermissionBehavior::Allow),
         ],
     );
@@ -461,7 +459,10 @@ fn equal_specificity_first_rule_wins_allow_vs_ask() {
         allow_first.decide("Bash", &call),
         ToolPermissionBehavior::Allow
     );
-    assert_eq!(ask_first.decide("Bash", &call), ToolPermissionBehavior::Ask);
+    assert_eq!(
+        ask_first.decide("Bash", &call),
+        ToolPermissionBehavior::RequireConfirmation
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -543,7 +544,7 @@ fn schema_behavior_enum_matches_the_serialized_behavior_variants() {
     let wire = |b: ToolPermissionBehavior| serde_json::to_value(b).unwrap();
     let expected = vec![
         wire(ToolPermissionBehavior::Allow),
-        wire(ToolPermissionBehavior::Ask),
+        wire(ToolPermissionBehavior::RequireConfirmation),
         wire(ToolPermissionBehavior::Deny),
     ];
     assert_eq!(
@@ -575,13 +576,13 @@ fn schema_mode_enum_matches_the_serialized_mode_variants() {
 }
 
 // ---------------------------------------------------------------------------
-// The async port impl (`RulePermissionPolicy`): Deny carries a reason naming the
+// The async port impl (`RuleBasedToolPermissionPolicy`): Deny carries a reason naming the
 // tool, and an Ask ticket is correlated to the call id so the operator's later
 // decision resumes exactly this invocation (ADR-0030 D2).
 // ---------------------------------------------------------------------------
 
-fn policy_ctx(tool: &str, call_id: &str, args: serde_json::Value) -> PermissionContext {
-    PermissionContext {
+fn policy_ctx(tool: &str, call_id: &str, args: serde_json::Value) -> ToolCall {
+    ToolCall {
         tool_id: tool.to_string(),
         call_id: call_id.to_string(),
         arguments: args,
@@ -590,15 +591,15 @@ fn policy_ctx(tool: &str, call_id: &str, args: serde_json::Value) -> PermissionC
 
 #[tokio::test]
 async fn port_deny_reason_names_the_tool() {
-    let policy = RulePermissionPolicy::new(ruleset(
-        ToolPermissionBehavior::Ask,
+    let policy = RuleBasedToolPermissionPolicy::new(ruleset(
+        ToolPermissionBehavior::RequireConfirmation,
         vec![rule("Bash(rm *)", ToolPermissionBehavior::Deny)],
     ));
     match policy
-        .decide(&policy_ctx("Bash", "c-9", json!({"command": "rm -rf /"})))
+        .evaluate(&policy_ctx("Bash", "c-9", json!({"command": "rm -rf /"})))
         .await
     {
-        PermissionDecision::Deny { reason } => {
+        ToolPermissionVerdict::Deny { reason } => {
             assert!(
                 reason.contains("Bash"),
                 "deny reason names the tool: {reason}"
@@ -613,14 +614,17 @@ async fn port_deny_reason_names_the_tool() {
 async fn port_ask_ticket_is_correlated_to_the_call_id() {
     // An unmatched call under the default `ask` yields a ticket keyed to THIS
     // call id, so the resumed decision targets exactly this invocation.
-    let policy = RulePermissionPolicy::new(ruleset(ToolPermissionBehavior::Ask, vec![]));
+    let policy = RuleBasedToolPermissionPolicy::new(ruleset(
+        ToolPermissionBehavior::RequireConfirmation,
+        vec![],
+    ));
     for call_id in ["c-1", "call-42"] {
         match policy
-            .decide(&policy_ctx("WebFetch", call_id, json!({})))
+            .evaluate(&policy_ctx("WebFetch", call_id, json!({})))
             .await
         {
-            PermissionDecision::Ask { ticket_id } => {
-                assert_eq!(ticket_id, format!("perm-{call_id}"));
+            ToolPermissionVerdict::RequireConfirmation { correlation_id } => {
+                assert_eq!(correlation_id, format!("perm-{call_id}"));
             }
             other => panic!("expected ask, got {other:?}"),
         }
@@ -629,12 +633,12 @@ async fn port_ask_ticket_is_correlated_to_the_call_id() {
 
 #[tokio::test]
 async fn port_allow_maps_to_allow_decision() {
-    let policy = RulePermissionPolicy::new(ruleset(
+    let policy = RuleBasedToolPermissionPolicy::new(ruleset(
         ToolPermissionBehavior::Deny,
         vec![rule("Read", ToolPermissionBehavior::Allow)],
     ));
     assert!(matches!(
-        policy.decide(&policy_ctx("Read", "c-1", json!({}))).await,
-        PermissionDecision::Allow
+        policy.evaluate(&policy_ctx("Read", "c-1", json!({}))).await,
+        ToolPermissionVerdict::Allow
     ));
 }

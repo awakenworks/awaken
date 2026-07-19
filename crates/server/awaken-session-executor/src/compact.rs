@@ -4,8 +4,7 @@
 //! and prompts, and the recall-symmetric [`CompactPlugin`] that injects the summary
 //! as request-only context — lives in `awaken-ext-compact` (a bounded context).
 //! This module wires that onto the host's aux-agent substrate: [`compact_runner`]
-//! builds a [`SubagentRunner`](awaken_runtime_contract::subagent_runner::SubagentRunner)
-//! over an ordinary `compactor` sub-agent (the shared aux-run port, ADR-0047 D5,
+//! builds an ordinary Agent-backed tool over the `compactor` Agent,
 //! also used by the goal judge). The plugin seeds it with the older slice at
 //! `BeforeInference` (once per run, cached), the same shape as memory's
 //! [`AgentSelector`](crate::memory::AgentSelector).
@@ -20,11 +19,11 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
 use awaken_runtime_contract::llm::LlmExecutor;
-use awaken_runtime_contract::subagent_runner::SubagentRunner;
+use awaken_runtime_contract::tool::RawTool;
 use awaken_sandbox_local::LocalProvider;
 
 use crate::agent_catalog::AgentCatalog;
-use crate::judge::HostSubagentRunner;
+use crate::judge::HostAgentTool;
 
 // The config pieces the host wires (registering the default compactor agent).
 pub use awaken_ext_compact::{DEFAULT_COMPACT_INSTRUCTIONS, default_compact_agent};
@@ -36,18 +35,14 @@ pub use awaken_ext_compact::{DEFAULT_COMPACT_INSTRUCTIONS, default_compact_agent
 /// (`config` without `runner`, and the reverse) into one catch-all arm.
 pub(crate) struct Compaction {
     pub(crate) config: awaken_ext_compact::CompactConfig,
-    pub(crate) runner: Arc<dyn SubagentRunner>,
+    pub(crate) agent_tool: Arc<dyn RawTool>,
 }
 
-/// A [`SubagentRunner`] whose catalog holds the `compactor` agent — the host side
-/// of compaction, shared with the goal judge via the neutral aux-run port
+/// An ordinary tool whose catalog holds the `compactor` Agent.
 /// (ADR-0047 D5). The compaction plugin builds the seed (older slice + summarize
 /// prompt); this runs the named agent to completion, the read-side counterpart of
 /// memory's `AgentSelector`.
-pub(crate) fn compact_runner(
-    llm: Arc<dyn LlmExecutor>,
-    model_ref: &str,
-) -> Arc<dyn SubagentRunner> {
+pub(crate) fn compact_runner(llm: Arc<dyn LlmExecutor>, model_ref: &str) -> Arc<dyn RawTool> {
     let catalog = Arc::new(AgentCatalog::new().with_agent(default_compact_agent(
         model_ref,
         DEFAULT_COMPACT_INSTRUCTIONS,
@@ -55,7 +50,7 @@ pub(crate) fn compact_runner(
     let base = std::env::temp_dir()
         .join("awaken-server")
         .join(format!("{}-compact", std::process::id()));
-    Arc::new(HostSubagentRunner {
+    Arc::new(HostAgentTool {
         llm,
         provider: LocalProvider::new(base),
         catalog,
@@ -69,11 +64,11 @@ mod tests {
     use async_trait::async_trait;
     use awaken_agent_contract::agent::content::ContentBlock;
     use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+    use awaken_ext_builtin_tools::{AgentRunArgs, invoke_agent_tool};
     use awaken_ext_compact::COMPACT_AGENT_ID;
     use awaken_runtime_contract::llm::{
         AssistantOutput, ChatRequest, ChatResponse, Result as LlmResult,
     };
-    use awaken_runtime_contract::subagent_runner::SubagentRequest;
 
     /// A stub compactor: replies with a fixed summary that names how many messages
     /// it was asked to fold (proving it received the seed the plugin built).
@@ -109,14 +104,17 @@ mod tests {
         // The plugin builds the seed (older slice + summarize prompt); here that is
         // 5 user messages.
         let seed: Vec<Message> = (0..5).map(user).collect();
-        let reply = runner
-            .run(SubagentRequest {
+        let reply = invoke_agent_tool(
+            runner.as_ref(),
+            "compact-test",
+            AgentRunArgs {
                 agent_id: COMPACT_AGENT_ID.to_string(),
                 seed,
-                cancellation: None,
-            })
-            .await
-            .unwrap();
-        assert_eq!(reply.text.as_deref(), Some("summary of 5 messages"));
+            },
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(reply.content, "summary of 5 messages");
     }
 }

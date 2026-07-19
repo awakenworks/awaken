@@ -195,6 +195,15 @@ async fn sdk_multipart_create_list_retrieve_and_version_lifecycle() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(receipt["type"], "skill_deleted");
 
+    let (status, _) = get(&router, &format!("/v1/skills/{id}")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, list) = get(&router, "/v1/skills").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        !list.contains(&id),
+        "deleted skill must not be re-projected"
+    );
+
     let _ = std::fs::remove_dir_all(&dir);
 }
 

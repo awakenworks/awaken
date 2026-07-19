@@ -13,7 +13,7 @@ pub const MEMORY_AGENT_ID: &str = "memory-extractor";
 /// (four types + a what-NOT-to-save gate), mapped onto the single-file
 /// `write_memory` tool.
 pub const DEFAULT_MEMORY_INSTRUCTIONS: &str = "\
-You are the memory extraction sub-agent. Analyze the conversation you are given \
+You are the memory extraction Agent. Analyze the conversation you are given \
 and update a persistent memory so future conversations understand who the user \
 is, how they want you to work, and the context behind their tasks.\n\n\
 ## Types of memory to save\n\
@@ -86,7 +86,7 @@ mod tests {
         let cfg = default_memory_agent("stub", DEFAULT_MEMORY_INSTRUCTIONS);
         assert_eq!(cfg.snapshot().root_agent_id.0, MEMORY_AGENT_ID);
         let spec = &cfg.snapshot().resolved_spec;
-        assert!(spec.instructions.contains("memory extraction sub-agent"));
+        assert!(spec.instructions.contains("memory extraction Agent"));
         assert_eq!(spec.tool_descriptors.len(), 1);
         assert_eq!(spec.tool_descriptors[0].id, "write_memory");
     }
