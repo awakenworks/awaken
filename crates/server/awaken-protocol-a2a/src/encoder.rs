@@ -56,6 +56,7 @@ pub fn encode_task(thread: &str, history: &[AgentMessage], outcome: &StepOutcome
         status: TaskStatus {
             state,
             message: status_message,
+            timestamp: Some(crate::time::now_rfc3339()),
         },
         history: messages,
         artifacts: Vec::new(),

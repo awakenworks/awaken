@@ -125,8 +125,9 @@ async fn agent_card_advertises_transport_protocol_and_skills() {
     let (status, card) = send("GET", "/v1/a2a/agent-card", Value::Null).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(card["preferredTransport"], "JSONRPC", "{card}");
-    assert_eq!(card["protocolVersion"], "1.0");
-    assert_eq!(card["capabilities"]["streaming"], false);
+    assert_eq!(card["protocolVersion"], "0.3.0");
+    assert_eq!(card["capabilities"]["streaming"], true);
+    assert_eq!(card["capabilities"]["pushNotifications"], true);
     assert!(
         !card["skills"].as_array().unwrap().is_empty(),
         "the card advertises at least one skill: {card}"
