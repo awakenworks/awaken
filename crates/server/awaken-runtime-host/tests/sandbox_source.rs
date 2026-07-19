@@ -49,6 +49,7 @@ fn activation(thread: &str) -> RunActivation {
                 catalog_fingerprint: CatalogFingerprint("fp".into()),
                 instructions: "be helpful".into(),
                 max_steps: 8,
+                delegation_limits: Default::default(),
                 model_binding: ModelBinding::new("prov", "model", "acp:test"),
                 tool_descriptors: Vec::new(),
                 plugin_ids: Vec::new(),
@@ -59,6 +60,7 @@ fn activation(thread: &str) -> RunActivation {
             fingerprint: CatalogFingerprint("fp".into()),
         },
         input: vec![Message::text(MessageId("u1".into()), Role::User, "go")],
+        initiator: None,
         model_ref_override: None,
     }
 }

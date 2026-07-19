@@ -69,14 +69,13 @@ async fn postgres_commit_backs_execute_resume_and_survives_restart() {
             .await
             .expect("restart"),
     );
-    // Per-step durability: the input commits at the first step boundary and the await
-    // commits the awaiting checkpoint, so an awaiting run leaves TWO committed checkpoints
-    // (the same shape `durable_memory` asserts for a completing run). A fresh
-    // coordinator warm-loads both from the shared database.
+    // Per-step durability leaves three semantic checkpoints: the input, the complete
+    // Requested tool batch (before any executor may be entered), and Awaiting with its
+    // approval ticket. A fresh coordinator warm-loads all three from the shared database.
     assert_eq!(
         restarted.commit_count(),
-        2,
-        "both checkpoints survive restart"
+        3,
+        "input, requested batch, and awaiting approval survive restart"
     );
     assert!(
         ThreadReader::resume_ticket(&*restarted, &RunId("run-1".to_string())).is_some(),

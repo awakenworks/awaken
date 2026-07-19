@@ -453,6 +453,7 @@ mod tests {
                     catalog_fingerprint: CatalogFingerprint("fp".into()),
                     instructions: "be helpful".into(),
                     max_steps: 8,
+                    delegation_limits: Default::default(),
                     model_binding: ModelBinding::new("prov", "model", "acp:test"),
                     tool_descriptors: Vec::new(),
                     plugin_ids: Vec::new(),

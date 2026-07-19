@@ -7,11 +7,9 @@
 //! serializable [`RunExecutionRequest`] a durable queue persists and replays — no
 //! live handles (G3). Live per-attempt wiring stays in the host.
 
-pub mod delegation;
 pub mod dispatch;
 pub mod request;
 
-pub use delegation::{DelegationCas, DelegationStore, DelegationStoreError, StoredDelegationGroup};
 pub use dispatch::{
     CasOutcome, Claimed, Dispatch, DispatchError, DispatchOutcome, DispatchQueue, DispatchState,
     DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, SettleOutcome,

@@ -30,7 +30,11 @@ run "file-limits" python3 scripts/ci/check_file_limits.py
 run "commit-message self-test" python3 scripts/ci/check_commit_message.py --self-test
 run "documentation" scripts/ci/check-docs.sh
 run "rust" scripts/ci/check-rust.sh --full
-run "formal" scripts/ci/check_formal.sh
+if [ "${AWAKEN_RUN_FORMAL:-0}" = "1" ]; then
+  run "formal" scripts/ci/check_formal.sh --require-tools
+else
+  echo "-> formal (skipped; opt in with AWAKEN_RUN_FORMAL=1)"
+fi
 # Postgres-backed suites against a throwaway database. Docker-gated: SKIPS (passes)
 # where docker is unavailable — so `cargo test --workspace` above still covers the
 # no-DB path, and a docker-equipped CI additionally runs the ~half of

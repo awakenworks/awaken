@@ -43,6 +43,7 @@ impl RunResolver for Runtime {
 
         Ok(ResolvedRun {
             snapshot_id: snapshot.id.clone(),
+            agent_id: snapshot.root_agent_id.clone(),
             spec: snapshot.resolved_spec.clone(),
         })
     }

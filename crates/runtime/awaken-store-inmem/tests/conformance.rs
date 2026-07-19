@@ -46,6 +46,14 @@ async fn committed_state_replays() {
     awaken_store_conformance::committed_state_replays(&MemoryCommitCoordinator::new()).await;
 }
 
+#[tokio::test]
+async fn delegation_and_tool_state_commit_atomically() {
+    awaken_store_conformance::delegation_and_tool_state_commit_atomically(
+        &MemoryCommitCoordinator::new(),
+    )
+    .await;
+}
+
 // The in-memory reference keys committed truth by thread, so two threads committed to
 // one store stay isolated (each reads only its own transcript/state/latest run) — it
 // runs the shared multi-thread isolation case, as the SQLite / Postgres backends do.

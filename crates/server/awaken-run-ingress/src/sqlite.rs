@@ -12,12 +12,8 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use awaken_agent_contract::agent::delegation::DelegationGroup;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_run_ingress_contract::{
-    DelegationCas, DelegationStore, DelegationStoreError, StoredDelegationGroup,
-};
 use awaken_runtime_contract::resume::ResumeResult;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
@@ -90,22 +86,6 @@ impl SqliteDispatchStore {
         .map_err(|err| DispatchError::Rejected(err.to_string()))?
     }
 
-    async fn with_delegation_conn<T, F>(&self, f: F) -> Result<T, DelegationStoreError>
-    where
-        T: Send + 'static,
-        F: FnOnce(&mut Connection, &str) -> Result<T, DelegationStoreError> + Send + 'static,
-    {
-        let conn = self.conn.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut guard = conn.lock().map_err(|_| {
-                DelegationStoreError::Rejected("delegation connection poisoned".to_string())
-            })?;
-            f(&mut guard, NS)
-        })
-        .await
-        .map_err(|error| DelegationStoreError::Rejected(error.to_string()))?
-    }
-
     /// Run ids in a terminal-ish dispatch status (dead_letter, superseded), in
     /// enqueue order — backs the operational `dead_letters`/`superseded` queries.
     async fn run_ids_by_status(&self, status: &'static str) -> Result<Vec<RunId>, DispatchError> {
@@ -123,126 +103,6 @@ impl SqliteDispatchStore {
                 ids.push(RunId(row.map_err(reject)?));
             }
             Ok(ids)
-        })
-        .await
-    }
-}
-
-#[async_trait]
-impl DelegationStore for SqliteDispatchStore {
-    async fn create(&self, group: DelegationGroup) -> Result<(), DelegationStoreError> {
-        group
-            .validate()
-            .map_err(|error| DelegationStoreError::Rejected(error.to_string()))?;
-        let parent_run_id = group.parent_run_id().0.clone();
-        let group_json = serde_json::to_string(&group)
-            .map_err(|error| DelegationStoreError::Rejected(error.to_string()))?;
-        self.with_delegation_conn(move |conn, p| {
-            conn.execute(
-                &format!(
-                    "INSERT OR IGNORE INTO {p}_delegation_group \
-                     (parent_run_id, revision, group_json) VALUES (?1, 0, ?2)"
-                ),
-                params![parent_run_id, group_json],
-            )
-            .map_err(|error| DelegationStoreError::Rejected(error.to_string()))?;
-            let stored: String = conn
-                .query_row(
-                    &format!(
-                        "SELECT group_json FROM {p}_delegation_group WHERE parent_run_id = ?1"
-                    ),
-                    params![parent_run_id],
-                    |row| row.get(0),
-                )
-                .map_err(|error| DelegationStoreError::Rejected(error.to_string()))?;
-            let stored: DelegationGroup = serde_json::from_str(&stored)
-                .map_err(|error| DelegationStoreError::Rejected(error.to_string()))?;
-            if stored == group {
-                Ok(())
-            } else {
-                Err(DelegationStoreError::Conflict)
-            }
-        })
-        .await
-    }
-
-    async fn load(
-        &self,
-        parent_run_id: &RunId,
-    ) -> Result<Option<StoredDelegationGroup>, DelegationStoreError> {
-        let parent_run_id = parent_run_id.0.clone();
-        self.with_delegation_conn(move |conn, p| {
-            let row: Option<(i64, String)> = conn
-                .query_row(
-                    &format!(
-                        "SELECT revision, group_json FROM {p}_delegation_group \
-                         WHERE parent_run_id = ?1"
-                    ),
-                    params![parent_run_id],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()
-                .map_err(|error| DelegationStoreError::Rejected(error.to_string()))?;
-            row.map(|(revision, json)| {
-                let revision =
-                    u64::try_from(revision).map_err(|_| DelegationStoreError::RevisionOverflow)?;
-                let group = serde_json::from_str(&json)
-                    .map_err(|error| DelegationStoreError::Rejected(error.to_string()))?;
-                Ok(StoredDelegationGroup { revision, group })
-            })
-            .transpose()
-        })
-        .await
-    }
-
-    async fn compare_and_set(
-        &self,
-        expected_revision: u64,
-        group: DelegationGroup,
-    ) -> Result<DelegationCas, DelegationStoreError> {
-        group
-            .validate()
-            .map_err(|error| DelegationStoreError::Rejected(error.to_string()))?;
-        let next_revision = expected_revision
-            .checked_add(1)
-            .and_then(|revision| i64::try_from(revision).ok())
-            .ok_or(DelegationStoreError::RevisionOverflow)?;
-        let expected_revision =
-            i64::try_from(expected_revision).map_err(|_| DelegationStoreError::RevisionOverflow)?;
-        let parent_run_id = group.parent_run_id().0.clone();
-        let group_json = serde_json::to_string(&group)
-            .map_err(|error| DelegationStoreError::Rejected(error.to_string()))?;
-        self.with_delegation_conn(move |conn, p| {
-            let changed = conn
-                .execute(
-                    &format!(
-                        "UPDATE {p}_delegation_group SET revision = ?1, group_json = ?2 \
-                         WHERE parent_run_id = ?3 AND revision = ?4"
-                    ),
-                    params![next_revision, group_json, parent_run_id, expected_revision],
-                )
-                .map_err(|error| DelegationStoreError::Rejected(error.to_string()))?;
-            if changed == 1 {
-                return Ok(DelegationCas::Applied {
-                    revision: u64::try_from(next_revision)
-                        .map_err(|_| DelegationStoreError::RevisionOverflow)?,
-                });
-            }
-            let current: Option<i64> = conn
-                .query_row(
-                    &format!("SELECT revision FROM {p}_delegation_group WHERE parent_run_id = ?1"),
-                    params![parent_run_id],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(|error| DelegationStoreError::Rejected(error.to_string()))?;
-            match current {
-                Some(revision) => Ok(DelegationCas::Fenced {
-                    current_revision: u64::try_from(revision)
-                        .map_err(|_| DelegationStoreError::RevisionOverflow)?,
-                }),
-                None => Err(DelegationStoreError::NotFound),
-            }
         })
         .await
     }

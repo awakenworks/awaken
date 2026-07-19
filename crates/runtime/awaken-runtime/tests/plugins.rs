@@ -288,6 +288,7 @@ fn activation(plugin_ids: Vec<String>) -> RunActivation {
                 catalog_fingerprint: fingerprint.clone(),
                 instructions: String::new(),
                 max_steps: 16,
+                delegation_limits: Default::default(),
                 model_binding: ModelBinding {
                     provider_identity_ref: "p".to_string(),
                     model_ref: "m".to_string(),
@@ -306,6 +307,7 @@ fn activation(plugin_ids: Vec<String>) -> RunActivation {
             role: Role::User,
             content: vec![ContentBlock::text("go")],
         }],
+        initiator: None,
         model_ref_override: None,
     }
 }

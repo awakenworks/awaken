@@ -15,6 +15,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use awaken_agent_contract::agent::delegation::DelegationOrigin;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
@@ -63,6 +64,7 @@ pub(crate) enum UsageRollup {
 pub(crate) struct AgentRunIdentity<'a> {
     thread: &'a str,
     run_id: Option<RunId>,
+    initiator: Option<DelegationOrigin>,
 }
 
 /// Runtime capabilities of an Agent regardless of who initiated its Run.
@@ -81,13 +83,15 @@ impl<'a> AgentRunIdentity<'a> {
         Self {
             thread,
             run_id: None,
+            initiator: None,
         }
     }
 
-    pub(crate) fn child(run_id: &'a RunId) -> Self {
+    pub(crate) fn child(run_id: &'a RunId, initiator: DelegationOrigin) -> Self {
         Self {
             thread: &run_id.0,
             run_id: Some(run_id.clone()),
+            initiator: Some(initiator),
         }
     }
 }
@@ -121,6 +125,7 @@ pub(crate) async fn run_configured_agent(
     context: Option<RuntimeRunContext>,
     delegation_executor: Option<Arc<dyn DelegationExecutor>>,
     run_id: Option<RunId>,
+    initiator: Option<DelegationOrigin>,
     rollup: UsageRollup,
 ) -> Result<(String, ThreadUsage), String> {
     let config = catalog
@@ -168,13 +173,22 @@ pub(crate) async fn run_configured_agent(
     let reader = ctx.reader.clone().expect("checked above");
     let thread_id = ThreadId(thread.to_string());
     match run_id {
-        Some(run_id) => {
-            runtime
-                .run_to_completion_with_id(&config, run_id, thread, seed, ctx, |_| {
-                    ResumeResult::allow()
-                })
-                .await
-        }
+        Some(run_id) => match initiator {
+            Some(origin) => {
+                runtime
+                    .run_delegated_to_completion(&config, run_id, thread, seed, ctx, origin, |_| {
+                        ResumeResult::allow()
+                    })
+                    .await
+            }
+            None => {
+                runtime
+                    .run_to_completion_with_id(&config, run_id, thread, seed, ctx, |_| {
+                        ResumeResult::allow()
+                    })
+                    .await
+            }
+        },
         None => {
             runtime
                 .run_to_completion(&config, thread, seed, ctx, |_| ResumeResult::allow())
@@ -238,6 +252,7 @@ pub(crate) async fn run_agent(
         execution.context,
         execution.delegation_executor,
         identity.run_id,
+        identity.initiator,
         rollup,
     )
     .await
@@ -326,6 +341,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             UsageRollup::Isolated,
         )
         .await
@@ -340,6 +356,7 @@ mod tests {
             "t-judge",
             vec![user("go")],
             Vec::new(),
+            None,
             None,
             None,
             None,
@@ -396,6 +413,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             UsageRollup::FoldIntoParent,
         )
         .await
@@ -444,6 +462,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             UsageRollup::Isolated,
         )
         .await
@@ -470,6 +489,7 @@ mod tests {
             "t",
             vec![user("go")],
             Vec::new(),
+            None,
             None,
             None,
             None,
@@ -508,6 +528,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             UsageRollup::Isolated,
         )
         .await
@@ -526,6 +547,7 @@ mod tests {
             "sub-b",
             vec![user("go")],
             Vec::new(),
+            None,
             None,
             None,
             None,

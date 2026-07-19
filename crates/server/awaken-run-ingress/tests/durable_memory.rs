@@ -714,7 +714,7 @@ async fn cancel_durable_for_a_queued_run_that_never_ran() {
 }
 
 #[tokio::test]
-async fn send_message_delivers_to_a_threads_awaiting_run() {
+async fn send_message_cannot_approve_a_threads_pending_tool() {
     use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
     use awaken_ext_builtin_tools::MessageSender;
     use awaken_run_ingress::OutboxMessageSender;
@@ -724,7 +724,7 @@ async fn send_message_delivers_to_a_threads_awaiting_run() {
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = DurableRunIngress::new(runtime, store.clone(), commit.clone());
 
-    // A run awaits on thread-1, awaiting for input.
+    // A run awaits on thread-1 for a structured tool-permission decision.
     assert_eq!(
         ingress
             .submit_background(activation("run-1"))
@@ -746,27 +746,28 @@ async fn send_message_delivers_to_a_threads_awaiting_run() {
         .await
         .expect("idle-thread send is queued");
 
-    // Relaying the outbox resumes the awaiting run with the message as input.
+    // Relaying persists the message, but it cannot consume the permission ticket.
     let processed = ingress.relay_outbox(0).await.expect("relay");
-    assert_eq!(
-        processed,
-        vec![(
-            RunId("run-1".to_string()),
-            RunState::Ended(EndCause::NaturalEnd)
-        )]
-    );
+    assert!(processed.is_empty());
     assert_eq!(
         ran.load(Ordering::SeqCst),
         0,
-        "an input resume does not run the gated tool"
+        "an ordinary message does not approve the gated tool"
     );
     assert!(
         commit
-            .committed()
-            .messages
-            .iter()
-            .any(|m| m.text_content() == "hello from another agent")
+            .resume_ticket_for(&RunId("run-1".to_string()))
+            .is_some(),
+        "the approval ticket remains authoritative"
     );
+    let queued = store.list(&ThreadId("thread-1".to_string())).await.unwrap();
+    assert!(queued.iter().any(|record| {
+        record.input.run_id.0.is_empty()
+            && matches!(
+                &record.input.result,
+                ResumeResult::Input(text) if text == "hello from another agent"
+            )
+    }));
 }
 
 #[tokio::test]

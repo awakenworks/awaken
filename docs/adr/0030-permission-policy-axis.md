@@ -62,11 +62,37 @@ run's other facts (G1). Authorization is therefore explainable from committed
 truth, not a durable write outside the commit path. No gate means no protected
 call and no audit.
 
+### D5: Approval and tool execution state share the ThreadCommit boundary
+
+An approval wait is represented twice inside the same runtime-truth aggregate:
+
+- `RunDisposition::Awaiting(ResumeTicket { reason: ToolPermission, ... })` owns
+  the resumable Run lifecycle;
+- the Run-scoped `ActiveToolBatch` state cell owns the corresponding tool call as
+  `Awaiting { kind: Approval, correlation_id }`.
+
+Both are state carried by `ThreadCommit`; there is no `ToolStore`, tool table, or
+second repository. A resume accepts only `ResumeResult::Decision` or a correlated
+`ToolResult`; free-form input cannot approve a tool. Before an approved tool is
+entered, one commit atomically clears the ticket, moves the Run to `Running`, moves
+the call to `Executing { attempt }`, and records `PermissionDecided=approved`.
+Failure or fencing of that commit prevents executor entry. Denial completes the
+call with a blocked result and records `PermissionDecided=denied`, without entering
+the executor.
+
+This is intentionally Run-scoped state stored in the thread commit log, not
+Thread-scoped domain state: the embedded `run_id` prevents an older Run's active
+batch from being rehydrated into a later Run on the same thread.
+
 ## Consequences
 
 - Authorization is real and uniform: every protected tool call passes a
   policy-backed gate, and the decision is committed for review.
 - The ask path reuses the resume-ticket/resume machinery unchanged.
+- Approval is a typed lifecycle command, never an ordinary agent message; its
+  decision and tool transition are durable before any external effect.
+- Tool-call recovery adds no persistence authority: all durable state remains in
+  the existing `ThreadCommit` aggregate.
 - The decision enum is three-valued; richer needs map onto the gate's SetResult or
   the ask ticket, not new variants.
 - The concrete rule policy (Claude-Code-style patterns and modes) lives in

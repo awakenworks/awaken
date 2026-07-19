@@ -7,9 +7,14 @@
 //! stays backend-agnostic and the media (inmem/fs/postgres/sqlite) cannot diverge.
 
 use awaken_agent_contract::agent::awaiting::{AwaitReason, ResumeTicket};
+use awaken_agent_contract::agent::delegation::{
+    DelegationId, DelegationLimits, DelegationRegistry, DelegationStatus, RequestDelegation,
+};
 use awaken_agent_contract::agent::message::{Id as MsgId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
-use awaken_agent_contract::agent::state::{Command as StateCommand, MergePolicy, Scope};
+use awaken_agent_contract::agent::state::{
+    Command as StateCommand, Key as StateKey, MergePolicy, Scope, Store,
+};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::draft::Draft;
 use awaken_agent_contract::audit::kind::Kind as EventKind;
@@ -17,6 +22,42 @@ use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator;
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
+
+const RUN_DELEGATIONS_KEY: &str = "runtime.delegations.v1";
+const ACTIVE_TOOL_BATCH_KEY: &str = "runtime.active_tool_batch.v1";
+
+fn delegation_state(registry: &DelegationRegistry) -> StateCommand {
+    StateCommand::set(
+        Scope::Run,
+        MergePolicy::Disjoint,
+        RUN_DELEGATIONS_KEY,
+        serde_json::to_value(Some(registry)).expect("delegation registry serializes"),
+    )
+}
+
+fn tool_batch_state(run: &RunId, phase: &str) -> StateCommand {
+    StateCommand::set(
+        Scope::Run,
+        MergePolicy::Disjoint,
+        ACTIVE_TOOL_BATCH_KEY,
+        serde_json::json!({
+            "run_id": run,
+            "call_id": "agent-call",
+            "phase": phase,
+        }),
+    )
+}
+
+fn load_delegation_registry(store: &Store) -> DelegationRegistry {
+    serde_json::from_value::<Option<DelegationRegistry>>(
+        store
+            .get(Scope::Run, &StateKey(RUN_DELEGATIONS_KEY.to_string()))
+            .cloned()
+            .expect("delegation registry cell is present"),
+    )
+    .expect("delegation registry shape")
+    .expect("delegation registry value is present")
+}
 
 fn checkpoint(thread: &ThreadId, run: &RunId, text: &str, state: RunState) -> ThreadCommit {
     let disposition = match state {
@@ -57,6 +98,7 @@ fn ticket(thread: &ThreadId, run: &RunId) -> ResumeTicket {
         thread_id: thread.clone(),
         snapshot_id: "conf-snap".to_string(),
         catalog_fingerprint: "conf-fp".to_string(),
+        initiator: None,
         reason: AwaitReason::ToolPermission,
         call_id: Some("conf-call".to_string()),
         pending_tool: None,
@@ -375,5 +417,114 @@ pub async fn committed_state_replays<S: Coordinator + CheckpointReader>(store: &
         store.committed_state(&thread),
         commands,
         "committed state replays in commit order"
+    );
+}
+
+/// Delegation relationship state and the initiating tool call are one atomic
+/// ThreadCommit state transition. This is the persistence-level refinement
+/// check for the production design: no independent delegation repository may
+/// advance (or survive a fenced terminal retry) apart from the ToolBatch cell.
+pub async fn delegation_and_tool_state_commit_atomically<S: Coordinator + CheckpointReader>(
+    store: &S,
+) {
+    let thread = ThreadId("conf-delegation-atomic".to_string());
+    let run = RunId("conf-delegation-parent".to_string());
+    let child = RunId("conf-delegation-child".to_string());
+    let delegation_id = DelegationId::for_parent_call(&run, "agent-call");
+
+    let mut registry = DelegationRegistry::new(
+        run.clone(),
+        "coordinator",
+        Vec::new(),
+        0,
+        DelegationLimits::new(3, 2, 4),
+    );
+    registry
+        .request(RequestDelegation {
+            id: delegation_id.clone(),
+            parent_call_id: "agent-call".to_string(),
+            target_agent_id: "researcher".to_string(),
+            child_run_id: child,
+        })
+        .expect("register child");
+
+    let start = ThreadCommit::assemble(
+        thread.clone(),
+        RunDisposition::running(run.clone()),
+        true,
+        Vec::new(),
+        vec![
+            delegation_state(&registry),
+            tool_batch_state(&run, "executing"),
+        ],
+        Vec::new(),
+    );
+    store.commit(start).await.expect("commit start");
+
+    let durable = store.committed_state(&thread);
+    assert_eq!(durable.len(), 2, "both cells land in the same commit");
+    assert!(
+        durable
+            .iter()
+            .all(|command| command.run_id.as_ref() == Some(&run)),
+        "every Run-scoped cell is bound to the parent Run"
+    );
+    let materialized = Store::rebuild(&durable);
+    let mut registry = load_delegation_registry(&materialized);
+    assert_eq!(
+        registry.get(&delegation_id).map(|entry| entry.status),
+        Some(DelegationStatus::Open)
+    );
+    assert_eq!(
+        materialized
+            .get(Scope::Run, &StateKey(ACTIVE_TOOL_BATCH_KEY.to_string()))
+            .and_then(|value| value.get("phase")),
+        Some(&serde_json::json!("executing"))
+    );
+
+    registry.end_parent();
+    let terminal = ThreadCommit::assemble(
+        thread.clone(),
+        RunDisposition::ended(run.clone(), EndCause::Cancelled),
+        true,
+        Vec::new(),
+        vec![
+            delegation_state(&registry),
+            tool_batch_state(&run, "indeterminate"),
+        ],
+        Vec::new(),
+    );
+    store
+        .commit(terminal.clone())
+        .await
+        .expect("commit terminal");
+
+    let terminal_state = store.committed_state(&thread);
+    assert_eq!(
+        terminal_state.len(),
+        4,
+        "two complete atomic state revisions"
+    );
+    let materialized = Store::rebuild(&terminal_state);
+    let registry = load_delegation_registry(&materialized);
+    assert_eq!(
+        registry.get(&delegation_id).map(|entry| entry.status),
+        Some(DelegationStatus::CancelRequested)
+    );
+    assert_eq!(
+        materialized
+            .get(Scope::Run, &StateKey(ACTIVE_TOOL_BATCH_KEY.to_string()))
+            .and_then(|value| value.get("phase")),
+        Some(&serde_json::json!("indeterminate"))
+    );
+
+    assert!(
+        store.commit(terminal).await.is_err(),
+        "a stale post-terminal retry is fenced"
+    );
+    assert_eq!(
+        store.committed_state(&thread),
+        terminal_state,
+        "the fenced retry writes neither cell"
     );
 }

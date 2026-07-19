@@ -1,22 +1,4 @@
 pub mod awaken_run_ingress_contract
-pub mod awaken_run_ingress_contract::delegation
-pub enum awaken_run_ingress_contract::delegation::DelegationCas
-pub awaken_run_ingress_contract::delegation::DelegationCas::Applied
-pub awaken_run_ingress_contract::delegation::DelegationCas::Applied::revision: u64
-pub awaken_run_ingress_contract::delegation::DelegationCas::Fenced
-pub awaken_run_ingress_contract::delegation::DelegationCas::Fenced::current_revision: u64
-pub enum awaken_run_ingress_contract::delegation::DelegationStoreError
-pub awaken_run_ingress_contract::delegation::DelegationStoreError::Conflict
-pub awaken_run_ingress_contract::delegation::DelegationStoreError::NotFound
-pub awaken_run_ingress_contract::delegation::DelegationStoreError::Rejected(alloc::string::String)
-pub awaken_run_ingress_contract::delegation::DelegationStoreError::RevisionOverflow
-pub struct awaken_run_ingress_contract::delegation::StoredDelegationGroup
-pub awaken_run_ingress_contract::delegation::StoredDelegationGroup::group: awaken_agent_contract::agent::delegation::DelegationGroup
-pub awaken_run_ingress_contract::delegation::StoredDelegationGroup::revision: u64
-pub trait awaken_run_ingress_contract::delegation::DelegationStore: core::marker::Send + core::marker::Sync
-pub fn awaken_run_ingress_contract::delegation::DelegationStore::compare_and_set<'life0, 'async_trait>(&'life0 self, u64, awaken_agent_contract::agent::delegation::DelegationGroup) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_run_ingress_contract::delegation::DelegationCas, awaken_run_ingress_contract::delegation::DelegationStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_run_ingress_contract::delegation::DelegationStore::create<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::agent::delegation::DelegationGroup) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_run_ingress_contract::delegation::DelegationStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_run_ingress_contract::delegation::DelegationStore::load<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::run::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_run_ingress_contract::delegation::StoredDelegationGroup>, awaken_run_ingress_contract::delegation::DelegationStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub mod awaken_run_ingress_contract::dispatch
 pub enum awaken_run_ingress_contract::dispatch::CasOutcome
 pub awaken_run_ingress_contract::dispatch::CasOutcome::Applied
@@ -111,16 +93,6 @@ pub enum awaken_run_ingress_contract::CasOutcome
 pub awaken_run_ingress_contract::CasOutcome::Applied
 pub awaken_run_ingress_contract::CasOutcome::NotFound
 pub awaken_run_ingress_contract::CasOutcome::RevisionMismatch
-pub enum awaken_run_ingress_contract::DelegationCas
-pub awaken_run_ingress_contract::DelegationCas::Applied
-pub awaken_run_ingress_contract::DelegationCas::Applied::revision: u64
-pub awaken_run_ingress_contract::DelegationCas::Fenced
-pub awaken_run_ingress_contract::DelegationCas::Fenced::current_revision: u64
-pub enum awaken_run_ingress_contract::DelegationStoreError
-pub awaken_run_ingress_contract::DelegationStoreError::Conflict
-pub awaken_run_ingress_contract::DelegationStoreError::NotFound
-pub awaken_run_ingress_contract::DelegationStoreError::Rejected(alloc::string::String)
-pub awaken_run_ingress_contract::DelegationStoreError::RevisionOverflow
 pub enum awaken_run_ingress_contract::DispatchError
 pub awaken_run_ingress_contract::DispatchError::Rejected(alloc::string::String)
 pub enum awaken_run_ingress_contract::DispatchOutcome
@@ -172,17 +144,10 @@ pub fn awaken_run_ingress_contract::request::RunExecutionRequest::new(awaken_run
 pub fn awaken_run_ingress_contract::request::RunExecutionRequest::run_id(&self) -> &awaken_agent_contract::agent::run::Id
 pub fn awaken_run_ingress_contract::request::RunExecutionRequest::thread_id(&self) -> &awaken_agent_contract::agent::thread::Id
 pub fn awaken_run_ingress_contract::request::RunExecutionRequest::with_traceparent(self, core::option::Option<alloc::string::String>) -> Self
-pub struct awaken_run_ingress_contract::StoredDelegationGroup
-pub awaken_run_ingress_contract::StoredDelegationGroup::group: awaken_agent_contract::agent::delegation::DelegationGroup
-pub awaken_run_ingress_contract::StoredDelegationGroup::revision: u64
 pub struct awaken_run_ingress_contract::SubmitOptions
 pub awaken_run_ingress_contract::SubmitOptions::dedupe_key: core::option::Option<alloc::string::String>
 pub awaken_run_ingress_contract::SubmitOptions::priority: i64
 pub awaken_run_ingress_contract::SubmitOptions::supersede: bool
-pub trait awaken_run_ingress_contract::DelegationStore: core::marker::Send + core::marker::Sync
-pub fn awaken_run_ingress_contract::DelegationStore::compare_and_set<'life0, 'async_trait>(&'life0 self, u64, awaken_agent_contract::agent::delegation::DelegationGroup) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_run_ingress_contract::delegation::DelegationCas, awaken_run_ingress_contract::delegation::DelegationStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_run_ingress_contract::DelegationStore::create<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::agent::delegation::DelegationGroup) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_run_ingress_contract::delegation::DelegationStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_run_ingress_contract::DelegationStore::load<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::run::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_run_ingress_contract::delegation::StoredDelegationGroup>, awaken_run_ingress_contract::delegation::DelegationStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_run_ingress_contract::Dispatch: awaken_run_ingress_contract::dispatch::DispatchQueue + awaken_run_ingress_contract::dispatch::Inbox + awaken_run_ingress_contract::dispatch::Outbox
 impl<T: awaken_run_ingress_contract::dispatch::DispatchQueue + awaken_run_ingress_contract::dispatch::Inbox + awaken_run_ingress_contract::dispatch::Outbox> awaken_run_ingress_contract::dispatch::Dispatch for T
 pub trait awaken_run_ingress_contract::DispatchQueue: core::marker::Send + core::marker::Sync

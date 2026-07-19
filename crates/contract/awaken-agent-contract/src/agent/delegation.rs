@@ -1,11 +1,9 @@
-//! Durable parent/child Run relationships for Agent delegation.
+//! Durable parent/child Run relationships created by Agent tool calls.
 //!
-//! A delegated Agent is a normal child Run. This module owns only the durable
-//! relationship between the parent and those child Runs: identity, limits,
-//! cancellation propagation, and exactly-once result delivery. It deliberately
-//! does not duplicate a child's `RunState`; local children read that state from
-//! committed Run facts and remote children are projected through the same
-//! delegation result vocabulary.
+//! This aggregate owns relationship identity, lineage budgets, and cancellation.
+//! It deliberately does not own tool execution or result delivery: those phases
+//! live once in the parent Run's durable `ToolBatch` and commit through the same
+//! `ThreadCommit.state` boundary.
 
 use std::collections::BTreeMap;
 
@@ -18,8 +16,7 @@ use crate::agent::run::Id as RunId;
 pub struct DelegationId(pub String);
 
 impl DelegationId {
-    /// Derive the stable relationship id from the parent's durable Run and tool
-    /// call identities. Length-prefixing prevents ambiguous delimiter collisions.
+    /// Length-prefixing prevents ambiguous delimiter collisions.
     #[must_use]
     pub fn for_parent_call(parent_run_id: &RunId, parent_call_id: &str) -> Self {
         Self(format!(
@@ -31,73 +28,102 @@ impl DelegationId {
         ))
     }
 
-    /// The stable first-class child Run identity for this relationship.
     #[must_use]
     pub fn child_run_id(&self) -> RunId {
         RunId(format!("child-run:{}:{}", self.0.len(), self.0))
     }
 }
 
-/// Stable identity of a child result. Retries must reuse it so delivery is
-/// idempotent rather than appending the result to the parent twice.
+/// Stable identity of the one terminal tool result for a child Run.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct DelegationResultId(pub String);
 
 impl DelegationResultId {
-    /// One child Run produces one terminal result. Retries derive the same id.
     #[must_use]
     pub fn for_delegation(id: &DelegationId) -> Self {
         Self(format!("delegation-result:{}:{}", id.0.len(), id.0))
     }
 }
 
-/// Whether the child executes in this deployment or behind a remote Agent
-/// adapter. This affects routing only; both kinds use the same lifecycle.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DelegationKind {
-    Local,
-    Remote,
-}
-
-/// The first-class origin recorded for a child Run.
+/// Durable origin of a delegated child Run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DelegationOrigin {
     pub delegation_id: DelegationId,
     pub parent_run_id: RunId,
     pub parent_call_id: String,
     pub depth: u16,
+    /// Root-to-parent Agent identities. Legacy origins may omit this; production
+    /// constructors always populate it so cycle checks survive recovery.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_lineage: Vec<String>,
 }
 
 impl DelegationOrigin {
-    /// Build the root parent → child origin used by existing non-recursive
-    /// runtimes. A nested runtime carries its parent's `depth` forward and uses
-    /// [`Self::nested`] instead.
+    /// Compatibility constructor for callers that do not own Agent identity.
     #[must_use]
     pub fn root(parent_run_id: RunId, parent_call_id: impl Into<String>) -> Self {
+        Self::root_for_agent(parent_run_id, parent_call_id, String::new())
+    }
+
+    /// Build a root relationship with the initiating Agent in its lineage.
+    #[must_use]
+    pub fn root_for_agent(
+        parent_run_id: RunId,
+        parent_call_id: impl Into<String>,
+        parent_agent_id: impl Into<String>,
+    ) -> Self {
         let parent_call_id = parent_call_id.into();
+        let parent_agent_id = parent_agent_id.into();
         Self {
             delegation_id: DelegationId::for_parent_call(&parent_run_id, &parent_call_id),
             parent_run_id,
             parent_call_id,
             depth: 1,
+            agent_lineage: (!parent_agent_id.is_empty())
+                .then_some(parent_agent_id)
+                .into_iter()
+                .collect(),
         }
     }
 
-    /// Build a nested child origin, failing closed on depth overflow.
+    /// Compatibility constructor retaining a numeric parent depth.
     pub fn nested(
         parent_run_id: RunId,
         parent_call_id: impl Into<String>,
         parent_depth: u16,
     ) -> Result<Self, DelegationError> {
+        Self::nested_for_agent(
+            parent_run_id,
+            parent_call_id,
+            parent_depth,
+            &[],
+            String::new(),
+        )
+    }
+
+    /// Build a nested origin while carrying the recovered Agent lineage forward.
+    pub fn nested_for_agent(
+        parent_run_id: RunId,
+        parent_call_id: impl Into<String>,
+        parent_depth: u16,
+        ancestor_lineage: &[String],
+        parent_agent_id: impl Into<String>,
+    ) -> Result<Self, DelegationError> {
         let parent_call_id = parent_call_id.into();
         let depth = parent_depth
             .checked_add(1)
             .ok_or(DelegationError::DepthOverflow)?;
+        let parent_agent_id = parent_agent_id.into();
+        let mut agent_lineage = ancestor_lineage.to_vec();
+        if !parent_agent_id.is_empty() && agent_lineage.last() != Some(&parent_agent_id) {
+            agent_lineage.push(parent_agent_id);
+        }
         Ok(Self {
             delegation_id: DelegationId::for_parent_call(&parent_run_id, &parent_call_id),
             parent_run_id,
             parent_call_id,
             depth,
+            agent_lineage,
         })
     }
 
@@ -112,14 +138,11 @@ impl DelegationOrigin {
     }
 }
 
-/// Limits inherited by a parent Run's delegation group.
+/// Run-scoped delegation budget.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DelegationLimits {
-    /// Maximum child depth below a root Run. Zero forbids delegation.
     pub max_depth: u16,
-    /// Maximum children executing or awaiting at the same time.
     pub max_parallel: u16,
-    /// Maximum children this parent may create over its whole lifetime.
     pub max_total: u32,
 }
 
@@ -134,142 +157,77 @@ impl DelegationLimits {
     }
 }
 
-/// Opaque continuation returned by an awaiting child. `revision` must increase
-/// when the child awaits again, preventing an old continuation from resuming a
-/// newer child state.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct DelegationContinuation {
-    pub revision: u64,
-    pub value: serde_json::Value,
-}
-
-/// Durable result produced by an ended child, before or after parent delivery.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct DelegationResult {
-    pub id: DelegationResultId,
-    pub output: String,
-}
-
-/// Coordination state of one delegation. Child execution state remains in the
-/// child Run aggregate; this state records only what the parent/child handoff
-/// still needs to do.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum DelegationState {
-    /// Relationship committed, child submission not yet confirmed.
-    Requested,
-    /// Child Run exists and may be driven independently.
-    Active,
-    /// Child awaits more input under this durable continuation.
-    Awaiting(DelegationContinuation),
-    /// Child ended and its result is durable, but the parent has not committed it.
-    ResultPending(DelegationResult),
-    /// Parent committed this result at `parent_run_version`.
-    Delivered {
-        result_id: DelegationResultId,
-        parent_run_version: u64,
-    },
-    /// Parent ended/cancelled and durable cancellation must reach the child.
-    CancelRequested,
-    /// Child cancellation was acknowledged.
-    Cancelled,
-    /// A child result arrived after the parent ended and was intentionally ignored.
-    Discarded { result_id: DelegationResultId },
-}
-
-impl DelegationState {
-    #[must_use]
-    pub fn is_active(&self) -> bool {
-        matches!(
-            self,
-            Self::Requested | Self::Active | Self::Awaiting(_) | Self::CancelRequested
-        )
+impl Default for DelegationLimits {
+    fn default() -> Self {
+        Self::new(8, 8, 64)
     }
 }
 
-/// The immutable parent/child relationship plus its coordination state.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Relationship progress not already represented by the tool call lifecycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DelegationStatus {
+    Open,
+    Completed,
+    CancelRequested,
+}
+
+impl DelegationStatus {
+    #[must_use]
+    pub const fn occupies_parallel_slot(self) -> bool {
+        matches!(self, Self::Open | Self::CancelRequested)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RelationshipTransition {
+    Complete,
+    RequestCancel,
+}
+
+/// Heap-free production transition kernel shared by the aggregate and Kani.
+/// Returning `Duplicate` is deliberately distinct from applying a transition:
+/// adapters may retry, but retries cannot manufacture a second state effect.
+fn transition_relationship(
+    current: DelegationStatus,
+    transition: RelationshipTransition,
+) -> Result<(DelegationStatus, TransitionResult), DelegationError> {
+    use DelegationStatus::{CancelRequested, Completed, Open};
+    use RelationshipTransition::{Complete, RequestCancel};
+    match (current, transition) {
+        (Open, Complete) => Ok((Completed, TransitionResult::Applied)),
+        (Completed, Complete) => Ok((Completed, TransitionResult::Duplicate)),
+        (Open, RequestCancel) => Ok((CancelRequested, TransitionResult::Applied)),
+        (CancelRequested, RequestCancel) => Ok((current, TransitionResult::Duplicate)),
+        _ => Err(DelegationError::InvalidTransition),
+    }
+}
+
+/// Immutable relationship plus cancellation/completion progress.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Delegation {
     pub id: DelegationId,
     pub parent_run_id: RunId,
     pub parent_call_id: String,
     pub target_agent_id: String,
     pub child_run_id: RunId,
-    pub kind: DelegationKind,
     pub depth: u16,
-    pub state: DelegationState,
+    pub status: DelegationStatus,
 }
 
-/// Input for idempotently creating one child relationship.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequestDelegation {
     pub id: DelegationId,
     pub parent_call_id: String,
     pub target_agent_id: String,
     pub child_run_id: RunId,
-    pub kind: DelegationKind,
 }
 
-/// Result of an idempotent delegation creation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RequestResult {
-    Created,
-    Existing,
-}
-
-/// Result of applying a child/parent handoff event.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeliveryResult {
+pub enum TransitionResult {
     Applied,
     Duplicate,
-    LateResultIgnored,
 }
 
-/// Small, payload-free kernel of the child-result handoff. The aggregate uses
-/// this function before applying payload/identity checks, which lets Kani prove
-/// the same transition rules that production executes without modeling JSON,
-/// strings, or maps.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ResultPhase {
-    Open,
-    Pending,
-    Delivered,
-    ParentEnded,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ResultEvent {
-    ChildEnded,
-    ParentCommitted,
-    ParentEnded,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ResultEffect {
-    RecordPending,
-    MarkDelivered,
-    Discard,
-    Duplicate,
-    Reject,
-}
-
-const fn result_transition(phase: ResultPhase, event: ResultEvent) -> ResultEffect {
-    match (phase, event) {
-        (ResultPhase::Open, ResultEvent::ChildEnded) => ResultEffect::RecordPending,
-        (ResultPhase::Pending, ResultEvent::ParentCommitted) => ResultEffect::MarkDelivered,
-        (ResultPhase::Open | ResultPhase::Pending, ResultEvent::ParentEnded) => {
-            ResultEffect::Discard
-        }
-        (ResultPhase::Pending | ResultPhase::Delivered, ResultEvent::ChildEnded)
-        | (ResultPhase::Delivered, ResultEvent::ParentCommitted)
-        | (ResultPhase::ParentEnded, ResultEvent::ParentEnded) => ResultEffect::Duplicate,
-        (ResultPhase::ParentEnded, ResultEvent::ChildEnded) => ResultEffect::Discard,
-        (ResultPhase::ParentEnded, ResultEvent::ParentCommitted)
-        | (ResultPhase::Open, ResultEvent::ParentCommitted)
-        | (ResultPhase::Delivered, ResultEvent::ParentEnded) => ResultEffect::Reject,
-    }
-}
-
-/// A fail-closed rejection of an invalid parent/child transition.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DelegationError {
     #[error("parent Run has ended")]
@@ -292,24 +250,17 @@ pub enum DelegationError {
     ChildRunConflict,
     #[error("unknown delegation")]
     NotFound,
-    #[error("invalid delegation transition from {state}")]
-    InvalidTransition { state: &'static str },
-    #[error("stale delegation continuation revision")]
-    StaleContinuation,
-    #[error("result id conflicts with the already recorded result")]
-    ResultConflict,
-    #[error("persisted delegation group is invalid: {0}")]
+    #[error("invalid delegation transition")]
+    InvalidTransition,
+    #[error("persisted delegation registry is invalid: {0}")]
     InvalidPersistedState(String),
 }
 
-/// All delegated children owned by one parent Run. The full value is durable and
-/// serializable, so a different process can continue delivery or cancellation
-/// after either the parent or a child process crashes.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct DelegationGroup {
+/// Run-scoped registry committed through ordinary thread state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DelegationRegistry {
     parent_run_id: RunId,
     parent_agent_id: String,
-    /// Root-to-parent lineage, including `parent_agent_id` as the last element.
     lineage: Vec<String>,
     parent_depth: u16,
     limits: DelegationLimits,
@@ -319,7 +270,7 @@ pub struct DelegationGroup {
     calls: BTreeMap<String, DelegationId>,
 }
 
-impl DelegationGroup {
+impl DelegationRegistry {
     #[must_use]
     pub fn new(
         parent_run_id: RunId,
@@ -351,8 +302,8 @@ impl DelegationGroup {
     }
 
     #[must_use]
-    pub fn parent_ended(&self) -> bool {
-        self.parent_ended
+    pub fn get(&self, id: &DelegationId) -> Option<&Delegation> {
+        self.delegations.get(id)
     }
 
     pub fn delegations(&self) -> impl Iterator<Item = &Delegation> {
@@ -360,23 +311,17 @@ impl DelegationGroup {
     }
 
     #[must_use]
-    pub fn get(&self, id: &DelegationId) -> Option<&Delegation> {
-        self.delegations.get(id)
-    }
-
-    #[must_use]
     pub fn active_count(&self) -> usize {
         self.delegations
             .values()
-            .filter(|delegation| delegation.state.is_active())
+            .filter(|delegation| delegation.status.occupies_parallel_slot())
             .count()
     }
 
-    /// Idempotently create a first-class child Run relationship.
     pub fn request(
         &mut self,
         request: RequestDelegation,
-    ) -> Result<RequestResult, DelegationError> {
+    ) -> Result<TransitionResult, DelegationError> {
         if self.parent_ended {
             return Err(DelegationError::ParentEnded);
         }
@@ -384,27 +329,18 @@ impl DelegationGroup {
             let existing = self
                 .delegations
                 .get(existing_id)
-                .expect("call index only contains existing delegations");
+                .expect("call index points at an existing delegation");
             return if existing.id == request.id
                 && existing.target_agent_id == request.target_agent_id
                 && existing.child_run_id == request.child_run_id
-                && existing.kind == request.kind
             {
-                Ok(RequestResult::Existing)
+                Ok(TransitionResult::Duplicate)
             } else {
                 Err(DelegationError::CallConflict)
             };
         }
-        if let Some(existing) = self.delegations.get(&request.id) {
-            return if existing.parent_call_id == request.parent_call_id
-                && existing.target_agent_id == request.target_agent_id
-                && existing.child_run_id == request.child_run_id
-                && existing.kind == request.kind
-            {
-                Ok(RequestResult::Existing)
-            } else {
-                Err(DelegationError::IdentityConflict)
-            };
+        if self.delegations.contains_key(&request.id) {
+            return Err(DelegationError::IdentityConflict);
         }
         if self
             .delegations
@@ -413,14 +349,10 @@ impl DelegationGroup {
         {
             return Err(DelegationError::ChildRunConflict);
         }
-
         let depth = self
             .parent_depth
             .checked_add(1)
-            .ok_or(DelegationError::DepthExceeded {
-                depth: u16::MAX,
-                limit: self.limits.max_depth,
-            })?;
+            .ok_or(DelegationError::DepthOverflow)?;
         if depth > self.limits.max_depth {
             return Err(DelegationError::DepthExceeded {
                 depth,
@@ -453,347 +385,71 @@ impl DelegationGroup {
                 parent_call_id: request.parent_call_id,
                 target_agent_id: request.target_agent_id,
                 child_run_id: request.child_run_id,
-                kind: request.kind,
                 depth,
-                state: DelegationState::Requested,
+                status: DelegationStatus::Open,
             },
         );
         self.calls.insert(call_id, id);
         self.total_started += 1;
-        Ok(RequestResult::Created)
+        Ok(TransitionResult::Applied)
     }
 
-    pub fn mark_active(&mut self, id: &DelegationId) -> Result<DeliveryResult, DelegationError> {
-        let delegation = self.delegation_mut(id)?;
-        match delegation.state {
-            DelegationState::Requested => {
-                delegation.state = DelegationState::Active;
-                Ok(DeliveryResult::Applied)
-            }
-            DelegationState::Active => Ok(DeliveryResult::Duplicate),
-            _ => Err(invalid_transition(&delegation.state)),
-        }
+    pub fn complete(&mut self, id: &DelegationId) -> Result<TransitionResult, DelegationError> {
+        let delegation = self
+            .delegations
+            .get_mut(id)
+            .ok_or(DelegationError::NotFound)?;
+        let (status, result) =
+            transition_relationship(delegation.status, RelationshipTransition::Complete)?;
+        delegation.status = status;
+        Ok(result)
     }
 
-    pub fn mark_awaiting(
-        &mut self,
-        id: &DelegationId,
-        continuation: DelegationContinuation,
-    ) -> Result<DeliveryResult, DelegationError> {
-        let delegation = self.delegation_mut(id)?;
-        match &delegation.state {
-            DelegationState::Requested | DelegationState::Active => {
-                delegation.state = DelegationState::Awaiting(continuation);
-                Ok(DeliveryResult::Applied)
-            }
-            DelegationState::Awaiting(current) if continuation.revision == current.revision => {
-                Ok(DeliveryResult::Duplicate)
-            }
-            DelegationState::Awaiting(current) if continuation.revision > current.revision => {
-                delegation.state = DelegationState::Awaiting(continuation);
-                Ok(DeliveryResult::Applied)
-            }
-            DelegationState::Awaiting(_) => Err(DelegationError::StaleContinuation),
-            _ => Err(invalid_transition(&delegation.state)),
-        }
-    }
-
-    /// Record the durable child result. If the parent already ended, the result is
-    /// retained as discarded evidence and can never reopen the parent Run.
-    pub fn record_result(
-        &mut self,
-        id: &DelegationId,
-        result: DelegationResult,
-    ) -> Result<DeliveryResult, DelegationError> {
-        let parent_ended = self.parent_ended;
-        let delegation = self.delegation_mut(id)?;
-        if parent_ended {
-            debug_assert!(matches!(
-                result_transition(ResultPhase::ParentEnded, ResultEvent::ChildEnded),
-                ResultEffect::Discard
-            ));
-            return match &delegation.state {
-                DelegationState::Discarded { result_id } if result_id == &result.id => {
-                    Ok(DeliveryResult::Duplicate)
-                }
-                DelegationState::Delivered { result_id, .. } if result_id == &result.id => {
-                    Ok(DeliveryResult::Duplicate)
-                }
-                DelegationState::Discarded { .. } | DelegationState::Delivered { .. } => {
-                    Err(DelegationError::ResultConflict)
-                }
-                _ => {
-                    delegation.state = DelegationState::Discarded {
-                        result_id: result.id,
-                    };
-                    Ok(DeliveryResult::LateResultIgnored)
-                }
-            };
-        }
-        let phase = result_phase(&delegation.state);
-        match result_transition(phase, ResultEvent::ChildEnded) {
-            ResultEffect::RecordPending => {
-                delegation.state = DelegationState::ResultPending(result);
-                Ok(DeliveryResult::Applied)
-            }
-            ResultEffect::Duplicate => match &delegation.state {
-                DelegationState::ResultPending(current) if current.id == result.id => {
-                    Ok(DeliveryResult::Duplicate)
-                }
-                DelegationState::Delivered { result_id, .. } if result_id == &result.id => {
-                    Ok(DeliveryResult::Duplicate)
-                }
-                DelegationState::ResultPending(_) | DelegationState::Delivered { .. } => {
-                    Err(DelegationError::ResultConflict)
-                }
-                _ => Err(invalid_transition(&delegation.state)),
-            },
-            ResultEffect::Discard | ResultEffect::MarkDelivered | ResultEffect::Reject => {
-                Err(invalid_transition(&delegation.state))
-            }
-        }
-    }
-
-    /// Mark a pending result as committed by the parent. Replaying the same
-    /// delivery is a no-op; a different result id fails closed.
-    pub fn deliver_result(
-        &mut self,
-        id: &DelegationId,
-        result_id: &DelegationResultId,
-        parent_run_version: u64,
-    ) -> Result<DeliveryResult, DelegationError> {
-        if self.parent_ended {
-            return Ok(DeliveryResult::LateResultIgnored);
-        }
-        let delegation = self.delegation_mut(id)?;
-        let phase = result_phase(&delegation.state);
-        match result_transition(phase, ResultEvent::ParentCommitted) {
-            ResultEffect::MarkDelivered => {
-                let DelegationState::ResultPending(result) = &delegation.state else {
-                    unreachable!("result phase and delegation state diverged")
-                };
-                if &result.id != result_id {
-                    return Err(DelegationError::ResultConflict);
-                }
-                delegation.state = DelegationState::Delivered {
-                    result_id: result_id.clone(),
-                    parent_run_version,
-                };
-                Ok(DeliveryResult::Applied)
-            }
-            ResultEffect::Duplicate => match &delegation.state {
-                DelegationState::Delivered {
-                    result_id: current, ..
-                } if current == result_id => Ok(DeliveryResult::Duplicate),
-                DelegationState::Delivered { .. } => Err(DelegationError::ResultConflict),
-                _ => Err(invalid_transition(&delegation.state)),
-            },
-            ResultEffect::Discard | ResultEffect::RecordPending | ResultEffect::Reject => {
-                Err(invalid_transition(&delegation.state))
-            }
-        }
-    }
-
-    /// End the parent and durably request cancellation of every active child.
-    /// Pending results become discarded; delivered history remains immutable.
+    /// Persist cancellation intent before an adapter attempts delivery.
     pub fn end_parent(&mut self) -> Vec<RunId> {
         if self.parent_ended {
             return Vec::new();
         }
         self.parent_ended = true;
-        let mut cancel = Vec::new();
+        let mut children = Vec::new();
         for delegation in self.delegations.values_mut() {
-            let result_effect =
-                result_transition(result_phase(&delegation.state), ResultEvent::ParentEnded);
-            match &delegation.state {
-                DelegationState::Requested
-                | DelegationState::Active
-                | DelegationState::Awaiting(_) => {
-                    delegation.state = DelegationState::CancelRequested;
-                    cancel.push(delegation.child_run_id.clone());
-                }
-                DelegationState::ResultPending(result) => {
-                    debug_assert_eq!(result_effect, ResultEffect::Discard);
-                    delegation.state = DelegationState::Discarded {
-                        result_id: result.id.clone(),
-                    };
-                }
-                DelegationState::CancelRequested
-                | DelegationState::Cancelled
-                | DelegationState::Delivered { .. }
-                | DelegationState::Discarded { .. } => {}
+            let Ok((status, result)) =
+                transition_relationship(delegation.status, RelationshipTransition::RequestCancel)
+            else {
+                continue;
+            };
+            delegation.status = status;
+            if result == TransitionResult::Applied {
+                children.push(delegation.child_run_id.clone());
             }
         }
-        cancel
+        children
     }
 
-    pub fn confirm_cancelled(
-        &mut self,
-        id: &DelegationId,
-    ) -> Result<DeliveryResult, DelegationError> {
-        let delegation = self.delegation_mut(id)?;
-        match delegation.state {
-            DelegationState::CancelRequested => {
-                delegation.state = DelegationState::Cancelled;
-                Ok(DeliveryResult::Applied)
-            }
-            DelegationState::Cancelled => Ok(DeliveryResult::Duplicate),
-            _ => Err(invalid_transition(&delegation.state)),
-        }
-    }
-
-    /// Validate a value restored after a process crash before it becomes live.
     pub fn validate(&self) -> Result<(), DelegationError> {
         if self.lineage.last() != Some(&self.parent_agent_id) {
             return Err(DelegationError::InvalidPersistedState(
-                "lineage does not end at the parent Agent".to_string(),
+                "lineage must end with parent agent".into(),
             ));
         }
-        let delegation_count = u32::try_from(self.delegations.len()).map_err(|_| {
-            DelegationError::InvalidPersistedState(
-                "delegation count does not fit the durable budget type".to_string(),
-            )
-        })?;
-        if self.total_started != delegation_count
+        if self.total_started != self.delegations.len() as u32
             || self.calls.len() != self.delegations.len()
-            || self.total_started > self.limits.max_total
         {
             return Err(DelegationError::InvalidPersistedState(
-                "delegation indexes or budget count diverged".to_string(),
+                "indexes and total must match relationships".into(),
             ));
         }
-        let expected_depth = self.parent_depth.checked_add(1).ok_or_else(|| {
-            DelegationError::InvalidPersistedState("delegation depth overflowed".to_string())
-        })?;
-        if expected_depth > self.limits.max_depth {
-            return Err(DelegationError::InvalidPersistedState(
-                "delegation depth exceeds its inherited limit".to_string(),
-            ));
-        }
-        let mut children = std::collections::BTreeSet::new();
         for (id, delegation) in &self.delegations {
             if id != &delegation.id
                 || delegation.parent_run_id != self.parent_run_id
-                || delegation.depth != expected_depth
                 || self.calls.get(&delegation.parent_call_id) != Some(id)
-                || !children.insert(&delegation.child_run_id.0)
             {
                 return Err(DelegationError::InvalidPersistedState(
-                    "a parent/child identity invariant was violated".to_string(),
+                    "relationship identity or call index mismatch".into(),
                 ));
             }
-            if self.lineage.contains(&delegation.target_agent_id) {
-                return Err(DelegationError::InvalidPersistedState(
-                    "a persisted delegation contains an Agent cycle".to_string(),
-                ));
-            }
-            if self.parent_ended
-                && matches!(
-                    delegation.state,
-                    DelegationState::Requested
-                        | DelegationState::Active
-                        | DelegationState::Awaiting(_)
-                        | DelegationState::ResultPending(_)
-                )
-            {
-                return Err(DelegationError::InvalidPersistedState(
-                    "an ended parent retained actionable child state".to_string(),
-                ));
-            }
-        }
-        if self.active_count() > usize::from(self.limits.max_parallel) {
-            return Err(DelegationError::InvalidPersistedState(
-                "parallel delegation limit was exceeded".to_string(),
-            ));
         }
         Ok(())
-    }
-
-    fn delegation_mut(&mut self, id: &DelegationId) -> Result<&mut Delegation, DelegationError> {
-        self.delegations
-            .get_mut(id)
-            .ok_or(DelegationError::NotFound)
-    }
-}
-
-fn invalid_transition(state: &DelegationState) -> DelegationError {
-    let state = match state {
-        DelegationState::Requested => "Requested",
-        DelegationState::Active => "Active",
-        DelegationState::Awaiting(_) => "Awaiting",
-        DelegationState::ResultPending(_) => "ResultPending",
-        DelegationState::Delivered { .. } => "Delivered",
-        DelegationState::CancelRequested => "CancelRequested",
-        DelegationState::Cancelled => "Cancelled",
-        DelegationState::Discarded { .. } => "Discarded",
-    };
-    DelegationError::InvalidTransition { state }
-}
-
-fn result_phase(state: &DelegationState) -> ResultPhase {
-    match state {
-        DelegationState::Requested
-        | DelegationState::Active
-        | DelegationState::Awaiting(_)
-        | DelegationState::CancelRequested => ResultPhase::Open,
-        DelegationState::ResultPending(_) => ResultPhase::Pending,
-        DelegationState::Delivered { .. } => ResultPhase::Delivered,
-        DelegationState::Cancelled | DelegationState::Discarded { .. } => ResultPhase::ParentEnded,
-    }
-}
-
-#[cfg(kani)]
-mod verification {
-    use super::*;
-
-    fn symbolic_phase(tag: u8) -> ResultPhase {
-        match tag % 4 {
-            0 => ResultPhase::Open,
-            1 => ResultPhase::Pending,
-            2 => ResultPhase::Delivered,
-            _ => ResultPhase::ParentEnded,
-        }
-    }
-
-    fn symbolic_event(tag: u8) -> ResultEvent {
-        match tag % 3 {
-            0 => ResultEvent::ChildEnded,
-            1 => ResultEvent::ParentCommitted,
-            _ => ResultEvent::ParentEnded,
-        }
-    }
-
-    #[kani::proof]
-    fn a_result_can_be_marked_delivered_only_from_pending() {
-        let phase = symbolic_phase(kani::any());
-        let effect = result_transition(phase, ResultEvent::ParentCommitted);
-        assert!(!matches!(effect, ResultEffect::MarkDelivered) || phase == ResultPhase::Pending);
-    }
-
-    #[kani::proof]
-    fn an_ended_parent_never_accepts_a_result_delivery() {
-        let event = symbolic_event(kani::any());
-        let effect = result_transition(ResultPhase::ParentEnded, event);
-        assert!(!matches!(
-            effect,
-            ResultEffect::RecordPending | ResultEffect::MarkDelivered
-        ));
-    }
-
-    #[kani::proof]
-    fn exactly_once_effects_have_unique_preconditions() {
-        let phase = symbolic_phase(kani::any());
-        let event = symbolic_event(kani::any());
-        let effect = result_transition(phase, event);
-        if matches!(effect, ResultEffect::RecordPending) {
-            assert_eq!((phase, event), (ResultPhase::Open, ResultEvent::ChildEnded));
-        }
-        if matches!(effect, ResultEffect::MarkDelivered) {
-            assert_eq!(
-                (phase, event),
-                (ResultPhase::Pending, ResultEvent::ParentCommitted)
-            );
-        }
     }
 }
 
@@ -801,255 +457,142 @@ mod verification {
 mod tests {
     use super::*;
 
-    fn group(max_parallel: u16, max_total: u32) -> DelegationGroup {
-        DelegationGroup::new(
-            RunId("parent-run".into()),
+    fn registry(parallel: u16, total: u32) -> DelegationRegistry {
+        DelegationRegistry::new(
+            RunId("parent".into()),
             "coordinator",
             vec!["root".into()],
             0,
-            DelegationLimits::new(3, max_parallel, max_total),
+            DelegationLimits::new(3, parallel, total),
         )
     }
 
-    fn request(n: u8, kind: DelegationKind) -> RequestDelegation {
+    fn request(n: u8, target: &str) -> RequestDelegation {
         RequestDelegation {
-            id: DelegationId(format!("delegation-{n}")),
-            parent_call_id: format!("call-{n}"),
-            target_agent_id: format!("agent-{n}"),
-            child_run_id: RunId(format!("child-run-{n}")),
-            kind,
-        }
-    }
-
-    fn result(n: u8) -> DelegationResult {
-        DelegationResult {
-            id: DelegationResultId(format!("result-{n}")),
-            output: format!("output-{n}"),
+            id: DelegationId(format!("d{n}")),
+            parent_call_id: format!("c{n}"),
+            target_agent_id: target.into(),
+            child_run_id: RunId(format!("r{n}")),
         }
     }
 
     #[test]
-    fn child_run_identity_and_parent_relationship_are_first_class() {
-        let mut group = group(2, 2);
+    fn relationship_request_is_idempotent_and_budgeted() {
+        let mut registry = registry(1, 2);
         assert_eq!(
-            group.request(request(1, DelegationKind::Local)),
-            Ok(RequestResult::Created)
+            registry.request(request(1, "researcher")),
+            Ok(TransitionResult::Applied)
         );
-        let child = group.get(&DelegationId("delegation-1".into())).unwrap();
-        assert_eq!(child.parent_run_id, RunId("parent-run".into()));
-        assert_eq!(child.child_run_id, RunId("child-run-1".into()));
-        assert_eq!(child.parent_call_id, "call-1");
-        assert_eq!(child.depth, 1);
+        assert_eq!(
+            registry.request(request(1, "researcher")),
+            Ok(TransitionResult::Duplicate)
+        );
+        assert_eq!(
+            registry.request(request(2, "writer")),
+            Err(DelegationError::ParallelLimit { limit: 1 })
+        );
+        registry.complete(&DelegationId("d1".into())).unwrap();
+        registry.request(request(2, "writer")).unwrap();
+        registry.complete(&DelegationId("d2".into())).unwrap();
+        assert_eq!(
+            registry.request(request(3, "reviewer")),
+            Err(DelegationError::BudgetExhausted { limit: 2 })
+        );
+        registry.validate().unwrap();
     }
 
     #[test]
-    fn parallel_children_are_bounded_and_release_capacity_after_ending() {
-        let mut group = group(2, 3);
-        group.request(request(1, DelegationKind::Local)).unwrap();
-        group.request(request(2, DelegationKind::Remote)).unwrap();
-        assert_eq!(group.active_count(), 2);
+    fn lineage_cycle_is_rejected() {
+        let mut registry = registry(2, 2);
         assert_eq!(
-            group.request(request(3, DelegationKind::Local)),
-            Err(DelegationError::ParallelLimit { limit: 2 })
-        );
-        group
-            .record_result(&DelegationId("delegation-1".into()), result(1))
-            .unwrap();
-        assert_eq!(group.active_count(), 1);
-        assert_eq!(
-            group.request(request(3, DelegationKind::Local)),
-            Ok(RequestResult::Created)
+            registry.request(request(1, "root")),
+            Err(DelegationError::Cycle {
+                agent_id: "root".into()
+            })
         );
     }
 
     #[test]
-    fn parent_and_child_recover_independently_from_serialized_truth() {
-        let mut before_crash = group(2, 2);
-        before_crash
-            .request(request(1, DelegationKind::Remote))
-            .unwrap();
-        before_crash
-            .mark_awaiting(
-                &DelegationId("delegation-1".into()),
-                DelegationContinuation {
-                    revision: 1,
-                    value: serde_json::json!({"remote_task":"t1"}),
-                },
+    fn parent_end_persists_idempotent_cancellation_intent() {
+        let mut registry = registry(2, 2);
+        registry.request(request(1, "researcher")).unwrap();
+        assert_eq!(registry.end_parent(), vec![RunId("r1".into())]);
+        assert_eq!(
+            registry.get(&DelegationId("d1".into())).unwrap().status,
+            DelegationStatus::CancelRequested
+        );
+        assert!(registry.end_parent().is_empty());
+    }
+
+    #[test]
+    fn origin_identity_is_stable_and_nested_depth_survives() {
+        let root = DelegationOrigin::root_for_agent(RunId("p".into()), "c", "root");
+        assert_eq!(root.child_run_id(), root.child_run_id());
+        let nested = DelegationOrigin::nested_for_agent(
+            RunId("child".into()),
+            "next",
+            root.depth,
+            &root.agent_lineage,
+            "researcher",
+        )
+        .unwrap();
+        assert_eq!(nested.depth, 2);
+        assert_eq!(nested.agent_lineage, vec!["root", "researcher"]);
+    }
+}
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    fn symbolic_status(tag: u8) -> DelegationStatus {
+        match tag % 3 {
+            0 => DelegationStatus::Open,
+            1 => DelegationStatus::Completed,
+            _ => DelegationStatus::CancelRequested,
+        }
+    }
+
+    fn symbolic_transition(tag: u8) -> RelationshipTransition {
+        match tag % 2 {
+            0 => RelationshipTransition::Complete,
+            _ => RelationshipTransition::RequestCancel,
+        }
+    }
+
+    #[kani::proof]
+    fn only_unsettled_relationships_occupy_a_parallel_slot() {
+        let status = symbolic_status(kani::any());
+        assert_eq!(
+            status.occupies_parallel_slot(),
+            matches!(
+                status,
+                DelegationStatus::Open | DelegationStatus::CancelRequested
             )
-            .unwrap();
-        let bytes = serde_json::to_vec(&before_crash).unwrap();
-
-        let mut recovered: DelegationGroup = serde_json::from_slice(&bytes).unwrap();
-        recovered.validate().unwrap();
-        recovered
-            .record_result(&DelegationId("delegation-1".into()), result(1))
-            .unwrap();
-        assert!(matches!(
-            recovered
-                .get(&DelegationId("delegation-1".into()))
-                .unwrap()
-                .state,
-            DelegationState::ResultPending(_)
-        ));
-    }
-
-    #[test]
-    fn child_end_is_durable_before_parent_delivery_and_delivery_is_exactly_once() {
-        let mut group = group(1, 1);
-        let id = DelegationId("delegation-1".into());
-        let result_id = DelegationResultId("result-1".into());
-        group.request(request(1, DelegationKind::Local)).unwrap();
-        assert_eq!(
-            group.record_result(&id, result(1)),
-            Ok(DeliveryResult::Applied)
-        );
-        assert!(matches!(
-            group.get(&id).unwrap().state,
-            DelegationState::ResultPending(_)
-        ));
-        assert_eq!(
-            group.deliver_result(&id, &result_id, 7),
-            Ok(DeliveryResult::Applied)
-        );
-        assert_eq!(
-            group.deliver_result(&id, &result_id, 7),
-            Ok(DeliveryResult::Duplicate)
         );
     }
 
-    #[test]
-    fn late_result_after_parent_end_is_discarded_and_never_delivered() {
-        let mut group = group(1, 1);
-        let id = DelegationId("delegation-1".into());
-        group.request(request(1, DelegationKind::Remote)).unwrap();
-        assert_eq!(group.end_parent(), vec![RunId("child-run-1".into())]);
+    #[kani::proof]
+    fn every_relationship_effect_has_one_documented_precondition() {
+        let status = symbolic_status(kani::any());
+        let transition = symbolic_transition(kani::any());
+        let result = transition_relationship(status, transition);
+        let expected_applied = matches!(
+            (status, transition),
+            (DelegationStatus::Open, RelationshipTransition::Complete)
+                | (
+                    DelegationStatus::Open,
+                    RelationshipTransition::RequestCancel
+                )
+        );
         assert_eq!(
-            group.record_result(&id, result(1)),
-            Ok(DeliveryResult::LateResultIgnored)
+            result
+                .as_ref()
+                .is_ok_and(|(_, effect)| *effect == TransitionResult::Applied),
+            expected_applied
         );
-        assert!(matches!(
-            group.get(&id).unwrap().state,
-            DelegationState::Discarded { .. }
-        ));
-        assert_eq!(
-            group.deliver_result(&id, &DelegationResultId("result-1".into()), 8),
-            Ok(DeliveryResult::LateResultIgnored)
-        );
-    }
-
-    #[test]
-    fn cancellation_request_survives_a_process_restart() {
-        let mut group = group(2, 2);
-        group.request(request(1, DelegationKind::Local)).unwrap();
-        group.request(request(2, DelegationKind::Remote)).unwrap();
-        let mut children = group.end_parent();
-        children.sort_by(|a, b| a.0.cmp(&b.0));
-        assert_eq!(
-            children,
-            vec![RunId("child-run-1".into()), RunId("child-run-2".into())]
-        );
-        let bytes = serde_json::to_vec(&group).unwrap();
-        let mut recovered: DelegationGroup = serde_json::from_slice(&bytes).unwrap();
-        recovered.validate().unwrap();
-        assert_eq!(
-            recovered.confirm_cancelled(&DelegationId("delegation-2".into())),
-            Ok(DeliveryResult::Applied)
-        );
-    }
-
-    #[test]
-    fn depth_cycle_parallelism_and_total_budget_fail_closed() {
-        let mut cycle = DelegationGroup::new(
-            RunId("p".into()),
-            "coordinator",
-            vec!["root".into()],
-            0,
-            DelegationLimits::new(1, 2, 2),
-        );
-        let mut cycle_request = request(1, DelegationKind::Local);
-        cycle_request.target_agent_id = "root".into();
-        assert!(matches!(
-            cycle.request(cycle_request),
-            Err(DelegationError::Cycle { .. })
-        ));
-
-        let mut too_deep = DelegationGroup::new(
-            RunId("p".into()),
-            "parent",
-            vec![],
-            2,
-            DelegationLimits::new(2, 1, 1),
-        );
-        assert!(matches!(
-            too_deep.request(request(1, DelegationKind::Local)),
-            Err(DelegationError::DepthExceeded { .. })
-        ));
-
-        let mut budget = group(1, 1);
-        budget.request(request(1, DelegationKind::Local)).unwrap();
-        budget
-            .record_result(&DelegationId("delegation-1".into()), result(1))
-            .unwrap();
-        assert_eq!(
-            budget.request(request(2, DelegationKind::Local)),
-            Err(DelegationError::BudgetExhausted { limit: 1 })
-        );
-    }
-
-    #[test]
-    fn local_and_remote_children_follow_identical_delivery_transitions() {
-        fn trace(kind: DelegationKind) -> Vec<DelegationState> {
-            let mut group = group(1, 1);
-            let id = DelegationId("delegation-1".into());
-            group.request(request(1, kind)).unwrap();
-            let mut states = vec![group.get(&id).unwrap().state.clone()];
-            group.mark_active(&id).unwrap();
-            states.push(group.get(&id).unwrap().state.clone());
-            group.record_result(&id, result(1)).unwrap();
-            states.push(group.get(&id).unwrap().state.clone());
-            group
-                .deliver_result(&id, &DelegationResultId("result-1".into()), 2)
-                .unwrap();
-            states.push(group.get(&id).unwrap().state.clone());
-            states
+        if let Ok((next, TransitionResult::Duplicate)) = result {
+            assert_eq!(next, status);
         }
-        assert_eq!(trace(DelegationKind::Local), trace(DelegationKind::Remote));
-    }
-
-    #[test]
-    fn duplicate_request_reuses_the_same_child_and_conflicts_fail_closed() {
-        let mut group = group(1, 1);
-        let initial_request = request(1, DelegationKind::Local);
-        assert_eq!(
-            group.request(initial_request.clone()),
-            Ok(RequestResult::Created)
-        );
-        assert_eq!(group.request(initial_request), Ok(RequestResult::Existing));
-        let mut conflict = request(2, DelegationKind::Remote);
-        conflict.parent_call_id = "call-1".into();
-        assert_eq!(group.request(conflict), Err(DelegationError::CallConflict));
-    }
-
-    #[test]
-    fn durable_ids_are_deterministic_and_delimiter_safe() {
-        let a = DelegationOrigin::root(RunId("parent:a".into()), "call");
-        let b = DelegationOrigin::root(RunId("parent".into()), "a:call");
-        assert_ne!(a.delegation_id, b.delegation_id);
-        assert_eq!(a, DelegationOrigin::root(RunId("parent:a".into()), "call"));
-        assert_eq!(a.child_run_id(), a.delegation_id.child_run_id());
-        assert_eq!(
-            a.result_id(),
-            DelegationResultId::for_delegation(&a.delegation_id)
-        );
-    }
-
-    #[test]
-    fn nested_origin_increments_depth_and_overflow_fails_closed() {
-        let nested = DelegationOrigin::nested(RunId("parent".into()), "call", 7).unwrap();
-        assert_eq!(nested.depth, 8);
-        assert_eq!(
-            DelegationOrigin::nested(RunId("parent".into()), "call", u16::MAX),
-            Err(DelegationError::DepthOverflow)
-        );
     }
 }

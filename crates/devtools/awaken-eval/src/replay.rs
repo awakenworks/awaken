@@ -145,6 +145,7 @@ async fn replay(case: &Case) -> (String, bool, Vec<String>) {
                 catalog_fingerprint: fingerprint.clone(),
                 instructions: case.instructions.clone(),
                 max_steps: 16,
+                delegation_limits: Default::default(),
                 model_binding: ModelBinding::new("eval", "eval-model", "genai"),
                 model_candidates: Vec::new(),
                 tool_descriptors: Vec::new(),
@@ -160,6 +161,7 @@ async fn replay(case: &Case) -> (String, bool, Vec<String>) {
             role: Role::User,
             content: vec![ContentBlock::text(case.input.clone())],
         }],
+        initiator: None,
         model_ref_override: None,
     };
 

@@ -5,6 +5,86 @@
 
 use super::*;
 
+/// Commit the immutable parent/call/child relationship through the same Run
+/// state delta that makes executor entry recoverable.
+pub(super) fn stage_delegation_request(
+    runtime: &Runtime,
+    resolved: &ResolvedRun,
+    initiator: Option<&DelegationOrigin>,
+    run_id: &RunId,
+    call: &ToolCall,
+    store: &mut Store,
+    staged_state: &mut Vec<StateCommand>,
+) -> Result<bool> {
+    let Some(executor) = runtime.delegation_executor() else {
+        return Ok(false);
+    };
+    if executor.tool_id() != call.tool_id {
+        return Ok(false);
+    }
+    let origin = delegation_origin(initiator, &resolved.agent_id.0, run_id, &call.call_id)
+        .map_err(|error| Error::Execution(error.to_string()))?;
+    let target_agent_id = executor
+        .target_agent_id(&call.arguments)
+        .map_err(|error| Error::Execution(error.to_string()))?;
+    let mut registry = RunDelegations::load(store)
+        .map_err(|error| Error::Execution(error.to_string()))?
+        .unwrap_or_else(|| {
+            DelegationRegistry::new(
+                run_id.clone(),
+                resolved.agent_id.0.clone(),
+                initiator
+                    .map(|origin| origin.agent_lineage.clone())
+                    .unwrap_or_default(),
+                initiator.map_or(0, |origin| origin.depth),
+                resolved.spec.delegation_limits,
+            )
+        });
+    let child_run_id = origin.child_run_id();
+    registry
+        .request(RequestDelegation {
+            id: origin.delegation_id,
+            parent_call_id: call.call_id.clone(),
+            target_agent_id,
+            child_run_id,
+        })
+        .map_err(|error| Error::Execution(error.to_string()))?;
+    registry
+        .validate()
+        .map_err(|error| Error::Execution(error.to_string()))?;
+    let command = RunDelegations::write(&Some(registry));
+    store.apply(&command);
+    staged_state.push(command);
+    Ok(true)
+}
+
+/// Release the relationship's parallel slot in the same commit that records the
+/// terminal ToolBatch result. The result payload itself remains ToolBatch-owned.
+pub(super) fn stage_delegation_completed(
+    runtime: &Runtime,
+    run_id: &RunId,
+    call: &ToolCall,
+    store: &mut Store,
+    staged_state: &mut Vec<StateCommand>,
+) -> Result<()> {
+    if runtime
+        .delegation_executor()
+        .is_none_or(|executor| executor.tool_id() != call.tool_id)
+    {
+        return Ok(());
+    }
+    let mut registry = RunDelegations::load(store)
+        .map_err(|error| Error::Execution(error.to_string()))?
+        .ok_or_else(|| Error::Execution("delegation relationship is not committed".into()))?;
+    registry
+        .complete(&DelegationId::for_parent_call(run_id, &call.call_id))
+        .map_err(|error| Error::Execution(error.to_string()))?;
+    let command = RunDelegations::write(&Some(registry));
+    store.apply(&command);
+    staged_state.push(command);
+    Ok(())
+}
+
 fn delegation_resume_input(result: &ResumeResult) -> String {
     match result {
         ResumeResult::ToolResult(output) => output.content.clone(),
@@ -44,13 +124,18 @@ pub(super) async fn resume_delegation(
         )
         .await;
     };
-    let step = match delegation_origin(context, run_id, &call_id) {
+    let step = match delegation_origin(
+        ticket.initiator.as_ref(),
+        &resolved.agent_id.0,
+        run_id,
+        &call_id,
+    ) {
         Ok(origin) => {
             executor
                 .resume(DelegationResume {
                     child_run_id: origin.child_run_id(),
                     result_id: origin.result_id(),
-                    context: context.for_delegated_child(origin.clone()),
+                    context: context.for_child_run(),
                     origin,
                     continuation: handle,
                     input,
@@ -91,6 +176,8 @@ pub(super) async fn resume_delegation(
 pub(super) async fn run_delegation(
     runtime: &Runtime,
     context: &RuntimeRunContext,
+    initiator: Option<&DelegationOrigin>,
+    parent_agent_id: &str,
     run_id: &RunId,
     call: &ToolCall,
 ) -> Option<std::result::Result<DelegationStep, DelegationExecutionError>> {
@@ -98,14 +185,14 @@ pub(super) async fn run_delegation(
     if executor.tool_id() != call.tool_id {
         return None;
     }
-    let origin = match delegation_origin(context, run_id, &call.call_id) {
+    let origin = match delegation_origin(initiator, parent_agent_id, run_id, &call.call_id) {
         Ok(origin) => origin,
         Err(error) => return Some(Err(error)),
     };
     let request = DelegationRequest {
         child_run_id: origin.child_run_id(),
         result_id: origin.result_id(),
-        context: context.for_delegated_child(origin.clone()),
+        context: context.for_child_run(),
         origin,
         arguments: call.arguments.clone(),
     };
@@ -113,18 +200,24 @@ pub(super) async fn run_delegation(
 }
 
 fn delegation_origin(
-    context: &RuntimeRunContext,
+    initiator: Option<&DelegationOrigin>,
+    parent_agent_id: &str,
     parent_run_id: &RunId,
     parent_call_id: &str,
 ) -> std::result::Result<DelegationOrigin, DelegationExecutionError> {
-    match &context.initiator {
-        Some(parent) => {
-            DelegationOrigin::nested(parent_run_id.clone(), parent_call_id, parent.depth)
-                .map_err(|error| DelegationExecutionError::new(error.to_string()))
-        }
-        None => Ok(DelegationOrigin::root(
+    match initiator {
+        Some(parent) => DelegationOrigin::nested_for_agent(
             parent_run_id.clone(),
             parent_call_id,
+            parent.depth,
+            &parent.agent_lineage,
+            parent_agent_id,
+        )
+        .map_err(|error| DelegationExecutionError::new(error.to_string())),
+        None => Ok(DelegationOrigin::root_for_agent(
+            parent_run_id.clone(),
+            parent_call_id,
+            parent_agent_id,
         )),
     }
 }

@@ -6,6 +6,11 @@ pub struct RunActivation {
     pub thread_id: awaken_agent_contract::agent::thread::Id,
     pub snapshot: crate::snapshot::ExecutableAgentSnapshot,
     pub input: Vec<awaken_agent_contract::agent::message::Message>,
+    /// Durable parent/call identity when this Run was created by an Agent tool.
+    /// This belongs to the serializable activation, not `RuntimeRunContext`:
+    /// recovery must retain the same origin even when every live handle changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initiator: Option<awaken_agent_contract::agent::delegation::DelegationOrigin>,
     /// Per-run model override (R5): the model ref to run THIS attempt on, when it
     /// differs from the agent's published binding. Deliberately OFF the fingerprinted
     /// snapshot — a per-turn model switch is a run-time choice, not a catalog change,
@@ -40,6 +45,7 @@ impl RunActivation {
             thread_id,
             snapshot,
             input,
+            initiator: None,
             model_ref_override: None,
         }
     }
@@ -59,6 +65,7 @@ impl RunActivation {
                     catalog_fingerprint: CatalogFingerprint("fp".into()),
                     instructions: String::new(),
                     max_steps: 4,
+                    delegation_limits: Default::default(),
                     model_binding: ModelBinding::new("prov", binding_model_ref, "backend"),
                     tool_descriptors: Vec::new(),
                     plugin_ids: Vec::new(),
@@ -76,6 +83,16 @@ impl RunActivation {
     #[must_use]
     pub fn with_model_ref_override(mut self, model_ref: Option<String>) -> Self {
         self.model_ref_override = model_ref;
+        self
+    }
+
+    /// Attach the stable relationship that created a delegated child Run.
+    #[must_use]
+    pub fn with_initiator(
+        mut self,
+        initiator: awaken_agent_contract::agent::delegation::DelegationOrigin,
+    ) -> Self {
+        self.initiator = Some(initiator);
         self
     }
 
@@ -204,5 +221,18 @@ mod serde_contract {
         let back: RunActivation =
             serde_json::from_value(value).expect("an unknown field is ignored");
         assert_eq!(back.effective_model_ref(), "bound");
+    }
+
+    #[test]
+    fn delegated_origin_survives_the_activation_wire() {
+        let origin = awaken_agent_contract::agent::delegation::DelegationOrigin::root_for_agent(
+            awaken_agent_contract::agent::run::Id("parent".into()),
+            "call",
+            "coordinator",
+        );
+        let activation = RunActivation::for_binding("bound").with_initiator(origin.clone());
+        let bytes = serde_json::to_vec(&activation).unwrap();
+        let recovered: RunActivation = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(recovered.initiator, Some(origin));
     }
 }

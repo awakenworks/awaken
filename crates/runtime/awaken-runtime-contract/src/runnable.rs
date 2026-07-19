@@ -75,6 +75,7 @@ pub struct RunnableConfigBuilder {
     id: String,
     instructions: String,
     max_steps: usize,
+    delegation_limits: awaken_agent_contract::agent::delegation::DelegationLimits,
     model_binding: ModelBinding,
     model_candidates: Vec<ModelBinding>,
     tools: Vec<ToolDescriptor>,
@@ -92,6 +93,7 @@ impl RunnableConfigBuilder {
             id: id.into(),
             instructions: String::new(),
             max_steps: DEFAULT_MAX_STEPS,
+            delegation_limits: Default::default(),
             model_binding: ModelBinding::default(),
             model_candidates: Vec::new(),
             tools: Vec::new(),
@@ -130,6 +132,16 @@ impl RunnableConfigBuilder {
     #[must_use]
     pub fn max_steps(mut self, max_steps: usize) -> Self {
         self.max_steps = max_steps;
+        self
+    }
+
+    /// Bound delegated children created by one Run of this Agent.
+    #[must_use]
+    pub fn delegation_limits(
+        mut self,
+        limits: awaken_agent_contract::agent::delegation::DelegationLimits,
+    ) -> Self {
+        self.delegation_limits = limits;
         self
     }
 
@@ -214,6 +226,7 @@ impl RunnableConfigBuilder {
                 catalog_fingerprint: fp.clone(),
                 instructions: self.instructions,
                 max_steps: self.max_steps,
+                delegation_limits: self.delegation_limits,
                 model_binding: self.model_binding,
                 model_candidates: self.model_candidates,
                 tool_descriptors: self.tools,

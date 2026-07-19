@@ -24,6 +24,7 @@ pub mod runtime_context;
 pub mod snapshot;
 pub mod subagent_runner;
 pub mod tool;
+pub mod tool_batch;
 
 pub use activation::RunActivation;
 pub use boundary::{BoundaryOutcome, evaluate_boundary};
@@ -35,8 +36,8 @@ pub use data_subject::{
     NullResolver, Purpose,
 };
 pub use delegation::{
-    DelegationExecutionError, DelegationExecutor, DelegationRequest, DelegationResume,
-    DelegationStep, RemoteAgent,
+    DelegationExecutionError, DelegationExecutor, DelegationLimits, DelegationRequest,
+    DelegationResume, DelegationStep, RemoteAgent, RunDelegations,
 };
 pub use execution::{Cancellation, ExecutorCapabilities, RunExecutor, Wait};
 pub use live_inbox::{LiveInbox, LiveInboxMessage, LiveInboxMessageId};
@@ -63,4 +64,10 @@ pub use runnable::{RunnableConfig, RunnableConfigBuilder};
 pub use runtime_context::{CaptureContext, RuntimeRunContext};
 pub use snapshot::{ExecutableAgentSnapshot, ExecutableAgentSnapshotId};
 pub use tokio_util::sync::CancellationToken;
-pub use tool::{RawTool, Tool, ToolExecutor, ToolOutput};
+pub use tool::{
+    RawTool, Tool, ToolExecutor, ToolOutput, ToolRecoveryCapability, ToolRecoveryMode,
+    ToolRecoveryPolicy,
+};
+pub use tool_batch::{
+    ActiveToolBatch, ToolBatch, ToolBatchId, ToolBatchPhase, ToolCallPhase, ToolWait, ToolWaitKind,
+};

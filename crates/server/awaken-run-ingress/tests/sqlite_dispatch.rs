@@ -8,14 +8,10 @@ mod harness;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use awaken_agent_contract::agent::delegation::{
-    DelegationGroup, DelegationId, DelegationKind, DelegationLimits, RequestDelegation,
-};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_run_ingress::{
-    DelegationCas, DelegationStore, DispatchQueue, DurableRunIngress, Inbox, PendingInput,
-    RunExecutionRequest, SqliteDispatchStore,
+    DispatchQueue, DurableRunIngress, Inbox, PendingInput, RunExecutionRequest, SqliteDispatchStore,
 };
 use awaken_runtime::RunIngress;
 use awaken_runtime_contract::resume::ResumeResult;
@@ -30,26 +26,6 @@ fn pending(message_id: &str, correlation: &str, allow: bool) -> PendingInput {
         correlation,
         ResumeResult::Decision { allow, note: None },
     )
-}
-
-fn delegation_group() -> DelegationGroup {
-    DelegationGroup::new(
-        RunId("delegation-parent".into()),
-        "coordinator",
-        Vec::new(),
-        0,
-        DelegationLimits::new(3, 2, 4),
-    )
-}
-
-fn child(id: &str) -> RequestDelegation {
-    RequestDelegation {
-        id: DelegationId(id.into()),
-        parent_call_id: format!("call-{id}"),
-        target_agent_id: format!("agent-{id}"),
-        child_run_id: RunId(format!("child-{id}")),
-        kind: DelegationKind::Local,
-    }
 }
 
 #[tokio::test]
@@ -164,51 +140,30 @@ async fn sqlite_dispatch_opens_a_file_and_persists() {
     let _ = std::fs::remove_file(&path);
 }
 
-#[tokio::test]
-async fn sqlite_delegation_group_persists_and_fences_a_stale_process() {
+#[test]
+fn latest_schema_removes_the_obsolete_delegation_table() {
+    use rusqlite::OptionalExtension as _;
+
     let path = std::env::temp_dir().join(format!(
-        "awaken_sqlite_delegation_{}.db",
+        "awaken_sqlite_no_delegation_store_{}.db",
         std::process::id()
     ));
     let path = path.to_str().unwrap().to_string();
     let _ = std::fs::remove_file(&path);
-
-    let store = SqliteDispatchStore::open(&path).expect("open a");
-    store.create(delegation_group()).await.unwrap();
-    let stale = store
-        .load(&RunId("delegation-parent".into()))
-        .await
-        .unwrap()
-        .unwrap();
-    let mut current = stale.clone();
-    current.group.request(child("a")).unwrap();
-    assert_eq!(
-        store
-            .compare_and_set(current.revision, current.group)
-            .await
-            .unwrap(),
-        DelegationCas::Applied { revision: 1 }
-    );
+    let store = SqliteDispatchStore::open(&path).expect("migrate");
     drop(store);
 
-    let restarted = SqliteDispatchStore::open(&path).expect("open b");
-    let recovered = restarted
-        .load(&RunId("delegation-parent".into()))
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(recovered.revision, 1);
-    let mut stale_group = stale.group;
-    stale_group.request(child("b")).unwrap();
-    assert_eq!(
-        restarted
-            .compare_and_set(stale.revision, stale_group)
-            .await
-            .unwrap(),
-        DelegationCas::Fenced {
-            current_revision: 1
-        }
-    );
+    let connection = rusqlite::Connection::open(&path).expect("inspect");
+    let table: Option<String> = connection
+        .query_row(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'runtime_delegation_group'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .expect("query schema");
+    assert!(table.is_none(), "delegation state belongs to ThreadCommit");
+    drop(connection);
     let _ = std::fs::remove_file(&path);
 }
 

@@ -311,6 +311,13 @@ impl ThreadReader for SqliteCommitCoordinator {
         self.resume_ticket_for(run_id)
     }
 
+    fn run_state(&self, run_id: &RunId) -> Option<RunState> {
+        self.projection
+            .lock()
+            .ok()
+            .and_then(|projection| projection.run_records.get(run_id).map(|r| r.state.clone()))
+    }
+
     fn committed_state(&self, thread_id: &ThreadId) -> Vec<StateCommand> {
         SqliteCommitCoordinator::committed_state(self, thread_id)
     }

@@ -98,6 +98,7 @@ fn snapshot() -> ExecutableAgentSnapshot {
             catalog_fingerprint: fp.clone(),
             instructions: String::new(),
             max_steps: 16,
+            delegation_limits: Default::default(),
             model_binding: ModelBinding {
                 provider_identity_ref: "p".to_string(),
                 model_ref: "m".to_string(),
@@ -155,6 +156,7 @@ fn activation() -> RunActivation {
             role: Role::User,
             content: vec![ContentBlock::text("go")],
         }],
+        initiator: None,
         model_ref_override: None,
     }
 }
@@ -253,6 +255,11 @@ async fn ask_awaits_then_a_resumed_allow_runs_the_tool() {
         .expect("resume");
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     assert_eq!(ran.load(Ordering::SeqCst), 1, "the approved tool ran once");
+    assert_eq!(
+        audited_decisions(&commit),
+        vec!["ask", "approved"],
+        "the resume decision is committed before tool execution"
+    );
 }
 
 /// A model that calls a tool by its MODEL-FACING ALIAS, not the canonical id.

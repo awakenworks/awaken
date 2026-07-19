@@ -14,6 +14,7 @@ impl awaken_agent_contract::thread::read::thread_reader::ThreadReader for awaken
 pub fn awaken_store_fs::FsCommitCoordinator::committed_messages(&self, &awaken_agent_contract::agent::thread::Id) -> alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
 pub fn awaken_store_fs::FsCommitCoordinator::committed_state(&self, &awaken_agent_contract::agent::thread::Id) -> alloc::vec::Vec<awaken_agent_contract::agent::state::Command>
 pub fn awaken_store_fs::FsCommitCoordinator::resume_ticket(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::awaiting::ResumeTicket>
+pub fn awaken_store_fs::FsCommitCoordinator::run_state(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::run::RunState>
 pub struct awaken_store_fs::FsStreamCheckpointStore
 impl awaken_store_fs::FsStreamCheckpointStore
 pub fn awaken_store_fs::FsStreamCheckpointStore::open(impl core::convert::AsRef<std::path::Path>) -> core::io::error::Result<Self>

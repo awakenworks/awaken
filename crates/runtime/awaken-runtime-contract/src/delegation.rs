@@ -5,8 +5,12 @@
 //! identities and receives either an ended result or an awaiting continuation.
 
 use async_trait::async_trait;
-use awaken_agent_contract::agent::delegation::{DelegationOrigin, DelegationResultId};
+pub use awaken_agent_contract::agent::delegation::DelegationLimits;
+use awaken_agent_contract::agent::delegation::{
+    DelegationOrigin, DelegationRegistry, DelegationResultId,
+};
 use awaken_agent_contract::agent::run::Id as RunId;
+use awaken_agent_contract::agent::state::{MergePolicy, Scope, StateKey};
 use serde_json::Value;
 
 use crate::CancellationToken;
@@ -59,6 +63,22 @@ pub trait DelegationExecutor: Send + Sync {
     /// Model-visible delegation tool handled by this executor.
     fn tool_id(&self) -> &str;
 
+    /// Extract the target Agent identity from this tool's model-visible payload.
+    /// The runtime needs the identity only for durable lineage/budget checks; the
+    /// tool implementation continues to own its schema and placement decision.
+    fn target_agent_id(&self, arguments: &Value) -> Result<String, DelegationExecutionError> {
+        arguments
+            .get("agent_id")
+            .and_then(Value::as_str)
+            .filter(|agent_id| !agent_id.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| DelegationExecutionError::new("delegation target agent is missing"))
+    }
+
+    /// Start or reconnect to the durable request identified by
+    /// `origin.delegation_id` / `child_run_id`. Repeated calls with the same
+    /// identity MUST address the same child Run; creating a second child is a
+    /// contract violation.
     async fn start(
         &self,
         request: DelegationRequest,
@@ -70,6 +90,17 @@ pub trait DelegationExecutor: Send + Sync {
     ) -> Result<DelegationStep, DelegationExecutionError>;
 }
 
+/// The current Run's relationship registry, committed beside `ToolBatch` through
+/// the ordinary thread state log. There is intentionally no delegation store.
+pub struct RunDelegations;
+
+impl StateKey for RunDelegations {
+    const KEY: &'static str = "runtime.delegations.v1";
+    const SCOPE: Scope = Scope::Run;
+    const MERGE: MergePolicy = MergePolicy::Disjoint;
+    type Value = Option<DelegationRegistry>;
+}
+
 /// A registered Agent hosted outside this process. Protocol-specific task ids,
 /// polling, and cancellation remain inside its adapter.
 #[async_trait]
@@ -77,6 +108,7 @@ pub trait RemoteAgent: Send + Sync {
     async fn run(
         &self,
         agent_id: &str,
+        request_id: &str,
         input: &str,
         cancellation: Option<&CancellationToken>,
     ) -> Result<DelegationStep, DelegationExecutionError>;

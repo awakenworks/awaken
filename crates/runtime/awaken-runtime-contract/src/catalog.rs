@@ -88,6 +88,7 @@ mod from_snapshot_tests {
                 catalog_fingerprint: fingerprint.clone(),
                 instructions: "be concise".to_string(),
                 max_steps: 8,
+                delegation_limits: Default::default(),
                 model_binding: ModelBinding::new("demo", "stub", "stub"),
                 model_candidates: Vec::new(),
                 tool_descriptors: vec![ToolDescriptor {
@@ -95,6 +96,7 @@ mod from_snapshot_tests {
                     description: "search the web".to_string(),
                     parameters: serde_json::json!({}),
                     content_hash: "h".to_string(),
+                    recovery_policy: Default::default(),
                 }],
                 plugin_ids: vec!["compact".to_string()],
                 plugin_config: Default::default(),

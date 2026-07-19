@@ -22,6 +22,7 @@ pub use task::{
 pub use web::{WebFetchArgs, WebFetchTool, WebSearchArgs, WebSearchTool, web_hand_tools};
 
 use awaken_runtime_contract::resolved::ToolDescriptor;
+use awaken_runtime_contract::tool::ToolRecoveryPolicy;
 use serde::{Deserialize, Serialize};
 
 /// The delegation tool id. The model-visible descriptor and the runtime resolver
@@ -100,7 +101,8 @@ pub fn builtin_tools() -> Vec<BuiltinTool> {
                 AGENT_RUN,
                 "Delegate a sub-run to another agent",
                 agent_run_args(),
-            ),
+            )
+            .with_recovery(ToolRecoveryPolicy::durable_request()),
         },
     ]
 }

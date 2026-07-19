@@ -11,62 +11,19 @@ mod harness;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use awaken_agent_contract::agent::delegation::{
-    DelegationGroup, DelegationId, DelegationKind, DelegationLimits, RequestDelegation,
-};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_run_ingress::{
-    DelegationCas, DelegationStore, DispatchQueue, DispatchWorker, DurableRunIngress, Inbox,
-    PendingInput, PostgresDispatchStore, RunExecutionRequest, SubmitOptions,
+    DispatchQueue, DispatchWorker, DurableRunIngress, Inbox, PendingInput, PostgresDispatchStore,
+    RunExecutionRequest, SubmitOptions,
 };
 use awaken_runtime::RunIngress;
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_store_postgres::PostgresCommitCoordinator;
 
 use harness::{THREAD, TICKET, activation, activation_on, blocking_tool_runtime, tool_runtime};
-
-#[tokio::test]
-async fn postgres_delegation_group_is_durable_and_revision_fenced() {
-    let schema = "t_pg_delegation_group";
-    let Some(pool) = harness::schema_pool(schema).await else {
-        return;
-    };
-    let store = PostgresDispatchStore::with_pool(pool).await.expect("store");
-    let mut group = DelegationGroup::new(
-        RunId("parent".into()),
-        "coordinator",
-        Vec::new(),
-        0,
-        DelegationLimits::new(3, 2, 4),
-    );
-    store.create(group.clone()).await.unwrap();
-    let stale = store.load(&RunId("parent".into())).await.unwrap().unwrap();
-    group
-        .request(RequestDelegation {
-            id: DelegationId("d1".into()),
-            parent_call_id: "c1".into(),
-            target_agent_id: "researcher".into(),
-            child_run_id: RunId("child".into()),
-            kind: DelegationKind::Remote,
-        })
-        .unwrap();
-    assert_eq!(
-        store.compare_and_set(0, group).await.unwrap(),
-        DelegationCas::Applied { revision: 1 }
-    );
-    assert_eq!(
-        store
-            .compare_and_set(stale.revision, stale.group)
-            .await
-            .unwrap(),
-        DelegationCas::Fenced {
-            current_revision: 1
-        }
-    );
-}
 
 /// Single-writer-per-thread (ADR-0022), topology-independent: two runs of the SAME
 /// thread are both pending; two claimers race concurrently. The V0012
@@ -537,9 +494,9 @@ async fn list_dispatches_on_postgres() {
 /// duplicate post-terminal commit is rejected, so the transcript never gains a
 /// second terminal fact or a duplicate final assistant message. The worker absorbs
 /// the rejected commit as an already-done settle. The external tool side effect
-/// still runs twice (an at-least-once effect inherent to lease recovery).
+/// uses the default NeverReplay policy, so the external tool runs only once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn postgres_mid_flight_reclaim_keeps_the_committed_log_exactly_once() {
+async fn postgres_mid_flight_reclaim_applies_never_replay_policy() {
     const LEASE: u64 = 1_000;
     let schema = "t_pg_midflight";
     let Some(pool) = harness::schema_pool(schema).await else {
@@ -591,8 +548,8 @@ async fn postgres_mid_flight_reclaim_keeps_the_committed_log_exactly_once() {
         "A committed a mid-flight Running"
     );
 
-    // Owner B's lease-expired reclaim re-drives the same run to completion — running
-    // the tool a SECOND time (the inherent double side effect).
+    // Owner B's lease-expired reclaim recovers the committed Executing phase and
+    // completes the run without entering the non-recoverable tool again.
     let worker_b =
         DispatchWorker::new(runtime, store.clone(), commit.clone(), "owner-b").with_lease_ms(LEASE);
     let processed = worker_b.tick(LEASE + 1).await.expect("B drives");
@@ -618,8 +575,8 @@ async fn postgres_mid_flight_reclaim_keeps_the_committed_log_exactly_once() {
         "the stale owner's re-drive is fenced: it settles nothing and abandons"
     );
 
-    // Residual: the tool side effect ran twice (at-least-once).
-    assert_eq!(ran.load(Ordering::SeqCst), 2, "the tool ran twice");
+    // The persisted Executing phase prevents an unsafe second invocation.
+    assert_eq!(ran.load(Ordering::SeqCst), 1, "the tool ran only once");
 
     // THE guarantee: exactly-once committed LOG. The committed transcript carries
     // exactly ONE final "all done" assistant message and the run's record is a single

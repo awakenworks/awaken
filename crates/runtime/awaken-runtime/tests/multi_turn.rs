@@ -61,6 +61,7 @@ fn snapshot() -> ExecutableAgentSnapshot {
             catalog_fingerprint: fp.clone(),
             instructions: String::new(),
             max_steps: 8,
+            delegation_limits: Default::default(),
             model_binding: ModelBinding {
                 provider_identity_ref: "p".to_string(),
                 model_ref: "m".to_string(),
@@ -111,6 +112,7 @@ fn turn(message_id: &str, text: &str) -> RunActivation {
             role: Role::User,
             content: vec![ContentBlock::text(text)],
         }],
+        initiator: None,
         model_ref_override: None,
     }
 }

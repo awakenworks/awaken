@@ -7,7 +7,6 @@
 //! names no A2A type — the leak this crate absorbs (ADR: neutral-core / Phase 2).
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use awaken_protocol_a2a::client::{self as a2a, Transport};
@@ -22,8 +21,6 @@ use serde_json::{Value, json};
 const MAX_TASK_POLLS: usize = 600;
 /// Delay between task polls while a remote task is still `working`.
 const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
-/// Process-local counter for unique per-turn A2A message ids.
-static BASE_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Drives one registered A2A remote agent (bound to its `transport`) as a neutral
 /// [`RemoteAgent`]. The composition root builds one per remote `agent_id`.
@@ -44,10 +41,18 @@ impl RemoteAgent for A2aRemoteAgent {
     async fn run(
         &self,
         agent_id: &str,
+        request_id: &str,
         input: &str,
         cancellation: Option<&CancellationToken>,
     ) -> Result<DelegationStep, DelegationExecutionError> {
-        remote_run(self.transport.as_ref(), agent_id, input, cancellation).await
+        remote_run(
+            self.transport.as_ref(),
+            agent_id,
+            request_id,
+            input,
+            cancellation,
+        )
+        .await
     }
 
     async fn card(&self, _agent_id: &str) -> Result<Value, DelegationExecutionError> {
@@ -107,11 +112,14 @@ fn step_from_task(agent_id: &str, task: Task) -> Result<DelegationStep, Delegati
 async fn remote_run(
     transport: &dyn Transport,
     agent_id: &str,
+    request_id: &str,
     input: &str,
     cancellation: Option<&CancellationToken>,
 ) -> Result<DelegationStep, DelegationExecutionError> {
-    let context_id = format!("deleg-{agent_id}");
-    let message_id = format!("m-{}", BASE_SEQ.fetch_add(1, Ordering::SeqCst));
+    // A recovery retry reuses both ids, so an A2A peer can deduplicate the
+    // durable request instead of spawning a second task.
+    let context_id = format!("deleg-{request_id}");
+    let message_id = format!("delegation-message-{request_id}");
     let mut task = a2a::send_message(transport, Some(agent_id), &context_id, &message_id, input)
         .await
         .map_err(|e| DelegationExecutionError::new(e.to_string()))?;

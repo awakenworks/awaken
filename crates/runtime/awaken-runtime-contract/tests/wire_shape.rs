@@ -35,6 +35,7 @@ fn spec() -> ResolvedSpec {
         catalog_fingerprint: CatalogFingerprint("fp-1".into()),
         instructions: "be concise".into(),
         max_steps: 8,
+        delegation_limits: Default::default(),
         model_binding: ModelBinding::new("prov", "gpt", "genai"),
         model_candidates: Vec::new(),
         tool_descriptors: Vec::new(),

@@ -2,7 +2,6 @@ pub mod awaken_agent_contract
 pub mod awaken_agent_contract::agent
 pub mod awaken_agent_contract::agent::awaiting
 pub enum awaken_agent_contract::agent::awaiting::AwaitReason
-pub awaken_agent_contract::agent::awaiting::AwaitReason::BackgroundTasks
 pub awaken_agent_contract::agent::awaiting::AwaitReason::Delegation
 pub awaken_agent_contract::agent::awaiting::AwaitReason::ExternalEvent
 pub awaken_agent_contract::agent::awaiting::AwaitReason::ManualPause
@@ -21,6 +20,7 @@ pub awaken_agent_contract::agent::awaiting::ResumeTicket::call_id: core::option:
 pub awaken_agent_contract::agent::awaiting::ResumeTicket::catalog_fingerprint: alloc::string::String
 pub awaken_agent_contract::agent::awaiting::ResumeTicket::correlation_id: alloc::string::String
 pub awaken_agent_contract::agent::awaiting::ResumeTicket::deadline_ms: core::option::Option<u64>
+pub awaken_agent_contract::agent::awaiting::ResumeTicket::initiator: core::option::Option<awaken_agent_contract::agent::delegation::DelegationOrigin>
 pub awaken_agent_contract::agent::awaiting::ResumeTicket::pending_tool: core::option::Option<awaken_agent_contract::agent::awaiting::PendingTool>
 pub awaken_agent_contract::agent::awaiting::ResumeTicket::reason: awaken_agent_contract::agent::awaiting::AwaitReason
 pub awaken_agent_contract::agent::awaiting::ResumeTicket::run_id: awaken_agent_contract::agent::run::Id
@@ -70,65 +70,27 @@ pub awaken_agent_contract::agent::delegation::DelegationError::DepthOverflow
 pub awaken_agent_contract::agent::delegation::DelegationError::IdentityConflict
 pub awaken_agent_contract::agent::delegation::DelegationError::InvalidPersistedState(alloc::string::String)
 pub awaken_agent_contract::agent::delegation::DelegationError::InvalidTransition
-pub awaken_agent_contract::agent::delegation::DelegationError::InvalidTransition::state: &'static str
 pub awaken_agent_contract::agent::delegation::DelegationError::NotFound
 pub awaken_agent_contract::agent::delegation::DelegationError::ParallelLimit
 pub awaken_agent_contract::agent::delegation::DelegationError::ParallelLimit::limit: u16
 pub awaken_agent_contract::agent::delegation::DelegationError::ParentEnded
-pub awaken_agent_contract::agent::delegation::DelegationError::ResultConflict
-pub awaken_agent_contract::agent::delegation::DelegationError::StaleContinuation
-pub enum awaken_agent_contract::agent::delegation::DelegationKind
-pub awaken_agent_contract::agent::delegation::DelegationKind::Local
-pub awaken_agent_contract::agent::delegation::DelegationKind::Remote
-pub enum awaken_agent_contract::agent::delegation::DelegationState
-pub awaken_agent_contract::agent::delegation::DelegationState::Active
-pub awaken_agent_contract::agent::delegation::DelegationState::Awaiting(awaken_agent_contract::agent::delegation::DelegationContinuation)
-pub awaken_agent_contract::agent::delegation::DelegationState::CancelRequested
-pub awaken_agent_contract::agent::delegation::DelegationState::Cancelled
-pub awaken_agent_contract::agent::delegation::DelegationState::Delivered
-pub awaken_agent_contract::agent::delegation::DelegationState::Delivered::parent_run_version: u64
-pub awaken_agent_contract::agent::delegation::DelegationState::Delivered::result_id: awaken_agent_contract::agent::delegation::DelegationResultId
-pub awaken_agent_contract::agent::delegation::DelegationState::Discarded
-pub awaken_agent_contract::agent::delegation::DelegationState::Discarded::result_id: awaken_agent_contract::agent::delegation::DelegationResultId
-pub awaken_agent_contract::agent::delegation::DelegationState::Requested
-pub awaken_agent_contract::agent::delegation::DelegationState::ResultPending(awaken_agent_contract::agent::delegation::DelegationResult)
-impl awaken_agent_contract::agent::delegation::DelegationState
-pub fn awaken_agent_contract::agent::delegation::DelegationState::is_active(&self) -> bool
-pub enum awaken_agent_contract::agent::delegation::DeliveryResult
-pub awaken_agent_contract::agent::delegation::DeliveryResult::Applied
-pub awaken_agent_contract::agent::delegation::DeliveryResult::Duplicate
-pub awaken_agent_contract::agent::delegation::DeliveryResult::LateResultIgnored
-pub enum awaken_agent_contract::agent::delegation::RequestResult
-pub awaken_agent_contract::agent::delegation::RequestResult::Created
-pub awaken_agent_contract::agent::delegation::RequestResult::Existing
+pub enum awaken_agent_contract::agent::delegation::DelegationStatus
+pub awaken_agent_contract::agent::delegation::DelegationStatus::CancelRequested
+pub awaken_agent_contract::agent::delegation::DelegationStatus::Completed
+pub awaken_agent_contract::agent::delegation::DelegationStatus::Open
+impl awaken_agent_contract::agent::delegation::DelegationStatus
+pub const fn awaken_agent_contract::agent::delegation::DelegationStatus::occupies_parallel_slot(self) -> bool
+pub enum awaken_agent_contract::agent::delegation::TransitionResult
+pub awaken_agent_contract::agent::delegation::TransitionResult::Applied
+pub awaken_agent_contract::agent::delegation::TransitionResult::Duplicate
 pub struct awaken_agent_contract::agent::delegation::Delegation
 pub awaken_agent_contract::agent::delegation::Delegation::child_run_id: awaken_agent_contract::agent::run::Id
 pub awaken_agent_contract::agent::delegation::Delegation::depth: u16
 pub awaken_agent_contract::agent::delegation::Delegation::id: awaken_agent_contract::agent::delegation::DelegationId
-pub awaken_agent_contract::agent::delegation::Delegation::kind: awaken_agent_contract::agent::delegation::DelegationKind
 pub awaken_agent_contract::agent::delegation::Delegation::parent_call_id: alloc::string::String
 pub awaken_agent_contract::agent::delegation::Delegation::parent_run_id: awaken_agent_contract::agent::run::Id
-pub awaken_agent_contract::agent::delegation::Delegation::state: awaken_agent_contract::agent::delegation::DelegationState
+pub awaken_agent_contract::agent::delegation::Delegation::status: awaken_agent_contract::agent::delegation::DelegationStatus
 pub awaken_agent_contract::agent::delegation::Delegation::target_agent_id: alloc::string::String
-pub struct awaken_agent_contract::agent::delegation::DelegationContinuation
-pub awaken_agent_contract::agent::delegation::DelegationContinuation::revision: u64
-pub awaken_agent_contract::agent::delegation::DelegationContinuation::value: serde_json::value::Value
-pub struct awaken_agent_contract::agent::delegation::DelegationGroup
-impl awaken_agent_contract::agent::delegation::DelegationGroup
-pub fn awaken_agent_contract::agent::delegation::DelegationGroup::active_count(&self) -> usize
-pub fn awaken_agent_contract::agent::delegation::DelegationGroup::confirm_cancelled(&mut self, &awaken_agent_contract::agent::delegation::DelegationId) -> core::result::Result<awaken_agent_contract::agent::delegation::DeliveryResult, awaken_agent_contract::agent::delegation::DelegationError>
-pub fn awaken_agent_contract::agent::delegation::DelegationGroup::delegations(&self) -> impl core::iter::traits::iterator::Iterator<Item = &awaken_agent_contract::agent::delegation::Delegation>
-pub fn awaken_agent_contract::agent::delegation::DelegationGroup::deliver_result(&mut self, &awaken_agent_contract::agent::delegation::DelegationId, &awaken_agent_contract::agent::delegation::DelegationResultId, u64) -> core::result::Result<awaken_agent_contract::agent::delegation::DeliveryResult, awaken_agent_contract::agent::delegation::DelegationError>
-pub fn awaken_agent_contract::agent::delegation::DelegationGroup::end_parent(&mut self) -> alloc::vec::Vec<awaken_agent_contract::agent::run::Id>
-pub fn awaken_agent_contract::agent::delegation::DelegationGroup::get(&self, &awaken_agent_contract::agent::delegation::DelegationId) -> core::option::Option<&awaken_agent_contract::agent::delegation::Delegation>
-pub fn awaken_agent_contract::agent::delegation::DelegationGroup::mark_active(&mut self, &awaken_agent_contract::agent::delegation::DelegationId) -> core::result::Result<awaken_agent_contract::agent::delegation::DeliveryResult, awaken_agent_contract::agent::delegation::DelegationError>
-pub fn awaken_agent_contract::agent::delegation::DelegationGroup::mark_awaiting(&mut self, &awaken_agent_contract::agent::delegation::DelegationId, awaken_agent_contract::agent::delegation::DelegationContinuation) -> core::result::Result<awaken_agent_contract::agent::delegation::DeliveryResult, awaken_agent_contract::agent::delegation::DelegationError>
-pub fn awaken_agent_contract::agent::delegation::DelegationGroup::new(awaken_agent_contract::agent::run::Id, impl core::convert::Into<alloc::string::String>, alloc::vec::Vec<alloc::string::String>, u16, awaken_agent_contract::agent::delegation::DelegationLimits) -> Self
-pub fn awaken_agent_contract::agent::delegation::DelegationGroup::parent_ended(&self) -> bool
-pub fn awaken_agent_contract::agent::delegation::DelegationGroup::parent_run_id(&self) -> &awaken_agent_contract::agent::run::Id
-pub fn awaken_agent_contract::agent::delegation::DelegationGroup::record_result(&mut self, &awaken_agent_contract::agent::delegation::DelegationId, awaken_agent_contract::agent::delegation::DelegationResult) -> core::result::Result<awaken_agent_contract::agent::delegation::DeliveryResult, awaken_agent_contract::agent::delegation::DelegationError>
-pub fn awaken_agent_contract::agent::delegation::DelegationGroup::request(&mut self, awaken_agent_contract::agent::delegation::RequestDelegation) -> core::result::Result<awaken_agent_contract::agent::delegation::RequestResult, awaken_agent_contract::agent::delegation::DelegationError>
-pub fn awaken_agent_contract::agent::delegation::DelegationGroup::validate(&self) -> core::result::Result<(), awaken_agent_contract::agent::delegation::DelegationError>
 pub struct awaken_agent_contract::agent::delegation::DelegationId(pub alloc::string::String)
 impl awaken_agent_contract::agent::delegation::DelegationId
 pub fn awaken_agent_contract::agent::delegation::DelegationId::child_run_id(&self) -> awaken_agent_contract::agent::run::Id
@@ -139,7 +101,10 @@ pub awaken_agent_contract::agent::delegation::DelegationLimits::max_parallel: u1
 pub awaken_agent_contract::agent::delegation::DelegationLimits::max_total: u32
 impl awaken_agent_contract::agent::delegation::DelegationLimits
 pub const fn awaken_agent_contract::agent::delegation::DelegationLimits::new(u16, u16, u32) -> Self
+impl core::default::Default for awaken_agent_contract::agent::delegation::DelegationLimits
+pub fn awaken_agent_contract::agent::delegation::DelegationLimits::default() -> Self
 pub struct awaken_agent_contract::agent::delegation::DelegationOrigin
+pub awaken_agent_contract::agent::delegation::DelegationOrigin::agent_lineage: alloc::vec::Vec<alloc::string::String>
 pub awaken_agent_contract::agent::delegation::DelegationOrigin::delegation_id: awaken_agent_contract::agent::delegation::DelegationId
 pub awaken_agent_contract::agent::delegation::DelegationOrigin::depth: u16
 pub awaken_agent_contract::agent::delegation::DelegationOrigin::parent_call_id: alloc::string::String
@@ -147,18 +112,27 @@ pub awaken_agent_contract::agent::delegation::DelegationOrigin::parent_run_id: a
 impl awaken_agent_contract::agent::delegation::DelegationOrigin
 pub fn awaken_agent_contract::agent::delegation::DelegationOrigin::child_run_id(&self) -> awaken_agent_contract::agent::run::Id
 pub fn awaken_agent_contract::agent::delegation::DelegationOrigin::nested(awaken_agent_contract::agent::run::Id, impl core::convert::Into<alloc::string::String>, u16) -> core::result::Result<Self, awaken_agent_contract::agent::delegation::DelegationError>
+pub fn awaken_agent_contract::agent::delegation::DelegationOrigin::nested_for_agent(awaken_agent_contract::agent::run::Id, impl core::convert::Into<alloc::string::String>, u16, &[alloc::string::String], impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, awaken_agent_contract::agent::delegation::DelegationError>
 pub fn awaken_agent_contract::agent::delegation::DelegationOrigin::result_id(&self) -> awaken_agent_contract::agent::delegation::DelegationResultId
 pub fn awaken_agent_contract::agent::delegation::DelegationOrigin::root(awaken_agent_contract::agent::run::Id, impl core::convert::Into<alloc::string::String>) -> Self
-pub struct awaken_agent_contract::agent::delegation::DelegationResult
-pub awaken_agent_contract::agent::delegation::DelegationResult::id: awaken_agent_contract::agent::delegation::DelegationResultId
-pub awaken_agent_contract::agent::delegation::DelegationResult::output: alloc::string::String
+pub fn awaken_agent_contract::agent::delegation::DelegationOrigin::root_for_agent(awaken_agent_contract::agent::run::Id, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub struct awaken_agent_contract::agent::delegation::DelegationRegistry
+impl awaken_agent_contract::agent::delegation::DelegationRegistry
+pub fn awaken_agent_contract::agent::delegation::DelegationRegistry::active_count(&self) -> usize
+pub fn awaken_agent_contract::agent::delegation::DelegationRegistry::complete(&mut self, &awaken_agent_contract::agent::delegation::DelegationId) -> core::result::Result<awaken_agent_contract::agent::delegation::TransitionResult, awaken_agent_contract::agent::delegation::DelegationError>
+pub fn awaken_agent_contract::agent::delegation::DelegationRegistry::delegations(&self) -> impl core::iter::traits::iterator::Iterator<Item = &awaken_agent_contract::agent::delegation::Delegation>
+pub fn awaken_agent_contract::agent::delegation::DelegationRegistry::end_parent(&mut self) -> alloc::vec::Vec<awaken_agent_contract::agent::run::Id>
+pub fn awaken_agent_contract::agent::delegation::DelegationRegistry::get(&self, &awaken_agent_contract::agent::delegation::DelegationId) -> core::option::Option<&awaken_agent_contract::agent::delegation::Delegation>
+pub fn awaken_agent_contract::agent::delegation::DelegationRegistry::new(awaken_agent_contract::agent::run::Id, impl core::convert::Into<alloc::string::String>, alloc::vec::Vec<alloc::string::String>, u16, awaken_agent_contract::agent::delegation::DelegationLimits) -> Self
+pub fn awaken_agent_contract::agent::delegation::DelegationRegistry::parent_run_id(&self) -> &awaken_agent_contract::agent::run::Id
+pub fn awaken_agent_contract::agent::delegation::DelegationRegistry::request(&mut self, awaken_agent_contract::agent::delegation::RequestDelegation) -> core::result::Result<awaken_agent_contract::agent::delegation::TransitionResult, awaken_agent_contract::agent::delegation::DelegationError>
+pub fn awaken_agent_contract::agent::delegation::DelegationRegistry::validate(&self) -> core::result::Result<(), awaken_agent_contract::agent::delegation::DelegationError>
 pub struct awaken_agent_contract::agent::delegation::DelegationResultId(pub alloc::string::String)
 impl awaken_agent_contract::agent::delegation::DelegationResultId
 pub fn awaken_agent_contract::agent::delegation::DelegationResultId::for_delegation(&awaken_agent_contract::agent::delegation::DelegationId) -> Self
 pub struct awaken_agent_contract::agent::delegation::RequestDelegation
 pub awaken_agent_contract::agent::delegation::RequestDelegation::child_run_id: awaken_agent_contract::agent::run::Id
 pub awaken_agent_contract::agent::delegation::RequestDelegation::id: awaken_agent_contract::agent::delegation::DelegationId
-pub awaken_agent_contract::agent::delegation::RequestDelegation::kind: awaken_agent_contract::agent::delegation::DelegationKind
 pub awaken_agent_contract::agent::delegation::RequestDelegation::parent_call_id: alloc::string::String
 pub awaken_agent_contract::agent::delegation::RequestDelegation::target_agent_id: alloc::string::String
 pub mod awaken_agent_contract::agent::message
@@ -231,8 +205,10 @@ pub struct awaken_agent_contract::agent::state::Command
 pub awaken_agent_contract::agent::state::Command::action: awaken_agent_contract::agent::state::Action
 pub awaken_agent_contract::agent::state::Command::key: awaken_agent_contract::agent::state::Key
 pub awaken_agent_contract::agent::state::Command::merge: awaken_agent_contract::agent::state::MergePolicy
+pub awaken_agent_contract::agent::state::Command::run_id: core::option::Option<awaken_agent_contract::agent::run::Id>
 pub awaken_agent_contract::agent::state::Command::scope: awaken_agent_contract::agent::state::Scope
 impl awaken_agent_contract::agent::state::Command
+pub fn awaken_agent_contract::agent::state::Command::bind_run(&mut self, &awaken_agent_contract::agent::run::Id)
 pub fn awaken_agent_contract::agent::state::Command::remove(awaken_agent_contract::agent::state::Scope, awaken_agent_contract::agent::state::MergePolicy, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_agent_contract::agent::state::Command::set(awaken_agent_contract::agent::state::Scope, awaken_agent_contract::agent::state::MergePolicy, impl core::convert::Into<alloc::string::String>, serde_json::value::Value) -> Self
 pub struct awaken_agent_contract::agent::state::Conflict
@@ -556,7 +532,7 @@ pub awaken_agent_contract::thread::commit::run_fact::RunFact::run_id: awaken_age
 pub awaken_agent_contract::thread::commit::run_fact::RunFact::state: awaken_agent_contract::agent::run::RunState
 pub mod awaken_agent_contract::thread::commit::staged
 pub enum awaken_agent_contract::thread::commit::staged::RunDisposition
-pub awaken_agent_contract::thread::commit::staged::RunDisposition::Awaiting(awaken_agent_contract::agent::awaiting::ResumeTicket)
+pub awaken_agent_contract::thread::commit::staged::RunDisposition::Awaiting(alloc::boxed::Box<awaken_agent_contract::agent::awaiting::ResumeTicket>)
 pub awaken_agent_contract::thread::commit::staged::RunDisposition::Ended
 pub awaken_agent_contract::thread::commit::staged::RunDisposition::Ended::cause: awaken_agent_contract::agent::run::EndCause
 pub awaken_agent_contract::thread::commit::staged::RunDisposition::Ended::run_id: awaken_agent_contract::agent::run::Id
@@ -592,7 +568,7 @@ pub struct awaken_agent_contract::thread::commit::staged::ValidationError(_)
 impl core::fmt::Display for awaken_agent_contract::thread::commit::staged::ValidationError
 pub fn awaken_agent_contract::thread::commit::staged::ValidationError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum awaken_agent_contract::thread::commit::RunDisposition
-pub awaken_agent_contract::thread::commit::RunDisposition::Awaiting(awaken_agent_contract::agent::awaiting::ResumeTicket)
+pub awaken_agent_contract::thread::commit::RunDisposition::Awaiting(alloc::boxed::Box<awaken_agent_contract::agent::awaiting::ResumeTicket>)
 pub awaken_agent_contract::thread::commit::RunDisposition::Ended
 pub awaken_agent_contract::thread::commit::RunDisposition::Ended::cause: awaken_agent_contract::agent::run::EndCause
 pub awaken_agent_contract::thread::commit::RunDisposition::Ended::run_id: awaken_agent_contract::agent::run::Id
@@ -626,6 +602,7 @@ pub trait awaken_agent_contract::thread::read::thread_reader::ThreadReader: core
 pub fn awaken_agent_contract::thread::read::thread_reader::ThreadReader::committed_messages(&self, &awaken_agent_contract::agent::thread::Id) -> alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
 pub fn awaken_agent_contract::thread::read::thread_reader::ThreadReader::committed_state(&self, &awaken_agent_contract::agent::thread::Id) -> alloc::vec::Vec<awaken_agent_contract::agent::state::Command>
 pub fn awaken_agent_contract::thread::read::thread_reader::ThreadReader::resume_ticket(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::awaiting::ResumeTicket>
+pub fn awaken_agent_contract::thread::read::thread_reader::ThreadReader::run_state(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::run::RunState>
 pub enum awaken_agent_contract::AgentEvent
 pub awaken_agent_contract::AgentEvent::Delta(awaken_agent_contract::event::agent::Delta)
 pub awaken_agent_contract::AgentEvent::Fact(awaken_agent_contract::event::agent::Fact)
@@ -640,6 +617,7 @@ impl awaken_agent_contract::agent::delegation::DelegationId
 pub fn awaken_agent_contract::agent::delegation::DelegationId::child_run_id(&self) -> awaken_agent_contract::agent::run::Id
 pub fn awaken_agent_contract::agent::delegation::DelegationId::for_parent_call(&awaken_agent_contract::agent::run::Id, &str) -> Self
 pub struct awaken_agent_contract::DelegationOrigin
+pub awaken_agent_contract::DelegationOrigin::agent_lineage: alloc::vec::Vec<alloc::string::String>
 pub awaken_agent_contract::DelegationOrigin::delegation_id: awaken_agent_contract::agent::delegation::DelegationId
 pub awaken_agent_contract::DelegationOrigin::depth: u16
 pub awaken_agent_contract::DelegationOrigin::parent_call_id: alloc::string::String
@@ -647,8 +625,10 @@ pub awaken_agent_contract::DelegationOrigin::parent_run_id: awaken_agent_contrac
 impl awaken_agent_contract::agent::delegation::DelegationOrigin
 pub fn awaken_agent_contract::agent::delegation::DelegationOrigin::child_run_id(&self) -> awaken_agent_contract::agent::run::Id
 pub fn awaken_agent_contract::agent::delegation::DelegationOrigin::nested(awaken_agent_contract::agent::run::Id, impl core::convert::Into<alloc::string::String>, u16) -> core::result::Result<Self, awaken_agent_contract::agent::delegation::DelegationError>
+pub fn awaken_agent_contract::agent::delegation::DelegationOrigin::nested_for_agent(awaken_agent_contract::agent::run::Id, impl core::convert::Into<alloc::string::String>, u16, &[alloc::string::String], impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, awaken_agent_contract::agent::delegation::DelegationError>
 pub fn awaken_agent_contract::agent::delegation::DelegationOrigin::result_id(&self) -> awaken_agent_contract::agent::delegation::DelegationResultId
 pub fn awaken_agent_contract::agent::delegation::DelegationOrigin::root(awaken_agent_contract::agent::run::Id, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_agent_contract::agent::delegation::DelegationOrigin::root_for_agent(awaken_agent_contract::agent::run::Id, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
 pub struct awaken_agent_contract::EventRecord
 pub awaken_agent_contract::EventRecord::kind: awaken_agent_contract::audit::kind::Kind
 pub awaken_agent_contract::EventRecord::payload: serde_json::value::Value

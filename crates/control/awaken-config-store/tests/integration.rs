@@ -41,6 +41,7 @@ fn agent_config() -> AgentConfig {
         id: "support-agent".to_string(),
         instructions: "be helpful".to_string(),
         max_steps: 8,
+        delegation_limits: Default::default(),
         model_binding: awaken_config_store::ModelSelection::pinned("p", "m", "b"),
         tool_ids: vec!["echo".to_string()],
         model_candidates: Vec::new(),
@@ -105,6 +106,7 @@ async fn config_compiles_stores_and_the_runtime_executes_the_snapshot() {
             role: Role::User,
             content: vec![ContentBlock::text("hi")],
         }],
+        initiator: None,
         model_ref_override: None,
     };
     let commit = Arc::new(MemoryCommitCoordinator::new());
@@ -189,6 +191,7 @@ fn scoped_agent(id: &str) -> AgentConfig {
         id: id.to_string(),
         instructions: "be helpful".to_string(),
         max_steps: 8,
+        delegation_limits: Default::default(),
         model_binding: ModelSelection::pinned("p", "m", "b"),
         tool_ids: Vec::new(),
         ..Default::default()
@@ -287,6 +290,7 @@ fn agent_with(id: &str, instructions: &str) -> AgentConfig {
         id: id.to_string(),
         instructions: instructions.to_string(),
         max_steps: 8,
+        delegation_limits: Default::default(),
         model_binding: ModelSelection::pinned("p", "m", "b"),
         tool_ids: Vec::new(),
         ..Default::default()

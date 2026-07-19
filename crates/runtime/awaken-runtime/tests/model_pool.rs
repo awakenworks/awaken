@@ -137,6 +137,7 @@ fn activation(primary: &str, fallbacks: &[&str]) -> RunActivation {
                 catalog_fingerprint: fingerprint.clone(),
                 instructions: String::new(),
                 max_steps: 16,
+                delegation_limits: Default::default(),
                 model_binding: binding(primary),
                 model_candidates: fallbacks.iter().map(|m| binding(m)).collect(),
                 tool_descriptors: Vec::new(),
@@ -152,6 +153,7 @@ fn activation(primary: &str, fallbacks: &[&str]) -> RunActivation {
             role: Role::User,
             content: vec![ContentBlock::text("go")],
         }],
+        initiator: None,
         model_ref_override: None,
     }
 }

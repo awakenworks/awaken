@@ -8,7 +8,9 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_runtime_contract::tool::{RawTool, Tool, ToolCall, ToolError, ToolOutput};
+use awaken_runtime_contract::tool::{
+    RawTool, Tool, ToolCall, ToolError, ToolOutput, ToolRecoveryCapability,
+};
 
 /// Wraps a typed [`Tool`] and presents it as a schema-erased [`RawTool`].
 pub struct Erased<T>(pub T);
@@ -23,6 +25,10 @@ pub fn erase<T: Tool + 'static>(tool: T) -> Arc<dyn RawTool> {
 impl<T: Tool> RawTool for Erased<T> {
     fn id(&self) -> &str {
         self.0.id()
+    }
+
+    fn recovery_capability(&self) -> ToolRecoveryCapability {
+        self.0.recovery_capability()
     }
 
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {

@@ -13,6 +13,7 @@ async fn hello_agent_example_runs_to_completion() {
         id: "greeter".to_string(),
         instructions: "You are a friendly greeter.".to_string(),
         max_steps: 4,
+        delegation_limits: Default::default(),
         model_binding: ModelSelection::pinned("demo", "stub", "stub"),
         tool_ids: Vec::new(),
         model_candidates: Vec::new(),

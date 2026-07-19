@@ -49,6 +49,14 @@ async fn committed_state_replays() {
     awaken_store_conformance::committed_state_replays(&fresh("state").await).await;
 }
 
+#[tokio::test]
+async fn delegation_and_tool_state_commit_atomically() {
+    awaken_store_conformance::delegation_and_tool_state_commit_atomically(
+        &fresh("delegation-atomic").await,
+    )
+    .await;
+}
+
 // The fs store reuses the thread-keyed in-memory reference as its read model, so two
 // threads committed to one store stay isolated — it runs the shared multi-thread
 // isolation case (as the SQLite / Postgres backends do). `thread_isolation_and_awaiting.rs`

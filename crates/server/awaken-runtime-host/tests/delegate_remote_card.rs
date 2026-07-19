@@ -37,6 +37,7 @@ impl RemoteAgent for MockRemote {
     async fn run(
         &self,
         _agent_id: &str,
+        _request_id: &str,
         _input: &str,
         _cancellation: Option<&CancellationToken>,
     ) -> Result<DelegationStep, DelegationExecutionError> {

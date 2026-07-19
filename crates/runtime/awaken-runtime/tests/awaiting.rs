@@ -101,6 +101,7 @@ fn snapshot() -> ExecutableAgentSnapshot {
             catalog_fingerprint: fingerprint.clone(),
             instructions: String::new(),
             max_steps: 16,
+            delegation_limits: Default::default(),
             model_binding: ModelBinding {
                 provider_identity_ref: "p".to_string(),
                 model_ref: "m".to_string(),
@@ -156,6 +157,7 @@ fn activation() -> RunActivation {
             role: Role::User,
             content: vec![ContentBlock::text("go")],
         }],
+        initiator: None,
         model_ref_override: None,
     }
 }
@@ -239,10 +241,11 @@ async fn suspend_commits_ticket_then_allow_resume_executes_and_completes() {
             .is_none()
     );
 
-    // The fact log keeps the full progression in order — Running (input
-    // committed at the first step boundary), Awaiting (awaiting), Running (the
-    // resumed result committed), Ended — and the latest fact is the authority
-    // replay derives (ADR-0006 D1).
+    // The fact log keeps the full progression in order — Running (input),
+    // Running (the Requested tool batch committed before execution), Awaiting,
+    // Running (approved -> Executing, committed before invocation), Running (the
+    // resumed result/batch publication), Ended — and the latest fact is the
+    // authority replay derives (ADR-0006 D1).
     let states: Vec<_> = committed
         .run_facts
         .iter()
@@ -253,7 +256,9 @@ async fn suspend_commits_ticket_then_allow_resume_executes_and_completes() {
         states,
         vec![
             RunState::Running,
+            RunState::Running,
             RunState::Awaiting,
+            RunState::Running,
             RunState::Running,
             RunState::Ended(EndCause::NaturalEnd)
         ]
@@ -292,6 +297,9 @@ async fn deny_resume_feeds_a_blocked_result_without_running_the_tool() {
             .iter()
             .any(|m| m.role == Role::Tool && m.text_content().contains("blocked"))
     );
+    assert!(commit.committed().events.iter().any(|event| {
+        event.kind == EventKind::PermissionDecided && event.payload["decision"] == "denied"
+    }));
 }
 
 #[tokio::test]
@@ -388,27 +396,24 @@ async fn resume_with_a_client_tool_result_is_used_directly() {
 }
 
 #[tokio::test]
-async fn resume_with_input_injects_a_user_message() {
+async fn permission_wait_rejects_free_form_input() {
     let ran = Arc::new(AtomicUsize::new(0));
     let runtime = runtime(ran);
     let commit = Arc::new(MemoryCommitCoordinator::new());
     suspend(&commit, &runtime).await;
 
     let context = RuntimeRunContext::new().with_commit(commit.clone());
-    let outcome = runtime
+    let error = runtime
         .resume(
             resume_command(ResumeResult::Input("the answer is 42".to_string())),
             commit.as_ref(),
             context,
         )
         .await
-        .expect("resume runs");
-    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
-    assert!(
-        commit
-            .committed()
-            .messages
-            .iter()
-            .any(|m| m.role == Role::User && m.text_content() == "the answer is 42")
+        .expect_err("approval is a structured decision, not a chat message");
+    assert!(error.to_string().contains("result kind"));
+    assert_eq!(
+        replay_latest_state(&commit.committed(), &RunId("run-1".to_string())),
+        Some(RunState::Awaiting)
     );
 }

@@ -68,6 +68,7 @@ mod tests {
                     catalog_fingerprint: CatalogFingerprint("fp".into()),
                     instructions: "be helpful".into(),
                     max_steps: 8,
+                    delegation_limits: Default::default(),
                     model_binding: ModelBinding::new("prov", "model", "acp:test"),
                     tool_descriptors: Vec::new(),
                     plugin_ids: Vec::new(),
@@ -178,6 +179,28 @@ mod tests {
         assert_eq!(
             today, frozen,
             "the default wire shape drifted from the frozen legacy row"
+        );
+    }
+
+    #[test]
+    fn non_default_delegation_limits_round_trip_on_the_queue_wire() {
+        let mut request = RunExecutionRequest::new(activation());
+        request.activation.snapshot.resolved_spec.delegation_limits =
+            awaken_agent_contract::agent::delegation::DelegationLimits::new(3, 4, 5);
+
+        let wire = serde_json::to_value(&request).expect("serializes");
+        assert_eq!(
+            wire["activation"]["snapshot"]["resolved_spec"]["delegation_limits"],
+            serde_json::json!({
+                "max_depth": 3,
+                "max_parallel": 4,
+                "max_total": 5
+            })
+        );
+        let restored: RunExecutionRequest = serde_json::from_value(wire).expect("deserializes");
+        assert_eq!(
+            restored.activation.snapshot.resolved_spec.delegation_limits,
+            awaken_agent_contract::agent::delegation::DelegationLimits::new(3, 4, 5)
         );
     }
 }

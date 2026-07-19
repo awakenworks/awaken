@@ -2,7 +2,9 @@
 
 use std::collections::BTreeMap;
 
+use awaken_runtime_contract::delegation::DelegationLimits;
 use awaken_runtime_contract::resolved::{ContextPolicy, ModelBinding};
+use awaken_runtime_contract::tool::ToolRecoveryPolicy;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// How an agent config's model is chosen at authoring time (ADR-0052 D5). This is
@@ -103,6 +105,10 @@ pub struct AgentConfig {
     pub id: String,
     pub instructions: String,
     pub max_steps: usize,
+    /// Limits for child Runs initiated through an Agent tool. Defaults preserve
+    /// existing configs; non-default values enter the publication fingerprint.
+    #[serde(default, skip_serializing_if = "delegation_limits_are_default")]
+    pub delegation_limits: DelegationLimits,
     /// The model selection (ADR-0052 D5): `Auto` (resolve at publish) or a
     /// `Pinned` concrete binding. Serializes wire-identically to the historic flat
     /// triple when pinned, so the field name and the publication fingerprint of
@@ -161,6 +167,11 @@ pub struct AgentConfig {
     /// byte-identical; a non-empty set enters the content address like any other field.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_overrides: Vec<ToolOverride>,
+    /// Per-tool crash recovery policy, keyed by canonical tool id. This selects
+    /// behavior but never grants capability: the runtime checks it against the
+    /// executable tool and fails closed if the configuration widens it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub recovery_policies: BTreeMap<String, ToolRecoveryPolicy>,
     /// The agent's compaction strategy (WHEN to compact) over the model's context window.
     /// Appended last with `skip_serializing_if`-none so an agent that sets none serializes to
     /// nothing and keeps its prior fingerprint byte-identical. At publish, the effective
@@ -168,6 +179,10 @@ pub struct AgentConfig {
     /// headroom) and stamped into both realizations' `plugin_config` slots.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compaction: Option<CompactionStrategy>,
+}
+
+fn delegation_limits_are_default(limits: &DelegationLimits) -> bool {
+    limits == &DelegationLimits::default()
 }
 
 /// An agent's compaction **strategy** — WHEN to compact its context. This is authored agent

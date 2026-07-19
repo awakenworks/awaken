@@ -9,6 +9,7 @@ fn spec(instructions: &str) -> ResolvedSpec {
         catalog_fingerprint: CatalogFingerprint("c".to_string()),
         instructions: instructions.to_string(),
         max_steps: 16,
+        delegation_limits: Default::default(),
         model_binding: ModelBinding {
             provider_identity_ref: "p".to_string(),
             model_ref: "m".to_string(),

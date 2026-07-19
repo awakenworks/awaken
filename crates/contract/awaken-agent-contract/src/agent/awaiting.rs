@@ -13,7 +13,6 @@ use serde::{Deserialize, Serialize};
 pub enum AwaitReason {
     ToolPermission,
     UserInput,
-    BackgroundTasks,
     ExternalEvent,
     RateLimit,
     ManualPause,
@@ -37,7 +36,6 @@ impl AwaitReason {
         match self {
             AwaitReason::ToolPermission => "tool_permission",
             AwaitReason::UserInput => "user_input",
-            AwaitReason::BackgroundTasks => "background_tasks",
             AwaitReason::ExternalEvent => "external_event",
             AwaitReason::RateLimit => "rate_limit",
             AwaitReason::ManualPause => "manual_pause",
@@ -61,6 +59,10 @@ pub struct ResumeTicket {
     /// agent-domain contract stays independent of runtime-facing types).
     pub snapshot_id: String,
     pub catalog_fingerprint: String,
+    /// Stable origin of this Run. A delegated Run keeps it across every await,
+    /// process restart, and resume; a directly admitted Run stores `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initiator: Option<crate::agent::delegation::DelegationOrigin>,
     pub reason: AwaitReason,
     /// The tool call awaiting a result, when the wait is a tool decision.
     pub call_id: Option<String>,
@@ -93,7 +95,6 @@ mod tests {
         let all = [
             (AwaitReason::ToolPermission, "tool_permission"),
             (AwaitReason::UserInput, "user_input"),
-            (AwaitReason::BackgroundTasks, "background_tasks"),
             (AwaitReason::ExternalEvent, "external_event"),
             (AwaitReason::RateLimit, "rate_limit"),
             (AwaitReason::ManualPause, "manual_pause"),
@@ -129,6 +130,7 @@ mod tests {
             thread_id: crate::agent::thread::Id("th".into()),
             snapshot_id: "s".into(),
             catalog_fingerprint: "f".into(),
+            initiator: None,
             reason: AwaitReason::ToolPermission,
             call_id: Some("call".into()),
             pending_tool: Some(pt),

@@ -30,6 +30,9 @@ fn boundary_values_are_plain_serializable_data() {
     assert_boundary::<rc::resolved::ModelBinding>();
     assert_boundary::<rc::resolved::ToolDescriptor>();
     assert_boundary::<rc::resolved::ResolvedRun>();
+    assert_boundary::<rc::tool::ToolRecoveryPolicy>();
+    assert_boundary::<rc::tool_batch::ToolBatch>();
+    assert_boundary::<rc::tool_batch::ToolCallPhase>();
 
     // Run activation crosses adapter -> ingress -> runtime as data.
     assert_boundary::<rc::activation::RunActivation>();

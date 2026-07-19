@@ -85,6 +85,10 @@ const FILES: &[(&str, &str)] = &[
         "V0015__delegation_group.sql",
         include_str!("migrations/V0015__delegation_group.sql"),
     ),
+    (
+        "V0016__drop_legacy_delegation_group.sql",
+        include_str!("migrations/V0016__drop_legacy_delegation_group.sql"),
+    ),
 ];
 
 /// Parse the version from a `Vnnnn__slug.sql` file name (`V0004__…` ⇒ 4). A name
@@ -142,11 +146,10 @@ mod tests {
     #[test]
     fn versions_parse_from_file_names() {
         let bundle = dispatch_bundle().expect("bundle builds");
-        // The three tables plus one index migration each for the seven hot
-        // claim/lease/pending queries, the sandbox-binding column (B-P3), then the
-        // one-running-per-thread constraint (ADR-0022), numbered contiguously.
+        // Historical migrations remain immutable. V0016 removes V0015's obsolete
+        // standalone delegation table after state ownership moved into ThreadCommit.
         let versions: Vec<i64> = bundle.migrations().iter().map(|m| m.version()).collect();
-        assert_eq!(versions, (1..=15).collect::<Vec<_>>());
+        assert_eq!(versions, (1..=16).collect::<Vec<_>>());
     }
 
     #[test]

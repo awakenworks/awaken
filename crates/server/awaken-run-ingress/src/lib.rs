@@ -18,7 +18,6 @@ mod any;
 mod capability;
 mod clock;
 mod commit_fence;
-mod delegation;
 mod dispatch;
 mod dispatch_schema;
 mod durable;
@@ -38,12 +37,8 @@ pub use any::AnyDispatchStore;
 pub use capability::RunIngressCapabilities;
 // The database-less worker's HTTP dispatch client (drives claim/settle over the wire
 // to a cell server's dispatch_transport_router), extracted from awaken-runtime-host.
-pub use awaken_run_ingress_contract::{
-    DelegationCas, DelegationStore, DelegationStoreError, StoredDelegationGroup,
-};
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use commit_fence::FencedCommitCoordinator;
-pub use delegation::MemoryDelegationStore;
 pub use dispatch::{
     CasOutcome, Claimed, Dispatch, DispatchError, DispatchOutcome, DispatchQueue, DispatchState,
     DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, SettleOutcome,
