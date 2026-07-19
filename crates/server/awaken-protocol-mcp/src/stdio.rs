@@ -16,7 +16,9 @@ use async_trait::async_trait;
 use awaken_mcp_wire::jsonrpc::{
     JsonRpcNotifier, JsonRpcPeer, ServerRequestError, ServerRequestHandler,
 };
-use serde_json::{Value, json};
+use serde_json::Value;
+#[cfg(test)]
+use serde_json::json;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::service::{McpToolService, NotifySink};
@@ -45,13 +47,14 @@ struct ServiceHandler {
 
 #[async_trait]
 impl ServerRequestHandler for ServiceHandler {
-    async fn handle(&self, method: &str, params: Value) -> Result<Value, ServerRequestError> {
+    async fn handle(
+        &self,
+        id: &Value,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, ServerRequestError> {
         self.service
-            .handle(
-                method,
-                params,
-                Arc::clone(&self.sink) as Arc<dyn NotifySink>,
-            )
+            .handle_request(id, method, params, self.sink.as_ref())
             .await
     }
 }
@@ -88,18 +91,20 @@ impl McpStdioServer {
         let notified = Arc::clone(&service);
         tokio::spawn(async move {
             while let Some(notification) = notifications.recv().await {
-                notified.handle_notification(&notification.method, &notification.params);
+                notified
+                    .handle_notification(&notification.method, &notification.params)
+                    .await;
             }
         });
 
         // Export-set changes owe the client a tools/list_changed.
         if let Some(mut changes) = service.source().changes() {
-            let notifier = peer.notifier();
+            let sink = PeerSink {
+                notifier: Arc::clone(&notifier_cell),
+            };
             tokio::spawn(async move {
                 while changes.changed().await.is_ok() {
-                    let _ = notifier
-                        .notify("notifications/tools/list_changed", json!({}))
-                        .await;
+                    awaken_mcp_server_core::notify_tools_list_changed(&sink).await;
                 }
             });
         }

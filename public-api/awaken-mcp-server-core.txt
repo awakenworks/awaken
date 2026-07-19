@@ -1,0 +1,77 @@
+pub mod awaken_mcp_server_core
+pub use awaken_mcp_server_core::CallToolResult
+pub use awaken_mcp_server_core::McpToolDefinition
+pub use awaken_mcp_server_core::ToolContent
+pub enum awaken_mcp_server_core::McpHostError
+pub awaken_mcp_server_core::McpHostError::Internal(alloc::string::String)
+pub awaken_mcp_server_core::McpHostError::InvalidArguments(alloc::string::String)
+pub awaken_mcp_server_core::McpHostError::NotFound(alloc::string::String)
+pub awaken_mcp_server_core::McpHostError::Rejected(alloc::string::String)
+impl core::error::Error for awaken_mcp_server_core::McpHostError
+impl core::fmt::Display for awaken_mcp_server_core::McpHostError
+pub fn awaken_mcp_server_core::McpHostError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum awaken_mcp_server_core::McpHttpBody
+pub awaken_mcp_server_core::McpHttpBody::Empty
+pub awaken_mcp_server_core::McpHttpBody::Json(serde_json::value::Value)
+pub awaken_mcp_server_core::McpHttpBody::Sse(alloc::vec::Vec<serde_json::value::Value>)
+pub awaken_mcp_server_core::McpHttpBody::Text(alloc::string::String)
+pub enum awaken_mcp_server_core::McpHttpMethod
+pub awaken_mcp_server_core::McpHttpMethod::Delete
+pub awaken_mcp_server_core::McpHttpMethod::Get
+pub awaken_mcp_server_core::McpHttpMethod::Other
+pub awaken_mcp_server_core::McpHttpMethod::Post
+pub struct awaken_mcp_server_core::AllowAllOrigins
+impl awaken_mcp_server_core::OriginPolicy for awaken_mcp_server_core::AllowAllOrigins
+pub fn awaken_mcp_server_core::AllowAllOrigins::allows(&self, core::option::Option<&str>) -> bool
+pub struct awaken_mcp_server_core::HttpContextError
+pub awaken_mcp_server_core::HttpContextError::message: alloc::string::String
+impl awaken_mcp_server_core::HttpContextError
+pub fn awaken_mcp_server_core::HttpContextError::new(impl core::convert::Into<alloc::string::String>) -> Self
+impl core::error::Error for awaken_mcp_server_core::HttpContextError
+impl core::fmt::Display for awaken_mcp_server_core::HttpContextError
+pub fn awaken_mcp_server_core::HttpContextError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct awaken_mcp_server_core::McpCall
+pub awaken_mcp_server_core::McpCall::arguments: serde_json::value::Value
+pub awaken_mcp_server_core::McpCall::meta: core::option::Option<serde_json::value::Value>
+pub awaken_mcp_server_core::McpCall::name: alloc::string::String
+pub struct awaken_mcp_server_core::McpHttpReply
+pub awaken_mcp_server_core::McpHttpReply::body: awaken_mcp_server_core::McpHttpBody
+pub awaken_mcp_server_core::McpHttpReply::headers: http::header::map::HeaderMap
+pub awaken_mcp_server_core::McpHttpReply::status: http::status::StatusCode
+pub struct awaken_mcp_server_core::McpServer<H, C>
+impl<H, C> awaken_mcp_server_core::McpServer<H, C> where H: awaken_mcp_server_core::McpToolHost<C>, C: core::marker::Send + core::marker::Sync
+pub async fn awaken_mcp_server_core::McpServer<H, C>::handle(&self, &C, &str, serde_json::value::Value, &dyn awaken_mcp_server_core::NotifySink) -> core::result::Result<serde_json::value::Value, awaken_mcp_wire::jsonrpc::ServerRequestError>
+pub async fn awaken_mcp_server_core::McpServer<H, C>::handle_notification(&self, &C, &str, &serde_json::value::Value)
+pub async fn awaken_mcp_server_core::McpServer<H, C>::handle_request(&self, &C, core::option::Option<&serde_json::value::Value>, &str, serde_json::value::Value, &dyn awaken_mcp_server_core::NotifySink) -> core::result::Result<serde_json::value::Value, awaken_mcp_wire::jsonrpc::ServerRequestError>
+pub fn awaken_mcp_server_core::McpServer<H, C>::host(&self) -> &H
+pub fn awaken_mcp_server_core::McpServer<H, C>::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, H) -> Self
+pub struct awaken_mcp_server_core::NullSink
+impl awaken_mcp_server_core::NotifySink for awaken_mcp_server_core::NullSink
+pub fn awaken_mcp_server_core::NullSink::notify<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub const awaken_mcp_server_core::SUPPORTED_PROTOCOL_VERSIONS: &[&str]
+pub trait awaken_mcp_server_core::McpHttpContextProvider<C>: core::marker::Send + core::marker::Sync
+pub fn awaken_mcp_server_core::McpHttpContextProvider::context<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 http::request::Parts) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<C, awaken_mcp_server_core::HttpContextError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub trait awaken_mcp_server_core::McpToolHost<C: core::marker::Sync>: core::marker::Send + core::marker::Sync
+pub fn awaken_mcp_server_core::McpToolHost::call_tool<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 C, awaken_mcp_server_core::McpCall, &'life2 dyn awaken_mcp_server_core::NotifySink) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<model_context_protocol::protocol::CallToolResult, awaken_mcp_server_core::McpHostError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_mcp_server_core::McpToolHost::list_tools<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 C) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<model_context_protocol::protocol::McpToolDefinition>, awaken_mcp_server_core::McpHostError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_mcp_server_core::McpToolHost::notification<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 C, &'life2 str, &'life3 serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
+impl<C, H> awaken_mcp_server_core::McpToolHost<C> for alloc::sync::Arc<H> where C: core::marker::Send + core::marker::Sync, H: awaken_mcp_server_core::McpToolHost<C> + ?core::marker::Sized
+pub fn alloc::sync::Arc<H>::call_tool<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 C, awaken_mcp_server_core::McpCall, &'life2 dyn awaken_mcp_server_core::NotifySink) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<model_context_protocol::protocol::CallToolResult, awaken_mcp_server_core::McpHostError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn alloc::sync::Arc<H>::list_tools<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 C) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<model_context_protocol::protocol::McpToolDefinition>, awaken_mcp_server_core::McpHostError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn alloc::sync::Arc<H>::notification<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 C, &'life2 str, &'life3 serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
+pub trait awaken_mcp_server_core::NotifySink: core::marker::Send + core::marker::Sync
+pub fn awaken_mcp_server_core::NotifySink::notify<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl awaken_mcp_server_core::NotifySink for awaken_mcp_server_core::NullSink
+pub fn awaken_mcp_server_core::NullSink::notify<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub trait awaken_mcp_server_core::OriginPolicy: core::marker::Send + core::marker::Sync
+pub fn awaken_mcp_server_core::OriginPolicy::allows(&self, core::option::Option<&str>) -> bool
+impl awaken_mcp_server_core::OriginPolicy for awaken_mcp_server_core::AllowAllOrigins
+pub fn awaken_mcp_server_core::AllowAllOrigins::allows(&self, core::option::Option<&str>) -> bool
+impl<F> awaken_mcp_server_core::OriginPolicy for F where F: for<'a> core::ops::function::Fn(core::option::Option<&'a str>) -> bool + core::marker::Send + core::marker::Sync
+pub fn F::allows(&self, core::option::Option<&str>) -> bool
+pub async fn awaken_mcp_server_core::handle_streamable_http<H, C>(&awaken_mcp_server_core::McpServer<H, C>, &C, awaken_mcp_server_core::McpHttpMethod, &http::header::map::HeaderMap, &[u8], &dyn awaken_mcp_server_core::OriginPolicy, &dyn awaken_mcp_server_core::NotifySink) -> awaken_mcp_server_core::McpHttpReply where H: awaken_mcp_server_core::McpToolHost<C>, C: core::marker::Send + core::marker::Sync
+pub fn awaken_mcp_server_core::jsonrpc_reply(serde_json::value::Value, core::result::Result<serde_json::value::Value, awaken_mcp_wire::jsonrpc::ServerRequestError>) -> serde_json::value::Value
+pub async fn awaken_mcp_server_core::notify_tools_list_changed(&dyn awaken_mcp_server_core::NotifySink)
+pub fn awaken_mcp_server_core::tools_list_changed_notification() -> serde_json::value::Value
+pub fn awaken_mcp_server_core::validate_protocol_version(&http::header::map::HeaderMap, bool) -> core::option::Option<awaken_mcp_server_core::McpHttpReply>
+pub fn awaken_mcp_server_core::validate_streamable_http_request(awaken_mcp_server_core::McpHttpMethod, &http::header::map::HeaderMap, &dyn awaken_mcp_server_core::OriginPolicy) -> core::option::Option<awaken_mcp_server_core::McpHttpReply>

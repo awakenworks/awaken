@@ -1,4 +1,4 @@
-//! Demo stdio MCP server over toy tools.
+//! Demo stdio/Streamable-HTTP MCP server over toy tools.
 //!
 //! Serves `echo` (plain) and `count` (progress-streaming) so any MCP client
 //! can be pointed at a real subprocess — the crate's e2e test drives it with
@@ -15,7 +15,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use awaken_mcp_wire::progress::McpProgressUpdate;
 use awaken_protocol_mcp::export::ProgressRawTool;
-use awaken_protocol_mcp::{McpExportedTool, McpStdioServer, McpToolService, StaticExports};
+use awaken_protocol_mcp::{
+    McpExportedTool, McpHttpConfig, McpStdioServer, McpToolService, SharedExports,
+};
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
 use serde_json::json;
@@ -61,8 +63,8 @@ impl ProgressRawTool for CountTool {
     }
 }
 
-fn exports() -> StaticExports {
-    StaticExports::new(vec![
+fn exports() -> Vec<McpExportedTool> {
+    vec![
         McpExportedTool::plain(
             ToolDescriptor::pinned(
                 "demo",
@@ -88,16 +90,40 @@ fn exports() -> StaticExports {
             ),
             Arc::new(CountTool),
         ),
-    ])
+    ]
 }
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
+    let source = Arc::new(SharedExports::new(exports()));
+    if let Ok(delay) = std::env::var("AWAKEN_MCP_DEMO_LIST_CHANGED_MS")
+        && let Ok(delay) = delay.parse::<u64>()
+    {
+        let changed = Arc::clone(&source);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(delay)).await;
+            changed.replace(exports());
+        });
+    }
     let service = Arc::new(McpToolService::new(
         "awaken-mcp-stdio-demo",
         env!("CARGO_PKG_VERSION"),
-        Arc::new(exports()),
+        source,
     ));
+    if let Ok(address) = std::env::var("AWAKEN_MCP_HTTP_ADDR") {
+        let listener = tokio::net::TcpListener::bind(&address)
+            .await
+            .expect("bind MCP HTTP demo");
+        eprintln!("awaken-mcp HTTP demo listening on {address}");
+        let config = McpHttpConfig {
+            bearer_token: std::env::var("AWAKEN_MCP_BEARER_TOKEN").ok(),
+            ..McpHttpConfig::default()
+        };
+        axum::serve(listener, awaken_protocol_mcp::router(service, config))
+            .await
+            .expect("serve MCP HTTP demo");
+        return;
+    }
     let server = McpStdioServer::serve_stdio(service);
     server.closed().await;
 }

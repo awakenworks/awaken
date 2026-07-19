@@ -82,7 +82,12 @@ impl SamplingBridge {
 
 #[async_trait]
 impl ServerRequestHandler for SamplingBridge {
-    async fn handle(&self, method: &str, params: Value) -> Result<Value, ServerRequestError> {
+    async fn handle(
+        &self,
+        _id: &Value,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, ServerRequestError> {
         if method != SAMPLING_METHOD {
             return Err(ServerRequestError::method_not_found(method));
         }
@@ -235,6 +240,7 @@ mod tests {
         let bridge = SamplingBridge::new(Arc::new(EchoSampler));
         let result = bridge
             .handle(
+                &json!(1),
                 SAMPLING_METHOD,
                 json!({ "messages": [{ "role": "user", "content": "ping" }] }),
             )
@@ -243,7 +249,7 @@ mod tests {
         assert_eq!(result["content"]["text"], "echo: ping");
 
         let err = bridge
-            .handle("roots/list", Value::Null)
+            .handle(&json!(2), "roots/list", Value::Null)
             .await
             .expect_err("rejects");
         assert_eq!(err.code, -32601);
@@ -264,7 +270,7 @@ mod tests {
     async fn sampling_failure_maps_to_internal_error() {
         let bridge = SamplingBridge::new(Arc::new(FailingSampler));
         let err = bridge
-            .handle(SAMPLING_METHOD, json!({ "messages": [] }))
+            .handle(&json!(3), SAMPLING_METHOD, json!({ "messages": [] }))
             .await
             .expect_err("fails");
         assert_eq!(err.code, -32603);

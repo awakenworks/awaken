@@ -783,6 +783,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-mcp-server-core"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "awaken-mcp-wire",
+ "http 1.4.2",
+ "model-context-protocol",
+ "proptest",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "awaken-mcp-server-testkit"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "awaken-mcp-server-core",
+ "awaken-mcp-wire",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "awaken-mcp-wire"
 version = "0.1.0"
 dependencies = [
@@ -952,6 +977,8 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-ext-mcp",
+ "awaken-mcp-server-core",
+ "awaken-mcp-server-testkit",
  "awaken-mcp-wire",
  "awaken-runtime-contract",
  "axum",

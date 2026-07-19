@@ -114,7 +114,7 @@ pub struct awaken_ext_mcp::sampling::SamplingBridge
 impl awaken_ext_mcp::sampling::SamplingBridge
 pub fn awaken_ext_mcp::sampling::SamplingBridge::new(alloc::sync::Arc<dyn awaken_ext_mcp::sampling::SamplingHandler>) -> Self
 impl awaken_mcp_wire::jsonrpc::ServerRequestHandler for awaken_ext_mcp::sampling::SamplingBridge
-pub fn awaken_ext_mcp::sampling::SamplingBridge::handle<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<serde_json::value::Value, awaken_mcp_wire::jsonrpc::ServerRequestError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::sampling::SamplingBridge::handle<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 serde_json::value::Value, &'life2 str, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<serde_json::value::Value, awaken_mcp_wire::jsonrpc::ServerRequestError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub struct awaken_ext_mcp::sampling::SamplingError(pub alloc::string::String)
 pub struct awaken_ext_mcp::sampling::SamplingMessage
 pub awaken_ext_mcp::sampling::SamplingMessage::content: alloc::string::String

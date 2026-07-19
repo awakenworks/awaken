@@ -22,7 +22,7 @@ pub fn awaken_mcp_wire::jsonrpc::ServerRequestError::internal(impl core::convert
 pub fn awaken_mcp_wire::jsonrpc::ServerRequestError::invalid_params(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_mcp_wire::jsonrpc::ServerRequestError::method_not_found(&str) -> Self
 pub trait awaken_mcp_wire::jsonrpc::ServerRequestHandler: core::marker::Send + core::marker::Sync
-pub fn awaken_mcp_wire::jsonrpc::ServerRequestHandler::handle<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<serde_json::value::Value, awaken_mcp_wire::jsonrpc::ServerRequestError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_mcp_wire::jsonrpc::ServerRequestHandler::handle<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 serde_json::value::Value, &'life2 str, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<serde_json::value::Value, awaken_mcp_wire::jsonrpc::ServerRequestError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub mod awaken_mcp_wire::progress
 pub struct awaken_mcp_wire::progress::McpProgressUpdate
 pub awaken_mcp_wire::progress::McpProgressUpdate::message: core::option::Option<alloc::string::String>
@@ -68,5 +68,5 @@ impl awaken_mcp_wire::sse::SseParser
 pub fn awaken_mcp_wire::sse::SseParser::new() -> Self
 pub fn awaken_mcp_wire::sse::SseParser::push(&mut self, &str) -> alloc::vec::Vec<alloc::string::String>
 pub trait awaken_mcp_wire::ServerRequestHandler: core::marker::Send + core::marker::Sync
-pub fn awaken_mcp_wire::ServerRequestHandler::handle<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<serde_json::value::Value, awaken_mcp_wire::jsonrpc::ServerRequestError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_mcp_wire::ServerRequestHandler::handle<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 serde_json::value::Value, &'life2 str, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<serde_json::value::Value, awaken_mcp_wire::jsonrpc::ServerRequestError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_mcp_wire::normalize_progress(&awaken_mcp_wire::progress::McpProgressUpdate) -> core::option::Option<f64>

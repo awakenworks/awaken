@@ -9,10 +9,11 @@ description = "MCP protocol adapter (server side): exposes awaken runtime tools 
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-mcp-wire.workspace = true
+awaken-mcp-server-core.workspace = true
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["io-util", "sync", "rt", "macros", "time"] }
+tokio = { workspace = true, features = ["io-util", "sync", "rt", "macros", "time", "net"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 axum = "0.8"
 uuid = { version = "1", features = ["v4"] }
@@ -23,6 +24,7 @@ mcp = { package = "model-context-protocol", version = "0.2", default-features = 
 
 [dev-dependencies]
 awaken-ext-mcp.workspace = true
+awaken-mcp-server-testkit.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util", "net", "time", "process"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"

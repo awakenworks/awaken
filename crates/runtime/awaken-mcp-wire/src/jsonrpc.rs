@@ -47,7 +47,12 @@ pub struct ServerNotification {
 /// error reply.
 #[async_trait]
 pub trait ServerRequestHandler: Send + Sync {
-    async fn handle(&self, method: &str, params: Value) -> Result<Value, ServerRequestError>;
+    async fn handle(
+        &self,
+        id: &Value,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, ServerRequestError>;
 }
 
 /// A peer request failed; becomes a JSON-RPC error reply.
@@ -263,7 +268,7 @@ async fn dispatch(
             let write_tx = write_tx.clone();
             tokio::spawn(async move {
                 let reply = match handler {
-                    Some(handler) => match handler.handle(&method, params).await {
+                    Some(handler) => match handler.handle(&id, &method, params).await {
                         Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
                         Err(err) => json!({
                             "jsonrpc": "2.0", "id": id,
@@ -375,7 +380,13 @@ mod tests {
     struct FixedHandler;
     #[async_trait]
     impl ServerRequestHandler for FixedHandler {
-        async fn handle(&self, method: &str, _params: Value) -> Result<Value, ServerRequestError> {
+        async fn handle(
+            &self,
+            id: &Value,
+            method: &str,
+            _params: Value,
+        ) -> Result<Value, ServerRequestError> {
+            assert_eq!(id, &json!(7));
             assert_eq!(method, "sampling/createMessage");
             Ok(json!({ "role": "assistant", "content": "sampled" }))
         }
@@ -426,7 +437,12 @@ mod tests {
     }
     #[async_trait]
     impl ServerRequestHandler for SlowHandler {
-        async fn handle(&self, _method: &str, _params: Value) -> Result<Value, ServerRequestError> {
+        async fn handle(
+            &self,
+            _id: &Value,
+            _method: &str,
+            _params: Value,
+        ) -> Result<Value, ServerRequestError> {
             let rx = self.release.lock().await.take().expect("one slow call");
             let _ = rx.await;
             Ok(json!({ "slow": true }))
@@ -516,7 +532,12 @@ mod tests {
     struct FailingHandler;
     #[async_trait]
     impl ServerRequestHandler for FailingHandler {
-        async fn handle(&self, _method: &str, _params: Value) -> Result<Value, ServerRequestError> {
+        async fn handle(
+            &self,
+            _id: &Value,
+            _method: &str,
+            _params: Value,
+        ) -> Result<Value, ServerRequestError> {
             Err(ServerRequestError::invalid_params("bad args"))
         }
     }
