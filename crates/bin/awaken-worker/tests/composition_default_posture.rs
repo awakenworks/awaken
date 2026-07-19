@@ -9,7 +9,8 @@
 //! `AWAKEN_MGMT_DIR` unset those stores are in-memory and need NO seal key, so the
 //! production-default composition must boot cleanly and become routable offline. If any
 //! of those steps panicked (e.g. a spurious seal-key demand on the in-memory path),
-//! `/readyz` would never reach 200.
+//! `/readyz` would never reach 200. A minimal worker-control HTTP peer satisfies the
+//! mandatory registration/heartbeat lifecycle while returning an empty dispatch queue.
 //!
 //! Same subprocess rationale as the sibling file: `run()` is env-configured and its
 //! future is non-`Send`, and this crate `forbid`s unsafe, so we launch the crate's own
@@ -19,6 +20,9 @@
 use std::io::{Read, Write};
 use std::process::{Child, Command};
 use std::time::Duration;
+
+mod support;
+use support::FakeWorkerUpstream;
 
 struct Worker(Child);
 impl Drop for Worker {
@@ -68,11 +72,11 @@ fn poll_until(addr: &str, method: &str, path: &str, want: u16) -> bool {
 #[test]
 fn run_default_posture_boots_the_config_plane_branch_and_is_routable() {
     let admin_addr = format!("127.0.0.1:{}", free_port());
-    let upstream = format!("http://127.0.0.1:{}", free_port());
+    let upstream = FakeWorkerUpstream::start();
 
     let worker = Worker(
         Command::new(env!("CARGO_BIN_EXE_awaken-worker"))
-            .env("AWAKEN_UPSTREAM_URL", &upstream)
+            .env("AWAKEN_UPSTREAM_URL", upstream.url())
             .env("AWAKEN_INGRESS", "durable")
             .env("AWAKEN_WORKER_ADMIN_LISTEN", &admin_addr)
             // Explicitly UNSET so run() takes the default (config-plane) branch over
