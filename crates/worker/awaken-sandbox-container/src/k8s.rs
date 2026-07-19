@@ -102,7 +102,6 @@ fn build_configmap(
         data,
         binary_data,
         immutable: Some(true),
-        ..Default::default()
     }
 }
 

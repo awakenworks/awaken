@@ -280,6 +280,14 @@ async fn handle_serializes_and_adopt_reconnects() {
 }
 
 #[tokio::test]
+async fn adopt_rejects_a_handle_owned_by_another_provider_kind() {
+    let tmp = tempfile::tempdir().unwrap();
+    let provider = LocalProvider::new(tmp.path());
+    let foreign = pc::SandboxHandle::new("container", "sandbox-1");
+    assert!(provider.adopt(&foreign).await.is_err());
+}
+
+#[tokio::test]
 async fn exit_code_propagates() {
     let tmp = tempfile::tempdir().unwrap();
     let sandbox = LocalProvider::new(tmp.path())

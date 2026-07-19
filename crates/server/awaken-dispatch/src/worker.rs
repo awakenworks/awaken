@@ -318,7 +318,18 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         // so `awaken.dispatch.*` exports on the one OTLP pipeline. The timer records
         // `drive.duration` on every exit path (including the early `?`/return arms).
         self.runtime.metrics().record_dispatch_claimed();
+        if claimed.recovered {
+            self.runtime.metrics().record_dispatch_recovered();
+        }
+        self.runtime.metrics().record_dispatch_in_flight(1);
         let _drive_timer = DriveTimer::new(self.runtime.metrics());
+
+        // Operations-only query: a metrics backend failure cannot reject a claim.
+        // Native authorities return an exact claimable count; remote/composed stores
+        // may report `None` until their transport exposes the query.
+        if let Ok(Some(depth)) = self.store.runnable_depth(now_ms).await {
+            self.runtime.metrics().record_dispatch_queue_depth(depth);
+        }
 
         let run_id = claimed.request.run_id().clone();
         // The fence token this drive holds. Every settle below carries it so a stale
@@ -569,8 +580,31 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             DispatchOutcome::Done => "done",
             DispatchOutcome::Awaiting => "awaiting",
         };
-        self.runtime.metrics().record_dispatch_settled(label);
-        Ok(self.store.settle(run_id, epoch, outcome, consumed).await?)
+        let started = std::time::Instant::now();
+        match self.store.settle(run_id, epoch, outcome, consumed).await {
+            Ok(result) => {
+                let commit_outcome = match result {
+                    SettleOutcome::Applied => {
+                        self.runtime.metrics().record_dispatch_settled(label);
+                        "applied"
+                    }
+                    SettleOutcome::Fenced => {
+                        self.runtime.metrics().record_dispatch_fenced();
+                        "fenced"
+                    }
+                };
+                self.runtime
+                    .metrics()
+                    .record_dispatch_commit(commit_outcome, started.elapsed());
+                Ok(result)
+            }
+            Err(error) => {
+                self.runtime
+                    .metrics()
+                    .record_dispatch_commit("error", started.elapsed());
+                Err(error.into())
+            }
+        }
     }
 
     /// Convert a runtime-drive failure into a benign already-done when committed
@@ -637,6 +671,7 @@ impl<'a> DriveTimer<'a> {
 impl Drop for DriveTimer<'_> {
     fn drop(&mut self) {
         self.metrics.record_dispatch_drive(self.start.elapsed());
+        self.metrics.record_dispatch_in_flight(-1);
     }
 }
 

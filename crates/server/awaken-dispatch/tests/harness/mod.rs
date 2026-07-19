@@ -9,7 +9,7 @@
 #![allow(dead_code)]
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
@@ -541,6 +541,11 @@ pub struct RecordingMetrics {
     pub drives: AtomicUsize,
     pub settled_done: AtomicUsize,
     pub settled_awaiting: AtomicUsize,
+    pub queue_depth: AtomicU64,
+    pub recovered: AtomicUsize,
+    pub commits_applied: AtomicUsize,
+    pub fenced: AtomicUsize,
+    pub in_flight: AtomicI64,
 }
 
 impl MetricsRecorder for RecordingMetrics {
@@ -558,6 +563,23 @@ impl MetricsRecorder for RecordingMetrics {
     }
     fn record_dispatch_drive(&self, _duration: std::time::Duration) {
         self.drives.fetch_add(1, Ordering::SeqCst);
+    }
+    fn record_dispatch_queue_depth(&self, depth: u64) {
+        self.queue_depth.store(depth, Ordering::SeqCst);
+    }
+    fn record_dispatch_recovered(&self) {
+        self.recovered.fetch_add(1, Ordering::SeqCst);
+    }
+    fn record_dispatch_commit(&self, outcome: &str, _duration: std::time::Duration) {
+        if outcome == "applied" {
+            self.commits_applied.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    fn record_dispatch_fenced(&self) {
+        self.fenced.fetch_add(1, Ordering::SeqCst);
+    }
+    fn record_dispatch_in_flight(&self, delta: i64) {
+        self.in_flight.fetch_add(delta, Ordering::SeqCst);
     }
 }
 

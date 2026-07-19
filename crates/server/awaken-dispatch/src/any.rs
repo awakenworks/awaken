@@ -216,6 +216,14 @@ impl DispatchQueue for AnyDispatchStore {
         delegate!(self, reap(max_attempts, now_ms))
     }
 
+    async fn bind_sandbox(&self, run_id: &RunId, sandbox_ref: &str) -> Result<(), DispatchError> {
+        delegate!(self, bind_sandbox(run_id, sandbox_ref))
+    }
+
+    async fn runnable_depth(&self, now_ms: u64) -> Result<Option<u64>, DispatchError> {
+        delegate!(self, runnable_depth(now_ms))
+    }
+
     async fn dead_letters(&self) -> Result<Vec<RunId>, DispatchError> {
         delegate!(self, dead_letters())
     }

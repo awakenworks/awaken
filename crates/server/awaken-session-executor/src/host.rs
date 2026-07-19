@@ -46,6 +46,7 @@ use awaken_runtime_contract::tool::{ToolExecutor, ToolExecutorProvider, ToolOutp
 // `LocalProvider::create_sandbox` yields a `LocalSandbox` whose host-tier helpers
 // (rooted tools, repos, artifacts) the host composes into each session's runtime.
 use awaken_protocol_managed::DelegatedRun;
+use awaken_provisioning_contract::Sandbox;
 use awaken_sandbox_local::{LocalProvider, LocalSandbox};
 use awaken_store_fs::{FsCommitCoordinator, FsStreamCheckpointStore};
 use awaken_store_sqlite::SqliteCommitCoordinator;
