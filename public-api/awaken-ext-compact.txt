@@ -13,6 +13,8 @@ pub awaken_ext_compact::config::CompactConfig::threshold: usize
 pub awaken_ext_compact::config::CompactConfig::trigger_ratio: f64
 impl core::default::Default for awaken_ext_compact::config::CompactConfig
 pub fn awaken_ext_compact::config::CompactConfig::default() -> Self
+impl<'de> serde_core::de::Deserialize<'de> for awaken_ext_compact::config::CompactConfig
+pub fn awaken_ext_compact::config::CompactConfig::deserialize<D>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
 pub fn awaken_ext_compact::config::config_schema() -> serde_json::value::Value
 pub mod awaken_ext_compact::fold
 pub fn awaken_ext_compact::fold::fold_point(usize, usize, usize) -> core::option::Option<usize>
@@ -37,6 +39,8 @@ pub awaken_ext_compact::CompactConfig::threshold: usize
 pub awaken_ext_compact::CompactConfig::trigger_ratio: f64
 impl core::default::Default for awaken_ext_compact::config::CompactConfig
 pub fn awaken_ext_compact::config::CompactConfig::default() -> Self
+impl<'de> serde_core::de::Deserialize<'de> for awaken_ext_compact::config::CompactConfig
+pub fn awaken_ext_compact::config::CompactConfig::deserialize<D>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
 pub struct awaken_ext_compact::CompactPlugin
 impl awaken_ext_compact::plugin::CompactPlugin
 pub fn awaken_ext_compact::plugin::CompactPlugin::new(awaken_ext_compact::config::CompactConfig) -> Self

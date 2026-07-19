@@ -72,6 +72,10 @@ pub awaken_provisioning_contract::MountSource::Resource::resource_id: alloc::str
 pub awaken_provisioning_contract::MountSource::Secret
 pub awaken_provisioning_contract::MountSource::Secret::content_hash: core::option::Option<alloc::string::String>
 pub awaken_provisioning_contract::MountSource::Secret::reference: alloc::string::String
+impl serde_core::ser::Serialize for awaken_provisioning_contract::MountSource
+pub fn awaken_provisioning_contract::MountSource::serialize<S: serde_core::ser::Serializer>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'de> serde_core::de::Deserialize<'de> for awaken_provisioning_contract::MountSource
+pub fn awaken_provisioning_contract::MountSource::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 pub enum awaken_provisioning_contract::NetworkPolicy
 pub awaken_provisioning_contract::NetworkPolicy::Allowlist
 pub awaken_provisioning_contract::NetworkPolicy::Allowlist::hosts: alloc::vec::Vec<alloc::string::String>

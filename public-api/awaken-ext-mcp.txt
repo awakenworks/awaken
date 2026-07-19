@@ -28,6 +28,10 @@ pub awaken_ext_mcp::error::McpError::DuplicateServerName(alloc::string::String)
 pub awaken_ext_mcp::error::McpError::EmptyServerName
 pub awaken_ext_mcp::error::McpError::InvalidRefreshInterval
 pub awaken_ext_mcp::error::McpError::InvalidToolIdComponent(alloc::string::String)
+pub awaken_ext_mcp::error::McpError::NamespaceCollision
+pub awaken_ext_mcp::error::McpError::NamespaceCollision::existing: alloc::string::String
+pub awaken_ext_mcp::error::McpError::NamespaceCollision::name: alloc::string::String
+pub awaken_ext_mcp::error::McpError::NamespaceCollision::namespace: alloc::string::String
 pub awaken_ext_mcp::error::McpError::PeriodicRefreshAlreadyRunning
 pub awaken_ext_mcp::error::McpError::RuntimeUnavailable
 pub awaken_ext_mcp::error::McpError::ServerDisabled(alloc::string::String)
@@ -99,6 +103,7 @@ pub async fn awaken_ext_mcp::plugin::McpServer::connect_http(impl core::convert:
 pub async fn awaken_ext_mcp::plugin::McpServer::connect_stdio(impl core::convert::Into<alloc::string::String>, awaken_ext_mcp::stdio::StdioTransport) -> core::result::Result<Self, awaken_ext_mcp::error::McpError>
 pub fn awaken_ext_mcp::plugin::McpServer::is_alive(&self) -> bool
 pub fn awaken_ext_mcp::plugin::McpServer::name(&self) -> &str
+pub fn awaken_ext_mcp::plugin::McpServer::namespace(&self) -> &str
 pub fn awaken_ext_mcp::plugin::McpServer::plugin(&self) -> awaken_ext_mcp::plugin::McpPlugin
 pub async fn awaken_ext_mcp::plugin::McpServer::start(impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_ext_mcp::transport::McpToolTransport>, tokio::sync::broadcast::Receiver<awaken_ext_mcp::transport::ListChangedKind>) -> core::result::Result<Self, awaken_ext_mcp::error::McpError>
 pub async fn awaken_ext_mcp::plugin::McpServer::start_with_sensitive(impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_ext_mcp::transport::McpToolTransport>, tokio::sync::broadcast::Receiver<awaken_ext_mcp::transport::ListChangedKind>, awaken_ext_mcp::plugin::SensitiveFields) -> core::result::Result<Self, awaken_ext_mcp::error::McpError>
@@ -228,6 +233,10 @@ pub awaken_ext_mcp::McpError::DuplicateServerName(alloc::string::String)
 pub awaken_ext_mcp::McpError::EmptyServerName
 pub awaken_ext_mcp::McpError::InvalidRefreshInterval
 pub awaken_ext_mcp::McpError::InvalidToolIdComponent(alloc::string::String)
+pub awaken_ext_mcp::McpError::NamespaceCollision
+pub awaken_ext_mcp::McpError::NamespaceCollision::existing: alloc::string::String
+pub awaken_ext_mcp::McpError::NamespaceCollision::name: alloc::string::String
+pub awaken_ext_mcp::McpError::NamespaceCollision::namespace: alloc::string::String
 pub awaken_ext_mcp::McpError::PeriodicRefreshAlreadyRunning
 pub awaken_ext_mcp::McpError::RuntimeUnavailable
 pub awaken_ext_mcp::McpError::ServerDisabled(alloc::string::String)
@@ -321,6 +330,7 @@ pub async fn awaken_ext_mcp::plugin::McpServer::connect_http(impl core::convert:
 pub async fn awaken_ext_mcp::plugin::McpServer::connect_stdio(impl core::convert::Into<alloc::string::String>, awaken_ext_mcp::stdio::StdioTransport) -> core::result::Result<Self, awaken_ext_mcp::error::McpError>
 pub fn awaken_ext_mcp::plugin::McpServer::is_alive(&self) -> bool
 pub fn awaken_ext_mcp::plugin::McpServer::name(&self) -> &str
+pub fn awaken_ext_mcp::plugin::McpServer::namespace(&self) -> &str
 pub fn awaken_ext_mcp::plugin::McpServer::plugin(&self) -> awaken_ext_mcp::plugin::McpPlugin
 pub async fn awaken_ext_mcp::plugin::McpServer::start(impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_ext_mcp::transport::McpToolTransport>, tokio::sync::broadcast::Receiver<awaken_ext_mcp::transport::ListChangedKind>) -> core::result::Result<Self, awaken_ext_mcp::error::McpError>
 pub async fn awaken_ext_mcp::plugin::McpServer::start_with_sensitive(impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_ext_mcp::transport::McpToolTransport>, tokio::sync::broadcast::Receiver<awaken_ext_mcp::transport::ListChangedKind>, awaken_ext_mcp::plugin::SensitiveFields) -> core::result::Result<Self, awaken_ext_mcp::error::McpError>

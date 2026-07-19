@@ -1,7 +1,6 @@
 pub mod awaken_ext_goal
 pub enum awaken_ext_goal::GoalOutcome
 pub awaken_ext_goal::GoalOutcome::Failed
-pub awaken_ext_goal::GoalOutcome::Interrupted
 pub awaken_ext_goal::GoalOutcome::MaxIterationsReached
 pub awaken_ext_goal::GoalOutcome::NeedsRevision
 pub awaken_ext_goal::GoalOutcome::Satisfied
