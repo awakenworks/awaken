@@ -196,6 +196,28 @@ async fn primary_failure_fails_over_to_the_next_candidate() {
 }
 
 #[tokio::test]
+async fn explicit_override_is_the_only_model_executed_for_the_run() {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(RouteLlm {
+            failing: vec![],
+            seen: seen.clone(),
+        }))
+        .with_retry_policy(no_retries());
+    install(&runtime);
+
+    let mut activation = activation("primary", &["chosen", "other"]);
+    activation.model_ref_override = Some("chosen".to_string());
+    let outcome = runtime
+        .execute(activation, RuntimeRunContext::new())
+        .await
+        .expect("runs on the explicit model");
+
+    assert!(matches!(outcome, RunState::Ended(EndCause::NaturalEnd)));
+    assert_eq!(&*seen.lock().unwrap(), &["chosen"]);
+}
+
+#[tokio::test]
 async fn a_committed_truncation_partial_does_not_fail_over_to_a_pool_model() {
     // I6: once a step commits a truncation partial (truncation_retries > 0), a later
     // inference failure is terminal in place — switching to another pool model would

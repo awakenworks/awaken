@@ -78,6 +78,32 @@ impl ResolvedSpec {
             .chain(self.model_candidates.iter())
             .collect()
     }
+
+    /// Apply a per-run model override to this ephemeral resolved view.
+    ///
+    /// The durable, content-addressed snapshot remains untouched. An override
+    /// that names a published pool candidate adopts that candidate's complete
+    /// provider/backend binding; any other override keeps the primary routing
+    /// axes and changes only its model ref. Explicit selection disables pool
+    /// failover for this run so execution cannot silently leave the model that
+    /// admission pinned.
+    pub fn apply_execution_model_override(&mut self, model_ref: Option<&str>) {
+        let Some(model_ref) = model_ref.filter(|model_ref| !model_ref.is_empty()) else {
+            return;
+        };
+        let selected = self
+            .candidate_bindings()
+            .into_iter()
+            .find(|binding| binding.model_ref == model_ref)
+            .cloned()
+            .unwrap_or_else(|| {
+                let mut binding = self.model_binding.clone();
+                binding.model_ref = model_ref.to_string();
+                binding
+            });
+        self.model_binding = selected;
+        self.model_candidates.clear();
+    }
 }
 
 /// The execution backend a resolved agent binds to (R3/R4): the in-process awaken

@@ -789,7 +789,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "sqlx",
         "awaken-scoped-migration",
         "awaken-scoped-migration-sqlite",
-        # dev-only.
+        # Dev-only verification tools and fixtures. Loom is never a production
+        # dependency; the registry swaps its mutex only under cfg(test).
+        "loom",
         "proptest",
         "tempfile",
     },

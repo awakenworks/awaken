@@ -15,7 +15,7 @@ the corresponding ToolBatch call terminal and completes its relationship.
 
 ## Kani production-kernel proofs
 
-Forty-one harnesses invoke production pure functions directly:
+The named harnesses in the strict gate invoke production pure functions directly:
 
 - `awaken-agent-contract`
   - an ended Run is absorbing;
@@ -63,6 +63,11 @@ Forty-one harnesses invoke production pure functions directly:
 - `awaken-credential-vault`
   - disabled, cooling, and exhausted pool members remain ineligible;
   - a pool with no eligible member fails closed.
+- `awaken-worker-contract`
+  - non-ready workers never accept work and accepted protocol versions are in range;
+  - `NeverReplace` rejects every replacement;
+  - sandbox-continuity replacement is authorized exactly when a binding exists;
+  - the same incarnation never spends replacement authority.
 - `awaken-store-schema`
   - migration versions are dense and strictly increasing;
   - each step advances at most one version and never rolls back;
@@ -118,6 +123,12 @@ production logic.
   `ResourceBindingEffect.tla` cover audit-before-write admission for stores that
   cannot share the config transaction, namespace-fenced orphan cleanup, and the
   durable external-effect journal used for resource bindings.
+- `WorkerReplacement.tla` composes authored route resolution, dispatch-time
+  candidate pinning, worker claims, credential materialization, execution and
+  settlement with concurrent route change, rotation, revocation, worker crash,
+  lease expiry and retry. It checks that durable state remains secret-free,
+  bindings and authority never widen, unavailable credentials cannot execute,
+  secret materialization is claim-fenced, and stale claims cannot publish output.
 
 `RuntimeVocabulary.tla` is the shared closed vocabulary, preventing component
 models from inventing incompatible aliases for the same lifecycle state.
@@ -188,6 +199,7 @@ graphs with zero invariant violations and zero states left on the queue:
 | ResourceBindingEffect | 21 | 10 | 6 |
 | ManagementAuditIntent | 15 | 8 | 5 |
 | CredentialInventory | 7 | 4 | 3 |
+| WorkerReplacement | 452,881 | 98,160 | 16 |
 
 These are bounded exhaustive checks, not unbounded liveness proofs. The bounds
 are explicit in the corresponding `.cfg` files.
@@ -263,8 +275,18 @@ TLAPS, Java, or `tla2tools.jar` fails instead of producing a false green.
 `formal/coverage.json` is the versioned obligation ledger. The CI gate verifies
 that every evidence path exists and that at least 70% of formalizable safety
 obligations have a machine-checked production link. The current ledger is
-107/107, or 100% (the original 28 plus 79 additional obligations). Environmental properties are listed separately and never
+126/126, or 100%. Environmental properties are listed separately and never
 silently omitted or mislabeled as machine-linked merely to raise the percentage.
+
+## Loom concurrency exploration
+
+The strict gate also runs the production `MemoryWorkerDirectory` with Loom's
+instrumented mutex. It exhaustively explores heartbeat-versus-drain and stale
+heartbeat-versus-incarnation-replacement schedules. A heartbeat cannot reopen a
+draining worker, and an old incarnation cannot mutate the generation that
+replaced it. Route/credential/lease interleavings are covered in the larger TLA+
+composition because those stores are async and backend-transactional rather
+than in-process lock algorithms.
 
 ## Honest boundary
 
@@ -273,10 +295,19 @@ not a compiler theorem that every possible Rust scheduler, adapter, network, or
 database execution refines the TLA+ model. The current proof also does not
 establish liveness, fairness, eventual network recovery, eventual external
 input, or eventual tool-result arrival. External tool side effects, remote
-protocol implementations, database engines, and unbounded state spaces remain
-outside the state-machine proof. They require idempotency contracts, adapter
-integration tests, fault injection, and operational reconciliation; a larger
-finite TLC bound alone cannot prove them.
+protocol implementations, database engines, provider-side key-revocation
+propagation, container/kernel and Kubernetes isolation, performance/long-run
+stability, external telemetry delivery and retention, and unbounded state spaces
+remain outside the state-machine proof. They require idempotency contracts,
+adapter integration tests, fault injection, real-runtime isolation tests,
+k6/soak tests, and operational reconciliation; a larger finite TLC bound alone
+cannot prove them.
+
+The `host-executor/v1` capability pins the declared model identity and fails
+closed on a replacement that does not install that identity. Proving that two
+separately built worker images implement the same model identity with equivalent
+code/configuration remains a deployment-supply-chain assumption; image digest,
+SBOM/signature, and fleet-conformance checks must enforce it.
 
 The transaction-hardening batch closes the three formerly narrower boundaries.
 `WebhookOutbox` now models the session repository's atomic lifecycle+outbox

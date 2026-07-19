@@ -490,6 +490,13 @@ impl SharedHost {
                     }
                     Arc::new(commit) as Arc<dyn awaken_run_ingress::ClaimedRunCommit>
                 }),
+                model_access: self.model_route.provider().map(|provider| {
+                    Arc::new(
+                        move |activation: &awaken_runtime_contract::activation::RunActivation| {
+                            provider.model_access_for_activation(activation)
+                        },
+                    ) as Arc<_>
+                }),
             })
         } else {
             None

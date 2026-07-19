@@ -12,9 +12,9 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::run::RunState;
 use awaken_run_ingress::{
     AnyDispatchStore, DispatchOutcome, DispatchQueue, DurableRunIngress, Inbox, LeastLoadedPolicy,
-    MemoryDispatchStore, PlacementContext, PlacementError, PlacementPolicy, PlacementRequirements,
-    RankedWorker, RunDispatch, SubmitOptions, WorkerIdentity, WorkerManifest, WorkerSnapshot,
-    WorkerState,
+    MemoryDispatchStore, ModelAccessRef, PlacementContext, PlacementError, PlacementPolicy,
+    PlacementRequirements, RankedWorker, RunDispatch, SubmitOptions, WorkerIdentity,
+    WorkerManifest, WorkerSnapshot, WorkerState,
 };
 use awaken_run_ingress::{RunClaim, SettleOutcome, WorkerRecoveryMode};
 use awaken_runtime::RunIngress;
@@ -312,6 +312,34 @@ async fn any_delegates_enqueue_claim_and_owner_scoped_lease() {
         Some("owner-b".to_string()),
         "an expired lease is reclaimed by the next owner"
     );
+}
+
+#[tokio::test]
+async fn reclaim_preserves_the_dispatch_pinned_model_candidate_set() {
+    let store = any_in_memory();
+    let expected = ModelAccessRef::candidate_set([
+        (
+            "primary".to_string(),
+            ModelAccessRef::exact_credential("cred-a", "provider-a@1", "route-a@2"),
+        ),
+        (
+            "fallback".to_string(),
+            ModelAccessRef::exact_credential("cred-b", "provider-b@3", "route-b@4"),
+        ),
+    ])
+    .expect("candidate set");
+    store
+        .enqueue(RunDispatch::new(activation("binding-retry")).with_model_access(expected.clone()))
+        .await
+        .unwrap();
+
+    let first = store.claim("worker-a", 10, 0).await.unwrap().unwrap();
+    assert_eq!(first.request.model_access.as_ref(), Some(&expected));
+    let recovered = store.claim("worker-b", 10, 11).await.unwrap().unwrap();
+
+    assert!(recovered.recovered);
+    assert_eq!(recovered.request.model_access, Some(expected));
+    assert_eq!(recovered.request.run_id(), first.request.run_id());
 }
 
 #[tokio::test]

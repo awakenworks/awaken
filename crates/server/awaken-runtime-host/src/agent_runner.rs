@@ -22,12 +22,13 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_run_ingress::{
-    AnyDispatchStore, ClaimedRunCommit, Clock, DispatchWorker, PendingInput, RunDispatch,
-    SystemClock,
+    AnyDispatchStore, ClaimedRunCommit, Clock, DispatchWorker, ModelAccessRef, PendingInput,
+    RunDispatch, SystemClock,
 };
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime::{DirectRunIngress, RunInput, RunService};
 use awaken_runtime_contract::CancellationToken;
+use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::delegation::RunDelegationService;
 use awaken_runtime_contract::llm::{LlmExecutor, ThreadUsage};
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
@@ -83,6 +84,29 @@ pub(crate) struct RunScheduler {
     pub(crate) reader: Arc<dyn ThreadReader>,
     pub(crate) owner: String,
     pub(crate) claimed_commit: Option<Arc<dyn ClaimedRunCommit>>,
+    pub(crate) model_access: Option<Arc<ModelAccessResolver>>,
+}
+
+type ModelAccessResolver =
+    dyn Fn(&RunActivation) -> Result<Option<ModelAccessRef>, String> + Send + Sync;
+
+fn child_dispatch_request(
+    activation: RunActivation,
+    parent_thread_id: ThreadId,
+    model_access: Option<&Arc<ModelAccessResolver>>,
+) -> Result<RunDispatch, AgentRunError> {
+    let access = model_access
+        .map(|resolve| resolve(&activation))
+        .transpose()
+        .map_err(AgentRunError::Configuration)?
+        .flatten();
+    let mut request = RunDispatch::new(activation)
+        .for_session(parent_thread_id)
+        .with_traceparent(awaken_observability::current_traceparent());
+    if let Some(access) = access {
+        request = request.with_model_access(access);
+    }
+    Ok(request)
 }
 
 /// Parent-mediated creation or continuation of one ordinary child Run. Grouping
@@ -305,9 +329,11 @@ pub(crate) async fn run_configured_agent_until_boundary(
                 match reader.run_state(&child_run_id) {
                     Some(state @ (RunState::Awaiting | RunState::Ended(_))) => state,
                     _ => {
-                        let request = RunDispatch::new(activation)
-                            .for_session(parent_thread_id.clone())
-                            .with_traceparent(awaken_observability::current_traceparent());
+                        let request = child_dispatch_request(
+                            activation,
+                            parent_thread_id.clone(),
+                            scheduler.model_access.as_ref(),
+                        )?;
                         match worker.start_run(request, now_ms).await.map_err(|error| {
                             AgentRunError::Runtime(
                                 awaken_runtime_contract::execution::Error::Execution(
@@ -710,6 +736,44 @@ mod tests {
         }
     }
 
+    #[test]
+    fn child_dispatch_persists_admission_pinned_model_access() {
+        let config = agent("child", "child");
+        let runtime = awaken_runtime::Runtime::new();
+        let (_, activation) = runtime
+            .prepare(
+                &config,
+                "child-thread".to_string(),
+                RunInput::from(vec![user("go")]),
+            )
+            .expect("prepare child activation");
+        let expected = ModelAccessRef::candidate_set([
+            (
+                "primary".to_string(),
+                ModelAccessRef::exact_credential("cred-a", "provider-a@1", "route-a@1"),
+            ),
+            (
+                "fallback".to_string(),
+                ModelAccessRef::exact_credential("cred-b", "provider-b@2", "route-b@3"),
+            ),
+        ])
+        .expect("candidate access");
+        let resolver: Arc<ModelAccessResolver> = {
+            let expected = expected.clone();
+            Arc::new(move |_| Ok(Some(expected.clone())))
+        };
+
+        let request = child_dispatch_request(
+            activation,
+            ThreadId("parent-thread".to_string()),
+            Some(&resolver),
+        )
+        .expect("build child dispatch");
+
+        assert_eq!(request.model_access, Some(expected));
+        assert_eq!(request.session_thread_id.unwrap().0, "parent-thread");
+    }
+
     #[tokio::test]
     async fn resolves_agent_config_by_id() {
         let base = std::env::temp_dir().join(format!(
@@ -958,6 +1022,7 @@ mod tests {
             reader: commit.clone(),
             owner: "replacement-worker".to_string(),
             claimed_commit: None,
+            model_access: None,
         };
         let context = || {
             RuntimeRunContext::new()
@@ -1013,6 +1078,7 @@ mod tests {
             reader: commit.clone(),
             owner: "replacement-worker-2".to_string(),
             claimed_commit: None,
+            model_access: None,
         };
 
         let recovered_boundary = run_agent_until_boundary(
@@ -1075,6 +1141,7 @@ mod tests {
                 reader: commit.clone(),
                 owner: "replacement-worker-3".to_string(),
                 claimed_commit: None,
+                model_access: None,
             }),
             AgentRunSandbox::Shared(&sandbox),
             ChildRunRequest {

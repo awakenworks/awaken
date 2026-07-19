@@ -775,6 +775,13 @@ async fn management_router_over(
     // memory-store identity registry the capability inventory reads, so a skill or memory
     // store the host serves is exactly what the assistant enumerates, and identity
     // survives a restart.
+    let executor_provider = awaken_server::config_executor::ConfigExecutorProvider::new(
+        exec_catalog,
+        exec_credentials,
+        exec_secrets,
+        awaken_control::BOOTSTRAP_WORKSPACE,
+    )
+    .with_fallback_executor(model_ref.clone(), model.clone());
     let host_builder = SharedHost::new(model, model_ref)
         .with_config_service(config_service.clone())
         .with_admin_tools(admin_execs)
@@ -782,14 +789,7 @@ async fn management_router_over(
         .with_memory_registry(memory_registry)
         // Resolve a session's model to a real executor from the config plane (M2):
         // an unconfigured/unresolvable model falls back to the scenario model above.
-        .with_executor_provider(Arc::new(
-            awaken_server::config_executor::ConfigExecutorProvider::new(
-                exec_catalog,
-                exec_credentials,
-                exec_secrets,
-                awaken_control::BOOTSTRAP_WORKSPACE,
-            ),
-        ));
+        .with_executor_provider(Arc::new(executor_provider));
     // Production ACP wiring (`acp:*` threads): `AWAKEN_ACP_CLI` / `AWAKEN_ACP_ARGV`
     // realized in `AWAKEN_SANDBOX_TIER`. The one shared helper both the server and
     // worker roots call, so they never drift (ADR-0057).

@@ -55,7 +55,6 @@ impl SharedHost {
         // so the runtime only ever receives an executor, never a model identity to
         // look up — the provider owns how the model is reached (local credentials or a
         // gateway offering).
-        let effective_model = activation.effective_model_ref().to_string();
         if supersede {
             // Durable + superseding: enqueue (marking prior pending superseded) and
             // let the process pool drive it on this session's worker (O2).
@@ -79,7 +78,11 @@ impl SharedHost {
             // resolved through the host's ExecutorProvider. `None` leaves the
             // runtime's bound (host default) executor — a single-model deployment is
             // unaffected.
-            if let Some(exec) = self.model_route.executor_for(&effective_model) {
+            if let Some(exec) = self
+                .model_route
+                .executor_for_activation(&activation)
+                .map_err(HostError::bad_request)?
+            {
                 context = context.with_model_executor(exec);
             }
             if let Some(sink) = sink {

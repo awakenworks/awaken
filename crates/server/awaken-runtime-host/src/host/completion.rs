@@ -8,10 +8,9 @@ impl SharedHost {
         &self,
         activation: RunActivation,
     ) -> Result<RunDispatch, HostError> {
-        let model_ref = activation.effective_model_ref().to_string();
         let access = self
             .model_route
-            .model_access_for(&model_ref)
+            .model_access_for_activation(&activation)
             .map_err(HostError::bad_request)?;
         let mut request = RunDispatch::new(activation)
             .with_traceparent(awaken_observability::current_traceparent());

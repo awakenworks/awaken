@@ -17,6 +17,18 @@ use serde::{Deserialize, Serialize};
 /// never a provider API key. The runtime and dispatch stores persist and forward
 /// the value without interpreting its scheme or reference.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelAccessCandidate {
+    pub model_ref: String,
+    pub scheme: String,
+    pub reference: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_ref: Option<String>,
+}
+
+/// Opaque reference to a renewable model-access grant.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelAccessRef {
     pub scheme: String,
     pub reference: String,
@@ -24,6 +36,11 @@ pub struct ModelAccessRef {
     pub provider_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub route_ref: Option<String>,
+    /// Ordered, dispatch-pinned candidate bindings. Empty preserves the legacy
+    /// single-model representation above. Every entry is non-secret and names
+    /// the exact credential/provider/route identities materializable by a worker.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub candidates: Vec<ModelAccessCandidate>,
 }
 
 impl ModelAccessRef {
@@ -34,6 +51,7 @@ impl ModelAccessRef {
             reference: reference.into(),
             provider_ref: None,
             route_ref: None,
+            candidates: Vec::new(),
         }
     }
 
@@ -48,7 +66,75 @@ impl ModelAccessRef {
             reference: credential_ref.into(),
             provider_ref: Some(provider_ref.into()),
             route_ref: Some(route_ref.into()),
+            candidates: Vec::new(),
         }
+    }
+
+    /// Pin an explicitly installed host executor without serializing executable
+    /// state. The model ref is the stable identity replacement workers must
+    /// advertise through the same composition; a different default cannot
+    /// consume this capability accidentally.
+    pub fn host_executor(model_ref: impl Into<String>) -> Self {
+        let model_ref = model_ref.into();
+        Self {
+            scheme: "host-executor/v1".to_string(),
+            reference: model_ref,
+            provider_ref: None,
+            route_ref: None,
+            candidates: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn is_host_executor_for(&self, model_ref: &str) -> bool {
+        self.scheme == "host-executor/v1"
+            && self.reference == model_ref
+            && self.provider_ref.is_none()
+            && self.route_ref.is_none()
+            && self.candidates.is_empty()
+    }
+
+    /// Pin the ordered subset of authored candidates that admission could
+    /// resolve. Runtime failover may select only one of these entries.
+    pub fn candidate_set(
+        candidates: impl IntoIterator<Item = (String, ModelAccessRef)>,
+    ) -> Option<Self> {
+        let candidates = candidates
+            .into_iter()
+            .map(|(model_ref, access)| ModelAccessCandidate {
+                model_ref,
+                scheme: access.scheme,
+                reference: access.reference,
+                provider_ref: access.provider_ref,
+                route_ref: access.route_ref,
+            })
+            .collect::<Vec<_>>();
+        let first = candidates.first()?;
+        Some(Self {
+            scheme: first.scheme.clone(),
+            reference: first.reference.clone(),
+            provider_ref: first.provider_ref.clone(),
+            route_ref: first.route_ref.clone(),
+            candidates,
+        })
+    }
+
+    #[must_use]
+    pub fn for_model(&self, model_ref: &str) -> Option<Self> {
+        if self.candidates.is_empty() {
+            return Some(self.clone());
+        }
+        let candidate = self
+            .candidates
+            .iter()
+            .find(|candidate| candidate.model_ref == model_ref)?;
+        Some(Self {
+            scheme: candidate.scheme.clone(),
+            reference: candidate.reference.clone(),
+            provider_ref: candidate.provider_ref.clone(),
+            route_ref: candidate.route_ref.clone(),
+            candidates: Vec::new(),
+        })
     }
 }
 
@@ -332,6 +418,50 @@ mod tests {
         assert!(!wire.to_string().contains("provider-key"));
         let restored: RunDispatch = serde_json::from_value(wire).expect("deserializes");
         assert_eq!(restored, request);
+    }
+
+    #[test]
+    fn candidate_access_is_ordered_pinned_and_model_scoped() {
+        let access = ModelAccessRef::candidate_set([
+            (
+                "primary".to_string(),
+                ModelAccessRef::exact_credential("cred-a", "provider-a@1", "route-a@2"),
+            ),
+            (
+                "fallback".to_string(),
+                ModelAccessRef::exact_credential("cred-b", "provider-b@4", "route-b@3"),
+            ),
+        ])
+        .unwrap();
+        assert_eq!(
+            access
+                .candidates
+                .iter()
+                .map(|candidate| candidate.model_ref.as_str())
+                .collect::<Vec<_>>(),
+            vec!["primary", "fallback"]
+        );
+        let fallback = access.for_model("fallback").unwrap();
+        assert_eq!(fallback.reference, "cred-b");
+        assert_eq!(fallback.provider_ref.as_deref(), Some("provider-b@4"));
+        assert!(fallback.candidates.is_empty());
+        assert!(access.for_model("not-authored").is_none());
+        let wire = serde_json::to_string(&access).unwrap();
+        assert!(!wire.contains("secret"));
+        assert_eq!(
+            serde_json::from_str::<ModelAccessRef>(&wire).unwrap(),
+            access
+        );
+    }
+
+    #[test]
+    fn host_executor_access_is_exact_and_non_secret() {
+        let access = ModelAccessRef::host_executor("embedded-model");
+        assert!(access.is_host_executor_for("embedded-model"));
+        assert!(!access.is_host_executor_for("another-model"));
+        assert!(access.provider_ref.is_none());
+        assert!(access.route_ref.is_none());
+        assert!(!serde_json::to_string(&access).unwrap().contains("secret"));
     }
 
     #[test]

@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use awaken_run_ingress::ModelAccessRef;
+use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::llm::LlmExecutor;
 
 /// Resolves a bound model ref to its executor (R1). `None` from `executor_for`
@@ -25,6 +26,15 @@ pub trait ExecutorProvider: Send + Sync {
     /// dispatch admission. Providers without dynamic credentials return `None`.
     fn model_access_for(&self, _model_ref: &str) -> Result<Option<ModelAccessRef>, String> {
         Ok(None)
+    }
+
+    /// Pin every model-access candidate this activation may use. Providers that
+    /// only support one model inherit the exact-primary behavior.
+    fn model_access_for_activation(
+        &self,
+        activation: &RunActivation,
+    ) -> Result<Option<ModelAccessRef>, String> {
+        self.model_access_for(activation.effective_model_ref())
     }
 
     /// Resolve one durable run, including its opaque model-access capability.
@@ -100,41 +110,64 @@ impl ThreadModelBinding {
             .cloned()
     }
 
-    /// Resolve an effective model ref to its executor through the installed provider
-    /// (R1), or `None` to fall back to the runtime's bound (host default) executor.
-    /// This is the per-run executor seam: a run names its effective model and gets an
-    /// executor, resolved each attempt from the run's own binding rather than a
-    /// session-build-time registry lookup.
-    pub(crate) fn executor_for(&self, model_ref: &str) -> Option<Arc<dyn LlmExecutor>> {
-        self.executor_for_run(model_ref, None)
-    }
-
-    /// Resolve a durable run with its opaque access capability.
-    pub(crate) fn executor_for_run(
+    pub(crate) fn model_access_for_activation(
         &self,
-        model_ref: &str,
-        model_access: Option<&ModelAccessRef>,
-    ) -> Option<Arc<dyn LlmExecutor>> {
-        self.provider
-            .as_ref()
-            .and_then(|provider| provider.executor_for_run(model_ref, model_access))
-    }
-
-    pub(crate) fn model_access_for(
-        &self,
-        model_ref: &str,
+        activation: &RunActivation,
     ) -> Result<Option<ModelAccessRef>, String> {
         match &self.provider {
-            Some(provider) => provider.model_access_for(model_ref),
+            Some(provider) => provider.model_access_for_activation(activation),
             None => Ok(None),
         }
+    }
+
+    pub(crate) fn executor_for_activation(
+        &self,
+        activation: &RunActivation,
+    ) -> Result<Option<Arc<dyn LlmExecutor>>, String> {
+        let Some(provider) = &self.provider else {
+            return Ok(None);
+        };
+        let access = provider.model_access_for_activation(activation)?;
+        Ok(provider.executor_for_run(activation.effective_model_ref(), access.as_ref()))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_agent_contract::agent::run::Id as RunId;
+    use awaken_agent_contract::agent::thread::Id as ThreadId;
     use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse};
+    use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
+    use awaken_runtime_contract::snapshot::{
+        AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
+    };
+
+    fn activation(model_ref: &str) -> RunActivation {
+        RunActivation::new(
+            RunId("run".into()),
+            ThreadId("thread".into()),
+            ExecutableAgentSnapshot {
+                id: ExecutableAgentSnapshotId("snapshot".into()),
+                root_agent_id: AgentId("agent".into()),
+                resolved_spec: ResolvedSpec {
+                    catalog_fingerprint: CatalogFingerprint("catalog".into()),
+                    instructions: String::new(),
+                    max_steps: 1,
+                    delegation_limits: Default::default(),
+                    model_binding: ModelBinding::new("provider", model_ref, "backend"),
+                    model_candidates: Vec::new(),
+                    tool_descriptors: Vec::new(),
+                    plugin_ids: Vec::new(),
+                    plugin_config: Default::default(),
+                    context_policy: Default::default(),
+                    tool_presentation: Default::default(),
+                },
+                fingerprint: CatalogFingerprint("catalog".into()),
+            },
+            Vec::new(),
+        )
+    }
 
     struct LabeledModel(&'static str);
     #[async_trait::async_trait]
@@ -168,11 +201,19 @@ mod tests {
 
         // A resolvable ref → the provider's executor (resolved per run, from the ref).
         assert!(Arc::ptr_eq(
-            &binding.executor_for("fast-model").unwrap(),
+            &binding
+                .executor_for_activation(&activation("fast-model"))
+                .unwrap()
+                .unwrap(),
             &fast
         ));
         // An unknown ref → None → the caller falls back to the runtime's bound default.
-        assert!(binding.executor_for("no-such").is_none());
+        assert!(
+            binding
+                .executor_for_activation(&activation("no-such"))
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -204,7 +245,12 @@ mod tests {
     #[test]
     fn no_provider_means_executor_for_is_always_none() {
         let binding = ThreadModelBinding::new();
-        assert!(binding.executor_for("whatever").is_none());
+        assert!(
+            binding
+                .executor_for_activation(&activation("whatever"))
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -212,6 +258,7 @@ mod tests {
         struct GatewayProvider {
             seen: Arc<Mutex<Option<ModelAccessRef>>>,
             executor: Arc<dyn LlmExecutor>,
+            grant: ModelAccessRef,
         }
 
         impl ExecutorProvider for GatewayProvider {
@@ -228,19 +275,28 @@ mod tests {
                 *self.seen.lock().expect("grant capture mutex") = model_access.cloned();
                 Some(self.executor.clone())
             }
+
+            fn model_access_for_activation(
+                &self,
+                _activation: &RunActivation,
+            ) -> Result<Option<ModelAccessRef>, String> {
+                Ok(Some(self.grant.clone()))
+            }
         }
 
         let seen = Arc::new(Mutex::new(None));
         let executor: Arc<dyn LlmExecutor> = Arc::new(LabeledModel("gateway"));
+        let grant = ModelAccessRef::new("cloud-gateway", "grant-42");
         let mut binding = ThreadModelBinding::new();
         binding.set_provider(Arc::new(GatewayProvider {
             seen: seen.clone(),
             executor: executor.clone(),
+            grant: grant.clone(),
         }));
-        let grant = ModelAccessRef::new("cloud-gateway", "grant-42");
 
         let resolved = binding
-            .executor_for_run("gateway-model", Some(&grant))
+            .executor_for_activation(&activation("gateway-model"))
+            .unwrap()
             .expect("gateway provider resolves the run");
         assert!(Arc::ptr_eq(&resolved, &executor));
         assert_eq!(*seen.lock().expect("grant capture mutex"), Some(grant));

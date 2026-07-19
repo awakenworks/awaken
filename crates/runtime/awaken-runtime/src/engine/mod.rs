@@ -114,9 +114,12 @@ pub(crate) async fn run_agent_loop(
     // passes. A no-op on a node with its own matching catalog (the gate still
     // enforces descent-from-active there).
     runtime.reconcile_dispatched_snapshot(&activation.snapshot);
-    let resolved = runtime
+    let mut resolved = runtime
         .resolve(&activation.snapshot)
         .map_err(map_resolver_error)?;
+    resolved
+        .spec
+        .apply_execution_model_override(activation.model_ref_override.as_deref());
 
     let run_id = activation.run_id.clone();
     let thread_id = activation.thread_id.clone();

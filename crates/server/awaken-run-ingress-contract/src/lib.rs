@@ -21,4 +21,6 @@ pub use dispatch::{
     DispatchOutcome, DispatchQueue, DispatchState, DispatchSummary, Inbox, Lease, Outbox,
     PendingInput, PendingRecord, RunClaim, SettleOutcome, SubmitOptions,
 };
-pub use run_dispatch::{ExecutionScopeRef, ModelAccessRef, PlacementRequirements, RunDispatch};
+pub use run_dispatch::{
+    ExecutionScopeRef, ModelAccessCandidate, ModelAccessRef, PlacementRequirements, RunDispatch,
+};
