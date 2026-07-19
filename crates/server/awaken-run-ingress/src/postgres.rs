@@ -18,9 +18,9 @@ use sqlx::postgres::PgPool;
 use sqlx::types::Json;
 
 use crate::dispatch::{
-    CasOutcome, Claimed, CommitEpochGuard, DispatchError, DispatchOutcome, DispatchQueue,
-    DispatchState, DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, RunClaim,
-    SettleOutcome, SubmitOptions,
+    CasOutcome, Claimed, CommitEpochGuard, DispatchCompletion, DispatchError, DispatchOutcome,
+    DispatchQueue, DispatchState, DispatchSummary, Inbox, Lease, Outbox, PendingInput,
+    PendingRecord, RunClaim, SettleOutcome, SubmitOptions,
 };
 use crate::dispatch_schema::dispatch_bundle;
 use crate::{WorkerAssignment, WorkerSnapshot, can_assign};
@@ -131,6 +131,22 @@ impl DispatchQueue for PostgresDispatchStore {
         let p = NS;
         let mut tx = self.pool.begin().await.map_err(reject)?;
 
+        // Run-id idempotency survives successful completion: a live row or the
+        // permanent completion tombstone makes the whole command a no-op. Check
+        // before supersession so replay cannot mutate sibling dispatches.
+        let already_known: bool = sqlx::query_scalar(&format!(
+            "SELECT EXISTS (SELECT 1 FROM {p}_dispatch WHERE run_id = $1) OR \
+             EXISTS (SELECT 1 FROM {p}_dispatch_completion WHERE run_id = $1)"
+        ))
+        .bind(&request.run_id().0)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(reject)?;
+        if already_known {
+            tx.commit().await.map_err(reject)?;
+            return Ok(());
+        }
+
         // Supersession: take the highest epoch on the thread and mark its prior
         // pending/awaiting work superseded — the newest submission wins (ADR-0022).
         let mut epoch = 0i64;
@@ -161,6 +177,7 @@ impl DispatchQueue for PostgresDispatchStore {
              SELECT $1, $2, $3, 'pending', $4, $5, $6 \
              WHERE NOT EXISTS ( \
                  SELECT 1 FROM {p}_dispatch WHERE dedupe_key = $6 AND status <> 'dead_letter') \
+             AND NOT EXISTS (SELECT 1 FROM {p}_dispatch_completion WHERE run_id = $1) \
              ON CONFLICT (run_id) DO NOTHING"
         ))
         .bind(&request.run_id().0)
@@ -189,7 +206,8 @@ impl DispatchQueue for PostgresDispatchStore {
         let inserted = sqlx::query_scalar::<_, i64>(&format!(
             "INSERT INTO {p}_dispatch \
              (run_id, thread_id, request, status, lease_owner, lease_until, lease_epoch) \
-             VALUES ($1,$2,$3,'running',$4,$5,1) \
+             SELECT $1,$2,$3,'running',$4,$5,1 \
+             WHERE NOT EXISTS (SELECT 1 FROM {p}_dispatch_completion WHERE run_id = $1) \
              ON CONFLICT (run_id) DO NOTHING RETURNING lease_epoch"
         ))
         .bind(&request.run_id().0)
@@ -244,7 +262,8 @@ impl DispatchQueue for PostgresDispatchStore {
         let inserted = sqlx::query_scalar::<_, i64>(&format!(
             "INSERT INTO {p}_dispatch \
              (run_id, thread_id, request, status, lease_owner, lease_until, lease_epoch, worker_assignment) \
-             VALUES ($1,$2,$3,'running',$4,$5,1,$6) \
+             SELECT $1,$2,$3,'running',$4,$5,1,$6 \
+             WHERE NOT EXISTS (SELECT 1 FROM {p}_dispatch_completion WHERE run_id = $1) \
              ON CONFLICT (run_id) DO NOTHING RETURNING lease_epoch"
         ))
         .bind(&request.run_id().0)
@@ -834,6 +853,16 @@ impl DispatchQueue for PostgresDispatchStore {
             let _ = tx.rollback().await;
             return Ok(SettleOutcome::Fenced);
         }
+        if outcome == DispatchOutcome::Done {
+            sqlx::query(&format!(
+                "INSERT INTO {p}_dispatch_completion (run_id) VALUES ($1) \
+                 ON CONFLICT (run_id) DO NOTHING"
+            ))
+            .bind(&run_id.0)
+            .execute(&mut *tx)
+            .await
+            .map_err(reject)?;
+        }
         // The fence held; now reconcile the run's pending input.
         match outcome {
             DispatchOutcome::Done => {
@@ -860,6 +889,43 @@ impl DispatchQueue for PostgresDispatchStore {
         }
         tx.commit().await.map_err(reject)?;
         Ok(SettleOutcome::Applied)
+    }
+
+    async fn completion_events_after(
+        &self,
+        after_sequence: u64,
+        limit: usize,
+    ) -> Result<Vec<DispatchCompletion>, DispatchError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let after_sequence = i64::try_from(after_sequence).map_err(|_| {
+            DispatchError::Rejected("completion cursor exceeds BIGINT range".to_string())
+        })?;
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let p = NS;
+        let rows = sqlx::query(&format!(
+            "SELECT sequence, run_id FROM {p}_dispatch_completion \
+             WHERE sequence > $1 ORDER BY sequence LIMIT $2"
+        ))
+        .bind(after_sequence)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(reject)?;
+        rows.into_iter()
+            .map(|row| {
+                let sequence = row.try_get::<i64, _>("sequence").map_err(reject)?;
+                Ok(DispatchCompletion {
+                    sequence: u64::try_from(sequence).map_err(|_| {
+                        DispatchError::Rejected(
+                            "persisted completion sequence is negative".to_string(),
+                        )
+                    })?,
+                    run_id: RunId(row.try_get("run_id").map_err(reject)?),
+                })
+            })
+            .collect()
     }
 
     async fn reap(&self, max_attempts: u64, now_ms: u64) -> Result<usize, DispatchError> {

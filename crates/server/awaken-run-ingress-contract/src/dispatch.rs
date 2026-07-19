@@ -143,6 +143,17 @@ pub enum SettleOutcome {
     Fenced,
 }
 
+/// One durable observation that a dispatch applied [`DispatchOutcome::Done`].
+///
+/// This is delivery truth only: the committed run fact remains authoritative for
+/// the run's terminal state and cause. `sequence` is a store-assigned cursor;
+/// consumers checkpoint it independently and may replay pages idempotently.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DispatchCompletion {
+    pub sequence: u64,
+    pub run_id: RunId,
+}
+
 /// Opaque backend guard which keeps a dispatch epoch stable until it is dropped.
 /// PostgreSQL stores a row-locking transaction in it; SQLite stores its shared
 /// single-process authority mutex guard. The ingress layer needs only the
@@ -404,6 +415,23 @@ pub trait DispatchQueue: Send + Sync {
         outcome: DispatchOutcome,
         consumed: &[String],
     ) -> Result<SettleOutcome, DispatchError>;
+
+    /// Return durable applied-`Done` facts after `after_sequence`, in ascending
+    /// sequence order, capped at `limit`.
+    ///
+    /// Native durable stores retain these rows as permanent run-id tombstones;
+    /// completed ids therefore cannot be re-enqueued after their live dispatch
+    /// row is removed (ADR-0060). A transport that does not expose this
+    /// server-local projection query fails explicitly.
+    async fn completion_events_after(
+        &self,
+        _after_sequence: u64,
+        _limit: usize,
+    ) -> Result<Vec<DispatchCompletion>, DispatchError> {
+        Err(DispatchError::Rejected(
+            "backend does not expose durable dispatch completion events".to_string(),
+        ))
+    }
 
     /// Hold a claim's exact epoch stable across a `ThreadCommit`.
     ///

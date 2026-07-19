@@ -176,6 +176,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0057-unified-agent-configuration.md` | Decision record | Not required | n/a |
 | `adr/0058-one-neutral-event-vocabulary-message-sourced-classify-routed-two-tier-projection.md` | Decision record | Not required | n/a |
 | `adr/0059-neutral-core-and-leaf-evolution.md` | Decision record | Not required | n/a |
+| `adr/0060-durable-dispatch-completion-tombstone.md` | Decision record | Not required | n/a |
 
 ## Implementation Context
 

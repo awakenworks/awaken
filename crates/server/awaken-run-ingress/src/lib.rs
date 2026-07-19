@@ -47,9 +47,9 @@ pub use awaken_run_ingress_contract::{
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use commit_fence::{ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit};
 pub use dispatch::{
-    CasOutcome, Claimed, CommitEpochGuard, Dispatch, DispatchError, DispatchOutcome, DispatchQueue,
-    DispatchState, DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, RunClaim,
-    SettleOutcome, SubmitOptions,
+    CasOutcome, Claimed, CommitEpochGuard, Dispatch, DispatchCompletion, DispatchError,
+    DispatchOutcome, DispatchQueue, DispatchState, DispatchSummary, Inbox, Lease, Outbox,
+    PendingInput, PendingRecord, RunClaim, SettleOutcome, SubmitOptions,
 };
 pub use dispatch_schema::dispatch_bundle;
 pub use durable::DurableRunIngress;

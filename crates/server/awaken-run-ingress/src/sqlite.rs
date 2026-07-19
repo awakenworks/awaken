@@ -18,9 +18,9 @@ use awaken_runtime_contract::resume::ResumeResult;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::dispatch::{
-    CasOutcome, Claimed, CommitEpochGuard, DispatchError, DispatchOutcome, DispatchQueue,
-    DispatchState, DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, RunClaim,
-    SettleOutcome, SubmitOptions,
+    CasOutcome, Claimed, CommitEpochGuard, DispatchCompletion, DispatchError, DispatchOutcome,
+    DispatchQueue, DispatchState, DispatchSummary, Inbox, Lease, Outbox, PendingInput,
+    PendingRecord, RunClaim, SettleOutcome, SubmitOptions,
 };
 use crate::dispatch_schema::dispatch_bundle;
 use crate::{WorkerAssignment, WorkerSnapshot, can_assign};
@@ -139,6 +139,23 @@ impl DispatchQueue for SqliteDispatchStore {
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(reject)?;
 
+            // A replayed completed run is a no-op before supersession, so it
+            // cannot mutate sibling rows on its thread (ADR-0060).
+            let already_known = tx
+                .query_row(
+                    &format!(
+                        "SELECT EXISTS (SELECT 1 FROM {p}_dispatch WHERE run_id = ?1) OR \
+                         EXISTS (SELECT 1 FROM {p}_dispatch_completion WHERE run_id = ?1)"
+                    ),
+                    params![run_id],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(reject)?;
+            if already_known {
+                tx.commit().map_err(reject)?;
+                return Ok(());
+            }
+
             // Supersession: take the highest epoch on the thread and mark its
             // prior pending/awaiting work superseded — newest wins (ADR-0022).
             let mut epoch = 0i64;
@@ -173,6 +190,7 @@ impl DispatchQueue for SqliteDispatchStore {
                      WHERE NOT EXISTS ( \
                          SELECT 1 FROM {p}_dispatch \
                          WHERE dedupe_key = ?6 AND status <> 'dead_letter') \
+                     AND NOT EXISTS (SELECT 1 FROM {p}_dispatch_completion WHERE run_id = ?1) \
                      ON CONFLICT(run_id) DO NOTHING"
                 ),
                 params![
@@ -212,7 +230,8 @@ impl DispatchQueue for SqliteDispatchStore {
                     &format!(
                         "INSERT INTO {p}_dispatch \
                          (run_id, thread_id, request, status, lease_owner, lease_until, lease_epoch) \
-                         VALUES (?1,?2,?3,'running',?4,?5,1) \
+                         SELECT ?1,?2,?3,'running',?4,?5,1 \
+                         WHERE NOT EXISTS (SELECT 1 FROM {p}_dispatch_completion WHERE run_id = ?1) \
                          ON CONFLICT(run_id) DO NOTHING"
                     ),
                     params![run_id, thread_id, request_json, owner, expires as i64],
@@ -270,7 +289,8 @@ impl DispatchQueue for SqliteDispatchStore {
                     &format!(
                         "INSERT INTO {p}_dispatch \
                          (run_id, thread_id, request, status, lease_owner, lease_until, lease_epoch, worker_assignment) \
-                         VALUES (?1,?2,?3,'running',?4,?5,1,?6) \
+                         SELECT ?1,?2,?3,'running',?4,?5,1,?6 \
+                         WHERE NOT EXISTS (SELECT 1 FROM {p}_dispatch_completion WHERE run_id = ?1) \
                          ON CONFLICT(run_id) DO NOTHING"
                     ),
                     params![
@@ -834,6 +854,16 @@ impl DispatchQueue for SqliteDispatchStore {
                 let _ = tx.rollback();
                 return Ok(SettleOutcome::Fenced);
             }
+            if outcome == DispatchOutcome::Done {
+                tx.execute(
+                    &format!(
+                        "INSERT INTO {p}_dispatch_completion (run_id) VALUES (?1) \
+                         ON CONFLICT(run_id) DO NOTHING"
+                    ),
+                    params![run_id],
+                )
+                .map_err(reject)?;
+            }
             // The fence held; now reconcile the run's pending input.
             match outcome {
                 DispatchOutcome::Done => {
@@ -864,6 +894,47 @@ impl DispatchQueue for SqliteDispatchStore {
             }
             tx.commit().map_err(reject)?;
             Ok(SettleOutcome::Applied)
+        })
+        .await
+    }
+
+    async fn completion_events_after(
+        &self,
+        after_sequence: u64,
+        limit: usize,
+    ) -> Result<Vec<DispatchCompletion>, DispatchError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let after_sequence = i64::try_from(after_sequence).map_err(|_| {
+            DispatchError::Rejected("completion cursor exceeds INTEGER range".to_string())
+        })?;
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        self.with_conn(move |conn, p| {
+            let mut statement = conn
+                .prepare(&format!(
+                    "SELECT sequence, run_id FROM {p}_dispatch_completion \
+                     WHERE sequence > ?1 ORDER BY sequence LIMIT ?2"
+                ))
+                .map_err(reject)?;
+            let rows = statement
+                .query_map(params![after_sequence, limit], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(reject)?;
+            let mut events = Vec::new();
+            for row in rows {
+                let (sequence, run_id) = row.map_err(reject)?;
+                events.push(DispatchCompletion {
+                    sequence: u64::try_from(sequence).map_err(|_| {
+                        DispatchError::Rejected(
+                            "persisted completion sequence is negative".to_string(),
+                        )
+                    })?,
+                    run_id: RunId(run_id),
+                });
+            }
+            Ok(events)
         })
         .await
     }

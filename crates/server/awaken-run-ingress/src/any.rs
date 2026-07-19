@@ -23,9 +23,9 @@ use awaken_agent_contract::stream::checkpoint::StreamCheckpoint;
 use awaken_runtime_contract::resume::ResumeResult;
 
 use crate::dispatch::{
-    CasOutcome, Claimed, CommitEpochGuard, Dispatch, DispatchError, DispatchOutcome, DispatchQueue,
-    DispatchSummary, Inbox, Outbox, PendingInput, PendingRecord, RunClaim, SettleOutcome,
-    SubmitOptions,
+    CasOutcome, Claimed, CommitEpochGuard, Dispatch, DispatchCompletion, DispatchError,
+    DispatchOutcome, DispatchQueue, DispatchSummary, Inbox, Outbox, PendingInput, PendingRecord,
+    RunClaim, SettleOutcome, SubmitOptions,
 };
 use crate::postgres::PostgresDispatchStore;
 use crate::sqlite::SqliteDispatchStore;
@@ -279,6 +279,14 @@ impl DispatchQueue for AnyDispatchStore {
         consumed: &[String],
     ) -> Result<SettleOutcome, DispatchError> {
         delegate!(self, settle(run_id, epoch, outcome, consumed))
+    }
+
+    async fn completion_events_after(
+        &self,
+        after_sequence: u64,
+        limit: usize,
+    ) -> Result<Vec<DispatchCompletion>, DispatchError> {
+        delegate!(self, completion_events_after(after_sequence, limit))
     }
 
     async fn reap(&self, max_attempts: u64, now_ms: u64) -> Result<usize, DispatchError> {

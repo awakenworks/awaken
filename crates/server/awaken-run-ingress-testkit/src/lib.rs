@@ -12,6 +12,7 @@ use awaken_run_ingress_contract::RunDispatch;
 use awaken_run_ingress_contract::dispatch::{
     DispatchOutcome, DispatchQueue, PendingInput, RunClaim, SettleOutcome,
 };
+use awaken_run_ingress_contract::{WorkerIdentity, WorkerManifest, WorkerSnapshot, WorkerState};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
 use awaken_runtime_contract::resume::ResumeResult;
@@ -28,6 +29,8 @@ pub struct ConformanceCapabilities {
     pub local_commit_guard: bool,
     /// The adapter persists and returns opaque sandbox bindings.
     pub sandbox_binding: bool,
+    /// The adapter exposes the server-local durable completion projection.
+    pub completion_events: bool,
 }
 
 /// Optional bridge for transports whose authoritative clock lives on the server.
@@ -58,6 +61,7 @@ impl ConformanceCapabilities {
     pub const LOCAL_STORE: Self = Self {
         local_commit_guard: true,
         sandbox_binding: true,
+        completion_events: true,
     };
 
     /// Worker-visible HTTP behaviour. Atomic commit is tested through the separate
@@ -65,6 +69,7 @@ impl ConformanceCapabilities {
     pub const WORKER_TRANSPORT: Self = Self {
         local_commit_guard: false,
         sandbox_binding: false,
+        completion_events: false,
     };
 }
 
@@ -92,6 +97,7 @@ pub async fn assert_dispatch_conformance_with_clock(
     parent_mediated_commands_are_atomic(store, namespace, clock).await;
     current_claim_guard_is_exact(store, namespace, capabilities, clock).await;
     sandbox_binding_survives_recovery(store, namespace, capabilities, clock).await;
+    completion_is_atomic_and_prevents_resurrection(store, namespace, capabilities, clock).await;
 }
 
 async fn exact_claim_recovery_and_fencing(
@@ -342,6 +348,189 @@ async fn sandbox_binding_survives_recovery(
             .await
             .expect("settle sandbox run"),
         SettleOutcome::Applied
+    );
+}
+
+async fn completion_is_atomic_and_prevents_resurrection(
+    store: &dyn DispatchQueue,
+    ns: &str,
+    capabilities: ConformanceCapabilities,
+    clock: &dyn ConformanceClock,
+) {
+    if !capabilities.completion_events {
+        return;
+    }
+
+    let baseline = store
+        .completion_events_after(0, usize::MAX)
+        .await
+        .expect("read completion baseline");
+    let cursor = baseline.last().map_or(0, |event| event.sequence);
+
+    // Awaiting and a stale fenced Done are negative partitions: neither may
+    // publish a completion fact.
+    clock.set(40_000);
+    let awaiting = run_id(ns, "completion-awaiting");
+    store
+        .enqueue(dispatch(
+            ns,
+            "completion-awaiting",
+            "completion-awaiting-thread",
+        ))
+        .await
+        .expect("enqueue awaiting control run");
+    let awaiting_claim = store
+        .claim_run(&awaiting, "conformance-completion", LEASE_MS, 40_000)
+        .await
+        .expect("claim awaiting control run")
+        .expect("awaiting control run is runnable");
+    assert_eq!(
+        store
+            .settle(
+                &awaiting,
+                awaiting_claim.lease.epoch,
+                DispatchOutcome::Awaiting,
+                &[],
+            )
+            .await
+            .expect("settle awaiting control run"),
+        SettleOutcome::Applied
+    );
+    assert!(
+        store
+            .completion_events_after(cursor, 1)
+            .await
+            .expect("query after awaiting settle")
+            .is_empty(),
+        "Awaiting does not emit a completion fact"
+    );
+    assert_eq!(
+        store
+            .cancel(&awaiting)
+            .await
+            .expect("remove awaiting control run"),
+        Some(thread_id(ns, "completion-awaiting-thread"))
+    );
+
+    let request = dispatch(ns, "completion-done", "completion-done-thread");
+    let done = request.run_id().clone();
+    store
+        .enqueue(request.clone())
+        .await
+        .expect("enqueue completion run");
+    let claim = store
+        .claim_run(&done, "conformance-completion", LEASE_MS, 40_000)
+        .await
+        .expect("claim completion run")
+        .expect("completion run is runnable");
+    assert_eq!(
+        store
+            .settle(
+                &done,
+                claim.lease.epoch.saturating_sub(1),
+                DispatchOutcome::Done,
+                &[],
+            )
+            .await
+            .expect("stale completion settle"),
+        SettleOutcome::Fenced
+    );
+    assert!(
+        store
+            .completion_events_after(cursor, 1)
+            .await
+            .expect("query after fenced settle")
+            .is_empty(),
+        "a fenced Done emits no completion fact"
+    );
+
+    assert_eq!(
+        store
+            .settle(&done, claim.lease.epoch, DispatchOutcome::Done, &[])
+            .await
+            .expect("apply completion settle"),
+        SettleOutcome::Applied
+    );
+    let first_page = store
+        .completion_events_after(cursor, 1)
+        .await
+        .expect("read first completion page");
+    assert_eq!(first_page.len(), 1);
+    assert_eq!(first_page[0].run_id, done);
+    assert!(first_page[0].sequence > cursor);
+    assert_eq!(
+        store
+            .completion_events_after(cursor, 1)
+            .await
+            .expect("replay first completion page"),
+        first_page,
+        "a consumer may replay the same cursor idempotently"
+    );
+
+    // Both admission commands consult the tombstone. A completed durable
+    // identity can never become runnable or emit a second event.
+    store
+        .enqueue(request.clone())
+        .await
+        .expect("replayed enqueue is accepted as a no-op");
+    assert!(
+        store
+            .claim_run(&done, "conformance-replay", LEASE_MS, 40_001)
+            .await
+            .expect("exact claim after replay")
+            .is_none(),
+        "completed run id does not resurrect through enqueue"
+    );
+    assert!(
+        store
+            .claim_new_run(request.clone(), "conformance-replay", LEASE_MS, 40_001)
+            .await
+            .expect("atomic admission after replay")
+            .is_none(),
+        "completed run id does not resurrect through claim_new_run"
+    );
+    let manifest = WorkerManifest::default();
+    let worker = WorkerSnapshot {
+        identity: WorkerIdentity::new("conformance-worker", "completion-boot", 1),
+        state: WorkerState::Ready,
+        capability_fingerprint: manifest
+            .fingerprint()
+            .expect("default worker manifest fingerprints"),
+        manifest,
+        in_flight: 0,
+        expires_at_ms: 100_000,
+    };
+    assert!(
+        store
+            .claim_new_run_compatible(request, &worker, LEASE_MS, 40_001)
+            .await
+            .expect("compatible atomic admission after replay")
+            .is_none(),
+        "completed run id does not resurrect through compatible claim_new_run"
+    );
+    assert_eq!(
+        store
+            .completion_events_after(cursor, 2)
+            .await
+            .expect("read completion events after replay"),
+        first_page,
+        "replayed admission creates no duplicate completion"
+    );
+    assert!(
+        store
+            .completion_events_after(first_page[0].sequence, 1)
+            .await
+            .expect("advance completion cursor")
+            .is_empty(),
+        "an advanced cursor excludes the acknowledged event"
+    );
+    assert!(
+        store
+            .completion_events_after(cursor, 0)
+            .await
+            .expect("zero-sized completion page")
+            .is_empty(),
+        "a zero limit returns an empty page"
     );
 }
 

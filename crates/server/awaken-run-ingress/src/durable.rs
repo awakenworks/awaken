@@ -34,6 +34,10 @@ use awaken_run_ingress_contract::RunDispatch;
 /// autonomous [`DispatchService`] can drain the same queue.
 pub struct DurableRunIngress<S> {
     worker: Arc<DispatchWorker<S>>,
+    /// Same committed-history source the worker consults. A replayed completed
+    /// run is blocked by the dispatch tombstone, so submit returns this existing
+    /// state rather than creating a second execution (ADR-0060).
+    reader: Arc<dyn ThreadReader>,
     /// The per-session live inbox shared by the worker's drive (drained at safe
     /// loop boundaries) and the offer side (ADR-0054 P2). Neutral `Message`s only;
     /// this is why durable steer needs no protocol type in the worker.
@@ -89,6 +93,7 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
     where
         C: CommitCoordinator + ThreadReader + RunStore + Send + Sync + 'static,
     {
+        let reader: Arc<dyn ThreadReader> = commit.clone();
         let live_inbox = awaken_runtime_contract::live_inbox::LiveInbox::new();
         let mut worker =
             DispatchWorker::new(runtime, store, commit, owner).with_live_inbox(live_inbox.clone());
@@ -100,6 +105,7 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
         }
         Self {
             worker: Arc::new(worker),
+            reader,
             live_inbox,
         }
     }
@@ -335,6 +341,7 @@ impl<S: Dispatch + 'static> RunIngress for DurableRunIngress<S> {
             .map_err(|err| ExecError::Execution(err.to_string()))?;
         let processed = self.worker.run_until_idle(0).await.map_err(exec_error)?;
         state_of(&processed, &run_id)
+            .or_else(|| self.reader.run_state(&run_id))
             .ok_or_else(|| ExecError::Execution("submitted run was not processed".into()))
     }
 }

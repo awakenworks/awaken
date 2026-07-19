@@ -15,9 +15,9 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime_contract::resume::ResumeResult;
 
 use crate::dispatch::{
-    CasOutcome, Claimed, CommitEpochGuard, DispatchError, DispatchOutcome, DispatchQueue,
-    DispatchState, DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, RunClaim,
-    SettleOutcome, SubmitOptions,
+    CasOutcome, Claimed, CommitEpochGuard, DispatchCompletion, DispatchError, DispatchOutcome,
+    DispatchQueue, DispatchState, DispatchSummary, Inbox, Lease, Outbox, PendingInput,
+    PendingRecord, RunClaim, SettleOutcome, SubmitOptions,
 };
 use awaken_run_ingress_contract::RunDispatch;
 
@@ -79,6 +79,8 @@ struct State {
     pending: Vec<PendingRow>,
     /// Cross-thread deliveries staged for relay, in arrival order.
     outbox: Vec<PendingInput>,
+    /// Applied-Done facts, retained as permanent run-id tombstones (ADR-0060).
+    completions: Vec<DispatchCompletion>,
 }
 
 /// In-memory durable-ingress store. Cloneable handles share one state.
@@ -309,7 +311,12 @@ impl DispatchQueue for MemoryDispatchStore {
         let run_id = request.run_id().clone();
         // Idempotent by run id; and a no-op while a live dispatch shares the
         // caller's dedupe key.
-        if state.rows.contains_key(&run_id) {
+        if state.rows.contains_key(&run_id)
+            || state
+                .completions
+                .iter()
+                .any(|completion| completion.run_id == run_id)
+        {
             return Ok(());
         }
         if let Some(key) = &options.dedupe_key
@@ -372,6 +379,13 @@ impl DispatchQueue for MemoryDispatchStore {
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
         let run_id = request.run_id().clone();
+        if state
+            .completions
+            .iter()
+            .any(|completion| completion.run_id == run_id)
+        {
+            return Ok(None);
+        }
         if !state.rows.contains_key(&run_id) {
             state.rows.insert(
                 run_id.clone(),
@@ -409,6 +423,13 @@ impl DispatchQueue for MemoryDispatchStore {
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
         let run_id = request.run_id().clone();
+        if state
+            .completions
+            .iter()
+            .any(|completion| completion.run_id == run_id)
+        {
+            return Ok(None);
+        }
         if !state.rows.contains_key(&run_id) {
             state.rows.insert(
                 run_id.clone(),
@@ -734,6 +755,11 @@ impl DispatchQueue for MemoryDispatchStore {
         }
         match outcome {
             DispatchOutcome::Done => {
+                let sequence = state.completions.len() as u64 + 1;
+                state.completions.push(DispatchCompletion {
+                    sequence,
+                    run_id: run_id.clone(),
+                });
                 state.rows.remove(run_id);
                 state.order.retain(|r| r != run_id);
                 // Drop the run's own pending and anything else the worker consumed
@@ -757,6 +783,21 @@ impl DispatchQueue for MemoryDispatchStore {
             }
         }
         Ok(SettleOutcome::Applied)
+    }
+
+    async fn completion_events_after(
+        &self,
+        after_sequence: u64,
+        limit: usize,
+    ) -> Result<Vec<DispatchCompletion>, DispatchError> {
+        let state = lock(&self.state)?;
+        Ok(state
+            .completions
+            .iter()
+            .filter(|completion| completion.sequence > after_sequence)
+            .take(limit)
+            .cloned()
+            .collect())
     }
 
     async fn reap(&self, max_attempts: u64, now_ms: u64) -> Result<usize, DispatchError> {
