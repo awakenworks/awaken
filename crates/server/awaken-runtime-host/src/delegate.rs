@@ -330,18 +330,49 @@ impl RunDelegationService for HostRunDelegationService {
         &self,
         cancellation: ChildRunCancellation,
     ) -> Result<(), DelegationExecutionError> {
-        let Some(remote) = self.delegates.remotes.get(&cancellation.target_agent_id) else {
-            // A native child shares the parent's cancellation token while live;
-            // after a crash it has no independent remote process to signal.
+        if let Some(remote) = self.delegates.remotes.get(&cancellation.target_agent_id) {
+            return remote
+                .cancel(
+                    &cancellation.target_agent_id,
+                    &cancellation.child_run_id,
+                    cancellation.execution_reference.as_ref(),
+                )
+                .await;
+        }
+
+        let Some(scheduler) = &self.scheduler else {
+            // A non-durable native child shares the parent's live cancellation
+            // token and has no independent queue entry to reconcile after exit.
             return Ok(());
         };
-        remote
-            .cancel(
-                &cancellation.target_agent_id,
-                &cancellation.child_run_id,
-                cancellation.execution_reference.as_ref(),
-            )
+        if matches!(
+            scheduler.reader.run_state(&cancellation.child_run_id),
+            Some(awaken_agent_contract::agent::run::RunState::Ended(_))
+        ) {
+            return Ok(());
+        }
+
+        // Rebuild only the neutral cancellation service from durable authorities.
+        // It first tries a live registry (there is none after restart), then removes
+        // a queued/awaiting dispatch and commits the child's terminal Cancelled fact.
+        // A child still leased by another process is deliberately retryable: the
+        // parent's committed cancellation intent remains and reconciliation tries
+        // again after that attempt reaches a boundary or loses its lease.
+        let runtime = Arc::new(
+            crate::config::build_runtime(self.llm.clone(), self.sandbox.as_ref())
+                .with_run_delegation(Arc::new(self.clone())),
+        );
+        let worker = Arc::new(awaken_run_ingress::DispatchWorker::from_parts(
+            runtime,
+            scheduler.store.clone(),
+            scheduler.commit.clone(),
+            scheduler.reader.clone(),
+            scheduler.owner.clone(),
+        ));
+        awaken_run_ingress::LiveRunControlService::new(worker)
+            .cancel(&cancellation.child_run_id.0)
             .await
+            .map_err(|error| DelegationExecutionError::retryable(error.to_string()))
     }
 }
 
@@ -357,5 +388,134 @@ impl SharedHost {
             .card(agent_id)
             .await
             .map_err(|e| HostError::internal(e.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod durable_cancel_tests {
+    use super::*;
+    use awaken_agent_contract::agent::delegation::DelegationOrigin;
+    use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
+    use awaken_agent_contract::agent::thread::Id as ThreadId;
+    use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
+    use awaken_run_ingress::{AnyDispatchStore, DispatchQueue};
+    use awaken_runtime::memory::MemoryCommitCoordinator;
+    use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse};
+    use awaken_runtime_contract::runtime_context::RuntimeRunContext;
+
+    struct AwaitPermission;
+
+    #[async_trait]
+    impl LlmExecutor for AwaitPermission {
+        async fn infer(
+            &self,
+            _request: ChatRequest,
+        ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+            Ok(ChatResponse {
+                output: AssistantOutput::from_tool_calls(vec![
+                    awaken_runtime_contract::llm::ToolCall {
+                        call_id: "child-write".into(),
+                        tool_id: "write".into(),
+                        arguments: serde_json::json!({"path": "child.txt", "content": "x"}),
+                    },
+                ]),
+                usage: None,
+                stop_reason: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn replacement_process_cancels_an_awaiting_native_child_idempotently() {
+        let root = tempfile::tempdir().expect("sandbox root");
+        let provider = Arc::new(LocalProvider::new(root.path()));
+        let sandbox = Arc::new(
+            provider
+                .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("parent"))
+                .await
+                .expect("parent sandbox"),
+        );
+        let store = Arc::new(
+            AnyDispatchStore::open_sqlite_in_memory().expect("durable child dispatch store"),
+        );
+        let commit = Arc::new(MemoryCommitCoordinator::new());
+        let scheduler = RunScheduler {
+            store: store.clone(),
+            commit: commit.clone(),
+            reader: commit.clone(),
+            owner: "child-owner".to_string(),
+            claimed_commit: None,
+        };
+        let mut delegates = Delegates::new();
+        delegates.add_local(HashSet::from(["researcher".to_string()]));
+        let service = HostRunDelegationService::new(
+            Arc::new(AwaitPermission),
+            "stub".to_string(),
+            provider,
+            sandbox,
+            true,
+            delegates,
+            Some(scheduler),
+        );
+        let origin = DelegationOrigin::root_for_agent(
+            RunId("parent-run".into()),
+            "delegate-call",
+            "parent-agent",
+        );
+        let child_run_id = origin.child_run_id();
+        let step = service
+            .start(DelegationRequest {
+                child_run_id: child_run_id.clone(),
+                parent_thread_id: ThreadId("parent-thread".into()),
+                context: RuntimeRunContext::new()
+                    .with_commit(commit.clone())
+                    .with_reader(commit.clone()),
+                origin: origin.clone(),
+                arguments: serde_json::json!({
+                    "agent_id": "researcher",
+                    "input": "write a file"
+                }),
+            })
+            .await
+            .expect("child reaches permission boundary");
+        assert!(matches!(step, DelegationStep::Awaiting { .. }));
+        assert_eq!(
+            store.list_dispatches().await.expect("dispatch list").len(),
+            1
+        );
+
+        let cancellation = ChildRunCancellation {
+            delegation_id: origin.delegation_id,
+            child_run_id: child_run_id.clone(),
+            target_agent_id: "researcher".to_string(),
+            execution_reference: None,
+        };
+        service
+            .cancel(cancellation.clone())
+            .await
+            .expect("replacement cancels awaiting child");
+        assert_eq!(
+            commit.run_state(&child_run_id),
+            Some(RunState::Ended(EndCause::Cancelled))
+        );
+        assert!(
+            store
+                .list_dispatches()
+                .await
+                .expect("dispatch list")
+                .is_empty()
+        );
+
+        // A later process has no in-memory delivery receipt and retries the
+        // durable cancellation intent. Terminal committed truth makes it a no-op.
+        service
+            .clone()
+            .cancel(cancellation)
+            .await
+            .expect("duplicate cancellation is idempotent");
+        assert_eq!(
+            commit.run_state(&child_run_id),
+            Some(RunState::Ended(EndCause::Cancelled))
+        );
     }
 }

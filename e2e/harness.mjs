@@ -183,7 +183,11 @@ export function spawnServer(mode, port, extraEnv = {}) {
 // TCP port is free and the SQLite files are flushed before a restart rebinds.
 export function stopServer(server) {
   return new Promise((resolve) => {
-    if (server.exitCode !== null) return resolve();
+    // A deliberately crashed child has `exitCode === null` and a non-null
+    // `signalCode`. Treat either terminal form as already stopped; otherwise a
+    // recovery e2e that SIGKILLs the worker would subscribe after `exit` fired
+    // and wait forever.
+    if (server.exitCode !== null || server.signalCode !== null) return resolve();
     server.on('exit', () => resolve());
     server.kill('SIGINT');
   });

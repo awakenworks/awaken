@@ -304,11 +304,15 @@ export function startFakeAnthropic(apiKey, opts = {}) {
   } = opts;
   const reply_of = BEHAVIORS[behavior];
   if (!reply_of) throw new Error(`unknown fake-anthropic behavior: ${behavior}`);
-  const state = { requests: [], unauthorized: 0, attempts: 0 };
+  const state = { requests: [], unauthorized: 0, attempts: 0, received: 0 };
   const server = http.createServer((req, res) => {
     let body = '';
     req.on('data', (c) => (body += c));
     req.on('end', async () => {
+      // Count arrival before an optional response delay. Crash/recovery e2e use
+      // this externally observable socket fact to kill a worker while inference
+      // is genuinely in flight, without peeking into the Rust process.
+      state.received += 1;
       if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
       const presented = req.headers['x-api-key'] ?? (req.headers.authorization ?? '').replace(/^Bearer /, '');
       if (req.method !== 'POST' || !req.url.endsWith('/messages')) {
@@ -361,6 +365,9 @@ export function startFakeAnthropic(apiKey, opts = {}) {
         },
         get attempts() {
           return state.attempts;
+        },
+        get received() {
+          return state.received;
         },
         close: () => server.close(),
       });
