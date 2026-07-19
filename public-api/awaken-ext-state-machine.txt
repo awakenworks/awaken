@@ -2,7 +2,7 @@ pub mod awaken_ext_state_machine
 pub enum awaken_ext_state_machine::AdvanceOp
 pub awaken_ext_state_machine::AdvanceOp::Emit
 pub awaken_ext_state_machine::AdvanceOp::Emit::content: alloc::string::String
-pub awaken_ext_state_machine::AdvanceOp::Emit::cooldown_turns: u32
+pub awaken_ext_state_machine::AdvanceOp::Emit::cooldown_steps: u32
 pub awaken_ext_state_machine::AdvanceOp::Emit::key: alloc::string::String
 pub awaken_ext_state_machine::AdvanceOp::Emit::machine: alloc::string::String
 pub awaken_ext_state_machine::AdvanceOp::Emit::reason: awaken_ext_state_machine::EmitReason
@@ -13,6 +13,14 @@ pub awaken_ext_state_machine::AdvanceOp::Transition::key: alloc::string::String
 pub awaken_ext_state_machine::AdvanceOp::Transition::machine: alloc::string::String
 pub awaken_ext_state_machine::AdvanceOp::Transition::scope: awaken_ext_state_machine::MachineScope
 pub awaken_ext_state_machine::AdvanceOp::Transition::to: alloc::string::String
+pub awaken_ext_state_machine::AdvanceOp::Update
+pub awaken_ext_state_machine::AdvanceOp::Update::data: alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
+pub awaken_ext_state_machine::AdvanceOp::Update::increment: alloc::vec::Vec<alloc::string::String>
+pub awaken_ext_state_machine::AdvanceOp::Update::initial: alloc::string::String
+pub awaken_ext_state_machine::AdvanceOp::Update::key: alloc::string::String
+pub awaken_ext_state_machine::AdvanceOp::Update::machine: alloc::string::String
+pub awaken_ext_state_machine::AdvanceOp::Update::reset: alloc::vec::Vec<alloc::string::String>
+pub awaken_ext_state_machine::AdvanceOp::Update::scope: awaken_ext_state_machine::MachineScope
 pub enum awaken_ext_state_machine::ContentMatcher
 pub awaken_ext_state_machine::ContentMatcher::JsonFields(alloc::vec::Vec<awaken_tool_pattern::types::FieldCondition>)
 pub awaken_ext_state_machine::ContentMatcher::Text
@@ -22,6 +30,7 @@ pub enum awaken_ext_state_machine::EmitReason
 pub awaken_ext_state_machine::EmitReason::Transition
 pub awaken_ext_state_machine::EmitReason::Warning
 pub enum awaken_ext_state_machine::EmitTarget
+pub awaken_ext_state_machine::EmitTarget::Context
 pub awaken_ext_state_machine::EmitTarget::Conversation
 pub awaken_ext_state_machine::EmitTarget::Session
 pub awaken_ext_state_machine::EmitTarget::SuffixSystem
@@ -67,7 +76,13 @@ pub awaken_ext_state_machine::ResultMatcher::Content(awaken_ext_state_machine::C
 pub awaken_ext_state_machine::ResultMatcher::Status(awaken_ext_state_machine::StatusMatcher)
 pub enum awaken_ext_state_machine::StateMachineConfigError
 pub awaken_ext_state_machine::StateMachineConfigError::Action(alloc::string::String)
+pub awaken_ext_state_machine::StateMachineConfigError::CounterRange
+pub awaken_ext_state_machine::StateMachineConfigError::CounterRange::gte: u64
+pub awaken_ext_state_machine::StateMachineConfigError::CounterRange::lte: u64
+pub awaken_ext_state_machine::StateMachineConfigError::CounterRange::name: alloc::string::String
 pub awaken_ext_state_machine::StateMachineConfigError::DuplicateMachine(alloc::string::String)
+pub awaken_ext_state_machine::StateMachineConfigError::EventEmitTarget(alloc::string::String)
+pub awaken_ext_state_machine::StateMachineConfigError::EventResultCondition(alloc::string::String)
 pub awaken_ext_state_machine::StateMachineConfigError::Parse(alloc::string::String)
 pub awaken_ext_state_machine::StateMachineConfigError::Pattern
 pub awaken_ext_state_machine::StateMachineConfigError::Pattern::message: alloc::string::String
@@ -78,6 +93,9 @@ pub enum awaken_ext_state_machine::StatusMatcher
 pub awaken_ext_state_machine::StatusMatcher::Any
 pub awaken_ext_state_machine::StatusMatcher::Error
 pub awaken_ext_state_machine::StatusMatcher::Success
+pub enum awaken_ext_state_machine::TransitionTrigger
+pub awaken_ext_state_machine::TransitionTrigger::Event(awaken_tool_pattern::types::ToolCallPattern)
+pub awaken_ext_state_machine::TransitionTrigger::Tool(awaken_tool_pattern::types::ToolCallPattern)
 pub enum awaken_ext_state_machine::ViolationAction
 pub awaken_ext_state_machine::ViolationAction::Ask
 pub awaken_ext_state_machine::ViolationAction::Deny
@@ -89,9 +107,14 @@ pub awaken_ext_state_machine::ViolationAuditAction::Warn
 pub struct awaken_ext_state_machine::ContinuationSettings
 pub awaken_ext_state_machine::ContinuationSettings::max_continuations: u32
 pub awaken_ext_state_machine::ContinuationSettings::message: core::option::Option<alloc::string::String>
+pub struct awaken_ext_state_machine::CounterCondition
+pub awaken_ext_state_machine::CounterCondition::gte: core::option::Option<u64>
+pub awaken_ext_state_machine::CounterCondition::lte: core::option::Option<u64>
+impl awaken_ext_state_machine::CounterCondition
+pub fn awaken_ext_state_machine::CounterCondition::matches(self, u64) -> bool
 pub struct awaken_ext_state_machine::Emit
 pub awaken_ext_state_machine::Emit::content: awaken_ext_state_machine::KeyTemplate
-pub awaken_ext_state_machine::Emit::cooldown_turns: u32
+pub awaken_ext_state_machine::Emit::cooldown_steps: u32
 pub awaken_ext_state_machine::Emit::role: core::option::Option<awaken_agent_contract::agent::message::Role>
 pub awaken_ext_state_machine::Emit::target: awaken_ext_state_machine::EmitTarget
 pub struct awaken_ext_state_machine::FsmMetricCounts
@@ -107,9 +130,10 @@ pub struct awaken_ext_state_machine::FsmMetrics
 pub awaken_ext_state_machine::FsmMetrics::by_machine: std::collections::hash::map::HashMap<alloc::string::String, awaken_ext_state_machine::FsmMetricCounts>
 pub awaken_ext_state_machine::FsmMetrics::total: awaken_ext_state_machine::FsmMetricCounts
 pub struct awaken_ext_state_machine::FsmStore
-pub awaken_ext_state_machine::FsmStore::machines: std::collections::hash::map::HashMap<alloc::string::String, std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>
+pub awaken_ext_state_machine::FsmStore::machines: std::collections::hash::map::HashMap<alloc::string::String, std::collections::hash::map::HashMap<alloc::string::String, awaken_ext_state_machine::MachineInstance>>
 impl awaken_ext_state_machine::FsmStore
 pub fn awaken_ext_state_machine::FsmStore::current(&self, &str, &str) -> core::option::Option<&str>
+pub fn awaken_ext_state_machine::FsmStore::instance(&self, &str, &str) -> core::option::Option<&awaken_ext_state_machine::MachineInstance>
 pub struct awaken_ext_state_machine::FsmTransition
 pub awaken_ext_state_machine::FsmTransition::key: alloc::string::String
 pub awaken_ext_state_machine::FsmTransition::machine: alloc::string::String
@@ -127,6 +151,10 @@ pub awaken_ext_state_machine::GateViolation::action: awaken_ext_state_machine::V
 pub awaken_ext_state_machine::GateViolation::key: alloc::string::String
 pub awaken_ext_state_machine::GateViolation::machine: alloc::string::String
 pub awaken_ext_state_machine::GateViolation::reason: alloc::string::String
+pub struct awaken_ext_state_machine::InstanceUpdate
+pub awaken_ext_state_machine::InstanceUpdate::capture: alloc::collections::btree::map::BTreeMap<alloc::string::String, awaken_ext_state_machine::KeyTemplate>
+pub awaken_ext_state_machine::InstanceUpdate::increment: alloc::vec::Vec<alloc::string::String>
+pub awaken_ext_state_machine::InstanceUpdate::reset: alloc::vec::Vec<alloc::string::String>
 pub struct awaken_ext_state_machine::KeyTemplate
 impl awaken_ext_state_machine::KeyTemplate
 pub fn awaken_ext_state_machine::KeyTemplate::is_empty(&self) -> bool
@@ -145,8 +173,22 @@ pub awaken_ext_state_machine::Machine::terminal_states: alloc::vec::Vec<alloc::s
 pub awaken_ext_state_machine::Machine::transitions: alloc::vec::Vec<awaken_ext_state_machine::Transition>
 impl awaken_ext_state_machine::Machine
 pub fn awaken_ext_state_machine::Machine::is_terminal(&self, &str) -> bool
+pub fn awaken_ext_state_machine::Machine::matching_event_transitions<'a>(&'a self, &'a str, &'a serde_json::value::Value) -> impl core::iter::traits::iterator::Iterator<Item = &'a awaken_ext_state_machine::Transition> + 'a
 pub fn awaken_ext_state_machine::Machine::matching_transitions<'a>(&'a self, &'a str, &'a serde_json::value::Value) -> impl core::iter::traits::iterator::Iterator<Item = &'a awaken_ext_state_machine::Transition> + 'a
 pub fn awaken_ext_state_machine::Machine::render_key(&self, &serde_json::value::Value) -> core::option::Option<alloc::string::String>
+pub struct awaken_ext_state_machine::MachineEventView<'a>
+pub awaken_ext_state_machine::MachineEventView::data: &'a serde_json::value::Value
+pub awaken_ext_state_machine::MachineEventView::name: &'a str
+pub struct awaken_ext_state_machine::MachineInstance
+pub awaken_ext_state_machine::MachineInstance::counters: alloc::collections::btree::map::BTreeMap<alloc::string::String, u64>
+pub awaken_ext_state_machine::MachineInstance::data: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+pub awaken_ext_state_machine::MachineInstance::state: alloc::string::String
+impl core::convert::From<&str> for awaken_ext_state_machine::MachineInstance
+pub fn awaken_ext_state_machine::MachineInstance::from(&str) -> Self
+impl core::convert::From<alloc::string::String> for awaken_ext_state_machine::MachineInstance
+pub fn awaken_ext_state_machine::MachineInstance::from(alloc::string::String) -> Self
+impl<'de> serde_core::de::Deserialize<'de> for awaken_ext_state_machine::MachineInstance
+pub fn awaken_ext_state_machine::MachineInstance::deserialize<D>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
 pub struct awaken_ext_state_machine::Metrics
 impl awaken_agent_contract::agent::state::FoldStateKey for awaken_ext_state_machine::Metrics
 pub type awaken_ext_state_machine::Metrics::Update = awaken_ext_state_machine::FsmMetricUpdate
@@ -194,11 +236,13 @@ pub awaken_ext_state_machine::ToolResultView::is_error: bool
 impl<'a> awaken_ext_state_machine::ToolResultView<'a>
 pub fn awaken_ext_state_machine::ToolResultView<'a>::new(bool, &'a str) -> Self
 pub struct awaken_ext_state_machine::Transition
+pub awaken_ext_state_machine::Transition::counters: alloc::collections::btree::map::BTreeMap<alloc::string::String, awaken_ext_state_machine::CounterCondition>
 pub awaken_ext_state_machine::Transition::emit: core::option::Option<awaken_ext_state_machine::Emit>
 pub awaken_ext_state_machine::Transition::from: alloc::vec::Vec<alloc::string::String>
 pub awaken_ext_state_machine::Transition::on_violation: awaken_ext_state_machine::Violation
-pub awaken_ext_state_machine::Transition::pattern: awaken_tool_pattern::types::ToolCallPattern
 pub awaken_ext_state_machine::Transition::to: alloc::string::String
+pub awaken_ext_state_machine::Transition::trigger: awaken_ext_state_machine::TransitionTrigger
+pub awaken_ext_state_machine::Transition::update: awaken_ext_state_machine::InstanceUpdate
 pub awaken_ext_state_machine::Transition::when: core::option::Option<awaken_ext_state_machine::ResultMatcher>
 impl awaken_ext_state_machine::Transition
 pub fn awaken_ext_state_machine::Transition::allows_from(&self, &str) -> bool
@@ -219,6 +263,7 @@ pub const awaken_ext_state_machine::ViolationLog::SCOPE: awaken_agent_contract::
 pub const awaken_ext_state_machine::STATE_KEYS: &[&str]
 pub const awaken_ext_state_machine::STATE_MACHINE_PLUGIN_ID: &str
 pub fn awaken_ext_state_machine::advance_evaluate(&[awaken_ext_state_machine::Machine], &awaken_ext_state_machine::FsmStore, &awaken_ext_state_machine::FsmStore, &str, &serde_json::value::Value, &awaken_ext_state_machine::ToolResultView<'_>) -> alloc::vec::Vec<awaken_ext_state_machine::AdvanceOp>
+pub fn awaken_ext_state_machine::event_evaluate(&[awaken_ext_state_machine::Machine], &awaken_ext_state_machine::FsmStore, &awaken_ext_state_machine::FsmStore, awaken_ext_state_machine::MachineEventView<'_>) -> alloc::vec::Vec<awaken_ext_state_machine::AdvanceOp>
 pub fn awaken_ext_state_machine::gate_decision(&[awaken_ext_state_machine::MachineEval]) -> core::option::Option<awaken_ext_state_machine::GateViolation>
 pub fn awaken_ext_state_machine::gate_evaluate(&[awaken_ext_state_machine::Machine], &awaken_ext_state_machine::FsmStore, &awaken_ext_state_machine::FsmStore, &str, &serde_json::value::Value) -> alloc::vec::Vec<awaken_ext_state_machine::MachineEval>
 pub fn awaken_ext_state_machine::result_matches(&awaken_ext_state_machine::ResultMatcher, &awaken_ext_state_machine::ToolResultView<'_>) -> bool

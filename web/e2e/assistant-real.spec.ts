@@ -6,19 +6,24 @@ import { expect, test, type APIRequestContext } from "@playwright/test";
 // assistant can fill in every part of an agent config": it drafts the agent (persisted
 // unpublished) AND binds an existing memory store, and the binding round-trips through
 // /v1/config/agents/:id/resources. Its own file (not real-llm.spec) so it self-gates on
-// KIMI_KEY independently of the Gemini suite.
-//   Run:  KIMI_KEY=… pnpm exec playwright test assistant-real.spec.ts
+// KIMI_KEY independently of the Gemini suite. A developer may also reuse a
+// previously validated local vault credential without exposing its secret.
+//   Run:  KIMI_EXISTING_CREDENTIAL=1 pnpm exec playwright test assistant-real.spec.ts
 
 const KIMI = process.env.KIMI_KEY ?? "";
-test.skip(!KIMI, "needs KIMI_KEY to drive the admin assistant on a real model");
+const USE_EXISTING_KIMI = process.env.KIMI_EXISTING_CREDENTIAL === "1";
+test.skip(!KIMI && !USE_EXISTING_KIMI, "needs KIMI_KEY or KIMI_EXISTING_CREDENTIAL=1");
+test.setTimeout(120_000);
 
 // Register KIMI through the config plane, as an operator would (no server env). Wiring a
 // model reconciles the Auto-bound assistant onto it.
 async function configureKimi(request: APIRequestContext) {
   await request.put("/v1/config/providers/kimi", { data: { id: "kimi", slug: "kimi", display_name: "Kimi", version: 1 } });
   await request.put("/v1/config/endpoints/kimi-ep", { data: { id: "kimi-ep", provider_id: "kimi", dialect: "anthropic_messages", base_url: "https://api.kimi.com/coding/v1/", timeout_secs: 60, display_name: "Kimi", version: 1 } });
-  await request.post("/v1/config/offerings", { data: { model_id: "kimi-for-coding", provider_id: "kimi", protocol_endpoint_id: "kimi-ep", dialect: "anthropic_messages", upstream_model: null } });
-  await request.post("/v1/config/credentials", { data: { workspace_id: "wrkspc_default", kind: "vault", provider_id: "kimi", secret: KIMI } });
+  await request.post("/v1/config/offerings", { data: { model_id: "moonshot-v1-8k", provider_id: "kimi", protocol_endpoint_id: "kimi-ep", dialect: "anthropic_messages", upstream_model: null } });
+  if (KIMI) {
+    await request.post("/v1/config/credentials", { data: { workspace_id: "wrkspc_default", kind: "vault", provider_id: "kimi", secret: KIMI } });
+  }
 }
 
 test("Admin Assistant authors an agent with tools + a memory-store binding (real model)", async ({ page, request }) => {
@@ -80,4 +85,39 @@ test("Admin Assistant answers a how-to question as an in-console manual (real mo
   await composer.press("Enter");
   // A grounded answer (from admin_explain_console) names the real Models/Credentials flow.
   await expect(page.getByText(/Models|Inference credentials|Provider|Offering/i).first()).toBeVisible({ timeout: 90_000 });
+});
+
+test("Admin Assistant authors a repeat-safe read-before-write machine (real model)", async ({ request }) => {
+  await configureKimi(request);
+  const id = `sm-generated-${Date.now()}`;
+  const session = await (await request.post("/v1/sessions", {
+    data: { agent: "__admin_assistant", title: "sm-author-candidate" },
+  })).json();
+  await request.post(`/v1/sessions/${session.id}/events`, {
+    data: { events: [{ type: "user.message", content: [{ type: "text", text:
+      `Draft an unpublished coding agent with id ${id}. Give it the built-in read and write tools. ` +
+      "Configure a thread-scoped State Machine that blocks write before execution until the same " +
+      "normalized path has been read, but permits repeated writes after that read. Do not publish." }] }] },
+  });
+
+  const deadline = Date.now() + 90_000;
+  let config: { plugin_config?: { state_machine?: { machines?: Array<{ key_normalizer?: string; transitions?: Array<{ on?: unknown; from?: string | string[]; on_violation?: { action?: string } }> }> } } } | undefined;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+    const response = await request.get(`/v1/config/agents/${id}`);
+    if (response.ok()) {
+      config = await response.json();
+      break;
+    }
+  }
+
+  const machine = config?.plugin_config?.state_machine?.machines?.[0];
+  expect(machine, "assistant persisted a state-machine draft").toBeTruthy();
+  expect(machine!.key_normalizer).toBe("path");
+  const write = machine!.transitions?.find((transition) =>
+    typeof transition.on === "string" && transition.on.startsWith("write"));
+  expect(write?.on_violation?.action).toBe("deny");
+  expect(Array.isArray(write?.from) ? write?.from : [write?.from]).toEqual(
+    expect.arrayContaining(["read", "written"]),
+  );
 });

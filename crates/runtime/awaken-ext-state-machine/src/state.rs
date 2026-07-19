@@ -1,8 +1,9 @@
 //! Runtime instance state for tool state machines.
 //!
-//! Four `(scope, key)` cells back the machine set: thread- and run-scoped
-//! instance state, plus thread-scoped audit metrics and a bounded violation log.
-//! Each is a folding state key — the contract's [`StateKey`] (address/scope/value)
+//! Six declared state keys back the machine set: thread- and run-scoped instance
+//! state, thread-scoped audit metrics, a bounded violation log, emit throttling,
+//! and the shared request-only context band. Each typed cell is a folding state
+//! key — the contract's [`StateKey`] (address/scope/value)
 //! plus [`FoldStateKey`] (a typed `apply` delta), ADR-0055: a read deserializes
 //! the whole value, an update folds a typed delta with `apply`, and a commit
 //! writes the whole value back as one `Command`. All cells use
@@ -11,7 +12,7 @@
 //! folded value. These cells tolerate a shape drift by resetting to the default,
 //! so callers read through [`StateKey::load_or_default`].
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use awaken_agent_contract::agent::state::{FoldStateKey, Scope, StateKey};
 use serde::Serialize;
@@ -24,6 +25,7 @@ pub const STATE_KEYS: &[&str] = &[
     Metrics::KEY,
     ViolationLog::KEY,
     EmitThrottleCell::KEY,
+    "context_messages",
 ];
 
 // ---------------------------------------------------------------------------
@@ -38,25 +40,127 @@ pub struct FsmTransition {
     pub to: String,
 }
 
-/// Instance-state store: `machine name -> (instance key -> current state)`.
+/// One aggregate mutation staged by the pure evaluator.
+pub(crate) struct InstanceMutation {
+    pub machine: String,
+    pub key: String,
+    pub initial: String,
+    pub to: Option<String>,
+    pub data: Vec<(String, String)>,
+    pub increment: Vec<String>,
+    pub reset: Vec<String>,
+}
+
+/// One durable machine instance. The string-only representation used by older
+/// commits deserializes into this shape with empty data/counters.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct MachineInstance {
+    pub state: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub data: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub counters: BTreeMap<String, u64>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum MachineInstanceWire {
+    Legacy(String),
+    Current {
+        state: String,
+        #[serde(default)]
+        data: BTreeMap<String, String>,
+        #[serde(default)]
+        counters: BTreeMap<String, u64>,
+    },
+}
+
+impl<'de> serde::Deserialize<'de> for MachineInstance {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Ok(match MachineInstanceWire::deserialize(deserializer)? {
+            MachineInstanceWire::Legacy(state) => Self {
+                state,
+                ..Self::default()
+            },
+            MachineInstanceWire::Current {
+                state,
+                data,
+                counters,
+            } => Self {
+                state,
+                data,
+                counters,
+            },
+        })
+    }
+}
+
+impl From<String> for MachineInstance {
+    fn from(state: String) -> Self {
+        Self {
+            state,
+            ..Self::default()
+        }
+    }
+}
+
+impl From<&str> for MachineInstance {
+    fn from(state: &str) -> Self {
+        state.to_string().into()
+    }
+}
+
+/// Instance-state store: `machine name -> (instance key -> aggregate)`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(default, transparent)]
 pub struct FsmStore {
-    pub machines: HashMap<String, HashMap<String, String>>,
+    pub machines: HashMap<String, HashMap<String, MachineInstance>>,
 }
 
 impl FsmStore {
     /// Current state of an instance, if it has ever transitioned.
     #[must_use]
     pub fn current(&self, machine: &str, key: &str) -> Option<&str> {
-        self.machines.get(machine)?.get(key).map(String::as_str)
+        self.instance(machine, key)
+            .map(|instance| instance.state.as_str())
+    }
+
+    /// The complete durable instance, including captured data and counters.
+    #[must_use]
+    pub fn instance(&self, machine: &str, key: &str) -> Option<&MachineInstance> {
+        self.machines.get(machine)?.get(key)
+    }
+
+    /// Materialize an instance and apply one state/data/counter mutation.
+    pub(crate) fn mutate(&mut self, mutation: InstanceMutation) {
+        let instance = self
+            .machines
+            .entry(mutation.machine)
+            .or_default()
+            .entry(mutation.key)
+            .or_insert_with(|| MachineInstance::from(mutation.initial));
+        if let Some(to) = mutation.to {
+            instance.state = to;
+        }
+        instance.data.extend(mutation.data);
+        for name in mutation.increment {
+            *instance.counters.entry(name).or_default() += 1;
+        }
+        for name in mutation.reset {
+            instance.counters.insert(name, 0);
+        }
     }
 
     fn reduce(&mut self, t: FsmTransition) {
         self.machines
             .entry(t.machine)
             .or_default()
-            .insert(t.key, t.to);
+            .entry(t.key)
+            .and_modify(|instance| instance.state.clone_from(&t.to))
+            .or_insert_with(|| t.to.into());
     }
 }
 
@@ -218,9 +322,9 @@ impl FoldStateKey for ViolationLog {
 // Emit throttle (cooldown)
 // ---------------------------------------------------------------------------
 
-/// Per-emit-key cooldown state: a monotonic tick (bumped once per tool result
-/// that fires an emit) and the tick each emit key last fired at. A reminder is
-/// re-injected only when `tick - last >= cooldown_turns`.
+/// Per-emit-key cooldown state: a monotonic completed-step tick and the tick
+/// each emit key last fired at. It is thread-scoped so the step sequence remains
+/// monotonic across runs on the same thread.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct EmitThrottle {
@@ -231,12 +335,12 @@ pub struct EmitThrottle {
 impl EmitThrottle {
     /// Whether `key` is still cooling down at the current `tick`.
     #[must_use]
-    pub fn on_cooldown(&self, key: &str, cooldown_turns: u32) -> bool {
-        cooldown_turns > 0
+    pub fn on_cooldown(&self, key: &str, cooldown_steps: u32) -> bool {
+        cooldown_steps > 0
             && self
                 .last
                 .get(key)
-                .is_some_and(|last| self.tick.saturating_sub(*last) < u64::from(cooldown_turns))
+                .is_some_and(|last| self.tick.saturating_sub(*last) < u64::from(cooldown_steps))
     }
 
     /// Record that `key` fired at the current tick.
@@ -325,7 +429,46 @@ mod tests {
         assert_eq!(ThreadInstances::SCOPE, Scope::Thread);
         assert_eq!(RunInstances::SCOPE, Scope::Run);
         assert_eq!(Metrics::MERGE, MergePolicy::Disjoint);
-        assert_eq!(STATE_KEYS.len(), 5);
+        assert_eq!(STATE_KEYS.len(), 6);
+    }
+
+    #[test]
+    fn legacy_string_instances_migrate_without_losing_state() {
+        let store: FsmStore = serde_json::from_value(serde_json::json!({
+            "m": { "k": "read" }
+        }))
+        .unwrap();
+        let instance = store.instance("m", "k").unwrap();
+        assert_eq!(instance.state, "read");
+        assert!(instance.data.is_empty());
+        assert!(instance.counters.is_empty());
+    }
+
+    #[test]
+    fn mutation_materializes_initial_and_updates_data_and_counters() {
+        let mut store = FsmStore::default();
+        store.mutate(InstanceMutation {
+            machine: "m".into(),
+            key: "k".into(),
+            initial: "tracking".into(),
+            to: None,
+            data: vec![("task".into(), "one".into())],
+            increment: vec!["steps".into()],
+            reset: vec![],
+        });
+        store.mutate(InstanceMutation {
+            machine: "m".into(),
+            key: "k".into(),
+            initial: "tracking".into(),
+            to: None,
+            data: vec![],
+            increment: vec!["steps".into()],
+            reset: vec![],
+        });
+        let instance = store.instance("m", "k").unwrap();
+        assert_eq!(instance.state, "tracking");
+        assert_eq!(instance.data.get("task").map(String::as_str), Some("one"));
+        assert_eq!(instance.counters.get("steps"), Some(&2));
     }
 
     #[test]

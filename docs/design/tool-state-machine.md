@@ -1,368 +1,181 @@
-# Tool Call State Machine
+# Runtime State Machine
 
-A **tool call state machine** is a declaratively loaded finite-state machine that
-constrains the *order* of tool calls in a run. A machine watches a family of tool
-calls, keeps a small per-instance state (e.g. one state per `file_path`), and at
-each call decides whether the call is allowed, denied, or must pause for approval;
-after a call runs it advances the instance state and may surface a reminder to the
-model. A canonical machine is *read-before-write*: a `Write` to a path is denied
-until a `Read` of that path has moved the instance to `read`.
+State Machine 是 agent 配置中的通用控制机制。内核只认识工具调用、运行阶段事件、状态、数据、计数器和动作；TODO、background task、system reminder 等业务含义由配置和适配器表达。
 
-The state machine is an **extension**: a `Plugin` that contributes hooks and
-state keys under its declared `CapabilityBound` (G30). It never writes a store or
-grants authorization directly — permission remains the only authorization path
-(G9/G21); a machine can only *narrow* what a gate allows, never widen it.
+它只能收紧工具权限，不能绕过 permission 授权。所有状态变更仍通过 runtime 的统一 commit/replay 边界持久化。
 
-This document owns the state model, the runtime seams the extension needs, and the
-durability guarantees (persistence, atomicity, transactionality, restart-safety).
-
-## Why new seams are needed
-
-Three capabilities the extension requires are not yet reachable from a plugin:
-
-1. **Reading accumulated state inside the loop.** The execution loop seeds the
-   transcript from committed messages but does not materialize the state `Store`
-   into the loop, and `PhaseContext` / `PermissionContext` carry no state. A gate
-   or advance step therefore cannot read "has this path been read yet?".
-2. **A post-execution reaction point.** The loop has a pre-execution gate
-   (`ToolGateHook`) but no symmetric post-execution seam that receives the
-   `(ToolCall, ToolOutput)` pair. The four phase-hook points (`StepStart`,
-   `BeforeInference`, `AfterInference`, `StepEnd`) carry no tool identity, and
-   `StepEnd` is skipped on the step that awaits or ends.
-3. **Composing more than one gate.** The loop consults a single host gate; a
-   plugin cannot contribute an additional, state-aware constraint.
-
-The design adds exactly four seams to close these, keeps the kernel state model
-unchanged, and reuses the existing State and Conversation aggregates rather than
-introducing a new effect vocabulary.
-
-## Overview
+## 动态视图
 
 ```text
-                     ┌ seam ① state materialization ─────────────┐
-                     │  Store = replay(committed, scope-filter)   │
-                     │        + this run's staged commands        │
-                     └───────────────┬────────────────────────────┘
-                                     │ &Store (read-only)
-   tool call ──▶ seam ② ToolGateHook chain ──▶ execute ──▶ seam ③ ToolOutcomeHook
-                (decision, read-only)                      (reaction: state + message)
-                                     │                                │
-   natural end ──▶ seam ④ RunEndGuard (reads &Store) ─▶ steer / complete
+工具调用
+  │
+  ├─ BeforeTool ── 匹配 on + from + counters
+  │                  ├─ 满足：执行工具
+  │                  └─ 违反：on_violation = deny | ask | warn
+  │                               deny/ask 在执行前拦截
+  │
+  └─ AfterTool ─── 匹配工具结果 when
+                     └─ 原子产生 transition + update + emit
+
+运行阶段
+  step.started
+      ↓
+  step.before_inference ── 产生 request-only context reminder
+      ↓                      （当前请求可见，不进入对话历史）
+  step.after_inference  ── 清除已消费 reminder；step tick +1
+      ↓
+  step.ended
 ```
 
-- **Extension** owns machine compilation, the pure evaluation engine, and the
-  four hook implementations.
-- **Kernel** owns the four seams, the commit boundary, and replay. Its state
-  model (`Command` / `Store` / `validate_batch`) is unchanged.
-
-## State model
-
-### Instances and cells
-
-Instance state is keyed by `(machine_name, instance_key)` and holds the current
-state id of each instance. It is partitioned along two orthogonal dimensions:
-
-- **Scope** — a machine declares `Thread` (persists across runs on the thread)
-  or `Run` (reset at each new run). These live in two separate keys because the
-  commit boundary binds `Scope::Run` to the run and `Scope::Thread` to the
-  thread; a single key cannot hold both lifetimes.
-- **Concern** — instance state, audit metrics, and a bounded violation log are
-  separate keys because they carry different value shapes.
-
-This yields four state keys, the minimal partition under `(scope × concern)`:
-
-| Key | Value | Scope | Concern |
-|---|---|---|---|
-| `tool_fsm_thread_state` | `machine → (instance_key → state)` | Thread | instance state |
-| `tool_fsm_run_state` | `machine → (instance_key → state)` | Run | instance state |
-| `tool_fsm_metrics` | counters (total + per machine) | Thread | audit |
-| `tool_fsm_violation_log` | bounded FIFO of samples | Thread | audit |
-
-### Typed cells over the untyped command model
-
-The kernel state model is deliberately untyped: a `Command` is a whole-value
-`Set`/`Remove` under a `(Scope, MergePolicy, key)` address, and the `Store` is
-rebuilt by replaying committed commands (G1/G13). The extension keeps a thin
-typed façade — one `StateCell` per key — so extension code reads and writes typed
-values while the wire form stays whole-value commands. No kernel change.
-
-```rust
-/// A typed view over one (scope, key) cell of the untyped runtime Store.
-trait StateCell {
-    const KEY:   &'static str;
-    const SCOPE: Scope;
-    const MERGE: MergePolicy;                 // Disjoint — see below
-    type Value:  Serialize + DeserializeOwned + Default;
-    type Update;
-    fn apply(value: &mut Self::Value, update: Self::Update);   // the reducer
-
-    fn load(store: &Store) -> Self::Value {   // read: deserialize whole value
-        store.get(Self::SCOPE, &Key(Self::KEY.into()))
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .unwrap_or_default()
-    }
-    fn commit(store: &Store, update: Self::Update) -> Command {   // read-apply-write
-        let mut v = Self::load(store);
-        Self::apply(&mut v, update);
-        Command::set(Self::SCOPE, Self::MERGE, Self::KEY, serde_json::to_value(v).unwrap_or_default())
-    }
-}
-
-/// Declared once; kept in sync with the plugin's CapabilityBound.state_keys (G30).
-const STATE_KEYS: &[&str] = &[/* the four keys above */];
-```
-
-The reducer (`apply`) folds one update into the value — insert a transition,
-increment a counter, push-and-truncate a log sample. Reads go through the live
-`Store` provided by seam ① (committed + this run's staged writes), so a
-read-apply-write inside one run sees earlier transitions from the same run.
-
-### Merge policy
-
-The four cells use `MergePolicy::Disjoint`. Each cell has a **single producer**
-(only this extension writes these keys, bounded by `CapabilityBound.state_keys`),
-so "at most one producer, a later write replaces" is exactly the intended
-semantics: within a commit batch the extension may write a key more than once
-(once per tool result), and on replay the last write — the fully folded value —
-wins. `Exclusive` is unsuitable here precisely because the extension legitimately
-writes a key more than once per batch; `Commutative` shallow-merges objects and
-cannot express counter increment or ordered log truncation.
-
-## Runtime seams
-
-### Seam ① — state materialization
-
-The loop builds a live, read-only `Store` at the start of a fresh run and of a
-resume:
+外部能力（TODO、background task、compaction）不进入内核枚举。适配器把事实转换为同一种事件：
 
 ```text
-Store = replay(committed state for this thread, filtered by scope)
-      + this run's staged commands
+domain fact ── adapter ── { name, data } ── State Machine
 ```
 
-Filtering by scope re-hydrates `Scope::Thread` cells across runs and starts
-`Scope::Run` cells empty for a new run. The loop **folds each staged command into
-the live Store as it is produced** (`store.apply`), so a later gate/hook read
-observes earlier same-run writes. The live `&Store` is passed, read-only, to
-seams ②–④.
+异步完成消息仍由原有消息通道通知用户；State Machine 只在需要约束、累计状态或决定何时注入 reminder 时消费相应事实，避免重复承担消息投递。
 
-Committed state is read through the thread reader (the same source that already
-serves committed messages) and replayed with `Store::rebuild`.
+## 静态视图
 
-### Seam ② — tool gate (decision port)
+```text
+AgentConfig
+└─ state_machine
+   ├─ Machine[]
+   │  ├─ name / scope / key / initial / terminal
+   │  └─ Transition[]
+   │     ├─ trigger: ToolPattern | EventPattern
+   │     ├─ guard: from + when + counters
+   │     ├─ update: state + capture + increment + reset
+   │     └─ effect: emit | on_violation
+   └─ continuation
 
-The gate is a pre-execution **decision**: read-only, chainable, restrict-only.
-
-```rust
-trait ToolGateHook {
-    fn id(&self) -> &str;                                          // bounded (G30)
-    async fn gate(&self, ctx: &PermissionContext, state: &Store) -> GateOutcome;
+MachineInstance = {
+  state,
+  data: { name: value },
+  counters: { name: number }
 }
+
+scope = run    → 新 run 不继承
+scope = thread → 同一 thread 的后续 run 继续使用
 ```
 
-The loop consults the host permission gate first, then the gates contributed by
-active plugins, in dependency order. A call executes only if every gate allows
-it. A permission `Deny` is absolute — a plugin gate can further block or suspend
-an otherwise-allowed call, but can never turn a permission denial into an
-allowance (G21). The state machine maps a denial to `Block { reason }` (the reason
-becomes the model-visible tool result) and an approval requirement to
-`Suspend { ticket_id }`.
+模板上下文同时暴露当前事实和持久化实例：`{event.name}`、
+`{event.data.*}`、`{instance.state}`、`{instance.data.*}`、
+`{instance.counters.*}`。工具参数仍保留在根节点以兼容 `{file_path}` 写法。
 
-`PermissionContext` stays plain, serializable data; the state view is a separate
-read-only parameter, never embedded in it.
+DDD 边界：
 
-### Seam ③ — tool outcome hook (reaction port)
+- `Machine` / `Transition` / `MachineInstance` 是领域模型，不依赖 TODO 或后台任务。
+- 纯 evaluator 只产生 `AdvanceOp` 决策，不直接写存储或发送消息。
+- Plugin 是应用层适配器，把 runtime hook 转为事件，并把决策转为已有的 State / Conversation 聚合操作。
+- Runtime 的 permission、commit、replay 仍是唯一授权和持久化边界。
 
-The symmetric post-execution seam receives the executed call and its output and
-produces existing aggregates — state commands and conversation messages:
-
-```rust
-trait ToolOutcomeHook {
-    fn id(&self) -> &str;                                          // bounded (G30)
-    async fn after_tool(&self, call: &ToolCall, output: &ToolOutput, state: &Store)
-        -> ToolReaction;
-}
-struct ToolReaction {
-    state:    Vec<StateCommand>,   // transitions, metrics, log — via the State aggregate
-    messages: Vec<Message>,        // reminders — via the Conversation aggregate
-}
-```
-
-It fires at the one place a tool result is produced in the ordinary loop, and
-again on the resume path where an approved pending call is executed, so an
-approved-and-replayed call advances its machine exactly like a first-time call.
-Its `state` and `messages` fold into the current checkpoint and commit atomically
-with the tool result.
-
-### Seam ④ — run-end guard state
-
-The run-end guard already decides whether a natural end continues (`Steer`) or
-completes; it gains the read-only state view so a continuation predicate can
-inspect machine instances (e.g. "some instance is not yet terminal"):
-
-```rust
-struct RunEndContext<'a> {
-    // …existing fields…
-    state: &'a Store,     // added
-}
-```
-
-## Emit reuses the conversation aggregate
-
-A reminder to the model is a `Message` appended to the transcript — the same
-mechanism a steered continuation already uses. `ToolReaction.messages` carries
-these; the loop materializes them into the transcript as committed facts, so they
-replay deterministically. There is no separate effect or action type: a reminder
-is a conversation turn, a transition is a state command.
-
-De-duplication ("do not repeat the same reminder for N turns") is the extension's
-own policy: it records a last-emitted marker in a `StateCell` and only emits when
-the cooldown has elapsed. Reminders are presentation, never authorization; they
-cannot grant a protected operation (G9/G21).
-
-## Capability bounding
-
-Every id-bearing contribution is declared in the plugin's `CapabilityBound` and
-enforced fail-closed at resolve (G30):
-
-- `state_keys` — the four cell keys (`STATE_KEYS`).
-- `tool_gates` — the gate id (seam ②).
-- `tool_observers` — the outcome-hook id (seam ③).
-- `run_end_guards` — the continuation guard id (seam ④).
-
-`tool_gates` and `tool_observers` are new id-bearing axes on `CapabilityBound` /
-`Contributions`; they follow the existing axis rules exactly (subset-of-bound at
-`enforce_bound`, cross-plugin uniqueness at merge). `CapabilityBound` is a
-contribution ceiling, never authorization, and shares no type with a permission
-decision.
-
-Configuration is validated when the plugin is constructed
-(`StateMachinePlugin::from_config(cfg) -> Result<_, ConfigError>`): a malformed
-pattern or template fails fast at construction rather than at first use.
-
-## Tool State Machine Role Catalog
+## Runtime State Machine Role Catalog
 
 | Role / component | Responsibility |
 |---|---|
-| State machine extension (`Plugin`) | compiles machines from config, contributes the gate, outcome hook, run-end guard, and state keys under its declared `CapabilityBound` |
-| `StateCell` | typed view over one `(scope, key)` cell of the untyped store; owns load / apply / commit for one value |
-| State materialization (seam ①) | builds the read-only live `Store` for a run or resume from committed (scope-filtered) plus this run's staged commands |
-| Tool gate chain (seam ②) | pre-execution decision port; read-only and restrict-only, with permission remaining the only grant |
-| Tool outcome hook (seam ③) | post-execution reaction port; emits state commands and reminder messages for the executed call |
-| Run-end guard state (seam ④) | run-end continuation predicate reading the live `Store` |
+| Machine aggregate | 保存 state/data/counters，并执行配置声明的 transition |
+| Pure evaluator | 把工具调用或通用事件计算为 gate / transition / update / emit 决策 |
+| State Machine plugin | 将 runtime phase 转为事件，并把决策适配到 State 与 Conversation |
+| Fact adapter | 将 TODO、background task、compaction 等领域事实投影为 `{name, data}` |
+| Runtime | 负责 permission、hook 顺序、request assembly、commit 和 replay |
 
-## Durability guarantees
+## DSL
 
-All four guarantees rest on the existing commit/replay machinery; the extension
-adds no persistence path of its own.
+### Read before write
 
-### Persistence
-
-A transition is a `StateCommand`. It is staged, committed in `ThreadCommit.state`
-at the single finish boundary, and reconstructed by `Store::rebuild` on replay.
-The `Store` is never durable in itself — committed commands are the truth (G1/G13).
-Modeling transitions as commands (not messages or transient effects) is what makes
-them durable and queryable.
-
-### Atomicity
-
-Every run end funnels through one commit boundary that writes one `ThreadCommit
-{ run: RunDisposition, messages, state, events }` (G1/G31). A tool result and
-the transition, metrics, and reminder it produced land in the *same* commit — all
-or nothing. When a call suspends for approval, the machine's state at that point
-commits atomically with the `ResumeTicket` and `RunState::Awaiting`.
-
-### Transactionality
-
-`validate_batch` rejects a batch that violates a merge policy; a conflict becomes
-a `StateConflict` fault that drops any pause and commits no state — a run whose
-state did not commit cleanly is not resumable. Deny/ask counters are not written
-by the gate (which stays a pure read-only decision); they are derived from the
-permission-audit events already committed with the call, so they are consistent
-with the decision by construction.
-
-### Restart safety
-
-- Committed state replays via `Store::rebuild`; seam ① re-hydrates it into a
-  restarted run, scope-filtered.
-- A aawaiting run is recovered by durable ingress (lease reclaim) and resumed
-  through a committed `ResumeTicket`; `validate_resume` requires every identity
-  to match, including `snapshot_id` and `catalog_fingerprint`, so a resume against
-  a changed machine definition fails closed.
-- Work not yet committed (a crash between tool execution and the finish commit)
-  is discarded and re-driven from the last committed checkpoint. A transition is
-  idempotent (`set machine[key] = to`), so replaying an at-least-once tool
-  execution is safe.
-
-### Failure modes
-
-| Crash point | State | Run state | Recovery |
-|---|---|---|---|
-| Before tool executes | unchanged | uncommitted | re-run the step |
-| After tool, before finish | staged, uncommitted | uncommitted | discard; re-run; transition idempotent |
-| During finish commit | atomic (all or nothing) | atomic | success → replay; failure → treat as uncommitted |
-| Awaiting for approval, committed | durable | `Awaiting` + ticket | recover → resume → re-hydrate |
-| Terminal, committed | durable | `Ended` | recovery reads the fact; never re-runs |
-
-## Configuration (DSL)
-
-Machines are declared as data (JSON/YAML) and compiled once when the plugin is
-constructed:
+写操作在工具执行前拦截；一次成功读取后，可以连续写入：
 
 ```yaml
 machines:
   - name: read-before-write
-    scope: thread                 # thread | run
-    key: "{file_path}"            # instance key template over tool arguments
-    key_normalizer: path          # none | trim | lowercase | path | url
+    scope: thread
+    key: "{file_path}"
+    key_normalizer: path
     initial: unread
     terminal: [written]
     transitions:
       - on: 'Read(file_path ~ "*")'
-        from: [unread, written, read]
+        from: [unread, read, written]
         to: read
       - on: 'Write(file_path ~ "*")'
-        from: read
+        from: [read, written]
         to: written
         when: { status: success }
-        emit:  { content: "Wrote {file_path}", cooldown_turns: 2 }
-        on_violation: { action: deny, reason: "Read {file_path} before writing." }
-
-continuation:
-  max_continuations: 25
-  message: "Finish protocol work: {summary}"
+        on_violation:
+          action: deny
+          reason: "Read {file_path} before writing."
 ```
 
-- `on` is a tool-call pattern (name plus optional argument conditions).
-- `when` conditions a post-execution transition on the tool result (success,
-  error, or content match), so an error can route to a different state.
-- `emit` injects a reminder (seam ③) subject to the machine's cooldown.
-- `on_violation` selects `deny` (block with feedback), `ask` (suspend for
-  approval), or `warn` (allow but inject guidance).
-- `continuation` steers the run until every machine instance reaches a terminal
-  state, up to a cap (seam ④).
+`on_violation` 属于 BeforeTool；`when`、`to`、`update` 和 transition `emit` 属于 AfterTool，因此失败的写入不会错误推进状态。
 
-## Verification
+### 通用 reminder
 
-- **Persistence** — write a transition, restart the process, and confirm a gate
-  reads the state back after seam ① re-hydration.
-- **Atomicity** — inject a finish failure and confirm the transition, reminder,
-  metrics, tool result, and `RunState` are all present or all absent.
-- **Transactionality** — multiple machines writing the same scoped key in one
-  step commit without conflict (Disjoint + fold); a genuine conflict yields
-  `StateConflict` with no state committed.
-- **Restart safety** — suspend for approval, kill the process, recover, resume,
-  and confirm the machine advances (the approved call replays); resume against a
-  changed machine definition fails closed on fingerprint.
-- **Scope lifecycle** — a thread machine survives across runs; a run machine
-  starts empty each run.
-- **Behavior** — write-before-read is denied and the model corrects to
-  read-then-write; a warn reminder reaches the next model turn; a continuation
-  nudge keeps the run going until terminal.
+```yaml
+machines:
+  - name: progress-reminder
+    scope: thread
+    key: ""
+    initial: tracking
+    transitions:
+      - on: { event: step.after_inference }
+        from: tracking
+        to: tracking
+        update:
+          increment: [steps_since_management]
 
-## Guardrails touched
+      - on: { event: step.before_inference }
+        from: tracking
+        to: tracking
+        counters:
+          steps_since_management: { gte: 10 }
+        emit:
+          target: context
+          content: "Review active work before continuing."
+          cooldown_steps: 10
+        update:
+          reset: [steps_since_management]
+```
 
-G1/G13 (commit is the single durable write; state replays from commands),
-G9/G21 (permission is the only authorization; gates and reminders never grant),
-G30 (every contributed id is within the declared `CapabilityBound`),
-G31/G32 (one `RunState` authority written once; replay reads the fact log).
+`cooldown_steps` 使用已完成 inference step 的单调计数；它不是消息数或工具结果数。旧字段 `cooldown_turns` 只作为反序列化兼容别名。
+
+### 外部事实适配
+
+TODO 和 background task 可使用相同机制，不增加专用动作：
+
+```yaml
+# 适配器事件示例；事件名和 data 都属于配置词汇
+on: { event: todo.changed }
+update:
+  capture:
+    snapshot: "{event.data.snapshot}"
+
+on: { event: background.completed }
+emit:
+  target: context
+  content: "Background result is ready: {event.data.summary}"
+```
+
+当前 runtime 原生提供四个 step lifecycle 事件。TODO/background/compaction 适配器只需发布同形的 `{name, data}` 事实；纯 `event_evaluate` API 已可处理，业务适配器不应写入 State Machine 内核。
+
+## 持久化与消息语义
+
+| 内容 | scope | 行为 |
+|---|---|---|
+| Machine instance | `run` / `thread` | 按机器配置持久化 |
+| Metrics / violation log | `thread` | 跨 run 审计 |
+| Emit throttle | `thread` | cooldown 跨 run 单调 |
+| Context reminder | request-only | 推理请求消费后清除，不进入 transcript |
+| Conversation emit | conversation | 与工具结果一起提交并回放 |
+
+旧的字符串实例（`machine[key] = "read"`）会无损迁移为 `{state:"read"}`，新增的 `data/counters` 默认为空。
+
+## 验证点
+
+- 写前未读：工具未执行，模型收到明确 violation。
+- 读后连续写：两次写均允许，状态保持 `written`。
+- 工具失败：不执行仅限成功结果的 transition。
+- scope：`thread` 跨 run 保留，`run` 在新 run 清空。
+- lifecycle reminder：下一次模型请求可见，commit transcript 不可见，消费后清除。
+- cooldown：按 completed step 计算，不受一个 step 内工具数量影响。
+- replay：旧实例可迁移，commit 后状态可重建。

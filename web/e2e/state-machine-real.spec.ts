@@ -5,16 +5,20 @@ import { PRESETS } from "../src/components/agent/state-machine-presets";
 // runtime on a real model (KIMI): we build an agent with the exact `read-before-write`
 // machine the editor inserts, publish it, and drive the real model to write a file WITHOUT
 // reading first — the state machine's `deny` must block the tool call. This closes the loop
-// editor-config → published agent → real run → enforcement. Self-gates on KIMI_KEY.
+// editor-config → published agent → real run → enforcement. It can either enter
+// a fresh KIMI_KEY or reuse a previously validated local vault credential.
 
 const KIMI = process.env.KIMI_KEY ?? "";
-test.skip(!KIMI, "needs KIMI_KEY to drive the state machine on a real model");
+const USE_EXISTING_KIMI = process.env.KIMI_EXISTING_CREDENTIAL === "1";
+test.skip(!KIMI && !USE_EXISTING_KIMI, "needs KIMI_KEY or KIMI_EXISTING_CREDENTIAL=1");
 
 async function configureKimi(request: APIRequestContext) {
   await request.put("/v1/config/providers/kimi", { data: { id: "kimi", slug: "kimi", display_name: "Kimi", version: 1 } });
   await request.put("/v1/config/endpoints/kimi-ep", { data: { id: "kimi-ep", provider_id: "kimi", dialect: "anthropic_messages", base_url: "https://api.kimi.com/coding/v1/", timeout_secs: 60, display_name: "Kimi", version: 1 } });
   await request.post("/v1/config/offerings", { data: { model_id: "kimi-k2-0711-preview", provider_id: "kimi", protocol_endpoint_id: "kimi-ep", dialect: "anthropic_messages", upstream_model: null } });
-  await request.post("/v1/config/credentials", { data: { workspace_id: "wrkspc_default", kind: "vault", provider_id: "kimi", secret: KIMI } });
+  if (KIMI) {
+    await request.post("/v1/config/credentials", { data: { workspace_id: "wrkspc_default", kind: "vault", provider_id: "kimi", secret: KIMI } });
+  }
 }
 
 test("read-before-write state machine blocks an unread write at runtime (real model)", async ({ request }) => {

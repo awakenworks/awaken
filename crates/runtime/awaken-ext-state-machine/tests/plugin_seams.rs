@@ -37,6 +37,24 @@ async fn after_tool(
     hook.on_phase(&ctx, &[], store).await
 }
 
+async fn phase(
+    hook: &std::sync::Arc<dyn PhaseHook>,
+    step: usize,
+    kind: PhaseKind,
+    store: &Store,
+) -> HookReaction {
+    hook.on_phase(
+        &PhaseContext {
+            run_id: RunId("r".into()),
+            step,
+            kind,
+        },
+        &[],
+        store,
+    )
+    .await
+}
+
 const READ_BEFORE_WRITE: &str = r#"{"machines":[{
     "name":"rbw","scope":"thread","key":"{file_path}","initial":"unread","terminal":["written"],
     "transitions":[
@@ -96,9 +114,9 @@ fn manifest_admits_resolved_contributions() {
     assert_eq!(manifest.id, "state_machine");
     assert!(enforce_bound(&manifest, &contributions).is_ok());
     assert_eq!(contributions.tool_gates.len(), 1);
-    assert_eq!(contributions.phase_hooks.len(), 1);
+    assert_eq!(contributions.phase_hooks.len(), 5);
     assert_eq!(contributions.run_end_guards.len(), 1);
-    assert_eq!(contributions.state_keys.len(), 5);
+    assert_eq!(contributions.state_keys.len(), 6);
 }
 
 #[test]
@@ -341,17 +359,24 @@ async fn observer_records_asked_on_approved_ask_call() {
 
 #[tokio::test]
 async fn emit_cooldown_throttles_repeat_reminders() {
-    // A self-loop transition that emits every fire, with a cooldown of 2 ticks:
-    // over three consecutive calls the middle reminder is throttled.
+    // A self-loop transition that emits every fire, with a cooldown of two
+    // completed inference steps: over three steps the middle reminder is throttled.
     let cfg = r#"{"machines":[{"name":"m","scope":"run","key":"{file_path}","initial":"editing",
         "transitions":[{"on":"Edit(file_path ~ \"*\")","from":"editing","to":"editing",
-            "emit":{"target":"system","content":"check {file_path}","cooldown_turns":2}}]}]}"#;
+            "emit":{"target":"system","content":"check {file_path}","cooldown_steps":2}}]}]}"#;
     let p = plugin(cfg);
     let contributions = p.resolve();
     let observer = &contributions.phase_hooks[0];
+    let after_inference = contributions
+        .phase_hooks
+        .iter()
+        .find(|hook| {
+            hook.point() == awaken_runtime_contract::plugin::PhaseHookPoint::AfterInference
+        })
+        .unwrap();
     let mut store = Store::new();
     let mut emitted = 0;
-    for _ in 0..3 {
+    for step in 0..3 {
         let reaction = after_tool(
             observer,
             &call("Edit", json!({"file_path": "a.rs"})),
@@ -361,6 +386,8 @@ async fn emit_cooldown_throttles_repeat_reminders() {
         .await;
         emitted += reaction.messages.len();
         apply(&mut store, &reaction.state);
+        let tick = phase(after_inference, step, PhaseKind::AfterInference, &store).await;
+        apply(&mut store, &tick.state);
     }
     assert_eq!(
         emitted, 2,

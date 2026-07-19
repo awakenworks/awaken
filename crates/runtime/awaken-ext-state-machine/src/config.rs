@@ -2,12 +2,15 @@
 //! immutable [`Machine`] model.
 
 use awaken_agent_contract::agent::message::Role;
+use std::collections::BTreeMap;
+
 use awaken_tool_pattern::parse_pattern;
 use serde::Deserialize;
 
 use crate::machine::{
-    Emit, EmitTarget, KeyNormalizer, KeyTemplate, KeyTemplateError, Machine, MachineScope,
-    Transition, Violation, ViolationAction,
+    CounterCondition, Emit, EmitTarget, InstanceUpdate, KeyNormalizer, KeyTemplate,
+    KeyTemplateError, Machine, MachineScope, Transition, TransitionTrigger, Violation,
+    ViolationAction,
 };
 use crate::result::{ContentMatcher, ResultMatcher, StatusMatcher};
 
@@ -78,15 +81,46 @@ pub enum KeyNormalizerEntry {
 #[derive(Debug, Clone, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TransitionEntry {
-    pub on: String,
+    pub on: TriggerEntry,
     pub from: FromEntry,
     pub to: String,
     #[serde(default)]
     pub when: Option<WhenEntry>,
     #[serde(default)]
+    pub counters: BTreeMap<String, CounterConditionEntry>,
+    #[serde(default)]
+    pub update: UpdateEntry,
+    #[serde(default)]
     pub emit: Option<EmitEntry>,
     #[serde(default)]
     pub on_violation: Option<ViolationEntry>,
+}
+
+/// A string keeps the existing tool-pattern DSL. Generic runtime events are
+/// explicit objects so an event named `write` can never weaken a tool gate.
+#[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(untagged)]
+pub enum TriggerEntry {
+    Tool(String),
+    Event { event: String },
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default)]
+pub struct CounterConditionEntry {
+    pub gte: Option<u64>,
+    pub lte: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default)]
+pub struct UpdateEntry {
+    pub capture: BTreeMap<String, String>,
+    pub increment: Vec<String>,
+    pub reset: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -119,7 +153,8 @@ pub struct EmitEntry {
     pub target: EmitTargetEntry,
     pub content: String,
     #[serde(default)]
-    pub cooldown_turns: u32,
+    #[serde(alias = "cooldown_turns")]
+    pub cooldown_steps: u32,
     #[serde(default)]
     pub role: Option<RoleEntry>,
 }
@@ -128,6 +163,7 @@ pub struct EmitEntry {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum EmitTargetEntry {
+    Context,
     System,
     #[default]
     SuffixSystem,
@@ -170,6 +206,12 @@ pub enum StateMachineConfigError {
     Status(String),
     #[error("duplicate machine name `{0}`")]
     DuplicateMachine(String),
+    #[error("event transition `{0}` cannot use a tool-result `when` condition")]
+    EventResultCondition(String),
+    #[error("event transition `{0}` reminders must target `context`")]
+    EventEmitTarget(String),
+    #[error("counter `{name}` has gte {gte} greater than lte {lte}")]
+    CounterRange { name: String, gte: u64, lte: u64 },
 }
 
 impl StateMachineConfig {
@@ -235,27 +277,81 @@ impl MachineEntry {
 
 impl TransitionEntry {
     fn compile(self) -> Result<Transition, StateMachineConfigError> {
-        let pattern = parse_pattern(&self.on).map_err(|e| StateMachineConfigError::Pattern {
-            pattern: self.on.clone(),
-            message: e.to_string(),
-        })?;
+        let (pattern_text, event) = match self.on {
+            TriggerEntry::Tool(pattern) => (pattern, false),
+            TriggerEntry::Event { event } => (event, true),
+        };
+        let pattern =
+            parse_pattern(&pattern_text).map_err(|e| StateMachineConfigError::Pattern {
+                pattern: pattern_text.clone(),
+                message: e.to_string(),
+            })?;
         let from = match self.from {
             FromEntry::One(s) => vec![s],
             FromEntry::Many(v) => v,
         };
+        if event && self.when.is_some() {
+            return Err(StateMachineConfigError::EventResultCondition(pattern_text));
+        }
+        for (name, condition) in &self.counters {
+            if let (Some(gte), Some(lte)) = (condition.gte, condition.lte)
+                && gte > lte
+            {
+                return Err(StateMachineConfigError::CounterRange {
+                    name: name.clone(),
+                    gte,
+                    lte,
+                });
+            }
+        }
         let when = self.when.map(compile_when).transpose()?;
         let emit = self.emit.map(compile_emit).transpose()?;
+        if event
+            && emit
+                .as_ref()
+                .is_some_and(|emit| emit.target != EmitTarget::Context)
+        {
+            return Err(StateMachineConfigError::EventEmitTarget(pattern_text));
+        }
+        let update = InstanceUpdate {
+            capture: self
+                .update
+                .capture
+                .into_iter()
+                .map(|(name, template)| Ok((name, KeyTemplate::parse(&template)?)))
+                .collect::<Result<_, StateMachineConfigError>>()?,
+            increment: self.update.increment,
+            reset: self.update.reset,
+        };
         let on_violation = self
             .on_violation
             .map(compile_violation)
             .transpose()?
             .unwrap_or_default();
         Ok(Transition {
-            pattern,
+            trigger: if event {
+                TransitionTrigger::Event(pattern)
+            } else {
+                TransitionTrigger::Tool(pattern)
+            },
             from,
             to: self.to,
             when,
+            counters: self
+                .counters
+                .into_iter()
+                .map(|(name, condition)| {
+                    (
+                        name,
+                        CounterCondition {
+                            gte: condition.gte,
+                            lte: condition.lte,
+                        },
+                    )
+                })
+                .collect(),
             emit,
+            update,
             on_violation,
         })
     }
@@ -293,13 +389,14 @@ fn compile_when(when: WhenEntry) -> Result<ResultMatcher, StateMachineConfigErro
 fn compile_emit(emit: EmitEntry) -> Result<Emit, StateMachineConfigError> {
     Ok(Emit {
         target: match emit.target {
+            EmitTargetEntry::Context => EmitTarget::Context,
             EmitTargetEntry::System => EmitTarget::System,
             EmitTargetEntry::SuffixSystem => EmitTarget::SuffixSystem,
             EmitTargetEntry::Session => EmitTarget::Session,
             EmitTargetEntry::Conversation => EmitTarget::Conversation,
         },
         content: KeyTemplate::parse(&emit.content)?,
-        cooldown_turns: emit.cooldown_turns,
+        cooldown_steps: emit.cooldown_steps,
         role: emit.role.map(|r| match r {
             RoleEntry::User => Role::User,
             RoleEntry::Assistant => Role::Assistant,
@@ -475,6 +572,57 @@ machines:
         assert!(matches!(
             StateMachineConfig::from_yaml_str("machines: [ : : ]").unwrap_err(),
             StateMachineConfigError::Parse(_)
+        ));
+    }
+
+    #[test]
+    fn compiles_generic_event_updates_and_context_reminder() {
+        let cfg = r#"{"machines":[{"name":"todo","key":"","initial":"tracking",
+            "transitions":[
+              {"on":{"event":"step.after_inference"},"from":"tracking","to":"tracking",
+               "update":{"increment":["steps"]}},
+              {"on":{"event":"step.before_inference"},"from":"tracking","to":"tracking",
+               "counters":{"steps":{"gte":10}},
+               "emit":{"target":"context","content":"review todos"},
+               "update":{"reset":["steps"]}}
+            ]}]}"#;
+        let machine = &StateMachineConfig::from_json_str(cfg)
+            .unwrap()
+            .into_machines()
+            .unwrap()[0];
+        assert_eq!(machine.transitions.len(), 2);
+        assert!(matches!(
+            machine.transitions[0].trigger,
+            TransitionTrigger::Event(_)
+        ));
+        assert_eq!(machine.transitions[0].update.increment, ["steps"]);
+        assert_eq!(machine.transitions[1].counters["steps"].gte, Some(10));
+        assert_eq!(
+            machine.transitions[1].emit.as_ref().unwrap().target,
+            EmitTarget::Context
+        );
+    }
+
+    #[test]
+    fn rejects_result_condition_or_committed_emit_on_event_transition() {
+        let result_when = r#"{"machines":[{"name":"m","initial":"a","transitions":[
+            {"on":{"event":"step.started"},"from":"a","to":"b","when":"success"}]}]}"#;
+        assert!(matches!(
+            StateMachineConfig::from_json_str(result_when)
+                .unwrap()
+                .into_machines()
+                .unwrap_err(),
+            StateMachineConfigError::EventResultCondition(_)
+        ));
+        let conversation_emit = r#"{"machines":[{"name":"m","initial":"a","transitions":[
+            {"on":{"event":"step.started"},"from":"a","to":"b",
+             "emit":{"target":"conversation","content":"x"}}]}]}"#;
+        assert!(matches!(
+            StateMachineConfig::from_json_str(conversation_emit)
+                .unwrap()
+                .into_machines()
+                .unwrap_err(),
+            StateMachineConfigError::EventEmitTarget(_)
         ));
     }
 }

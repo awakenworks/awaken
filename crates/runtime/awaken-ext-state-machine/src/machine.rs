@@ -6,6 +6,7 @@
 //! per-resource rather than globally. The runtime instance state lives in
 //! [`crate::state`]; this module only holds the immutable definition.
 
+use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 
 use awaken_agent_contract::agent::message::Role;
@@ -83,19 +84,57 @@ impl Default for Violation {
 /// A single transition.
 #[derive(Debug, Clone)]
 pub struct Transition {
-    pub pattern: ToolCallPattern,
+    pub trigger: TransitionTrigger,
     pub from: Vec<String>,
     pub to: String,
     /// Result condition (post-execution). `None` ⇒ success-only.
     pub when: Option<ResultMatcher>,
+    pub counters: BTreeMap<String, CounterCondition>,
     /// Optional context message injected when this transition fires.
     pub emit: Option<Emit>,
+    /// Generic instance updates applied when the transition fires.
+    pub update: InstanceUpdate,
     pub on_violation: Violation,
+}
+
+/// Numeric predicate over one durable instance counter.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CounterCondition {
+    pub gte: Option<u64>,
+    pub lte: Option<u64>,
+}
+
+impl CounterCondition {
+    #[must_use]
+    pub fn matches(self, value: u64) -> bool {
+        self.gte.is_none_or(|minimum| value >= minimum)
+            && self.lte.is_none_or(|maximum| value <= maximum)
+    }
+}
+
+/// What activates a transition. Tool transitions retain their two-phase
+/// semantics (gate before execution, advance after the result); event
+/// transitions fire atomically when the named runtime event is observed.
+#[derive(Debug, Clone)]
+pub enum TransitionTrigger {
+    Tool(ToolCallPattern),
+    Event(ToolCallPattern),
+}
+
+/// Generic durable updates. Captures are templates evaluated against the event
+/// context; counters are intentionally named data rather than TODO/task concepts.
+#[derive(Debug, Clone, Default)]
+pub struct InstanceUpdate {
+    pub capture: BTreeMap<String, KeyTemplate>,
+    pub increment: Vec<String>,
+    pub reset: Vec<String>,
 }
 
 /// Where an emitted context message is placed in the prompt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EmitTarget {
+    /// Request-only system context, never committed to the conversation.
+    Context,
     /// After the base system prompt.
     System,
     /// After the conversation history (default — least intrusive).
@@ -114,7 +153,7 @@ pub struct Emit {
     /// Message body; `{field}` placeholders are interpolated from tool args.
     pub content: KeyTemplate,
     /// Minimum steps between re-injections (dedup throttle).
-    pub cooldown_turns: u32,
+    pub cooldown_steps: u32,
     /// Message role for the `Session` / `Conversation` targets. `None` ⇒ `User`.
     /// Ignored for the system targets, whose role is always `System`.
     pub role: Option<Role>,
@@ -181,8 +220,25 @@ impl Machine {
         tool_name: &'a str,
         tool_args: &'a Value,
     ) -> impl Iterator<Item = &'a Transition> + 'a {
-        self.transitions.iter().filter(move |t| {
-            awaken_tool_pattern::pattern_matches(&t.pattern, tool_name, tool_args).is_match()
+        self.transitions.iter().filter(move |t| match &t.trigger {
+            TransitionTrigger::Tool(pattern) => {
+                awaken_tool_pattern::pattern_matches(pattern, tool_name, tool_args).is_match()
+            }
+            TransitionTrigger::Event(_) => false,
+        })
+    }
+
+    /// Event transitions matching a generic event name and its structured data.
+    pub fn matching_event_transitions<'a>(
+        &'a self,
+        event_name: &'a str,
+        event_data: &'a Value,
+    ) -> impl Iterator<Item = &'a Transition> + 'a {
+        self.transitions.iter().filter(move |t| match &t.trigger {
+            TransitionTrigger::Event(pattern) => {
+                awaken_tool_pattern::pattern_matches(pattern, event_name, event_data).is_match()
+            }
+            TransitionTrigger::Tool(_) => false,
         })
     }
 }
@@ -498,11 +554,13 @@ mod tests {
     #[test]
     fn transition_allows_from() {
         let t = Transition {
-            pattern: ToolCallPattern::tool("Write"),
+            trigger: TransitionTrigger::Tool(ToolCallPattern::tool("Write")),
             from: vec!["read".into()],
             to: "written".into(),
             when: None,
+            counters: BTreeMap::new(),
             emit: None,
+            update: InstanceUpdate::default(),
             on_violation: Violation::default(),
         };
         assert!(t.allows_from("read"));

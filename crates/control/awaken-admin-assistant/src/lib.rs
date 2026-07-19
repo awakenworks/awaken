@@ -138,6 +138,13 @@ it for the model and/or `description` to re-describe it. Use it when the operato
 rename or re-explain a tool.
 - Permissions: prefer least privilege. If the operator wants approval or bans, put it in \
 the `permission` section (a `default_behavior` of `ask`/`deny`, and/or ordered `rules`).
+- State Machine: first state the operator's intent, then encode only generic mechanisms from \
+the advertised schema. Tool `on_violation` gates BEFORE execution; `when` advances AFTER the \
+result. If an operation must remain repeatable after moving to its destination state, INCLUDE \
+THAT DESTINATION IN `from` (for read-before-write, write uses `[read, written]`). Use `scope: \
+thread` only for state that must cross runs; otherwise use `run`. Lifecycle reminders use \
+event triggers plus request-only `emit.target: context` and `cooldown_steps`. Never claim a \
+custom TODO/background event works unless the platform advertises its fact adapter.
 - Select the minimum tools the task needs; omit tools entirely when none are needed.
 - Only pin a model if the operator names one; otherwise leave it auto-bound.
 - You can fill in EVERY part of a config, matching the manual editor: besides tools and \

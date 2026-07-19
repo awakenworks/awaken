@@ -47,7 +47,7 @@ test("agent editor Tools/Behavior are data-driven from /v1/capabilities", async 
   // Behavior tab → the schema-carrying plugins from capabilities.plugins, rendered as
   // named behavior cards (not raw ids).
   await page.getByRole("tab", { name: "Behavior" }).click();
-  for (const title of ["Auto-compaction", "Memory recall", "Tool-call ordering"]) {
+  for (const title of ["Auto-compaction", "Memory recall", "Agent behavior state machine"]) {
     await expect(page.locator(".behavior-card", { hasText: title })).toBeVisible();
   }
 });
@@ -92,6 +92,25 @@ test("enabling a behavior renders a schema-driven form (not raw JSON)", async ({
   await page.locator(".behavior-card", { hasText: "Auto-compaction" }).getByRole("switch").check();
   // The schema-driven form exposes compact's fields (e.g. keep_last).
   await expect(page.getByText("keep_last")).toBeVisible();
+});
+
+test("State Machine editor exposes scope, pre-execution gate, lifecycle events and request context", async ({ page }) => {
+  await page.goto("/w/default/agents/new");
+  await page.getByRole("tab", { name: "Behavior" }).click();
+  const card = page.locator(".behavior-card", { hasText: "Agent behavior state machine" });
+  await card.getByRole("switch").check();
+
+  await card.getByRole("button", { name: /Read before write/ }).click();
+  await expect(card.getByText("1 · Instance & lifetime")).toBeVisible();
+  await expect(card.getByText("2 · Trigger, guard & effect")).toBeVisible();
+  await expect(card.getByText("pre + post").first()).toBeVisible();
+  await expect(card.getByLabel("Scope")).toHaveValue("thread");
+  await expect(card.getByLabel("Before run action").last()).toHaveValue("deny");
+
+  await card.getByRole("button", { name: /Todo reminder/ }).click();
+  await expect(card.locator('input[value="step.before_inference"]')).toBeVisible();
+  await expect(card.getByLabel("Reminder target").last()).toBeDisabled();
+  await expect(card.getByPlaceholder("cooldown steps").last()).toHaveValue("5");
 });
 
 test("gated Observe page is truth-driven: probes the endpoint and shows the gate", async ({ page }) => {

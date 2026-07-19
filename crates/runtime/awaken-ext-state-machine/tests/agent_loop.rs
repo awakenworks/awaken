@@ -41,16 +41,16 @@ const READ_BEFORE_WRITE: &str = r#"{"machines":[{
          "on_violation":{"action":"deny","reason":"Read {file_path} before writing."}}
     ]}],"continuation":{"max_continuations":5,"message":"Finish: {summary}"}}"#;
 
-/// A model that replays a scripted sequence of turns, one per inference.
+/// A model that replays a scripted sequence of responses, one per inference.
 struct ScriptedLlm {
-    turns: Mutex<Vec<AssistantOutput>>,
+    responses: Mutex<Vec<AssistantOutput>>,
     step: AtomicUsize,
 }
 
 impl ScriptedLlm {
-    fn new(turns: Vec<AssistantOutput>) -> Self {
+    fn new(responses: Vec<AssistantOutput>) -> Self {
         Self {
-            turns: Mutex::new(turns),
+            responses: Mutex::new(responses),
             step: AtomicUsize::new(0),
         }
     }
@@ -63,8 +63,8 @@ impl LlmExecutor for ScriptedLlm {
         _request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
         let idx = self.step.fetch_add(1, Ordering::SeqCst);
-        let turns = self.turns.lock().unwrap();
-        let output = turns
+        let responses = self.responses.lock().unwrap();
+        let output = responses
             .get(idx)
             .cloned()
             .unwrap_or_else(|| AssistantOutput::text("done"));
@@ -137,7 +137,7 @@ fn activation() -> RunActivation {
 
 #[tokio::test]
 async fn deny_then_corrected_read_write_reaches_terminal() {
-    // Scripted turns: write (denied) → read → write → (implicit text "done").
+    // Scripted steps: write (denied) → read → write → (implicit text "done").
     let llm = ScriptedLlm::new(vec![
         AssistantOutput::from_tool_calls(vec![tool_call("c1", "Write", "a.rs")]),
         AssistantOutput::from_tool_calls(vec![tool_call("c2", "Read", "a.rs")]),
@@ -210,7 +210,7 @@ async fn warn_message_reaches_the_next_model_turn() {
 
     let committed = commit.committed();
     // The warn call was allowed (the write executed) and a warning reached the
-    // transcript for the next turn.
+    // transcript for the next step.
     assert!(
         committed
             .messages
@@ -231,7 +231,7 @@ const WORK_FLOW: &str = r#"{"machines":[{
 
 #[tokio::test]
 async fn continuation_nudge_keeps_running_until_terminal() {
-    // Start (idle→pending), then a premature text turn (guard steers because the
+    // Start (idle→pending), then a premature text response (guard steers because the
     // instance is non-terminal), then Finish (pending→done), then end.
     let llm = ScriptedLlm::new(vec![
         AssistantOutput::from_tool_calls(vec![ToolCall {
@@ -337,7 +337,7 @@ async fn config_section_drives_the_machine_set() {
 #[tokio::test]
 async fn no_section_leaves_calls_unconstrained() {
     // The same empty plugin with no config section imposes no constraint: the
-    // write executes on the first turn and the run ends naturally.
+    // write executes in the first step and the run ends naturally.
     let llm = ScriptedLlm::new(vec![AssistantOutput::from_tool_calls(vec![tool_call(
         "c1", "Write", "a.rs",
     )])]);
@@ -387,33 +387,33 @@ async fn malformed_section_fails_the_run_closed() {
 
 // ---------------------------------------------------------------------------
 // Direct model-visibility: capture each inference request and assert an emitted
-// message is actually in the message list the model is shown on the next turn
+// message is actually in the message list the model is shown in the next step
 // (not merely committed to the transcript).
 // ---------------------------------------------------------------------------
 
 /// A scripted model that also records the message list of every request it is
-/// given, so a test can assert exactly what the model saw on each turn.
+/// given, so a test can assert exactly what the model saw in each step.
 struct RecordingLlm {
-    turns: Mutex<Vec<AssistantOutput>>,
+    responses: Mutex<Vec<AssistantOutput>>,
     step: AtomicUsize,
     seen: Mutex<Vec<Vec<Message>>>,
 }
 
 impl RecordingLlm {
-    fn new(turns: Vec<AssistantOutput>) -> Self {
+    fn new(responses: Vec<AssistantOutput>) -> Self {
         Self {
-            turns: Mutex::new(turns),
+            responses: Mutex::new(responses),
             step: AtomicUsize::new(0),
             seen: Mutex::new(Vec::new()),
         }
     }
 
-    /// The neutral message list shown to the model on inference `turn` (0-based).
-    fn request_texts(&self, turn: usize) -> Vec<String> {
+    /// The neutral message list shown to the model on inference `step` (0-based).
+    fn request_texts(&self, step: usize) -> Vec<String> {
         self.seen
             .lock()
             .unwrap()
-            .get(turn)
+            .get(step)
             .map(|msgs| msgs.iter().map(Message::text_content).collect())
             .unwrap_or_default()
     }
@@ -425,7 +425,7 @@ impl LlmExecutor for RecordingLlm {
         &self,
         request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
-        // Record the neutral messages the runtime assembled for this turn.
+        // Record the neutral messages the runtime assembled for this step.
         let messages = request
             .messages
             .iter()
@@ -438,8 +438,8 @@ impl LlmExecutor for RecordingLlm {
         self.seen.lock().unwrap().push(messages);
 
         let idx = self.step.fetch_add(1, Ordering::SeqCst);
-        let turns = self.turns.lock().unwrap();
-        let output = turns
+        let responses = self.responses.lock().unwrap();
+        let output = responses
             .get(idx)
             .cloned()
             .unwrap_or_else(|| AssistantOutput::text("done"));
@@ -459,7 +459,7 @@ const EMIT_ON_WRITE: &str = r#"{"machines":[{
 #[tokio::test]
 async fn warn_emit_is_in_the_models_next_request() {
     // A warn violation on `Write` emits guidance; the model must literally see it
-    // on the turn after the tool call — not just have it committed.
+    // in the step after the tool call — not just have it committed.
     let llm = Arc::new(RecordingLlm::new(vec![AssistantOutput::from_tool_calls(
         vec![tool_call("c1", "Write", "a.rs")],
     )]));
@@ -475,7 +475,7 @@ async fn warn_emit_is_in_the_models_next_request() {
     let state = runtime.execute(activation(), context).await.expect("runs");
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
 
-    // Turn 0 (before the tool call) must NOT contain the emit; turn 1 (right after
+    // Step 0 (before the tool call) must NOT contain the emit; step 1 (right after
     // the Write) MUST — proving it was injected between the two model calls.
     let emit = "writing unread a.rs";
     assert!(
@@ -520,6 +520,102 @@ async fn success_transition_emit_is_in_the_models_next_request() {
     );
 }
 
+const STEP_REMINDER: &str = r#"{"machines":[{
+    "name":"step-reminder","scope":"run","key":"","initial":"tracking",
+    "transitions":[
+      {"on":{"event":"step.after_inference"},"from":"tracking","to":"tracking",
+       "update":{"increment":["steps"]}},
+      {"on":{"event":"step.before_inference"},"from":"tracking","to":"tracking",
+       "counters":{"steps":{"gte":1}},
+       "emit":{"target":"context","content":"check progress before step {step}"},
+       "update":{"reset":["steps"]}}
+    ]}]}"#;
+
+#[tokio::test]
+async fn lifecycle_reminder_is_request_only_and_visible_on_the_next_step() {
+    let llm = Arc::new(RecordingLlm::new(vec![AssistantOutput::from_tool_calls(
+        vec![tool_call("c1", "Write", "a.rs")],
+    )]));
+    let plugin =
+        StateMachinePlugin::from_config(StateMachineConfig::from_json_str(STEP_REMINDER).unwrap())
+            .unwrap();
+    let runtime = Runtime::new()
+        .with_llm(llm.clone())
+        .with_tool(Arc::new(OkTool("Write")))
+        .with_plugin(Arc::new(plugin));
+    install(&runtime);
+
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
+    let state = runtime.execute(activation(), context).await.expect("runs");
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
+
+    let reminder = "check progress before step 1";
+    assert!(!llm.request_texts(0).iter().any(|text| text == reminder));
+    assert!(llm.request_texts(1).iter().any(|text| text == reminder));
+    assert!(
+        !commit
+            .committed()
+            .messages
+            .iter()
+            .any(|message| message.text_content() == reminder),
+        "request-only reminder must not enter the transcript"
+    );
+}
+
+const ONE_SHOT_STEP_REMINDER: &str = r#"{"machines":[{
+    "name":"one-shot-reminder","scope":"run","key":"","initial":"tracking",
+    "transitions":[
+      {"on":{"event":"step.after_inference"},"from":"tracking","to":"tracking",
+       "update":{"increment":["steps"]}},
+      {"on":{"event":"step.before_inference"},"from":"tracking","to":"reminded",
+       "counters":{"steps":{"gte":1}},
+       "emit":{"target":"context","content":"one request only"}}
+    ]}]}"#;
+
+#[tokio::test]
+async fn lifecycle_reminder_is_removed_after_the_request_consumes_it() {
+    let llm = Arc::new(RecordingLlm::new(vec![
+        AssistantOutput::from_tool_calls(vec![tool_call("c1", "Write", "a.rs")]),
+        AssistantOutput::from_tool_calls(vec![tool_call("c2", "Write", "b.rs")]),
+    ]));
+    let plugin = StateMachinePlugin::from_config(
+        StateMachineConfig::from_json_str(ONE_SHOT_STEP_REMINDER).unwrap(),
+    )
+    .unwrap();
+    let runtime = Runtime::new()
+        .with_llm(llm.clone())
+        .with_tool(Arc::new(OkTool("Write")))
+        .with_plugin(Arc::new(plugin));
+    install(&runtime);
+
+    let state = runtime
+        .execute(
+            activation(),
+            RuntimeRunContext::new().with_commit(Arc::new(MemoryCommitCoordinator::new())),
+        )
+        .await
+        .expect("runs");
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
+
+    assert!(
+        !llm.request_texts(0)
+            .iter()
+            .any(|text| text == "one request only")
+    );
+    assert!(
+        llm.request_texts(1)
+            .iter()
+            .any(|text| text == "one request only")
+    );
+    assert!(
+        !llm.request_texts(2)
+            .iter()
+            .any(|text| text == "one request only"),
+        "the request-only reminder must be cleared after one inference"
+    );
+}
+
 /// A gate that awaits the `Await` tool pending an out-of-band decision, and allows
 /// everything else — so a real tool runs (and the FSM emits) before the await.
 struct AwaitTheAwaitTool;
@@ -555,9 +651,9 @@ fn await_resume_command() -> ResumeCommand {
 
 #[tokio::test]
 async fn emit_survives_a_await_and_is_in_the_resumed_request() {
-    // Turn 0 `Write` executes and the FSM emits guidance; turn 1 awaits on a gated
-    // `Await` tool. After resume, the emit (committed on turn 0, before the await)
-    // must still be in the message list the model is shown on the resumed turn.
+    // Step 0 `Write` executes and the FSM emits guidance; step 1 awaits on a gated
+    // `Await` tool. After resume, the emit (committed in step 0, before the await)
+    // must still be in the message list the model is shown in the resumed step.
     let llm = Arc::new(RecordingLlm::new(vec![
         AssistantOutput::from_tool_calls(vec![tool_call("c1", "Write", "a.rs")]),
         AssistantOutput::from_tool_calls(vec![tool_call("c2", "Await", "a.rs")]),
@@ -592,7 +688,7 @@ async fn emit_survives_a_await_and_is_in_the_resumed_request() {
     assert_eq!(ended, RunState::Ended(EndCause::NaturalEnd));
 
     // The resumed inference (index 2 across the whole run) still carries the emit
-    // committed on turn 0 — proof it survived the await boundary.
+    // committed in step 0 — proof it survived the await boundary.
     let emit = "saved a.rs; read it to verify";
     let resumed = llm.request_texts(2);
     assert!(
