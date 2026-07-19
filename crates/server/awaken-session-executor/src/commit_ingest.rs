@@ -462,11 +462,24 @@ mod postgres_tests {
             .expect("HTTP commit task joins")
             .expect("current HTTP claimed commit succeeds");
 
-        let recovered = store
-            .claim_run(&run, "worker-b", 100, 200)
-            .await
-            .expect("reclaim after commit")
-            .expect("guard release makes the expired run reclaimable");
+        // Dropping sqlx::Transaction queues ROLLBACK on its connection; it does
+        // not wait for PostgreSQL to acknowledge the rollback. The HTTP response
+        // can therefore win a very small race with the row-lock release. Poll as
+        // a real worker would, but keep the test strictly bounded.
+        let recovered = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Some(claimed) = store
+                    .claim_run(&run, "worker-b", 100, 200)
+                    .await
+                    .expect("reclaim after commit")
+                {
+                    break claimed;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("guard release makes the expired run reclaimable within five seconds");
         assert_eq!(recovered.lease.epoch, first.lease.epoch + 1);
         assert!(
             remote

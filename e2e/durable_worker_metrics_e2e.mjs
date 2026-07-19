@@ -1,22 +1,15 @@
 // Durable worker/dispatch OPERATIONAL METRICS — what the durable path actually
 // exports, scraped from the real Prometheus `/metrics` endpoint.
 //
-// FINDING (observability gap): the durable dispatch/worker layer emits NO
-// operational counters. There is no runs-claimed / runs-settled / runs-awaiting
-// counter, no queue-depth gauge, and no drive-duration histogram anywhere in the
-// dispatch pool or run-ingress crates. The ONLY metrics a server exports are:
+// This suite focuses on the brain's connection/lifecycle gauges exposed at the
+// Prometheus admin surface. Durable dispatch now also emits claim/settle/queue/
+// recovery/commit/fencing/in-flight metrics through the shared OTel recorder;
+// those are asserted over OTLP by dispatch_metrics_export_e2e.mjs and the stage
+// recovery suite. The two admin gauges asserted here are:
 //
-//   1. Prometheus text at `GET /metrics` (mounted by `with_brain_admin`,
-//      crates/bin/awaken-server/src/brain_admin.rs) — two CONNECTION/lifecycle
-//      gauges, not dispatch counters:
-//        - `awaken_brain_active_streams`  (gauge) in-flight requests; a foreground
-//          durable run holds its HTTP handler open while the dispatch worker drives
-//          it, so this gauge reflects durable in-flight work (KEDA autoscales on it).
-//        - `awaken_brain_draining`        (gauge) 1 while draining for scale-in.
-//   2. OTLP-only GenAI/tool instruments via `OtelMetricsRecorder`
-//      (crates/runtime/awaken-observability/src/metrics.rs): gen_ai.client.* and
-//      awaken.tool.execution.* — model/tool metrics, NOT durable-path metrics, and
-//      exported over OTLP only (never on `/metrics`). Covered by metrics_export_e2e.
+//   1. `awaken_brain_active_streams` — in-flight foreground requests; a durable
+//      request holds its handler open while the worker drives it.
+//   2. `awaken_brain_draining` — the scale-in lifecycle signal.
 //
 // So this test does NOT fabricate dispatch counters. It boots a DURABLE server
 // (AWAKEN_INGRESS=durable), drives real runs through the enqueue→claim→worker→commit
@@ -184,10 +177,6 @@ async function main() {
     console.log(
       'E2E PASS: durable worker path exports the /metrics connection+lifecycle gauges ' +
         'and they MOVE with durable work (active_streams, draining).',
-    );
-    console.log(
-      'GAP: no durable-dispatch operational counters exist — no runs-claimed/settled/awaiting ' +
-        'counter, no queue-depth gauge, no drive-duration histogram. See report / recommend adding.',
     );
   } finally {
     await stopServer(server);
