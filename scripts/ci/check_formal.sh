@@ -211,6 +211,7 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/credential-inventory" \
     -config formal/tla/CredentialInventory.cfg formal/tla/CredentialInventory.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/mcp-server" \
     -config formal/tla/McpServer.cfg formal/tla/McpServer.tla
   for trace_config in "$rendered_trace_dir"/RustTrace*.cfg; do

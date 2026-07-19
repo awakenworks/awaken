@@ -119,27 +119,29 @@ fn decode_lifecycle(data: &str) -> Result<SessionLifecycleFact, serde_json::Erro
 /// on read. Callers within this module treat it like any other unreadable row
 /// (the module's `.expect` convention for read failures), so a corrupt row fails
 /// loudly instead of returning a hollow session.
-fn decode(
+struct EncodedSessionRow {
     session_id: String,
     agent_id: String,
     model: String,
     title: Option<String>,
-    metadata_json: &str,
+    metadata_json: String,
     environment_id: String,
-    mcp_json: &str,
+    mcp_json: String,
     status: String,
     archived_at: Option<String>,
-) -> Result<PersistedSession, serde_json::Error> {
+}
+
+fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_json::Error> {
     Ok(PersistedSession {
-        session_id,
-        agent_id,
-        model,
-        title,
-        metadata: serde_json::from_str(metadata_json)?,
-        environment_id,
-        mcp_servers: serde_json::from_str(mcp_json)?,
-        status,
-        archived_at,
+        session_id: row.session_id,
+        agent_id: row.agent_id,
+        model: row.model,
+        title: row.title,
+        metadata: serde_json::from_str(&row.metadata_json)?,
+        environment_id: row.environment_id,
+        mcp_servers: serde_json::from_str(&row.mcp_json)?,
+        status: row.status,
+        archived_at: row.archived_at,
     })
 }
 
@@ -359,17 +361,17 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         let (agent_id, model, title, metadata_json, environment_id, mcp_json, status, archived_at) =
             raw;
         Some(
-            decode(
-                session_id.to_string(),
+            decode(EncodedSessionRow {
+                session_id: session_id.to_string(),
                 agent_id,
                 model,
                 title,
-                &metadata_json,
+                metadata_json,
                 environment_id,
-                &mcp_json,
+                mcp_json,
                 status,
                 archived_at,
-            )
+            })
             .expect("decode managed session"),
         )
     }
@@ -594,17 +596,17 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         let metadata_json: String = row.get("metadata_json");
         let mcp_json: String = row.get("mcp_json");
         Some(
-            decode(
-                session_id.to_string(),
-                row.get("agent_id"),
-                row.get("model"),
-                row.get("title"),
-                &metadata_json,
-                row.get("environment_id"),
-                &mcp_json,
-                row.get("status"),
-                row.get("archived_at"),
-            )
+            decode(EncodedSessionRow {
+                session_id: session_id.to_string(),
+                agent_id: row.get("agent_id"),
+                model: row.get("model"),
+                title: row.get("title"),
+                metadata_json,
+                environment_id: row.get("environment_id"),
+                mcp_json,
+                status: row.get("status"),
+                archived_at: row.get("archived_at"),
+            })
             .expect("decode managed session"),
         )
     }

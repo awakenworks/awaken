@@ -121,12 +121,16 @@ commit-msg:
 
 pre-push:
   commands:
-    check-all-full:
-      run: scripts/ci/check-all.sh
+    # Keep push latency bounded. Full workspace tests, formal verification,
+    # Postgres suites, frontend tests/build, and public-API rustdoc generation
+    # remain explicit checks:
+    #   scripts/ci/check-all.sh
+    #   scripts/ci/check_public_api.sh
+    documentation:
+      run: scripts/ci/check-docs.sh
 
-    # Public API surface fitness function (INVARIANTS G2/G6/G10). Heavier than the
-    # pre-commit checks (it builds rustdoc), so it runs on push. Self-skips if
-    # cargo-public-api is not installed; run with --bless to accept an intended
-    # surface change.
-    public-api:
-      run: scripts/ci/check_public_api.sh
+    rust-quick:
+      run: scripts/ci/check-rust.sh --quick
+
+    frontend-quick:
+      run: scripts/ci/check-frontend.sh --quick

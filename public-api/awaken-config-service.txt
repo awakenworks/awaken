@@ -2,28 +2,40 @@ pub mod awaken_config_service
 pub enum awaken_config_service::PublishError
 pub awaken_config_service::PublishError::Compile(alloc::string::String)
 pub awaken_config_service::PublishError::NotStored(alloc::string::String)
+pub awaken_config_service::PublishError::StaleGeneration(core::option::Option<u64>)
 pub awaken_config_service::PublishError::Store(alloc::string::String)
 pub awaken_config_service::PublishError::Unresolvable(alloc::string::String)
 pub struct awaken_config_service::ConfigPlane
 impl awaken_config_service::ConfigPlane
 pub fn awaken_config_service::ConfigPlane::catalog_for(&self, &awaken_tenancy::ScopeId) -> alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
+pub async fn awaken_config_service::ConfigPlane::complete_management_effect(&self, &awaken_tenancy::ScopeId, &str, &str) -> core::result::Result<(), alloc::string::String>
 pub async fn awaken_config_service::ConfigPlane::get(&self, &awaken_tenancy::ScopeId, &str) -> core::result::Result<core::option::Option<awaken_config_store::config::AgentConfig>, alloc::string::String>
+pub async fn awaken_config_service::ConfigPlane::get_management_audit(&self, &awaken_tenancy::ScopeId, &str, &str) -> core::result::Result<core::option::Option<awaken_config_store::store::ManagementAuditEntry>, alloc::string::String>
+pub async fn awaken_config_service::ConfigPlane::get_versioned(&self, &awaken_tenancy::ScopeId, &str) -> core::result::Result<core::option::Option<awaken_config_store::store::VersionedAgentConfig>, alloc::string::String>
 pub async fn awaken_config_service::ConfigPlane::list(&self, &awaken_tenancy::ScopeId) -> core::result::Result<alloc::vec::Vec<awaken_config_store::config::AgentConfig>, alloc::string::String>
+pub async fn awaken_config_service::ConfigPlane::mark_management_audit_committed(&self, &awaken_tenancy::ScopeId, &str, &str) -> core::result::Result<(), alloc::string::String>
 pub fn awaken_config_service::ConfigPlane::new(alloc::sync::Arc<awaken_config_service::ConfigService>, alloc::sync::Arc<dyn awaken_config_store::store::ScopedConfigRegistry>, alloc::sync::Arc<dyn awaken_config_service::ToolCatalogSource>) -> Self
+pub async fn awaken_config_service::ConfigPlane::pending_management_effects(&self, &awaken_tenancy::ScopeId) -> core::result::Result<alloc::vec::Vec<awaken_config_store::store::ManagementEffect>, alloc::string::String>
 pub async fn awaken_config_service::ConfigPlane::publish(&self, &awaken_tenancy::ScopeId, &str) -> core::result::Result<awaken_config_store::store::StoredPublication, awaken_config_service::PublishError>
 pub async fn awaken_config_service::ConfigPlane::put(&self, &awaken_tenancy::ScopeId, &awaken_config_store::config::AgentConfig) -> core::result::Result<(), alloc::string::String>
+pub async fn awaken_config_service::ConfigPlane::put_if_generation(&self, &awaken_tenancy::ScopeId, &awaken_config_store::config::AgentConfig, u64) -> core::result::Result<awaken_config_store::store::ConfigWrite, alloc::string::String>
+pub async fn awaken_config_service::ConfigPlane::put_with_audit(&self, &awaken_tenancy::ScopeId, &awaken_config_store::config::AgentConfig, &awaken_config_store::store::ManagementAuditRecord) -> core::result::Result<awaken_config_store::store::AuditedConfigWrite, alloc::string::String>
+pub async fn awaken_config_service::ConfigPlane::put_with_audit_effect(&self, &awaken_tenancy::ScopeId, &awaken_config_store::config::AgentConfig, &awaken_config_store::store::ManagementAuditRecord, core::option::Option<&awaken_config_store::store::ManagementEffect>) -> core::result::Result<awaken_config_store::store::AuditedConfigWrite, alloc::string::String>
 pub async fn awaken_config_service::ConfigPlane::reconcile(&self, &awaken_tenancy::ScopeId, &str) -> core::result::Result<bool, alloc::string::String>
+pub async fn awaken_config_service::ConfigPlane::record_management_audit(&self, &awaken_tenancy::ScopeId, &awaken_config_store::store::ManagementAuditRecord) -> core::result::Result<awaken_config_store::store::AuditedConfigWrite, alloc::string::String>
 pub fn awaken_config_service::ConfigPlane::registry_for(&self, &awaken_tenancy::ScopeId) -> awaken_config_store::store::ScopedConfig<dyn awaken_config_store::store::ScopedConfigRegistry>
 pub fn awaken_config_service::ConfigPlane::service(&self) -> &alloc::sync::Arc<awaken_config_service::ConfigService>
 pub fn awaken_config_service::ConfigPlane::validate(&self, &awaken_tenancy::ScopeId, &awaken_config_store::config::AgentConfig) -> core::result::Result<(), awaken_config_service::config_plane::ValidationIssue>
 pub struct awaken_config_service::ConfigService
 impl awaken_config_service::ConfigService
 pub async fn awaken_config_service::ConfigService::get(&self, &dyn awaken_config_store::store::ConfigRegistry, &str) -> core::result::Result<core::option::Option<awaken_config_store::config::AgentConfig>, alloc::string::String>
+pub async fn awaken_config_service::ConfigService::get_versioned(&self, &dyn awaken_config_store::store::ConfigRegistry, &str) -> core::result::Result<core::option::Option<awaken_config_store::store::VersionedAgentConfig>, alloc::string::String>
 pub fn awaken_config_service::ConfigService::installed(&self, &str) -> core::option::Option<awaken_runtime_contract::runnable::RunnableConfig>
 pub async fn awaken_config_service::ConfigService::list(&self, &dyn awaken_config_store::store::ConfigRegistry) -> core::result::Result<alloc::vec::Vec<awaken_config_store::config::AgentConfig>, alloc::string::String>
 pub fn awaken_config_service::ConfigService::new() -> Self
 pub async fn awaken_config_service::ConfigService::publish(&self, &dyn awaken_config_store::store::ConfigRegistry, &str, &[awaken_runtime_contract::resolved::ToolDescriptor]) -> core::result::Result<awaken_config_store::store::StoredPublication, awaken_config_service::PublishError>
 pub async fn awaken_config_service::ConfigService::put(&self, &dyn awaken_config_store::store::ConfigRegistry, &awaken_config_store::config::AgentConfig) -> core::result::Result<(), alloc::string::String>
+pub async fn awaken_config_service::ConfigService::put_if_generation(&self, &dyn awaken_config_store::store::ConfigRegistry, &awaken_config_store::config::AgentConfig, u64) -> core::result::Result<awaken_config_store::store::ConfigWrite, alloc::string::String>
 pub async fn awaken_config_service::ConfigService::reconcile(&self, &dyn awaken_config_store::store::ConfigRegistry, &str, &[awaken_runtime_contract::resolved::ToolDescriptor]) -> core::result::Result<bool, alloc::string::String>
 pub fn awaken_config_service::ConfigService::validate(&self, &awaken_config_store::config::AgentConfig, &[awaken_runtime_contract::resolved::ToolDescriptor]) -> core::result::Result<(), awaken_config_service::config_plane::ValidationIssue>
 pub async fn awaken_config_service::ConfigService::warm_install(&self, &dyn awaken_config_store::store::ScopedConfigRegistry, &awaken_tenancy::ScopeId) -> usize
