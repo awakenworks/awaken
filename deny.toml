@@ -176,3 +176,74 @@ wrappers = [
     "awaken-scenario-host",
 ]
 reason = "extensions sit on top; the runtime core must stay extension-agnostic (G2)"
+
+# ── Protocol adapters are LEAVES (Phase 0.2, neutral-core fitness function) ──────
+# A `protocol-*` crate is a pure wire translator (DTOs + routes + one neutral→wire
+# projection). Nothing may depend on it except a composition root that mounts it, the
+# service layer that assembles the managed adapter, or a sibling adapter over a shared
+# protocol base. Freezing the depender set here makes the ROOT DISEASE — a neutral port
+# living inside a protocol adapter, then consumed workspace-wide — fail the build: a new
+# reverse edge onto an adapter forces the port to move inward to a contract/ leaf first.
+
+# The shared transport base other protocol adapters build on (a `ProtocolRuntime` seam),
+# plus the composition roots + service layer that mount them.
+[[bans.deny]]
+name = "awaken-protocol-transport"
+wrappers = [
+    "awaken-protocol-a2a",
+    "awaken-protocol-ag-ui",
+    "awaken-protocol-ai-sdk",
+    "awaken-runtime-host",
+    "awaken-server",
+    "awaken-scenario-host",
+]
+reason = "protocol adapters are leaves; only composition roots + sibling adapters mount the transport base (Phase 0.2 neutral-core)"
+
+# Managed Agents adapter. runtime-host is the service layer that assembles the managed
+# host; control mounts its routes + reuses the wire ErrorResponse; cli/server/scenario
+# are composition roots.
+[[bans.deny]]
+name = "awaken-protocol-managed"
+wrappers = [
+    "awaken-runtime-host",
+    "awaken-control",
+    "awaken-cli",
+    "awaken-server",
+    "awaken-scenario-host",
+]
+reason = "protocol adapters are leaves; a new reverse edge onto the managed adapter means a neutral port must move to a contract/ leaf first (Phase 0.2 neutral-core)"
+
+# A2A adapter. run-executor-a2a implements the neutral RemoteDelegate port over it;
+# server/scenario are composition roots. The host itself no longer depends on it.
+[[bans.deny]]
+name = "awaken-protocol-a2a"
+wrappers = [
+    "awaken-run-executor-a2a",
+    "awaken-server",
+    "awaken-scenario-host",
+]
+reason = "protocol adapters are leaves; the host holds the neutral RemoteDelegate port, not the A2A wire (Phase 0.2 neutral-core)"
+
+# AI SDK v6 adapter — composition roots only.
+[[bans.deny]]
+name = "awaken-protocol-ai-sdk"
+wrappers = [
+    "awaken-server",
+    "awaken-scenario-host",
+]
+reason = "protocol adapters are leaves; only composition roots mount the AI SDK adapter (Phase 0.2 neutral-core)"
+
+# AG-UI adapter — composition roots only.
+[[bans.deny]]
+name = "awaken-protocol-ag-ui"
+wrappers = [
+    "awaken-server",
+    "awaken-scenario-host",
+]
+reason = "protocol adapters are leaves; only composition roots mount the AG-UI adapter (Phase 0.2 neutral-core)"
+
+# awaken-protocol-mcp has NO depender today (a pure leaf). deny.toml cannot express a
+# zero-depender lock on a workspace member (empty `wrappers` bans the member itself), so
+# its leaf status — and the categorical `protocol-*` rule for every adapter — is enforced
+# by `check_protocol_leaves()` in scripts/ci/check_crate_boundaries.py (the crate-name
+# prefix rule), with these deny.toml entries as the cargo-deny-layer defense in depth.
