@@ -31,6 +31,36 @@ pub enum ConfigWrite {
     Conflict { current_generation: Option<u64> },
 }
 
+/// Secret-free durable management audit record keyed by stable tool call id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManagementAuditRecord {
+    pub tool: String,
+    pub call_id: String,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagementAuditEntry {
+    pub record: ManagementAuditRecord,
+    pub business_committed: bool,
+}
+
+/// A secret-free, idempotent effect that must be applied to a separate store
+/// after the config transaction commits. The config store durably journals it
+/// in the same transaction as the draft and audit record.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManagementEffect {
+    pub kind: String,
+    pub key: String,
+    pub payload: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuditedConfigWrite {
+    Applied,
+    Replayed,
+}
+
 /// The lifecycle spine (ADR-0031). The richer states (installing/active/
 /// superseded/rolled_back/rejected) are deferred.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -184,6 +214,87 @@ pub trait ScopedConfigRegistry: Send + Sync {
         scope: &ScopeId,
         config: &AgentConfig,
     ) -> Result<(), ConfigStoreError>;
+
+    /// Atomically persist the audit record and config. Replaying the same call id
+    /// with the same record is a no-op; conflicting reuse fails closed.
+    async fn put_config_with_audit_scoped(
+        &self,
+        _scope: &ScopeId,
+        _config: &AgentConfig,
+        _audit: &ManagementAuditRecord,
+    ) -> Result<AuditedConfigWrite, ConfigStoreError> {
+        Err(ConfigStoreError(
+            "config registry does not support transactional audit".to_string(),
+        ))
+    }
+
+    async fn put_config_with_audit_effect_scoped(
+        &self,
+        scope: &ScopeId,
+        config: &AgentConfig,
+        audit: &ManagementAuditRecord,
+        effect: Option<&ManagementEffect>,
+    ) -> Result<AuditedConfigWrite, ConfigStoreError> {
+        if effect.is_some() {
+            return Err(ConfigStoreError(
+                "config registry does not support durable external effects".to_string(),
+            ));
+        }
+        self.put_config_with_audit_scoped(scope, config, audit)
+            .await
+    }
+
+    async fn pending_management_effects_scoped(
+        &self,
+        _scope: &ScopeId,
+    ) -> Result<Vec<ManagementEffect>, ConfigStoreError> {
+        Err(ConfigStoreError(
+            "config registry does not support durable external effects".to_string(),
+        ))
+    }
+
+    async fn complete_management_effect_scoped(
+        &self,
+        _scope: &ScopeId,
+        _kind: &str,
+        _key: &str,
+    ) -> Result<(), ConfigStoreError> {
+        Err(ConfigStoreError(
+            "config registry does not support durable external effects".to_string(),
+        ))
+    }
+
+    async fn record_management_audit_scoped(
+        &self,
+        _scope: &ScopeId,
+        _audit: &ManagementAuditRecord,
+    ) -> Result<AuditedConfigWrite, ConfigStoreError> {
+        Err(ConfigStoreError(
+            "config registry does not support durable audit".to_string(),
+        ))
+    }
+
+    async fn get_management_audit_scoped(
+        &self,
+        _scope: &ScopeId,
+        _tool: &str,
+        _call_id: &str,
+    ) -> Result<Option<ManagementAuditEntry>, ConfigStoreError> {
+        Err(ConfigStoreError(
+            "config registry does not support durable audit reads".to_string(),
+        ))
+    }
+
+    async fn mark_management_audit_committed_scoped(
+        &self,
+        _scope: &ScopeId,
+        _tool: &str,
+        _call_id: &str,
+    ) -> Result<(), ConfigStoreError> {
+        Err(ConfigStoreError(
+            "config registry does not support durable audit completion".to_string(),
+        ))
+    }
 
     async fn put_config_if_generation_scoped(
         &self,

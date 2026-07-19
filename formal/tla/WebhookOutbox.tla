@@ -3,48 +3,48 @@ EXTENDS Naturals, TLC
 
 CONSTANT StableId
 
-VARIABLE committed, queued, delivered, eventId, processUp, crashQueue
+VARIABLE lifecycleCommitted, queued, delivered, eventId, processUp
 
-vars == <<committed, queued, delivered, eventId, processUp, crashQueue>>
+vars == <<lifecycleCommitted, queued, delivered, eventId, processUp>>
 
-Init == /\ committed = FALSE
+Init == /\ lifecycleCommitted = FALSE
         /\ queued = FALSE
         /\ delivered = FALSE
         /\ eventId = StableId
         /\ processUp = TRUE
-        /\ crashQueue = FALSE
 
-CommitFact == /\ processUp /\ ~committed
-              /\ committed' = TRUE
-              /\ queued' = TRUE
-              /\ UNCHANGED <<delivered, eventId, processUp, crashQueue>>
+\* One repository transaction commits the lifecycle fact and its outbox row.
+CommitLifecycleAndOutbox ==
+    /\ processUp /\ ~lifecycleCommitted
+    /\ lifecycleCommitted' = TRUE
+    /\ queued' = TRUE
+    /\ UNCHANGED <<delivered, eventId, processUp>>
 
 DispatchSuccess == /\ processUp /\ queued
                    /\ delivered' = TRUE
                    /\ queued' = FALSE
-                   /\ UNCHANGED <<committed, eventId, processUp, crashQueue>>
+                   /\ UNCHANGED <<lifecycleCommitted, eventId, processUp>>
 
 DispatchFailure == /\ processUp /\ queued
                    /\ UNCHANGED vars
 
 Crash == /\ processUp
          /\ processUp' = FALSE
-         /\ crashQueue' = queued
-         /\ UNCHANGED <<committed, queued, delivered, eventId>>
+         /\ UNCHANGED <<lifecycleCommitted, queued, delivered, eventId>>
 
 Restart == /\ ~processUp
            /\ processUp' = TRUE
-           /\ UNCHANGED <<committed, queued, delivered, eventId, crashQueue>>
+           /\ UNCHANGED <<lifecycleCommitted, queued, delivered, eventId>>
 
-Next == CommitFact \/ DispatchSuccess \/ DispatchFailure \/ Crash \/ Restart
+Next == CommitLifecycleAndOutbox \/ DispatchSuccess \/ DispatchFailure \/ Crash \/ Restart
 
-TypeOK == /\ committed \in BOOLEAN /\ queued \in BOOLEAN
+TypeOK == /\ lifecycleCommitted \in BOOLEAN /\ queued \in BOOLEAN
           /\ delivered \in BOOLEAN /\ processUp \in BOOLEAN
-          /\ crashQueue \in BOOLEAN /\ eventId = StableId
-CommittedFactIsRecoverable == committed => (queued \/ delivered)
-DeliveryRequiresCommit == delivered => committed
+          /\ eventId = StableId
+NoCommittedLifecycleWithoutOutbox == lifecycleCommitted => (queued \/ delivered)
+DeliveryRequiresCommittedLifecycle == delivered => lifecycleCommitted
 StableIdentityNeverChanges == eventId = StableId
-CrashPreservesPending == (~processUp /\ crashQueue) => (queued \/ delivered)
+CrashCannotErasePending == (~processUp /\ lifecycleCommitted /\ ~delivered) => queued
 
 Spec == Init /\ [][Next]_vars
 =============================================================================

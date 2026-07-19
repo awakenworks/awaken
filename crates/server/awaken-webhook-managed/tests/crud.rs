@@ -4,14 +4,16 @@
 //! the seal-failure / missing-url faults.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use awaken_agent_contract::RedactedString;
 use awaken_config_resolver::{WebhookEndpointDef, WebhookOutboxEvent, WebhookStore};
 use awaken_credential_vault::{CredentialError, SecretRef, SecretStore};
-use awaken_session_contract::SessionLifecycleSink;
+use awaken_session_contract::{
+    ManagedSessionRepository, PersistedSession, SessionLifecycleFact, SessionLifecycleSink,
+};
 use awaken_tenancy::WorkspaceScope;
 use awaken_webhook::{ResolvedSubscription, SubscriptionSource, WebhookDispatcher, WebhookSender};
 use awaken_webhook_managed::{
@@ -30,6 +32,49 @@ struct MemStore(
     Mutex<HashMap<String, WebhookEndpointDef>>,
     Mutex<HashMap<String, WebhookOutboxEvent>>,
 );
+
+#[derive(Default)]
+struct SessionOutbox(Mutex<HashMap<String, SessionLifecycleFact>>);
+
+#[async_trait]
+impl ManagedSessionRepository for SessionOutbox {
+    async fn save_owned(&self, _owner_scope: &str, _session: PersistedSession) {}
+    async fn save_owned_with_lifecycle(
+        &self,
+        _owner_scope: &str,
+        _session: PersistedSession,
+        fact: SessionLifecycleFact,
+    ) {
+        self.append_lifecycle(fact).await;
+    }
+    async fn append_lifecycle(&self, fact: SessionLifecycleFact) {
+        self.0
+            .lock()
+            .unwrap()
+            .entry(fact.id.clone())
+            .or_insert(fact);
+    }
+    async fn archive_with_lifecycle(
+        &self,
+        _session_id: &str,
+        _archived_at: &str,
+        fact: SessionLifecycleFact,
+    ) {
+        self.append_lifecycle(fact).await;
+    }
+    async fn delete_with_lifecycle(&self, _session_id: &str, fact: SessionLifecycleFact) {
+        self.append_lifecycle(fact).await;
+    }
+    async fn pending_lifecycle(&self) -> Vec<SessionLifecycleFact> {
+        self.0.lock().unwrap().values().cloned().collect()
+    }
+    async fn complete_lifecycle(&self, fact_id: &str) {
+        self.0.lock().unwrap().remove(fact_id);
+    }
+    async fn get(&self, _session_id: &str) -> Option<PersistedSession> {
+        None
+    }
+}
 
 impl WebhookStore for MemStore {
     fn put(&self, def: WebhookEndpointDef) {
@@ -546,6 +591,23 @@ struct CountingStatusSender {
     status: Result<u16, String>,
 }
 
+struct RecoveringSender {
+    calls: Arc<AtomicUsize>,
+    failing: Arc<AtomicBool>,
+}
+
+#[async_trait]
+impl WebhookSender for RecoveringSender {
+    async fn post(&self, _u: &str, _h: Vec<(String, String)>, _b: String) -> Result<u16, String> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if self.failing.load(Ordering::SeqCst) {
+            Err("temporary outage".into())
+        } else {
+            Ok(200)
+        }
+    }
+}
+
 #[async_trait]
 impl WebhookSender for CountingStatusSender {
     async fn post(&self, _u: &str, _h: Vec<(String, String)>, _b: String) -> Result<u16, String> {
@@ -662,6 +724,77 @@ async fn rebuilding_the_sink_drains_rows_left_by_the_prior_process() {
         store.pending_outbox().is_empty(),
         "startup recovery retires a successfully redelivered row"
     );
+}
+
+#[tokio::test]
+async fn session_local_outbox_is_drained_after_commit_before_notify_crash() {
+    let outbox = Arc::new(SessionOutbox::default());
+    outbox
+        .append_lifecycle(SessionLifecycleFact {
+            id: "session:sesn_tx:created".into(),
+            session_id: "sesn_tx".into(),
+            workspace_id: Some("ws_a".into()),
+            event_type: "session.status_idled".into(),
+            timestamp: 1_768_780_800,
+        })
+        .await;
+    // No sink existed at commit time: this is the exact former crash window.
+    let calls = Arc::new(AtomicUsize::new(0));
+    let dispatcher = Arc::new(WebhookDispatcher::new(
+        Arc::new(OneSubSource(awaken_webhook::generate_secret())),
+        Arc::new(CountingStatusSender {
+            calls: calls.clone(),
+            status: Ok(200),
+        }),
+    ));
+    let _restarted = WebhookLifecycleSink::with_session_outbox(
+        dispatcher,
+        None,
+        outbox.clone() as Arc<dyn ManagedSessionRepository>,
+    );
+
+    wait_for_calls(&calls, 1).await;
+    assert!(outbox.pending_lifecycle().await.is_empty());
+}
+
+#[tokio::test]
+async fn periodic_reconciliation_redelivers_without_restart_or_a_new_event() {
+    let outbox = Arc::new(SessionOutbox::default());
+    outbox
+        .append_lifecycle(SessionLifecycleFact {
+            id: "session:sesn_retry:created".into(),
+            session_id: "sesn_retry".into(),
+            workspace_id: Some("ws_a".into()),
+            event_type: "session.status_idled".into(),
+            timestamp: 1_768_780_800,
+        })
+        .await;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let failing = Arc::new(AtomicBool::new(true));
+    let dispatcher = Arc::new(WebhookDispatcher::new(
+        Arc::new(OneSubSource(awaken_webhook::generate_secret())),
+        Arc::new(RecoveringSender {
+            calls: calls.clone(),
+            failing: failing.clone(),
+        }),
+    ));
+    let _sink = WebhookLifecycleSink::with_session_outbox_interval(
+        dispatcher,
+        None,
+        outbox.clone() as Arc<dyn ManagedSessionRepository>,
+        std::time::Duration::from_millis(10),
+    );
+    wait_for_calls(&calls, 3).await;
+    assert_eq!(outbox.pending_lifecycle().await.len(), 1);
+
+    failing.store(false, Ordering::SeqCst);
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while !outbox.pending_lifecycle().await.is_empty() {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("periodic reconciliation should redeliver after recovery");
 }
 
 #[tokio::test]

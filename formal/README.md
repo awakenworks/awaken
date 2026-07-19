@@ -107,13 +107,17 @@ production logic.
   request classification, editable process-local input, and crash-safe streaming
   watermark/checkpoint behavior.
 - `WebhookOutbox.tla`, `ErasureSaga.tla`, and `CredentialCreation.tla` cover
-  durable pending delivery, checkpointed erasure, and in-call secret-write
-  compensation.
+  atomic lifecycle/outbox commit, checkpointed erasure, and durable
+  credential-intent recovery.
 - `MemoryCAS.tla`, `ToolResultProtocol.tla`, and `WorkerDrain.tla` cover memory
   generation/rename safety, cross-protocol result correlation, and the drain
   admission fence.
-- `AuditCommit.tla` and `ConfigActivation.tla` cover audit-before-business
-  ordering/stable identity and generation-fenced publication installation.
+- `AuditCommit.tla` and `ConfigActivation.tla` cover transactional durable audit,
+  replay fencing, and generation-fenced publication installation.
+- `ManagementAuditIntent.tla`, `CredentialInventory.tla`, and
+  `ResourceBindingEffect.tla` cover audit-before-write admission for stores that
+  cannot share the config transaction, namespace-fenced orphan cleanup, and the
+  durable external-effect journal used for resource bindings.
 
 `RuntimeVocabulary.tla` is the shared closed vocabulary, preventing component
 models from inventing incompatible aliases for the same lifecycle state.
@@ -173,14 +177,17 @@ graphs with zero invariant violations and zero states left on the queue:
 | ConfigCAS | 1,669 | 417 | 11 |
 | LiveInbox | 213 | 64 | 7 |
 | CheckpointRecovery | 462 | 141 | 8 |
-| WebhookOutbox | 14 | 8 | 5 |
+| WebhookOutbox | 10 | 6 | 4 |
 | ErasureSaga | 19 | 12 | 6 |
-| CredentialCreation | 6 | 5 | 4 |
+| CredentialCreation | 14 | 8 | 5 |
 | MemoryCAS | 1,245 | 244 | 10 |
 | ToolResultProtocol | 213 | 56 | 9 |
 | WorkerDrain | 15 | 11 | 8 |
-| AuditCommit | 11 | 6 | 4 |
+| AuditCommit | 10 | 6 | 4 |
 | ConfigActivation | 85 | 35 | 9 |
+| ResourceBindingEffect | 21 | 10 | 6 |
+| ManagementAuditIntent | 15 | 8 | 5 |
+| CredentialInventory | 7 | 4 | 3 |
 
 These are bounded exhaustive checks, not unbounded liveness proofs. The bounds
 are explicit in the corresponding `.cfg` files.
@@ -256,7 +263,7 @@ TLAPS, Java, or `tla2tools.jar` fails instead of producing a false green.
 `formal/coverage.json` is the versioned obligation ledger. The CI gate verifies
 that every evidence path exists and that at least 70% of formalizable safety
 obligations have a machine-checked production link. The current ledger is
-92/92, or 100% (the original 28 plus 64 additional obligations). Environmental properties are listed separately and never
+107/107, or 100% (the original 28 plus 79 additional obligations). Environmental properties are listed separately and never
 silently omitted or mislabeled as machine-linked merely to raise the percentage.
 
 ## Honest boundary
@@ -271,16 +278,17 @@ outside the state-machine proof. They require idempotency contracts, adapter
 integration tests, fault injection, and operational reconciliation; a larger
 finite TLC bound alone cannot prove them.
 
-The second-batch models also keep three transaction boundaries explicit.
-`WebhookOutbox` starts at a committed outbox row; the current session repository
-and admin outbox are separate, so it does not prove away a crash between session
-commit and `emit_fact`. `CredentialCreation` proves returned-error compensation,
-not recovery from a process crash between its two stores. `AuditCommit` proves
-audit-before-business ordering and stable call identity under the assumption that
-the injected sink makes `record` durable; the default tracing sink is not a
-database transaction shared with the business store. Closing those gaps requires
-respectively a session-local transactional outbox, a durable creation journal (or
-one database transaction), and a durable audit-intent/outbox capability.
+The transaction-hardening batch closes the three formerly narrower boundaries.
+`WebhookOutbox` now models the session repository's atomic lifecycle+outbox
+commit. `CredentialCreation` models the secret-free durable intent, atomic source
+publication/intent retirement, and restart/periodic compensation. `AuditCommit` models a
+durable pending audit followed by the config store's atomic business commit and
+pending→committed transition; stable committed-call replay is a no-op. Tracing is
+an observability projection rather than the durable audit authority.
+
+These proofs still depend on the storage engines honoring their documented
+transaction and durability contracts. They do not establish eventual delivery or
+exactly-once effects in a third-party system.
 
 `RunIngress.tla` models claim fencing as one atomic state transition. Production
 now keeps the exact epoch guard live across the actual `ThreadCommit` for the

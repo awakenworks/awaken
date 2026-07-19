@@ -3,7 +3,9 @@
 //! backends keep identical semantics — workspace-scoped lists, upsert puts, and
 //! the exact NotFound arms.
 
-use awaken_credential_vault::repo::{CredentialRepo, InMemoryCredentialRepo};
+use awaken_credential_vault::repo::{
+    CredentialCreationIntent, CredentialRepo, InMemoryCredentialRepo,
+};
 use awaken_credential_vault::{
     CredentialError, CredentialKind, CredentialPool, CredentialPoolId, CredentialPoolMember,
     CredentialSource, CredentialSourceId, CredentialStatus, SelectionPolicy,
@@ -103,6 +105,48 @@ async fn put_is_upsert(repo: &dyn CredentialRepo) {
     assert_eq!(repo.list_pools("ws").await.unwrap().len(), 1);
 }
 
+/// Publishing metadata and retiring the durable creation intent is one repository
+/// transaction. A successful return may never expose both the source and its old
+/// pending intent, and replaying the commit must remain harmless.
+async fn creation_intent_commit_is_atomic_and_idempotent(repo: &dyn CredentialRepo) {
+    let source = source("cred:intent", "ws");
+    let intent = CredentialCreationIntent {
+        source: source.clone(),
+    };
+
+    repo.begin_creation(intent.clone()).await.unwrap();
+    repo.begin_creation(intent).await.unwrap();
+    assert_eq!(repo.pending_creations().await.unwrap().len(), 1);
+    assert!(matches!(
+        repo.get(&source.id).await,
+        Err(CredentialError::SourceNotFound(_))
+    ));
+
+    repo.commit_creation(source.clone()).await.unwrap();
+    assert_eq!(repo.get(&source.id).await.unwrap(), source);
+    assert!(repo.pending_creations().await.unwrap().is_empty());
+
+    repo.commit_creation(source.clone()).await.unwrap();
+    assert_eq!(repo.get(&source.id).await.unwrap(), source);
+    assert!(repo.pending_creations().await.unwrap().is_empty());
+}
+
+async fn abort_creation_is_idempotent(repo: &dyn CredentialRepo) {
+    let source = source("cred:abort", "ws");
+    repo.begin_creation(CredentialCreationIntent {
+        source: source.clone(),
+    })
+    .await
+    .unwrap();
+    repo.abort_creation(&source.id).await.unwrap();
+    repo.abort_creation(&source.id).await.unwrap();
+    assert!(repo.pending_creations().await.unwrap().is_empty());
+    assert!(matches!(
+        repo.get(&source.id).await,
+        Err(CredentialError::SourceNotFound(_))
+    ));
+}
+
 // CONTRACT: `CredentialRepo::get` is a deliberate unscoped by-id PRIMITIVE — it is
 // keyed by source id only, while `list` is the workspace-scoped enumeration face.
 // Tenant isolation for secret *materialization* is enforced one layer up, in
@@ -131,6 +175,8 @@ async fn run_all(make: impl Fn() -> Box<dyn CredentialRepo>) {
     pools_round_trip_and_scope_by_workspace(&*make()).await;
     missing_rows_are_not_found(&*make()).await;
     put_is_upsert(&*make()).await;
+    creation_intent_commit_is_atomic_and_idempotent(&*make()).await;
+    abort_creation_is_idempotent(&*make()).await;
     get_is_an_unscoped_by_id_primitive(&*make()).await;
 }
 
@@ -209,6 +255,11 @@ mod postgres {
         pools_round_trip_and_scope_by_workspace(&repo("t_cred_pools").await.unwrap()).await;
         missing_rows_are_not_found(&repo("t_cred_missing").await.unwrap()).await;
         put_is_upsert(&repo("t_cred_upsert").await.unwrap()).await;
+        creation_intent_commit_is_atomic_and_idempotent(
+            &repo("t_cred_creation_intent").await.unwrap(),
+        )
+        .await;
+        abort_creation_is_idempotent(&repo("t_cred_abort_intent").await.unwrap()).await;
         get_is_an_unscoped_by_id_primitive(&repo("t_cred_xtenant").await.unwrap()).await;
     }
 

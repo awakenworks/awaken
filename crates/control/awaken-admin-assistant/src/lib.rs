@@ -27,7 +27,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_config_store::{AgentConfig, ModelSelection, ToolOverride};
+use awaken_config_store::{AgentConfig, ManagementAuditRecord, ModelSelection, ToolOverride};
 use awaken_runtime_contract::resolved::{ContextPolicy, ToolDescriptor};
 use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
 use serde::{Deserialize, Serialize};
@@ -200,6 +200,27 @@ pub struct ResourceSpec {
 pub trait DraftStore: Send + Sync {
     /// Persist an UNPUBLISHED draft agent config (same effect as the editor's Save).
     async fn put(&self, draft: &AgentConfig) -> Result<(), String>;
+    /// Commit the draft and mark its pre-recorded audit intent as business-complete
+    /// in one store transaction. A stable call-id replay is a business no-op.
+    async fn put_audited(&self, draft: &AgentConfig, audit: &AdminAuditEvent)
+    -> Result<(), String>;
+    /// Atomically commit the draft/audit and, when present, journal replacement
+    /// resource bindings for idempotent application to the separate resource store.
+    async fn put_audited_with_resources(
+        &self,
+        draft: &AgentConfig,
+        audit: &AdminAuditEvent,
+        resources: Option<Vec<ResourceSpec>>,
+    ) -> Result<(), String> {
+        self.put_audited(draft, audit).await?;
+        if let Some(resources) = resources {
+            self.put_resources(&draft.id, resources)
+                .await
+                .map_err(|error| format!("resources could not be bound: {error}"))?;
+        }
+        Ok(())
+    }
+    async fn record_audit(&self, audit: &AdminAuditEvent) -> Result<(), String>;
     /// Read a persisted draft agent config back by id (`None` if absent).
     async fn get(&self, id: &str) -> Result<Option<AgentConfig>, String>;
     /// Replace the whole set of resource bindings for `agent_id` (data-plane store).
@@ -214,12 +235,7 @@ pub trait DraftStore: Send + Sync {
 
 /// A structured record of one management tool invocation (ADR-0052 D6). Emitted on
 /// **every** call. Carries only a short, non-secret summary — never the full arguments.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct AdminAuditEvent {
-    pub tool: String,
-    pub call_id: String,
-    pub summary: String,
-}
+pub type AdminAuditEvent = ManagementAuditRecord;
 
 /// Where management tool-call audit records go (ADR-0052 D6). The default
 /// [`TracingAuditSink`] logs to the `awaken::admin_audit` target; a deployment can
@@ -461,6 +477,7 @@ pub fn admin_tools(
     vec![
         Arc::new(GetPlatformCapabilities {
             reader,
+            store: store.clone(),
             audit: audit.clone(),
         }),
         Arc::new(DraftAgent {
@@ -475,16 +492,17 @@ pub fn admin_tools(
         }),
         Arc::new(ValidateAgent {
             validator,
-            store,
+            store: store.clone(),
             audit: audit.clone(),
         }),
-        Arc::new(ExplainConsole { audit }),
+        Arc::new(ExplainConsole { store, audit }),
     ]
 }
 
 // ---- Tool 5: admin_explain_console (read-only in-console user manual) ------------
 
 struct ExplainConsole {
+    store: Arc<dyn DraftStore>,
     audit: Arc<dyn AuditSink>,
 }
 
@@ -505,6 +523,7 @@ impl RawTool for ExplainConsole {
         let args: ExplainArgs =
             serde_json::from_value(call.arguments.clone()).unwrap_or(ExplainArgs { topic: None });
         audit(
+            &self.store,
             &self.audit,
             EXPLAIN_TOOL,
             &call.call_id,
@@ -512,7 +531,8 @@ impl RawTool for ExplainConsole {
                 "explain console `{}`",
                 args.topic.as_deref().unwrap_or("(index)")
             ),
-        );
+        )
+        .await?;
         Ok(ToolOutput::ok(
             call.call_id,
             console_help::explain(args.topic.as_deref()).to_string(),
@@ -521,12 +541,24 @@ impl RawTool for ExplainConsole {
 }
 
 /// Emit the audit record for one management tool call (ADR-0052 D6).
-fn audit(sink: &Arc<dyn AuditSink>, tool: &str, call_id: &str, summary: impl Into<String>) {
-    sink.record(AdminAuditEvent {
+async fn audit(
+    store: &Arc<dyn DraftStore>,
+    sink: &Arc<dyn AuditSink>,
+    tool: &str,
+    call_id: &str,
+    summary: impl Into<String>,
+) -> Result<AdminAuditEvent, ToolError> {
+    let event = AdminAuditEvent {
         tool: tool.to_string(),
         call_id: call_id.to_string(),
         summary: summary.into(),
-    });
+    };
+    store
+        .record_audit(&event)
+        .await
+        .map_err(|error| ToolError::Execution(format!("durable audit failed: {error}")))?;
+    sink.record(event.clone());
+    Ok(event)
 }
 
 /// Size-bound every plugin-config section (D4): never let a draft absorb an unbounded
@@ -557,6 +589,8 @@ async fn validate_persist_emit(
     config: AgentConfig,
     validator: &Arc<dyn DraftValidator>,
     store: &Arc<dyn DraftStore>,
+    audit: &AdminAuditEvent,
+    resources: Option<Vec<ResourceSpec>>,
 ) -> Result<ToolOutput, ToolError> {
     if let Err(error) = validator.validate(&config) {
         return Ok(ToolOutput::error(
@@ -564,7 +598,10 @@ async fn validate_persist_emit(
             format!("draft does not validate, not saved: {error}"),
         ));
     }
-    if let Err(error) = store.put(&config).await {
+    if let Err(error) = store
+        .put_audited_with_resources(&config, audit, resources)
+        .await
+    {
         return Ok(ToolOutput::error(
             call_id,
             format!("draft validated but could not be saved: {error}"),
@@ -578,34 +615,11 @@ async fn validate_persist_emit(
     Ok(ToolOutput::ok(call_id, body.to_string()))
 }
 
-/// Bind the SEPARATE data-plane resources after the config was saved. Fail-safe: if the
-/// config save already errored (`out.is_error`) or the caller passed `None` (nothing to
-/// change), resources are left untouched; a present set REPLACES the agent's bindings.
-async fn persist_resources_after(
-    out: ToolOutput,
-    agent_id: &str,
-    resources: Option<Vec<ResourceSpec>>,
-    store: &Arc<dyn DraftStore>,
-) -> Result<ToolOutput, ToolError> {
-    if out.is_error {
-        return Ok(out);
-    }
-    let Some(resources) = resources else {
-        return Ok(out);
-    };
-    if let Err(error) = store.put_resources(agent_id, resources).await {
-        return Ok(ToolOutput::error(
-            out.call_id,
-            format!("draft saved but its resources could not be bound: {error}"),
-        ));
-    }
-    Ok(out)
-}
-
 // ---- Tool 1: admin_get_platform_capabilities ------------------------------------
 
 struct GetPlatformCapabilities {
     reader: Arc<dyn CapabilityReader>,
+    store: Arc<dyn DraftStore>,
     audit: Arc<dyn AuditSink>,
 }
 
@@ -617,11 +631,13 @@ impl RawTool for GetPlatformCapabilities {
 
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
         audit(
+            &self.store,
             &self.audit,
             CAPABILITIES_TOOL,
             &call.call_id,
             "list platform capabilities",
-        );
+        )
+        .await?;
         let caps = self.reader.capabilities().await;
         let content = serde_json::to_string(&caps)
             .map_err(|e| ToolError::Execution(format!("serialize capabilities: {e}")))?;
@@ -689,12 +705,14 @@ impl RawTool for DraftAgent {
                 ));
             }
         };
-        audit(
+        let audit_event = audit(
+            &self.store,
             &self.audit,
             CREATE_DRAFT_TOOL,
             &call.call_id,
             format!("draft agent `{}`", args.id),
-        );
+        )
+        .await?;
         if let Err(error) = check_plugin_config_size(&args.plugin_config) {
             return Ok(ToolOutput::error(call.call_id, error));
         }
@@ -704,7 +722,6 @@ impl RawTool for DraftAgent {
             .map(|m| ModelSelection::pinned("default", m, "default"))
             .unwrap_or(ModelSelection::Auto);
         let plugin_ids = plugin_ids_of(&args.plugin_config);
-        let id = args.id.clone();
         let resources = args.resources;
         let config = AgentConfig {
             id: args.id,
@@ -730,12 +747,15 @@ impl RawTool for DraftAgent {
             // author a per-agent strategy yet (default = model-derived window).
             compaction: None,
         };
-        let out = validate_persist_emit(call.call_id, config, &self.validator, &self.store).await?;
-        // Resources are a SEPARATE store: only bind them once the config validated + was
-        // saved (a validation/save error already short-circuited above). On create we
-        // bind only when the operator named at least one resource.
-        let to_bind = (!resources.is_empty()).then_some(resources);
-        persist_resources_after(out, &id, to_bind, &self.store).await
+        validate_persist_emit(
+            call.call_id,
+            config,
+            &self.validator,
+            &self.store,
+            &audit_event,
+            (!resources.is_empty()).then_some(resources),
+        )
+        .await
     }
 }
 
@@ -808,12 +828,14 @@ impl RawTool for PatchAgent {
                 ));
             }
         };
-        audit(
+        let audit_event = audit(
+            &self.store,
             &self.audit,
             PATCH_TOOL,
             &call.call_id,
             format!("patch agent `{}`", args.id),
-        );
+        )
+        .await?;
         // Read the persisted draft; a patch targets an existing draft (fail-closed).
         let mut config = match self.store.get(&args.id).await {
             Ok(Some(c)) => c,
@@ -883,12 +905,16 @@ impl RawTool for PatchAgent {
         if let Err(error) = check_plugin_config_size(&config.plugin_config) {
             return Ok(ToolOutput::error(call.call_id, error));
         }
-        let id = config.id.clone();
         let resources = patch.resources;
-        let out = validate_persist_emit(call.call_id, config, &self.validator, &self.store).await?;
-        // A present `resources` array REPLACES the whole binding set (even an empty array
-        // clears it); an absent one leaves the existing bindings untouched.
-        persist_resources_after(out, &id, resources, &self.store).await
+        validate_persist_emit(
+            call.call_id,
+            config,
+            &self.validator,
+            &self.store,
+            &audit_event,
+            resources,
+        )
+        .await
     }
 }
 
@@ -922,11 +948,13 @@ impl RawTool for ValidateAgent {
             }
         };
         audit(
+            &self.store,
             &self.audit,
             VALIDATE_TOOL,
             &call.call_id,
             format!("validate draft `{}`", args.id),
-        );
+        )
+        .await?;
         let draft = match self.store.get(&args.id).await {
             Ok(Some(c)) => c,
             Ok(None) => {

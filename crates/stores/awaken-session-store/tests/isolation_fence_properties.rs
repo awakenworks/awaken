@@ -32,6 +32,8 @@ fn session(id: &str, title: &str) -> PersistedSession {
         metadata: Default::default(),
         environment_id: "env".into(),
         mcp_servers: Vec::new(),
+        status: "idle".into(),
+        archived_at: None,
     }
 }
 

@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::repo::CredentialRepo;
+use crate::repo::{CredentialCreationIntent, CredentialRepo};
 use crate::schema::credential_bundle;
 use crate::{
     CredentialError, CredentialPool, CredentialPoolId, CredentialSource, CredentialSourceId,
@@ -186,6 +186,97 @@ impl CredentialRepo for SqliteCredentialRepo {
         .await
     }
 
+    async fn begin_creation(
+        &self,
+        intent: CredentialCreationIntent,
+    ) -> Result<(), CredentialError> {
+        let id = intent.source.id.0.clone();
+        let data = serde_json::to_string(&intent).map_err(storage)?;
+        with_conn(&self.conn, move |conn, p| {
+            conn.execute(
+                &format!(
+                    "INSERT OR IGNORE INTO {p}_creation_intent (source_id, data) VALUES (?1, ?2)"
+                ),
+                params![id, data],
+            )
+            .map_err(storage)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn commit_creation(&self, source: CredentialSource) -> Result<(), CredentialError> {
+        let id = source.id.0.clone();
+        let workspace_id = source.workspace_id.clone();
+        let data = serde_json::to_string(&source).map_err(storage)?;
+        with_conn(&self.conn, move |conn, p| {
+            let tx = conn.transaction().map_err(storage)?;
+            tx.execute(
+                &format!(
+                    "INSERT INTO {p}_source (id, workspace_id, data) VALUES (?1, ?2, ?3) \
+                     ON CONFLICT(id) DO UPDATE SET workspace_id = excluded.workspace_id, data = excluded.data"
+                ),
+                params![id, workspace_id, data],
+            )
+            .map_err(storage)?;
+            tx.execute(
+                &format!("DELETE FROM {p}_creation_intent WHERE source_id = ?1"),
+                params![id],
+            )
+            .map_err(storage)?;
+            tx.commit().map_err(storage)
+        })
+        .await
+    }
+
+    async fn pending_creations(&self) -> Result<Vec<CredentialCreationIntent>, CredentialError> {
+        with_conn(&self.conn, move |conn, p| {
+            let mut statement = conn
+                .prepare(&format!(
+                    "SELECT data FROM {p}_creation_intent ORDER BY created_at, source_id"
+                ))
+                .map_err(storage)?;
+            let rows = statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(storage)?;
+            rows.map(|row| serde_json::from_str(&row.map_err(storage)?).map_err(storage))
+                .collect()
+        })
+        .await
+    }
+
+    async fn abort_creation(&self, id: &CredentialSourceId) -> Result<(), CredentialError> {
+        let id = id.0.clone();
+        with_conn(&self.conn, move |conn, p| {
+            conn.execute(
+                &format!("DELETE FROM {p}_creation_intent WHERE source_id = ?1"),
+                params![id],
+            )
+            .map_err(storage)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn material_refs(&self) -> Result<Vec<SecretRef>, CredentialError> {
+        with_conn(&self.conn, move |conn, p| {
+            let mut statement = conn
+                .prepare(&format!("SELECT data FROM {p}_source ORDER BY id"))
+                .map_err(storage)?;
+            let rows = statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(storage)?;
+            let sources: Vec<CredentialSource> = rows
+                .map(|row| serde_json::from_str(&row.map_err(storage)?).map_err(storage))
+                .collect::<Result<_, _>>()?;
+            Ok(sources
+                .into_iter()
+                .filter_map(|source| source.material_ref)
+                .collect())
+        })
+        .await
+    }
+
     async fn put_pool(&self, pool: CredentialPool) -> Result<(), CredentialError> {
         let id = pool.id.0.clone();
         let workspace_id = pool.workspace_id.clone();
@@ -320,6 +411,22 @@ impl SealedBlobStore for SqliteSealedBlobStore {
             )
             .map_err(storage)?;
             Ok(())
+        })
+        .await
+    }
+
+    async fn inventory_blobs(&self) -> Result<Vec<SecretRef>, CredentialError> {
+        with_conn(&self.conn, move |conn, p| {
+            let mut statement = conn
+                .prepare(&format!(
+                    "SELECT secret_ref FROM {p}_secret ORDER BY secret_ref"
+                ))
+                .map_err(storage)?;
+            let rows = statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(storage)?;
+            rows.map(|row| row.map(SecretRef).map_err(storage))
+                .collect()
         })
         .await
     }

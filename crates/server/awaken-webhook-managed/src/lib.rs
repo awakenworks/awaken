@@ -13,6 +13,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use awaken_agent_contract::RedactedString;
@@ -20,7 +21,9 @@ use awaken_config_resolver::{
     InMemoryWebhookStore, WebhookEndpointDef, WebhookOutboxEvent, WebhookStore,
 };
 use awaken_credential_vault::{SecretRef, SecretStore};
-use awaken_session_contract::SessionLifecycleSink;
+use awaken_session_contract::{
+    ManagedSessionRepository, SessionLifecycleFact, SessionLifecycleSink,
+};
 use awaken_tenancy::WorkspaceScope;
 use awaken_webhook::{
     ReqwestSender, ResolvedSubscription, SubscriptionSource, WebhookDispatcher, WebhookEvent,
@@ -63,9 +66,12 @@ pub struct WebhookLifecycleSink {
     org_id: Option<String>,
     /// Monotonic event-id source (`event_<n>`).
     seq: AtomicU64,
-    outbox: Arc<dyn WebhookStore>,
+    legacy_outbox: Option<Arc<dyn WebhookStore>>,
+    session_outbox: Option<Arc<dyn ManagedSessionRepository>>,
     draining: Arc<tokio::sync::Mutex<()>>,
 }
+
+const RECONCILIATION_INTERVAL: Duration = Duration::from_secs(30);
 
 impl WebhookLifecycleSink {
     pub fn new(dispatcher: Arc<WebhookDispatcher>, org_id: Option<String>) -> Self {
@@ -81,7 +87,8 @@ impl WebhookLifecycleSink {
             dispatcher,
             org_id,
             seq: AtomicU64::new(0),
-            outbox,
+            legacy_outbox: Some(outbox),
+            session_outbox: None,
             draining: Arc::new(tokio::sync::Mutex::new(())),
         };
         // Assembly constructs the sink inside a Tokio runtime. Scan immediately
@@ -89,7 +96,65 @@ impl WebhookLifecycleSink {
         // lifecycle fact to arrive. Construction outside a runtime remains valid;
         // the first `emit_fact` will start the same drain.
         sink.spawn_drain();
+        sink.spawn_reconciliation(RECONCILIATION_INTERVAL);
         sink
+    }
+
+    /// Production constructor: lifecycle facts are read from the same repository
+    /// transaction that commits the session transition.
+    pub fn with_session_outbox(
+        dispatcher: Arc<WebhookDispatcher>,
+        org_id: Option<String>,
+        outbox: Arc<dyn ManagedSessionRepository>,
+    ) -> Self {
+        Self::with_session_outbox_interval(dispatcher, org_id, outbox, RECONCILIATION_INTERVAL)
+    }
+
+    #[doc(hidden)]
+    pub fn with_session_outbox_interval(
+        dispatcher: Arc<WebhookDispatcher>,
+        org_id: Option<String>,
+        outbox: Arc<dyn ManagedSessionRepository>,
+        interval: Duration,
+    ) -> Self {
+        let sink = Self {
+            dispatcher,
+            org_id,
+            seq: AtomicU64::new(0),
+            legacy_outbox: None,
+            session_outbox: Some(outbox),
+            draining: Arc::new(tokio::sync::Mutex::new(())),
+        };
+        sink.spawn_drain();
+        sink.spawn_reconciliation(interval);
+        sink
+    }
+
+    fn spawn_reconciliation(&self, interval: Duration) {
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let dispatcher = self.dispatcher.clone();
+        let legacy_outbox = self.legacy_outbox.clone();
+        let session_outbox = self.session_outbox.clone();
+        let org_id = self.org_id.clone();
+        let draining = self.draining.clone();
+        handle.spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            ticker.tick().await;
+            loop {
+                ticker.tick().await;
+                Self::drain_once(
+                    &dispatcher,
+                    legacy_outbox.as_ref(),
+                    session_outbox.as_ref(),
+                    org_id.as_ref(),
+                    &draining,
+                )
+                .await;
+            }
+        });
     }
 
     fn spawn_drain(&self) {
@@ -97,25 +162,66 @@ impl WebhookLifecycleSink {
             return;
         };
         let dispatcher = self.dispatcher.clone();
-        let outbox = self.outbox.clone();
+        let legacy_outbox = self.legacy_outbox.clone();
+        let session_outbox = self.session_outbox.clone();
+        let org_id = self.org_id.clone();
         let draining = self.draining.clone();
         handle.spawn(async move {
-            let _guard = draining.lock().await;
-            for row in outbox.pending_outbox() {
+            Self::drain_once(
+                &dispatcher,
+                legacy_outbox.as_ref(),
+                session_outbox.as_ref(),
+                org_id.as_ref(),
+                &draining,
+            )
+            .await;
+        });
+    }
+
+    async fn drain_once(
+        dispatcher: &Arc<WebhookDispatcher>,
+        legacy_outbox: Option<&Arc<dyn WebhookStore>>,
+        session_outbox: Option<&Arc<dyn ManagedSessionRepository>>,
+        org_id: Option<&String>,
+        draining: &Arc<tokio::sync::Mutex<()>>,
+    ) {
+        let _guard = draining.lock().await;
+        if let Some(outbox) = session_outbox {
+            for row in outbox.pending_lifecycle().await {
+                let Some(workspace_id) = row.workspace_id.clone() else {
+                    outbox.complete_lifecycle(&row.id).await;
+                    continue;
+                };
                 let event = WebhookEvent::new(
                     row.id.clone(),
-                    row.created_at.clone(),
+                    rfc3339(row.timestamp),
                     row.event_type.clone(),
-                    row.object_id.clone(),
-                    row.workspace_id.clone(),
-                    row.organization_id.clone(),
+                    row.session_id.clone(),
+                    workspace_id,
+                    org_id.cloned(),
                 );
                 let report = dispatcher.dispatch(&event, row.timestamp).await;
                 if report.failed.is_empty() {
-                    outbox.complete_outbox(&row.id);
+                    outbox.complete_lifecycle(&row.id).await;
                 }
             }
-        });
+            return;
+        }
+        let outbox = legacy_outbox.expect("webhook lifecycle sink has an outbox");
+        for row in outbox.pending_outbox() {
+            let event = WebhookEvent::new(
+                row.id.clone(),
+                row.created_at.clone(),
+                row.event_type.clone(),
+                row.object_id.clone(),
+                row.workspace_id.clone(),
+                row.organization_id.clone(),
+            );
+            let report = dispatcher.dispatch(&event, row.timestamp).await;
+            if report.failed.is_empty() {
+                outbox.complete_outbox(&row.id);
+            }
+        }
     }
 }
 
@@ -134,14 +240,28 @@ impl SessionLifecycleSink for WebhookLifecycleSink {
         workspace_id: Option<&str>,
         event_type: &str,
     ) {
-        // No owner → no workspace to fan out to (the bare pre-owner surface).
-        let Some(workspace_id) = workspace_id else {
-            return;
-        };
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
+        if let Some(outbox) = &self.session_outbox {
+            outbox
+                .append_lifecycle(SessionLifecycleFact {
+                    id: fact_id.to_string(),
+                    session_id: session_id.to_string(),
+                    workspace_id: workspace_id.map(str::to_string),
+                    event_type: event_type.to_string(),
+                    timestamp: now,
+                })
+                .await;
+            self.spawn_drain();
+            return;
+        }
+
+        // The compatibility admin outbox predates the session-local transaction.
+        let Some(workspace_id) = workspace_id else {
+            return;
+        };
         let row = WebhookOutboxEvent {
             id: fact_id.to_string(),
             created_at: rfc3339(now),
@@ -151,7 +271,10 @@ impl SessionLifecycleSink for WebhookLifecycleSink {
             organization_id: self.org_id.clone(),
             timestamp: now,
         };
-        self.outbox.enqueue_outbox(row);
+        self.legacy_outbox
+            .as_ref()
+            .expect("legacy webhook outbox")
+            .enqueue_outbox(row);
 
         // A single in-process drainer avoids duplicate concurrent dispatch. Rows
         // remain durable until every matching subscription succeeds; a crash or
@@ -463,6 +586,24 @@ pub fn assemble(
         org_id,
         Arc::new(ReqwestSender::guarded()),
         strict_endpoint_url_policy(),
+        None,
+    )
+}
+
+/// Production assembly using the session repository's transactional outbox.
+pub fn assemble_with_session_repo(
+    store: Arc<dyn WebhookStore>,
+    secrets: Arc<dyn SecretStore>,
+    org_id: Option<String>,
+    sessions: Arc<dyn ManagedSessionRepository>,
+) -> (Arc<WebhookLifecycleSink>, Router) {
+    assemble_with(
+        store,
+        secrets,
+        org_id,
+        Arc::new(ReqwestSender::guarded()),
+        strict_endpoint_url_policy(),
+        Some(sessions),
     )
 }
 
@@ -483,6 +624,7 @@ pub fn assemble_loopback(
         org_id,
         Arc::new(ReqwestSender::default()),
         Arc::new(|_url| Ok(())),
+        None,
     )
 }
 
@@ -492,17 +634,17 @@ fn assemble_with(
     org_id: Option<String>,
     sender: Arc<dyn WebhookSender>,
     url_policy: EndpointUrlPolicy,
+    sessions: Option<Arc<dyn ManagedSessionRepository>>,
 ) -> (Arc<WebhookLifecycleSink>, Router) {
     let source = Arc::new(ConfigPlaneSubscriptionSource::new(
         store.clone(),
         secrets.clone(),
     ));
     let dispatcher = Arc::new(WebhookDispatcher::new(source, sender));
-    let sink = Arc::new(WebhookLifecycleSink::with_outbox(
-        dispatcher,
-        org_id,
-        store.clone(),
-    ));
+    let sink = Arc::new(match sessions {
+        Some(sessions) => WebhookLifecycleSink::with_session_outbox(dispatcher, org_id, sessions),
+        None => WebhookLifecycleSink::with_outbox(dispatcher, org_id, store.clone()),
+    });
     (
         sink,
         webhook_config_router_with_policy(store, secrets, url_policy),

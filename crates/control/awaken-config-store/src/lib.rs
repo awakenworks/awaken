@@ -25,6 +25,7 @@ pub use postgres::{PostgresConfigStore, StoreError as PostgresStoreError};
 pub use schema::config_bundle;
 pub use sqlite::{SqliteConfigStore, StoreError as SqliteStoreError};
 pub use store::{
-    ConfigRegistry, ConfigStoreError, ConfigWrite, DEFAULT_SCOPE, PublicationState, ScopedConfig,
+    AuditedConfigWrite, ConfigRegistry, ConfigStoreError, ConfigWrite, DEFAULT_SCOPE,
+    ManagementAuditEntry, ManagementAuditRecord, ManagementEffect, PublicationState, ScopedConfig,
     ScopedConfigRegistry, StoredPublication, VersionedAgentConfig,
 };
