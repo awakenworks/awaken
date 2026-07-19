@@ -71,6 +71,7 @@ fn snapshot_for(model_id: &str) -> ExecutableAgentSnapshot {
             catalog_fingerprint: CatalogFingerprint("fp".into()),
             instructions: String::new(),
             max_steps: 8,
+            delegation_limits: Default::default(),
             model_binding: ModelBinding {
                 provider_identity_ref: "anthropic".into(),
                 model_ref: model_id.into(),

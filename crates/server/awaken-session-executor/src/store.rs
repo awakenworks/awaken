@@ -11,7 +11,7 @@
 
 use awaken_agent_contract::agent::awaiting::ResumeTicket;
 use awaken_agent_contract::agent::message::Message;
-use awaken_agent_contract::agent::run::{Id as RunId, Record as RunRecord};
+use awaken_agent_contract::agent::run::{Id as RunId, Record as RunRecord, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::kind::Kind;
 use awaken_agent_contract::thread::commit::coordinator::{Coordinator, Error};
@@ -168,6 +168,13 @@ impl ThreadReader for HostCommit {
     fn resume_ticket(&self, run_id: &RunId) -> Option<ResumeTicket> {
         match self {
             HostCommit::Local(store) => store.resume_ticket(run_id),
+            HostCommit::Remote(_) => None,
+        }
+    }
+
+    fn run_state(&self, run_id: &RunId) -> Option<RunState> {
+        match self {
+            HostCommit::Local(store) => store.run_state(run_id),
             HostCommit::Remote(_) => None,
         }
     }

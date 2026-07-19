@@ -563,6 +563,7 @@ mod trust_dispatched_snapshot_tests {
                 catalog_fingerprint: fingerprint.clone(),
                 instructions: String::new(),
                 max_steps: 4,
+                delegation_limits: Default::default(),
                 model_binding: ModelBinding::new("demo", "stub", "stub"),
                 model_candidates: Vec::new(),
                 tool_descriptors: vec![ToolDescriptor {
@@ -570,6 +571,7 @@ mod trust_dispatched_snapshot_tests {
                     description: String::new(),
                     parameters: serde_json::json!({}),
                     content_hash: "h".to_string(),
+                    recovery_policy: Default::default(),
                 }],
                 plugin_ids: Vec::new(),
                 plugin_config: Default::default(),

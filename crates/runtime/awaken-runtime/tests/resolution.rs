@@ -41,6 +41,7 @@ fn snapshot(fingerprint: &str) -> ExecutableAgentSnapshot {
             catalog_fingerprint: fingerprint.clone(),
             instructions: String::new(),
             max_steps: 16,
+            delegation_limits: Default::default(),
             model_binding: ModelBinding {
                 provider_identity_ref: "provider-1".to_string(),
                 model_ref: "model-1".to_string(),

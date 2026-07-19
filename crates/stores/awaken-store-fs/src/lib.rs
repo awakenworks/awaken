@@ -19,7 +19,7 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use awaken_agent_contract::agent::awaiting::ResumeTicket;
 use awaken_agent_contract::agent::message::Message;
-use awaken_agent_contract::agent::run::{Id as RunId, Record as RunRecord};
+use awaken_agent_contract::agent::run::{Id as RunId, Record as RunRecord, RunState};
 use awaken_agent_contract::agent::state::Command as StateCommand;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::record::Record as EventRecord;
@@ -150,6 +150,10 @@ impl ThreadReader for FsCommitCoordinator {
 
     fn resume_ticket(&self, run_id: &RunId) -> Option<ResumeTicket> {
         self.inner.resume_ticket(run_id)
+    }
+
+    fn run_state(&self, run_id: &RunId) -> Option<RunState> {
+        self.inner.run_state(run_id)
     }
 
     fn committed_state(&self, thread_id: &ThreadId) -> Vec<StateCommand> {

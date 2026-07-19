@@ -21,7 +21,7 @@ pub enum RunDisposition {
     Running {
         run_id: crate::agent::run::Id,
     },
-    Awaiting(crate::agent::awaiting::ResumeTicket),
+    Awaiting(Box<crate::agent::awaiting::ResumeTicket>),
     Ended {
         run_id: crate::agent::run::Id,
         cause: crate::agent::run::EndCause,
@@ -36,7 +36,7 @@ impl RunDisposition {
 
     #[must_use]
     pub fn awaiting(ticket: crate::agent::awaiting::ResumeTicket) -> Self {
-        Self::Awaiting(ticket)
+        Self::Awaiting(Box::new(ticket))
     }
 
     #[must_use]
@@ -184,12 +184,15 @@ impl ThreadCommit {
         run: RunDisposition,
         state_changed: bool,
         messages: Vec<crate::agent::message::Message>,
-        state: Vec<crate::agent::state::Command>,
+        mut state: Vec<crate::agent::state::Command>,
         extra_events: Vec<crate::audit::draft::Draft>,
     ) -> Self {
         use crate::audit::run_event::RunEvent;
         let mut events = Vec::with_capacity(extra_events.len() + 3);
         let run_id = run.run_id().clone();
+        for command in &mut state {
+            command.bind_run(&run_id);
+        }
         let run_state = run.state();
         if state_changed {
             events.push(RunEvent::RunStateChanged { state: run_state }.into());
@@ -281,6 +284,26 @@ mod assemble_tests {
     use crate::audit::draft::Draft;
     use crate::audit::kind::Kind;
 
+    #[test]
+    fn assemble_binds_run_scoped_state_to_the_committing_run() {
+        let run = RunId("run-owner".into());
+        let command = crate::agent::state::Command::set(
+            crate::agent::state::Scope::Run,
+            crate::agent::state::MergePolicy::Disjoint,
+            "run.cell",
+            serde_json::json!(1),
+        );
+        let commit = ThreadCommit::assemble(
+            ThreadId("thread".into()),
+            RunDisposition::running(run.clone()),
+            true,
+            Vec::new(),
+            vec![command],
+            Vec::new(),
+        );
+        assert_eq!(commit.state[0].run_id, Some(run));
+    }
+
     fn kinds(commit: &ThreadCommit) -> Vec<Kind> {
         commit.events.iter().map(|e| e.kind.clone()).collect()
     }
@@ -343,6 +366,7 @@ mod assemble_tests {
             thread_id: ThreadId(thread.into()),
             snapshot_id: "snap".into(),
             catalog_fingerprint: "fp".into(),
+            initiator: None,
             reason: AwaitReason::UserInput,
             call_id: None,
             pending_tool: None,

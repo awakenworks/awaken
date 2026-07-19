@@ -256,6 +256,7 @@ mod tests {
                     catalog_fingerprint: CatalogFingerprint("fp".into()),
                     instructions: String::new(),
                     max_steps: 4,
+                    delegation_limits: Default::default(),
                     model_binding: ModelBinding::new("p", "m", backend_ref),
                     tool_descriptors: Vec::new(),
                     plugin_ids: Vec::new(),
@@ -266,6 +267,7 @@ mod tests {
                 fingerprint: CatalogFingerprint("fp".into()),
             },
             input: vec![Message::text(MessageId("u".into()), Role::User, "go")],
+            initiator: None,
             model_ref_override: None,
         }
     }

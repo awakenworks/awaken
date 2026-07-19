@@ -146,6 +146,7 @@ fn activation(tool_ids: &[&str]) -> RunActivation {
                 catalog_fingerprint: fingerprint.clone(),
                 instructions: String::new(),
                 max_steps: 16,
+                delegation_limits: Default::default(),
                 model_binding: ModelBinding {
                     provider_identity_ref: "p".to_string(),
                     model_ref: "m".to_string(),
@@ -164,6 +165,7 @@ fn activation(tool_ids: &[&str]) -> RunActivation {
             role: Role::User,
             content: vec![ContentBlock::text("go")],
         }],
+        initiator: None,
         model_ref_override: None,
     }
 }
@@ -194,8 +196,11 @@ async fn tool_with_no_state_commits_nothing_extra() {
 
     let committed = commit.committed();
     assert!(
-        committed.state.is_empty(),
-        "a tool staging no commands must not commit state, got {:?}",
+        committed
+            .state
+            .iter()
+            .all(|command| command.key.0 == "runtime.active_tool_batch.v1"),
+        "a tool staging no commands must commit only runtime recovery state, got {:?}",
         committed.state
     );
 }
@@ -247,7 +252,15 @@ async fn parallel_commutative_tool_writes_merge() {
     assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
 
     let committed = commit.committed();
-    assert_eq!(committed.state.len(), 2, "both tool writes are committed");
+    assert_eq!(
+        committed
+            .state
+            .iter()
+            .filter(|command| command.key.0 == "acc")
+            .count(),
+        2,
+        "both tool-owned writes are committed"
+    );
 
     // Replay proves the two commutative writes shallow-merge into one value.
     let store = replay_state(&committed);
@@ -308,8 +321,11 @@ async fn parallel_exclusive_tool_writes_conflict_fail_closed() {
     );
     let committed = commit.committed();
     assert!(
-        committed.state.is_empty(),
-        "a conflicting batch must never partially commit, got {:?}",
+        committed
+            .state
+            .iter()
+            .all(|command| command.key.0 != "lock"),
+        "a conflicting tool-owned batch must never partially commit, got {:?}",
         committed.state
     );
 }

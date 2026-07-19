@@ -114,6 +114,7 @@ fn activation() -> RunActivation {
                 catalog_fingerprint: fingerprint.clone(),
                 instructions: String::new(),
                 max_steps: 16,
+                delegation_limits: Default::default(),
                 model_binding: ModelBinding {
                     provider_identity_ref: "p".to_string(),
                     model_ref: "m".to_string(),
@@ -137,6 +138,7 @@ fn activation() -> RunActivation {
             role: Role::User,
             content: vec![ContentBlock::text("go")],
         }],
+        initiator: None,
         model_ref_override: None,
     }
 }
@@ -162,7 +164,15 @@ async fn tool_staged_state_is_committed_and_replayable() {
     assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
 
     let committed = commit.committed();
-    assert_eq!(committed.state.len(), 1, "the state command is committed");
+    assert_eq!(
+        committed
+            .state
+            .iter()
+            .filter(|command| command.key.0 == "counter")
+            .count(),
+        1,
+        "the tool-owned state command is committed alongside Run-scoped ToolBatch checkpoints"
+    );
 
     // A StateChanged event is committed alongside the state event.
     assert!(
@@ -214,8 +224,11 @@ async fn exclusive_conflict_fails_closed_and_commits_no_state() {
     );
     let committed = commit.committed();
     assert!(
-        committed.state.is_empty(),
-        "a conflicting batch is never committed"
+        committed
+            .state
+            .iter()
+            .all(|command| command.key.0 != "lock"),
+        "the conflicting tool-owned batch is never committed"
     );
     assert!(matches!(
         committed.latest_run.unwrap().state,

@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use awaken_agent_contract::agent::awaiting::ResumeTicket;
 use awaken_agent_contract::agent::content::ContentBlock;
+use awaken_agent_contract::agent::delegation::DelegationOrigin;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
@@ -79,16 +80,63 @@ impl Runtime {
     where
         F: FnMut(&ResumeTicket) -> ResumeResult,
     {
+        self.run_with_identity(config, run_id, thread, input, context, None, &mut decide)
+            .await
+    }
+
+    /// Drive a delegated child through the ordinary lifecycle under its stable
+    /// Run id while retaining the tool-call origin in durable activation data.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run_delegated_to_completion<F>(
+        &self,
+        config: &RunnableConfig,
+        run_id: RunId,
+        thread: impl Into<String>,
+        input: impl Into<RunInput>,
+        context: RuntimeRunContext,
+        initiator: DelegationOrigin,
+        mut decide: F,
+    ) -> Result<RunState, Error>
+    where
+        F: FnMut(&ResumeTicket) -> ResumeResult,
+    {
+        self.run_with_identity(
+            config,
+            run_id,
+            thread,
+            input,
+            context,
+            Some(initiator),
+            &mut decide,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn run_with_identity<F>(
+        &self,
+        config: &RunnableConfig,
+        run_id: RunId,
+        thread: impl Into<String>,
+        input: impl Into<RunInput>,
+        context: RuntimeRunContext,
+        initiator: Option<DelegationOrigin>,
+        decide: &mut F,
+    ) -> Result<RunState, Error>
+    where
+        F: FnMut(&ResumeTicket) -> ResumeResult,
+    {
         self.install_catalog(config.install().clone())
             .map_err(|err| Error::Execution(err.to_string()))?;
         self.register_snapshot(config.snapshot().clone());
-        let activation = RunActivation::new(
+        let mut activation = RunActivation::new(
             run_id.clone(),
             ThreadId(thread.into()),
             config.snapshot().clone(),
             input.into().0,
         );
-        self.drive_to_completion(run_id, activation, context, &mut decide)
+        activation.initiator = initiator;
+        self.drive_to_completion(run_id, activation, context, decide)
             .await
     }
 
@@ -102,7 +150,19 @@ impl Runtime {
     where
         F: FnMut(&ResumeTicket) -> ResumeResult,
     {
-        let mut state = self.execute(activation, context.clone()).await?;
+        // Stable-id entry is idempotent: an existing Ended run is returned, an
+        // Awaiting run resumes through its committed ticket, and only a missing or
+        // orphan Running run enters execution/recovery. No synthetic "continue"
+        // message is added to the transcript.
+        let mut state = match context
+            .reader
+            .as_deref()
+            .and_then(|reader| reader.run_state(&run_id))
+        {
+            Some(state @ RunState::Ended(_)) => return Ok(state),
+            Some(RunState::Awaiting) => RunState::Awaiting,
+            Some(RunState::Running) | None => self.execute(activation, context.clone()).await?,
+        };
         while state == RunState::Awaiting {
             let reader = context.reader.as_deref().ok_or_else(|| {
                 Error::Execution("resuming an awaiting run needs a history reader".to_string())
@@ -163,6 +223,7 @@ impl Runtime {
             thread_id: ThreadId(thread),
             snapshot: config.snapshot().clone(),
             input: input.into().0,
+            initiator: None,
             model_ref_override: None,
         };
         Ok((run_id, activation))

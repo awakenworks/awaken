@@ -623,6 +623,7 @@ fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig, St
         id,
         instructions: string("system").unwrap_or_default(),
         max_steps: body.get("max_steps").and_then(Value::as_u64).unwrap_or(8) as usize,
+        delegation_limits: Default::default(),
         model_binding: ModelSelection::pinned("", model_ref, ""),
         tool_ids: array("tools").iter().filter_map(managed_tool_id).collect(),
         plugin_ids: array("plugins")
@@ -644,6 +645,13 @@ fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig, St
         skills: array("skills"),
         multiagent: body.get("multiagent").filter(|v| !v.is_null()).cloned(),
         tool_overrides,
+        recovery_policies: body
+            .get("recovery_policies")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|error| error.to_string())?
+            .unwrap_or_default(),
         compaction: body
             .get("compaction")
             .filter(|v| !v.is_null())
@@ -663,6 +671,7 @@ fn managed_from_agent_config(cfg: &AgentConfig, published: bool) -> Value {
         "system": cfg.instructions,
         "metadata": cfg.metadata,
         "tools": cfg.tool_ids,
+        "recovery_policies": cfg.recovery_policies,
         "mcp_servers": cfg.mcp_servers,
         "skills": cfg.skills,
         "multiagent": cfg.multiagent,
@@ -722,6 +731,7 @@ mod resource_prompt_tests {
             id: id.to_string(),
             instructions: "be helpful".to_string(),
             max_steps: 8,
+            delegation_limits: Default::default(),
             model_binding: awaken_config_store::ModelSelection::pinned("p", "m", "b"),
             tool_ids: vec![],
             model_candidates: Vec::new(),

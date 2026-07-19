@@ -44,6 +44,10 @@ pub struct Command {
     pub key: Key,
     pub scope: Scope,
     pub merge: MergePolicy,
+    /// Concrete owner stamped by `ThreadCommit::assemble` for Run-scoped state.
+    /// Older commands omit it and are handled only by explicit legacy readers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<crate::agent::run::Id>,
     pub action: Action,
 }
 
@@ -64,6 +68,7 @@ impl Command {
             key: Key(key.into()),
             scope,
             merge,
+            run_id: None,
             action: Action::Set(value),
         }
     }
@@ -73,7 +78,15 @@ impl Command {
             key: Key(key.into()),
             scope,
             merge,
+            run_id: None,
             action: Action::Remove,
+        }
+    }
+
+    /// Bind abstract Run scope to the Run whose commit carries this command.
+    pub fn bind_run(&mut self, run_id: &crate::agent::run::Id) {
+        if self.scope == Scope::Run {
+            self.run_id = Some(run_id.clone());
         }
     }
 }

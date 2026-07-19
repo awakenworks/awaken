@@ -1261,6 +1261,7 @@ mod tests {
                     catalog_fingerprint: CatalogFingerprint("fp".into()),
                     instructions: String::new(),
                     max_steps: 4,
+                    delegation_limits: Default::default(),
                     // The config-plane selection: this agent runs on `acp:claude`.
                     model_binding: ModelBinding::new("prov", "m", backend_ref),
                     tool_descriptors: Vec::new(),

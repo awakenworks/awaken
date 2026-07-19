@@ -38,6 +38,7 @@ pub struct awaken_ext_builtin_tools::Erased<T>(pub T)
 impl<T: awaken_runtime_contract::tool::Tool> awaken_runtime_contract::tool::RawTool for awaken_ext_builtin_tools::Erased<T>
 pub fn awaken_ext_builtin_tools::Erased<T>::id(&self) -> &str
 pub fn awaken_ext_builtin_tools::Erased<T>::invoke<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_builtin_tools::Erased<T>::recovery_capability(&self) -> awaken_runtime_contract::tool::ToolRecoveryCapability
 pub struct awaken_ext_builtin_tools::GlobArgs
 pub awaken_ext_builtin_tools::GlobArgs::pattern: alloc::string::String
 pub struct awaken_ext_builtin_tools::GlobTool

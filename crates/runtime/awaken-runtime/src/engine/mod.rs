@@ -9,11 +9,13 @@
 use async_trait::async_trait;
 use awaken_agent_contract::agent::awaiting::{AwaitReason, PendingTool, ResumeTicket};
 use awaken_agent_contract::agent::content::ContentBlock;
-use awaken_agent_contract::agent::delegation::DelegationOrigin;
+use awaken_agent_contract::agent::delegation::{
+    DelegationId, DelegationOrigin, DelegationRegistry, RequestDelegation,
+};
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, RunState};
 use awaken_agent_contract::agent::state::{
-    Command as StateCommand, Scope, StateKey, Store, validate_batch,
+    Action as StateAction, Command as StateCommand, Scope, StateKey, Store, validate_batch,
 };
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::draft::Draft as EventDraft;
@@ -28,7 +30,7 @@ use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::boundary::{BoundaryOutcome, evaluate_boundary};
 use awaken_runtime_contract::delegation::{
-    DelegationExecutionError, DelegationRequest, DelegationResume, DelegationStep,
+    DelegationExecutionError, DelegationRequest, DelegationResume, DelegationStep, RunDelegations,
 };
 use awaken_runtime_contract::execution::{Error, Result, RunExecutor};
 use awaken_runtime_contract::llm::{
@@ -46,6 +48,10 @@ use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult, validate_resu
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId;
 use awaken_runtime_contract::tool::{ToolError, ToolExecutor, ToolOutput};
+use awaken_runtime_contract::tool::{ToolRecoveryCapability, ToolRecoveryMode, ToolRecoveryPolicy};
+use awaken_runtime_contract::tool_batch::{
+    ActiveToolBatch, ToolBatch, ToolBatchId, ToolBatchPhase, ToolCallPhase, ToolWaitKind,
+};
 
 use crate::runtime::Runtime;
 
@@ -54,9 +60,13 @@ mod convert;
 mod delegation;
 mod dispatch;
 mod inference;
+mod resume;
 pub(crate) use convert::*;
-use delegation::{resume_delegation, run_delegation};
+use delegation::{
+    resume_delegation, run_delegation, stage_delegation_completed, stage_delegation_request,
+};
 use inference::infer_with_retry;
+use resume::drive_resumed;
 
 /// Message-id base for messages produced by a resumed attempt, kept distinct
 /// from the original attempt's ids.
@@ -104,6 +114,7 @@ pub(crate) async fn run_agent_loop(
 
     let run_id = activation.run_id.clone();
     let thread_id = activation.thread_id.clone();
+    let initiator = activation.initiator.clone();
 
     // Cancellation observed before any model call: commit a terminal Cancelled
     // outcome instead of starting work.
@@ -154,6 +165,7 @@ pub(crate) async fn run_agent_loop(
             .as_ref()
             .map(|reader| reader.committed_state(&thread_id))
             .unwrap_or_default(),
+        &run_id,
     );
     let step_result = drive(
         runtime,
@@ -162,10 +174,12 @@ pub(crate) async fn run_agent_loop(
         &run_id,
         &thread_id,
         &context,
+        initiator.as_ref(),
         transcript,
         fresh_input,
         0,
         store,
+        Vec::new(),
         Vec::new(),
     )
     .await?;
@@ -300,51 +314,6 @@ pub(crate) async fn resume_run(
     .await
 }
 
-/// Rebuild the transcript and state from committed truth, inject a resumed
-/// `result` for the awaiting ticket, and drive the loop to its next terminal/awaiting
-/// checkpoint. Shared by the two resume entries — a validated `ResumeCommand`
-/// (`resume_run`) and a delegate step folded back into the parent
-/// (`resume_delegation`) — so the rebuild/inject/drive/finalize glue lives once.
-#[allow(clippy::too_many_arguments)]
-async fn drive_resumed(
-    runtime: &Runtime,
-    resolved: &ResolvedRun,
-    env: &ResolvedExecutionEnv,
-    run_id: &RunId,
-    thread_id: &ThreadId,
-    ticket: &ResumeTicket,
-    result: ResumeResult,
-    reader: &dyn ThreadReader,
-    context: &RuntimeRunContext,
-) -> Result<RunState> {
-    let mut transcript = reader.committed_messages(thread_id);
-    let mut store = store_from_commands(reader.committed_state(thread_id));
-    let (resumed, seed_state) =
-        resume_into_messages(runtime, env, run_id, ticket, result, &store, context).await;
-    // The resumed tool's own state is folded into the store so a later step in
-    // this resume observes the advanced state; it also seeds the attempt's batch
-    // (kept first) so step commits and conflict validation cover it too.
-    for command in &seed_state {
-        store.apply(command);
-    }
-    transcript.extend(resumed.iter().cloned());
-    let step_result = drive(
-        runtime,
-        resolved,
-        env,
-        run_id,
-        thread_id,
-        context,
-        transcript,
-        resumed,
-        RESUME_STEP_BASE,
-        store,
-        seed_state,
-    )
-    .await?;
-    finalize(context, thread_id, run_id.clone(), step_result).await
-}
-
 /// Validate the staged state batch, then commit. A conflict fails closed: the
 /// attempt becomes a `StateConflict` fault, drops any pause, and commits no
 /// state (G13). A run whose state did not commit cleanly must not be resumable.
@@ -457,12 +426,12 @@ fn open_deferred_tool(
 /// returned checkpoint is only the tail beyond it. The model-facing `transcript`
 /// (seeded with committed history) and the durable `new_messages` (only this
 /// attempt's messages) grow together but stay distinct.
-struct StepLedger {
-    transcript: Vec<Message>,
-    new_messages: Vec<Message>,
-    staged_state: Vec<StateCommand>,
+pub(super) struct StepLedger {
+    pub(super) transcript: Vec<Message>,
+    pub(super) new_messages: Vec<Message>,
+    pub(super) staged_state: Vec<StateCommand>,
     /// Permission-audit drafts accumulated across the attempt's gate decisions.
-    audit: Vec<EventDraft>,
+    pub(super) audit: Vec<EventDraft>,
     committed_messages: usize,
     committed_state: usize,
     committed_audit: usize,
@@ -474,12 +443,13 @@ impl StepLedger {
         transcript: Vec<Message>,
         new_messages: Vec<Message>,
         seed_state: Vec<StateCommand>,
+        seed_audit: Vec<EventDraft>,
     ) -> Self {
         Self {
             transcript,
             new_messages,
             staged_state: seed_state,
-            audit: Vec::new(),
+            audit: seed_audit,
             committed_messages: 0,
             committed_state: 0,
             committed_audit: 0,
@@ -489,7 +459,7 @@ impl StepLedger {
 
     /// Append one message to both the model-facing transcript and the durable
     /// new-message accumulation — the two always grow in lock-step.
-    fn push_message(&mut self, message: Message) {
+    pub(super) fn push_message(&mut self, message: Message) {
         self.transcript.push(message.clone());
         self.new_messages.push(message);
     }
@@ -510,7 +480,7 @@ impl StepLedger {
 
     /// Commit the tail beyond every watermark under a `Running` fact, then advance
     /// the watermarks. `first` (the first delta) announces the state change.
-    async fn commit_delta(
+    pub(super) async fn commit_delta(
         &mut self,
         context: &RuntimeRunContext,
         thread_id: &ThreadId,
@@ -703,11 +673,13 @@ async fn drive(
     run_id: &RunId,
     thread_id: &ThreadId,
     context: &RuntimeRunContext,
+    initiator: Option<&DelegationOrigin>,
     transcript: Vec<Message>,
     new_messages: Vec<Message>,
     step_base: usize,
     mut store: Store,
     seed_state: Vec<StateCommand>,
+    seed_audit: Vec<EventDraft>,
 ) -> Result<RunStepResult> {
     // The per-run model executor (ADR-0004) wins over the runtime's bound default:
     // the host resolves the run's model ref to an executor for this attempt and
@@ -726,7 +698,7 @@ async fn drive(
     // The attempt's durable-progress accumulator; it owns the step-commit
     // watermark invariant, so only the tail beyond a watermark is ever returned
     // or re-committed.
-    let mut ledger = StepLedger::new(transcript, new_messages, seed_state);
+    let mut ledger = StepLedger::new(transcript, new_messages, seed_state, seed_audit);
     // The loop's terminal decision. It stays `None` only if the loop runs to its
     // step ceiling, which is itself an end (`MaxSteps`).
     let mut disposition: Option<RunDisposition> = None;
@@ -778,6 +750,41 @@ async fn drive(
     // Deferred tools (ADR-0053) the model has opened via `tool_open` this run, by
     // canonical id: once opened, a tool's full schema is sent on subsequent steps.
     let mut opened: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+
+    // A reclaimed Running run may have died after committing a Requested/Executing
+    // tool batch. Recover that explicit Run-scoped entity before asking the model
+    // for another turn. Terminal calls are reused, never re-entered.
+    if let Some(batch) = ActiveToolBatch::load(&store)
+        .map_err(|error| Error::Execution(error.to_string()))?
+        .filter(|batch| batch.run_id == *run_id && batch.phase != ToolBatchPhase::Finalized)
+    {
+        match dispatch::recover_tool_batch(
+            runtime,
+            context,
+            initiator,
+            resolved,
+            env,
+            run_id,
+            thread_id,
+            batch,
+            &mut ledger,
+            &mut store,
+            &mut opened,
+        )
+        .await
+        {
+            Ok(Some(reached)) => return Ok(ledger.into_step_result(reached)),
+            Ok(None) => {}
+            Err(Error::StateConflict) => {
+                return Ok(ledger.into_step_result(RunDisposition::ended(
+                    run_id.clone(),
+                    EndCause::Error(Failure::StateConflict),
+                )));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
     for step in 0..resolved.spec.max_steps {
         // Step-boundary incremental commit: everything the completed steps
         // staged — messages, state, audit — becomes durable under a `Running`
@@ -989,7 +996,7 @@ async fn drive(
                         ledger.push_message(message);
                     }
                     disposition = Some(RunDisposition::awaiting(pause_ticket(
-                        resolved, run_id, reason,
+                        resolved, run_id, initiator, reason,
                     )));
                     emit(
                         context,
@@ -1059,25 +1066,35 @@ async fn drive(
         // Otherwise run each requested tool and feed the results back. A call that
         // awaits or fails the run returns its disposition here, ending the step
         // loop; every call answered with a result returns `None` and the loop goes on.
-        if let Some(reached) = dispatch::run_tool_calls(
+        match dispatch::run_tool_calls(
             runtime,
             context,
+            initiator,
             resolved,
             env,
             run_id,
+            thread_id,
             step,
             calls,
-            &mut ledger.transcript,
-            &mut ledger.new_messages,
-            &mut ledger.staged_state,
-            &mut ledger.audit,
+            &mut ledger,
             &mut store,
             &mut opened,
         )
         .await
         {
-            disposition = Some(reached);
-            break;
+            Ok(Some(reached)) => {
+                disposition = Some(reached);
+                break;
+            }
+            Ok(None) => {}
+            Err(Error::StateConflict) => {
+                disposition = Some(RunDisposition::ended(
+                    run_id.clone(),
+                    EndCause::Error(Failure::StateConflict),
+                ));
+                break;
+            }
+            Err(error) => return Err(error),
         }
 
         // StepEnd fires at the boundary between steps that continue the loop.
@@ -1438,13 +1455,19 @@ fn feedback_message(run_id: &RunId, nth: usize, feedback: String) -> Message {
 /// no pending tool and no call id, correlated by run id, resumed by an explicit
 /// operator resume rather than a tool result. The drain/re-identify discipline
 /// this used to sit next to now lives in `awaken-runtime-contract::boundary`.
-fn pause_ticket(resolved: &ResolvedRun, run_id: &RunId, reason: AwaitReason) -> ResumeTicket {
+fn pause_ticket(
+    resolved: &ResolvedRun,
+    run_id: &RunId,
+    initiator: Option<&DelegationOrigin>,
+    reason: AwaitReason,
+) -> ResumeTicket {
     ResumeTicket {
         correlation_id: run_id.0.clone(),
         run_id: run_id.clone(),
         thread_id: ThreadId(String::new()), // filled in finish via the commit thread id
         snapshot_id: resolved.snapshot_id.0.clone(),
         catalog_fingerprint: resolved.spec.catalog_fingerprint.0.clone(),
+        initiator: initiator.cloned(),
         reason,
         call_id: None,
         pending_tool: None,
@@ -1457,6 +1480,7 @@ fn pause_ticket(resolved: &ResolvedRun, run_id: &RunId, reason: AwaitReason) -> 
 fn resume_ticket(
     resolved: &ResolvedRun,
     run_id: &RunId,
+    initiator: Option<&DelegationOrigin>,
     ticket_id: &str,
     call: &ToolCall,
     reason: AwaitReason,
@@ -1468,6 +1492,7 @@ fn resume_ticket(
         thread_id: ThreadId(String::new()), // filled in finish via the commit thread id
         snapshot_id: resolved.snapshot_id.0.clone(),
         catalog_fingerprint: resolved.spec.catalog_fingerprint.0.clone(),
+        initiator: initiator.cloned(),
         reason,
         call_id: Some(call.call_id.clone()),
         pending_tool: Some(PendingTool {
@@ -1490,7 +1515,7 @@ async fn resume_into_messages(
     result: ResumeResult,
     store: &Store,
     context: &RuntimeRunContext,
-) -> (Vec<Message>, Vec<StateCommand>) {
+) -> (Vec<Message>, Vec<StateCommand>, Option<ToolOutput>) {
     let call_id = ticket.call_id.clone().unwrap_or_default();
     // The pending call, when the ticket carries one, so a tool-outcome hook can
     // advance a machine on the replayed result exactly like a first-time call.
@@ -1504,7 +1529,9 @@ async fn resume_into_messages(
     match result {
         ResumeResult::ToolResult(output) => {
             let call = pending_call(&output);
-            fold_resume_tool_output(env, run_id, &call_id, call, &output, store).await
+            let (messages, state) =
+                fold_resume_tool_output(env, run_id, &call_id, call, &output, store).await;
+            (messages, state, Some(output))
         }
         ResumeResult::Decision { allow, note } => {
             if allow && let Some(pending) = &ticket.pending_tool {
@@ -1513,17 +1540,16 @@ async fn resume_into_messages(
                     tool_id: pending.tool_id.clone(),
                     arguments: pending.arguments.clone(),
                 };
-                let output = execute_tool(runtime, None, &call, context).await;
-                fold_resume_tool_output(env, run_id, &call_id, Some(call), &output, store).await
+                let output = execute_tool(runtime, Some(env), &call, context).await;
+                let (messages, state) =
+                    fold_resume_tool_output(env, run_id, &call_id, Some(call), &output, store)
+                        .await;
+                (messages, state, Some(output))
             } else {
                 let reason = note.unwrap_or_else(|| "denied".to_string());
-                (
-                    vec![tool_result_message_from(
-                        &call_id,
-                        &format!("blocked: {reason}"),
-                    )],
-                    Vec::new(),
-                )
+                let output = ToolOutput::error(&call_id, format!("blocked: {reason}"));
+                let messages = vec![tool_result_message_from(&call_id, &output.content)];
+                (messages, Vec::new(), Some(output))
             }
         }
         ResumeResult::Input(text) => (
@@ -1533,6 +1559,7 @@ async fn resume_into_messages(
                 text,
             )],
             Vec::new(),
+            None,
         ),
     }
 }
@@ -1570,13 +1597,35 @@ async fn gate_decision(
 }
 
 /// Seed the run's read-only state from committed thread truth. Thread/Shared/
-/// Profile-scoped commands re-hydrate; run-scoped commands are dropped so a
-/// run-scoped machine starts empty each run (G1/G13). Within the run, later
-/// commands are folded into this store so a gate/hook reads accumulated state.
-fn store_from_commands(commands: Vec<StateCommand>) -> Store {
+/// Profile-scoped commands re-hydrate for every Run; Run-scoped commands only
+/// re-hydrate for their committed owner. Within a Run, later commands are folded
+/// into this store so gates and hooks read its accumulated state (G1/G13).
+fn store_from_commands(commands: Vec<StateCommand>, run_id: &RunId) -> Store {
     let kept: Vec<StateCommand> = commands
         .into_iter()
-        .filter(|command| command.scope != Scope::Run)
+        .filter(|command| {
+            if command.scope != Scope::Run {
+                return true;
+            }
+            if let Some(owner) = &command.run_id {
+                return owner == run_id;
+            }
+            // Legacy commands predate commit-time Run binding. Only the old
+            // ToolBatch cell has an embedded Run id that can be migrated safely;
+            // every new Run-scoped key is explicitly owned above.
+            if command.key.0 != ActiveToolBatch::KEY {
+                return false;
+            }
+            match &command.action {
+                StateAction::Set(value) => {
+                    serde_json::from_value::<Option<ToolBatch>>(value.clone())
+                        .ok()
+                        .flatten()
+                        .is_some_and(|batch| batch.run_id == *run_id)
+                }
+                StateAction::Remove => false,
+            }
+        })
         .collect();
     Store::rebuild(&kept)
 }
@@ -1776,6 +1825,15 @@ struct LocalToolExecutor<'a> {
 
 #[async_trait::async_trait]
 impl ToolExecutor for LocalToolExecutor<'_> {
+    fn recovery_capability(&self, tool_id: &str) -> ToolRecoveryCapability {
+        self.env
+            .and_then(|env| env.dynamic_tool(tool_id))
+            .or_else(|| self.runtime.tool(tool_id).cloned())
+            .map_or(ToolRecoveryCapability::NonRecoverable, |tool| {
+                tool.recovery_capability()
+            })
+    }
+
     async fn invoke(&self, call: &ToolCall) -> std::result::Result<ToolOutput, ToolError> {
         let tool = self
             .env
@@ -1811,7 +1869,7 @@ async fn finish(
 ) -> Result<RunState> {
     let RunStepResult {
         new_messages,
-        staged_state,
+        mut staged_state,
         audit,
         disposition,
     } = step;
@@ -1827,6 +1885,40 @@ async fn finish(
     };
     debug_assert_eq!(disposition.run_id(), &run_id);
     let run_state = disposition.state();
+
+    // Parent termination and child-cancellation intent are one ThreadCommit.
+    // Delivery may be retried by the adapter, but an ended parent can never lose
+    // the durable request or reopen a relationship.
+    if matches!(run_state, RunState::Ended(_)) {
+        let mut store = store_from_commands(
+            context
+                .reader
+                .as_ref()
+                .map(|reader| reader.committed_state(thread_id))
+                .unwrap_or_default(),
+            &run_id,
+        );
+        for command in &staged_state {
+            store.apply(command);
+        }
+        if let Some(mut batch) = ActiveToolBatch::load(&store)
+            .map_err(|error| Error::Execution(error.to_string()))?
+            .filter(|batch| batch.run_id == run_id && batch.phase != ToolBatchPhase::Finalized)
+        {
+            batch.seal_on_run_end("owning run ended before every tool call settled");
+            let command = ActiveToolBatch::write(&Some(batch));
+            store.apply(&command);
+            staged_state.push(command);
+        }
+        if let Some(mut registry) =
+            RunDelegations::load(&store).map_err(|error| Error::Execution(error.to_string()))?
+        {
+            registry.end_parent();
+            let command = RunDelegations::write(&Some(registry));
+            store.apply(&command);
+            staged_state.push(command);
+        }
+    }
 
     if let Some(coordinator) = &context.commit {
         // The finish boundary always transitions state (to Awaiting/Ended); the

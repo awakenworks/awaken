@@ -747,6 +747,7 @@ mod tests {
             description: String::new(),
             parameters: serde_json::json!({}),
             content_hash: String::new(),
+            recovery_policy: Default::default(),
         }
     }
 
