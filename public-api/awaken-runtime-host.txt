@@ -5,7 +5,6 @@ pub use awaken_runtime_host::ConfigService
 pub use awaken_runtime_host::ConfigServiceAgentSource
 pub use awaken_runtime_host::ConfigServiceReconciler
 pub use awaken_runtime_host::HttpDispatchQueue
-pub use awaken_runtime_host::HttpTransport
 pub use awaken_runtime_host::ModelResolver
 pub use awaken_runtime_host::PostgresEnvRegistry
 pub use awaken_runtime_host::PostgresManagedSessionRepository
@@ -13,7 +12,6 @@ pub use awaken_runtime_host::PostgresWorkQueue
 pub use awaken_runtime_host::PublishError
 pub use awaken_runtime_host::RESERVED_ADMIN_SCOPE
 pub use awaken_runtime_host::ResolvedModel
-pub use awaken_runtime_host::Response
 pub use awaken_runtime_host::ScopedToolCatalog
 pub use awaken_runtime_host::SkillContext
 pub use awaken_runtime_host::SkillSpec
@@ -22,7 +20,6 @@ pub use awaken_runtime_host::SqliteManagedSessionRepository
 pub use awaken_runtime_host::SqliteWorkQueue
 pub use awaken_runtime_host::StaticToolCatalog
 pub use awaken_runtime_host::ToolCatalogSource
-pub use awaken_runtime_host::Transport
 pub use awaken_runtime_host::capabilities_router
 pub use awaken_runtime_host::config_router
 pub use awaken_runtime_host::content_fingerprint
@@ -233,7 +230,7 @@ pub fn awaken_runtime_host::SharedHost::with_gate_override(self, alloc::sync::Ar
 pub fn awaken_runtime_host::SharedHost::with_judge(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_memory(self, impl core::convert::Into<std::path::PathBuf>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_memory_registry(self, alloc::sync::Arc<dyn awaken_config_resolver::stores::MemoryStoreRegistry>) -> Self
-pub fn awaken_runtime_host::SharedHost::with_remote_a2a(self, impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_protocol_a2a::client::Transport>) -> Self
+pub fn awaken_runtime_host::SharedHost::with_remote_delegate(self, impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_runtime_contract::agent_resolver::RemoteDelegate>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_remote_hand(self, alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolExecutor>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_session_blob_root(self, impl core::convert::Into<std::path::PathBuf>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_skill_store(self, impl core::convert::Into<std::path::PathBuf>) -> Self
@@ -260,7 +257,7 @@ pub fn awaken_runtime_host::SharedHost::thread_resources_handle(&self) -> awaken
 impl awaken_runtime_host::SharedHost
 pub async fn awaken_runtime_host::SharedHost::live_inbox(&self, &str) -> core::option::Option<awaken_runtime_contract::live_inbox::LiveInbox>
 impl awaken_runtime_host::SharedHost
-pub async fn awaken_runtime_host::SharedHost::remote_agent_card(&self, &str) -> core::result::Result<awaken_protocol_a2a::types::AgentCard, awaken_runtime_host::host::types::HostError>
+pub async fn awaken_runtime_host::SharedHost::remote_agent_card(&self, &str) -> core::result::Result<serde_json::value::Value, awaken_runtime_host::host::types::HostError>
 pub struct awaken_runtime_host::ThreadEgress(_)
 impl awaken_runtime_host::ThreadEgress
 pub fn awaken_runtime_host::ThreadEgress::denies(&self, &str) -> bool
