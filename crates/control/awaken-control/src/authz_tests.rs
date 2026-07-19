@@ -478,6 +478,36 @@ async fn mg11a_allow_passes_through() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn mg11a_authenticated_workspace_is_stamped_for_inner_layers() {
+    async fn scope_echo(
+        axum::Extension(scope): axum::Extension<awaken_tenancy::WorkspaceScope>,
+    ) -> Response {
+        (StatusCode::OK, scope.0).into_response()
+    }
+
+    let (_dir, iam) = fresh_iam();
+    let token = mint(&iam, "tok_scope", "wrkspc_scope", "workspace_user");
+    let app = Router::new()
+        .route("/v1/config/catalog", axum::routing::get(scope_echo))
+        .layer(axum::middleware::from_fn_with_state(iam, management_guard));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/config/catalog")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.into_body().collect().await.unwrap().to_bytes(),
+        "wrkspc_scope"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn mg11b_require_approval_is_403_approval() {
     let (dir, iam) = fresh_iam();
     let bootstrap = admin_token(dir.path());

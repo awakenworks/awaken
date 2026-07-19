@@ -1,11 +1,11 @@
 // ADR-0052 assistant RUN e2e: the seeded management assistant actually runs and
-// invokes all four read-only management tools end to end. The `config` server (with
+// invokes all five management tools end to end. The `config` server (with
 // the assistant seeded + the admin executables wired) is driven by the fake upstream
-// reproducing the `adminDrive` scenario, which sequences the four tool calls. This
+// reproducing the `adminDrive` scenario, which sequences the five tool calls. This
 // exercises the tool *executables* + the audit sink over a real managed session,
 // which the config-plane HTTP e2e cannot reach.
 //
-//   capabilities → create draft → validate draft → set plugin → final summary
+//   capabilities → draft → patch → validate → explain → final summary
 //
 // Run: (from e2e/)  node adr0052_admin_run_e2e.mjs
 
@@ -39,25 +39,26 @@ async function main() {
     // Every admin tool ran (their ids appear as tool calls / results in the transcript).
     for (const id of [
       'admin_get_platform_capabilities',
-      'admin_create_agent_draft',
+      'admin_draft_agent',
+      'admin_patch_agent',
       'admin_validate_agent',
-      'admin_set_plugin_config',
+      'admin_explain_console',
     ]) {
       assert.ok(blob.includes(id), `assistant invoked ${id} end to end`);
     }
-    // The run reached its natural end after all four tools executed successfully:
-    // the driving model only emits this marker after it has seen four tool RESULTS,
+    // The run reached its natural end after all five tools executed successfully:
+    // the driving model only emits this marker after it has seen five tool RESULTS,
     // so reaching it proves each admin executable ran and returned (not just emitted).
     const assistantText = events
       .filter((e) => e.type === 'agent.message')
       .map((m) => JSON.stringify(m.content))
       .join('');
-    assert.ok(assistantText.includes('ADMIN-RUN-DONE'), 'assistant finished after driving all four tools');
+    assert.ok(assistantText.includes('ADMIN-RUN-DONE'), 'assistant finished after driving all five tools');
 
-    pass('management assistant ran and invoked all four admin tools end to end');
+    pass('management assistant ran and invoked all five admin tools end to end');
   });
 
-  console.log('\nE2E PASS: ADR-0052 assistant executes its four management tools live.');
+  console.log('\nE2E PASS: ADR-0052 assistant executes its five management tools live.');
   process.exitCode = 0;
 }
 

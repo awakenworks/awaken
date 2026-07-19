@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
 
@@ -59,16 +60,22 @@ pub trait WebhookSender: Send + Sync {
 pub struct ReqwestSender {
     client: reqwest::Client,
     guard: bool,
+    timeout: Duration,
 }
+
+const DEFAULT_DELIVERY_TIMEOUT: Duration = Duration::from_secs(10);
 
 impl Default for ReqwestSender {
     fn default() -> Self {
+        let timeout = DEFAULT_DELIVERY_TIMEOUT;
         Self {
             client: reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none()) // never follow redirects
+                .timeout(timeout)
                 .build()
                 .expect("reqwest client builds"),
             guard: false,
+            timeout,
         }
     }
 }
@@ -82,6 +89,22 @@ impl ReqwestSender {
         Self {
             guard: true,
             ..Self::default()
+        }
+    }
+
+    /// A permissive sender with a bounded per-attempt timeout. Production uses
+    /// ten seconds; tests and specialized composition roots may choose a tighter
+    /// bound. Retries remain owned by [`WebhookDispatcher`].
+    #[must_use]
+    pub fn with_timeout(timeout: Duration) -> Self {
+        Self {
+            client: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(timeout)
+                .build()
+                .expect("reqwest client builds"),
+            guard: false,
+            timeout,
         }
     }
 
@@ -101,6 +124,7 @@ impl ReqwestSender {
         let addrs = resolve_global(&host, port).await?;
         reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
+            .timeout(self.timeout)
             .resolve_to_addrs(&host, &addrs)
             .build()
             .map_err(|e| e.to_string())

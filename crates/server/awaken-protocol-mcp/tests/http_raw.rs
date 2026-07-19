@@ -46,6 +46,7 @@ fn post(body: &str) -> Request<Body> {
         .method("POST")
         .uri("/mcp")
         .header("content-type", "application/json")
+        .header("accept", "application/json, text/event-stream")
         .body(Body::from(body.to_string()))
         .unwrap()
 }
@@ -63,6 +64,58 @@ async fn a_body_without_a_method_is_not_a_jsonrpc_message() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn missing_or_wrong_jsonrpc_version_is_bad_request() {
+    for body in [
+        r#"{"id":1,"method":"ping"}"#,
+        r#"{"jsonrpc":"1.0","id":1,"method":"ping"}"#,
+    ] {
+        let response = app(None).oneshot(post(body)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "body={body}");
+    }
+}
+
+#[tokio::test]
+async fn unsupported_protocol_versions_are_transport_bad_requests() {
+    let initialize = app(None)
+        .oneshot(post(
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"1900-01-01"}}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(initialize.status(), StatusCode::BAD_REQUEST);
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/mcp")
+        .header("content-type", "application/json")
+        .header("accept", "application/json, text/event-stream")
+        .header("mcp-protocol-version", "1900-01-01")
+        .body(Body::from(
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#,
+        ))
+        .unwrap();
+    let response = app(None).oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn post_requires_both_json_and_sse_accept_types() {
+    for accept in ["application/json", "text/event-stream", "*/*"] {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/mcp")
+            .header("content-type", "application/json")
+            .header("accept", accept)
+            .body(Body::from(
+                r#"{"jsonrpc":"2.0","id":1,"method":"ping","params":{}}"#,
+            ))
+            .unwrap();
+        let response = app(None).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE, "{accept}");
+    }
 }
 
 #[tokio::test]
@@ -101,7 +154,28 @@ async fn get_requires_an_sse_accept_header() {
         .body(Body::empty())
         .unwrap();
     let response = app(None).oneshot(request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE);
+}
+
+#[tokio::test]
+async fn get_with_sse_accept_is_a_real_standing_stream() {
+    let request = Request::builder()
+        .method("GET")
+        .uri("/mcp")
+        .header("accept", "text/event-stream")
+        .body(Body::empty())
+        .unwrap();
+    let response = app(None).oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("text/event-stream"))
+    );
+    // Do not collect the body: a correct standing stream remains open and is
+    // independently proven to deliver list-changed in http_roundtrip.rs.
 }
 
 #[tokio::test]
@@ -125,6 +199,7 @@ async fn a_call_on_an_unknown_session_is_not_found() {
         .method("POST")
         .uri("/mcp")
         .header("content-type", "application/json")
+        .header("accept", "application/json, text/event-stream")
         .header("Mcp-Session-Id", "never-opened")
         .body(Body::from(
             r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#.to_string(),
@@ -176,6 +251,7 @@ async fn delete_tears_down_the_session() {
                 .method("POST")
                 .uri("/mcp")
                 .header("content-type", "application/json")
+                .header("accept", "application/json, text/event-stream")
                 .header("Mcp-Session-Id", &session)
                 .body(Body::from(
                     r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#.to_string(),

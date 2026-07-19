@@ -248,25 +248,17 @@ export const BEHAVIORS = {
     return text(`USED-SKILL: ${lastText}`);
   },
   // AdminAssistantModel (ADR-0052): drive the seeded management assistant through all
-  // four read-only admin tools in one run, sequenced by tool-result count, then a
+  // five admin tools in one run, sequenced by tool-result count, then a
   // final marker. Every draft it passes is a valid ordinary config (auto-bound, no
   // tools) so the real DraftValidator accepts it.
   adminDrive(parsed) {
-    const draft = {
-      id: 'drafted-agent',
-      instructions: 'a drafted agent',
-      max_steps: 4,
-      model_binding: { mode: 'auto' },
-      tool_ids: [],
-      plugin_ids: [],
-      plugin_config: {},
-    };
     switch (toolResults(parsed).length) {
       case 0: return tool('c0', 'admin_get_platform_capabilities', {});
-      case 1: return tool('c1', 'admin_create_agent_draft', { id: 'drafted-agent', instructions: 'a drafted agent' });
-      case 2: return tool('c2', 'admin_validate_agent', { draft });
-      case 3: return tool('c3', 'admin_set_plugin_config', { draft, plugin_id: 'state_machine', config: { machines: [] } });
-      default: return text('ADMIN-RUN-DONE: capabilities read, draft created, validated, plugin set');
+      case 1: return tool('c1', 'admin_draft_agent', { id: 'drafted-agent', instructions: 'a drafted agent' });
+      case 2: return tool('c2', 'admin_patch_agent', { id: 'drafted-agent', patch: { description: 'patched by the admin assistant' } });
+      case 3: return tool('c3', 'admin_validate_agent', { id: 'drafted-agent' });
+      case 4: return tool('c4', 'admin_explain_console', { topic: 'agent' });
+      default: return text('ADMIN-RUN-DONE: capabilities read, draft created, patched, validated, help read');
     }
   },
   // DelegatingModel: with `agent_run` it delegates (to `researcher`, or `ghost` if

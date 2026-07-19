@@ -2,10 +2,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use awaken_mcp_server_core::{
-    CallToolResult, McpCall, McpHostError, McpServer, McpToolDefinition, McpToolHost, NotifySink,
-    ToolContent,
+    AllowAllOrigins, CallToolResult, McpCall, McpHostError, McpHttpMethod, McpHttpReply, McpServer,
+    McpToolDefinition, McpToolHost, NotifySink, NullSink, ToolContent, handle_streamable_http,
 };
-use awaken_mcp_server_testkit::{McpConformanceDriver, assert_mcp_server_conformance};
+use awaken_mcp_server_testkit::{
+    McpConformanceDriver, McpHttpConformanceDriver, assert_mcp_http_transport_conformance,
+    assert_mcp_server_conformance,
+};
 use awaken_mcp_wire::jsonrpc::ServerRequestError;
 use serde_json::{Value, json};
 
@@ -86,6 +89,38 @@ impl McpConformanceDriver for Driver {
     }
 }
 
+#[async_trait]
+impl McpHttpConformanceDriver for Driver {
+    async fn exchange(
+        &self,
+        method: McpHttpMethod,
+        headers: &[(&str, &str)],
+        body: &[u8],
+    ) -> McpHttpReply {
+        let mut map = http::HeaderMap::new();
+        for (name, value) in headers {
+            map.append(
+                http::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                http::HeaderValue::from_str(value).unwrap(),
+            );
+        }
+        handle_streamable_http(
+            &self.server,
+            &(),
+            method,
+            &map,
+            body,
+            &AllowAllOrigins,
+            &NullSink,
+        )
+        .await
+    }
+
+    fn host_call_count(&self) -> usize {
+        self.server.host().calls.load(Ordering::SeqCst)
+    }
+}
+
 #[tokio::test]
 async fn neutral_core_passes_the_shared_conformance_suite() {
     let driver = Driver {
@@ -98,4 +133,18 @@ async fn neutral_core_passes_the_shared_conformance_suite() {
         ),
     };
     assert_mcp_server_conformance(&driver).await;
+}
+
+#[tokio::test]
+async fn neutral_core_passes_the_shared_http_transport_suite() {
+    let driver = Driver {
+        server: McpServer::new(
+            "http-conformance",
+            "1",
+            Host {
+                calls: AtomicUsize::new(0),
+            },
+        ),
+    };
+    assert_mcp_http_transport_conformance(&driver).await;
 }

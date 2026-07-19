@@ -803,6 +803,7 @@ dependencies = [
  "async-trait",
  "awaken-mcp-server-core",
  "awaken-mcp-wire",
+ "http 1.4.2",
  "serde_json",
  "tokio",
 ]

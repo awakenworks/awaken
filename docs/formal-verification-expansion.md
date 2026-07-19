@@ -143,3 +143,30 @@ The production composition root now passes the durable SQLite/PostgreSQL admin
 store as the shared `ResourceStore`; the previous unconditional in-memory store
 was removed. Real child-process kill tests cover session, credential, and audit
 crash windows, and restart persistence covers HTTP audit plus resource bindings.
+
+## Environmental verification matrix
+
+The safety ledger intentionally does not turn dependencies outside the process
+into mathematical assumptions. Those boundaries are covered by executable tests
+and release gates instead:
+
+| Boundary not proved end-to-end | Executable evidence | Gate |
+| --- | --- | --- |
+| Network retry, timeout, 429/5xx, and response loss | `awaken-webhook/tests/webhook_e2e.rs` drives real loopback TCP/HTTP receivers and verifies stable `webhook-id` retries | `cargo test -p awaken-webhook --all-targets` |
+| Third-party exactly-once side effects | Stable delivery IDs and response-loss retries let receivers deduplicate; no test claims an arbitrary receiver applies once | receiver contract/integration test plus reconciliation metrics |
+| SQLite/PostgreSQL engine and process durability | config/session/credential process-kill tests, backend conformance, and live PostgreSQL suites | `scripts/ci/pg_tests.sh` plus workspace Rust tests |
+| LLM semantic quality and sampling variance | repeated Admin Assistant golden cases score persisted, compiled configuration rather than prose alone | `python3 scripts/assistant-eval.py 3 --gate` against a live configured server |
+| HTTP/MCP wire compatibility | one shared Streamable HTTP suite drives both the framework-free kernel and the real Axum router; raw and round-trip suites cover auth/session state | MCP core, testkit, and protocol crate tests |
+| Middleware/composition order | management guard stamps authenticated scope into the inner durable audit layer; rejection, replay, conflict, and body-bound tests drive assembled Axum routers | `cargo test -p awaken-control --all-targets` and CLI management tests |
+| Encryption implementation and key operations | sealed-secret restart, wrong-key, SQL tamper, nonce, and hard-cutover rotation tests | `cargo test -p awaken-credential-vault --all-targets` |
+| Kernel/container isolation | local, Docker, Podman, and Kubernetes capability/egress/resource-limit suites exercise the actual OS boundary when available | `scripts/e2e/sandbox_capability_suite.sh` |
+| Wall clocks and timers | time is supplied to pure lease/queue/cooldown kernels; backward movement, expiry edges, timeout, and reaping are property-tested | workspace Rust tests |
+| Scheduler concurrency and capacity | optimistic-CAS/lease properties, multi-protocol concurrency, bounded queues, stress and soak workloads | `npm --prefix e2e run test:k6:stress` and `npm --prefix e2e run test:soak` |
+| Telemetry collectors and retention operations | collector-free trace files, fake OTLP receivers, live Jaeger/Phoenix fan-out, secret scans, and bounded shutdown cover failure/flush paths | `npm --prefix e2e run test:trace` plus deployment retention drills |
+| Client SDK and deployment wiring | official Managed, AI SDK, AG-UI, and A2A clients drive the served binary; worker composition and k3d suites cover role/startup/failover wiring | `npm --prefix e2e run test:protocols` and deployment E2E jobs |
+
+The rows for arbitrary third-party exactly-once behavior, model meaning, database
+implementation correctness, kernel isolation, collector retention, and cloud
+control planes can only increase empirical confidence. They cannot be promoted to
+formal guarantees without replacing the external component with a modeled,
+transaction-participating capability.

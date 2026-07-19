@@ -21,6 +21,9 @@ pub mod control_stores;
 pub mod resource_owner;
 pub mod worker_stores;
 
+#[cfg(test)]
+mod audit_tests;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -294,14 +297,23 @@ pub fn control_router(input: ControlRouterInput) -> (Router, Arc<WebhookLifecycl
         .merge(capabilities);
     if let Some(iam) = iam {
         mgmt = mgmt.merge(crate::authz::token_router(iam.clone()));
+        // Layer order is outside-in in reverse application order: audit is
+        // installed first, then IAM wraps it. Thus unauthenticated requests
+        // never create audit intents, while admitted requests carry the
+        // authenticated WorkspaceScope into durable audit and ownership guards.
+        mgmt = mgmt.layer(axum::middleware::from_fn_with_state(
+            audit_plane,
+            durable_management_audit,
+        ));
         mgmt = mgmt.layer(axum::middleware::from_fn_with_state(
             iam,
             crate::authz::management_guard,
         ));
+    } else {
+        mgmt = mgmt.layer(axum::middleware::from_fn_with_state(
+            audit_plane,
+            durable_management_audit,
+        ));
     }
-    mgmt = mgmt.layer(axum::middleware::from_fn_with_state(
-        audit_plane,
-        durable_management_audit,
-    ));
     (mgmt, webhook_sink)
 }

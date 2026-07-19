@@ -664,6 +664,8 @@ pub async fn management_guard(
             // that workspace only).
             let mut req = req;
             req.extensions_mut().insert(AuthedPrincipal(principal));
+            req.extensions_mut()
+                .insert(awaken_tenancy::WorkspaceScope(workspace.0));
             return next.run(req).await;
         }
     };
@@ -708,7 +710,12 @@ pub async fn management_guard(
     {
         return forbidden("workspace_id does not match the API token's workspace");
     }
-    let req = Request::from_parts(parts, Body::from(bytes));
+    let mut req = Request::from_parts(parts, Body::from(bytes));
+    // Publish the authenticated authority to inner ownership and durable-audit
+    // layers. The IAM guard must be the outer layer so no unauthenticated caller
+    // can select this scope and no audited write silently falls back to default.
+    req.extensions_mut()
+        .insert(awaken_tenancy::WorkspaceScope(workspace.0.clone()));
 
     match authz.authorize(principal, action, workspace) {
         AuthorizationDecision::Allow => next.run(req).await,

@@ -124,6 +124,11 @@ async fn handle_post(
     let Ok(message) = serde_json::from_str::<Value>(&body) else {
         return (StatusCode::BAD_REQUEST, "invalid JSON").into_response();
     };
+    if let Some(rejection) =
+        awaken_mcp_server_core::validate_streamable_http_message(&headers, &message)
+    {
+        return core_reply(rejection);
+    }
     let method = message.get("method").and_then(Value::as_str);
     let id = message.get("id").filter(|value| !value.is_null()).cloned();
     let params = message.get("params").cloned().unwrap_or(Value::Null);
@@ -148,16 +153,6 @@ async fn handle_post(
                 .and_then(|meta| meta.get("progressToken"))
                 .is_some_and(|token| !token.is_null());
         if wants_progress {
-            if awaken_mcp_server_core::validate_protocol_version(&headers, method == "initialize")
-                .is_some()
-            {
-                return core_reply(
-                    state
-                        .service
-                        .handle_http(&headers, body.as_bytes(), &NullSink)
-                        .await,
-                );
-            }
             return progress_call_response(&state, id.clone(), method.to_string(), params);
         }
     }
@@ -298,6 +293,9 @@ fn core_reply(reply: awaken_mcp_server_core::McpHttpReply) -> Response {
         awaken_mcp_server_core::McpHttpBody::Text(text) => (reply.status, text).into_response(),
         awaken_mcp_server_core::McpHttpBody::Json(value) => {
             (reply.status, axum::Json(value)).into_response()
+        }
+        awaken_mcp_server_core::McpHttpBody::EventStream => {
+            unreachable!("standing SSE responses are realized by handle_get")
         }
         awaken_mcp_server_core::McpHttpBody::Sse(events) => {
             let stream =

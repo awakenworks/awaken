@@ -136,6 +136,7 @@ pub struct McpServer<H, C> {
     name: String,
     version: String,
     host: H,
+    tools_list_changed: bool,
     active: Mutex<HashMap<String, Arc<CancellationSignal>>>,
     _context: PhantomData<fn(&C)>,
 }
@@ -151,9 +152,21 @@ where
             name: name.into(),
             version: version.into(),
             host,
+            tools_list_changed: false,
             active: Mutex::new(HashMap::new()),
             _context: PhantomData,
         }
+    }
+
+    /// Declare whether this server can emit `notifications/tools/list_changed`.
+    ///
+    /// The safe default is `false`: a fixed tool set must not advertise a
+    /// notification channel that can never produce a change. Dynamic adapters
+    /// opt in only when they have a real change source wired to every transport.
+    #[must_use]
+    pub fn with_tools_list_changed(mut self, enabled: bool) -> Self {
+        self.tools_list_changed = enabled;
+        self
     }
 
     /// The caller-owned host, for adapter-specific lifecycle wiring only.
@@ -209,11 +222,19 @@ where
     }
 
     fn initialize(&self, params: &Value) -> Result<Value, ServerRequestError> {
+        // Awaken uses exact-version negotiation: the client selects one of the
+        // explicitly supported revisions and the server echoes that revision.
+        // We deliberately do not silently downgrade an unknown revision because
+        // doing so can make both peers interpret the same message differently.
         let requested = params
             .as_object()
             .and_then(|params| params.get("protocolVersion"))
             .and_then(Value::as_str)
-            .unwrap_or(mcp::MCP_PROTOCOL_VERSION);
+            .ok_or_else(|| {
+                ServerRequestError::invalid_params(
+                    "initialize.protocolVersion must be a supported version string",
+                )
+            })?;
         if !SUPPORTED_PROTOCOL_VERSIONS.contains(&requested) {
             return Err(ServerRequestError::invalid_params(format!(
                 "unsupported MCP protocol version: {requested}"
@@ -223,7 +244,7 @@ where
             protocol_version: requested.to_string(),
             capabilities: ServerCapabilities {
                 tools: Some(ServerToolCapabilities {
-                    list_changed: Some(true),
+                    list_changed: Some(self.tools_list_changed),
                 }),
                 ..ServerCapabilities::default()
             },
