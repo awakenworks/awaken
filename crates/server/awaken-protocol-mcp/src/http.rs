@@ -81,11 +81,8 @@ pub fn router(service: Arc<McpToolService>, config: McpHttpConfig) -> Router {
         let notifications = state.notifications.clone();
         tokio::spawn(async move {
             while changes.changed().await.is_ok() {
-                let _ = notifications.send(json!({
-                    "jsonrpc": "2.0",
-                    "method": "notifications/tools/list_changed",
-                    "params": {},
-                }));
+                let _ =
+                    notifications.send(awaken_mcp_server_core::tools_list_changed_notification());
             }
         });
     }
@@ -121,6 +118,9 @@ async fn handle_post(
     if let Some(challenge) = unauthorized(&state, &headers) {
         return challenge;
     }
+    if let Some(rejection) = core_preflight(awaken_mcp_server_core::McpHttpMethod::Post, &headers) {
+        return rejection;
+    }
     let Ok(message) = serde_json::from_str::<Value>(&body) else {
         return (StatusCode::BAD_REQUEST, "invalid JSON").into_response();
     };
@@ -128,11 +128,8 @@ async fn handle_post(
     let id = message.get("id").filter(|value| !value.is_null()).cloned();
     let params = message.get("params").cloned().unwrap_or(Value::Null);
 
-    match (method, id) {
-        (Some(method), Some(id)) => {
-            if method == "initialize" {
-                return initialize_response(&state, id, params).await;
-            }
+    if let (Some(method), Some(id)) = (method, id.as_ref()) {
+        if method != "initialize" {
             // A stale session (server restarted, or DELETEd) is 404: the
             // client reacts by re-initializing, per the Streamable HTTP spec.
             if let Some(session) = header_value(&headers, SESSION_HEADER)
@@ -144,49 +141,53 @@ async fn handle_post(
             {
                 return (StatusCode::NOT_FOUND, "unknown session").into_response();
             }
-            let wants_progress = method == "tools/call"
-                && params
-                    .get("_meta")
-                    .and_then(|meta| meta.get("progressToken"))
-                    .is_some_and(|token| !token.is_null());
-            if wants_progress {
-                return progress_call_response(&state, id, method.to_string(), params);
+        }
+        let wants_progress = method == "tools/call"
+            && params
+                .get("_meta")
+                .and_then(|meta| meta.get("progressToken"))
+                .is_some_and(|token| !token.is_null());
+        if wants_progress {
+            if awaken_mcp_server_core::validate_protocol_version(&headers, method == "initialize")
+                .is_some()
+            {
+                return core_reply(
+                    state
+                        .service
+                        .handle_http(&headers, body.as_bytes(), &NullSink)
+                        .await,
+                );
             }
-            let reply = jsonrpc_reply(
-                id,
-                state
-                    .service
-                    .handle(method, params, Arc::new(NullSink))
-                    .await,
-            );
-            axum::Json(reply).into_response()
+            return progress_call_response(&state, id.clone(), method.to_string(), params);
         }
-        // A notification: acknowledge with 202 and no body.
-        (Some(method), None) => {
-            state.service.handle_notification(method, &params);
-            StatusCode::ACCEPTED.into_response()
-        }
-        _ => (StatusCode::BAD_REQUEST, "not a JSON-RPC message").into_response(),
     }
-}
 
-/// Answer `initialize`: run it, open a session, and echo the id in the
-/// `Mcp-Session-Id` header.
-async fn initialize_response(state: &Arc<HttpState>, id: Value, params: Value) -> Response {
-    let reply = jsonrpc_reply(
-        id,
+    let is_initialize = method == Some("initialize") && id.is_some();
+    let reply = state
+        .service
+        .handle_http(&headers, body.as_bytes(), &NullSink)
+        .await;
+    let successful_initialize = is_initialize
+        && matches!(
+            &reply.body,
+            awaken_mcp_server_core::McpHttpBody::Json(value) if value.get("result").is_some()
+        );
+    let mut response = core_reply(reply);
+    if successful_initialize {
+        let session = uuid::Uuid::new_v4().simple().to_string();
         state
-            .service
-            .handle("initialize", params, Arc::new(NullSink))
-            .await,
-    );
-    let session = uuid::Uuid::new_v4().simple().to_string();
-    state
-        .sessions
-        .write()
-        .expect("session lock")
-        .insert(session.clone());
-    ([(SESSION_HEADER, session)], axum::Json(reply)).into_response()
+            .sessions
+            .write()
+            .expect("session lock")
+            .insert(session.clone());
+        response.headers_mut().insert(
+            SESSION_HEADER,
+            session
+                .parse()
+                .expect("generated session id is a header value"),
+        );
+    }
+    response
 }
 
 /// Answer a progress-tracked `tools/call` with an SSE stream: each progress
@@ -203,7 +204,12 @@ fn progress_call_response(
         let sink = Arc::new(SseResponseSink {
             events: events_tx.clone(),
         });
-        let reply = jsonrpc_reply(id, service.handle(&method, params, sink).await);
+        let reply = awaken_mcp_server_core::jsonrpc_reply(
+            id.clone(),
+            service
+                .handle_request(&id, &method, params, sink.as_ref())
+                .await,
+        );
         let _ = events_tx.send(reply).await;
     });
     let stream = ReceiverStream::new(events_rx)
@@ -218,6 +224,9 @@ async fn handle_get(State(state): State<Arc<HttpState>>, headers: HeaderMap) -> 
     if let Some(challenge) = unauthorized(&state, &headers) {
         return challenge;
     }
+    if let Some(rejection) = core_preflight(awaken_mcp_server_core::McpHttpMethod::Get, &headers) {
+        return rejection;
+    }
     let stream = BroadcastStream::new(state.notifications.subscribe()).filter_map(|message| {
         message
             .ok()
@@ -231,6 +240,10 @@ async fn handle_get(State(state): State<Arc<HttpState>>, headers: HeaderMap) -> 
 async fn handle_delete(State(state): State<Arc<HttpState>>, headers: HeaderMap) -> Response {
     if let Some(challenge) = unauthorized(&state, &headers) {
         return challenge;
+    }
+    if let Some(rejection) = core_preflight(awaken_mcp_server_core::McpHttpMethod::Delete, &headers)
+    {
+        return rejection;
     }
     if let Some(session) = header_value(&headers, SESSION_HEADER) {
         state
@@ -267,16 +280,33 @@ fn header_value(headers: &HeaderMap, name: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Wrap a service outcome in the JSON-RPC envelope.
-fn jsonrpc_reply(
-    id: Value,
-    outcome: Result<Value, awaken_mcp_wire::jsonrpc::ServerRequestError>,
-) -> Value {
-    match outcome {
-        Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
-        Err(err) => json!({
-            "jsonrpc": "2.0", "id": id,
-            "error": { "code": err.code, "message": err.message },
-        }),
-    }
+fn core_preflight(
+    method: awaken_mcp_server_core::McpHttpMethod,
+    headers: &HeaderMap,
+) -> Option<Response> {
+    awaken_mcp_server_core::validate_streamable_http_request(
+        method,
+        headers,
+        &awaken_mcp_server_core::AllowAllOrigins,
+    )
+    .map(core_reply)
+}
+
+fn core_reply(reply: awaken_mcp_server_core::McpHttpReply) -> Response {
+    let mut response = match reply.body {
+        awaken_mcp_server_core::McpHttpBody::Empty => reply.status.into_response(),
+        awaken_mcp_server_core::McpHttpBody::Text(text) => (reply.status, text).into_response(),
+        awaken_mcp_server_core::McpHttpBody::Json(value) => {
+            (reply.status, axum::Json(value)).into_response()
+        }
+        awaken_mcp_server_core::McpHttpBody::Sse(events) => {
+            let stream =
+                tokio_stream::iter(events.into_iter().map(|message| {
+                    Ok::<_, Infallible>(Event::default().data(message.to_string()))
+                }));
+            Sse::new(stream).into_response()
+        }
+    };
+    response.headers_mut().extend(reply.headers);
+    response
 }

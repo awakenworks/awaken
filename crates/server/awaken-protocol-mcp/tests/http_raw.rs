@@ -78,6 +78,33 @@ async fn a_notification_is_accepted_with_202() {
 }
 
 #[tokio::test]
+async fn progress_post_uses_the_shared_accept_preflight() {
+    let request = Request::builder()
+        .method("POST")
+        .uri("/mcp")
+        .header("content-type", "application/json")
+        .header("accept", "image/png")
+        .body(Body::from(
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","_meta":{"progressToken":"p"}}}"#,
+        ))
+        .unwrap();
+    let response = app(None).oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE);
+}
+
+#[tokio::test]
+async fn get_requires_an_sse_accept_header() {
+    let request = Request::builder()
+        .method("GET")
+        .uri("/mcp")
+        .header("accept", "application/json")
+        .body(Body::empty())
+        .unwrap();
+    let response = app(None).oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+}
+
+#[tokio::test]
 async fn initialize_issues_a_session_header() {
     let resp = app(None)
         .oneshot(post(

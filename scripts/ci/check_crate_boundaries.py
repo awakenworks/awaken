@@ -916,6 +916,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-agent-contract",
         "awaken-runtime-contract",
         "awaken-mcp-wire",
+        "awaken-mcp-server-core",
+        # Dev-only: the same black-box suite independent host adapters run.
+        "awaken-mcp-server-testkit",
         "awaken-ext-mcp",
         "async-trait",
         "serde",
@@ -1002,6 +1005,30 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tokio",
         "tokio-util",
         "mcp",
+    },
+    # Runtime-neutral MCP server mechanics: lifecycle/version negotiation,
+    # list/call dispatch, SDK mapping, notifications/progress/cancellation, and
+    # the axum-free Streamable HTTP decision kernel. It must never name awaken's
+    # agent/runtime/store/gate contracts; those belong to host adapters above it.
+    "awaken-mcp-server-core": {
+        "awaken-mcp-wire",
+        "async-trait",
+        "serde",
+        "serde_json",
+        "tokio",
+        "http",
+        "mcp",
+        # Dev-only property checks of response-envelope invariants.
+        "proptest",
+    },
+    # Black-box protocol conformance driver shared by independent MCP host
+    # adapters. Production crates consume it only as a dev dependency.
+    "awaken-mcp-server-testkit": {
+        "awaken-mcp-server-core",
+        "awaken-mcp-wire",
+        "async-trait",
+        "serde_json",
+        "tokio",
     },
     # MCP client extension: connects to external Model Context Protocol servers
     # and exposes their tools as runtime `RawTool`s. Like the other extensions it

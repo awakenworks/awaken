@@ -50,6 +50,8 @@ awaken-provider-genai = { path = "crates/runtime/awaken-provider-genai" }
 awaken-ext-permission = { path = "crates/runtime/awaken-ext-permission" }
 awaken-credential = { path = "crates/runtime/awaken-credential" }
 awaken-mcp-wire = { path = "crates/runtime/awaken-mcp-wire" }
+awaken-mcp-server-core = { path = "crates/server/awaken-mcp-server-core" }
+awaken-mcp-server-testkit = { path = "crates/server/awaken-mcp-server-testkit" }
 awaken-ext-mcp = { path = "crates/runtime/awaken-ext-mcp" }
 awaken-ext-skills = { path = "crates/runtime/awaken-ext-skills" }
 awaken-ext-goal = { path = "crates/runtime/awaken-ext-goal" }

@@ -1,0 +1,10 @@
+pub mod awaken_mcp_server_testkit
+pub struct awaken_mcp_server_testkit::RecordingSink
+impl awaken_mcp_server_testkit::RecordingSink
+pub fn awaken_mcp_server_testkit::RecordingSink::snapshot(&self) -> alloc::vec::Vec<(alloc::string::String, serde_json::value::Value)>
+impl awaken_mcp_server_core::server::NotifySink for awaken_mcp_server_testkit::RecordingSink
+pub fn awaken_mcp_server_testkit::RecordingSink::notify<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub trait awaken_mcp_server_testkit::McpConformanceDriver: core::marker::Send + core::marker::Sync
+pub fn awaken_mcp_server_testkit::McpConformanceDriver::host_call_count(&self) -> usize
+pub fn awaken_mcp_server_testkit::McpConformanceDriver::request<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value, &'life2 dyn awaken_mcp_server_core::server::NotifySink) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<serde_json::value::Value, awaken_mcp_wire::jsonrpc::ServerRequestError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub async fn awaken_mcp_server_testkit::assert_mcp_server_conformance(&dyn awaken_mcp_server_testkit::McpConformanceDriver)

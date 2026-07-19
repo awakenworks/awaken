@@ -15,50 +15,44 @@
 //! updates are flushed before the final result is returned, so a client never
 //! sees progress after the response.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::state::Store;
+use awaken_mcp_server_core::{McpCall, McpHostError, McpServer, McpToolHost};
 use awaken_mcp_wire::jsonrpc::ServerRequestError;
 use awaken_mcp_wire::progress::McpProgressUpdate;
 use awaken_runtime_contract::permission::{GateOutcome, ToolGateHook};
 use awaken_runtime_contract::tool::{ToolCall, ToolError, ToolOutput};
-use mcp::transport::{InitializeResult, ServerCapabilities, ServerInfo, ServerToolCapabilities};
-use mcp::{CallToolParams, CallToolResult, ListToolsResult, McpToolDefinition, ToolContent};
+use mcp::{CallToolResult, McpToolDefinition, ToolContent};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
 use crate::export::{McpExportedTool, ToolExec, ToolExportSource};
 
-/// Where a transport delivers server->client notifications for one connection:
-/// the stdio peer's write queue, or an HTTP response/GET stream. The service
-/// pushes `notifications/progress` through it during `tools/call`.
-#[async_trait]
-pub trait NotifySink: Send + Sync {
-    async fn notify(&self, method: &str, params: Value);
+pub use awaken_mcp_server_core::{NotifySink, NullSink};
+
+/// The awaken-owned context presented to the neutral server port. External calls
+/// currently start with empty state; keeping it explicit prevents the core from
+/// assuming every future host has an awaken `Store`.
+#[derive(Default)]
+pub struct AwakenMcpContext {
+    pub store: Store,
 }
 
-/// A sink for transports (or calls) with nowhere to deliver notifications.
-pub struct NullSink;
-
-#[async_trait]
-impl NotifySink for NullSink {
-    async fn notify(&self, _method: &str, _params: Value) {}
-}
-
-/// The MCP server core, shared by every transport.
-pub struct McpToolService {
-    name: String,
-    version: String,
+struct AwakenMcpHost {
     source: Arc<dyn ToolExportSource>,
-    /// Consulted before every external `tools/call`; the same gate interface
-    /// the runtime loop applies internally, so the external path cannot widen
-    /// what permission allows (G21).
-    gate: Option<Arc<dyn ToolGateHook>>,
-    /// Allocates the runtime-side `call_id` for external calls (MCP has no
-    /// client-supplied call id; the JSON-RPC id belongs to the envelope).
+    gate: RwLock<Option<Arc<dyn ToolGateHook>>>,
     next_call_id: AtomicU64,
+}
+
+/// Compatibility facade over the runtime-neutral server core.
+pub struct McpToolService {
+    core: McpServer<Arc<AwakenMcpHost>, AwakenMcpContext>,
+    host: Arc<AwakenMcpHost>,
+    context: AwakenMcpContext,
+    source: Arc<dyn ToolExportSource>,
 }
 
 impl McpToolService {
@@ -67,20 +61,24 @@ impl McpToolService {
         version: impl Into<String>,
         source: Arc<dyn ToolExportSource>,
     ) -> Self {
-        Self {
-            name: name.into(),
-            version: version.into(),
-            source,
-            gate: None,
+        let host = Arc::new(AwakenMcpHost {
+            source: Arc::clone(&source),
+            gate: RwLock::new(None),
             next_call_id: AtomicU64::new(1),
+        });
+        Self {
+            core: McpServer::new(name, version, Arc::clone(&host)),
+            host,
+            context: AwakenMcpContext::default(),
+            source,
         }
     }
 
     /// Gate every external `tools/call` (deny/ask outcomes become model-visible
     /// error results, never silent execution).
     #[must_use]
-    pub fn with_gate(mut self, gate: Arc<dyn ToolGateHook>) -> Self {
-        self.gate = Some(gate);
+    pub fn with_gate(self, gate: Arc<dyn ToolGateHook>) -> Self {
+        *self.host.gate.write().expect("MCP gate lock") = Some(gate);
         self
     }
 
@@ -98,76 +96,89 @@ impl McpToolService {
         params: Value,
         sink: Arc<dyn NotifySink>,
     ) -> Result<Value, ServerRequestError> {
-        match method {
-            "initialize" => Ok(self.initialize(&params)),
-            "ping" => Ok(json!({})),
-            "tools/list" => self.list_tools(),
-            "tools/call" => self.call_tool(params, sink).await,
-            _ => Err(ServerRequestError::method_not_found(method)),
-        }
+        self.handle_with_sink(method, params, sink.as_ref()).await
     }
 
-    /// Client notifications (`notifications/initialized`,
-    /// `notifications/cancelled`) — nothing to track yet; the hook exists so
-    /// transports have one place to forward them.
-    pub fn handle_notification(&self, _method: &str, _params: &Value) {}
-
-    fn initialize(&self, params: &Value) -> Value {
-        // Echo the client's protocol version: this server's surface (tools,
-        // progress, list_changed) is meaningful under every published revision,
-        // and echoing keeps strict clients that reject unknown versions working.
-        let protocol_version = params
-            .get("protocolVersion")
-            .and_then(Value::as_str)
-            .unwrap_or(mcp::MCP_PROTOCOL_VERSION)
-            .to_string();
-        let result = InitializeResult {
-            protocol_version,
-            capabilities: ServerCapabilities {
-                tools: Some(ServerToolCapabilities {
-                    list_changed: Some(true),
-                }),
-                ..ServerCapabilities::default()
-            },
-            server_info: ServerInfo::new(self.name.clone(), self.version.clone()),
-        };
-        serde_json::to_value(result).expect("InitializeResult serializes")
+    /// Borrowed-sink variant used by the neutral conformance driver and thin
+    /// transports; the Arc-taking method above remains source-compatible.
+    pub async fn handle_with_sink(
+        &self,
+        method: &str,
+        params: Value,
+        sink: &dyn NotifySink,
+    ) -> Result<Value, ServerRequestError> {
+        self.core.handle(&self.context, method, params, sink).await
     }
 
-    fn list_tools(&self) -> Result<Value, ServerRequestError> {
-        let tools = self
+    /// Dispatch with the JSON-RPC id available to the core cancellation registry.
+    pub(crate) async fn handle_request(
+        &self,
+        id: &Value,
+        method: &str,
+        params: Value,
+        sink: &dyn NotifySink,
+    ) -> Result<Value, ServerRequestError> {
+        self.core
+            .handle_request(&self.context, Some(id), method, params, sink)
+            .await
+    }
+
+    pub(crate) async fn handle_http(
+        &self,
+        headers: &axum::http::HeaderMap,
+        body: &[u8],
+        sink: &dyn NotifySink,
+    ) -> awaken_mcp_server_core::McpHttpReply {
+        awaken_mcp_server_core::handle_streamable_http(
+            &self.core,
+            &self.context,
+            awaken_mcp_server_core::McpHttpMethod::Post,
+            headers,
+            body,
+            &awaken_mcp_server_core::AllowAllOrigins,
+            sink,
+        )
+        .await
+    }
+
+    pub async fn handle_notification(&self, method: &str, params: &Value) {
+        self.core
+            .handle_notification(&self.context, method, params)
+            .await;
+    }
+}
+
+#[async_trait]
+impl McpToolHost<AwakenMcpContext> for AwakenMcpHost {
+    async fn list_tools(
+        &self,
+        _context: &AwakenMcpContext,
+    ) -> Result<Vec<McpToolDefinition>, McpHostError> {
+        Ok(self
             .source
             .tools()
             .into_iter()
-            .map(|t| {
-                McpToolDefinition::new(t.descriptor.id)
-                    .with_description(t.descriptor.description)
-                    .with_schema(t.descriptor.parameters)
+            .map(|tool| {
+                McpToolDefinition::new(tool.descriptor.id)
+                    .with_description(tool.descriptor.description)
+                    .with_schema(tool.descriptor.parameters)
             })
-            .collect();
-        serde_json::to_value(ListToolsResult {
-            tools,
-            next_cursor: None,
-        })
-        .map_err(|e| ServerRequestError::internal(e.to_string()))
+            .collect())
     }
 
     async fn call_tool(
         &self,
-        params: Value,
-        sink: Arc<dyn NotifySink>,
-    ) -> Result<Value, ServerRequestError> {
-        let params: CallToolParams = serde_json::from_value(params)
-            .map_err(|e| ServerRequestError::invalid_params(format!("tools/call: {e}")))?;
+        context: &AwakenMcpContext,
+        call: McpCall,
+        notifications: &dyn NotifySink,
+    ) -> Result<CallToolResult, McpHostError> {
         let exported = self
             .source
             .tools()
             .into_iter()
-            .find(|t| t.descriptor.id == params.name)
-            .ok_or_else(|| {
-                ServerRequestError::invalid_params(format!("unknown tool: {}", params.name))
-            })?;
-        let progress_token = params
+            .find(|tool| tool.descriptor.id == call.name)
+            .ok_or_else(|| McpHostError::NotFound(format!("unknown tool: {}", call.name)))?;
+        let progress_token = call
             .meta
             .as_ref()
             .and_then(|meta| meta.get("progressToken"))
@@ -178,44 +189,36 @@ impl McpToolService {
                 "mcp-srv-{}",
                 self.next_call_id.fetch_add(1, Ordering::SeqCst)
             ),
-            tool_id: params.name.clone(),
-            arguments: params.arguments.unwrap_or_else(|| json!({})),
+            tool_id: call.name,
+            arguments: call.arguments,
         };
 
-        if let Some(outcome) = self.gate_verdict(&call).await {
-            return outcome;
+        if let Some(result) = self.gate_verdict(context, &call).await {
+            return Ok(result);
         }
-
-        let outcome = invoke(&exported, call, progress_token, sink).await;
-        match outcome {
-            // The neutral result maps back onto the MCP three-state: a
-            // model-visible tool failure stays a result (`isError`), so the
-            // client's run continues — the mirror of `McpRawTool::invoke`.
-            Ok(output) => call_result(&output),
-            // A `ToolError` is a protocol-level failure: the call did not
-            // produce a tool result.
-            Err(ToolError::Unknown(id)) => Err(ServerRequestError::invalid_params(format!(
-                "unknown tool: {id}"
-            ))),
-            Err(ToolError::InvalidArguments(message)) => {
-                Err(ServerRequestError::invalid_params(message))
+        match invoke(&exported, call, progress_token, notifications).await {
+            Ok(output) => Ok(call_result(&output)),
+            Err(ToolError::Unknown(id)) => {
+                Err(McpHostError::NotFound(format!("unknown tool: {id}")))
             }
-            Err(ToolError::Execution(message)) => Err(ServerRequestError::internal(message)),
+            Err(ToolError::InvalidArguments(message)) => {
+                Err(McpHostError::InvalidArguments(message))
+            }
+            Err(ToolError::Execution(message)) => Err(McpHostError::Internal(message)),
         }
     }
+}
 
-    /// Consult the gate; `None` means "allowed, execute". Outcomes that cannot
-    /// be honored over MCP (suspend/schedule await a *run*; an external client
-    /// has none) fail closed as model-visible errors.
-    async fn gate_verdict(&self, call: &ToolCall) -> Option<Result<Value, ServerRequestError>> {
-        let gate = self.gate.as_ref()?;
-        let ctx = ToolCall {
-            tool_id: call.tool_id.clone(),
-            call_id: call.call_id.clone(),
-            arguments: call.arguments.clone(),
-        };
-        // External calls run outside any run: the gate sees empty state.
-        match gate.gate(&ctx, &Store::new()).await {
+impl AwakenMcpHost {
+    /// Consult the awaken runtime gate. Outcomes requiring a suspended run fail
+    /// closed because an external MCP call owns no run lifecycle.
+    async fn gate_verdict(
+        &self,
+        context: &AwakenMcpContext,
+        call: &ToolCall,
+    ) -> Option<CallToolResult> {
+        let gate = self.gate.read().expect("MCP gate lock").clone()?;
+        match gate.gate(call, &context.store).await {
             GateOutcome::Allow => None,
             GateOutcome::Block { reason } => Some(call_result(&ToolOutput::error(
                 call.call_id.clone(),
@@ -239,14 +242,14 @@ async fn invoke(
     exported: &McpExportedTool,
     call: ToolCall,
     progress_token: Option<Value>,
-    sink: Arc<dyn NotifySink>,
+    sink: &dyn NotifySink,
 ) -> Result<ToolOutput, ToolError> {
     let progress_tool = match &exported.exec {
         ToolExec::Plain(tool) => return tool.invoke(call).await,
         ToolExec::WithProgress(tool) => tool,
     };
     let (tx, mut rx) = mpsc::channel::<McpProgressUpdate>(64);
-    let forwarder = tokio::spawn(async move {
+    let forwarder = async {
         while let Some(update) = rx.recv().await {
             let Some(token) = &progress_token else {
                 continue;
@@ -263,19 +266,19 @@ async fn invoke(
             }
             sink.notify("notifications/progress", params).await;
         }
-    });
-    let result = progress_tool.invoke_with_progress(call, tx).await;
+    };
+    let invocation = progress_tool.invoke_with_progress(call, tx);
+    let (result, ()) = tokio::join!(invocation, forwarder);
     // The tool dropped its sender (or never took one past its return): the
     // forwarder drains what was queued and ends — awaiting it orders every
     // progress notification before the final response.
-    let _ = forwarder.await;
     result
 }
 
 /// Project the neutral output onto the wire result: the content string as one
 /// text block, `is_error` preserved. `state` is run-internal and dropped here.
-fn call_result(output: &ToolOutput) -> Result<Value, ServerRequestError> {
-    serde_json::to_value(CallToolResult {
+fn call_result(output: &ToolOutput) -> CallToolResult {
+    CallToolResult {
         content: vec![ToolContent::Text {
             text: output.content.clone(),
             annotations: None,
@@ -283,8 +286,7 @@ fn call_result(output: &ToolOutput) -> Result<Value, ServerRequestError> {
         }],
         structured_content: None,
         is_error: Some(output.is_error),
-    })
-    .map_err(|e| ServerRequestError::internal(e.to_string()))
+    }
 }
 
 #[cfg(test)]
