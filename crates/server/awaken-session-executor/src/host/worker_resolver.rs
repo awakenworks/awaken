@@ -95,25 +95,40 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
         let agent_id = claimed.request.activation.snapshot.root_agent_id.0.as_str();
         let agent_id = (!agent_id.is_empty()).then_some(agent_id);
 
+        let mut rebuild_binding = false;
         let adopted = if let Some(encoded) = &claimed.sandbox {
             let handle = decode_binding(encoded, &thread_id.0, &claimed.lease.run_id)?;
-            let sandbox = host
-                .provider
-                .adopt_sandbox(&handle)
-                .await
-                .map_err(|e| Self::execution_error(e.to_string()))?;
-            if sandbox
-                .status()
-                .await
-                .map_err(|e| Self::execution_error(e.to_string()))?
-                != awaken_provisioning_contract::SandboxStatus::Ready
-            {
-                return Err(Self::execution_error(format!(
-                    "run {} sandbox {} is no longer available",
-                    claimed.lease.run_id.0, handle.sandbox_id
-                )));
+            let adoption = async {
+                let sandbox = host
+                    .provider
+                    .adopt_sandbox(&handle)
+                    .await
+                    .map_err(|e| Self::execution_error(e.to_string()))?;
+                if sandbox
+                    .status()
+                    .await
+                    .map_err(|e| Self::execution_error(e.to_string()))?
+                    != awaken_provisioning_contract::SandboxStatus::Ready
+                {
+                    return Err(Self::execution_error(format!(
+                        "run {} sandbox {} is no longer available",
+                        claimed.lease.run_id.0, handle.sandbox_id
+                    )));
+                }
+                Ok(sandbox)
             }
-            Some(sandbox)
+            .await;
+            match adoption {
+                Ok(sandbox) => Some(sandbox),
+                Err(_)
+                    if claimed.request.placement.recovery
+                        == awaken_dispatch::WorkerRecoveryMode::RebuildFromCommittedTruth =>
+                {
+                    rebuild_binding = true;
+                    None
+                }
+                Err(error) => return Err(error),
+            }
         } else {
             None
         };
@@ -123,7 +138,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
         // Persist the first placement before executing the claimed run. If the
         // process dies after this write, the next owner sees the handle and adopts
         // the same environment; a failed write leaves the run unexecuted/retryable.
-        if claimed.sandbox.is_none() {
+        if claimed.sandbox.is_none() || rebuild_binding {
             let ctx = host
                 .sessions
                 .lock()
@@ -133,11 +148,19 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
                 .ok_or_else(|| Self::execution_error("resolved session disappeared"))?;
             let encoded = serde_json::to_string(&ctx.env.handle())
                 .map_err(|e| Self::execution_error(e.to_string()))?;
-            crate::dispatch_backend::shared_durable_store(host.store_dir.as_deref())
+            let outcome = crate::dispatch_backend::shared_durable_store(host.store_dir.as_deref())
                 .map_err(|e| Self::execution_error(e.to_string()))?
-                .bind_sandbox(&claimed.lease.run_id, &encoded)
+                .bind_sandbox(
+                    &awaken_dispatch::RunClaim::from(&claimed.lease),
+                    &encoded,
+                )
                 .await
                 .map_err(awaken_dispatch::Error::from)?;
+            if !outcome.applied() {
+                return Err(Self::execution_error(
+                    "sandbox binding was fenced by a replacement claim",
+                ));
+            }
         }
         Ok(worker)
     }

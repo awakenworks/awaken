@@ -17,7 +17,9 @@
 use async_trait::async_trait;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::stream::checkpoint::StreamCheckpoint;
 use awaken_runtime_contract::resume::ResumeResult;
+use awaken_worker_contract::{WorkerAssignment, WorkerSnapshot};
 use serde::{Deserialize, Serialize};
 
 use crate::run_dispatch::RunDispatch;
@@ -113,6 +115,10 @@ pub struct Claimed {
     /// Durable so crash recovery (`reconcile_adoption`) can re-adopt the same
     /// sandbox instead of leaking it.
     pub sandbox: Option<String>,
+    /// Worker incarnation selected for this lease epoch. Legacy/local claims omit
+    /// it; registered remote claims always persist and return it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assignment: Option<WorkerAssignment>,
 }
 
 /// How a claimed attempt resolved. Settled atomically with releasing the lease.
@@ -135,6 +141,17 @@ pub enum SettleOutcome {
     /// current owner's in-flight dispatch is untouched. The stale caller has lost
     /// the lease and must abandon the run.
     Fenced,
+}
+
+/// One durable observation that a dispatch applied [`DispatchOutcome::Done`].
+///
+/// This is delivery truth only: the committed run fact remains authoritative for
+/// the run's terminal state and cause. `sequence` is a store-assigned cursor;
+/// consumers checkpoint it independently and may replay pages idempotently.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DispatchCompletion {
+    pub sequence: u64,
+    pub run_id: RunId,
 }
 
 /// Opaque backend guard which keeps a dispatch epoch stable until it is dropped.
@@ -254,6 +271,18 @@ pub trait DispatchQueue: Send + Sync {
         now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError>;
 
+    async fn claim_new_run_compatible(
+        &self,
+        _request: RunDispatch,
+        _worker: &WorkerSnapshot,
+        _lease_ms: u64,
+        _now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        Err(DispatchError::Rejected(
+            "backend does not support registered-worker exact claims".to_string(),
+        ))
+    }
+
     /// Atomically append one idempotent input and claim its exact Run.
     ///
     /// This is the resume-side twin of [`claim_new_run`](Self::claim_new_run): a
@@ -269,6 +298,18 @@ pub trait DispatchQueue: Send + Sync {
         now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError>;
 
+    async fn deliver_and_claim_compatible(
+        &self,
+        _input: PendingInput,
+        _worker: &WorkerSnapshot,
+        _lease_ms: u64,
+        _now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        Err(DispatchError::Rejected(
+            "backend does not support registered-worker delivery claims".to_string(),
+        ))
+    }
+
     /// Claim one runnable dispatch for `owner`, single owner per run: a fresh
     /// `pending` run, an awaiting run with pending input (a wake), or a running
     /// dispatch whose lease expired (recovery). Returns `None` when nothing is
@@ -279,6 +320,20 @@ pub trait DispatchQueue: Send + Sync {
         lease_ms: u64,
         now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError>;
+
+    /// Atomically claim only work compatible with the registered worker snapshot.
+    /// Implementations must evaluate the shared compatibility kernel before the
+    /// lease transition and persist the resulting assignment with that transition.
+    async fn claim_compatible(
+        &self,
+        _worker: &WorkerSnapshot,
+        _lease_ms: u64,
+        _now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        Err(DispatchError::Rejected(
+            "backend does not support registered-worker claims".to_string(),
+        ))
+    }
 
     /// Claim one specific runnable Run without consuming unrelated queue work.
     ///
@@ -294,6 +349,18 @@ pub trait DispatchQueue: Send + Sync {
         lease_ms: u64,
         now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError>;
+
+    async fn claim_run_compatible(
+        &self,
+        _run_id: &RunId,
+        _worker: &WorkerSnapshot,
+        _lease_ms: u64,
+        _now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        Err(DispatchError::Rejected(
+            "backend does not support registered-worker run claims".to_string(),
+        ))
+    }
 
     /// Extend the lease on a run this `owner` is executing, so a long run is not
     /// reclaimed by another node's recovery while it is still making progress.
@@ -349,6 +416,23 @@ pub trait DispatchQueue: Send + Sync {
         consumed: &[String],
     ) -> Result<SettleOutcome, DispatchError>;
 
+    /// Return durable applied-`Done` facts after `after_sequence`, in ascending
+    /// sequence order, capped at `limit`.
+    ///
+    /// Native durable stores retain these rows as permanent run-id tombstones;
+    /// completed ids therefore cannot be re-enqueued after their live dispatch
+    /// row is removed (ADR-0060). A transport that does not expose this
+    /// server-local projection query fails explicitly.
+    async fn completion_events_after(
+        &self,
+        _after_sequence: u64,
+        _limit: usize,
+    ) -> Result<Vec<DispatchCompletion>, DispatchError> {
+        Err(DispatchError::Rejected(
+            "backend does not expose durable dispatch completion events".to_string(),
+        ))
+    }
+
     /// Hold a claim's exact epoch stable across a `ThreadCommit`.
     ///
     /// `Some` means the claim remains authoritative while the guard lives;
@@ -359,6 +443,37 @@ pub trait DispatchQueue: Send + Sync {
         claim: &RunClaim,
     ) -> Result<Option<CommitEpochGuard>, DispatchError>;
 
+    /// Remote-capable checkpoint operations. Native stores normally use
+    /// `lock_commit_epoch` around their colocated checkpoint store; transports
+    /// override these to execute the guarded operation on the authority server.
+    async fn load_stream_checkpoint(
+        &self,
+        _claim: &RunClaim,
+    ) -> Result<Option<StreamCheckpoint>, DispatchError> {
+        Err(DispatchError::Rejected(
+            "claimed checkpoint transport is unavailable".to_string(),
+        ))
+    }
+
+    async fn put_stream_checkpoint(
+        &self,
+        _claim: &RunClaim,
+        _checkpoint: StreamCheckpoint,
+    ) -> Result<SettleOutcome, DispatchError> {
+        Err(DispatchError::Rejected(
+            "claimed checkpoint transport is unavailable".to_string(),
+        ))
+    }
+
+    async fn delete_stream_checkpoint(
+        &self,
+        _claim: &RunClaim,
+    ) -> Result<SettleOutcome, DispatchError> {
+        Err(DispatchError::Rejected(
+            "claimed checkpoint transport is unavailable".to_string(),
+        ))
+    }
+
     /// Dead-letter every *crashed* dispatch — one whose lease expired without a
     /// settle — that has used up its crash-retry budget (`attempt_count >=
     /// max_attempts`). A dead-lettered dispatch is no longer claimed, so a poison
@@ -367,13 +482,19 @@ pub trait DispatchQueue: Send + Sync {
     /// a normal await/wake never spends the budget.
     async fn reap(&self, max_attempts: u64, now_ms: u64) -> Result<usize, DispatchError>;
 
-    /// Bind `run_id` to the sandbox it was placed on (B-P3, ADR-0021 §6). The
+    /// Bind a currently claimed run to the sandbox it was placed on (B-P3,
+    /// ADR-0021 §6). The complete claim is required so a stale incarnation cannot
+    /// overwrite the replacement's environment after its lease expires. The
     /// reference is opaque to the dispatch aggregate (the fleet serializes a
     /// `SandboxHandle` into it). Stored durably so `claim` returns it on recovery
     /// and `reconcile_adoption` can re-adopt the same sandbox. Default is a no-op
     /// for backends that do not persist the binding (the neutral seam).
-    async fn bind_sandbox(&self, _run_id: &RunId, _sandbox_ref: &str) -> Result<(), DispatchError> {
-        Ok(())
+    async fn bind_sandbox(
+        &self,
+        _claim: &RunClaim,
+        _sandbox_ref: &str,
+    ) -> Result<SettleOutcome, DispatchError> {
+        Ok(SettleOutcome::Fenced)
     }
 
     /// Current number of dispatches that are claimable at `now_ms`. Native stores
@@ -682,6 +803,7 @@ mod tests {
             pending: vec![pending()],
             recovered: true,
             sandbox: Some("sbx-opaque-ref".into()),
+            assignment: None,
         };
         let back: Claimed =
             serde_json::from_str(&serde_json::to_string(&claimed).expect("serializes"))
@@ -840,13 +962,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bind_sandbox_defaults_to_a_no_op_ok() {
-        // Backends that do not persist the binding inherit the neutral no-op seam.
+    async fn bind_sandbox_defaults_to_fail_closed() {
+        // Backends that do not persist the binding cannot pretend the write applied.
         let q = CapturingQueue::default();
-        assert!(
-            q.bind_sandbox(&RunId("run-1".into()), "sbx-ref")
-                .await
-                .is_ok()
+        assert_eq!(
+            q.bind_sandbox(
+                &RunClaim {
+                    run_id: RunId("run-1".into()),
+                    owner: "worker".into(),
+                    epoch: 1,
+                },
+                "sbx-ref"
+            )
+            .await
+            .unwrap(),
+            SettleOutcome::Fenced
         );
     }
 }

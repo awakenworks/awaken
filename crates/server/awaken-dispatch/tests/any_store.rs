@@ -11,8 +11,11 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::run::RunState;
 use awaken_dispatch::{
-    AnyDispatchStore, DispatchOutcome, DispatchQueue, DurableRunIngress, Inbox, RunDispatch,
+    AnyDispatchStore, DispatchOutcome, DispatchQueue, DurableRunIngress, Inbox,
+    PlacementRequirements, RunDispatch, SubmitOptions, WorkerIdentity, WorkerManifest,
+    WorkerSnapshot, WorkerState,
 };
+use awaken_dispatch::{RunClaim, SettleOutcome, WorkerRecoveryMode};
 use awaken_runtime::RunIngress;
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_store_sqlite::SqliteCommitCoordinator;
@@ -21,6 +24,137 @@ use harness::{TICKET, activation, activation_on, tool_runtime};
 
 fn any_in_memory() -> AnyDispatchStore {
     AnyDispatchStore::open_sqlite_in_memory().expect("open in-memory sqlite backend")
+}
+
+#[tokio::test]
+async fn compatible_claim_skips_ineligible_work_and_pins_the_incarnation() {
+    let store = any_in_memory();
+    let mut gpu = PlacementRequirements::remote_required();
+    gpu.required_capabilities.insert("gpu".to_string());
+    let mut cpu = PlacementRequirements::remote_required();
+    cpu.required_capabilities.insert("cpu".to_string());
+    store
+        .enqueue_with(
+            RunDispatch::new(activation_on("gpu-run", "gpu-thread")).with_placement(gpu),
+            SubmitOptions {
+                priority: 100,
+                ..SubmitOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+    store
+        .enqueue(RunDispatch::new(activation_on("cpu-run", "cpu-thread")).with_placement(cpu))
+        .await
+        .unwrap();
+
+    let mut manifest = WorkerManifest::default();
+    manifest.capabilities.insert("cpu".to_string());
+    let fingerprint = manifest.fingerprint().unwrap();
+    let worker = WorkerSnapshot {
+        identity: WorkerIdentity::new("worker", "boot-a", 7),
+        state: WorkerState::Ready,
+        manifest,
+        capability_fingerprint: fingerprint.clone(),
+        in_flight: 0,
+        expires_at_ms: 10_000,
+    };
+    let claimed = store
+        .claim_compatible(&worker, 1_000, 0)
+        .await
+        .unwrap()
+        .expect("the compatible lower-priority run is selected");
+    assert_eq!(claimed.request.run_id().0, "cpu-run");
+    assert_eq!(claimed.lease.owner, worker.identity.lease_owner());
+    let assignment = claimed.assignment.expect("remote claim pins assignment");
+    assert_eq!(assignment.identity, worker.identity);
+    assert_eq!(assignment.capability_fingerprint, fingerprint);
+}
+
+fn worker_snapshot(id: &str, boot: &str, generation: u64) -> WorkerSnapshot {
+    let mut manifest = WorkerManifest::default();
+    manifest.capabilities.insert("cpu".to_string());
+    let capability_fingerprint = manifest.fingerprint().unwrap();
+    WorkerSnapshot {
+        identity: WorkerIdentity::new(id, boot, generation),
+        state: WorkerState::Ready,
+        manifest,
+        capability_fingerprint,
+        in_flight: 0,
+        expires_at_ms: 100_000,
+    }
+}
+
+#[tokio::test]
+async fn recovery_mode_is_enforced_from_the_durable_previous_assignment() {
+    let store = any_in_memory();
+    let mut never = PlacementRequirements::remote_required();
+    never.required_capabilities.insert("cpu".to_string());
+    never.recovery = WorkerRecoveryMode::NeverReplace;
+    store
+        .enqueue(RunDispatch::new(activation_on("never", "never-thread")).with_placement(never))
+        .await
+        .unwrap();
+    let original = worker_snapshot("worker", "boot-a", 1);
+    let replacement = worker_snapshot("worker", "boot-b", 2);
+    let _first = store
+        .claim_compatible(&original, 10, 0)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        store
+            .claim_compatible(&replacement, 10, 11)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        store
+            .claim_compatible(&original, 10, 11)
+            .await
+            .unwrap()
+            .is_some(),
+        "the same incarnation may recover its own expired lease"
+    );
+
+    let mut continuity = PlacementRequirements::remote_required();
+    continuity.required_capabilities.insert("cpu".to_string());
+    continuity.recovery = WorkerRecoveryMode::RequireSandboxContinuity;
+    store
+        .enqueue(
+            RunDispatch::new(activation_on("continuous", "continuous-thread"))
+                .with_placement(continuity),
+        )
+        .await
+        .unwrap();
+    let initial = store
+        .claim_compatible(&original, 10, 20)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        store
+            .claim_run_compatible(initial.request.run_id(), &replacement, 10, 31)
+            .await
+            .unwrap()
+            .is_none(),
+        "continuity replacement is blocked until a sandbox was bound"
+    );
+    assert_eq!(
+        store
+            .bind_sandbox(&RunClaim::from(&initial.lease), "sandbox:durable")
+            .await
+            .unwrap(),
+        SettleOutcome::Applied
+    );
+    assert!(
+        store
+            .claim_run_compatible(initial.request.run_id(), &replacement, 10, 31)
+            .await
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[tokio::test]

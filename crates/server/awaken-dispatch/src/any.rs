@@ -15,15 +15,17 @@
 
 use std::sync::Arc;
 
+use crate::WorkerSnapshot;
 use async_trait::async_trait;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::stream::checkpoint::StreamCheckpoint;
 use awaken_runtime_contract::resume::ResumeResult;
 
 use crate::dispatch::{
-    CasOutcome, Claimed, CommitEpochGuard, Dispatch, DispatchError, DispatchOutcome, DispatchQueue,
-    DispatchSummary, Inbox, Outbox, PendingInput, PendingRecord, RunClaim, SettleOutcome,
-    SubmitOptions,
+    CasOutcome, Claimed, CommitEpochGuard, Dispatch, DispatchCompletion, DispatchError,
+    DispatchOutcome, DispatchQueue, DispatchSummary, Inbox, Outbox, PendingInput, PendingRecord,
+    RunClaim, SettleOutcome, SubmitOptions,
 };
 use crate::postgres::PostgresDispatchStore;
 use crate::sqlite::SqliteDispatchStore;
@@ -136,6 +138,28 @@ impl DispatchQueue for AnyDispatchStore {
         delegate!(self, lock_commit_epoch(claim))
     }
 
+    async fn load_stream_checkpoint(
+        &self,
+        claim: &RunClaim,
+    ) -> Result<Option<StreamCheckpoint>, DispatchError> {
+        delegate!(self, load_stream_checkpoint(claim))
+    }
+
+    async fn put_stream_checkpoint(
+        &self,
+        claim: &RunClaim,
+        checkpoint: StreamCheckpoint,
+    ) -> Result<SettleOutcome, DispatchError> {
+        delegate!(self, put_stream_checkpoint(claim, checkpoint))
+    }
+
+    async fn delete_stream_checkpoint(
+        &self,
+        claim: &RunClaim,
+    ) -> Result<SettleOutcome, DispatchError> {
+        delegate!(self, delete_stream_checkpoint(claim))
+    }
+
     async fn enqueue_with(
         &self,
         request: RunDispatch,
@@ -154,6 +178,19 @@ impl DispatchQueue for AnyDispatchStore {
         delegate!(self, claim_new_run(request, owner, lease_ms, now_ms))
     }
 
+    async fn claim_new_run_compatible(
+        &self,
+        request: RunDispatch,
+        worker: &WorkerSnapshot,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        delegate!(
+            self,
+            claim_new_run_compatible(request, worker, lease_ms, now_ms)
+        )
+    }
+
     async fn deliver_and_claim(
         &self,
         input: PendingInput,
@@ -162,6 +199,19 @@ impl DispatchQueue for AnyDispatchStore {
         now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
         delegate!(self, deliver_and_claim(input, owner, lease_ms, now_ms))
+    }
+
+    async fn deliver_and_claim_compatible(
+        &self,
+        input: PendingInput,
+        worker: &WorkerSnapshot,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        delegate!(
+            self,
+            deliver_and_claim_compatible(input, worker, lease_ms, now_ms)
+        )
     }
 
     async fn claim(
@@ -173,6 +223,15 @@ impl DispatchQueue for AnyDispatchStore {
         delegate!(self, claim(owner, lease_ms, now_ms))
     }
 
+    async fn claim_compatible(
+        &self,
+        worker: &WorkerSnapshot,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        delegate!(self, claim_compatible(worker, lease_ms, now_ms))
+    }
+
     async fn claim_run(
         &self,
         run_id: &RunId,
@@ -181,6 +240,16 @@ impl DispatchQueue for AnyDispatchStore {
         now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
         delegate!(self, claim_run(run_id, owner, lease_ms, now_ms))
+    }
+
+    async fn claim_run_compatible(
+        &self,
+        run_id: &RunId,
+        worker: &WorkerSnapshot,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        delegate!(self, claim_run_compatible(run_id, worker, lease_ms, now_ms))
     }
 
     async fn renew_lease(
@@ -212,12 +281,24 @@ impl DispatchQueue for AnyDispatchStore {
         delegate!(self, settle(run_id, epoch, outcome, consumed))
     }
 
+    async fn completion_events_after(
+        &self,
+        after_sequence: u64,
+        limit: usize,
+    ) -> Result<Vec<DispatchCompletion>, DispatchError> {
+        delegate!(self, completion_events_after(after_sequence, limit))
+    }
+
     async fn reap(&self, max_attempts: u64, now_ms: u64) -> Result<usize, DispatchError> {
         delegate!(self, reap(max_attempts, now_ms))
     }
 
-    async fn bind_sandbox(&self, run_id: &RunId, sandbox_ref: &str) -> Result<(), DispatchError> {
-        delegate!(self, bind_sandbox(run_id, sandbox_ref))
+    async fn bind_sandbox(
+        &self,
+        claim: &RunClaim,
+        sandbox_ref: &str,
+    ) -> Result<SettleOutcome, DispatchError> {
+        delegate!(self, bind_sandbox(claim, sandbox_ref))
     }
 
     async fn runnable_depth(&self, now_ms: u64) -> Result<Option<u64>, DispatchError> {

@@ -196,7 +196,15 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             self.claimed_commit.clone(),
             claim.clone(),
         ));
-        let ctx = self.execution_context().with_commit(fenced);
+        let mut ctx = self.execution_context().with_commit(fenced);
+        if let Some(checkpoint) = ctx.stream_checkpoint.clone() {
+            let dispatch: Arc<dyn crate::DispatchQueue> = self.store.clone();
+            ctx = ctx.with_stream_checkpoint(Arc::new(crate::FencedStreamCheckpointStore::new(
+                checkpoint,
+                dispatch,
+                claim.clone(),
+            )));
+        }
         match model_executor {
             Some(exec) => ctx.with_model_executor(exec.clone()),
             None => ctx,

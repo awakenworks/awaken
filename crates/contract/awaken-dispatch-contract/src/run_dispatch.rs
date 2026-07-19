@@ -8,6 +8,7 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime_contract::activation::RunActivation;
 pub use awaken_tenancy::ExecutionScopeRef;
+pub use awaken_worker_contract::PlacementRequirements;
 use serde::{Deserialize, Serialize};
 
 /// Opaque reference to a renewable model-access grant.
@@ -58,6 +59,14 @@ pub struct RunDispatch {
     /// a remote worker. It follows the durable dispatch through recovery.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_access: Option<ModelAccessRef>,
+    /// Hard worker requirements pinned at admission. Older durable rows omit this
+    /// field and deserialize through the contract's explicit legacy posture;
+    /// strict remote callers attach `PlacementRequirements::remote_required()`.
+    #[serde(
+        default,
+        skip_serializing_if = "PlacementRequirements::is_legacy_default"
+    )]
+    pub placement: PlacementRequirements,
 }
 
 impl RunDispatch {
@@ -68,6 +77,7 @@ impl RunDispatch {
             traceparent: None,
             execution_scope: None,
             model_access: None,
+            placement: PlacementRequirements::default(),
         }
     }
 
@@ -95,6 +105,14 @@ impl RunDispatch {
     #[must_use]
     pub fn with_model_access(mut self, access: ModelAccessRef) -> Self {
         self.model_access = Some(access);
+        self
+    }
+
+    /// Pin the immutable worker-placement requirements carried through every
+    /// crash recovery and replacement attempt.
+    #[must_use]
+    pub fn with_placement(mut self, placement: PlacementRequirements) -> Self {
+        self.placement = placement;
         self
     }
 
@@ -181,6 +199,7 @@ mod tests {
         assert!(back.traceparent.is_none());
         assert!(back.execution_scope.is_none());
         assert!(back.model_access.is_none());
+        assert!(back.placement.is_legacy_default());
     }
 
     /// A durable queue row written by an OLDER peer — no `traceparent`, no
@@ -229,6 +248,7 @@ mod tests {
         assert!(back.traceparent.is_none());
         assert!(back.execution_scope.is_none());
         assert!(back.model_access.is_none());
+        assert!(back.placement.is_legacy_default());
         // The activation's newer field defaults, and the run resolves to its pinned
         // binding — exactly how a run admitted before per-turn overrides behaves.
         assert!(back.activation.model_ref_override.is_none());
@@ -290,6 +310,17 @@ mod tests {
         assert_eq!(wire["model_access"]["scheme"], "cloud-gateway");
         assert_eq!(wire["model_access"]["reference"], "grant-17");
         assert!(!wire.to_string().contains("provider-key"));
+        let restored: RunDispatch = serde_json::from_value(wire).expect("deserializes");
+        assert_eq!(restored, request);
+    }
+
+    #[test]
+    fn strict_worker_requirements_are_pinned_while_legacy_bytes_stay_unchanged() {
+        let request =
+            RunDispatch::new(activation()).with_placement(PlacementRequirements::remote_required());
+        let wire = serde_json::to_value(&request).expect("serializes");
+        assert_eq!(wire["placement"]["contract_version"], 1);
+        assert_eq!(wire["placement"]["location"], "remote_required");
         let restored: RunDispatch = serde_json::from_value(wire).expect("deserializes");
         assert_eq!(restored, request);
     }
