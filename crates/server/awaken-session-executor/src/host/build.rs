@@ -576,4 +576,9 @@ impl SharedHost {
             .get()
             .is_some_and(|pool| !pool.is_draining())
     }
+
+    #[must_use]
+    pub fn pool_in_flight(&self) -> u32 {
+        self.dispatch_pool.get().map_or(0, |pool| pool.in_flight())
+    }
 }

@@ -76,12 +76,15 @@ use awaken_runtime_contract::live_inbox::{EditError, LiveInboxMessageId, Message
 
 use crate::host::{HostError, HostErrorKind, PendingTool, RunResult};
 
+mod worker_control_client;
+
 // The neutral session substrate and its resume vocabulary.
 pub use crate::commit_backend::init_shared_postgres_commit;
 pub use crate::dispatch_backend::{
     ensure_durable_backend, init_shared_dispatch_store, init_shared_postgres_dispatch,
 };
 pub use crate::host::{HostResume, SharedHost};
+pub use crate::worker_control_client::WorkerControlClient;
 // The sandboxed ACP channel source (bwrap-confined agent launch) and the shared
 // per-thread egress handle a composition root wires it with.
 pub use crate::data_subject_api::{consent_router, erasure_router, install_capture_sink};
@@ -118,8 +121,8 @@ pub use crate::deployment_config::{
     DeploymentConfig, DispatchBackend, SandboxTier, StoreKind, Wake,
 };
 pub use crate::dispatch_transport::{
-    WorkerDispatchService, dispatch_transport_router, dispatch_transport_router_with_service,
-    worker_dispatch_store_with_upstream,
+    WorkerDispatchService, dispatch_transport_router, dispatch_transport_router_with_directory,
+    dispatch_transport_router_with_service, worker_dispatch_store_with_upstream,
 };
 pub use crate::worker_security::{
     FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, ManualWorkerClock, SystemWorkerClock,

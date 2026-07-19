@@ -8,6 +8,7 @@ license.workspace = true
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-tenancy.workspace = true
+awaken-worker-contract.workspace = true
 async-trait.workspace = true
 serde.workspace = true
 thiserror.workspace = true

@@ -347,6 +347,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-agent-contract",
         "awaken-runtime-contract",
         "awaken-tenancy",
+        "awaken-worker-contract",
         # Serializable claim/settle payloads (the durable-persistence serde contract).
         "serde_json",
         "async-trait",
@@ -376,6 +377,19 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "thiserror",
         # dev-only: a fake exercises the async ports in unit tests.
         "tokio",
+    },
+    # Worker fleet vocabulary and pure placement kernel. It composes the existing
+    # provisioning capability vocabulary; persistence and channels stay in server
+    # adapters, so the isolated worker contract remains store-free.
+    "awaken-worker-contract": {
+        "awaken-provisioning-contract",
+        "async-trait",
+        "serde",
+        "serde_json",
+        "sha2",
+        "thiserror",
+        # dev-only property verification.
+        "proptest",
     },
     # Content-addressed blob store (ADR-0041): the neutral file-store trait +
     # `content_id` (BLAKE3) + local backends (fs/in-mem). Network backends
@@ -761,6 +775,23 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "serde",
         "serde_json",
         "thiserror",
+    },
+    # Durable worker-directory adapter. One shared transition kernel drives its
+    # memory/SQLite/Postgres stores; the neutral identity/placement vocabulary
+    # remains in the store-free worker contract.
+    "awaken-worker-registry": {
+        "awaken-worker-contract",
+        "async-trait",
+        "serde_json",
+        "thiserror",
+        "tokio",
+        "rusqlite",
+        "sqlx",
+        "awaken-scoped-migration",
+        "awaken-scoped-migration-sqlite",
+        # dev-only.
+        "proptest",
+        "tempfile",
     },
     # Shared protocol transport seam: the neutral vocabulary every streaming /
     # request-response adapter drives (`ProtocolRuntime` + its step/pending/resume
@@ -1323,7 +1354,11 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     },
     "awaken-server": {
         "awaken-scenario-host",
+        # dev-only: transport conformance assembles the real dispatch service over
+        # the in-memory queue while exercising the server's worker registry.
+        "awaken-dispatch",
         "awaken-session-executor",
+        "awaken-worker-registry",
         "awaken-managed-routers",
         # dev-only: the a2a-loopback e2e wraps its mock transports in the A2A
         # remote-Agent adapter (the host now holds the neutral RemoteAgent interface).
@@ -1513,6 +1548,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-session-executor",
         "awaken-server",
         "awaken-control",
+        "awaken-worker-contract",
+        "awaken-provisioning-contract",
+        "getrandom",
         "tokio",
         # The cloud-native admin surface (ADR-0022 D7): an axum router serving
         # /livez /readyz /admin/drain + the process Prometheus scrape.

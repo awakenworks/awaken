@@ -21,6 +21,7 @@ mod commit_fence;
 mod dispatch;
 mod dispatch_schema;
 mod durable;
+mod fenced_checkpoint;
 mod live_control;
 pub mod memory;
 mod pool;
@@ -37,16 +38,22 @@ pub use any::AnyDispatchStore;
 pub use capability::RunIngressCapabilities;
 // The database-less worker's HTTP dispatch client (drives claim/settle over the wire
 // to a cell server's dispatch_transport_router), extracted from awaken-session-executor.
-pub use awaken_dispatch_contract::{ExecutionScopeRef, ModelAccessRef, RunDispatch};
+pub use awaken_dispatch_contract::{
+    AssignmentRejection, ExecutionScopeRef, ModelAccessRef, PlacementRequirements,
+    RegisteredWorker, RegistryError, RegistryMutation, RunDispatch, WorkerAssignment,
+    WorkerDirectory, WorkerHeartbeat, WorkerIdentity, WorkerManifest, WorkerRecoveryMode,
+    WorkerRegistration, WorkerSnapshot, WorkerState, can_assign, can_claim,
+};
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use commit_fence::{ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit};
 pub use dispatch::{
-    CasOutcome, Claimed, CommitEpochGuard, Dispatch, DispatchError, DispatchOutcome, DispatchQueue,
-    DispatchState, DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, RunClaim,
-    SettleOutcome, SubmitOptions,
+    CasOutcome, Claimed, CommitEpochGuard, Dispatch, DispatchCompletion, DispatchError,
+    DispatchOutcome, DispatchQueue, DispatchState, DispatchSummary, Inbox, Lease, Outbox,
+    PendingInput, PendingRecord, RunClaim, SettleOutcome, SubmitOptions,
 };
 pub use dispatch_schema::dispatch_bundle;
 pub use durable::DurableRunIngress;
+pub use fenced_checkpoint::FencedStreamCheckpointStore;
 pub use live_control::{Error as LiveRunControlError, LiveRunControlService};
 pub use memory::MemoryDispatchStore;
 pub use pool::{CompletionSink, DispatchPool, WorkerResolver};

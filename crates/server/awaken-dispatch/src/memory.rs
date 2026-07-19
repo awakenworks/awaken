@@ -8,15 +8,16 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use crate::{WorkerAssignment, WorkerSnapshot, can_assign};
 use async_trait::async_trait;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime_contract::resume::ResumeResult;
 
 use crate::dispatch::{
-    CasOutcome, Claimed, CommitEpochGuard, DispatchError, DispatchOutcome, DispatchQueue,
-    DispatchState, DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, RunClaim,
-    SettleOutcome, SubmitOptions,
+    CasOutcome, Claimed, CommitEpochGuard, DispatchCompletion, DispatchError, DispatchOutcome,
+    DispatchQueue, DispatchState, DispatchSummary, Inbox, Lease, Outbox, PendingInput,
+    PendingRecord, RunClaim, SettleOutcome, SubmitOptions,
 };
 use awaken_dispatch_contract::RunDispatch;
 
@@ -59,6 +60,7 @@ struct Row {
     /// Opaque sandbox binding (B-P3, ADR-0021 §6); set by `bind_sandbox`, returned
     /// on `claim` so recovery re-adopts the same sandbox.
     sandbox: Option<String>,
+    assignment: Option<WorkerAssignment>,
 }
 
 /// A pending input with its optimistic-concurrency revision.
@@ -77,6 +79,8 @@ struct State {
     pending: Vec<PendingRow>,
     /// Cross-thread deliveries staged for relay, in arrival order.
     outbox: Vec<PendingInput>,
+    /// Applied-Done facts, retained as permanent run-id tombstones (ADR-0060).
+    completions: Vec<DispatchCompletion>,
 }
 
 /// In-memory durable-ingress store. Cloneable handles share one state.
@@ -151,7 +155,7 @@ fn is_due(input: &PendingInput, now_ms: u64) -> bool {
 /// Pick the next runnable run, oldest-first within each priority band: reclaim an
 /// expired lease (recovery), then wake an awaiting run with pending input, then a
 /// fresh pending run. This is the claim policy the Postgres store must match.
-fn select(state: &State, now_ms: u64) -> Option<RunId> {
+fn select_where(state: &State, now_ms: u64, compatible: impl Fn(&Row) -> bool) -> Option<RunId> {
     // Single-writer-per-thread (ADR-0022): a wake or fresh pick must not start a
     // second concurrent run for a thread that already has one running. A recovery
     // pick is exempt — it re-owns the SAME running row, it does not add a second.
@@ -167,6 +171,7 @@ fn select(state: &State, now_ms: u64) -> Option<RunId> {
         if let Some(row) = state.rows.get(run)
             && row.state == RowState::Leased
             && row.lease.as_ref().is_some_and(|l| l.expires_ms < now_ms)
+            && compatible(row)
         {
             return Some(run.clone());
         }
@@ -180,6 +185,7 @@ fn select(state: &State, now_ms: u64) -> Option<RunId> {
                 .iter()
                 .any(|p| &p.input.run_id == run && is_due(&p.input, now_ms))
             && !thread_running(row.request.thread_id())
+            && compatible(row)
         {
             return Some(run.clone());
         }
@@ -191,12 +197,17 @@ fn select(state: &State, now_ms: u64) -> Option<RunId> {
         if let Some(row) = state.rows.get(run)
             && row.state == RowState::Pending
             && !thread_running(row.request.thread_id())
+            && compatible(row)
             && best.is_none_or(|(_, p)| row.priority > p)
         {
             best = Some((run, row.priority));
         }
     }
     best.map(|(run, _)| run.clone())
+}
+
+fn select(state: &State, now_ms: u64) -> Option<RunId> {
+    select_where(state, now_ms, |_| true)
 }
 
 /// Whether one exact row is runnable under the same policy as [`select`]. The
@@ -235,6 +246,7 @@ fn claim_exact(
     owner: &str,
     lease_ms: u64,
     now_ms: u64,
+    assignment: Option<WorkerAssignment>,
 ) -> Option<Claimed> {
     let was_recovery = runnable(state, requested_run, now_ms)?;
     let run_id = requested_run.clone();
@@ -249,6 +261,7 @@ fn claim_exact(
         };
         row.state = RowState::Leased;
         row.lease = Some(lease.clone());
+        row.assignment = assignment.clone();
         if was_recovery {
             row.attempt_count += 1;
         }
@@ -266,6 +279,7 @@ fn claim_exact(
         pending,
         recovered: was_recovery,
         sandbox,
+        assignment,
     })
 }
 
@@ -297,7 +311,12 @@ impl DispatchQueue for MemoryDispatchStore {
         let run_id = request.run_id().clone();
         // Idempotent by run id; and a no-op while a live dispatch shares the
         // caller's dedupe key.
-        if state.rows.contains_key(&run_id) {
+        if state.rows.contains_key(&run_id)
+            || state
+                .completions
+                .iter()
+                .any(|completion| completion.run_id == run_id)
+        {
             return Ok(());
         }
         if let Some(key) = &options.dedupe_key
@@ -343,6 +362,7 @@ impl DispatchQueue for MemoryDispatchStore {
                 dedupe_key: options.dedupe_key,
                 dead_lettered_at: None,
                 sandbox: None,
+                assignment: None,
             },
         );
         state.order.push(run_id);
@@ -359,6 +379,13 @@ impl DispatchQueue for MemoryDispatchStore {
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
         let run_id = request.run_id().clone();
+        if state
+            .completions
+            .iter()
+            .any(|completion| completion.run_id == run_id)
+        {
+            return Ok(None);
+        }
         if !state.rows.contains_key(&run_id) {
             state.rows.insert(
                 run_id.clone(),
@@ -373,11 +400,63 @@ impl DispatchQueue for MemoryDispatchStore {
                     dedupe_key: None,
                     dead_lettered_at: None,
                     sandbox: None,
+                    assignment: None,
                 },
             );
             state.order.push(run_id.clone());
         }
-        Ok(claim_exact(&mut state, &run_id, owner, lease_ms, now_ms))
+        Ok(claim_exact(
+            &mut state, &run_id, owner, lease_ms, now_ms, None,
+        ))
+    }
+
+    async fn claim_new_run_compatible(
+        &self,
+        request: RunDispatch,
+        worker: &WorkerSnapshot,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        if can_assign(worker, &request.placement, None, false, now_ms).is_err() {
+            return Ok(None);
+        }
+        let _authority = self.authority.lock().await;
+        let mut state = lock(&self.state)?;
+        let run_id = request.run_id().clone();
+        if state
+            .completions
+            .iter()
+            .any(|completion| completion.run_id == run_id)
+        {
+            return Ok(None);
+        }
+        if !state.rows.contains_key(&run_id) {
+            state.rows.insert(
+                run_id.clone(),
+                Row {
+                    request,
+                    state: RowState::Pending,
+                    lease: None,
+                    attempt_count: 0,
+                    priority: 0,
+                    epoch: 0,
+                    lease_epoch: 0,
+                    dedupe_key: None,
+                    dead_lettered_at: None,
+                    sandbox: None,
+                    assignment: None,
+                },
+            );
+            state.order.push(run_id.clone());
+        }
+        Ok(claim_exact(
+            &mut state,
+            &run_id,
+            &worker.identity.lease_owner(),
+            lease_ms,
+            now_ms,
+            Some(WorkerAssignment::from(worker)),
+        ))
     }
 
     async fn deliver_and_claim(
@@ -397,7 +476,48 @@ impl DispatchQueue for MemoryDispatchStore {
         {
             state.pending.push(PendingRow { input, revision: 1 });
         }
-        Ok(claim_exact(&mut state, &run_id, owner, lease_ms, now_ms))
+        Ok(claim_exact(
+            &mut state, &run_id, owner, lease_ms, now_ms, None,
+        ))
+    }
+
+    async fn deliver_and_claim_compatible(
+        &self,
+        input: PendingInput,
+        worker: &WorkerSnapshot,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        let _authority = self.authority.lock().await;
+        let mut state = lock(&self.state)?;
+        let run_id = input.run_id.clone();
+        if !state
+            .pending
+            .iter()
+            .any(|pending| pending.input.message_id == input.message_id)
+        {
+            state.pending.push(PendingRow { input, revision: 1 });
+        }
+        if state.rows.get(&run_id).is_none_or(|row| {
+            can_assign(
+                worker,
+                &row.request.placement,
+                row.assignment.as_ref(),
+                row.sandbox.is_some(),
+                now_ms,
+            )
+            .is_err()
+        }) {
+            return Ok(None);
+        }
+        Ok(claim_exact(
+            &mut state,
+            &run_id,
+            &worker.identity.lease_owner(),
+            lease_ms,
+            now_ms,
+            Some(WorkerAssignment::from(worker)),
+        ))
     }
 
     async fn claim(
@@ -431,6 +551,7 @@ impl DispatchQueue for MemoryDispatchStore {
             };
             row.state = RowState::Leased;
             row.lease = Some(lease.clone());
+            row.assignment = None;
             if was_recovery {
                 row.attempt_count += 1;
             }
@@ -453,7 +574,38 @@ impl DispatchQueue for MemoryDispatchStore {
             pending,
             recovered: was_recovery,
             sandbox,
+            assignment: None,
         }))
+    }
+
+    async fn claim_compatible(
+        &self,
+        worker: &WorkerSnapshot,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        let _authority = self.authority.lock().await;
+        let mut state = lock(&self.state)?;
+        let Some(run_id) = select_where(&state, now_ms, |row| {
+            can_assign(
+                worker,
+                &row.request.placement,
+                row.assignment.as_ref(),
+                row.sandbox.is_some(),
+                now_ms,
+            )
+            .is_ok()
+        }) else {
+            return Ok(None);
+        };
+        Ok(claim_exact(
+            &mut state,
+            &run_id,
+            &worker.identity.lease_owner(),
+            lease_ms,
+            now_ms,
+            Some(WorkerAssignment::from(worker)),
+        ))
     }
 
     async fn claim_run(
@@ -471,15 +623,59 @@ impl DispatchQueue for MemoryDispatchStore {
             owner,
             lease_ms,
             now_ms,
+            None,
         ))
     }
 
-    async fn bind_sandbox(&self, run_id: &RunId, sandbox_ref: &str) -> Result<(), DispatchError> {
+    async fn claim_run_compatible(
+        &self,
+        requested_run: &RunId,
+        worker: &WorkerSnapshot,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
-        if let Some(row) = state.rows.get_mut(run_id) {
-            row.sandbox = Some(sandbox_ref.to_string());
+        if state.rows.get(requested_run).is_none_or(|row| {
+            can_assign(
+                worker,
+                &row.request.placement,
+                row.assignment.as_ref(),
+                row.sandbox.is_some(),
+                now_ms,
+            )
+            .is_err()
+        }) {
+            return Ok(None);
         }
-        Ok(())
+        Ok(claim_exact(
+            &mut state,
+            requested_run,
+            &worker.identity.lease_owner(),
+            lease_ms,
+            now_ms,
+            Some(WorkerAssignment::from(worker)),
+        ))
+    }
+
+    async fn bind_sandbox(
+        &self,
+        claim: &RunClaim,
+        sandbox_ref: &str,
+    ) -> Result<SettleOutcome, DispatchError> {
+        let _authority = self.authority.lock().await;
+        let mut state = lock(&self.state)?;
+        if let Some(row) = state.rows.get_mut(&claim.run_id)
+            && row.lease_epoch == claim.epoch
+            && row
+                .lease
+                .as_ref()
+                .is_some_and(|lease| lease.owner == claim.owner)
+        {
+            row.sandbox = Some(sandbox_ref.to_string());
+            return Ok(SettleOutcome::Applied);
+        }
+        Ok(SettleOutcome::Fenced)
     }
 
     async fn runnable_depth(&self, now_ms: u64) -> Result<Option<u64>, DispatchError> {
@@ -559,6 +755,11 @@ impl DispatchQueue for MemoryDispatchStore {
         }
         match outcome {
             DispatchOutcome::Done => {
+                let sequence = state.completions.len() as u64 + 1;
+                state.completions.push(DispatchCompletion {
+                    sequence,
+                    run_id: run_id.clone(),
+                });
                 state.rows.remove(run_id);
                 state.order.retain(|r| r != run_id);
                 // Drop the run's own pending and anything else the worker consumed
@@ -582,6 +783,21 @@ impl DispatchQueue for MemoryDispatchStore {
             }
         }
         Ok(SettleOutcome::Applied)
+    }
+
+    async fn completion_events_after(
+        &self,
+        after_sequence: u64,
+        limit: usize,
+    ) -> Result<Vec<DispatchCompletion>, DispatchError> {
+        let state = lock(&self.state)?;
+        Ok(state
+            .completions
+            .iter()
+            .filter(|completion| completion.sequence > after_sequence)
+            .take(limit)
+            .cloned()
+            .collect())
     }
 
     async fn reap(&self, max_attempts: u64, now_ms: u64) -> Result<usize, DispatchError> {
