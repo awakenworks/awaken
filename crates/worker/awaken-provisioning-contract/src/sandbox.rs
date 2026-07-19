@@ -152,12 +152,54 @@ impl SandboxCapabilities {
     #[must_use]
     pub fn satisfies(&self, spec: &crate::spec::SandboxSpec) -> bool {
         use crate::vocab::NetworkPolicy;
-        self.isolation >= spec.isolation
-            && (matches!(spec.network, NetworkPolicy::Unrestricted) || self.network_isolation)
-            // Resource caps are load-bearing too: a spec that asks for cgroup limits
-            // must not be placed on a tier that can't enforce them.
-            && (!spec.limits.is_set() || self.resource_limits)
+        capability_requirements_satisfied(
+            self.isolation,
+            spec.isolation,
+            self.network_isolation,
+            !matches!(spec.network, NetworkPolicy::Unrestricted),
+            self.resource_limits,
+            spec.limits.is_set(),
+        )
     }
+}
+
+/// Representation-free admission kernel shared by production provider selection
+/// and the bounded proof harnesses. Every load-bearing requirement is conjunctive:
+/// adding a requirement can only remove candidates, never make a weaker backend
+/// admissible.
+#[must_use]
+pub const fn capability_requirements_satisfied(
+    actual_isolation: IsolationClass,
+    required_isolation: IsolationClass,
+    has_network_isolation: bool,
+    requires_network_isolation: bool,
+    has_resource_limits: bool,
+    requires_resource_limits: bool,
+) -> bool {
+    isolation_rank(actual_isolation) >= isolation_rank(required_isolation)
+        && (!requires_network_isolation || has_network_isolation)
+        && (!requires_resource_limits || has_resource_limits)
+}
+
+const fn isolation_rank(class: IsolationClass) -> u8 {
+    match class {
+        IsolationClass::Workdir => 0,
+        IsolationClass::Namespace => 1,
+        IsolationClass::Container => 2,
+    }
+}
+
+/// Whether placing below the requested floor is explicitly authorized. This is
+/// kept separate from readiness/ranking so a fail-closed policy can never silently
+/// turn into a downgrade while candidate ordering changes.
+#[must_use]
+pub const fn degradation_is_authorized(
+    actual: IsolationClass,
+    required: IsolationClass,
+    on_unmet: OnUnmet,
+) -> bool {
+    isolation_rank(actual) >= isolation_rank(required)
+        || matches!(on_unmet, OnUnmet::DegradeWithConsent)
 }
 
 /// Why no backend could be selected for a spec.
@@ -260,7 +302,7 @@ pub async fn select_provider_with_policy<'a>(
         }
         if caps.isolation >= policy.require {
             at_or_above.push(provider.as_ref());
-        } else {
+        } else if degradation_is_authorized(caps.isolation, policy.require, policy.on_unmet) {
             below.push(provider.as_ref());
         }
     }
@@ -293,6 +335,65 @@ pub async fn select_provider_with_policy<'a>(
                 degraded_to: Some(p.capabilities().isolation),
             })
             .ok_or(SelectionError::NoCapableBackend),
+    }
+}
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    fn isolation(tag: u8) -> IsolationClass {
+        match tag % 3 {
+            0 => IsolationClass::Workdir,
+            1 => IsolationClass::Namespace,
+            _ => IsolationClass::Container,
+        }
+    }
+
+    #[kani::proof]
+    fn sandbox_admission_never_weakens_the_isolation_floor() {
+        let actual = isolation(kani::any());
+        let required = isolation(kani::any());
+        let admitted = capability_requirements_satisfied(
+            actual,
+            required,
+            kani::any(),
+            kani::any(),
+            kani::any(),
+            kani::any(),
+        );
+        if admitted {
+            assert!(isolation_rank(actual) >= isolation_rank(required));
+        }
+    }
+
+    #[kani::proof]
+    fn sandbox_admission_requires_every_requested_capability() {
+        let has_network = kani::any();
+        let needs_network = kani::any();
+        let has_limits = kani::any();
+        let needs_limits = kani::any();
+        let admitted = capability_requirements_satisfied(
+            isolation(kani::any()),
+            IsolationClass::Workdir,
+            has_network,
+            needs_network,
+            has_limits,
+            needs_limits,
+        );
+        if admitted {
+            assert!(!needs_network || has_network);
+            assert!(!needs_limits || has_limits);
+        }
+    }
+
+    #[kani::proof]
+    fn fail_closed_sandbox_policy_never_authorizes_a_downgrade() {
+        let actual = isolation(kani::any());
+        let required = isolation(kani::any());
+        if degradation_is_authorized(actual, required, OnUnmet::FailClosed) {
+            assert!(isolation_rank(actual) >= isolation_rank(required));
+        }
     }
 }
 

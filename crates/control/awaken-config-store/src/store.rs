@@ -16,6 +16,21 @@ use crate::config::AgentConfig;
 #[error("config store: {0}")]
 pub struct ConfigStoreError(pub String);
 
+/// An authoring config paired with the monotonic generation used for optimistic
+/// concurrency control.
+#[derive(Debug, Clone)]
+pub struct VersionedAgentConfig {
+    pub config: AgentConfig,
+    pub generation: u64,
+}
+
+/// Outcome of an atomic compare-and-set config write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigWrite {
+    Applied { generation: u64 },
+    Conflict { current_generation: Option<u64> },
+}
+
 /// The lifecycle spine (ADR-0031). The richer states (installing/active/
 /// superseded/rolled_back/rejected) are deferred.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,6 +56,8 @@ pub struct StoredPublication {
     pub publication_id: String,
     pub fingerprint: String,
     pub agent_id: String,
+    #[serde(default)]
+    pub source_generation: u64,
     pub state: PublicationState,
     pub snapshot: ExecutableAgentSnapshot,
     pub install: RuntimeCatalogInstall,
@@ -51,11 +68,20 @@ impl StoredPublication {
     /// publication id come from the runnable config itself (the producer stamped
     /// them), so the store never re-derives them.
     pub fn published(config: RunnableConfig, agent_id: impl Into<String>) -> Self {
+        Self::published_at_generation(config, agent_id, 0)
+    }
+
+    pub fn published_at_generation(
+        config: RunnableConfig,
+        agent_id: impl Into<String>,
+        source_generation: u64,
+    ) -> Self {
         let (snapshot, install) = config.into_parts();
         Self {
             publication_id: install.publication_id.clone(),
             fingerprint: snapshot.fingerprint.0.clone(),
             agent_id: agent_id.into(),
+            source_generation,
             state: PublicationState::Published,
             snapshot,
             install,
@@ -71,8 +97,33 @@ pub trait ConfigRegistry: Send + Sync {
     /// Upsert an agent config by id.
     async fn put_config(&self, config: &AgentConfig) -> Result<(), ConfigStoreError>;
 
+    /// Store only when `expected_generation` is still current. Generation zero
+    /// means "create only". Adapters without CAS support fail explicitly.
+    async fn put_config_if_generation(
+        &self,
+        _config: &AgentConfig,
+        _expected_generation: u64,
+    ) -> Result<ConfigWrite, ConfigStoreError> {
+        Err(ConfigStoreError(
+            "config registry does not support generation CAS".to_string(),
+        ))
+    }
+
     /// Load an agent config by id.
     async fn get_config(&self, id: &str) -> Result<Option<AgentConfig>, ConfigStoreError>;
+
+    async fn get_config_versioned(
+        &self,
+        id: &str,
+    ) -> Result<Option<VersionedAgentConfig>, ConfigStoreError> {
+        Ok(self
+            .get_config(id)
+            .await?
+            .map(|config| VersionedAgentConfig {
+                config,
+                generation: 0,
+            }))
+    }
 
     /// List every stored agent config (the authoring aggregate), ascending by id.
     /// Backs the management console's agent list, which authors against this
@@ -84,6 +135,24 @@ pub trait ConfigRegistry: Send + Sync {
         &self,
         publication: &StoredPublication,
     ) -> Result<(), ConfigStoreError>;
+
+    async fn put_publication_if_config_generation(
+        &self,
+        publication: &StoredPublication,
+        expected_generation: u64,
+    ) -> Result<ConfigWrite, ConfigStoreError> {
+        let current_generation = self
+            .get_config_versioned(&publication.agent_id)
+            .await?
+            .map(|versioned| versioned.generation);
+        if current_generation != Some(expected_generation) {
+            return Ok(ConfigWrite::Conflict { current_generation });
+        }
+        self.put_publication(publication).await?;
+        Ok(ConfigWrite::Applied {
+            generation: expected_generation,
+        })
+    }
 
     /// Load a publication by its fingerprint.
     async fn get_publication(
@@ -116,6 +185,17 @@ pub trait ScopedConfigRegistry: Send + Sync {
         config: &AgentConfig,
     ) -> Result<(), ConfigStoreError>;
 
+    async fn put_config_if_generation_scoped(
+        &self,
+        _scope: &ScopeId,
+        _config: &AgentConfig,
+        _expected_generation: u64,
+    ) -> Result<ConfigWrite, ConfigStoreError> {
+        Err(ConfigStoreError(
+            "scoped config registry does not support generation CAS".to_string(),
+        ))
+    }
+
     /// Load an agent config by id **within `scope`** — a row owned by another
     /// scope is invisible.
     async fn get_config_scoped(
@@ -123,6 +203,20 @@ pub trait ScopedConfigRegistry: Send + Sync {
         scope: &ScopeId,
         id: &str,
     ) -> Result<Option<AgentConfig>, ConfigStoreError>;
+
+    async fn get_config_versioned_scoped(
+        &self,
+        scope: &ScopeId,
+        id: &str,
+    ) -> Result<Option<VersionedAgentConfig>, ConfigStoreError> {
+        Ok(self
+            .get_config_scoped(scope, id)
+            .await?
+            .map(|config| VersionedAgentConfig {
+                config,
+                generation: 0,
+            }))
+    }
 
     /// List every agent config owned by `scope`, ascending by id — a row owned by
     /// another scope is invisible.
@@ -137,6 +231,25 @@ pub trait ScopedConfigRegistry: Send + Sync {
         scope: &ScopeId,
         publication: &StoredPublication,
     ) -> Result<(), ConfigStoreError>;
+
+    async fn put_publication_if_config_generation_scoped(
+        &self,
+        scope: &ScopeId,
+        publication: &StoredPublication,
+        expected_generation: u64,
+    ) -> Result<ConfigWrite, ConfigStoreError> {
+        let current_generation = self
+            .get_config_versioned_scoped(scope, &publication.agent_id)
+            .await?
+            .map(|versioned| versioned.generation);
+        if current_generation != Some(expected_generation) {
+            return Ok(ConfigWrite::Conflict { current_generation });
+        }
+        self.put_publication_scoped(scope, publication).await?;
+        Ok(ConfigWrite::Applied {
+            generation: expected_generation,
+        })
+    }
 
     /// Load a publication by fingerprint **within `scope`**.
     async fn get_publication_scoped(
@@ -196,8 +309,27 @@ impl<S: ScopedConfigRegistry + ?Sized> ConfigRegistry for ScopedConfig<S> {
         self.inner.put_config_scoped(&self.scope, config).await
     }
 
+    async fn put_config_if_generation(
+        &self,
+        config: &AgentConfig,
+        expected_generation: u64,
+    ) -> Result<ConfigWrite, ConfigStoreError> {
+        self.inner
+            .put_config_if_generation_scoped(&self.scope, config, expected_generation)
+            .await
+    }
+
     async fn get_config(&self, id: &str) -> Result<Option<AgentConfig>, ConfigStoreError> {
         self.inner.get_config_scoped(&self.scope, id).await
+    }
+
+    async fn get_config_versioned(
+        &self,
+        id: &str,
+    ) -> Result<Option<VersionedAgentConfig>, ConfigStoreError> {
+        self.inner
+            .get_config_versioned_scoped(&self.scope, id)
+            .await
     }
 
     async fn list_configs(&self) -> Result<Vec<AgentConfig>, ConfigStoreError> {
@@ -210,6 +342,20 @@ impl<S: ScopedConfigRegistry + ?Sized> ConfigRegistry for ScopedConfig<S> {
     ) -> Result<(), ConfigStoreError> {
         self.inner
             .put_publication_scoped(&self.scope, publication)
+            .await
+    }
+
+    async fn put_publication_if_config_generation(
+        &self,
+        publication: &StoredPublication,
+        expected_generation: u64,
+    ) -> Result<ConfigWrite, ConfigStoreError> {
+        self.inner
+            .put_publication_if_config_generation_scoped(
+                &self.scope,
+                publication,
+                expected_generation,
+            )
             .await
     }
 

@@ -223,4 +223,14 @@ impl SealedBlobStore for PostgresSealedBlobStore {
         let blob: Vec<u8> = row.try_get("sealed").map_err(storage)?;
         Ok(blob)
     }
+
+    async fn delete_blob(&self, r: &SecretRef) -> Result<(), CredentialError> {
+        let p = NS;
+        sqlx::query(&format!("DELETE FROM {p}_secret WHERE secret_ref = $1"))
+            .bind(&r.0)
+            .execute(&self.pool)
+            .await
+            .map_err(storage)?;
+        Ok(())
+    }
 }

@@ -53,6 +53,51 @@ pub enum ConsentStatus {
     Withdrawn,
 }
 
+/// Finite consent decision kernel. Keeping the two facts separately makes the
+/// withdrawal veto explicit: once observed, a later stale `Granted` duplicate
+/// cannot reopen full-content capture.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ConsentDecision {
+    granted: bool,
+    withdrawn: bool,
+}
+
+impl ConsentDecision {
+    #[must_use]
+    pub const fn observe(self, status: ConsentStatus) -> Self {
+        match status {
+            ConsentStatus::Granted => Self {
+                granted: true,
+                withdrawn: self.withdrawn,
+            },
+            ConsentStatus::Pending => self,
+            ConsentStatus::Withdrawn => Self {
+                granted: self.granted,
+                withdrawn: true,
+            },
+        }
+    }
+
+    #[must_use]
+    pub const fn ceiling(self) -> ContentCapture {
+        if self.granted && !self.withdrawn {
+            ContentCapture::Full
+        } else {
+            ContentCapture::Structured
+        }
+    }
+}
+
+#[must_use]
+const fn retain_consent_for_upsert(existing_matches_incoming_purpose: bool) -> bool {
+    !existing_matches_incoming_purpose
+}
+
+#[must_use]
+const fn erased_consent_status(_current: ConsentStatus) -> ConsentStatus {
+    ConsentStatus::Withdrawn
+}
+
 /// The GDPR lawful basis a capture relies on. `Consent` is the default; the
 /// others record that capture is justified without explicit end-user consent.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -122,7 +167,7 @@ impl DataSubject {
     /// accountability; only the content it pointed to is deleted (by the erasers).
     pub fn mark_erased(&mut self, at: i64) {
         for grant in &mut self.consents {
-            grant.status = ConsentStatus::Withdrawn;
+            grant.status = erased_consent_status(grant.status);
         }
         self.erased_at = Some(at);
         self.updated_at = at;
@@ -140,29 +185,68 @@ impl DataSubject {
     /// it. (Fixing it here, not only in the writer, means no reader can leak.)
     #[must_use]
     pub fn consent_ceiling(&self, purpose: Purpose) -> ContentCapture {
-        let mut granted = false;
+        let mut decision = ConsentDecision::default();
         for g in &self.consents {
             if g.purpose != purpose {
                 continue;
             }
-            match g.status {
-                // A withdrawal for this purpose vetoes capture outright.
-                ConsentStatus::Withdrawn => return ContentCapture::Structured,
-                ConsentStatus::Granted => granted = true,
-                ConsentStatus::Pending => {}
-            }
+            decision = decision.observe(g.status);
         }
-        if granted {
-            ContentCapture::Full
-        } else {
-            ContentCapture::Structured
-        }
+        decision.ceiling()
     }
 
     /// Record `grant`, superseding any prior grant for the same purpose.
     pub fn upsert_consent(&mut self, grant: ConsentGrant) {
-        self.consents.retain(|g| g.purpose != grant.purpose);
+        self.consents
+            .retain(|g| retain_consent_for_upsert(g.purpose == grant.purpose));
         self.consents.push(grant);
+    }
+}
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    fn status(tag: u8) -> ConsentStatus {
+        match tag % 3 {
+            0 => ConsentStatus::Granted,
+            1 => ConsentStatus::Pending,
+            _ => ConsentStatus::Withdrawn,
+        }
+    }
+
+    #[kani::proof]
+    fn any_withdrawal_vetoes_full_content_capture() {
+        let statuses = [
+            status(kani::any()),
+            status(kani::any()),
+            status(kani::any()),
+        ];
+        let mut decision = ConsentDecision::default();
+        for item in statuses {
+            decision = decision.observe(item);
+        }
+        if statuses.contains(&ConsentStatus::Withdrawn) {
+            assert_eq!(decision.ceiling(), ContentCapture::Structured);
+        }
+    }
+
+    #[kani::proof]
+    fn consent_upsert_leaves_exactly_one_row_for_the_incoming_purpose() {
+        let existing_match = [kani::any::<bool>(), kani::any(), kani::any()];
+        let retained_matches = existing_match
+            .iter()
+            .filter(|matches| retain_consent_for_upsert(**matches) && **matches)
+            .count();
+        assert_eq!(retained_matches + 1, 1);
+    }
+
+    #[kani::proof]
+    fn erasure_withdrawal_is_absorbing_and_idempotent() {
+        let first = erased_consent_status(status(kani::any()));
+        let second = erased_consent_status(first);
+        assert_eq!(first, ConsentStatus::Withdrawn);
+        assert_eq!(second, ConsentStatus::Withdrawn);
     }
 }
 
@@ -173,6 +257,15 @@ pub enum DataSubjectError {
     NotFound(String),
     #[error("storage: {0}")]
     Storage(String),
+}
+
+/// Durable checkpoint for a multi-store erasure workflow.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ErasureProgress {
+    pub completed_erasers: Vec<usize>,
+    pub records_removed: usize,
+    pub accountability_stamped: bool,
+    pub complete: bool,
 }
 
 /// Persistence port for the [`DataSubject`] aggregate (repository-per-aggregate).
@@ -186,6 +279,19 @@ pub trait DataSubjectRepo: Send + Sync {
     async fn list(&self, org: &str) -> Result<Vec<DataSubject>, DataSubjectError>;
     /// Delete a subject record (its consent history); returns Ok even if absent.
     async fn delete(&self, id: &DataSubjectId) -> Result<(), DataSubjectError>;
+    async fn load_erasure_progress(
+        &self,
+        _id: &DataSubjectId,
+    ) -> Result<Option<ErasureProgress>, DataSubjectError> {
+        Ok(None)
+    }
+    async fn save_erasure_progress(
+        &self,
+        _id: &DataSubjectId,
+        _progress: &ErasureProgress,
+    ) -> Result<(), DataSubjectError> {
+        Ok(())
+    }
 }
 
 /// In-memory [`DataSubjectRepo`] (tests / ephemeral single-process).
@@ -193,6 +299,7 @@ pub trait DataSubjectRepo: Send + Sync {
 pub struct InMemoryDataSubjectRepo {
     inner: Mutex<BTreeMap<String, DataSubject>>,
     order: Mutex<Vec<String>>,
+    erasures: Mutex<BTreeMap<String, ErasureProgress>>,
 }
 
 impl InMemoryDataSubjectRepo {
@@ -239,6 +346,25 @@ impl DataSubjectRepo for InMemoryDataSubjectRepo {
     async fn delete(&self, id: &DataSubjectId) -> Result<(), DataSubjectError> {
         self.inner.lock().unwrap().remove(&id.0);
         self.order.lock().unwrap().retain(|k| k != &id.0);
+        Ok(())
+    }
+
+    async fn load_erasure_progress(
+        &self,
+        id: &DataSubjectId,
+    ) -> Result<Option<ErasureProgress>, DataSubjectError> {
+        Ok(self.erasures.lock().unwrap().get(&id.0).cloned())
+    }
+
+    async fn save_erasure_progress(
+        &self,
+        id: &DataSubjectId,
+        progress: &ErasureProgress,
+    ) -> Result<(), DataSubjectError> {
+        self.erasures
+            .lock()
+            .unwrap()
+            .insert(id.0.clone(), progress.clone());
         Ok(())
     }
 }
@@ -290,22 +416,54 @@ impl awaken_runtime_contract::DataSubjectResolver for RepoDataSubjectResolver {
         // records removed. A content-store DELETE that fails is surfaced (fail
         // closed) BEFORE the accountability stamp — an unerased subject must never
         // be stamped as erased, and the caller must not receive a success receipt.
-        let mut records_removed = 0;
-        for eraser in &self.erasers {
-            records_removed += eraser.erase_subject(subject).await?;
+        let mut progress = self
+            .repo
+            .load_erasure_progress(subject)
+            .await
+            .map_err(|e| awaken_runtime_contract::ErasureError(e.to_string()))?
+            .unwrap_or_default();
+        if progress.complete {
+            return Ok(ErasureReceipt {
+                records_removed: progress.records_removed,
+            });
+        }
+        for (index, eraser) in self.erasers.iter().enumerate() {
+            if progress.completed_erasers.contains(&index) {
+                continue;
+            }
+            progress.records_removed += eraser.erase_subject(subject).await?;
+            progress.completed_erasers.push(index);
+            self.repo
+                .save_erasure_progress(subject, &progress)
+                .await
+                .map_err(|e| awaken_runtime_contract::ErasureError(e.to_string()))?;
         }
         // Retain the subject record as accountability proof (Art. 5(2)/7(1)):
         // withdraw its consents + stamp `erased_at`, rather than deleting it. A
         // present subject whose accountability write fails surfaces as an error
         // (an unrecorded erasure is a compliance gap); an absent subject record is
         // simply nothing to stamp.
-        if let Ok(mut s) = self.repo.get(subject).await {
+        if !progress.accountability_stamped
+            && let Ok(mut s) = self.repo.get(subject).await
+        {
             s.mark_erased(now_millis());
             self.repo.put(s).await.map_err(|e| {
                 awaken_runtime_contract::ErasureError(format!("accountability write failed: {e}"))
             })?;
+            progress.accountability_stamped = true;
+            self.repo
+                .save_erasure_progress(subject, &progress)
+                .await
+                .map_err(|e| awaken_runtime_contract::ErasureError(e.to_string()))?;
         }
-        Ok(ErasureReceipt { records_removed })
+        progress.complete = true;
+        self.repo
+            .save_erasure_progress(subject, &progress)
+            .await
+            .map_err(|e| awaken_runtime_contract::ErasureError(e.to_string()))?;
+        Ok(ErasureReceipt {
+            records_removed: progress.records_removed,
+        })
     }
 }
 
@@ -658,6 +816,58 @@ mod tests {
         assert_eq!(
             receipt.records_removed, 6,
             "content erased even with no record"
+        );
+    }
+
+    #[tokio::test]
+    async fn erasure_retry_resumes_after_the_last_durable_checkpoint() {
+        use awaken_runtime_contract::{ContentEraser, ErasureError};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct CountingEraser {
+            calls: std::sync::Arc<AtomicUsize>,
+            removed: usize,
+            fail_first: bool,
+        }
+        #[async_trait]
+        impl ContentEraser for CountingEraser {
+            async fn erase_subject(&self, _s: &DataSubjectId) -> Result<usize, ErasureError> {
+                let call = self.calls.fetch_add(1, Ordering::SeqCst);
+                if self.fail_first && call == 0 {
+                    Err(ErasureError("transient delete failure".into()))
+                } else {
+                    Ok(self.removed)
+                }
+            }
+        }
+
+        let repo = std::sync::Arc::new(InMemoryDataSubjectRepo::new());
+        let first_calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let second_calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let resolver = RepoDataSubjectResolver::new(repo.clone())
+            .with_eraser(std::sync::Arc::new(CountingEraser {
+                calls: first_calls.clone(),
+                removed: 2,
+                fail_first: false,
+            }))
+            .with_eraser(std::sync::Arc::new(CountingEraser {
+                calls: second_calls.clone(),
+                removed: 3,
+                fail_first: true,
+            }));
+        let subject = DataSubjectId("resume-me".into());
+
+        assert!(resolver.erase(&subject).await.is_err());
+        let receipt = resolver.erase(&subject).await.expect("retry resumes");
+        assert_eq!(receipt.records_removed, 5);
+        assert_eq!(first_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(second_calls.load(Ordering::SeqCst), 2);
+        assert!(
+            repo.load_erasure_progress(&subject)
+                .await
+                .unwrap()
+                .unwrap()
+                .complete
         );
     }
 

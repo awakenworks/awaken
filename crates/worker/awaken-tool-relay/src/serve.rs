@@ -15,6 +15,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
 use crate::wire::{HandError, HandErrorKind, HandReply, HandRequest, HandResult};
+use crate::{HandOperationLedger, InMemoryOperationLedger, LedgerAdmission};
 
 /// The hand's tool catalog plus its idempotency ledger.
 ///
@@ -23,7 +24,7 @@ use crate::wire::{HandError, HandErrorKind, HandReply, HandRequest, HandResult};
 pub struct HandSession {
     registry: HashMap<String, Arc<dyn RawTool>>,
     catalog_fingerprint: Option<String>,
-    ledger: HashMap<u64, HandResult>,
+    ledger: Arc<dyn HandOperationLedger>,
 }
 
 impl HandSession {
@@ -33,8 +34,16 @@ impl HandSession {
         Self {
             registry,
             catalog_fingerprint: None,
-            ledger: HashMap::new(),
+            ledger: Arc::new(InMemoryOperationLedger::default()),
         }
+    }
+
+    /// Use a process-external operation ledger when effects must remain fenced
+    /// across hand restarts.
+    #[must_use]
+    pub fn with_operation_ledger(mut self, ledger: Arc<dyn HandOperationLedger>) -> Self {
+        self.ledger = ledger;
+        self
     }
 
     /// Fail closed on any request whose fingerprint does not match `fingerprint`.
@@ -47,14 +56,35 @@ impl HandSession {
     /// Handle one request. A `correlation_id` already in the ledger returns the
     /// recorded result without re-running the effect (ADR-0044 D4).
     pub async fn handle(&mut self, request: HandRequest) -> HandReply {
-        if let Some(cached) = self.ledger.get(&request.correlation_id) {
-            return HandReply {
-                correlation_id: request.correlation_id,
-                result: cached.clone(),
-            };
-        }
-        let result = self.dispatch(&request).await;
-        self.ledger.insert(request.correlation_id, result.clone());
+        // Old peers omitted `operation_id`; treating the already-stable tool call
+        // id as the operation identity preserves compatibility without falling
+        // back to the per-request correlation id.
+        let operation_id = if request.operation_id.is_empty() {
+            request.call.call_id.as_str()
+        } else {
+            request.operation_id.as_str()
+        };
+        let result = match self.ledger.begin(operation_id).await {
+            Ok(LedgerAdmission::Cached(result)) => result,
+            Ok(LedgerAdmission::Indeterminate) => HandResult::Indeterminate,
+            Err(error) => HandResult::err(HandError::new(
+                HandErrorKind::Execution,
+                format!("hand operation ledger unavailable: {error}"),
+            )),
+            Ok(LedgerAdmission::Execute) => {
+                let result = self.dispatch(&request).await;
+                if let Err(error) = self.ledger.complete(operation_id, &result).await {
+                    return HandReply {
+                        correlation_id: request.correlation_id,
+                        result: HandResult::err(HandError::new(
+                            HandErrorKind::Execution,
+                            format!("hand operation result was not durable: {error}"),
+                        )),
+                    };
+                }
+                result
+            }
+        };
         HandReply {
             correlation_id: request.correlation_id,
             result,

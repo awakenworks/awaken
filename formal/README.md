@@ -15,7 +15,7 @@ the corresponding ToolBatch call terminal and completes its relationship.
 
 ## Kani production-kernel proofs
 
-Twenty harnesses invoke production pure functions directly:
+Forty-one harnesses invoke production pure functions directly:
 
 - `awaken-agent-contract`
   - an ended Run is absorbing;
@@ -45,6 +45,31 @@ Twenty harnesses invoke production pure functions directly:
   - ending a Run seals exactly the non-terminal calls.
   - a child result is consumable only from `Ready`;
   - consumed or discarded delivery phases never reopen.
+- `awaken-tenancy`
+  - successful resolution cannot widen authority;
+  - every uncovered selector fails closed;
+  - selector ordering cannot authorize disagreement.
+- `awaken-provisioning-contract`
+  - credential expiry is bounded by lease and token TTL;
+  - revoked/expired leases deny egress;
+  - reap causes obey the fixed fail-closed priority.
+  - sandbox admission preserves the isolation floor and every requested
+    capability;
+  - fail-closed sandbox policy never authorizes a downgrade.
+- `awaken-data-subject`
+  - any withdrawal vetoes full-content capture;
+  - purpose upsert retains exactly one incoming-purpose row;
+  - erasure withdrawal is absorbing and idempotent.
+- `awaken-credential-vault`
+  - disabled, cooling, and exhausted pool members remain ineligible;
+  - a pool with no eligible member fails closed.
+- `awaken-store-schema`
+  - migration versions are dense and strictly increasing;
+  - each step advances at most one version and never rolls back;
+  - replaying a fully applied plan is a no-op.
+- `awaken-ext-compact`
+  - folding preserves the requested suffix;
+  - the fold trigger is exact and total.
 
 The relationship and tool-call harnesses verify the same transition kernels
 used by `DelegationRegistry` and `ToolBatch`; they are not copies of the
@@ -75,6 +100,20 @@ production logic.
   production `ThreadCommit`s: Run state/ticket, `ActiveToolBatch`, and
   `RunDelegations`. Its binary `NextState(s, t)` relation is also the checker for
   executable Rust traces.
+- `RemoteTool.tla`, `SessionOwnership.tla`, `CircuitBreaker.tla`, and
+  `ConfigCAS.tla` cover durable operation identity, atomic ownership,
+  generation-fenced permits, and optimistic config concurrency.
+- `AuthzKernel.tla`, `LiveInbox.tla`, and `CheckpointRecovery.tla` cover total
+  request classification, editable process-local input, and crash-safe streaming
+  watermark/checkpoint behavior.
+- `WebhookOutbox.tla`, `ErasureSaga.tla`, and `CredentialCreation.tla` cover
+  durable pending delivery, checkpointed erasure, and in-call secret-write
+  compensation.
+- `MemoryCAS.tla`, `ToolResultProtocol.tla`, and `WorkerDrain.tla` cover memory
+  generation/rename safety, cross-protocol result correlation, and the drain
+  admission fence.
+- `AuditCommit.tla` and `ConfigActivation.tla` cover audit-before-business
+  ordering/stable identity and generation-fenced publication installation.
 
 `RuntimeVocabulary.tla` is the shared closed vocabulary, preventing component
 models from inventing incompatible aliases for the same lifecycle state.
@@ -127,6 +166,21 @@ graphs with zero invariant violations and zero states left on the queue:
 | RuntimeSystem | 110,923 | 12,896 | 13 |
 | RuntimeImplementation | 1,323,147 | 619,008 | 24 |
 | RustCommitSystem | 4,494 | 1,277 | 9 |
+| RemoteTool | 421 | 200 | 10 |
+| AuthzKernel | 180 | 18 | 1 |
+| SessionOwnership | 768 | 169 | 7 |
+| CircuitBreaker | 1,573 | 478 | 10 |
+| ConfigCAS | 1,669 | 417 | 11 |
+| LiveInbox | 213 | 64 | 7 |
+| CheckpointRecovery | 462 | 141 | 8 |
+| WebhookOutbox | 14 | 8 | 5 |
+| ErasureSaga | 19 | 12 | 6 |
+| CredentialCreation | 6 | 5 | 4 |
+| MemoryCAS | 1,245 | 244 | 10 |
+| ToolResultProtocol | 213 | 56 | 9 |
+| WorkerDrain | 15 | 11 | 8 |
+| AuditCommit | 11 | 6 | 4 |
+| ConfigActivation | 85 | 35 | 9 |
 
 These are bounded exhaustive checks, not unbounded liveness proofs. The bounds
 are explicit in the corresponding `.cfg` files.
@@ -202,7 +256,7 @@ TLAPS, Java, or `tla2tools.jar` fails instead of producing a false green.
 `formal/coverage.json` is the versioned obligation ledger. The CI gate verifies
 that every evidence path exists and that at least 70% of formalizable safety
 obligations have a machine-checked production link. The current ledger is
-28/28, or 100%. Environmental properties are listed separately and never
+92/92, or 100% (the original 28 plus 64 additional obligations). Environmental properties are listed separately and never
 silently omitted or mislabeled as machine-linked merely to raise the percentage.
 
 ## Honest boundary
@@ -216,6 +270,17 @@ protocol implementations, database engines, and unbounded state spaces remain
 outside the state-machine proof. They require idempotency contracts, adapter
 integration tests, fault injection, and operational reconciliation; a larger
 finite TLC bound alone cannot prove them.
+
+The second-batch models also keep three transaction boundaries explicit.
+`WebhookOutbox` starts at a committed outbox row; the current session repository
+and admin outbox are separate, so it does not prove away a crash between session
+commit and `emit_fact`. `CredentialCreation` proves returned-error compensation,
+not recovery from a process crash between its two stores. `AuditCommit` proves
+audit-before-business ordering and stable call identity under the assumption that
+the injected sink makes `record` durable; the default tracing sink is not a
+database transaction shared with the business store. Closing those gaps requires
+respectively a session-local transactional outbox, a durable creation journal (or
+one database transaction), and a durable audit-intent/outbox capability.
 
 `RunIngress.tla` models claim fencing as one atomic state transition. Production
 now keeps the exact epoch guard live across the actual `ThreadCommit` for the

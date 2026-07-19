@@ -16,7 +16,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use awaken_agent_contract::RedactedString;
-use awaken_config_resolver::{WebhookEndpointDef, WebhookStore};
+use awaken_config_resolver::{
+    InMemoryWebhookStore, WebhookEndpointDef, WebhookOutboxEvent, WebhookStore,
+};
 use awaken_credential_vault::{SecretRef, SecretStore};
 use awaken_session_contract::SessionLifecycleSink;
 use awaken_tenancy::WorkspaceScope;
@@ -61,43 +63,100 @@ pub struct WebhookLifecycleSink {
     org_id: Option<String>,
     /// Monotonic event-id source (`event_<n>`).
     seq: AtomicU64,
+    outbox: Arc<dyn WebhookStore>,
+    draining: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl WebhookLifecycleSink {
     pub fn new(dispatcher: Arc<WebhookDispatcher>, org_id: Option<String>) -> Self {
-        Self {
+        Self::with_outbox(dispatcher, org_id, Arc::new(InMemoryWebhookStore::new()))
+    }
+
+    pub fn with_outbox(
+        dispatcher: Arc<WebhookDispatcher>,
+        org_id: Option<String>,
+        outbox: Arc<dyn WebhookStore>,
+    ) -> Self {
+        let sink = Self {
             dispatcher,
             org_id,
             seq: AtomicU64::new(0),
-        }
+            outbox,
+            draining: Arc::new(tokio::sync::Mutex::new(())),
+        };
+        // Assembly constructs the sink inside a Tokio runtime. Scan immediately
+        // so rows left by a prior process are retried without waiting for another
+        // lifecycle fact to arrive. Construction outside a runtime remains valid;
+        // the first `emit_fact` will start the same drain.
+        sink.spawn_drain();
+        sink
+    }
+
+    fn spawn_drain(&self) {
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let dispatcher = self.dispatcher.clone();
+        let outbox = self.outbox.clone();
+        let draining = self.draining.clone();
+        handle.spawn(async move {
+            let _guard = draining.lock().await;
+            for row in outbox.pending_outbox() {
+                let event = WebhookEvent::new(
+                    row.id.clone(),
+                    row.created_at.clone(),
+                    row.event_type.clone(),
+                    row.object_id.clone(),
+                    row.workspace_id.clone(),
+                    row.organization_id.clone(),
+                );
+                let report = dispatcher.dispatch(&event, row.timestamp).await;
+                if report.failed.is_empty() {
+                    outbox.complete_outbox(&row.id);
+                }
+            }
+        });
     }
 }
 
 #[async_trait::async_trait]
 impl SessionLifecycleSink for WebhookLifecycleSink {
     async fn emit(&self, session_id: &str, workspace_id: Option<&str>, event_type: &str) {
+        let n = self.seq.fetch_add(1, Ordering::SeqCst);
+        self.emit_fact(&format!("event_{n}"), session_id, workspace_id, event_type)
+            .await;
+    }
+
+    async fn emit_fact(
+        &self,
+        fact_id: &str,
+        session_id: &str,
+        workspace_id: Option<&str>,
+        event_type: &str,
+    ) {
         // No owner → no workspace to fan out to (the bare pre-owner surface).
         let Some(workspace_id) = workspace_id else {
             return;
         };
-        let n = self.seq.fetch_add(1, Ordering::SeqCst);
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
-        let event = WebhookEvent::new(
-            format!("event_{n}"),
-            rfc3339(now),
-            event_type,
-            session_id,
-            workspace_id,
-            self.org_id.clone(),
-        );
-        // Deliver out-of-band: the session create must not wait on HTTP egress.
-        let dispatcher = self.dispatcher.clone();
-        tokio::spawn(async move {
-            dispatcher.dispatch(&event, now).await;
-        });
+        let row = WebhookOutboxEvent {
+            id: fact_id.to_string(),
+            created_at: rfc3339(now),
+            event_type: event_type.to_string(),
+            object_id: session_id.to_string(),
+            workspace_id: workspace_id.to_string(),
+            organization_id: self.org_id.clone(),
+            timestamp: now,
+        };
+        self.outbox.enqueue_outbox(row);
+
+        // A single in-process drainer avoids duplicate concurrent dispatch. Rows
+        // remain durable until every matching subscription succeeds; a crash or
+        // failed endpoint therefore leaves the stable event available to retry.
+        self.spawn_drain();
     }
 }
 
@@ -439,7 +498,11 @@ fn assemble_with(
         secrets.clone(),
     ));
     let dispatcher = Arc::new(WebhookDispatcher::new(source, sender));
-    let sink = Arc::new(WebhookLifecycleSink::new(dispatcher, org_id));
+    let sink = Arc::new(WebhookLifecycleSink::with_outbox(
+        dispatcher,
+        org_id,
+        store.clone(),
+    ));
     (
         sink,
         webhook_config_router_with_policy(store, secrets, url_policy),

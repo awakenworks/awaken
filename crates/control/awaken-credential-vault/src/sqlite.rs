@@ -310,6 +310,19 @@ impl SealedBlobStore for SqliteSealedBlobStore {
         })
         .await
     }
+
+    async fn delete_blob(&self, r: &SecretRef) -> Result<(), CredentialError> {
+        let key = r.0.clone();
+        with_conn(&self.conn, move |conn, p| {
+            conn.execute(
+                &format!("DELETE FROM {p}_secret WHERE secret_ref = ?1"),
+                params![key],
+            )
+            .map_err(storage)?;
+            Ok(())
+        })
+        .await
+    }
 }
 
 #[cfg(test)]

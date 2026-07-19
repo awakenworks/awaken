@@ -49,6 +49,7 @@ enum State {
 struct ModelCircuit {
     state: State,
     consecutive_failures: u32,
+    probe_generation: u64,
 }
 
 impl Default for ModelCircuit {
@@ -56,6 +57,7 @@ impl Default for ModelCircuit {
         Self {
             state: State::Closed,
             consecutive_failures: 0,
+            probe_generation: 0,
         }
     }
 }
@@ -65,6 +67,52 @@ impl Default for ModelCircuit {
 pub(crate) struct CircuitBreaker {
     config: CircuitBreakerConfig,
     circuits: Mutex<HashMap<String, ModelCircuit>>,
+}
+
+/// Admission capability for exactly one inference attempt. A half-open permit
+/// carries the generation of the probe cycle that admitted it, so a late result
+/// from an older cycle cannot mutate a newer one. Dropping an unfinished probe
+/// is fail-closed and reopens that same cycle automatically.
+pub(crate) struct CircuitPermit<'a> {
+    breaker: &'a CircuitBreaker,
+    metrics: &'a dyn MetricsRecorder,
+    model: String,
+    probe_generation: Option<u64>,
+    finished: bool,
+}
+
+impl CircuitPermit<'_> {
+    pub(crate) fn success(mut self) {
+        self.breaker
+            .finish_success(&self.model, self.probe_generation);
+        self.finished = true;
+    }
+
+    pub(crate) fn failure(mut self, retryable: bool) {
+        if retryable {
+            self.breaker
+                .finish_retryable_failure(&self.model, self.probe_generation);
+        } else {
+            self.breaker.finish_inconclusive_probe(
+                &self.model,
+                self.probe_generation,
+                self.metrics,
+            );
+        }
+        self.finished = true;
+    }
+}
+
+impl Drop for CircuitPermit<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.breaker.finish_inconclusive_probe(
+                &self.model,
+                self.probe_generation,
+                self.metrics,
+            );
+        }
+    }
 }
 
 impl CircuitBreaker {
@@ -78,49 +126,69 @@ impl CircuitBreaker {
     /// Whether a call to `model` may proceed. An open circuit past its
     /// cooldown transitions to half-open and admits up to the configured
     /// number of probes; otherwise the rejection names the model.
-    pub(crate) fn check(&self, model: &str) -> Result<(), String> {
+    pub(crate) fn check<'a>(
+        &'a self,
+        model: &str,
+        metrics: &'a dyn MetricsRecorder,
+    ) -> Result<CircuitPermit<'a>, String> {
         let mut circuits = self.circuits.lock();
         let circuit = circuits.entry(model.to_string()).or_default();
-        match circuit.state {
-            State::Closed => Ok(()),
+        let probe_generation = match circuit.state {
+            State::Closed => None,
             State::Open { since } => {
                 if since.elapsed() >= self.config.cooldown {
+                    circuit.probe_generation = circuit.probe_generation.wrapping_add(1);
                     circuit.state = State::HalfOpen { probes: 1 };
-                    Ok(())
+                    Some(circuit.probe_generation)
                 } else {
-                    Err(format!(
+                    return Err(format!(
                         "circuit breaker open for model '{model}': recent consecutive failures; \
                          retry after cooldown"
-                    ))
+                    ));
                 }
             }
             State::HalfOpen { probes } => {
                 if probes < self.config.half_open_max_probes {
                     circuit.state = State::HalfOpen { probes: probes + 1 };
-                    Ok(())
+                    Some(circuit.probe_generation)
                 } else {
-                    Err(format!(
+                    return Err(format!(
                         "circuit breaker half-open for model '{model}': probe already in flight"
-                    ))
+                    ));
                 }
             }
-        }
+        };
+        Ok(CircuitPermit {
+            breaker: self,
+            metrics,
+            model: model.to_string(),
+            probe_generation,
+            finished: false,
+        })
     }
 
-    /// A call succeeded: close the circuit and reset the failure count.
-    pub(crate) fn record_success(&self, model: &str) {
+    fn finish_success(&self, model: &str, generation: Option<u64>) {
         let mut circuits = self.circuits.lock();
         let circuit = circuits.entry(model.to_string()).or_default();
+        if generation.is_some_and(|generation| {
+            !matches!(circuit.state, State::HalfOpen { .. })
+                || circuit.probe_generation != generation
+        }) {
+            return;
+        }
         circuit.state = State::Closed;
         circuit.consecutive_failures = 0;
     }
 
-    /// A counted (retryable) failure: a failing half-open probe reopens the
-    /// circuit immediately; otherwise the consecutive count grows and opens
-    /// the circuit at the threshold.
-    pub(crate) fn record_failure(&self, model: &str) {
+    fn finish_retryable_failure(&self, model: &str, generation: Option<u64>) {
         let mut circuits = self.circuits.lock();
         let circuit = circuits.entry(model.to_string()).or_default();
+        if generation.is_some_and(|generation| {
+            !matches!(circuit.state, State::HalfOpen { .. })
+                || circuit.probe_generation != generation
+        }) {
+            return;
+        }
         circuit.consecutive_failures = circuit.consecutive_failures.saturating_add(1);
         match circuit.state {
             State::HalfOpen { .. } => {
@@ -138,19 +206,19 @@ impl CircuitBreaker {
         }
     }
 
-    /// A half-open probe was dropped before finishing (typically a user
-    /// cancel): reopen the circuit so the next cooldown re-probes, but do not
-    /// grow the failure count — an abandoned probe says nothing about health.
-    ///
-    /// This reopen is the one breaker transition with no accompanying inference
-    /// outcome (the call was cancelled, so no `record_inference` fires), so it is
-    /// surfaced on `metrics` — otherwise an operator would see a circuit reopen
-    /// with no trace of why. Other transitions are already visible through the
-    /// inference-outcome stream that drove them.
-    pub(crate) fn record_abandoned_probe(&self, model: &str, metrics: &dyn MetricsRecorder) {
+    fn finish_inconclusive_probe(
+        &self,
+        model: &str,
+        generation: Option<u64>,
+        metrics: &dyn MetricsRecorder,
+    ) {
+        let Some(generation) = generation else {
+            return;
+        };
         let mut circuits = self.circuits.lock();
         let circuit = circuits.entry(model.to_string()).or_default();
-        if let State::HalfOpen { .. } = circuit.state {
+        if matches!(circuit.state, State::HalfOpen { .. }) && circuit.probe_generation == generation
+        {
             circuit.state = State::Open {
                 since: Instant::now(),
             };
@@ -196,62 +264,74 @@ mod tests {
     #[test]
     fn opens_after_threshold_and_rejects() {
         let cb = breaker(2, Duration::from_secs(60));
-        assert!(cb.check("m").is_ok());
-        cb.record_failure("m");
-        assert!(cb.check("m").is_ok(), "below threshold still admits");
-        cb.record_failure("m");
-        let rejection = cb.check("m").expect_err("open circuit rejects");
+        cb.check("m", &NoopRecorder).unwrap().failure(true);
+        assert!(
+            cb.check("m", &NoopRecorder).is_ok(),
+            "below threshold still admits"
+        );
+        cb.check("m", &NoopRecorder).unwrap().failure(true);
+        let rejection = cb
+            .check("m", &NoopRecorder)
+            .err()
+            .expect("open circuit rejects");
         assert!(rejection.contains("circuit breaker open for model 'm'"));
     }
 
     #[test]
     fn success_closes_and_resets_the_count() {
         let cb = breaker(2, Duration::from_secs(60));
-        cb.record_failure("m");
-        cb.record_success("m");
+        cb.check("m", &NoopRecorder).unwrap().failure(true);
+        cb.check("m", &NoopRecorder).unwrap().success();
         // The count restarted: one more failure stays below the threshold.
-        cb.record_failure("m");
-        assert!(cb.check("m").is_ok());
+        cb.check("m", &NoopRecorder).unwrap().failure(true);
+        assert!(cb.check("m", &NoopRecorder).is_ok());
     }
 
     #[test]
     fn cooldown_admits_one_probe_then_rejects_concurrent_probes() {
         let cb = breaker(1, Duration::from_millis(0));
-        cb.record_failure("m");
+        cb.check("m", &NoopRecorder).unwrap().failure(true);
         // Cooldown already elapsed: the circuit half-opens for one probe.
-        assert!(cb.check("m").is_ok());
-        let rejection = cb.check("m").expect_err("second concurrent probe rejects");
+        let _probe = cb.check("m", &NoopRecorder).expect("probe admitted");
+        let rejection = cb
+            .check("m", &NoopRecorder)
+            .err()
+            .expect("second concurrent probe rejects");
         assert!(rejection.contains("half-open"));
     }
 
     #[test]
     fn probe_failure_reopens_probe_success_closes() {
         let cb = breaker(1, Duration::from_millis(0));
-        cb.record_failure("m");
-        assert!(cb.check("m").is_ok(), "probe admitted");
-        cb.record_failure("m");
+        cb.check("m", &NoopRecorder).unwrap().failure(true);
+        cb.check("m", &NoopRecorder)
+            .expect("probe admitted")
+            .failure(true);
         // Reopened with a fresh cooldown (0ms here), so the next check probes
         // again rather than staying closed.
-        assert!(cb.check("m").is_ok());
-        cb.record_success("m");
-        assert!(cb.check("m").is_ok());
-        assert!(cb.check("m").is_ok(), "closed circuit admits freely");
+        cb.check("m", &NoopRecorder).unwrap().success();
+        assert!(cb.check("m", &NoopRecorder).is_ok());
+        assert!(
+            cb.check("m", &NoopRecorder).is_ok(),
+            "closed circuit admits freely"
+        );
     }
 
     #[test]
     fn abandoned_probe_reopens_without_counting_a_failure() {
         let cb = breaker(2, Duration::from_millis(0));
-        cb.record_failure("m");
-        cb.record_failure("m");
-        assert!(cb.check("m").is_ok(), "probe admitted after cooldown");
-        cb.record_abandoned_probe("m", &NoopRecorder);
+        cb.check("m", &NoopRecorder).unwrap().failure(true);
+        cb.check("m", &NoopRecorder).unwrap().failure(true);
+        drop(
+            cb.check("m", &NoopRecorder)
+                .expect("probe admitted after cooldown"),
+        );
         // Reopened: after the (zero) cooldown the next check probes again.
-        assert!(cb.check("m").is_ok());
+        cb.check("m", &NoopRecorder).unwrap().success();
         // The failure count did not grow: one success closes and a single new
         // failure stays below the threshold of 2.
-        cb.record_success("m");
-        cb.record_failure("m");
-        assert!(cb.check("m").is_ok());
+        cb.check("m", &NoopRecorder).unwrap().failure(true);
+        assert!(cb.check("m", &NoopRecorder).is_ok());
     }
 
     #[test]
@@ -260,8 +340,8 @@ mod tests {
         // circuit it must not open anything — the reopen guard is `HalfOpen`-only.
         let cb = breaker(2, Duration::from_secs(60));
         let spy = SpyRecorder::default();
-        cb.record_abandoned_probe("m", &spy);
-        assert!(cb.check("m").is_ok(), "a closed circuit stays closed");
+        drop(cb.check("m", &spy).expect("closed admission"));
+        assert!(cb.check("m", &spy).is_ok(), "a closed circuit stays closed");
         assert!(
             spy.transitions.lock().unwrap().is_empty(),
             "no transition on a closed circuit → no metric"
@@ -275,9 +355,11 @@ mod tests {
         // metric an operator can see.
         let cb = breaker(1, Duration::from_millis(0));
         let spy = SpyRecorder::default();
-        cb.record_failure("m"); // opens
-        assert!(cb.check("m").is_ok(), "cooldown elapsed → half-open probe");
-        cb.record_abandoned_probe("m", &spy);
+        cb.check("m", &spy).unwrap().failure(true); // opens
+        drop(
+            cb.check("m", &spy)
+                .expect("cooldown elapsed → half-open probe"),
+        );
         assert_eq!(
             *spy.transitions.lock().unwrap(),
             vec![("m".to_string(), "open".to_string())],
@@ -288,8 +370,33 @@ mod tests {
     #[test]
     fn models_are_isolated() {
         let cb = breaker(1, Duration::from_secs(60));
-        cb.record_failure("down");
-        assert!(cb.check("down").is_err());
-        assert!(cb.check("healthy").is_ok());
+        cb.check("down", &NoopRecorder).unwrap().failure(true);
+        assert!(cb.check("down", &NoopRecorder).is_err());
+        assert!(cb.check("healthy", &NoopRecorder).is_ok());
+    }
+
+    #[test]
+    fn late_probe_result_cannot_mutate_a_new_generation() {
+        let cb = CircuitBreaker::new(CircuitBreakerConfig {
+            failure_threshold: 1,
+            cooldown: Duration::ZERO,
+            half_open_max_probes: 2,
+        });
+        cb.check("m", &NoopRecorder).unwrap().failure(true);
+        let first = cb.check("m", &NoopRecorder).expect("first probe");
+        let stale = cb.check("m", &NoopRecorder).expect("second probe");
+        first.failure(true);
+
+        let current = cb.check("m", &NoopRecorder).expect("new generation probe");
+        stale.success();
+        let peer = cb
+            .check("m", &NoopRecorder)
+            .expect("one peer allowed in the current generation");
+        assert!(
+            cb.check("m", &NoopRecorder).is_err(),
+            "the stale success did not close the current half-open cycle"
+        );
+        peer.success();
+        drop(current);
     }
 }

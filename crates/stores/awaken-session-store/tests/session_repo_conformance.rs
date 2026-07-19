@@ -2,14 +2,9 @@
 //! shared behavioural contract every backend must satisfy, run against both the in-memory
 //! reference and the SQLite backend (ADR-0059, the `awaken-store-conformance` pattern).
 //!
-//! Scope note (a real capability divergence, surfaced by writing the contract): the
-//! `save`/`get` aggregate round-trip is UNIVERSAL and asserted here for both backends. The
-//! owner-scope methods (`set_owner`/`owner`) are NOT universal — the durable backends
-//! persist the ADR-0051 owner `scope_id` in a column, while `InMemorySessionRepository`
-//! deliberately no-ops them (same-process ownership lives in `ManagedState`'s index, so it
-//! returns `None`). That asymmetry is a documented backend-capability difference, so it is
-//! verified per-backend (durable parity already lives in this crate's unit tests), not
-//! folded into the shared suite — the suite must only encode what ALL backends promise.
+//! Every save also persists an owner scope in the same repository operation. The generic
+//! suite checks that universal invariant for both backends; durable restart persistence
+//! remains in the backend-specific suite.
 
 use awaken_session_contract::{ManagedSessionRepository, PersistedSession};
 use awaken_session_store::{InMemorySessionRepository, SqliteManagedSessionRepository};
@@ -62,10 +57,26 @@ async fn save_is_idempotent_upsert<R: ManagedSessionRepository>(r: &R) {
     );
 }
 
+/// A visible row and its owner are one write: no backend may expose the row with
+/// a missing or stale scope after `save_owned` returns.
+async fn save_owned_is_one_atomic_repository_fact<R: ManagedSessionRepository>(r: &R) {
+    r.save_owned("ws_a", session("sesn_owned", "owned")).await;
+    assert!(r.get("sesn_owned").await.is_some());
+    assert_eq!(r.owner("sesn_owned").await.as_deref(), Some("ws_a"));
+
+    r.save_owned("ws_b", session("sesn_owned", "moved")).await;
+    assert_eq!(r.owner("sesn_owned").await.as_deref(), Some("ws_b"));
+    assert_eq!(
+        r.get("sesn_owned").await.and_then(|s| s.title),
+        Some("moved".into())
+    );
+}
+
 async fn run_suite<R: ManagedSessionRepository>(fresh: impl Fn() -> R) {
     save_get_round_trips(&fresh()).await;
     absent_id_reads_none(&fresh()).await;
     save_is_idempotent_upsert(&fresh()).await;
+    save_owned_is_one_atomic_repository_fact(&fresh()).await;
 }
 
 // ── Backend rows: each must pass the identical universal suite ───────────────────

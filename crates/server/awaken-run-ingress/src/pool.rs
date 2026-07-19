@@ -75,6 +75,22 @@ pub struct DispatchPool<S> {
     drains: Vec<JoinHandle<()>>,
     maintenance: JoinHandle<()>,
     renewal: Option<JoinHandle<()>>,
+    admission: Arc<tokio::sync::RwLock<DrainAdmission>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DrainAdmission {
+    open: bool,
+    generation: u64,
+}
+
+impl Default for DrainAdmission {
+    fn default() -> Self {
+        Self {
+            open: true,
+            generation: 0,
+        }
+    }
 }
 
 impl<S: Dispatch + 'static> DispatchPool<S> {
@@ -197,6 +213,7 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
     ) -> Self {
         let owner = owner.into();
         let shutdown = CancellationToken::new();
+        let admission = Arc::new(tokio::sync::RwLock::new(DrainAdmission::default()));
         let drains = (0..concurrency.max(1))
             .map(|_| {
                 tokio::spawn(drain_loop(
@@ -209,6 +226,7 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
                     resolver.clone(),
                     config.poll_interval,
                     completion.clone(),
+                    admission.clone(),
                 ))
             })
             .collect();
@@ -236,6 +254,7 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
             drains,
             maintenance,
             renewal,
+            admission,
         }
     }
 
@@ -280,7 +299,17 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
     /// grace period), and it takes `&self` so a live handle (e.g. behind an `Arc` in
     /// the host) can trigger it.
     pub async fn begin_drain(&self) {
+        // The write lock linearizes drain against the short read-side claim
+        // critical section. Once this returns, every claim either completed
+        // before the drain generation advanced (and is now in-flight), or saw
+        // `open = false` and did not touch the store.
+        let mut admission = self.admission.write().await;
+        if admission.open {
+            admission.open = false;
+            admission.generation = admission.generation.saturating_add(1);
+        }
         self.shutdown.cancel();
+        drop(admission);
         let _ = self.wake.publish().await;
     }
 
@@ -316,6 +345,7 @@ async fn drain_loop<S: Dispatch + 'static>(
     resolver: Arc<dyn WorkerResolver<S>>,
     poll_interval: Duration,
     completion: Option<Arc<dyn CompletionSink>>,
+    admission: Arc<tokio::sync::RwLock<DrainAdmission>>,
 ) {
     loop {
         if shutdown.is_cancelled() {
@@ -330,6 +360,7 @@ async fn drain_loop<S: Dispatch + 'static>(
             lease_ms,
             resolver.as_ref(),
             &completion,
+            &admission,
         )
         .await
         {
@@ -362,9 +393,17 @@ async fn claim_and_drive<S: Dispatch + 'static>(
     lease_ms: u64,
     resolver: &dyn WorkerResolver<S>,
     completion: &Option<Arc<dyn CompletionSink>>,
+    admission: &Arc<tokio::sync::RwLock<DrainAdmission>>,
 ) -> Result<bool, Error> {
     let now = clock.now_ms();
-    let Some(claimed) = store.claim(owner, lease_ms, now).await? else {
+    let claimed = {
+        let gate = admission.read().await;
+        if !gate.open {
+            return Ok(false);
+        }
+        store.claim(owner, lease_ms, now).await?
+    };
+    let Some(claimed) = claimed else {
         return Ok(false);
     };
     // Route to the runtime that owns this run's thread, then drive+settle there.

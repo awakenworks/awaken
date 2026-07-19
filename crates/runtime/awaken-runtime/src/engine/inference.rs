@@ -129,6 +129,7 @@ pub(super) async fn infer_with_retry(
         sink,
         checkpoint,
         resume,
+        metrics,
         reschedules,
     )
     .await;
@@ -196,6 +197,7 @@ async fn infer_with_retry_inner(
     sink: &dyn DeltaSink,
     checkpoint: Option<&CheckpointCtx<'_>>,
     resume: Option<StreamCheckpoint>,
+    metrics: &dyn awaken_runtime_contract::metrics::MetricsRecorder,
     reschedules: Option<&std::sync::Arc<std::sync::atomic::AtomicU32>>,
 ) -> std::result::Result<ChatResponse, awaken_runtime_contract::llm::Error> {
     let model = request.model_binding.model_ref.clone();
@@ -220,9 +222,9 @@ async fn infer_with_retry_inner(
 
     let mut attempt = 0;
     loop {
-        if let Err(reason) = breaker.check(&model) {
-            return Err(awaken_runtime_contract::llm::Error::Provider(reason));
-        }
+        let permit = breaker
+            .check(&model, metrics)
+            .map_err(awaken_runtime_contract::llm::Error::Provider)?;
         let attempt_request = if prefix.is_empty() {
             request.clone()
         } else {
@@ -231,7 +233,7 @@ async fn infer_with_retry_inner(
         sink.reset();
         match llm.infer_streaming(attempt_request, &sink).await {
             Ok(response) => {
-                breaker.record_success(&model);
+                permit.success();
                 return Ok(stitch_prefix(response, &prefix));
             }
             Err(err) => {
@@ -239,9 +241,7 @@ async fn infer_with_retry_inner(
                 // set must stay exactly `is_retryable`, or permanent faults
                 // (bad key, overlong prompt) would trip the breaker.
                 let retryable = err.is_retryable();
-                if retryable {
-                    breaker.record_failure(&model);
-                }
+                permit.failure(retryable);
                 // Classify the same failure through the unified Disposition (E3-1)
                 // for failure-span observability. This never alters the retry/breaker
                 // gate above (that stays exactly `is_retryable`); the tuple forces the

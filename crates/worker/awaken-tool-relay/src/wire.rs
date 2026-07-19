@@ -9,16 +9,19 @@
 use awaken_runtime_contract::tool::{ToolCall, ToolOutput};
 use serde::{Deserialize, Serialize};
 
-/// A monotonic per-executor call id used to match a [`HandReply`] to its
-/// [`HandRequest`] and to key the hand's idempotency ledger (ADR-0044 D4).
+/// A monotonic per-connection request id used only to match a [`HandReply`] to
+/// its [`HandRequest`]. It is not an effect identity.
 pub type CorrelationId = u64;
 
 /// One tool call framed for a hand.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HandRequest {
-    /// Matches the reply and keys the idempotency ledger; a re-drive reuses the
-    /// same id so the effect runs at most once.
+    /// Matches one transport reply. A re-drive normally receives a fresh value.
     pub correlation_id: CorrelationId,
+    /// Stable effect identity. Every transport retry of the same logical tool
+    /// call carries the same value, even across a new connection/process.
+    #[serde(default)]
+    pub operation_id: String,
     /// The run's resolved catalog fingerprint. When both sides carry one and they
     /// differ, the hand fails closed rather than run a mismatched tool (mirrors
     /// the runtime's own fingerprint discipline, G4).
@@ -101,6 +104,7 @@ impl HandRequest {
     pub fn new(correlation_id: CorrelationId, call: ToolCall) -> Self {
         Self {
             correlation_id,
+            operation_id: call.call_id.clone(),
             catalog_fingerprint: None,
             deadline_unix_ms: None,
             call,

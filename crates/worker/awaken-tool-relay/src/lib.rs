@@ -17,9 +17,13 @@
 //! `awaken-connection-plan` (ADR-0045) chooses how the two ends meet.
 
 mod executor;
+mod ledger;
 mod serve;
 pub mod wire;
 
 pub use executor::RemoteToolExecutor;
+pub use ledger::{
+    FsOperationLedger, HandOperationLedger, InMemoryOperationLedger, LedgerAdmission,
+};
 pub use serve::{HandSession, ServeError, serve_hand};
 pub use wire::{CorrelationId, HandError, HandErrorKind, HandReply, HandRequest, HandResult};

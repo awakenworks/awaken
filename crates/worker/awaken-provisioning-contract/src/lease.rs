@@ -238,6 +238,60 @@ pub async fn reconcile_and_apply(
     apply_adoption_plan(provider, &reconcile_adoption(live, referenced)).await
 }
 
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    #[kani::proof]
+    fn credential_expiry_never_exceeds_lease_or_own_ttl() {
+        let now = kani::any::<u64>();
+        let ttl = kani::any::<u64>();
+        let lease_expiry = kani::any::<u64>();
+        let grant = LeaseGrant::until(lease_expiry);
+        let expiry = capped_expiry(ttl, now, &grant);
+        assert!(expiry <= lease_expiry);
+        assert!(expiry <= now.saturating_add(ttl));
+    }
+
+    #[kani::proof]
+    fn revoked_or_expired_lease_always_denies_egress() {
+        let now = kani::any::<u64>();
+        let expiry = kani::any::<u64>();
+        let revoked = kani::any::<bool>();
+        let grant = LeaseGrant::until(expiry);
+        if revoked || now >= expiry {
+            assert!(!egress_permitted(&grant, now, revoked));
+        }
+    }
+
+    #[kani::proof]
+    fn reap_reason_obeys_fixed_fail_closed_priority() {
+        let now = kani::any::<u64>();
+        let expiry = kani::any::<u64>();
+        let revoked = kani::any::<bool>();
+        let transport_lost = kani::any::<bool>();
+        let grant = LeaseGrant::until(expiry);
+        let got = decide_reap(
+            &grant,
+            LivenessSignals {
+                now_ms: now,
+                revoked,
+                transport_lost,
+            },
+        );
+        let expected = if revoked {
+            Some(ReapCause::Revoked)
+        } else if now >= expiry {
+            Some(ReapCause::Expired)
+        } else if transport_lost {
+            Some(ReapCause::TransportLost)
+        } else {
+            None
+        };
+        assert_eq!(got, expected);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

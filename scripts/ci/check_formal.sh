@@ -48,6 +48,48 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness first_heartbeat_is_authorized_exactly_once
   cargo kani -p awaken-session-contract \
     --harness matching_heartbeat_rejects_every_other_receipt
+  cargo kani -p awaken-tenancy \
+    --harness successful_scope_resolution_never_widens_authority
+  cargo kani -p awaken-tenancy \
+    --harness any_uncovered_selector_fails_closed
+  cargo kani -p awaken-tenancy \
+    --harness selector_order_cannot_change_an_authorized_result
+  cargo kani -p awaken-provisioning-contract \
+    --harness credential_expiry_never_exceeds_lease_or_own_ttl
+  cargo kani -p awaken-provisioning-contract \
+    --harness revoked_or_expired_lease_always_denies_egress
+  cargo kani -p awaken-provisioning-contract \
+    --harness reap_reason_obeys_fixed_fail_closed_priority
+  cargo kani -p awaken-provisioning-contract \
+    --harness sandbox_admission_never_weakens_the_isolation_floor
+  cargo kani -p awaken-provisioning-contract \
+    --harness sandbox_admission_requires_every_requested_capability
+  cargo kani -p awaken-provisioning-contract \
+    --harness fail_closed_sandbox_policy_never_authorizes_a_downgrade
+  cargo kani -p awaken-data-subject \
+    --harness any_withdrawal_vetoes_full_content_capture
+  cargo kani -p awaken-data-subject \
+    --harness consent_upsert_leaves_exactly_one_row_for_the_incoming_purpose
+  cargo kani -p awaken-data-subject \
+    --harness erasure_withdrawal_is_absorbing_and_idempotent
+  cargo kani -p awaken-credential-vault \
+    --harness disabled_credential_pool_members_are_never_eligible
+  cargo kani -p awaken-credential-vault \
+    --harness credential_cooldown_boundary_is_exact_and_inclusive
+  cargo kani -p awaken-credential-vault \
+    --harness exhausted_credentials_are_unavailable_at_every_time
+  cargo kani -p awaken-credential-vault \
+    --harness a_pool_with_no_enabled_available_member_fails_closed
+  cargo kani -p awaken-store-schema \
+    --harness dense_migration_versions_are_strictly_increasing
+  cargo kani -p awaken-store-schema \
+    --harness migration_step_never_rolls_back_or_skips_a_version
+  cargo kani -p awaken-store-schema \
+    --harness replaying_a_fully_applied_migration_plan_is_a_noop
+  cargo kani -p awaken-ext-compact \
+    --harness fold_point_preserves_the_requested_suffix
+  cargo kani -p awaken-ext-compact \
+    --harness fold_point_is_present_exactly_when_triggered_with_nonempty_prefix
   cargo kani -p awaken-runtime-contract \
     --harness terminal_calls_are_never_reentered
   cargo kani -p awaken-runtime-contract \
@@ -105,6 +147,51 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/rust-commit-system" \
     -config formal/tla/RustCommitSystem.cfg formal/tla/RustCommitSystem.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/remote-tool" \
+    -config formal/tla/RemoteTool.cfg formal/tla/RemoteTool.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/authz-kernel" \
+    -config formal/tla/AuthzKernel.cfg formal/tla/AuthzKernel.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/session-ownership" \
+    -config formal/tla/SessionOwnership.cfg formal/tla/SessionOwnership.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/circuit-breaker" \
+    -config formal/tla/CircuitBreaker.cfg formal/tla/CircuitBreaker.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/config-cas" \
+    -config formal/tla/ConfigCAS.cfg formal/tla/ConfigCAS.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/live-inbox" \
+    -config formal/tla/LiveInbox.cfg formal/tla/LiveInbox.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/checkpoint-recovery" \
+    -config formal/tla/CheckpointRecovery.cfg formal/tla/CheckpointRecovery.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/webhook-outbox" \
+    -config formal/tla/WebhookOutbox.cfg formal/tla/WebhookOutbox.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/erasure-saga" \
+    -config formal/tla/ErasureSaga.cfg formal/tla/ErasureSaga.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/credential-creation" \
+    -config formal/tla/CredentialCreation.cfg formal/tla/CredentialCreation.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/memory-cas" \
+    -config formal/tla/MemoryCAS.cfg formal/tla/MemoryCAS.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/tool-result-protocol" \
+    -config formal/tla/ToolResultProtocol.cfg formal/tla/ToolResultProtocol.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/worker-drain" \
+    -config formal/tla/WorkerDrain.cfg formal/tla/WorkerDrain.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/audit-commit" \
+    -config formal/tla/AuditCommit.cfg formal/tla/AuditCommit.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/config-activation" \
+    -config formal/tla/ConfigActivation.cfg formal/tla/ConfigActivation.tla
   for trace_config in "$rendered_trace_dir"/RustTrace*.cfg; do
     trace_module="${trace_config%.cfg}.tla"
     trace_name="$(basename "$trace_module" .tla)"

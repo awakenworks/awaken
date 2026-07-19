@@ -11,8 +11,8 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_config_store::{
-    AgentConfig, ConfigRegistry, DEFAULT_SCOPE, ModelSelection, PublicationState, ScopeId,
-    ScopedConfig, ScopedConfigRegistry, SqliteConfigStore, StoredPublication, compile,
+    AgentConfig, ConfigRegistry, ConfigWrite, DEFAULT_SCOPE, ModelSelection, PublicationState,
+    ScopeId, ScopedConfig, ScopedConfigRegistry, SqliteConfigStore, StoredPublication, compile,
 };
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
@@ -60,6 +60,49 @@ fn tool_catalog() -> Vec<ToolDescriptor> {
         "Echo",
         serde_json::json!({"type": "object"}),
     )]
+}
+
+#[tokio::test]
+async fn config_generation_cas_rejects_a_stale_writer_without_lost_update() {
+    let store = SqliteConfigStore::open_in_memory().expect("store");
+    let mut first = agent_with("cas", "v1");
+    assert_eq!(
+        store.put_config_if_generation(&first, 0).await.unwrap(),
+        ConfigWrite::Applied { generation: 1 }
+    );
+    let snapshot = store
+        .get_config_versioned("cas")
+        .await
+        .unwrap()
+        .expect("created config");
+    assert_eq!(snapshot.generation, 1);
+
+    first.instructions = "v2".into();
+    assert_eq!(
+        store
+            .put_config_if_generation(&first, snapshot.generation)
+            .await
+            .unwrap(),
+        ConfigWrite::Applied { generation: 2 }
+    );
+    let mut stale = snapshot.config;
+    stale.instructions = "stale-overwrite".into();
+    assert_eq!(
+        store
+            .put_config_if_generation(&stale, snapshot.generation)
+            .await
+            .unwrap(),
+        ConfigWrite::Conflict {
+            current_generation: Some(2)
+        }
+    );
+    let current = store
+        .get_config_versioned("cas")
+        .await
+        .unwrap()
+        .expect("current config");
+    assert_eq!(current.generation, 2);
+    assert_eq!(current.config.instructions, "v2");
 }
 
 #[tokio::test]

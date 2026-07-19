@@ -35,8 +35,29 @@ pub enum AvailabilityState {
 impl AvailabilityState {
     /// Whether a selector may pick this source.
     #[must_use]
-    pub fn is_available(self) -> bool {
+    pub const fn is_available(self) -> bool {
         matches!(self, AvailabilityState::Available)
+    }
+}
+
+/// Pure time/state kernel used by the concurrent ledger and formal harnesses.
+/// A deadline is inclusive: a credential becomes available exactly at
+/// `retry_at_ms`, while hard exhaustion has priority until explicitly cleared.
+#[must_use]
+pub const fn availability_at(
+    exhausted: bool,
+    retry_at_ms: Option<u64>,
+    now_ms: u64,
+) -> AvailabilityState {
+    if exhausted {
+        AvailabilityState::Exhausted
+    } else {
+        match retry_at_ms {
+            Some(deadline) if now_ms < deadline => AvailabilityState::CooledDown {
+                retry_at_ms: deadline,
+            },
+            _ => AvailabilityState::Available,
+        }
     }
 }
 
@@ -95,16 +116,10 @@ impl AvailabilityLedger {
     #[must_use]
     pub fn state(&self, id: &CredentialSourceId, now_ms: u64) -> AvailabilityState {
         match self.lock().get(&id.0) {
-            None => AvailabilityState::Available,
-            Some(Entry::Exhausted) => AvailabilityState::Exhausted,
+            None => availability_at(false, None, now_ms),
+            Some(Entry::Exhausted) => availability_at(true, None, now_ms),
             Some(Entry::Cooled { retry_at_ms }) => {
-                if now_ms >= *retry_at_ms {
-                    AvailabilityState::Available
-                } else {
-                    AvailabilityState::CooledDown {
-                        retry_at_ms: *retry_at_ms,
-                    }
-                }
+                availability_at(false, Some(*retry_at_ms), now_ms)
             }
         }
     }

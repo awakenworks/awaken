@@ -14,3 +14,6 @@ thiserror.workspace = true
 # Exercise the async ports through a trivial fake in unit tests (object-safety +
 # the reattach/poll/lease lifecycle). Dev-only; the contract itself needs no runtime.
 tokio = { workspace = true, features = ["rt", "macros"] }
+
+[lints]
+workspace = true

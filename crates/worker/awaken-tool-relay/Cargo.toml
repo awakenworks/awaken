@@ -15,7 +15,7 @@ async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["io-util", "sync"] }
+tokio = { workspace = true, features = ["fs", "io-util", "sync"] }
 tokio-util = { workspace = true, features = ["codec"] }
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
 bytes = "1"

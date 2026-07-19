@@ -11,7 +11,7 @@ use sqlx::postgres::PgPool;
 use sqlx::types::Json;
 
 use crate::schema::data_subject_bundle;
-use crate::{DataSubject, DataSubjectError, DataSubjectId, DataSubjectRepo};
+use crate::{DataSubject, DataSubjectError, DataSubjectId, DataSubjectRepo, ErasureProgress};
 
 /// The component's table namespace (its bundle prefix).
 const NS: &str = "data_subject";
@@ -122,6 +122,43 @@ impl DataSubjectRepo for PgDataSubjectRepo {
             .execute(&self.pool)
             .await
             .map_err(storage)?;
+        Ok(())
+    }
+
+    async fn load_erasure_progress(
+        &self,
+        id: &DataSubjectId,
+    ) -> Result<Option<ErasureProgress>, DataSubjectError> {
+        let p = NS;
+        let row = sqlx::query(&format!(
+            "SELECT data FROM {p}_erasure_job WHERE subject_id = $1"
+        ))
+        .bind(&id.0)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(storage)?;
+        row.map(|row| {
+            let Json(progress): Json<ErasureProgress> = row.try_get("data").map_err(storage)?;
+            Ok(progress)
+        })
+        .transpose()
+    }
+
+    async fn save_erasure_progress(
+        &self,
+        id: &DataSubjectId,
+        progress: &ErasureProgress,
+    ) -> Result<(), DataSubjectError> {
+        let p = NS;
+        sqlx::query(&format!(
+            "INSERT INTO {p}_erasure_job (subject_id, data) VALUES ($1, $2) \
+             ON CONFLICT (subject_id) DO UPDATE SET data = excluded.data, updated_at = now()"
+        ))
+        .bind(&id.0)
+        .bind(Json(progress))
+        .execute(&self.pool)
+        .await
+        .map_err(storage)?;
         Ok(())
     }
 }

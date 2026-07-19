@@ -43,21 +43,26 @@ pub struct PersistedSession {
 /// and be reported faithfully by another process.
 #[async_trait]
 pub trait ManagedSessionRepository: Send + Sync {
-    /// Persist (idempotent upsert by `session_id`) a session's configuration.
-    async fn save(&self, session: PersistedSession);
+    /// Persist a session and its owning scope in one repository operation.
+    ///
+    /// The owner is part of the adapter-side persistence envelope rather than the
+    /// tenancy-agnostic [`PersistedSession`] value. Keeping both arguments on one
+    /// required method makes the crash invariant explicit: a visible session row
+    /// can never exist without its ownership fence.
+    async fn save_owned(&self, owner_scope: &str, session: PersistedSession);
+
+    /// Persist under the self-hosted default scope. Production request paths with
+    /// an edge-resolved owner use [`Self::save_owned`] directly; this convenience
+    /// keeps scope-free local/test callers deterministic without reintroducing a
+    /// second owner write.
+    async fn save(&self, session: PersistedSession) {
+        self.save_owned("default", session).await;
+    }
 
     /// The stored configuration for `session_id`, if any.
     async fn get(&self, session_id: &str) -> Option<PersistedSession>;
 
-    /// Record the owner scope of `session_id` (ADR-0051): the opaque `scope_id`
-    /// that created it, so the edge ownership guard can fence a cross-tenant
-    /// request even after a restart lost the in-memory index. Durable backends
-    /// persist it beside the (tenancy-agnostic) config row; the in-memory default
-    /// no-ops, since same-process ownership lives in `ManagedState`'s index.
-    async fn set_owner(&self, _session_id: &str, _scope: &str) {}
-
-    /// The persisted owner scope of `session_id`, if this backend records one
-    /// (durable backends only; the in-memory default returns `None`).
+    /// The atomically persisted owner scope of `session_id`, if the row exists.
     async fn owner(&self, _session_id: &str) -> Option<String> {
         None
     }
@@ -113,7 +118,7 @@ impl<S: ScopedSessionStore> ScopedSessionRepo<S> {
 
 #[async_trait]
 impl<S: ScopedSessionStore> ManagedSessionRepository for ScopedSessionRepo<S> {
-    async fn save(&self, session: PersistedSession) {
+    async fn save_owned(&self, _owner_scope: &str, session: PersistedSession) {
         self.inner.save_scoped(&self.scope, session).await;
     }
 

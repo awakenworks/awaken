@@ -57,8 +57,9 @@ fn apply_compaction(
     }
 }
 use awaken_config_store::{
-    AgentConfig, ConfigRegistry, DEFAULT_SCOPE, RunnableConfig, ScopedConfig, ScopedConfigRegistry,
-    StoredPublication, ToolOverride, compile_with_resource_prompts,
+    AgentConfig, ConfigRegistry, ConfigWrite, DEFAULT_SCOPE, RunnableConfig, ScopedConfig,
+    ScopedConfigRegistry, StoredPublication, ToolOverride, VersionedAgentConfig,
+    compile_with_resource_prompts,
 };
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_tenancy::ScopeId;
@@ -81,6 +82,8 @@ pub enum PublishError {
     /// the catalog. Surfaced as 409 ("configure and publish a model first").
     #[error("cannot resolve an auto model binding: {0}")]
     Unresolvable(String),
+    #[error("config changed while it was being published (current generation: {0:?})")]
+    StaleGeneration(Option<u64>),
     #[error("{0}")]
     Compile(String),
     #[error("{0}")]
@@ -105,6 +108,12 @@ pub struct ValidationIssue {
 /// (`&[ToolDescriptor]`) — are passed in per call by the edge ([`ConfigPlane`] and
 /// the router handlers). The service holds only scope-agnostic state: the installed
 /// hot catalog (by agent id), the resource-prompt store, and the model resolver.
+#[derive(Clone)]
+struct InstalledEntry {
+    source_generation: u64,
+    runnable: RunnableConfig,
+}
+
 #[derive(Default)]
 pub struct ConfigService {
     /// The installed catalog: agent id → compiled runnable config, hot-swapped on
@@ -112,7 +121,7 @@ pub struct ConfigService {
     /// Keyed by agent id alone (the durable, scope-owned store is the tenant-isolated
     /// truth); built-in and reserved ids are globally unique, so no cross-scope
     /// collision arises in practice.
-    installed: Mutex<HashMap<String, RunnableConfig>>,
+    installed: Mutex<HashMap<String, InstalledEntry>>,
     /// Per-agent resource bindings (ADR-0038). When wired, the agent's bound-resource
     /// prompt fragments are appended to its effective system prompt at compile (A3a).
     /// `None` → compilation is byte-identical to an unbound agent.
@@ -197,6 +206,18 @@ impl ConfigService {
         registry.put_config(config).await.map_err(|e| e.to_string())
     }
 
+    pub async fn put_if_generation(
+        &self,
+        registry: &dyn ConfigRegistry,
+        config: &AgentConfig,
+        expected_generation: u64,
+    ) -> Result<ConfigWrite, String> {
+        registry
+            .put_config_if_generation(config, expected_generation)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
     /// Load a stored config draft by id from the scope-bound `registry`.
     pub async fn get(
         &self,
@@ -204,6 +225,17 @@ impl ConfigService {
         id: &str,
     ) -> Result<Option<AgentConfig>, String> {
         registry.get_config(id).await.map_err(|e| e.to_string())
+    }
+
+    pub async fn get_versioned(
+        &self,
+        registry: &dyn ConfigRegistry,
+        id: &str,
+    ) -> Result<Option<VersionedAgentConfig>, String> {
+        registry
+            .get_config_versioned(id)
+            .await
+            .map_err(|e| e.to_string())
     }
 
     /// Every stored config draft in the scope-bound `registry` (the console's list).
@@ -222,29 +254,43 @@ impl ConfigService {
         id: &str,
         catalog: &[ToolDescriptor],
     ) -> Result<StoredPublication, PublishError> {
-        let config = registry
-            .get_config(id)
+        let versioned = registry
+            .get_config_versioned(id)
             .await
             .map_err(|e| PublishError::Store(e.to_string()))?
             .ok_or_else(|| PublishError::NotStored(id.to_string()))?;
+        let source_generation = versioned.generation;
 
         // Resolve the model *before* compile (compile requires a concrete binding).
         // `Auto` → first-offering via the resolver; `Pinned` → the authored binding
         // and its authored candidates.
-        let compile_input = self.resolve_for_compile(config)?;
+        let compile_input = self.resolve_for_compile(versioned.config)?;
 
         let runnable =
             compile_with_resource_prompts(&compile_input, catalog, &self.resource_prompts(id))
                 .map_err(|e| PublishError::Compile(e.to_string()))?;
-        let publication = StoredPublication::published(runnable.clone(), id);
-        registry
-            .put_publication(&publication)
+        let publication =
+            StoredPublication::published_at_generation(runnable.clone(), id, source_generation);
+        let write = registry
+            .put_publication_if_config_generation(&publication, source_generation)
             .await
             .map_err(|e| PublishError::Store(e.to_string()))?;
-        self.installed
-            .lock()
-            .unwrap()
-            .insert(id.to_string(), runnable);
+        if let ConfigWrite::Conflict { current_generation } = write {
+            return Err(PublishError::StaleGeneration(current_generation));
+        }
+        let mut installed = self.installed.lock().unwrap();
+        let replace = installed
+            .get(id)
+            .is_none_or(|current| source_generation >= current.source_generation);
+        if replace {
+            installed.insert(
+                id.to_string(),
+                InstalledEntry {
+                    source_generation,
+                    runnable,
+                },
+            );
+        }
         Ok(publication)
     }
 
@@ -309,7 +355,11 @@ impl ConfigService {
 
     /// The installed (published) runnable config for `agent`, if any.
     pub fn installed(&self, agent: &str) -> Option<RunnableConfig> {
-        self.installed.lock().unwrap().get(agent).cloned()
+        self.installed
+            .lock()
+            .unwrap()
+            .get(agent)
+            .map(|entry| entry.runnable.clone())
     }
 
     /// Warm-load the installed catalog from a durable registry's published configs
@@ -330,10 +380,18 @@ impl ConfigService {
         let mut installed = self.installed.lock().unwrap();
         let n = pubs.len();
         for p in pubs {
-            installed.insert(
-                p.agent_id,
-                RunnableConfig::from_parts(p.snapshot, p.install),
-            );
+            let replace = installed
+                .get(&p.agent_id)
+                .is_none_or(|current| p.source_generation >= current.source_generation);
+            if replace {
+                installed.insert(
+                    p.agent_id,
+                    InstalledEntry {
+                        source_generation: p.source_generation,
+                        runnable: RunnableConfig::from_parts(p.snapshot, p.install),
+                    },
+                );
+            }
         }
         n
     }
@@ -385,9 +443,30 @@ impl ConfigPlane {
         self.service.put(&self.registry_for(scope), config).await
     }
 
+    pub async fn put_if_generation(
+        &self,
+        scope: &ScopeId,
+        config: &AgentConfig,
+        expected_generation: u64,
+    ) -> Result<ConfigWrite, String> {
+        self.service
+            .put_if_generation(&self.registry_for(scope), config, expected_generation)
+            .await
+    }
+
     /// Load one stored config draft owned by `scope`.
     pub async fn get(&self, scope: &ScopeId, id: &str) -> Result<Option<AgentConfig>, String> {
         self.service.get(&self.registry_for(scope), id).await
+    }
+
+    pub async fn get_versioned(
+        &self,
+        scope: &ScopeId,
+        id: &str,
+    ) -> Result<Option<VersionedAgentConfig>, String> {
+        self.service
+            .get_versioned(&self.registry_for(scope), id)
+            .await
     }
 
     /// Every stored config draft owned by `scope`.
@@ -491,13 +570,14 @@ async fn get_config(
     scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
 ) -> (StatusCode, Json<Value>) {
     let scope = request_scope(scope);
-    match plane.get(&scope, &id).await {
-        Ok(Some(config)) => {
+    match plane.get_versioned(&scope, &id).await {
+        Ok(Some(versioned)) => {
             let published = plane.service().installed(&id).is_some();
-            (
-                StatusCode::OK,
-                Json(managed_from_agent_config(&config, published)),
-            )
+            let mut body = managed_from_agent_config(&versioned.config, published);
+            body.as_object_mut()
+                .expect("managed config is an object")
+                .insert("generation".to_string(), json!(versioned.generation));
+            (StatusCode::OK, Json(body))
         }
         Ok(None) => (
             StatusCode::NOT_FOUND,
@@ -555,8 +635,31 @@ async fn put_config(
         Ok(c) => c,
         Err(error) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))),
     };
-    match plane.put(&request_scope(scope), &config).await {
-        Ok(()) => (StatusCode::OK, Json(json!({ "id": id }))),
+    let scope = request_scope(scope);
+    if let Some(expected) = body.get("generation").and_then(Value::as_u64) {
+        return match plane.put_if_generation(&scope, &config, expected).await {
+            Ok(ConfigWrite::Applied { generation }) => (
+                StatusCode::OK,
+                Json(json!({ "id": id, "generation": generation })),
+            ),
+            Ok(ConfigWrite::Conflict { current_generation }) => (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": "config generation conflict",
+                    "current_generation": current_generation,
+                })),
+            ),
+            Err(error) => (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))),
+        };
+    }
+    match plane.put(&scope, &config).await {
+        Ok(()) => match plane.get_versioned(&scope, &id).await {
+            Ok(Some(current)) => (
+                StatusCode::OK,
+                Json(json!({ "id": id, "generation": current.generation })),
+            ),
+            _ => (StatusCode::OK, Json(json!({ "id": id }))),
+        },
         Err(error) => (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))),
     }
 }
@@ -702,7 +805,7 @@ async fn publish(
         ),
         // An unresolvable auto model is a 409 ("configure a model first"), ADR-0052 D5;
         // every other publish failure stays a 400.
-        Err(err @ PublishError::Unresolvable(_)) => (
+        Err(err @ (PublishError::Unresolvable(_) | PublishError::StaleGeneration(_))) => (
             StatusCode::CONFLICT,
             Json(json!({ "error": err.to_string() })),
         ),
@@ -838,6 +941,58 @@ mod resource_prompt_tests {
         }
     }
 
+    /// Simulates an authoring write that wins after publish reads generation 7
+    /// but before it tries to persist/install the compiled artifact.
+    struct StalePublishRegistry;
+
+    #[async_trait::async_trait]
+    impl ConfigRegistry for StalePublishRegistry {
+        async fn put_config(&self, _c: &AgentConfig) -> Result<(), ConfigStoreError> {
+            Ok(())
+        }
+
+        async fn get_config(&self, id: &str) -> Result<Option<AgentConfig>, ConfigStoreError> {
+            Ok(Some(agent_config(id)))
+        }
+
+        async fn get_config_versioned(
+            &self,
+            id: &str,
+        ) -> Result<Option<VersionedAgentConfig>, ConfigStoreError> {
+            Ok(Some(VersionedAgentConfig {
+                config: agent_config(id),
+                generation: 7,
+            }))
+        }
+
+        async fn list_configs(&self) -> Result<Vec<AgentConfig>, ConfigStoreError> {
+            Ok(Vec::new())
+        }
+
+        async fn put_publication(&self, _p: &StoredPublication) -> Result<(), ConfigStoreError> {
+            panic!("generation-fenced publish must use the atomic method")
+        }
+
+        async fn put_publication_if_config_generation(
+            &self,
+            publication: &StoredPublication,
+            expected_generation: u64,
+        ) -> Result<ConfigWrite, ConfigStoreError> {
+            assert_eq!(publication.source_generation, 7);
+            assert_eq!(expected_generation, 7);
+            Ok(ConfigWrite::Conflict {
+                current_generation: Some(8),
+            })
+        }
+
+        async fn get_publication(
+            &self,
+            _fp: &str,
+        ) -> Result<Option<StoredPublication>, ConfigStoreError> {
+            Ok(None)
+        }
+    }
+
     /// A scope-bound registry whose reads and writes fail, so the HTTP handlers hit
     /// their 500 / 400 error arms (F19c / F21b).
     struct FailingScopedRegistry;
@@ -911,6 +1066,21 @@ mod resource_prompt_tests {
             .await
             .unwrap_err();
         assert!(matches!(err, PublishError::Store(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn publish_never_installs_an_artifact_from_a_stale_source_generation() {
+        let service = ConfigService::new();
+        let err = service
+            .publish(&StalePublishRegistry, "a", &[])
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, PublishError::StaleGeneration(Some(8))));
+        assert!(
+            service.installed("a").is_none(),
+            "a stale publication must not enter the live catalog"
+        );
     }
 
     // reconcile-a: a registry read failure on reconcile is a returned `Err`.
