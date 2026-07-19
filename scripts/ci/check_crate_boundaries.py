@@ -789,7 +789,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "sqlx",
         "awaken-scoped-migration",
         "awaken-scoped-migration-sqlite",
-        # dev-only.
+        # Dev-only verification tools and fixtures. Loom is never a production
+        # dependency; the registry swaps its mutex only under cfg(test).
+        "loom",
         "proptest",
         "tempfile",
     },
@@ -1321,6 +1323,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-iam-server",
         "awaken-memory-store",
         "awaken-model-catalog",
+        # Worker-fleet E2E reuses the production registration/heartbeat/drain
+        # lifecycle and injects only a deterministic executor provider.
+        "awaken-worker",
         "awaken-observability",
         "awaken-protocol-a2a",
         # The A2A remote-delegate adapter the delegate-remote scenario injects.

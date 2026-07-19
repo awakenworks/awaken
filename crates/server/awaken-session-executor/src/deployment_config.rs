@@ -152,6 +152,10 @@ impl DeploymentConfig {
             _ => Wake::None,
         };
         let sandbox_tier = SandboxTier::from_env_str(env("AWAKEN_SANDBOX_TIER").as_deref());
+        let disable_local_pool = local_pool_disabled(
+            env("AWAKEN_SERVER_RUN_LOCAL_POOL").as_deref(),
+            env("AWAKEN_DISABLE_LOCAL_POOL").as_deref(),
+        );
         Self {
             durable: env("AWAKEN_INGRESS").as_deref() == Some("durable"),
             storage_dir: env("AWAKEN_STORAGE_DIR").map(PathBuf::from),
@@ -166,7 +170,7 @@ impl DeploymentConfig {
             upstream: env("AWAKEN_UPSTREAM_URL"),
             sandbox_tier,
             container_image: env("AWAKEN_CONTAINER_IMAGE"),
-            disable_local_pool: env("AWAKEN_DISABLE_LOCAL_POOL").as_deref() == Some("1"),
+            disable_local_pool,
         }
     }
 
@@ -191,6 +195,18 @@ impl DeploymentConfig {
             );
         }
         None
+    }
+}
+
+/// One parser for the positive deployment axis and its legacy negated alias.
+/// An explicit new value wins, matching the CLI validation layer.
+fn local_pool_disabled(run_local_pool: Option<&str>, legacy_disable: Option<&str>) -> bool {
+    match run_local_pool {
+        Some(value) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "false" | "0" | "no"
+        ),
+        None => legacy_disable == Some("1"),
     }
 }
 
@@ -248,6 +264,18 @@ mod tests {
         for t in [SandboxTier::Docker, SandboxTier::Podman, SandboxTier::K8s] {
             assert!(t.is_container());
         }
+    }
+
+    #[test]
+    fn local_pool_axis_matches_the_cli_and_new_name_wins() {
+        for value in ["false", "0", "no", "FALSE"] {
+            assert!(local_pool_disabled(Some(value), None), "{value}");
+        }
+        for value in ["true", "1", "yes"] {
+            assert!(!local_pool_disabled(Some(value), Some("1")), "{value}");
+        }
+        assert!(local_pool_disabled(None, Some("1")));
+        assert!(!local_pool_disabled(None, None));
     }
 
     #[test]

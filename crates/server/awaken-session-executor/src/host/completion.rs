@@ -2,8 +2,50 @@
 //! and the [`CompletionRegistry`] event-wakeup machinery.
 
 use super::*;
+use awaken_dispatch::{ModelAccessRef, PlacementRequirements};
+
+fn remote_worker_placement(access: Option<&ModelAccessRef>) -> PlacementRequirements {
+    let mut placement = PlacementRequirements::remote_required();
+    placement
+        .required_capabilities
+        .insert("native-runtime".to_string());
+    if let Some(access) = access {
+        if access.candidates.is_empty() {
+            placement
+                .required_capabilities
+                .insert(access.scheme.clone());
+        } else {
+            placement.required_capabilities.extend(
+                access
+                    .candidates
+                    .iter()
+                    .map(|candidate| candidate.scheme.clone()),
+            );
+        }
+    }
+    placement
+}
 
 impl SharedHost {
+    pub(crate) fn resolved_dispatch(
+        &self,
+        activation: RunActivation,
+    ) -> Result<RunDispatch, HostError> {
+        let access = self
+            .model_route
+            .model_access_for_activation(&activation)
+            .map_err(HostError::bad_request)?;
+        let mut request = RunDispatch::new(activation)
+            .with_traceparent(awaken_observability::current_traceparent());
+        if self.deployment.disable_local_pool {
+            request = request.with_placement(remote_worker_placement(access.as_ref()));
+        }
+        if let Some(access) = access {
+            request = request.with_model_access(access);
+        }
+        Ok(request)
+    }
+
     /// The process dispatch pool, or a fail-closed error when durable ingress (and
     /// thus the pool) is not enabled.
     pub(crate) fn dispatch_pool_or_err(
@@ -35,6 +77,7 @@ impl SharedHost {
         // settles — held to the end of this method.
         let (settled, _waiter_guard) = self.completion.register(&run_id);
         let pool = self.dispatch_pool_or_err()?;
+        let request = self.resolved_dispatch(activation)?;
         // Enqueue only — never drive here; the pool is the sole claimer. The common
         // path goes through `pool.submit` (which stamps the trace); a superseding
         // submit needs the supersede option, so it enqueues on the shared store and
@@ -48,7 +91,7 @@ impl SharedHost {
                 .worker()
                 .store()
                 .enqueue_with(
-                    RunDispatch::new(activation),
+                    request,
                     SubmitOptions {
                         supersede: true,
                         ..Default::default()
@@ -58,7 +101,7 @@ impl SharedHost {
                 .map_err(|e| HostError::internal(e.to_string()))?;
             pool.notify().await;
         } else {
-            pool.submit(activation)
+            pool.submit_dispatch(request)
                 .await
                 .map_err(|e| HostError::internal(e.to_string()))?;
         }
@@ -171,7 +214,7 @@ impl CompletionSink for CompletionRegistry {
 
 #[cfg(test)]
 mod completion_tests {
-    use super::{CompletionRegistry, RunId};
+    use super::{CompletionRegistry, ModelAccessRef, RunId, remote_worker_placement};
     use awaken_agent_contract::agent::run::RunState;
     use awaken_dispatch::CompletionSink;
     use std::sync::Arc;
@@ -200,5 +243,31 @@ mod completion_tests {
         registry.settled(&RunId("r".into()), &RunState::Awaiting);
         assert!(matches!(rx.await, Ok(RunState::Awaiting)));
         assert!(registry.waiters.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn coordinator_admission_pins_protocol_and_every_materialization_capability() {
+        let access = ModelAccessRef::candidate_set([
+            (
+                "primary".to_string(),
+                ModelAccessRef::new("credential-source/v1", "credential-a"),
+            ),
+            (
+                "fallback".to_string(),
+                ModelAccessRef::new("cloud-gateway/v1", "grant-b"),
+            ),
+        ])
+        .unwrap();
+        let placement = remote_worker_placement(Some(&access));
+        assert_eq!(placement.contract_version, 1);
+        assert_eq!(placement.dispatch_contract_version, 1);
+        assert_eq!(placement.runtime_protocol_version, 1);
+        assert!(placement.required_capabilities.contains("native-runtime"));
+        assert!(
+            placement
+                .required_capabilities
+                .contains("credential-source/v1")
+        );
+        assert!(placement.required_capabilities.contains("cloud-gateway/v1"));
     }
 }

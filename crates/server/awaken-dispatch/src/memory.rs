@@ -8,7 +8,10 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use crate::{WorkerAssignment, WorkerSnapshot, can_assign};
+use crate::{
+    DispatchPlacement, PlacementPolicy, WorkerAssignment, WorkerSnapshot, can_assign,
+    policy_selects_requester,
+};
 use async_trait::async_trait;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
@@ -155,7 +158,11 @@ fn is_due(input: &PendingInput, now_ms: u64) -> bool {
 /// Pick the next runnable run, oldest-first within each priority band: reclaim an
 /// expired lease (recovery), then wake an awaiting run with pending input, then a
 /// fresh pending run. This is the claim policy the Postgres store must match.
-fn select_where(state: &State, now_ms: u64, compatible: impl Fn(&Row) -> bool) -> Option<RunId> {
+fn select_where(
+    state: &State,
+    now_ms: u64,
+    mut compatible: impl FnMut(&Row) -> bool,
+) -> Option<RunId> {
     // Single-writer-per-thread (ADR-0022): a wake or fresh pick must not start a
     // second concurrent run for a thread that already has one running. A recovery
     // pick is exempt — it re-owns the SAME running row, it does not add a second.
@@ -605,6 +612,53 @@ impl DispatchQueue for MemoryDispatchStore {
             lease_ms,
             now_ms,
             Some(WorkerAssignment::from(worker)),
+        ))
+    }
+
+    async fn claim_placed(
+        &self,
+        requester: &WorkerSnapshot,
+        workers: Vec<WorkerSnapshot>,
+        policy: Arc<dyn PlacementPolicy>,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        let _authority = self.authority.lock().await;
+        let mut state = lock(&self.state)?;
+        let mut policy_error = None;
+        let run_id = select_where(&state, now_ms, |row| {
+            match policy_selects_requester(
+                &row.request,
+                policy.as_ref(),
+                DispatchPlacement {
+                    recovered: row.state == RowState::Leased,
+                    previous: row.assignment.as_ref(),
+                    sandbox_bound: row.sandbox.is_some(),
+                    requester: &requester.identity,
+                    workers: &workers,
+                    now_ms,
+                },
+            ) {
+                Ok(selected) => selected,
+                Err(error) => {
+                    policy_error = Some(error);
+                    false
+                }
+            }
+        });
+        if let Some(error) = policy_error {
+            return Err(error);
+        }
+        let Some(run_id) = run_id else {
+            return Ok(None);
+        };
+        Ok(claim_exact(
+            &mut state,
+            &run_id,
+            &requester.identity.lease_owner(),
+            lease_ms,
+            now_ms,
+            Some(WorkerAssignment::from(requester)),
         ))
     }
 

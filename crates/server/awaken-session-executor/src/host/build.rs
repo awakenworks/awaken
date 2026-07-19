@@ -73,6 +73,14 @@ impl SharedHost {
         }
     }
 
+    /// Whether this process owns a co-located dispatch pool. Composition roots use
+    /// the same parsed deployment value that admission uses, so the process cannot
+    /// accidentally both advertise coordinator-only behavior and drain locally.
+    #[must_use]
+    pub fn runs_local_dispatch_pool(&self) -> bool {
+        !self.deployment.disable_local_pool
+    }
+
     /// Opt this host into **β** (trusted-inline) MCP credential delivery for its ACP
     /// runs: a staged server's raw bearer is handed to the CLI inline instead of as a
     /// secretless α reference. Only sound when the CLI is a trusted-local (non-sandboxed)
@@ -441,6 +449,8 @@ impl SharedHost {
     /// over [`with_remote_hand`] for any run it places; runs it declines (`None`)
     /// fall back to `remote_hand`/in-process. This is the seam a config-driven
     /// self-hosted brain–hand split — or a host's own richer policy — plugs into.
+    /// Provider failure aborts run setup; only an explicit `Ok(None)` permits the
+    /// configured remote-hand/in-process fallback.
     pub fn with_tool_executor_provider(mut self, provider: Arc<dyn ToolExecutorProvider>) -> Self {
         self.hand_placement.set_provider(provider);
         self
@@ -480,10 +490,20 @@ impl SharedHost {
                 reader: commit,
                 owner: crate::dispatch_backend::dispatch_owner(),
                 claimed_commit: self.upstream.as_ref().map(|upstream| {
-                    Arc::new(
+                    let mut commit =
                         crate::commit_ingest::RemoteClaimedRunCommit::new(upstream.base_url())
-                            .with_client(upstream.client().clone()),
-                    ) as Arc<dyn awaken_dispatch::ClaimedRunCommit>
+                            .with_client(upstream.client().clone());
+                    if let Some(identity) = upstream.worker_identity() {
+                        commit = commit.with_worker_identity(identity.clone());
+                    }
+                    Arc::new(commit) as Arc<dyn awaken_dispatch::ClaimedRunCommit>
+                }),
+                model_access: self.model_route.provider().map(|provider| {
+                    Arc::new(
+                        move |activation: &awaken_runtime_contract::activation::RunActivation| {
+                            provider.model_access_for_activation(activation)
+                        },
+                    ) as Arc<_>
                 }),
             })
         } else {

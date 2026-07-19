@@ -431,6 +431,28 @@ pub enum AssignmentRejection {
     SandboxContinuityUnavailable,
 }
 
+/// Heap-free recovery kernel shared by runtime admission and Kani. Returning a
+/// typed reason (rather than a boolean) keeps fail-closed diagnostics identical
+/// in the proof harness and the store claim paths.
+#[must_use]
+pub const fn assignment_recovery_rejection(
+    replacing: bool,
+    recovery: WorkerRecoveryMode,
+    sandbox_bound: bool,
+) -> Option<AssignmentRejection> {
+    if !replacing {
+        return None;
+    }
+    match recovery {
+        WorkerRecoveryMode::NeverReplace => Some(AssignmentRejection::ReplacementForbidden),
+        WorkerRecoveryMode::RequireSandboxContinuity if !sandbox_bound => {
+            Some(AssignmentRejection::SandboxContinuityUnavailable)
+        }
+        WorkerRecoveryMode::RequireSandboxContinuity
+        | WorkerRecoveryMode::RebuildFromCommittedTruth => None,
+    }
+}
+
 /// Shared admission kernel for initial placement, wake, and crash replacement.
 pub fn can_assign(
     worker: &WorkerSnapshot,
@@ -443,16 +465,12 @@ pub fn can_assign(
         return Err(AssignmentRejection::Ineligible);
     }
     let replacing = previous.is_some_and(|prior| prior.identity != worker.identity);
-    if !replacing {
-        return Ok(());
-    }
-    match requirements.recovery {
-        WorkerRecoveryMode::NeverReplace => Err(AssignmentRejection::ReplacementForbidden),
-        WorkerRecoveryMode::RequireSandboxContinuity if !sandbox_bound => {
-            Err(AssignmentRejection::SandboxContinuityUnavailable)
-        }
-        WorkerRecoveryMode::RequireSandboxContinuity
-        | WorkerRecoveryMode::RebuildFromCommittedTruth => Ok(()),
+    if let Some(rejection) =
+        assignment_recovery_rejection(replacing, requirements.recovery, sandbox_bound)
+    {
+        Err(rejection)
+    } else {
+        Ok(())
     }
 }
 
@@ -650,6 +668,42 @@ pub fn place(
         .filter(|worker| worker.accepts(&context.requirements, now_ms))
         .cloned()
         .collect::<Vec<_>>();
+    rank_eligible(policy, context, eligible)
+}
+
+/// Placement for a concrete dispatch assignment. Unlike [`place`], this also
+/// applies replacement and sandbox-continuity constraints from the durable
+/// prior assignment. The extension still receives only eligible candidates.
+pub fn place_assignment(
+    policy: &dyn PlacementPolicy,
+    context: &PlacementContext,
+    workers: &[WorkerSnapshot],
+    previous: Option<&WorkerAssignment>,
+    sandbox_bound: bool,
+    now_ms: u64,
+) -> Result<RankedWorker, PlacementError> {
+    let eligible = workers
+        .iter()
+        .filter(|worker| {
+            can_assign(
+                worker,
+                &context.requirements,
+                previous,
+                sandbox_bound,
+                now_ms,
+            )
+            .is_ok()
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    rank_eligible(policy, context, eligible)
+}
+
+fn rank_eligible(
+    policy: &dyn PlacementPolicy,
+    context: &PlacementContext,
+    eligible: Vec<WorkerSnapshot>,
+) -> Result<RankedWorker, PlacementError> {
     if eligible.is_empty() {
         return Err(PlacementError::NoEligibleWorker);
     }
@@ -704,6 +758,39 @@ mod verification {
             _ => WorkerState::Dead,
         };
         assert!(!state.accepts_work());
+    }
+
+    #[kani::proof]
+    fn never_replace_rejects_every_replacement() {
+        let sandbox_bound = kani::any::<bool>();
+        assert!(matches!(
+            assignment_recovery_rejection(true, WorkerRecoveryMode::NeverReplace, sandbox_bound,),
+            Some(AssignmentRejection::ReplacementForbidden)
+        ));
+    }
+
+    #[kani::proof]
+    fn sandbox_continuity_authorizes_replacement_exactly_when_bound() {
+        let sandbox_bound = kani::any::<bool>();
+        assert_eq!(
+            assignment_recovery_rejection(
+                true,
+                WorkerRecoveryMode::RequireSandboxContinuity,
+                sandbox_bound,
+            )
+            .is_none(),
+            sandbox_bound
+        );
+    }
+
+    #[kani::proof]
+    fn same_incarnation_never_spends_replacement_authority() {
+        let recovery = match kani::any::<u8>() % 3 {
+            0 => WorkerRecoveryMode::RebuildFromCommittedTruth,
+            1 => WorkerRecoveryMode::RequireSandboxContinuity,
+            _ => WorkerRecoveryMode::NeverReplace,
+        };
+        assert!(assignment_recovery_rejection(false, recovery, kani::any()).is_none());
     }
 }
 

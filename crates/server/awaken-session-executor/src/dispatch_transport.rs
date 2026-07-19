@@ -19,8 +19,8 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpointStore};
 use awaken_dispatch::{
     AnyDispatchStore, Dispatch, DispatchOutcome, DispatchQueue, HttpDispatchQueue, PendingInput,
-    RunClaim, RunDispatch, SubmitOptions, WorkerDirectory, WorkerHeartbeat, WorkerIdentity,
-    WorkerRegistration, WorkerSnapshot, WorkerState,
+    PlacementPolicy, RunClaim, RunDispatch, SubmitOptions, WorkerDirectory, WorkerHeartbeat,
+    WorkerIdentity, WorkerRegistration, WorkerSnapshot, WorkerState,
 };
 
 use crate::dispatch_backend::shared_durable_store;
@@ -52,6 +52,7 @@ pub struct WorkerDispatchService {
     clock: Arc<dyn WorkerClock>,
     lease_policy: Arc<dyn WorkerLeasePolicy>,
     directory: Option<Arc<dyn WorkerDirectory>>,
+    placement_policy: Option<Arc<dyn PlacementPolicy>>,
     registry_ttl_ms: u64,
     checkpoint: Option<Arc<dyn StreamCheckpointStore>>,
 }
@@ -70,6 +71,7 @@ impl WorkerDispatchService {
             clock,
             lease_policy,
             directory: None,
+            placement_policy: None,
             registry_ttl_ms: 30_000,
             checkpoint: None,
         }
@@ -89,6 +91,15 @@ impl WorkerDispatchService {
     ) -> Self {
         self.directory = Some(directory);
         self.registry_ttl_ms = ttl_ms.max(1);
+        self
+    }
+
+    /// Install the preference policy used for ordinary pull claims. Exact
+    /// parent-mediated claims remain explicit bindings and still pass the same
+    /// immutable compatibility/recovery kernel.
+    #[must_use]
+    pub fn with_placement_policy(mut self, policy: Arc<dyn PlacementPolicy>) -> Self {
+        self.placement_policy = Some(policy);
         self
     }
 
@@ -169,6 +180,18 @@ pub fn dispatch_transport_router_with_directory(
     host: Arc<SharedHost>,
     directory: Arc<dyn WorkerDirectory>,
 ) -> Router {
+    dispatch_transport_router_with_directory_and_policy(
+        host,
+        directory,
+        Arc::new(awaken_dispatch::LeastLoadedPolicy),
+    )
+}
+
+pub fn dispatch_transport_router_with_directory_and_policy(
+    host: Arc<SharedHost>,
+    directory: Arc<dyn WorkerDirectory>,
+    policy: Arc<dyn PlacementPolicy>,
+) -> Router {
     let dispatch = shared_durable_store(host.store_dir.as_deref())
         .expect("worker dispatch router requires the durable backend initialized at startup");
     let checkpoint: Arc<dyn StreamCheckpointStore> = if let Some(root) = &host.store_dir {
@@ -182,8 +205,34 @@ pub fn dispatch_transport_router_with_directory(
     dispatch_transport_router_with_service(Arc::new(
         WorkerDispatchService::local(dispatch)
             .with_worker_directory(directory, 30_000)
+            .with_placement_policy(policy)
             .with_checkpoint_store(checkpoint),
     ))
+}
+
+/// Production worker transport: lifecycle/dispatch and atomic claimed commit are
+/// mounted over the same durable queue, authenticator, and incarnation directory.
+/// Keeping this as one composition entry prevents a server from pairing registered
+/// claims with the legacy unregistered commit route.
+pub fn registered_worker_transport_router(
+    host: Arc<SharedHost>,
+    directory: Arc<dyn WorkerDirectory>,
+    policy: Arc<dyn PlacementPolicy>,
+) -> Router {
+    let dispatch = shared_durable_store(host.store_dir.as_deref())
+        .expect("registered worker transport requires the durable backend at startup");
+    let dispatch_router = dispatch_transport_router_with_directory_and_policy(
+        host.clone(),
+        directory.clone(),
+        policy,
+    );
+    let commit_router = crate::commit_ingest::claimed_commit_ingest_router_with_directory(
+        host,
+        dispatch as Arc<dyn DispatchQueue>,
+        Arc::new(HeaderWorkerAuthenticator),
+        directory,
+    );
+    dispatch_router.merge(commit_router)
 }
 
 pub fn dispatch_transport_router_with_service(service: Arc<WorkerDispatchService>) -> Router {
@@ -198,6 +247,7 @@ pub fn dispatch_transport_router_with_service(service: Arc<WorkerDispatchService
         .route("/v1/worker/dispatch/claim_run", post(claim_run))
         .route("/v1/worker/dispatch/renew", post(renew))
         .route("/v1/worker/dispatch/renew_owned", post(renew_owned))
+        .route("/v1/worker/dispatch/bind_sandbox", post(bind_sandbox))
         .route("/v1/worker/dispatch/settle", post(settle))
         .route("/v1/worker/register", post(register_worker))
         .route("/v1/worker/heartbeat", post(heartbeat_worker))
@@ -230,6 +280,39 @@ struct CheckpointReq {
     identity: Option<WorkerIdentity>,
     #[serde(default)]
     checkpoint: Option<StreamCheckpoint>,
+}
+
+#[derive(Deserialize)]
+struct BindSandboxReq {
+    claim: RunClaim,
+    #[serde(default)]
+    identity: Option<WorkerIdentity>,
+    sandbox_ref: String,
+}
+
+async fn bind_sandbox(
+    State(service): State<Arc<WorkerDispatchService>>,
+    Extension(worker): Extension<VerifiedWorkerContext>,
+    Json(request): Json<BindSandboxReq>,
+) -> (StatusCode, Json<Value>) {
+    let result = async {
+        let authority =
+            claim_authority(&service, &worker, request.identity.as_ref(), false).await?;
+        if request.claim.owner != authority.owner {
+            return Err(HostError::bad_request("sandbox claim owner is stale"));
+        }
+        if request.sandbox_ref.is_empty() {
+            return Err(HostError::bad_request("sandbox reference is required"));
+        }
+        let outcome = service
+            .dispatch
+            .bind_sandbox(&request.claim, &request.sandbox_ref)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?;
+        Ok(json!({ "applied": outcome.applied() }))
+    }
+    .await;
+    respond(result)
 }
 
 async fn checkpoint_authority(
@@ -592,10 +675,30 @@ async fn claim(
     let result = async {
         let authority = claim_authority(&service, &worker, request.identity.as_ref(), true).await?;
         let claimed = if let Some(snapshot) = &authority.snapshot {
-            service
-                .dispatch
-                .claim_compatible(snapshot, authority.lease_ms, authority.now_ms)
-                .await
+            if let Some(policy) = &service.placement_policy {
+                let workers = directory(&service)?
+                    .list()
+                    .await
+                    .map_err(|error| HostError::internal(error.to_string()))?
+                    .into_iter()
+                    .map(|record| record.snapshot)
+                    .collect();
+                service
+                    .dispatch
+                    .claim_placed(
+                        snapshot,
+                        workers,
+                        policy.clone(),
+                        authority.lease_ms,
+                        authority.now_ms,
+                    )
+                    .await
+            } else {
+                service
+                    .dispatch
+                    .claim_compatible(snapshot, authority.lease_ms, authority.now_ms)
+                    .await
+            }
         } else {
             service
                 .dispatch

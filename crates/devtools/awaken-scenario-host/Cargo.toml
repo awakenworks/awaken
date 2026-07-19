@@ -97,6 +97,9 @@ tower = { version = "0.5", features = ["util"] }
 
 # Depends on the product crate for the now-pub assembly helpers + production executors.
 awaken-server = { workspace = true }
+# Reuse the production worker lifecycle/registration/heartbeat/dispatch wiring in
+# the worker-failover scenario; only its deterministic executor provider differs.
+awaken-worker = { workspace = true }
 # The composition root: the `management` scenario mode + the brain-admin surface moved
 # to awaken-cli's library (Stage B2). Dev-dep cycle-free: awaken-cli dev-depends back
 # on this crate for the mock models its moved integration tests drive.

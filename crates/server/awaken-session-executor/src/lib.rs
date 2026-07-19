@@ -115,14 +115,16 @@ pub use crate::tool_catalog::{
 };
 // The per-plane resource routers the composition root merges over one host.
 pub use crate::commit_ingest::{
-    RemoteClaimedRunCommit, RemoteCoordinator, claimed_commit_ingest_router, commit_ingest_router,
+    RemoteClaimedRunCommit, RemoteCoordinator, claimed_commit_ingest_router,
+    claimed_commit_ingest_router_with_directory, commit_ingest_router,
 };
 pub use crate::deployment_config::{
     DeploymentConfig, DispatchBackend, SandboxTier, StoreKind, Wake,
 };
 pub use crate::dispatch_transport::{
     WorkerDispatchService, dispatch_transport_router, dispatch_transport_router_with_directory,
-    dispatch_transport_router_with_service, worker_dispatch_store_with_upstream,
+    dispatch_transport_router_with_directory_and_policy, dispatch_transport_router_with_service,
+    registered_worker_transport_router, worker_dispatch_store_with_upstream,
 };
 pub use crate::worker_security::{
     FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, ManualWorkerClock, SystemWorkerClock,

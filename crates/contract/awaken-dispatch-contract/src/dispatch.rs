@@ -19,7 +19,7 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpoint;
 use awaken_runtime_contract::resume::ResumeResult;
-use awaken_worker_contract::{WorkerAssignment, WorkerSnapshot};
+use awaken_worker_contract::{PlacementPolicy, WorkerAssignment, WorkerSnapshot};
 use serde::{Deserialize, Serialize};
 
 use crate::run_dispatch::RunDispatch;
@@ -332,6 +332,24 @@ pub trait DispatchQueue: Send + Sync {
     ) -> Result<Option<Claimed>, DispatchError> {
         Err(DispatchError::Rejected(
             "backend does not support registered-worker claims".to_string(),
+        ))
+    }
+
+    /// Claim according to a replaceable preference policy while preserving the
+    /// same atomic eligibility, recovery and assignment transition. Preference
+    /// may use a liveness snapshot, while the backend's final claim transition
+    /// rechecks immutable eligibility and fencing; a stale preference can delay
+    /// work but cannot widen execution authority or create two owners.
+    async fn claim_placed(
+        &self,
+        _requester: &WorkerSnapshot,
+        _workers: Vec<WorkerSnapshot>,
+        _policy: std::sync::Arc<dyn PlacementPolicy>,
+        _lease_ms: u64,
+        _now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        Err(DispatchError::Rejected(
+            "backend does not support policy-based registered-worker claims".to_string(),
         ))
     }
 
