@@ -441,6 +441,8 @@ impl SharedHost {
     /// over [`with_remote_hand`] for any run it places; runs it declines (`None`)
     /// fall back to `remote_hand`/in-process. This is the seam a config-driven
     /// self-hosted brain–hand split — or a host's own richer policy — plugs into.
+    /// Provider failure aborts run setup; only an explicit `Ok(None)` permits the
+    /// configured remote-hand/in-process fallback.
     pub fn with_tool_executor_provider(mut self, provider: Arc<dyn ToolExecutorProvider>) -> Self {
         self.hand_placement.set_provider(provider);
         self

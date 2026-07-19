@@ -156,10 +156,12 @@ pub fn mount_with_managed(host: Arc<SharedHost>, managed_state: Arc<ManagedState
     let durable_ops = durable_ops_router(host.clone());
     // The worker-facing cross-node seam: a database-less worker claims/settles runs
     // over the dispatch transport and pushes committed facts to the commit ingest.
-    let dispatch_transport = awaken_runtime_host::dispatch_transport_router_with_directory(
-        host.clone(),
-        worker_registry::shared(),
-    );
+    let dispatch_transport =
+        awaken_runtime_host::dispatch_transport_router_with_directory_and_policy(
+            host.clone(),
+            worker_registry::shared(),
+            dynamic_placement::shared_worker_placement_policy(),
+        );
     let commit_ingest = awaken_runtime_host::commit_ingest_router(host.clone());
     // The Files API (`/v1/files`) over the host's blob store — file resources + artifacts.
     let files = files_router(host.clone());

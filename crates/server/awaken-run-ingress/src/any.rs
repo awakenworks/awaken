@@ -15,7 +15,7 @@
 
 use std::sync::Arc;
 
-use crate::WorkerSnapshot;
+use crate::{PlacementPolicy, WorkerSnapshot};
 use async_trait::async_trait;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
@@ -230,6 +230,20 @@ impl DispatchQueue for AnyDispatchStore {
         now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
         delegate!(self, claim_compatible(worker, lease_ms, now_ms))
+    }
+
+    async fn claim_placed(
+        &self,
+        requester: &WorkerSnapshot,
+        workers: Vec<WorkerSnapshot>,
+        policy: Arc<dyn PlacementPolicy>,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        delegate!(
+            self,
+            claim_placed(requester, workers, policy, lease_ms, now_ms)
+        )
     }
 
     async fn claim_run(

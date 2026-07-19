@@ -11,9 +11,10 @@ mod sqlite;
 mod transition;
 
 pub use awaken_worker_contract::{
-    RegisteredWorker, RegistryError, RegistryMutation, WorkerAssignment, WorkerDirectory,
-    WorkerHeartbeat, WorkerIdentity, WorkerManifest, WorkerRegistration, WorkerSnapshot,
-    WorkerState,
+    ExecutionLocation, LeastLoadedPolicy, PlacementContext, PlacementError, PlacementPolicy,
+    PlacementRequirements, RankedWorker, RegisteredWorker, RegistryError, RegistryMutation,
+    WorkerAssignment, WorkerDirectory, WorkerHeartbeat, WorkerIdentity, WorkerManifest,
+    WorkerRegistration, WorkerSnapshot, WorkerState, place, place_assignment,
 };
 pub use memory::MemoryWorkerDirectory;
 pub use postgres::PostgresWorkerDirectory;

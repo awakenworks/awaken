@@ -11,9 +11,10 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::run::RunState;
 use awaken_run_ingress::{
-    AnyDispatchStore, DispatchOutcome, DispatchQueue, DurableRunIngress, Inbox,
-    PlacementRequirements, RunDispatch, SubmitOptions, WorkerIdentity, WorkerManifest,
-    WorkerSnapshot, WorkerState,
+    AnyDispatchStore, DispatchOutcome, DispatchQueue, DurableRunIngress, Inbox, LeastLoadedPolicy,
+    MemoryDispatchStore, PlacementContext, PlacementError, PlacementPolicy, PlacementRequirements,
+    RankedWorker, RunDispatch, SubmitOptions, WorkerIdentity, WorkerManifest, WorkerSnapshot,
+    WorkerState,
 };
 use awaken_run_ingress::{RunClaim, SettleOutcome, WorkerRecoveryMode};
 use awaken_runtime::RunIngress;
@@ -83,6 +84,129 @@ fn worker_snapshot(id: &str, boot: &str, generation: u64) -> WorkerSnapshot {
         in_flight: 0,
         expires_at_ms: 100_000,
     }
+}
+
+struct MostLoadedPolicy;
+
+impl PlacementPolicy for MostLoadedPolicy {
+    fn id(&self) -> &str {
+        "test-most-loaded"
+    }
+
+    fn rank(
+        &self,
+        _context: &PlacementContext,
+        eligible: &[WorkerSnapshot],
+    ) -> Result<Vec<RankedWorker>, PlacementError> {
+        let mut eligible = eligible.to_vec();
+        eligible.sort_by_key(|worker| std::cmp::Reverse(worker.in_flight));
+        Ok(eligible
+            .into_iter()
+            .map(|worker| RankedWorker {
+                identity: worker.identity,
+                score: i64::from(worker.in_flight),
+                reason: "test preference".to_string(),
+            })
+            .collect())
+    }
+}
+
+fn worker_with_load(id: &str, load: u32) -> WorkerSnapshot {
+    let mut worker = worker_snapshot(id, &format!("{id}-boot"), 1);
+    worker.manifest.capacity.max_concurrent = 100;
+    worker.capability_fingerprint = worker.manifest.fingerprint().unwrap();
+    worker.in_flight = load;
+    worker
+}
+
+async fn policy_claim_conformance(store: &dyn DispatchQueue) {
+    let mut requirements = PlacementRequirements::remote_required();
+    requirements.required_capabilities.insert("cpu".to_string());
+    store
+        .enqueue(
+            RunDispatch::new(activation_on("policy-run", "policy-thread"))
+                .with_placement(requirements),
+        )
+        .await
+        .unwrap();
+    let idle = worker_with_load("idle", 0);
+    let busy = worker_with_load("busy", 7);
+    let workers = vec![busy.clone(), idle.clone()];
+
+    assert!(
+        store
+            .claim_placed(&busy, workers.clone(), Arc::new(LeastLoadedPolicy), 100, 0,)
+            .await
+            .unwrap()
+            .is_none(),
+        "a worker rejected by the active preference cannot race into ownership"
+    );
+    let claimed = store
+        .claim_placed(&idle, workers, Arc::new(LeastLoadedPolicy), 100, 0)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(claimed.assignment.unwrap().identity, idle.identity);
+}
+
+#[tokio::test]
+async fn policy_claim_is_wired_through_memory_and_runtime_selected_sqlite() {
+    policy_claim_conformance(&MemoryDispatchStore::new()).await;
+    policy_claim_conformance(&any_in_memory()).await;
+}
+
+#[tokio::test]
+async fn replacement_policy_cannot_override_never_replace() {
+    let store = MemoryDispatchStore::new();
+    let mut requirements = PlacementRequirements::remote_required();
+    requirements.required_capabilities.insert("cpu".to_string());
+    requirements.recovery = WorkerRecoveryMode::NeverReplace;
+    store
+        .enqueue(
+            RunDispatch::new(activation_on("pinned", "pinned-thread")).with_placement(requirements),
+        )
+        .await
+        .unwrap();
+    let original = worker_with_load("original", 0);
+    let replacement = worker_with_load("replacement", 9);
+    store
+        .claim_placed(
+            &original,
+            vec![original.clone(), replacement.clone()],
+            Arc::new(LeastLoadedPolicy),
+            10,
+            0,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        store
+            .claim_placed(
+                &replacement,
+                vec![original.clone(), replacement.clone()],
+                Arc::new(MostLoadedPolicy),
+                10,
+                11,
+            )
+            .await
+            .unwrap()
+            .is_none(),
+        "extension ranking cannot widen durable recovery authority"
+    );
+    assert!(
+        store
+            .claim_placed(
+                &original,
+                vec![original.clone()],
+                Arc::new(MostLoadedPolicy),
+                10,
+                11,
+            )
+            .await
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[tokio::test]

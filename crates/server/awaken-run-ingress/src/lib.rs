@@ -39,10 +39,11 @@ pub use capability::RunIngressCapabilities;
 // The database-less worker's HTTP dispatch client (drives claim/settle over the wire
 // to a cell server's dispatch_transport_router), extracted from awaken-runtime-host.
 pub use awaken_run_ingress_contract::{
-    AssignmentRejection, ExecutionScopeRef, ModelAccessRef, PlacementRequirements,
-    RegisteredWorker, RegistryError, RegistryMutation, RunDispatch, WorkerAssignment,
-    WorkerDirectory, WorkerHeartbeat, WorkerIdentity, WorkerManifest, WorkerRecoveryMode,
-    WorkerRegistration, WorkerSnapshot, WorkerState, can_assign, can_claim,
+    AssignmentRejection, ExecutionScopeRef, LeastLoadedPolicy, ModelAccessRef, PlacementContext,
+    PlacementError, PlacementPolicy, PlacementRequirements, RankedWorker, RegisteredWorker,
+    RegistryError, RegistryMutation, RunDispatch, WorkerAssignment, WorkerDirectory,
+    WorkerHeartbeat, WorkerIdentity, WorkerManifest, WorkerRecoveryMode, WorkerRegistration,
+    WorkerSnapshot, WorkerState, can_assign, can_claim, place_assignment,
 };
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use commit_fence::{ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit};
@@ -79,4 +80,48 @@ pub enum Error {
     Dispatch(#[from] dispatch::DispatchError),
     #[error(transparent)]
     Execution(#[from] awaken_runtime_contract::execution::Error),
+}
+
+/// Shared policy adapter used by every durable backend. Eligibility and
+/// replacement authority remain in the worker-contract kernel; stores only use
+/// the boolean result while holding their backend-specific claim lock.
+pub(crate) struct DispatchPlacement<'a> {
+    pub recovered: bool,
+    pub previous: Option<&'a WorkerAssignment>,
+    pub sandbox_bound: bool,
+    pub requester: &'a WorkerIdentity,
+    pub workers: &'a [WorkerSnapshot],
+    pub now_ms: u64,
+}
+
+pub(crate) fn policy_selects_requester(
+    request: &RunDispatch,
+    policy: &dyn PlacementPolicy,
+    attempt: DispatchPlacement<'_>,
+) -> Result<bool, DispatchError> {
+    let context = PlacementContext {
+        run_id: request.run_id().0.clone(),
+        workspace_id: request
+            .execution_scope
+            .as_ref()
+            .map_or_else(String::new, |scope| scope.0.0.clone()),
+        requirements: request.placement.clone(),
+        recovered: attempt.recovered,
+        previous_worker: attempt
+            .previous
+            .map(|assignment| assignment.identity.clone()),
+        attributes: Default::default(),
+    };
+    match place_assignment(
+        policy,
+        &context,
+        attempt.workers,
+        attempt.previous,
+        attempt.sandbox_bound,
+        attempt.now_ms,
+    ) {
+        Ok(selected) => Ok(&selected.identity == attempt.requester),
+        Err(PlacementError::NoEligibleWorker) => Ok(false),
+        Err(error) => Err(DispatchError::Rejected(error.to_string())),
+    }
 }

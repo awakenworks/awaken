@@ -39,6 +39,7 @@ impl SharedHost {
             let context = ctx
                 .context_for(&activation)
                 .await
+                .map_err(|e| HostError::internal(e.to_string()))?
                 .with_live_inbox(ctx.open_live_inbox());
             let result = acp
                 .executor
@@ -72,6 +73,7 @@ impl SharedHost {
             let mut context = ctx
                 .context_for(&activation)
                 .await
+                .map_err(|e| HostError::internal(e.to_string()))?
                 .with_live_inbox(ctx.open_live_inbox());
             // Route this attempt's inference through the run's effective model,
             // resolved through the host's ExecutorProvider. `None` leaves the

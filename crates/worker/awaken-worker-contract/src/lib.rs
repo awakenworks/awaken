@@ -650,6 +650,42 @@ pub fn place(
         .filter(|worker| worker.accepts(&context.requirements, now_ms))
         .cloned()
         .collect::<Vec<_>>();
+    rank_eligible(policy, context, eligible)
+}
+
+/// Placement for a concrete dispatch assignment. Unlike [`place`], this also
+/// applies replacement and sandbox-continuity constraints from the durable
+/// prior assignment. The extension still receives only eligible candidates.
+pub fn place_assignment(
+    policy: &dyn PlacementPolicy,
+    context: &PlacementContext,
+    workers: &[WorkerSnapshot],
+    previous: Option<&WorkerAssignment>,
+    sandbox_bound: bool,
+    now_ms: u64,
+) -> Result<RankedWorker, PlacementError> {
+    let eligible = workers
+        .iter()
+        .filter(|worker| {
+            can_assign(
+                worker,
+                &context.requirements,
+                previous,
+                sandbox_bound,
+                now_ms,
+            )
+            .is_ok()
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    rank_eligible(policy, context, eligible)
+}
+
+fn rank_eligible(
+    policy: &dyn PlacementPolicy,
+    context: &PlacementContext,
+    eligible: Vec<WorkerSnapshot>,
+) -> Result<RankedWorker, PlacementError> {
     if eligible.is_empty() {
         return Err(PlacementError::NoEligibleWorker);
     }

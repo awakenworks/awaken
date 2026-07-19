@@ -6,14 +6,16 @@
 //! startup** and wrapped in a `RemoteToolExecutor`; [`provide`](ConfigToolExecutorProvider::provide)
 //! is then a pure per-run lookup — it opens no connection and consults no
 //! registry/lease/scheduler (the port stays placement-mechanism-agnostic, G16).
-//! A run matching no entry returns `None`, so the kernel's in-process
+//! A run matching no entry returns `Ok(None)`, so the kernel's in-process
 //! `LocalToolExecutor` runs its tools unchanged.
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::tool::{ToolExecutor, ToolExecutorProvider};
+use awaken_runtime_contract::tool::{
+    ToolExecutor, ToolExecutorProvider, ToolExecutorSelectionError,
+};
 
 /// One placement rule: runs whose root agent matches `agent_id` run their tools
 /// on `executor`. `agent_id: None` is a catch-all (place it last) — every run it
@@ -67,13 +69,17 @@ impl ConfigToolExecutorProvider {
 
 #[async_trait]
 impl ToolExecutorProvider for ConfigToolExecutorProvider {
-    async fn provide(&self, activation: &RunActivation) -> Option<Arc<dyn ToolExecutor>> {
+    async fn provide(
+        &self,
+        activation: &RunActivation,
+    ) -> Result<Option<Arc<dyn ToolExecutor>>, ToolExecutorSelectionError> {
         // Static config: a pure lookup that resolves in a ready future — the async
         // seam (ADR-0046, G2) exists for dynamic drivers that must await I/O.
-        self.entries
+        Ok(self
+            .entries
             .iter()
             .find(|entry| entry.matches(activation))
-            .map(|entry| entry.executor.clone())
+            .map(|entry| entry.executor.clone()))
     }
 }
 
@@ -151,6 +157,7 @@ mod tests {
         let placed = provider
             .provide(&activation_for("remote-agent"))
             .await
+            .unwrap()
             .unwrap();
         assert_eq!(returned_marker(&placed).await, "HAND");
 
@@ -159,6 +166,7 @@ mod tests {
             provider
                 .provide(&activation_for("local-agent"))
                 .await
+                .unwrap()
                 .is_none()
         );
     }
@@ -172,12 +180,14 @@ mod tests {
 
         // The specific rule wins for its agent...
         let special = provider.provide(&activation_for("special")).await.unwrap();
+        let special = special.unwrap();
         assert_eq!(returned_marker(&special).await, "SPECIAL");
 
         // ...and the catch-all places every other run.
         let other = provider
             .provide(&activation_for("anything-else"))
             .await
+            .unwrap()
             .unwrap();
         assert_eq!(returned_marker(&other).await, "DEFAULT");
     }
@@ -185,6 +195,12 @@ mod tests {
     #[tokio::test]
     async fn no_entries_places_nothing() {
         let provider = ConfigToolExecutorProvider::new(Vec::new());
-        assert!(provider.provide(&activation_for("a")).await.is_none());
+        assert!(
+            provider
+                .provide(&activation_for("a"))
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 }

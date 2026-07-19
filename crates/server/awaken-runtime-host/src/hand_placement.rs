@@ -11,7 +11,9 @@
 use std::sync::Arc;
 
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::tool::{ToolExecutor, ToolExecutorProvider};
+use awaken_runtime_contract::tool::{
+    ToolExecutor, ToolExecutorProvider, ToolExecutorSelectionError,
+};
 
 /// The tool-execution placement for a host/session: an optional session-wide hand and
 /// an optional per-run placement provider. See the module docs for the precedence.
@@ -49,10 +51,13 @@ impl HandPlacement {
 
     /// The per-run executor override, if a provider is installed and places this run.
     /// Takes precedence over [`Self::session_hand`]; `None` falls back to it.
-    pub(crate) async fn placed(&self, activation: &RunActivation) -> Option<Arc<dyn ToolExecutor>> {
+    pub(crate) async fn placed(
+        &self,
+        activation: &RunActivation,
+    ) -> Result<Option<Arc<dyn ToolExecutor>>, ToolExecutorSelectionError> {
         match &self.provider {
             Some(provider) => provider.provide(activation).await,
-            None => None,
+            None => Ok(None),
         }
     }
 }

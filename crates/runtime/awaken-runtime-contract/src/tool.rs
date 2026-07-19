@@ -167,6 +167,18 @@ pub enum ToolError {
     Execution(String),
 }
 
+/// Failure to select the executor that will own a run's tool side effects.
+/// This is distinct from an invocation failure: selection happens before the
+/// runtime starts the run, so a required remote placement must fail closed
+/// instead of becoming an implicit local execution.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum ToolExecutorSelectionError {
+    #[error("tool executor placement unavailable: {0}")]
+    Unavailable(String),
+    #[error("tool executor placement policy failed: {0}")]
+    Policy(String),
+}
+
 /// Schema-erased tool: the dynamic call boundary used by the runtime and by
 /// MCP/server/client adapters. Concrete implementations live in
 /// extension/adapter crates, never in neutral crates.
@@ -242,7 +254,7 @@ pub trait ToolExecutor: Send + Sync {
 /// scheduling driver live behind it without blocking the run loop's thread.
 #[async_trait]
 pub trait ToolExecutorProvider: Send + Sync {
-    /// The tool executor for this run. Returning `None` means "use the kernel's
+    /// The tool executor for this run. Returning `Ok(None)` means "use the kernel's
     /// in-process `LocalToolExecutor`" — a deployment that places no hand installs
     /// no provider (or a provider that always returns `None`) and is unaffected.
     ///
@@ -253,7 +265,7 @@ pub trait ToolExecutorProvider: Send + Sync {
     async fn provide(
         &self,
         activation: &crate::activation::RunActivation,
-    ) -> Option<Arc<dyn ToolExecutor>>;
+    ) -> Result<Option<Arc<dyn ToolExecutor>>, ToolExecutorSelectionError>;
 }
 
 #[cfg(test)]

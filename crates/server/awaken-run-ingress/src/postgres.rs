@@ -24,7 +24,10 @@ use crate::dispatch::{
     PendingRecord, RunClaim, SettleOutcome, SubmitOptions,
 };
 use crate::dispatch_schema::dispatch_bundle;
-use crate::{WorkerAssignment, WorkerSnapshot, can_assign};
+use crate::{
+    DispatchPlacement, PlacementPolicy, WorkerAssignment, WorkerSnapshot, can_assign,
+    policy_selects_requester,
+};
 use awaken_run_ingress_contract::RunDispatch;
 
 /// Errors from constructing or migrating the dispatch store. Claim/settle-time
@@ -664,6 +667,70 @@ impl DispatchQueue for PostgresDispatchStore {
             lease_ms,
             now_ms,
             Some(worker),
+        )
+        .await?;
+        tx.commit().await.map_err(reject)?;
+        Ok(claimed)
+    }
+
+    async fn claim_placed(
+        &self,
+        requester: &WorkerSnapshot,
+        workers: Vec<WorkerSnapshot>,
+        policy: std::sync::Arc<dyn PlacementPolicy>,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        let p = NS;
+        let rows = sqlx::query(&format!(
+            "SELECT d.run_id, d.request, d.sandbox, d.worker_assignment, d.status FROM {p}_dispatch d WHERE \
+             (d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until < $1) OR \
+             (d.status = 'awaiting' AND EXISTS (SELECT 1 FROM {p}_pending pe \
+               WHERE pe.run_id = d.run_id AND (pe.available_at IS NULL OR pe.available_at <= $1)) \
+               AND NOT EXISTS (SELECT 1 FROM {p}_dispatch r WHERE r.thread_id = d.thread_id AND r.status = 'running')) OR \
+             (d.status = 'pending' AND NOT EXISTS (SELECT 1 FROM {p}_dispatch r \
+               WHERE r.thread_id = d.thread_id AND r.status = 'running')) \
+             ORDER BY CASE WHEN d.status = 'running' THEN 0 WHEN d.status = 'awaiting' THEN 1 ELSE 2 END, \
+                      d.priority DESC, d.created_at"
+        ))
+        .bind(now_ms as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(reject)?;
+        let mut selected = None;
+        for row in rows {
+            let Json(request): Json<RunDispatch> = row.try_get("request").map_err(reject)?;
+            let sandbox: Option<String> = row.try_get("sandbox").map_err(reject)?;
+            let previous: Option<Json<WorkerAssignment>> =
+                row.try_get("worker_assignment").map_err(reject)?;
+            let status: String = row.try_get("status").map_err(reject)?;
+            if policy_selects_requester(
+                &request,
+                policy.as_ref(),
+                DispatchPlacement {
+                    recovered: status == "running",
+                    previous: previous.as_ref().map(|value| &value.0),
+                    sandbox_bound: sandbox.is_some(),
+                    requester: &requester.identity,
+                    workers: &workers,
+                    now_ms,
+                },
+            )? {
+                selected = Some(RunId(row.try_get("run_id").map_err(reject)?));
+                break;
+            }
+        }
+        let Some(run_id) = selected else {
+            return Ok(None);
+        };
+        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let claimed = claim_exact_transaction(
+            &mut tx,
+            &run_id,
+            &requester.identity.lease_owner(),
+            lease_ms,
+            now_ms,
+            Some(requester),
         )
         .await?;
         tx.commit().await.map_err(reject)?;

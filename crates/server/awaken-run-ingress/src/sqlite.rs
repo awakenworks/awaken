@@ -23,7 +23,10 @@ use crate::dispatch::{
     PendingRecord, RunClaim, SettleOutcome, SubmitOptions,
 };
 use crate::dispatch_schema::dispatch_bundle;
-use crate::{WorkerAssignment, WorkerSnapshot, can_assign};
+use crate::{
+    DispatchPlacement, PlacementPolicy, WorkerAssignment, WorkerSnapshot, can_assign,
+    policy_selects_requester,
+};
 use awaken_run_ingress_contract::RunDispatch;
 
 /// Errors from constructing or migrating the dispatch store. Claim/settle-time
@@ -657,6 +660,88 @@ impl DispatchQueue for SqliteDispatchStore {
                 lease_ms,
                 now_ms,
                 Some(&worker),
+            )?;
+            tx.commit().map_err(reject)?;
+            Ok(claimed)
+        })
+        .await
+    }
+
+    async fn claim_placed(
+        &self,
+        requester: &WorkerSnapshot,
+        workers: Vec<WorkerSnapshot>,
+        policy: Arc<dyn PlacementPolicy>,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        let requester = requester.clone();
+        self.with_conn(move |conn, p| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(reject)?;
+            let sql = format!(
+                "SELECT d.run_id, d.request, d.sandbox, d.worker_assignment, d.status FROM {p}_dispatch d WHERE \
+                 (d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until < ?1) OR \
+                 (d.status = 'awaiting' AND EXISTS (SELECT 1 FROM {p}_pending pe \
+                   WHERE pe.run_id = d.run_id AND (pe.available_at IS NULL OR pe.available_at <= ?1)) \
+                   AND NOT EXISTS (SELECT 1 FROM {p}_dispatch r WHERE r.thread_id = d.thread_id AND r.status = 'running')) OR \
+                 (d.status = 'pending' AND NOT EXISTS (SELECT 1 FROM {p}_dispatch r \
+                   WHERE r.thread_id = d.thread_id AND r.status = 'running')) \
+                 ORDER BY CASE WHEN d.status = 'running' THEN 0 WHEN d.status = 'awaiting' THEN 1 ELSE 2 END, \
+                          d.priority DESC, d.created_at"
+            );
+            let selected = {
+                let mut stmt = tx.prepare(&sql).map_err(reject)?;
+                let rows = stmt
+                    .query_map(params![now_ms as i64], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, Option<String>>(3)?,
+                            row.get::<_, String>(4)?,
+                        ))
+                    })
+                    .map_err(reject)?;
+                let mut selected = None;
+                for row in rows {
+                    let (run_id, request_json, sandbox, previous_json, status) =
+                        row.map_err(reject)?;
+                    let request: RunDispatch =
+                        serde_json::from_str(&request_json).map_err(json_err)?;
+                    let previous: Option<WorkerAssignment> = previous_json
+                        .map(|value| serde_json::from_str(&value).map_err(json_err))
+                        .transpose()?;
+                    if policy_selects_requester(
+                        &request,
+                        policy.as_ref(),
+                        DispatchPlacement {
+                            recovered: status == "running",
+                            previous: previous.as_ref(),
+                            sandbox_bound: sandbox.is_some(),
+                            requester: &requester.identity,
+                            workers: &workers,
+                            now_ms,
+                        },
+                    )? {
+                        selected = Some(run_id);
+                        break;
+                    }
+                }
+                selected
+            };
+            let Some(run_id) = selected else {
+                return Ok(None);
+            };
+            let claimed = claim_exact_transaction(
+                &tx,
+                p,
+                &run_id,
+                &requester.identity.lease_owner(),
+                lease_ms,
+                now_ms,
+                Some(&requester),
             )?;
             tx.commit().map_err(reject)?;
             Ok(claimed)
