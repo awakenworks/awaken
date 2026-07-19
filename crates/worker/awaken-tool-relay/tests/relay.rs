@@ -2,12 +2,40 @@
 //! in-process duplex, plus the Indeterminate and idempotent-re-drive guarantees.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolExecutor, ToolOutput};
 use awaken_tool_relay::wire::{HandError, HandErrorKind, HandReply, HandRequest, HandResult};
-use awaken_tool_relay::{HandSession, RemoteToolExecutor, serve_hand};
+use awaken_tool_relay::{
+    FsOperationLedger, HandOperationLedger, HandSession, RemoteToolExecutor, serve_hand,
+};
+
+static NEXT_TEMP_DIRECTORY: AtomicU64 = AtomicU64::new(0);
+
+struct TestDirectory(std::path::PathBuf);
+
+impl TestDirectory {
+    fn create() -> Self {
+        let sequence = NEXT_TEMP_DIRECTORY.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "awaken-tool-relay-{}-{sequence}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&path).expect("create ledger test directory");
+        Self(path)
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TestDirectory {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
 
 /// A tool that echoes its `text` argument and counts how many times it ran, so a
 /// test can prove an effect ran exactly once.
@@ -188,6 +216,72 @@ async fn re_drive_with_same_correlation_id_runs_the_effect_at_most_once() {
         "the effect ran at most once"
     );
     assert!(matches!(first.result, HandResult::Ok { .. }));
+}
+
+#[tokio::test]
+async fn different_transport_ids_with_one_operation_id_run_the_effect_once() {
+    let runs = Arc::new(AtomicU32::new(0));
+    let mut session = HandSession::new([Arc::new(CountingEcho {
+        id: "echo".into(),
+        runs: runs.clone(),
+    }) as Arc<dyn RawTool>]);
+
+    let first = HandRequest::new(1, call("c1", "echo", "once"));
+    let mut retry = first.clone();
+    retry.correlation_id = 2;
+    let first_reply = session.handle(first).await;
+    let retry_reply = session.handle(retry).await;
+
+    assert_eq!(first_reply.correlation_id, 1);
+    assert_eq!(retry_reply.correlation_id, 2);
+    assert_eq!(first_reply.result, retry_reply.result);
+    assert_eq!(runs.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn filesystem_ledger_survives_a_hand_restart() {
+    let directory = TestDirectory::create();
+    let runs = Arc::new(AtomicU32::new(0));
+    let tool = || {
+        Arc::new(CountingEcho {
+            id: "echo".into(),
+            runs: runs.clone(),
+        }) as Arc<dyn RawTool>
+    };
+
+    let mut first = HandSession::new([tool()]).with_operation_ledger(Arc::new(
+        FsOperationLedger::open(directory.path()).expect("open first ledger"),
+    ));
+    let request = HandRequest::new(1, call("c1", "echo", "durable"));
+    let first_reply = first.handle(request.clone()).await;
+    drop(first);
+
+    let mut restarted = HandSession::new([tool()]).with_operation_ledger(Arc::new(
+        FsOperationLedger::open(directory.path()).expect("reopen ledger"),
+    ));
+    let mut retry = request;
+    retry.correlation_id = 99;
+    let retry_reply = restarted.handle(retry).await;
+
+    assert_eq!(first_reply.result, retry_reply.result);
+    assert_eq!(
+        runs.load(Ordering::SeqCst),
+        1,
+        "restart did not re-run effect"
+    );
+}
+
+#[tokio::test]
+async fn filesystem_ledger_rejects_an_oversized_operation_identity() {
+    let directory = TestDirectory::create();
+    let ledger = FsOperationLedger::open(directory.path()).expect("open ledger");
+
+    let error = ledger
+        .begin(&"x".repeat(97))
+        .await
+        .expect_err("an identity that cannot fit losslessly must fail closed");
+
+    assert!(error.contains("operation id exceeds"));
 }
 
 /// A tool whose own `invoke` returns an error — the hand reports it as an
@@ -478,6 +572,7 @@ fn hand_request_omits_absent_optionals_and_defaults_them_on_decode() {
     });
     let decoded: HandRequest = serde_json::from_value(minimal).unwrap();
     assert_eq!(decoded.correlation_id, 5);
+    assert!(decoded.operation_id.is_empty());
     assert_eq!(decoded.catalog_fingerprint, None);
     assert_eq!(decoded.deadline_unix_ms, None);
     assert_eq!(decoded.call.tool_id, "echo");

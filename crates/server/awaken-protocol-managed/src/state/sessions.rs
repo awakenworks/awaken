@@ -205,41 +205,26 @@ impl ManagedState {
         // rehydrates its real agent/model/title/metadata/MCP, not a placeholder.
         // The core session record is tenancy-agnostic (authz is an edge aspect) —
         // it never stores a workspace/org.
-        self.sessions_repo
-            .save(PersistedSession {
-                session_id: id.clone(),
-                agent_id: agent_id.clone(),
-                model: session.agent.model.id.clone(),
-                title: session.title.clone(),
-                metadata: session.metadata.clone(),
-                environment_id: session.environment_id.clone(),
-                mcp_servers: session.agent.mcp_servers.clone(),
-            })
-            .await;
-        // Project the committed create as a lifecycle fact: a fresh session is idle,
-        // so fan out `session.status_idled` (the webhook catalog name — past-tense
-        // fact, distinct from the SSE `session.status_idle` transition) to any
-        // workspace-scoped subscribers. The owning workspace comes from the edge (the
-        // aspect), passed in — never read back from the core record. Out-of-band.
-        if let Some(sink) = &self.lifecycle_sink {
-            sink.emit(&id, workspace_id.as_deref(), lifecycle_event::SESSION_IDLED)
-                .await;
-        }
-        // Record the session's owner (ADR-0051): in the aspect-layer in-memory
-        // index (same-process) and — for a durable backend — beside the persisted
-        // config, so the edge ownership guard fences a cross-tenant request even
-        // across a restart that lost the index. A bare/self-hosted create (no
-        // resolved workspace) owns under the seeded default scope.
         let owner_scope = workspace_id
             .clone()
             .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
-        self.owners
-            .lock()
-            .unwrap()
-            .insert(id.clone(), owner_scope.clone());
-        self.sessions_repo.set_owner(&id, &owner_scope).await;
+        self.sessions_repo
+            .save_owned(
+                &owner_scope,
+                PersistedSession {
+                    session_id: id.clone(),
+                    agent_id: agent_id.clone(),
+                    model: session.agent.model.id.clone(),
+                    title: session.title.clone(),
+                    metadata: session.metadata.clone(),
+                    environment_id: session.environment_id.clone(),
+                    mcp_servers: session.agent.mcp_servers.clone(),
+                },
+            )
+            .await;
+        self.owners.lock().unwrap().insert(id.clone(), owner_scope);
         self.sessions.lock().unwrap().insert(
-            id,
+            id.clone(),
             SessionRecord {
                 agent_id,
                 session: session.clone(),
@@ -247,6 +232,20 @@ impl ManagedState {
                 child_threads: Vec::new(),
             },
         );
+        // Project the committed create as a lifecycle fact: a fresh session is idle,
+        // so fan out `session.status_idled` (the webhook catalog name — past-tense
+        // fact, distinct from the SSE `session.status_idle` transition) to any
+        // workspace-scoped subscribers. The owning workspace comes from the edge (the
+        // aspect), passed in — never read back from the core record. Out-of-band.
+        if let Some(sink) = &self.lifecycle_sink {
+            sink.emit_fact(
+                &format!("session:{id}:created"),
+                &id,
+                workspace_id.as_deref(),
+                lifecycle_event::SESSION_IDLED,
+            )
+            .await;
+        }
         Ok(session)
     }
 
@@ -498,8 +497,13 @@ impl ManagedState {
         // owner (the delete edge carries only the id).
         if let Some(sink) = &self.lifecycle_sink {
             let owner = self.resolve_owner(id).await;
-            sink.emit(id, owner.as_deref(), lifecycle_event::SESSION_DELETED)
-                .await;
+            sink.emit_fact(
+                &format!("session:{id}:deleted"),
+                id,
+                owner.as_deref(),
+                lifecycle_event::SESSION_DELETED,
+            )
+            .await;
         }
         Ok(())
     }
@@ -566,8 +570,13 @@ impl ManagedState {
         // that workspace is matched even after a restart lost the in-memory index.
         if newly_terminated && let Some(sink) = &self.lifecycle_sink {
             let owner = self.resolve_owner(id).await;
-            sink.emit(id, owner.as_deref(), lifecycle_event::SESSION_TERMINATED)
-                .await;
+            sink.emit_fact(
+                &format!("session:{id}:terminated"),
+                id,
+                owner.as_deref(),
+                lifecycle_event::SESSION_TERMINATED,
+            )
+            .await;
         }
         Ok(session)
     }

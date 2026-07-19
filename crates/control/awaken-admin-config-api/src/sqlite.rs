@@ -230,6 +230,47 @@ impl WebhookStore for SqliteAdminStore {
             .expect("delete webhook row");
         n > 0
     }
+    fn enqueue_outbox(&self, event: awaken_config_resolver::WebhookOutboxEvent) -> bool {
+        let data = serde_json::to_string(&event).expect("encode webhook outbox event");
+        self.conn
+            .lock()
+            .expect("admin store")
+            .execute(
+                &format!(
+                    "INSERT OR IGNORE INTO {NS}_webhook_outbox (event_id, data) VALUES (?1, ?2)"
+                ),
+                params![event.id, data],
+            )
+            .expect("enqueue webhook outbox event")
+            > 0
+    }
+    fn pending_outbox(&self) -> Vec<awaken_config_resolver::WebhookOutboxEvent> {
+        let conn = self.conn.lock().expect("admin store");
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT data FROM {NS}_webhook_outbox ORDER BY created_at, event_id"
+            ))
+            .expect("prepare webhook outbox list");
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("list webhook outbox");
+        rows.map(|data| {
+            serde_json::from_str(&data.expect("read webhook outbox row"))
+                .expect("decode webhook outbox row")
+        })
+        .collect()
+    }
+    fn complete_outbox(&self, event_id: &str) -> bool {
+        self.conn
+            .lock()
+            .expect("admin store")
+            .execute(
+                &format!("DELETE FROM {NS}_webhook_outbox WHERE event_id = ?1"),
+                params![event_id],
+            )
+            .expect("complete webhook outbox event")
+            > 0
+    }
 }
 
 #[cfg(test)]

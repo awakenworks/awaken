@@ -26,6 +26,10 @@ const FILES: &[(&str, &str)] = &[
         "V0003__restricted.sql",
         include_str!("migrations/V0003__restricted.sql"),
     ),
+    (
+        "V0004__erasure_job.sql",
+        include_str!("migrations/V0004__erasure_job.sql"),
+    ),
 ];
 
 /// Version from a `Vnnnn__slug.sql` file name (`V0003__…` ⇒ 3); a non-positive

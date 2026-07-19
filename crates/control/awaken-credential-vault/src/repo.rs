@@ -106,7 +106,16 @@ pub async fn enter_credential(
     repo: &dyn CredentialRepo,
 ) -> Result<CredentialSource, CredentialError> {
     let source = create_source(params, store).await?;
-    repo.put(source.clone()).await?;
+    if let Err(error) = repo.put(source.clone()).await {
+        // The row is the publication barrier. If it cannot be committed, remove
+        // any material written while building the source so a failed create does
+        // not leave a reachable orphan secret. Delete is idempotent, making a
+        // caller retry safe after an ambiguous cleanup response.
+        if let Some(material_ref) = &source.material_ref {
+            store.delete(material_ref).await?;
+        }
+        return Err(error);
+    }
     Ok(source)
 }
 
@@ -115,6 +124,41 @@ mod tests {
     use super::*;
     use crate::{CredentialKind, InMemorySecretStore, materialize};
     use awaken_agent_contract::RedactedString;
+
+    struct RejectingRepo;
+
+    #[async_trait::async_trait]
+    impl CredentialRepo for RejectingRepo {
+        async fn put(&self, _source: CredentialSource) -> Result<(), CredentialError> {
+            Err(CredentialError::Storage("injected row failure".into()))
+        }
+
+        async fn get(&self, id: &CredentialSourceId) -> Result<CredentialSource, CredentialError> {
+            Err(CredentialError::SourceNotFound(id.0.clone()))
+        }
+
+        async fn list(
+            &self,
+            _workspace_id: &str,
+        ) -> Result<Vec<CredentialSource>, CredentialError> {
+            Ok(Vec::new())
+        }
+
+        async fn put_pool(&self, _pool: CredentialPool) -> Result<(), CredentialError> {
+            Ok(())
+        }
+
+        async fn get_pool(&self, id: &CredentialPoolId) -> Result<CredentialPool, CredentialError> {
+            Err(CredentialError::PoolNotFound(id.0.clone()))
+        }
+
+        async fn list_pools(
+            &self,
+            _workspace_id: &str,
+        ) -> Result<Vec<CredentialPool>, CredentialError> {
+            Ok(Vec::new())
+        }
+    }
 
     #[tokio::test]
     async fn enter_stores_row_and_secret_separately() {
@@ -144,6 +188,32 @@ mod tests {
         );
         assert_eq!(repo.list("ws").await.unwrap().len(), 1);
         assert_eq!(repo.list("other").await.unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn rejected_row_commit_compensates_the_secret_write() {
+        let store = InMemorySecretStore::new();
+        let result = enter_credential(
+            CredentialCreateParams {
+                workspace_id: "ws".into(),
+                kind: CredentialKind::Vault,
+                provider_id: Some("anthropic".into()),
+                env_key: None,
+                secret: Some(RedactedString::new("must-not-be-orphaned")),
+                oauth_command: None,
+            },
+            &store,
+            &RejectingRepo,
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(CredentialError::Storage(message)) if message == "injected row failure")
+        );
+        assert!(
+            store.map.lock().expect("secret store mutex").is_empty(),
+            "a failed row commit must not leave secret material behind"
+        );
     }
 
     #[tokio::test]

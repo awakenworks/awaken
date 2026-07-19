@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::schema::data_subject_bundle;
-use crate::{DataSubject, DataSubjectError, DataSubjectId, DataSubjectRepo};
+use crate::{DataSubject, DataSubjectError, DataSubjectId, DataSubjectRepo, ErasureProgress};
 
 /// The component's table namespace (its bundle prefix).
 const NS: &str = "data_subject";
@@ -151,6 +151,47 @@ impl DataSubjectRepo for SqliteDataSubjectRepo {
             conn.execute(
                 &format!("DELETE FROM {p}_subject WHERE id = ?1"),
                 params![id],
+            )
+            .map_err(storage)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn load_erasure_progress(
+        &self,
+        id: &DataSubjectId,
+    ) -> Result<Option<ErasureProgress>, DataSubjectError> {
+        let id = id.0.clone();
+        with_conn(&self.conn, move |conn, p| {
+            let data: Option<String> = conn
+                .query_row(
+                    &format!("SELECT data FROM {p}_erasure_job WHERE subject_id = ?1"),
+                    params![id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(storage)?;
+            data.map(|value| serde_json::from_str(&value).map_err(storage))
+                .transpose()
+        })
+        .await
+    }
+
+    async fn save_erasure_progress(
+        &self,
+        id: &DataSubjectId,
+        progress: &ErasureProgress,
+    ) -> Result<(), DataSubjectError> {
+        let id = id.0.clone();
+        let data = serde_json::to_string(progress).map_err(storage)?;
+        with_conn(&self.conn, move |conn, p| {
+            conn.execute(
+                &format!(
+                    "INSERT INTO {p}_erasure_job (subject_id, data) VALUES (?1, ?2) \
+                     ON CONFLICT(subject_id) DO UPDATE SET data = excluded.data, updated_at = CURRENT_TIMESTAMP"
+                ),
+                params![id, data],
             )
             .map_err(storage)?;
             Ok(())

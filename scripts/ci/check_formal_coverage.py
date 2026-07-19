@@ -8,7 +8,13 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 LEDGER = ROOT / "formal" / "coverage.json"
-ALLOWED = {"machine_linked", "modeled_only", "executable_only", "external"}
+ALLOWED = {
+    "machine_linked",
+    "kernel_proved",
+    "modeled_only",
+    "executable_only",
+    "external",
+}
 
 
 def fail(message: str) -> None:
@@ -60,17 +66,41 @@ for obligation in obligations:
             fail(f"{obligation_id} is machine-linked without a formal model or proof")
         if not has_executable_link:
             fail(f"{obligation_id} is machine-linked without executable Rust evidence")
+    elif status == "kernel_proved":
+        if not has_executable_link:
+            fail(f"{obligation_id} is kernel-proved without production Rust evidence")
+        harnesses = obligation.get("proof_harnesses", [])
+        if not harnesses:
+            fail(f"{obligation_id} is kernel-proved without named Kani harnesses")
+        if len(harnesses) != len(set(harnesses)):
+            fail(f"{obligation_id} contains duplicate proof harnesses")
+        source = "\n".join(
+            (ROOT / relative).read_text(encoding="utf-8")
+            for relative in evidence
+            if relative.startswith("crates/") and relative.endswith(".rs")
+        )
+        formal_gate = (ROOT / "scripts/ci/check_formal.sh").read_text(encoding="utf-8")
+        for harness in harnesses:
+            if f"fn {harness}" not in source:
+                fail(f"{obligation_id} names missing Kani harness {harness}")
+            if f"--harness {harness}" not in formal_gate:
+                fail(f"{obligation_id} Kani harness {harness} is absent from strict CI")
     elif status == "modeled_only" and not has_formal_model:
         fail(f"{obligation_id} is modeled-only without a formal model")
     elif status == "executable_only" and not has_executable_link:
         fail(f"{obligation_id} is executable-only without executable Rust evidence")
 
 formalizable = [item for item in obligations if item["formalizable"]]
-linked = [item for item in formalizable if item["status"] == "machine_linked"]
+linked = [
+    item
+    for item in formalizable
+    if item["status"] in {"machine_linked", "kernel_proved"}
+]
 ratio = len(linked) / len(formalizable) if formalizable else 0.0
 print(
     f"formal safety coverage: {len(linked)}/{len(formalizable)} "
-    f"machine-linked obligations = {ratio:.1%} (required {minimum:.1%})"
+    f"machine-linked or kernel-proved obligations = {ratio:.1%} "
+    f"(required {minimum:.1%})"
 )
 if ratio < minimum:
     fail("coverage is below the required threshold")

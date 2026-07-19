@@ -131,21 +131,22 @@ impl SqliteManagedSessionRepository {
 
 #[async_trait]
 impl ManagedSessionRepository for SqliteManagedSessionRepository {
-    async fn save(&self, session: PersistedSession) {
+    async fn save_owned(&self, owner_scope: &str, session: PersistedSession) {
         let metadata_json = metadata_str(&session);
         let mcp_json = mcp_str(&session);
         let conn = self.conn.lock().expect("session store mutex poisoned");
         conn.execute(
             "INSERT INTO managed_session
-                (session_id, agent_id, model, title, metadata_json, environment_id, mcp_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                (session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, scope_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(session_id) DO UPDATE SET
                 agent_id = excluded.agent_id,
                 model = excluded.model,
                 title = excluded.title,
                 metadata_json = excluded.metadata_json,
                 environment_id = excluded.environment_id,
-                mcp_json = excluded.mcp_json",
+                mcp_json = excluded.mcp_json,
+                scope_id = excluded.scope_id",
             params![
                 session.session_id,
                 session.agent_id,
@@ -154,6 +155,7 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                 metadata_json,
                 session.environment_id,
                 mcp_json,
+                owner_scope,
             ],
         )
         .expect("persist managed session");
@@ -192,15 +194,6 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
             )
             .expect("decode managed session"),
         )
-    }
-
-    async fn set_owner(&self, session_id: &str, scope: &str) {
-        let conn = self.conn.lock().expect("session store mutex poisoned");
-        conn.execute(
-            "UPDATE managed_session SET scope_id = ?2 WHERE session_id = ?1",
-            params![session_id, scope],
-        )
-        .expect("stamp managed session owner");
     }
 
     async fn owner(&self, session_id: &str) -> Option<String> {
@@ -243,18 +236,19 @@ impl PostgresManagedSessionRepository {
 
 #[async_trait]
 impl ManagedSessionRepository for PostgresManagedSessionRepository {
-    async fn save(&self, session: PersistedSession) {
+    async fn save_owned(&self, owner_scope: &str, session: PersistedSession) {
         sqlx::query(
             "INSERT INTO managed_session \
-                (session_id, agent_id, model, title, metadata_json, environment_id, mcp_json) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7) \
+                (session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, scope_id) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
              ON CONFLICT (session_id) DO UPDATE SET \
                 agent_id = excluded.agent_id, \
                 model = excluded.model, \
                 title = excluded.title, \
                 metadata_json = excluded.metadata_json, \
                 environment_id = excluded.environment_id, \
-                mcp_json = excluded.mcp_json",
+                mcp_json = excluded.mcp_json, \
+                scope_id = excluded.scope_id",
         )
         .bind(&session.session_id)
         .bind(&session.agent_id)
@@ -263,6 +257,7 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         .bind(metadata_str(&session))
         .bind(&session.environment_id)
         .bind(mcp_str(&session))
+        .bind(owner_scope)
         .execute(&self.pool)
         .await
         .expect("persist managed session");
@@ -291,15 +286,6 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
             )
             .expect("decode managed session"),
         )
-    }
-
-    async fn set_owner(&self, session_id: &str, scope: &str) {
-        sqlx::query("UPDATE managed_session SET scope_id = $2 WHERE session_id = $1")
-            .bind(session_id)
-            .bind(scope)
-            .execute(&self.pool)
-            .await
-            .expect("stamp managed session owner");
     }
 
     async fn owner(&self, session_id: &str) -> Option<String> {
@@ -375,8 +361,7 @@ mod tests {
         let path = path.to_string_lossy().to_string();
         {
             let repo = SqliteManagedSessionRepository::open(&path).unwrap();
-            repo.save(sample("sesn_1")).await;
-            repo.set_owner("sesn_1", "ws_a").await;
+            repo.save_owned("ws_a", sample("sesn_1")).await;
             assert_eq!(repo.owner("sesn_1").await, Some("ws_a".to_string()));
         }
         // After a restart the owner is still readable — the cross-process fence input
@@ -463,8 +448,8 @@ mod tests {
         assert_eq!(repo.get("sesn_1").await, Some(updated));
     }
 
-    /// Postgres parity for the ADR-0051 owner `scope_id` — the same `set_owner` / `owner`
-    /// + default-seed assertions the sqlite `owner_scope_is_recorded_and_survives_a_reopen`
+    /// Postgres parity for the ADR-0051 owner `scope_id` — the same atomic
+    /// `save_owned` / `owner` + default-seed assertions the SQLite test
     /// test has, which the pg test previously OMITTED. A second pool over the same schema
     /// stands in for a restart (the cross-process fence input the edge guard reads). Skips
     /// when no Postgres is reachable (`AWAKEN_TEST_DATABASE_URL`), isolated in its schema.
@@ -506,12 +491,11 @@ mod tests {
             }
         };
 
-        // First "process": save + stamp an owner.
+        // First "process": save the row and owner atomically.
         let repo = PostgresManagedSessionRepository::with_pool(pool().await)
             .await
             .expect("store");
-        repo.save(sample("sesn_1")).await;
-        repo.set_owner("sesn_1", "ws_a").await;
+        repo.save_owned("ws_a", sample("sesn_1")).await;
         assert_eq!(repo.owner("sesn_1").await, Some("ws_a".to_string()));
 
         // Second "process": a fresh pool over the same schema still reads the owner.

@@ -190,11 +190,7 @@ impl CredentialPool {
     pub fn selection_order(&self) -> Vec<&CredentialPoolMember> {
         let mut members: Vec<&CredentialPoolMember> =
             self.members.iter().filter(|m| m.enabled).collect();
-        members.sort_by(|a, b| {
-            a.ordinal
-                .cmp(&b.ordinal)
-                .then_with(|| a.credential_source_id.0.cmp(&b.credential_source_id.0))
-        });
+        members.sort_by(|a, b| member_ordering(a, b));
         members
     }
 
@@ -210,8 +206,77 @@ impl CredentialPool {
     ) -> Vec<&CredentialPoolMember> {
         self.selection_order()
             .into_iter()
-            .filter(|m| ledger.is_available(&m.credential_source_id, now_ms))
+            .filter(|m| {
+                member_is_eligible(m.enabled, ledger.state(&m.credential_source_id, now_ms))
+            })
             .collect()
+    }
+}
+
+#[must_use]
+pub const fn member_is_eligible(
+    enabled: bool,
+    availability: crate::availability::AvailabilityState,
+) -> bool {
+    enabled && availability.is_available()
+}
+
+fn member_ordering(a: &CredentialPoolMember, b: &CredentialPoolMember) -> std::cmp::Ordering {
+    a.ordinal
+        .cmp(&b.ordinal)
+        .then_with(|| a.credential_source_id.0.cmp(&b.credential_source_id.0))
+}
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+    use crate::availability::{AvailabilityState, availability_at};
+
+    #[kani::proof]
+    fn disabled_credential_pool_members_are_never_eligible() {
+        let state = match kani::any::<u8>() % 3 {
+            0 => AvailabilityState::Available,
+            1 => AvailabilityState::CooledDown {
+                retry_at_ms: kani::any(),
+            },
+            _ => AvailabilityState::Exhausted,
+        };
+        assert!(!member_is_eligible(false, state));
+    }
+
+    #[kani::proof]
+    fn credential_cooldown_boundary_is_exact_and_inclusive() {
+        let deadline = kani::any::<u64>();
+        let now = kani::any::<u64>();
+        let state = availability_at(false, Some(deadline), now);
+        assert_eq!(state.is_available(), now >= deadline);
+    }
+
+    #[kani::proof]
+    fn exhausted_credentials_are_unavailable_at_every_time() {
+        let state = availability_at(true, Some(kani::any()), kani::any());
+        assert_eq!(state, AvailabilityState::Exhausted);
+        assert!(!state.is_available());
+    }
+
+    #[kani::proof]
+    fn a_pool_with_no_enabled_available_member_fails_closed() {
+        let enabled = [kani::any::<bool>(), kani::any(), kani::any()];
+        let available = [kani::any::<bool>(), kani::any(), kani::any()];
+        let mut selected = None;
+        for index in 0..3 {
+            let state = if available[index] {
+                AvailabilityState::Available
+            } else {
+                AvailabilityState::Exhausted
+            };
+            if selected.is_none() && member_is_eligible(enabled[index], state) {
+                selected = Some(index);
+            }
+        }
+        if (0..3).all(|i| !enabled[i] || !available[i]) {
+            assert!(selected.is_none());
+        }
     }
 }
 
@@ -236,6 +301,10 @@ pub struct CredentialCreateParams {
 pub trait SecretStore: Send + Sync {
     async fn put(&self, r: &SecretRef, secret: RedactedString) -> Result<(), CredentialError>;
     async fn get(&self, r: &SecretRef) -> Result<RedactedString, CredentialError>;
+    /// Idempotently remove material. Credential creation uses this as its
+    /// compensation edge when the secret write succeeds but the secret-free row
+    /// cannot be committed.
+    async fn delete(&self, r: &SecretRef) -> Result<(), CredentialError>;
 }
 
 /// A credential-domain failure.
@@ -274,6 +343,7 @@ pub enum CredentialError {
 pub trait SealedBlobStore: Send + Sync {
     async fn put_blob(&self, r: &SecretRef, blob: Vec<u8>) -> Result<(), CredentialError>;
     async fn get_blob(&self, r: &SecretRef) -> Result<Vec<u8>, CredentialError>;
+    async fn delete_blob(&self, r: &SecretRef) -> Result<(), CredentialError>;
 }
 
 /// In-memory [`SealedBlobStore`] — the default behind
@@ -309,6 +379,11 @@ impl SealedBlobStore for InMemorySealedBlobStore {
             .cloned()
             .ok_or_else(|| CredentialError::SecretNotFound(r.0.clone()))
     }
+
+    async fn delete_blob(&self, r: &SecretRef) -> Result<(), CredentialError> {
+        self.blobs.lock().expect("sealed blob mutex").remove(&r.0);
+        Ok(())
+    }
 }
 
 /// In-memory [`SecretStore`] (dev / tests). Real backends encrypt at rest.
@@ -341,6 +416,11 @@ impl SecretStore for InMemorySecretStore {
             .get(&r.0)
             .map(|v| RedactedString::new(v.clone()))
             .ok_or_else(|| CredentialError::SecretNotFound(r.0.clone()))
+    }
+
+    async fn delete(&self, r: &SecretRef) -> Result<(), CredentialError> {
+        self.map.lock().expect("secret store mutex").remove(&r.0);
+        Ok(())
     }
 }
 
@@ -808,6 +888,9 @@ mod tests {
         }
         async fn get(&self, r: &SecretRef) -> Result<RedactedString, CredentialError> {
             Err(CredentialError::SecretNotFound(r.0.clone()))
+        }
+        async fn delete(&self, _r: &SecretRef) -> Result<(), CredentialError> {
+            Ok(())
         }
     }
 

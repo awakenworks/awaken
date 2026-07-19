@@ -82,6 +82,10 @@ impl SecretStore for SealedAeadSecretStore {
         let text = String::from_utf8(plaintext).map_err(|_| CredentialError::Seal)?;
         Ok(RedactedString::new(text))
     }
+
+    async fn delete(&self, r: &SecretRef) -> Result<(), CredentialError> {
+        self.blobs.delete_blob(r).await
+    }
 }
 
 /// Parse a seal-key hex string into the 32-byte AEAD key

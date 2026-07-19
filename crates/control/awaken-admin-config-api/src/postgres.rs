@@ -238,6 +238,55 @@ impl WebhookStore for PostgresAdminStore {
                 > 0
         })
     }
+    fn enqueue_outbox(&self, event: awaken_config_resolver::WebhookOutboxEvent) -> bool {
+        let sql = format!(
+            "INSERT INTO {NS}_webhook_outbox (event_id, data) VALUES ($1, $2) \
+             ON CONFLICT (event_id) DO NOTHING"
+        );
+        let pool = self.pool.clone();
+        block(&self.handle, move || async move {
+            sqlx::query(&sql)
+                .bind(&event.id)
+                .bind(sqlx::types::Json(&event))
+                .execute(&pool)
+                .await
+                .expect("enqueue webhook outbox event")
+                .rows_affected()
+                > 0
+        })
+    }
+    fn pending_outbox(&self) -> Vec<awaken_config_resolver::WebhookOutboxEvent> {
+        let sql = format!("SELECT data FROM {NS}_webhook_outbox ORDER BY created_at, event_id");
+        let pool = self.pool.clone();
+        block(&self.handle, move || async move {
+            sqlx::query(&sql)
+                .fetch_all(&pool)
+                .await
+                .expect("list webhook outbox")
+                .into_iter()
+                .map(|row| {
+                    let sqlx::types::Json(event) = row
+                        .try_get::<sqlx::types::Json<awaken_config_resolver::WebhookOutboxEvent>, _>("data")
+                        .expect("decode webhook outbox row");
+                    event
+                })
+                .collect()
+        })
+    }
+    fn complete_outbox(&self, event_id: &str) -> bool {
+        let sql = format!("DELETE FROM {NS}_webhook_outbox WHERE event_id = $1");
+        let pool = self.pool.clone();
+        let event_id = event_id.to_string();
+        block(&self.handle, move || async move {
+            sqlx::query(&sql)
+                .bind(event_id)
+                .execute(&pool)
+                .await
+                .expect("complete webhook outbox event")
+                .rows_affected()
+                > 0
+        })
+    }
 }
 
 impl InferenceProfileStore for PostgresAdminStore {

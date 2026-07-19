@@ -871,9 +871,9 @@ async fn drive(
             context,
         );
         // A cancel aborts a hung or long inference in flight rather than
-        // awaiting for the step boundary. Dropping the inference future may
-        // abandon a half-open breaker probe; recording that reopens the
-        // circuit for a later re-probe without polluting the failure count.
+        // awaiting for the step boundary. Dropping the inference future drops
+        // its generation-bound circuit permit, which safely reopens an active
+        // half-open probe without a separate check-then-record race.
         let inference = match &context.cancellation {
             Some(token) => {
                 tokio::select! {
@@ -885,9 +885,6 @@ async fn drive(
             None => Some(inference.await),
         };
         let Some(inference) = inference else {
-            runtime
-                .circuit_breaker()
-                .record_abandoned_probe(&resolved.spec.model_binding.model_ref, runtime.metrics());
             disposition = Some(RunDisposition::ended(run_id.clone(), EndCause::Cancelled));
             break;
         };

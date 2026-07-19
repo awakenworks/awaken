@@ -15,4 +15,18 @@ pub trait SessionLifecycleSink: Send + Sync {
     /// cloud-only (ADR-0048 D4), so the core never resolves it. Must not block the
     /// caller for long — deliver out-of-band.
     async fn emit(&self, session_id: &str, workspace_id: Option<&str>, event_type: &str);
+
+    /// Emit using the durable committed fact identity. Adapters predating the
+    /// outbox may rely on the compatibility default; durable sinks override this
+    /// method so retries and restarts keep one logical event id.
+    async fn emit_fact(
+        &self,
+        fact_id: &str,
+        session_id: &str,
+        workspace_id: Option<&str>,
+        event_type: &str,
+    ) {
+        let _ = fact_id;
+        self.emit(session_id, workspace_id, event_type).await;
+    }
 }

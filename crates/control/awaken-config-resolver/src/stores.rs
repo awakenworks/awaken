@@ -181,11 +181,32 @@ pub trait WebhookStore: Send + Sync {
     fn list(&self, workspace_id: &str) -> Vec<WebhookEndpointDef>;
     /// Remove by id; `true` if a row was removed (idempotent unsubscribe).
     fn delete(&self, id: &str) -> bool;
+    /// Insert one logical lifecycle event if absent. The stable event id is the
+    /// idempotency key across dispatcher retries and process restarts.
+    fn enqueue_outbox(&self, event: WebhookOutboxEvent) -> bool;
+    fn pending_outbox(&self) -> Vec<WebhookOutboxEvent>;
+    fn complete_outbox(&self, event_id: &str) -> bool;
+}
+
+/// Secret-free durable webhook outbox row. Subscription secrets are resolved
+/// only at dispatch time; this row is safe to persist in the admin database.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebhookOutboxEvent {
+    pub id: String,
+    pub created_at: String,
+    pub event_type: String,
+    pub object_id: String,
+    pub workspace_id: String,
+    pub organization_id: Option<String>,
+    pub timestamp: i64,
 }
 
 /// The default in-memory [`WebhookStore`], keyed by endpoint id.
 #[derive(Default)]
-pub struct InMemoryWebhookStore(std::sync::Mutex<HashMap<String, WebhookEndpointDef>>);
+pub struct InMemoryWebhookStore {
+    endpoints: std::sync::Mutex<HashMap<String, WebhookEndpointDef>>,
+    outbox: std::sync::Mutex<HashMap<String, WebhookOutboxEvent>>,
+}
 
 impl InMemoryWebhookStore {
     #[must_use]
@@ -196,14 +217,17 @@ impl InMemoryWebhookStore {
 
 impl WebhookStore for InMemoryWebhookStore {
     fn put(&self, def: WebhookEndpointDef) {
-        self.0.lock().expect("webhooks").insert(def.id.clone(), def);
+        self.endpoints
+            .lock()
+            .expect("webhooks")
+            .insert(def.id.clone(), def);
     }
     fn get(&self, id: &str) -> Option<WebhookEndpointDef> {
-        self.0.lock().expect("webhooks").get(id).cloned()
+        self.endpoints.lock().expect("webhooks").get(id).cloned()
     }
     fn list(&self, workspace_id: &str) -> Vec<WebhookEndpointDef> {
         let mut rows: Vec<WebhookEndpointDef> = self
-            .0
+            .endpoints
             .lock()
             .expect("webhooks")
             .values()
@@ -214,7 +238,37 @@ impl WebhookStore for InMemoryWebhookStore {
         rows
     }
     fn delete(&self, id: &str) -> bool {
-        self.0.lock().expect("webhooks").remove(id).is_some()
+        self.endpoints
+            .lock()
+            .expect("webhooks")
+            .remove(id)
+            .is_some()
+    }
+    fn enqueue_outbox(&self, event: WebhookOutboxEvent) -> bool {
+        let mut rows = self.outbox.lock().expect("webhook outbox");
+        if rows.contains_key(&event.id) {
+            return false;
+        }
+        rows.insert(event.id.clone(), event);
+        true
+    }
+    fn pending_outbox(&self) -> Vec<WebhookOutboxEvent> {
+        let mut rows: Vec<_> = self
+            .outbox
+            .lock()
+            .expect("webhook outbox")
+            .values()
+            .cloned()
+            .collect();
+        rows.sort_by(|a, b| a.id.cmp(&b.id));
+        rows
+    }
+    fn complete_outbox(&self, event_id: &str) -> bool {
+        self.outbox
+            .lock()
+            .expect("webhook outbox")
+            .remove(event_id)
+            .is_some()
     }
 }
 
