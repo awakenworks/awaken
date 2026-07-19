@@ -22,7 +22,7 @@ tokio.workspace = true
 tokio-util.workspace = true
 # The database-less worker's HTTP dispatch client (`HttpDispatchQueue`) posts
 # claim/settle over the wire to a cell server's dispatch_transport_router.
-reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "json"] }
 rusqlite = { workspace = true }
 awaken-scoped-migration = { git = "https://github.com/awakenworks/awaken-foundation", rev = "dfa512edd2e5b7e34ad0b05db01b973845f0f9e9", features = ["postgres"] }

@@ -57,7 +57,9 @@ pub fn dispatch_span(traceparent: Option<&str>) -> tracing::Span {
         let cx = opentelemetry::global::get_text_map_propagator(|propagator| {
             propagator.extract(&MapExtractor(&carrier))
         });
-        span.set_parent(cx);
+        // A process without an installed OpenTelemetry layer legitimately has
+        // no subscriber extension to receive the parent.
+        let _ = span.set_parent(cx);
     }
     span
 }
@@ -167,9 +169,10 @@ mod tests {
 
     impl opentelemetry_sdk::trace::SpanExporter for CapturingExporter {
         fn export(
-            &mut self,
+            &self,
             batch: Vec<opentelemetry_sdk::trace::SpanData>,
-        ) -> futures::future::BoxFuture<'static, opentelemetry_sdk::error::OTelSdkResult> {
+        ) -> impl std::future::Future<Output = opentelemetry_sdk::error::OTelSdkResult> + Send
+        {
             use opentelemetry::trace::SpanId;
             let sink = self.0.clone();
             let mut out = sink.lock().unwrap();
@@ -189,7 +192,7 @@ mod tests {
                         .then(|| format!("{:016x}", u64::from_be_bytes(parent.to_bytes()))),
                 });
             }
-            Box::pin(async { Ok(()) })
+            async { Ok(()) }
         }
     }
 

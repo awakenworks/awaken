@@ -17,15 +17,15 @@ axum = { workspace = true }
 futures = "0.3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "registry", "json"] }
-tracing-opentelemetry = "0.29"
-opentelemetry = { version = "0.28", features = ["metrics"] }
-opentelemetry_sdk = { version = "0.28", features = ["rt-tokio", "metrics", "experimental_trace_batch_span_processor_with_async_runtime", "experimental_metrics_periodicreader_with_async_runtime"] }
-opentelemetry-otlp = { version = "0.28", default-features = false, features = ["http-proto", "reqwest-client", "metrics"] }
+tracing-opentelemetry = "0.33"
+opentelemetry = { version = "0.32", features = ["metrics"] }
+opentelemetry_sdk = { version = "0.32", features = ["rt-tokio", "metrics", "experimental_trace_batch_span_processor_with_async_runtime", "experimental_metrics_periodicreader_with_async_runtime"] }
+opentelemetry-otlp = { version = "0.32", default-features = false, features = ["http-proto", "reqwest-client", "metrics"] }
 # The OSS OpenTelemetry→Prometheus bridge, so a role's admin `/metrics` scrape
 # surface exposes OTel instruments (not hand-formatted text). `prometheus` is the
 # registry + text encoder opentelemetry-prometheus writes through.
-opentelemetry-prometheus = "0.28"
-prometheus = { version = "0.13", default-features = false }
+opentelemetry-prometheus = "0.32"
+prometheus = { version = "0.14", default-features = false }
 awaken-runtime-contract = { workspace = true }
 
 [dev-dependencies]

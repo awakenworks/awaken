@@ -48,7 +48,9 @@ pub async fn trace_http(request: Request, next: Next) -> Response {
         http.route = %route,
         http.response.status_code = tracing::field::Empty,
     );
-    span.set_parent(parent_cx);
+    // A process without an installed OpenTelemetry layer legitimately has no
+    // subscriber extension to receive the parent; tracing remains best-effort.
+    let _ = span.set_parent(parent_cx);
 
     let response = async move { next.run(request).await }
         .instrument(span.clone())
@@ -96,9 +98,10 @@ mod tests {
 
     impl opentelemetry_sdk::trace::SpanExporter for CapturingExporter {
         fn export(
-            &mut self,
+            &self,
             batch: Vec<opentelemetry_sdk::trace::SpanData>,
-        ) -> futures::future::BoxFuture<'static, opentelemetry_sdk::error::OTelSdkResult> {
+        ) -> impl std::future::Future<Output = opentelemetry_sdk::error::OTelSdkResult> + Send
+        {
             use opentelemetry::trace::SpanId;
             let sink = self.0.clone();
             let mut out = sink.lock().unwrap();
@@ -120,7 +123,7 @@ mod tests {
                     attributes,
                 });
             }
-            Box::pin(async { Ok(()) })
+            async { Ok(()) }
         }
     }
 
