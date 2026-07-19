@@ -138,7 +138,7 @@ export default function Transcript({
 }: TranscriptProps) {
   const app = useApp();
   const { log, results, pendingIds, running, freshCount, applyPending, send, sendError, loadError } =
-    useSessionLog(base, queryKey, live);
+    useSessionLog(base, queryKey, live, composer);
   const [draft, setDraft] = useState("");
   const [model, setModel] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);

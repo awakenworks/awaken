@@ -1,7 +1,6 @@
-// The live session-log hook: an events query + committed-replay SSE folded into
-// a pending buffer, plus a `send` mutation for inbound events. Live frames land
-// in `pending` (surfaced as an "N new · Refresh" affordance) instead of tearing
-// the reading position. Shared by every transcript projection.
+// The live session-log hook: an events query + committed-replay SSE, plus a `send`
+// mutation for inbound events. Interactive transcripts can follow frames immediately;
+// read-only/history views may keep them in a pending buffer to preserve scroll position.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
@@ -37,6 +36,7 @@ export function useSessionLog(
   base: string,
   queryKey: readonly unknown[],
   live = true,
+  followLive = false,
 ): SessionLog {
   const qc = useQueryClient();
   const [pending, setPending] = useState<SessionEvent[]>([]);
@@ -48,7 +48,9 @@ export function useSessionLog(
   });
   const log = useMemo(() => events.data ?? [], [events.data]);
 
-  // Committed-replay SSE → pending buffer → banner (never tears the position).
+  // Committed-replay SSE. A chat must visibly react as soon as work starts; history
+  // readers retain the explicit refresh buffer so an incoming frame cannot move text
+  // under their cursor.
   useEffect(() => {
     if (!live) return;
     const source = new EventSource(streamUrl(`${base}/events/stream`));
@@ -56,6 +58,10 @@ export function useSessionLog(
       try {
         const ev = JSON.parse(raw.data as string) as SessionEvent;
         if (!ev.id) return;
+        if (followLive) {
+          qc.setQueryData<SessionEvent[]>(queryKey, (old) => mergeEvents(old ?? [], [ev]));
+          return;
+        }
         setPending((buf) => (buf.some((b) => b.id === ev.id) ? buf : [...buf, ev]));
       } catch {
         /* non-JSON frame */
@@ -64,7 +70,10 @@ export function useSessionLog(
     for (const name of SSE_EVENT_NAMES) source.addEventListener(name, onAny);
     source.onerror = () => source.close();
     return () => source.close();
-  }, [base, live]);
+  // `queryKey` is deliberately represented by `base` here. Callers often pass an
+  // inline array; depending on its identity would tear down and reopen SSE on every
+  // transcript render (including every incoming frame).
+  }, [base, followLive, live, qc]);
 
   const freshCount = pending.filter((p) => !log.some((e) => e.id === p.id)).length;
   const applyPending = () => {

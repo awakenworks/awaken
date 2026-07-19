@@ -183,7 +183,8 @@ export default function EnvironmentsSurface() {
               <th>Environment</th>
               <th>{app.t("Name", "名称")}</th>
               <th>{app.t("Runtime", "运行时")}</th>
-              <th>{app.t("Networking", "网络")}</th>
+              <th>{app.t("Placement", "运行位置")}</th>
+              <th>{app.t("Isolation / networking", "隔离/网络")}</th>
               <th>{app.t("Queue", "队列")}</th>
               <th />
             </tr>
@@ -194,11 +195,16 @@ export default function EnvironmentsSurface() {
                 <td className="mono">{e.id}</td>
                 <td>{e.name}</td>
                 <td>
+                  <Pill tone={e.config.runtime ? "agent" : "neutral"}>
+                    {runtimeLabel(e.config.runtime)}
+                  </Pill>
+                </td>
+                <td>
                   <Pill tone={e.config.type === "self_hosted" ? "agent" : "neutral"}>
                     {e.config.type}
                   </Pill>
                 </td>
-                <td className="mut">{e.config.networking?.type ?? "—"}</td>
+                <td className="mut">{isolationLabel(e.config)}</td>
                 <td>{e.archived_at ? <span className="mut">—</span> : <EnvQueue id={e.id} />}</td>
                 <td style={{ textAlign: "right" }}>
                   {e.archived_at ? (
@@ -218,7 +224,7 @@ export default function EnvironmentsSurface() {
             ))}
             {rows.length === 0 && (
               <tr>
-                <td colSpan={6} className="mut">
+                <td colSpan={7} className="mut">
                   {envs.isLoading ? "…" : app.t("No environments yet.", "还没有运行环境。")}
                 </td>
               </tr>
@@ -229,4 +235,20 @@ export default function EnvironmentsSurface() {
       {creating && <CreateModal onClose={() => setCreating(false)} />}
     </>
   );
+}
+
+export function runtimeLabel(runtime?: string): string {
+  if (!runtime || runtime === "awaken") return "Native";
+  const cli = runtime.startsWith("acp:") ? runtime.slice(4) : runtime;
+  const known: Record<string, string> = { claude: "Claude Code", codex: "Codex", gemini: "Gemini CLI", opencode: "OpenCode" };
+  return `${known[cli] ?? cli} · ACP`;
+}
+
+export function isolationLabel(config: EnvironmentConfig): string {
+  if (config.sandbox) {
+    const isolation = config.sandbox.isolation ?? "sandbox";
+    const network = config.sandbox.network?.mode ?? "provider network";
+    return `${isolation} · ${network === "none" ? "no egress" : network}`;
+  }
+  return config.networking?.type ?? "provider default";
 }
