@@ -24,12 +24,16 @@ Record against the real console/backend (and supply `KIMI_KEY` for live-model fl
 pnpm record 06-ai-state-machine
 ```
 
-Recommended release order:
+Recommended release order (see `VIDEO_STRATEGY.md` for the user-value map):
 
 1. `00-platform-overview` — the short promise and capability-contract proof.
 2. `01`–`06` — model supply, agent authoring, policy, resources/trace, AI
    authoring, and State Machine runtime enforcement.
 3. `07-runtime-sandbox` — Native/ACP portability plus a persisted sandbox policy.
+4. `08-agent-control-plane` — context, compaction, Memory prompts, reminders, and
+   completion constraints configured together.
+5. `09-protocol-composition` — Managed Agents sessions compose ACP, Vault, and
+   direct inline MCP without changing the Agent.
 
 The current repository's `awaken` binary starts the aggregated API/control/runtime
 server. It does not embed the Vite console assets, so “run one binary and open the UI”
