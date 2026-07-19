@@ -104,6 +104,16 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness child_result_is_consumed_only_from_ready
   cargo kani -p awaken-runtime-contract \
     --harness terminal_delivery_phases_never_reopen
+  cargo kani -p awaken-mcp-server-core \
+    --harness one_request_has_at_most_one_final_response
+  cargo kani -p awaken-mcp-server-core \
+    --harness notifications_never_have_a_jsonrpc_response
+  cargo kani -p awaken-mcp-server-core \
+    --harness final_response_is_progress_absorbing
+  cargo kani -p awaken-mcp-server-core \
+    --harness rejected_requests_never_enter_the_host
+  cargo kani -p awaken-mcp-server-core \
+    --harness cancellation_never_produces_a_success_result
 else
   echo "skipped Kani: install with 'cargo install --locked kani-verifier && cargo kani setup'"
   missing=1
@@ -201,6 +211,8 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/credential-inventory" \
     -config formal/tla/CredentialInventory.cfg formal/tla/CredentialInventory.tla
+    -metadir "$tlc_state_root/mcp-server" \
+    -config formal/tla/McpServer.cfg formal/tla/McpServer.tla
   for trace_config in "$rendered_trace_dir"/RustTrace*.cfg; do
     trace_module="${trace_config%.cfg}.tla"
     trace_name="$(basename "$trace_module" .tla)"

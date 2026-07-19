@@ -143,7 +143,7 @@ impl HttpShared {
             (Some(method), Some(id)) => {
                 let params = value.get("params").cloned().unwrap_or(Value::Null);
                 let reply = match &self.request_handler {
-                    Some(handler) => match handler.handle(&method, params).await {
+                    Some(handler) => match handler.handle(&id, &method, params).await {
                         Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
                         Err(err) => json!({
                             "jsonrpc": "2.0", "id": id,

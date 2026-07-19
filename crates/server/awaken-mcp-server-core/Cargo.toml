@@ -1,0 +1,21 @@
+[package]
+name = "awaken-mcp-server-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Runtime-neutral MCP server lifecycle, dispatch, and Streamable HTTP semantics"
+
+[dependencies]
+awaken-mcp-wire.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["sync", "rt", "macros"] }
+http = "1"
+mcp = { package = "model-context-protocol", version = "0.2", default-features = false, features = ["client"] }
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

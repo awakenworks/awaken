@@ -1,0 +1,18 @@
+[package]
+name = "awaken-mcp-server-testkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Reusable MCP server conformance suite for host adapters"
+
+[dependencies]
+awaken-mcp-server-core.workspace = true
+awaken-mcp-wire.workspace = true
+async-trait.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[lints]
+workspace = true
