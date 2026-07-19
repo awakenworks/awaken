@@ -32,7 +32,7 @@ awaken-run-executor-acp = { workspace = true }
 awaken-observability = { workspace = true }
 # The admin `/metrics` gauges are OTel observable instruments (rendered via the
 # Prometheus exporter in awaken-observability).
-opentelemetry = { version = "0.28", features = ["metrics"] }
+opentelemetry = { version = "0.32", features = ["metrics"] }
 # The Managed wire aggregates the composition builds directly: session repos, the
 # vault + environment state shared across both planes.
 awaken-protocol-managed = { workspace = true }

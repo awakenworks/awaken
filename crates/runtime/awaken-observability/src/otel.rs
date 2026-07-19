@@ -199,13 +199,13 @@ mod file_exporter {
 
     impl SpanExporter for JsonFileSpanExporter {
         fn export(
-            &mut self,
+            &self,
             batch: Vec<SpanData>,
-        ) -> futures::future::BoxFuture<'static, OTelSdkResult> {
+        ) -> impl std::future::Future<Output = OTelSdkResult> + Send {
             let result = self
                 .write_batch(&batch)
                 .map_err(|e| OTelSdkError::InternalFailure(e.to_string()));
-            Box::pin(async move { result })
+            async move { result }
         }
     }
 }
