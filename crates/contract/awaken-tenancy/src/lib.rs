@@ -32,6 +32,36 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ScopeId(pub String);
 
+/// Opaque execution ownership coordinate carried by a durable dispatch.
+///
+/// This value is serializable and therefore is an identity claim, not proof of
+/// authorization. An ingress edge must resolve it against an authenticated
+/// [`Authority`] and pass the resulting [`VerifiedExecutionScope`] to trusted
+/// composition code before constructing a dispatch.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ExecutionScopeRef(pub ScopeId);
+
+/// A scope whose membership in an authenticated principal's authority has been
+/// checked. It deliberately does not implement serialization: only the opaque
+/// [`ExecutionScopeRef`] crosses a durable or network boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedExecutionScope(ExecutionScopeRef);
+
+impl VerifiedExecutionScope {
+    /// Consume the verified value into its durable representation.
+    #[must_use]
+    pub fn into_ref(self) -> ExecutionScopeRef {
+        self.0
+    }
+}
+
+impl AsRef<ExecutionScopeRef> for VerifiedExecutionScope {
+    fn as_ref(&self) -> &ExecutionScopeRef {
+        &self.0
+    }
+}
+
 /// The tenant workspace an ingress edge resolved for a session, handed to the core
 /// so an edge projection (webhooks / usage) can stamp it. This is a **tenancy**
 /// concept (orthogonal to the session-runtime contract, which never sees tenancy):
@@ -138,6 +168,20 @@ impl Authority {
     #[must_use]
     pub fn covers(&self, scope: &ScopeId) -> bool {
         self.reachable.iter().any(|s| s == scope)
+    }
+
+    /// Turn an untrusted opaque reference into a process-local verified scope.
+    pub fn verify_execution_scope(
+        &self,
+        scope: &ExecutionScopeRef,
+    ) -> Result<VerifiedExecutionScope, ScopeRejection> {
+        if self.covers(&scope.0) {
+            Ok(VerifiedExecutionScope(scope.clone()))
+        } else {
+            Err(ScopeRejection::NotAuthorized {
+                selected: scope.0.clone(),
+            })
+        }
     }
 }
 
@@ -269,6 +313,27 @@ mod tests {
         assert_eq!(a.as_str(), "wrkspc_acme");
         assert_eq!(a.to_string(), "wrkspc_acme");
         assert_eq!(a, ScopeId::from("wrkspc_acme".to_string()));
+    }
+
+    #[test]
+    fn execution_scope_is_verified_against_authenticated_authority() {
+        let authority = Authority::reaching([ws("ws_a"), ws("ws_b")]);
+        let allowed = ExecutionScopeRef(ws("ws_b"));
+        assert_eq!(
+            authority
+                .verify_execution_scope(&allowed)
+                .expect("authority covers scope")
+                .into_ref(),
+            allowed
+        );
+
+        let denied = ExecutionScopeRef(ws("ws_z"));
+        assert_eq!(
+            authority.verify_execution_scope(&denied),
+            Err(ScopeRejection::NotAuthorized {
+                selected: ws("ws_z")
+            })
+        );
     }
 
     #[test]

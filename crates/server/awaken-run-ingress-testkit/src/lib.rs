@@ -30,6 +30,29 @@ pub struct ConformanceCapabilities {
     pub sandbox_binding: bool,
 }
 
+/// Optional bridge for transports whose authoritative clock lives on the server.
+/// Direct stores ignore it because their `now_ms` command argument is already the
+/// clock input under test.
+pub trait ConformanceClock: Send + Sync {
+    fn set(&self, now_ms: u64);
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DirectCommandClock;
+
+impl ConformanceClock for DirectCommandClock {
+    fn set(&self, _now_ms: u64) {}
+}
+
+impl<F> ConformanceClock for F
+where
+    F: Fn(u64) + Send + Sync,
+{
+    fn set(&self, now_ms: u64) {
+        self(now_ms);
+    }
+}
+
 impl ConformanceCapabilities {
     /// Full store/decorator behaviour.
     pub const LOCAL_STORE: Self = Self {
@@ -55,13 +78,28 @@ pub async fn assert_dispatch_conformance(
     namespace: &str,
     capabilities: ConformanceCapabilities,
 ) {
-    exact_claim_recovery_and_fencing(store, namespace).await;
-    parent_mediated_commands_are_atomic(store, namespace).await;
-    current_claim_guard_is_exact(store, namespace, capabilities).await;
-    sandbox_binding_survives_recovery(store, namespace, capabilities).await;
+    assert_dispatch_conformance_with_clock(store, namespace, capabilities, &DirectCommandClock)
+        .await;
 }
 
-async fn exact_claim_recovery_and_fencing(store: &dyn DispatchQueue, ns: &str) {
+pub async fn assert_dispatch_conformance_with_clock(
+    store: &dyn DispatchQueue,
+    namespace: &str,
+    capabilities: ConformanceCapabilities,
+    clock: &dyn ConformanceClock,
+) {
+    exact_claim_recovery_and_fencing(store, namespace, clock).await;
+    parent_mediated_commands_are_atomic(store, namespace, clock).await;
+    current_claim_guard_is_exact(store, namespace, capabilities, clock).await;
+    sandbox_binding_survives_recovery(store, namespace, capabilities, clock).await;
+}
+
+async fn exact_claim_recovery_and_fencing(
+    store: &dyn DispatchQueue,
+    ns: &str,
+    clock: &dyn ConformanceClock,
+) {
+    clock.set(0);
     let target = run_id(ns, "target");
     let unrelated = run_id(ns, "unrelated");
     store
@@ -96,6 +134,7 @@ async fn exact_claim_recovery_and_fencing(store: &dyn DispatchQueue, ns: &str) {
         SettleOutcome::Applied
     );
 
+    clock.set(LEASE_MS);
     assert!(
         store
             .claim_run(&target, "conformance-b", LEASE_MS, LEASE_MS)
@@ -104,6 +143,7 @@ async fn exact_claim_recovery_and_fencing(store: &dyn DispatchQueue, ns: &str) {
             .is_none(),
         "a lease remains live at its exact expiry boundary"
     );
+    clock.set(LEASE_MS + 1);
     let recovered = store
         .claim_run(&target, "conformance-b", LEASE_MS, LEASE_MS + 1)
         .await
@@ -127,7 +167,12 @@ async fn exact_claim_recovery_and_fencing(store: &dyn DispatchQueue, ns: &str) {
     );
 }
 
-async fn parent_mediated_commands_are_atomic(store: &dyn DispatchQueue, ns: &str) {
+async fn parent_mediated_commands_are_atomic(
+    store: &dyn DispatchQueue,
+    ns: &str,
+    clock: &dyn ConformanceClock,
+) {
+    clock.set(10_000);
     let child = run_id(ns, "child");
     let claimed = store
         .claim_new_run(
@@ -156,6 +201,7 @@ async fn parent_mediated_commands_are_atomic(store: &dyn DispatchQueue, ns: &str
         SettleOutcome::Applied
     );
 
+    clock.set(10_001);
     let message_id = format!("{ns}-child-answer");
     let resumed = store
         .deliver_and_claim(
@@ -202,10 +248,12 @@ async fn current_claim_guard_is_exact(
     store: &dyn DispatchQueue,
     ns: &str,
     capabilities: ConformanceCapabilities,
+    clock: &dyn ConformanceClock,
 ) {
     if !capabilities.local_commit_guard {
         return;
     }
+    clock.set(20_000);
     let run = run_id(ns, "guard");
     store
         .enqueue(dispatch(ns, "guard", "guard-thread"))
@@ -248,10 +296,12 @@ async fn sandbox_binding_survives_recovery(
     store: &dyn DispatchQueue,
     ns: &str,
     capabilities: ConformanceCapabilities,
+    clock: &dyn ConformanceClock,
 ) {
     if !capabilities.sandbox_binding {
         return;
     }
+    clock.set(30_000);
     let run = run_id(ns, "sandbox");
     store
         .enqueue(dispatch(ns, "sandbox", "sandbox-thread"))
@@ -267,6 +317,7 @@ async fn sandbox_binding_survives_recovery(
         .bind_sandbox(&run, &sandbox_ref)
         .await
         .expect("bind sandbox");
+    clock.set(first.lease.expires_ms + 1);
     let recovered = store
         .claim_run(
             &run,

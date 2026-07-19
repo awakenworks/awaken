@@ -15,14 +15,22 @@ use awaken_runtime_contract::llm::{
 use awaken_runtime_host::{HostResume, SharedHost, init_shared_dispatch_store};
 
 struct ParentChildModel {
-    calls: AtomicUsize,
+    parent_calls: AtomicUsize,
+    child_calls: AtomicUsize,
 }
 
 #[async_trait::async_trait]
 impl LlmExecutor for ParentChildModel {
-    async fn infer(&self, _request: ChatRequest) -> LlmResult<ChatResponse> {
-        let output = match self.calls.fetch_add(1, Ordering::SeqCst) {
-            0 => AssistantOutput::from_tool_calls(vec![ToolCall {
+    async fn infer(&self, request: ChatRequest) -> LlmResult<ChatResponse> {
+        let messages = serde_json::to_string(&request.messages).expect("chat messages serialize");
+        let is_child = !messages.contains("\"text\":\"start\"");
+        let call = if is_child {
+            self.child_calls.fetch_add(1, Ordering::SeqCst)
+        } else {
+            self.parent_calls.fetch_add(1, Ordering::SeqCst)
+        };
+        let output = match (is_child, call) {
+            (false, 0) => AssistantOutput::from_tool_calls(vec![ToolCall {
                 call_id: "delegate-1".into(),
                 tool_id: awaken_ext_builtin_tools::AGENT_RUN.into(),
                 arguments: serde_json::json!({
@@ -30,7 +38,7 @@ impl LlmExecutor for ParentChildModel {
                     "input": "investigate"
                 }),
             }]),
-            1 => AssistantOutput::from_tool_calls(vec![ToolCall {
+            (true, 0) => AssistantOutput::from_tool_calls(vec![ToolCall {
                 call_id: "child-permission".into(),
                 tool_id: "write".into(),
                 arguments: serde_json::json!({
@@ -38,7 +46,7 @@ impl LlmExecutor for ParentChildModel {
                     "content": "approved child work"
                 }),
             }]),
-            2 => AssistantOutput::text("child result"),
+            (true, _) => AssistantOutput::text("child result"),
             _ => AssistantOutput::text("parent received child result"),
         };
         Ok(ChatResponse {
@@ -65,7 +73,8 @@ async fn child_run_uses_the_durable_scheduler_and_returns_to_its_parent() {
     let host = Arc::new(
         SharedHost::new(
             Arc::new(ParentChildModel {
-                calls: AtomicUsize::new(0),
+                parent_calls: AtomicUsize::new(0),
+                child_calls: AtomicUsize::new(0),
             }),
             "stub",
         )

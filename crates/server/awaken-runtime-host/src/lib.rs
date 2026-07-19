@@ -47,6 +47,7 @@ mod skills;
 mod skills_api;
 mod store;
 mod worker_http;
+mod worker_security;
 
 // The config-authoring plane now lives in the shared `awaken-config-service` crate
 // (control ⊥ execution: `awaken-control` depends on it directly, not on this host).
@@ -110,11 +111,20 @@ pub use crate::tool_catalog::{
     RESERVED_ADMIN_SCOPE, ScopedToolCatalog, StaticToolCatalog, ToolCatalogSource,
 };
 // The per-plane resource routers the composition root merges over one host.
-pub use crate::commit_ingest::{RemoteClaimedRunCommit, RemoteCoordinator, commit_ingest_router};
+pub use crate::commit_ingest::{
+    RemoteClaimedRunCommit, RemoteCoordinator, claimed_commit_ingest_router, commit_ingest_router,
+};
 pub use crate::deployment_config::{
     DeploymentConfig, DispatchBackend, SandboxTier, StoreKind, Wake,
 };
-pub use crate::dispatch_transport::dispatch_transport_router;
+pub use crate::dispatch_transport::{
+    WorkerDispatchService, dispatch_transport_router, dispatch_transport_router_with_service,
+};
+pub use crate::worker_security::{
+    FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, ManualWorkerClock, SystemWorkerClock,
+    VerifiedWorkerContext, WORKER_ID_HEADER, WorkerAuthError, WorkerClock, WorkerLeasePolicy,
+    WorkerRequestAuthenticator,
+};
 // The worker HTTP dispatch client now lives in awaken-run-ingress; re-exported so
 // composition roots keep using `awaken_runtime_host::{HttpDispatchQueue, worker_dispatch_store}`.
 pub use crate::durable_ops::durable_ops_router;

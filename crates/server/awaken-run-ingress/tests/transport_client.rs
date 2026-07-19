@@ -16,6 +16,7 @@
 mod harness;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
@@ -25,6 +26,7 @@ use awaken_run_ingress::{
 };
 use awaken_runtime_contract::resume::ResumeResult;
 use axum::extract::State;
+use axum::http::HeaderMap;
 use axum::routing::post;
 use axum::{Json, Router};
 use serde_json::{Value, json};
@@ -35,8 +37,18 @@ use harness::activation;
 /// over a shared [`MemoryDispatchStore`], bound to an ephemeral port. Returns the
 /// base URL a `HttpDispatchQueue` points at plus the shared store handle, so a test
 /// can assert server-side state directly.
-async fn spawn_transport_server() -> (String, Arc<MemoryDispatchStore>) {
+struct TransportState {
+    store: Arc<MemoryDispatchStore>,
+    now_ms: Arc<AtomicU64>,
+}
+
+async fn spawn_transport_server() -> (String, Arc<MemoryDispatchStore>, Arc<AtomicU64>) {
     let store = Arc::new(MemoryDispatchStore::new());
+    let now_ms = Arc::new(AtomicU64::new(0));
+    let state = Arc::new(TransportState {
+        store: store.clone(),
+        now_ms: now_ms.clone(),
+    });
     let app = Router::new()
         .route("/v1/worker/dispatch/enqueue", post(enqueue))
         .route("/v1/worker/dispatch/claim", post(claim))
@@ -44,7 +56,7 @@ async fn spawn_transport_server() -> (String, Arc<MemoryDispatchStore>) {
         .route("/v1/worker/dispatch/renew", post(renew))
         .route("/v1/worker/dispatch/renew_owned", post(renew_owned))
         .route("/v1/worker/dispatch/settle", post(settle))
-        .with_state(store.clone());
+        .with_state(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind ephemeral port");
@@ -52,34 +64,55 @@ async fn spawn_transport_server() -> (String, Arc<MemoryDispatchStore>) {
     tokio::spawn(async move {
         axum::serve(listener, app).await.expect("serve");
     });
-    (format!("http://{addr}"), store)
+    (format!("http://{addr}"), store, now_ms)
 }
 
 fn run_id(v: &Value) -> RunId {
     RunId(v["run_id"].as_str().expect("run_id").to_string())
 }
 
-async fn enqueue(
-    State(store): State<Arc<MemoryDispatchStore>>,
-    Json(req): Json<Value>,
-) -> Json<Value> {
+fn worker_id(headers: &HeaderMap) -> &str {
+    headers
+        .get("x-awaken-worker-id")
+        .and_then(|value| value.to_str().ok())
+        .expect("authenticated worker header")
+}
+
+fn assert_server_authority_fields_absent(request: &Value) {
+    for field in ["owner", "lease_ms", "now_ms"] {
+        assert!(
+            request.get(field).is_none(),
+            "client must not send server-authoritative field {field}"
+        );
+    }
+}
+
+async fn enqueue(State(state): State<Arc<TransportState>>, Json(req): Json<Value>) -> Json<Value> {
+    assert_server_authority_fields_absent(&req);
     let request: RunDispatch = serde_json::from_value(req["request"].clone()).expect("request");
     let options: SubmitOptions =
         serde_json::from_value(req.get("options").cloned().unwrap_or(Value::Null))
             .unwrap_or_default();
-    store.enqueue_with(request, options).await.expect("enqueue");
+    state
+        .store
+        .enqueue_with(request, options)
+        .await
+        .expect("enqueue");
     Json(json!({ "enqueued": true }))
 }
 
 async fn claim(
-    State(store): State<Arc<MemoryDispatchStore>>,
+    State(state): State<Arc<TransportState>>,
+    headers: HeaderMap,
     Json(req): Json<Value>,
 ) -> Json<Value> {
-    let claimed = store
+    assert_server_authority_fields_absent(&req);
+    let claimed = state
+        .store
         .claim(
-            req["owner"].as_str().unwrap(),
-            req["lease_ms"].as_u64().unwrap(),
-            req["now_ms"].as_u64().unwrap(),
+            worker_id(&headers),
+            1_000,
+            state.now_ms.load(Ordering::SeqCst),
         )
         .await
         .expect("claim");
@@ -87,15 +120,18 @@ async fn claim(
 }
 
 async fn claim_run(
-    State(store): State<Arc<MemoryDispatchStore>>,
+    State(state): State<Arc<TransportState>>,
+    headers: HeaderMap,
     Json(req): Json<Value>,
 ) -> Json<Value> {
-    let claimed = store
+    assert_server_authority_fields_absent(&req);
+    let claimed = state
+        .store
         .claim_run(
             &run_id(&req),
-            req["owner"].as_str().unwrap(),
-            req["lease_ms"].as_u64().unwrap(),
-            req["now_ms"].as_u64().unwrap(),
+            worker_id(&headers),
+            1_000,
+            state.now_ms.load(Ordering::SeqCst),
         )
         .await
         .expect("claim_run");
@@ -103,15 +139,18 @@ async fn claim_run(
 }
 
 async fn renew(
-    State(store): State<Arc<MemoryDispatchStore>>,
+    State(state): State<Arc<TransportState>>,
+    headers: HeaderMap,
     Json(req): Json<Value>,
 ) -> Json<Value> {
-    let renewed = store
+    assert_server_authority_fields_absent(&req);
+    let renewed = state
+        .store
         .renew_lease(
             &run_id(&req),
-            req["owner"].as_str().unwrap(),
-            req["lease_ms"].as_u64().unwrap(),
-            req["now_ms"].as_u64().unwrap(),
+            worker_id(&headers),
+            1_000,
+            state.now_ms.load(Ordering::SeqCst),
         )
         .await
         .expect("renew");
@@ -119,14 +158,17 @@ async fn renew(
 }
 
 async fn renew_owned(
-    State(store): State<Arc<MemoryDispatchStore>>,
+    State(state): State<Arc<TransportState>>,
+    headers: HeaderMap,
     Json(req): Json<Value>,
 ) -> Json<Value> {
-    let renewed = store
+    assert_server_authority_fields_absent(&req);
+    let renewed = state
+        .store
         .renew_owned_leases(
-            req["owner"].as_str().unwrap(),
-            req["lease_ms"].as_u64().unwrap(),
-            req["now_ms"].as_u64().unwrap(),
+            worker_id(&headers),
+            1_000,
+            state.now_ms.load(Ordering::SeqCst),
         )
         .await
         .expect("renew_owned");
@@ -134,14 +176,17 @@ async fn renew_owned(
 }
 
 async fn settle(
-    State(store): State<Arc<MemoryDispatchStore>>,
+    State(state): State<Arc<TransportState>>,
+    _headers: HeaderMap,
     Json(req): Json<Value>,
 ) -> Json<Value> {
+    assert_server_authority_fields_absent(&req);
     let outcome: DispatchOutcome = serde_json::from_value(req["outcome"].clone()).expect("outcome");
     let consumed: Vec<String> =
         serde_json::from_value(req.get("consumed").cloned().unwrap_or(json!([])))
             .unwrap_or_default();
-    let outcome = store
+    let outcome = state
+        .store
         .settle(
             &run_id(&req),
             req["epoch"].as_u64().unwrap_or(0),
@@ -157,7 +202,7 @@ async fn settle(
 
 #[tokio::test]
 async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
-    let (base, store) = spawn_transport_server().await;
+    let (base, store, clock) = spawn_transport_server().await;
     let queue = HttpDispatchQueue::new(base);
     let run = RunId("run-1".into());
 
@@ -174,6 +219,7 @@ async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
 
     // Claim it over the wire → a `Claimed` carrying the self-contained request and a
     // fresh lease (epoch 1) — the whole payload survived the JSON round-trip.
+    clock.store(0, Ordering::SeqCst);
     let claimed = queue
         .claim("worker-A", 1_000, 0)
         .await
@@ -184,6 +230,7 @@ async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
     assert_eq!(claimed.lease.epoch, 1);
 
     // A second claim finds nothing runnable (the only run is now leased): `None`.
+    clock.store(10, Ordering::SeqCst);
     assert!(
         queue
             .claim("worker-A", 1_000, 10)
@@ -225,7 +272,7 @@ async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
 
 #[tokio::test]
 async fn renew_lease_returns_false_over_the_wire_when_the_lease_was_stolen() {
-    let (base, store) = spawn_transport_server().await;
+    let (base, store, clock) = spawn_transport_server().await;
     let queue = HttpDispatchQueue::new(base);
     let run = RunId("run-1".into());
 
@@ -235,6 +282,7 @@ async fn renew_lease_returns_false_over_the_wire_when_the_lease_was_stolen() {
         .unwrap();
 
     // Worker A claims at t=0 with a 1s lease (epoch 1).
+    clock.store(0, Ordering::SeqCst);
     let a = queue
         .claim("worker-A", 1_000, 0)
         .await
@@ -242,6 +290,7 @@ async fn renew_lease_returns_false_over_the_wire_when_the_lease_was_stolen() {
         .expect("A claims");
     assert_eq!(a.lease.epoch, 1);
     // While A still holds it, a renew succeeds — the TRUE path, as a control.
+    clock.store(100, Ordering::SeqCst);
     assert!(
         queue
             .renew_lease(&run, "worker-A", 1_000, 100)
@@ -251,6 +300,7 @@ async fn renew_lease_returns_false_over_the_wire_when_the_lease_was_stolen() {
     );
 
     // The lease lapses; worker B recovers the run at t=2s (epoch 2 — B now owns it).
+    clock.store(2_000, Ordering::SeqCst);
     let b = queue
         .claim("worker-B", 1_000, 2_000)
         .await
@@ -265,6 +315,7 @@ async fn renew_lease_returns_false_over_the_wire_when_the_lease_was_stolen() {
 
     // A's renew now returns FALSE over the wire — the lease was stolen; the stale
     // holder must stop (the whole point of the multi-node liveness knob).
+    clock.store(2_100, Ordering::SeqCst);
     assert!(
         !queue
             .renew_lease(&run, "worker-A", 1_000, 2_100)

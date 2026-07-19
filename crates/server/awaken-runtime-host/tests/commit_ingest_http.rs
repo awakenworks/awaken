@@ -13,8 +13,7 @@ use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator;
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_run_ingress::{
-    AnyDispatchStore, ClaimedRunCommit, Dispatch, DispatchQueue, MemoryDispatchStore, RunClaim,
-    RunDispatch,
+    ClaimedRunCommit, DispatchQueue, MemoryDispatchStore, RunClaim, RunDispatch,
 };
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::llm::{
@@ -25,9 +24,13 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_runtime_host::{
-    RemoteClaimedRunCommit, RemoteCoordinator, SharedHost, commit_ingest_router,
-    init_shared_dispatch_store,
+    HeaderWorkerAuthenticator, RemoteClaimedRunCommit, RemoteCoordinator, SharedHost,
+    claimed_commit_ingest_router, commit_ingest_router,
 };
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use serde_json::json;
+use tower::ServiceExt;
 
 struct OkModel;
 
@@ -147,15 +150,7 @@ async fn db_less_worker_pushes_facts_and_the_server_commits_them() {
 #[tokio::test(flavor = "multi_thread")]
 async fn remote_claim_and_commit_is_one_atomic_server_operation() {
     let memory = Arc::new(MemoryDispatchStore::new());
-    init_shared_dispatch_store(Arc::new(AnyDispatchStore::from_dispatch(
-        memory.clone() as Arc<dyn Dispatch>
-    )));
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
-    let router = commit_ingest_router(host.clone());
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-
     memory
         .enqueue(RunDispatch::new(activation("atomic-run", "atomic-thread")))
         .await
@@ -170,6 +165,53 @@ async fn remote_claim_and_commit_is_one_atomic_server_operation() {
         .await
         .unwrap()
         .expect("recovery claim");
+    let router = claimed_commit_ingest_router(
+        host.clone(),
+        memory.clone() as Arc<dyn DispatchQueue>,
+        Arc::new(HeaderWorkerAuthenticator),
+    );
+
+    let unclaimed = Request::builder()
+        .method("POST")
+        .uri("/v1/worker/commit")
+        .header("content-type", "application/json")
+        .header("x-awaken-worker-id", "worker-b")
+        .body(Body::from(serde_json::to_vec(&thread_commit()).unwrap()))
+        .unwrap();
+    assert_eq!(
+        router.clone().oneshot(unclaimed).await.unwrap().status(),
+        StatusCode::NOT_FOUND,
+        "the production router does not expose unclaimed commits"
+    );
+
+    let wrong_identity = Request::builder()
+        .method("POST")
+        .uri("/v1/worker/commit-claimed")
+        .header("content-type", "application/json")
+        .header("x-awaken-worker-id", "worker-a")
+        .body(Body::from(
+            serde_json::to_vec(&json!({
+                "claim": RunClaim::from(&current.lease),
+                "commit": claimed_commit("atomic-run", "atomic-thread", "forged")
+            }))
+            .unwrap(),
+        ))
+        .unwrap();
+    assert_eq!(
+        router
+            .clone()
+            .oneshot(wrong_identity)
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED,
+        "authenticated identity must match the claim owner"
+    );
+    assert!(host.committed_messages("atomic-thread").await.is_empty());
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let remote = RemoteClaimedRunCommit::new(format!("http://{addr}"));
 
     assert!(

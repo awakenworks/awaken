@@ -1,0 +1,18 @@
+pub mod awaken_run_ingress_testkit
+pub struct awaken_run_ingress_testkit::ConformanceCapabilities
+pub awaken_run_ingress_testkit::ConformanceCapabilities::local_commit_guard: bool
+pub awaken_run_ingress_testkit::ConformanceCapabilities::sandbox_binding: bool
+impl awaken_run_ingress_testkit::ConformanceCapabilities
+pub const awaken_run_ingress_testkit::ConformanceCapabilities::LOCAL_STORE: Self
+pub const awaken_run_ingress_testkit::ConformanceCapabilities::WORKER_TRANSPORT: Self
+pub struct awaken_run_ingress_testkit::DirectCommandClock
+impl awaken_run_ingress_testkit::ConformanceClock for awaken_run_ingress_testkit::DirectCommandClock
+pub fn awaken_run_ingress_testkit::DirectCommandClock::set(&self, u64)
+pub trait awaken_run_ingress_testkit::ConformanceClock: core::marker::Send + core::marker::Sync
+pub fn awaken_run_ingress_testkit::ConformanceClock::set(&self, u64)
+impl awaken_run_ingress_testkit::ConformanceClock for awaken_run_ingress_testkit::DirectCommandClock
+pub fn awaken_run_ingress_testkit::DirectCommandClock::set(&self, u64)
+impl<F> awaken_run_ingress_testkit::ConformanceClock for F where F: core::ops::function::Fn(u64) + core::marker::Send + core::marker::Sync
+pub fn F::set(&self, u64)
+pub async fn awaken_run_ingress_testkit::assert_dispatch_conformance(&dyn awaken_run_ingress_contract::dispatch::DispatchQueue, &str, awaken_run_ingress_testkit::ConformanceCapabilities)
+pub async fn awaken_run_ingress_testkit::assert_dispatch_conformance_with_clock(&dyn awaken_run_ingress_contract::dispatch::DispatchQueue, &str, awaken_run_ingress_testkit::ConformanceCapabilities, &dyn awaken_run_ingress_testkit::ConformanceClock)

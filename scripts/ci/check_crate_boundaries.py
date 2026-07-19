@@ -346,6 +346,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     "awaken-run-ingress-contract": {
         "awaken-agent-contract",
         "awaken-runtime-contract",
+        "awaken-tenancy",
         # Serializable claim/settle payloads (the durable-persistence serde contract).
         "serde_json",
         "async-trait",

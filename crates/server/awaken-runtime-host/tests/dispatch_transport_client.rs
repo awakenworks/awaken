@@ -9,35 +9,19 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_run_ingress::{
-    AnyDispatchStore, Dispatch, DispatchOutcome, DispatchQueue, MemoryDispatchStore, PendingInput,
-    RunDispatch,
+    DispatchOutcome, DispatchQueue, MemoryDispatchStore, PendingInput, RunDispatch,
 };
-use awaken_run_ingress_testkit::{ConformanceCapabilities, assert_dispatch_conformance};
+use awaken_run_ingress_testkit::{ConformanceCapabilities, assert_dispatch_conformance_with_clock};
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult,
-};
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_runtime_host::{
-    HttpDispatchQueue, SharedHost, dispatch_transport_router, init_shared_dispatch_store,
+    FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, HttpDispatchQueue, ManualWorkerClock,
+    WorkerDispatchService, dispatch_transport_router_with_service,
 };
-
-struct OkModel;
-
-#[async_trait::async_trait]
-impl LlmExecutor for OkModel {
-    async fn infer(&self, _request: ChatRequest) -> LlmResult<ChatResponse> {
-        Ok(ChatResponse {
-            output: AssistantOutput::text("ok"),
-            usage: None,
-            stop_reason: None,
-        })
-    }
-}
 
 fn activation(run: &str, thread: &str) -> RunActivation {
     RunActivation::new(
@@ -68,13 +52,14 @@ fn activation(run: &str, thread: &str) -> RunActivation {
 #[tokio::test(flavor = "multi_thread")]
 async fn db_less_worker_drives_runs_over_real_http() {
     let mem = Arc::new(MemoryDispatchStore::new());
-    let any = Arc::new(AnyDispatchStore::from_dispatch(
-        mem.clone() as Arc<dyn Dispatch>
+    let clock = Arc::new(ManualWorkerClock::new(0));
+    let service = Arc::new(WorkerDispatchService::new(
+        mem.clone() as Arc<dyn DispatchQueue>,
+        Arc::new(HeaderWorkerAuthenticator),
+        clock.clone(),
+        Arc::new(FixedWorkerLeasePolicy::new(1_000)),
     ));
-    init_shared_dispatch_store(any);
-
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
-    let router = dispatch_transport_router(host);
+    let router = dispatch_transport_router_with_service(service);
 
     // Serve the transport on an ephemeral localhost port.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -90,6 +75,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
         .await
         .expect("enqueue over http");
 
+    clock.set(0);
     let claimed = queue
         .claim("worker-1", 30_000, 0)
         .await
@@ -98,6 +84,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
     assert_eq!(claimed.request.activation.run_id.0, "run-A");
     assert_eq!(claimed.lease.owner, "worker-1");
 
+    clock.set(1_000);
     assert!(
         queue
             .renew_lease(&RunId("run-A".into()), "worker-1", 30_000, 1_000)
@@ -109,6 +96,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
     // The fence crosses the wire: after the lease lapses, a recovery claim by another
     // worker bumps the epoch, so the original owner's settle carrying its now-stale
     // epoch is fenced server-side and changes nothing.
+    clock.set(40_000);
     let reclaimed = queue
         .claim("worker-2", 30_000, 40_000)
         .await
@@ -158,6 +146,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
     // Parent-mediated child scheduling uses two compound commands. Each crosses
     // HTTP as one server-side transaction, so the co-located pool never observes
     // the row between enqueue/input delivery and the exact claim.
+    clock.set(70_000);
     let child = queue
         .claim_new_run(
             RunDispatch::new(activation("run-B", "child-thread")),
@@ -178,6 +167,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
         )
         .await
         .expect("child awaits over http");
+    clock.set(70_001);
     let resumed = queue
         .deliver_and_claim(
             PendingInput {
@@ -214,10 +204,12 @@ async fn db_less_worker_drives_runs_over_real_http() {
         "cancel is not available on the worker dispatch transport"
     );
 
-    assert_dispatch_conformance(
+    let conformance_clock = |now_ms| clock.set(now_ms);
+    assert_dispatch_conformance_with_clock(
         &queue,
         "conformance-http",
         ConformanceCapabilities::WORKER_TRANSPORT,
+        &conformance_clock,
     )
     .await;
 }

@@ -8,8 +8,10 @@
 
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::extract::{Extension, Request, State};
 use axum::http::StatusCode;
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Response};
 use axum::{Json, Router};
 use serde_json::{Value, json};
 
@@ -21,6 +23,9 @@ use awaken_run_ingress::{ClaimedRunCommit, DispatchQueue, RunClaim};
 
 use crate::host::{HostError, SharedHost};
 use crate::worker_http::respond;
+use crate::worker_security::{
+    HeaderWorkerAuthenticator, VerifiedWorkerContext, WORKER_ID_HEADER, WorkerRequestAuthenticator,
+};
 
 #[async_trait::async_trait]
 trait CommitApplier: Send + Sync {
@@ -41,29 +46,84 @@ struct CommitIngestState {
     /// An injected store is used by isolated compositions and conformance tests.
     /// The legacy facade leaves it empty and resolves the process store lazily.
     dispatch: Option<Arc<dyn DispatchQueue>>,
+    authenticator: Arc<dyn WorkerRequestAuthenticator>,
 }
 
 /// The worker-facing commit-ingest router. Mount it on a cell server alongside the
 /// dispatch transport; a database-less worker's [`RemoteCoordinator`] posts here.
 pub fn commit_ingest_router(host: Arc<SharedHost>) -> Router {
-    commit_ingest_router_from_parts(Arc::new(HostCommitApplier(host)), None)
+    commit_ingest_router_from_parts(
+        Arc::new(HostCommitApplier(host)),
+        None,
+        Arc::new(HeaderWorkerAuthenticator),
+        true,
+    )
+}
+
+/// Production-facing commit router. It exposes only the atomic claimed-commit
+/// operation and requires the caller-provided worker authenticator. The legacy
+/// unclaimed `/v1/worker/commit` route remains confined to
+/// [`commit_ingest_router`] for source compatibility.
+pub fn claimed_commit_ingest_router(
+    host: Arc<SharedHost>,
+    dispatch: Arc<dyn DispatchQueue>,
+    authenticator: Arc<dyn WorkerRequestAuthenticator>,
+) -> Router {
+    commit_ingest_router_from_parts(
+        Arc::new(HostCommitApplier(host)),
+        Some(dispatch),
+        authenticator,
+        false,
+    )
 }
 
 fn commit_ingest_router_from_parts(
     applier: Arc<dyn CommitApplier>,
     dispatch: Option<Arc<dyn DispatchQueue>>,
+    authenticator: Arc<dyn WorkerRequestAuthenticator>,
+    allow_unclaimed: bool,
 ) -> Router {
-    Router::new()
-        .route("/v1/worker/commit", axum::routing::post(commit_ingest))
-        .route(
-            "/v1/worker/commit-claimed",
-            axum::routing::post(commit_claimed),
-        )
-        .with_state(Arc::new(CommitIngestState { applier, dispatch }))
+    let state = Arc::new(CommitIngestState {
+        applier,
+        dispatch,
+        authenticator,
+    });
+    let router = Router::new().route(
+        "/v1/worker/commit-claimed",
+        axum::routing::post(commit_claimed),
+    );
+    let router = if allow_unclaimed {
+        router.route("/v1/worker/commit", axum::routing::post(commit_ingest))
+    } else {
+        router
+    };
+    router
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            authenticate_commit_worker,
+        ))
+        .with_state(state)
+}
+
+async fn authenticate_commit_worker(
+    State(state): State<Arc<CommitIngestState>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let (parts, body) = request.into_parts();
+    match state.authenticator.authenticate(&parts).await {
+        Ok(worker) => {
+            let mut request = Request::from_parts(parts, body);
+            request.extensions_mut().insert(worker);
+            next.run(request).await
+        }
+        Err(error) => unauthorized(error.to_string()).into_response(),
+    }
 }
 
 async fn commit_ingest(
     State(state): State<Arc<CommitIngestState>>,
+    Extension(_worker): Extension<VerifiedWorkerContext>,
     Json(commit): Json<ThreadCommit>,
 ) -> (StatusCode, Json<Value>) {
     let result = async {
@@ -85,8 +145,12 @@ struct ClaimedCommitRequest {
 /// store between the validation and the commit.
 async fn commit_claimed(
     State(state): State<Arc<CommitIngestState>>,
+    Extension(worker): Extension<VerifiedWorkerContext>,
     Json(request): Json<ClaimedCommitRequest>,
 ) -> (StatusCode, Json<Value>) {
+    if worker.worker_id() != request.claim.owner {
+        return unauthorized("authenticated worker does not own the claim".to_string());
+    }
     let result = async {
         let store = match &state.dispatch {
             Some(store) => Arc::clone(store),
@@ -104,6 +168,10 @@ async fn commit_claimed(
     }
     .await;
     respond(result)
+}
+
+fn unauthorized(message: String) -> (StatusCode, Json<Value>) {
+    (StatusCode::UNAUTHORIZED, Json(json!({ "error": message })))
 }
 
 async fn apply_commit(
@@ -133,6 +201,7 @@ async fn apply_commit(
 pub struct RemoteCoordinator {
     base_url: String,
     client: reqwest::Client,
+    worker_id: String,
 }
 
 /// Atomic claimed-run commit used by a database-less worker. Unlike
@@ -149,6 +218,14 @@ impl RemoteClaimedRunCommit {
             client: reqwest::Client::new(),
         }
     }
+
+    /// Use a caller-configured client (for example one carrying a worker mTLS
+    /// identity) instead of the default client.
+    #[must_use]
+    pub fn with_client(mut self, client: reqwest::Client) -> Self {
+        self.client = client;
+        self
+    }
 }
 
 #[async_trait::async_trait]
@@ -161,6 +238,7 @@ impl ClaimedRunCommit for RemoteClaimedRunCommit {
         let response = self
             .client
             .post(format!("{}/v1/worker/commit-claimed", self.base_url))
+            .header(WORKER_ID_HEADER, &claim.owner)
             .json(&json!({ "claim": claim, "commit": commit }))
             .send()
             .await
@@ -183,7 +261,22 @@ impl RemoteCoordinator {
         Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             client: reqwest::Client::new(),
+            worker_id: "awaken-worker".to_string(),
         }
+    }
+
+    #[must_use]
+    pub fn with_worker_id(mut self, worker_id: impl Into<String>) -> Self {
+        self.worker_id = worker_id.into();
+        self
+    }
+
+    /// Use a caller-configured client (for example one carrying a worker mTLS
+    /// identity) instead of the default client.
+    #[must_use]
+    pub fn with_client(mut self, client: reqwest::Client) -> Self {
+        self.client = client;
+        self
     }
 }
 
@@ -193,6 +286,7 @@ impl Coordinator for RemoteCoordinator {
         let resp = self
             .client
             .post(format!("{}/v1/worker/commit", self.base_url))
+            .header(WORKER_ID_HEADER, &self.worker_id)
             .json(&commit)
             .send()
             .await
@@ -322,6 +416,8 @@ mod postgres_tests {
         let router = commit_ingest_router_from_parts(
             blocking.clone(),
             Some(store.clone() as Arc<dyn DispatchQueue>),
+            Arc::new(HeaderWorkerAuthenticator),
+            false,
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await

@@ -9,34 +9,21 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_run_ingress::{AnyDispatchStore, Dispatch, MemoryDispatchStore, RunDispatch};
+use awaken_run_ingress::{DispatchQueue, MemoryDispatchStore, RunDispatch};
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult,
-};
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
-use awaken_runtime_host::{SharedHost, dispatch_transport_router, init_shared_dispatch_store};
+use awaken_runtime_host::{
+    FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, ManualWorkerClock, WorkerDispatchService,
+    dispatch_transport_router_with_service,
+};
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
 use tower::ServiceExt;
-
-struct OkModel;
-
-#[async_trait::async_trait]
-impl LlmExecutor for OkModel {
-    async fn infer(&self, _request: ChatRequest) -> LlmResult<ChatResponse> {
-        Ok(ChatResponse {
-            output: AssistantOutput::text("ok"),
-            usage: None,
-            stop_reason: None,
-        })
-    }
-}
 
 fn activation(run: &str, thread: &str) -> RunActivation {
     RunActivation::new(
@@ -64,14 +51,15 @@ fn activation(run: &str, thread: &str) -> RunActivation {
     )
 }
 
-async fn post(router: &Router, uri: &str, body: Value) -> (StatusCode, Value) {
-    let req = Request::builder()
+async fn post(router: &Router, worker: &str, uri: &str, body: Value) -> (StatusCode, Value) {
+    let request = Request::builder()
         .method("POST")
         .uri(uri)
         .header("content-type", "application/json")
+        .header("x-awaken-worker-id", worker)
         .body(Body::from(serde_json::to_vec(&body).unwrap()))
         .unwrap();
-    let resp = router.clone().oneshot(req).await.unwrap();
+    let resp = router.clone().oneshot(request).await.unwrap();
     let status = resp.status();
     let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
         .await
@@ -82,21 +70,29 @@ async fn post(router: &Router, uri: &str, body: Value) -> (StatusCode, Value) {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_db_less_worker_claims_renews_and_settles_over_http() {
-    // Inject one in-memory dispatch store the transport handlers reach through the
-    // process-shared store accessor.
     let mem = Arc::new(MemoryDispatchStore::new());
-    let any = Arc::new(AnyDispatchStore::from_dispatch(
-        mem.clone() as Arc<dyn Dispatch>
-    ));
-    init_shared_dispatch_store(any);
+    let clock = Arc::new(ManualWorkerClock::new(0));
+    let router = dispatch_transport_router_with_service(Arc::new(WorkerDispatchService::new(
+        mem as Arc<dyn DispatchQueue>,
+        Arc::new(HeaderWorkerAuthenticator),
+        clock.clone(),
+        Arc::new(FixedWorkerLeasePolicy::new(30_000)),
+    )));
 
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
-    let router = dispatch_transport_router(host);
+    let unauthorized = Request::builder()
+        .method("POST")
+        .uri("/v1/worker/dispatch/claim")
+        .header("content-type", "application/json")
+        .body(Body::from("{}"))
+        .unwrap();
+    let unauthorized = router.clone().oneshot(unauthorized).await.unwrap();
+    assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
 
     // enqueue a run over the transport.
     let request = serde_json::to_value(RunDispatch::new(activation("run-A", "t1"))).unwrap();
     let (s, _) = post(
         &router,
+        "worker-1",
         "/v1/worker/dispatch/enqueue",
         json!({ "request": request }),
     )
@@ -104,12 +100,7 @@ async fn a_db_less_worker_claims_renews_and_settles_over_http() {
     assert_eq!(s, StatusCode::OK);
 
     // claim it: the self-contained request comes back with a lease.
-    let (s, v) = post(
-        &router,
-        "/v1/worker/dispatch/claim",
-        json!({ "owner": "worker-1", "lease_ms": 30_000, "now_ms": 0 }),
-    )
-    .await;
+    let (s, v) = post(&router, "worker-1", "/v1/worker/dispatch/claim", json!({})).await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(
         v["claimed"]["request"]["activation"]["run_id"], "run-A",
@@ -126,22 +117,19 @@ async fn a_db_less_worker_claims_renews_and_settles_over_http() {
     assert_eq!(epoch, 1, "the first claim assigns fence epoch 1: {v}");
 
     // renew the lease: still owned → true.
+    clock.set(1_000);
     let (s, v) = post(
         &router,
+        "worker-1",
         "/v1/worker/dispatch/renew",
-        json!({ "run_id": "run-A", "owner": "worker-1", "lease_ms": 30_000, "now_ms": 1_000 }),
+        json!({ "run_id": "run-A" }),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(v["renewed"], true, "the owner renews its live lease: {v}");
 
     // a claim by a second worker finds nothing runnable (single owner per run).
-    let (_, v) = post(
-        &router,
-        "/v1/worker/dispatch/claim",
-        json!({ "owner": "worker-2", "lease_ms": 30_000, "now_ms": 1_000 }),
-    )
-    .await;
+    let (_, v) = post(&router, "worker-2", "/v1/worker/dispatch/claim", json!({})).await;
     assert!(
         v["claimed"].is_null(),
         "a leased run is not double-claimed: {v}"
@@ -151,6 +139,7 @@ async fn a_db_less_worker_claims_renews_and_settles_over_http() {
     // changes (a stale owner past its lease cannot settle behind a reclaimer).
     let (s, v) = post(
         &router,
+        "worker-1",
         "/v1/worker/dispatch/settle",
         json!({ "run_id": "run-A", "epoch": 99, "outcome": "Done", "consumed": [] }),
     )
@@ -161,9 +150,23 @@ async fn a_db_less_worker_claims_renews_and_settles_over_http() {
         "a non-current-epoch settle is fenced, not applied: {v}"
     );
 
+    let (s, v) = post(
+        &router,
+        "worker-2",
+        "/v1/worker/dispatch/settle",
+        json!({ "run_id": "run-A", "epoch": epoch, "outcome": "Done", "consumed": [] }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(
+        v["settled"], false,
+        "an authenticated non-owner cannot settle a current epoch: {v}"
+    );
+
     // settle Done under the current epoch: the dispatch is finished and removed.
     let (s, v) = post(
         &router,
+        "worker-1",
         "/v1/worker/dispatch/settle",
         json!({ "run_id": "run-A", "epoch": epoch, "outcome": "Done", "consumed": [] }),
     )
@@ -172,11 +175,6 @@ async fn a_db_less_worker_claims_renews_and_settles_over_http() {
     assert_eq!(v["settled"], true, "the run settles Done: {v}");
 
     // nothing left to claim.
-    let (_, v) = post(
-        &router,
-        "/v1/worker/dispatch/claim",
-        json!({ "owner": "worker-1", "lease_ms": 30_000, "now_ms": 2_000 }),
-    )
-    .await;
+    let (_, v) = post(&router, "worker-1", "/v1/worker/dispatch/claim", json!({})).await;
     assert!(v["claimed"].is_null(), "a settled run is gone: {v}");
 }

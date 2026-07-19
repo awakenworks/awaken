@@ -21,7 +21,8 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_run_ingress::{
-    AnyDispatchStore, ClaimedRunCommit, DispatchWorker, PendingInput, RunDispatch,
+    AnyDispatchStore, ClaimedRunCommit, Clock, DispatchWorker, PendingInput, RunDispatch,
+    SystemClock,
 };
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime::{DirectRunIngress, RunInput, RunService};
@@ -216,6 +217,11 @@ pub(crate) async fn run_configured_agent_until_boundary(
         }
     }?;
     let state = if let Some(scheduler) = scheduler {
+        // The foreground child scheduler and the background dispatch pool share
+        // one queue, so they must use the same epoch time domain. A synthetic
+        // zero here makes every new child lease immediately expired to the pool,
+        // which can re-claim it and fence the still-running foreground attempt.
+        let now_ms = SystemClock.now_ms();
         let runtime = Arc::new(runtime);
         let mut worker = DispatchWorker::from_parts(
             runtime,
@@ -238,7 +244,7 @@ pub(crate) async fn run_configured_agent_until_boundary(
                         let request = RunDispatch::new(activation)
                             .for_session(parent_thread_id.clone())
                             .with_traceparent(awaken_observability::current_traceparent());
-                        match worker.start_run(request, 0).await.map_err(|error| {
+                        match worker.start_run(request, now_ms).await.map_err(|error| {
                             AgentRunError::Runtime(
                                 awaken_runtime_contract::execution::Error::Execution(
                                     error.to_string(),
@@ -276,7 +282,7 @@ pub(crate) async fn run_configured_agent_until_boundary(
                     available_at_ms: None,
                     result: command.result,
                 };
-                match worker.resume_run(input, 0).await.map_err(|error| {
+                match worker.resume_run(input, now_ms).await.map_err(|error| {
                     AgentRunError::Runtime(awaken_runtime_contract::execution::Error::Execution(
                         error.to_string(),
                     ))

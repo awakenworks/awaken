@@ -43,6 +43,8 @@ pub fn worker_dispatch_store(
 pub struct HttpDispatchQueue {
     base_url: String,
     client: reqwest::Client,
+    default_worker_id: String,
+    claimed_owners: std::sync::Mutex<std::collections::HashMap<String, String>>,
 }
 
 impl HttpDispatchQueue {
@@ -52,17 +54,41 @@ impl HttpDispatchQueue {
         Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             client: reqwest::Client::new(),
+            default_worker_id: std::env::var("AWAKEN_WORKER_ID")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| "awaken-worker".to_string()),
+            claimed_owners: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
+    }
+
+    /// Configure the authenticated identity used for owner-less worker verbs such
+    /// as enqueue and settle. Claim methods still use their `owner` argument so the
+    /// neutral `DispatchQueue` caller and HTTP identity remain aligned.
+    #[must_use]
+    pub fn with_worker_id(mut self, worker_id: impl Into<String>) -> Self {
+        self.default_worker_id = worker_id.into();
+        self
+    }
+
+    /// Use a caller-configured client (for example one carrying a worker mTLS
+    /// identity) instead of the default client.
+    #[must_use]
+    pub fn with_client(mut self, client: reqwest::Client) -> Self {
+        self.client = client;
+        self
     }
 
     async fn post(
         &self,
         path: &str,
         body: serde_json::Value,
+        worker_id: &str,
     ) -> Result<serde_json::Value, DispatchError> {
         let resp = self
             .client
             .post(format!("{}{}", self.base_url, path))
+            .header("x-awaken-worker-id", worker_id)
             .json(&body)
             .send()
             .await
@@ -76,6 +102,22 @@ impl HttpDispatchQueue {
         resp.json()
             .await
             .map_err(|e| DispatchError::Rejected(format!("dispatch transport decode: {e}")))
+    }
+
+    fn remember_claim(&self, claimed: &Option<Claimed>) {
+        if let Some(claimed) = claimed
+            && let Ok(mut owners) = self.claimed_owners.lock()
+        {
+            owners.insert(claimed.lease.run_id.0.clone(), claimed.lease.owner.clone());
+        }
+    }
+
+    fn owner_for(&self, run_id: &RunId) -> String {
+        self.claimed_owners
+            .lock()
+            .ok()
+            .and_then(|owners| owners.get(&run_id.0).cloned())
+            .unwrap_or_else(|| self.default_worker_id.clone())
     }
 
     fn server_local<T>(verb: &str) -> Result<T, DispatchError> {
@@ -104,6 +146,7 @@ impl DispatchQueue for HttpDispatchQueue {
         self.post(
             "/v1/worker/dispatch/enqueue",
             json!({ "request": request, "options": options }),
+            &self.default_worker_id,
         )
         .await?;
         Ok(())
@@ -119,21 +162,20 @@ impl DispatchQueue for HttpDispatchQueue {
         let value = self
             .post(
                 "/v1/worker/dispatch/claim_new_run",
-                json!({
-                    "request": request,
-                    "owner": owner,
-                    "lease_ms": lease_ms,
-                    "now_ms": now_ms
-                }),
+                json!({ "request": request }),
+                owner,
             )
             .await?;
-        serde_json::from_value(
+        let claimed = serde_json::from_value(
             value
                 .get("claimed")
                 .cloned()
                 .unwrap_or(serde_json::Value::Null),
         )
-        .map_err(|error| DispatchError::Rejected(format!("decode claimed: {error}")))
+        .map_err(|error| DispatchError::Rejected(format!("decode claimed: {error}")))?;
+        self.remember_claim(&claimed);
+        let _ = (lease_ms, now_ms);
+        Ok(claimed)
     }
 
     async fn deliver_and_claim(
@@ -146,21 +188,20 @@ impl DispatchQueue for HttpDispatchQueue {
         let value = self
             .post(
                 "/v1/worker/dispatch/deliver_and_claim",
-                json!({
-                    "input": input,
-                    "owner": owner,
-                    "lease_ms": lease_ms,
-                    "now_ms": now_ms
-                }),
+                json!({ "input": input }),
+                owner,
             )
             .await?;
-        serde_json::from_value(
+        let claimed = serde_json::from_value(
             value
                 .get("claimed")
                 .cloned()
                 .unwrap_or(serde_json::Value::Null),
         )
-        .map_err(|error| DispatchError::Rejected(format!("decode claimed: {error}")))
+        .map_err(|error| DispatchError::Rejected(format!("decode claimed: {error}")))?;
+        self.remember_claim(&claimed);
+        let _ = (lease_ms, now_ms);
+        Ok(claimed)
     }
 
     async fn claim(
@@ -170,13 +211,14 @@ impl DispatchQueue for HttpDispatchQueue {
         now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
         let v = self
-            .post(
-                "/v1/worker/dispatch/claim",
-                json!({ "owner": owner, "lease_ms": lease_ms, "now_ms": now_ms }),
-            )
+            .post("/v1/worker/dispatch/claim", json!({}), owner)
             .await?;
-        serde_json::from_value(v.get("claimed").cloned().unwrap_or(serde_json::Value::Null))
-            .map_err(|e| DispatchError::Rejected(format!("decode claimed: {e}")))
+        let claimed =
+            serde_json::from_value(v.get("claimed").cloned().unwrap_or(serde_json::Value::Null))
+                .map_err(|e| DispatchError::Rejected(format!("decode claimed: {e}")))?;
+        self.remember_claim(&claimed);
+        let _ = (lease_ms, now_ms);
+        Ok(claimed)
     }
 
     async fn claim_run(
@@ -189,21 +231,20 @@ impl DispatchQueue for HttpDispatchQueue {
         let value = self
             .post(
                 "/v1/worker/dispatch/claim_run",
-                json!({
-                    "run_id": run_id.0,
-                    "owner": owner,
-                    "lease_ms": lease_ms,
-                    "now_ms": now_ms
-                }),
+                json!({ "run_id": run_id.0 }),
+                owner,
             )
             .await?;
-        serde_json::from_value(
+        let claimed = serde_json::from_value(
             value
                 .get("claimed")
                 .cloned()
                 .unwrap_or(serde_json::Value::Null),
         )
-        .map_err(|error| DispatchError::Rejected(format!("decode claimed: {error}")))
+        .map_err(|error| DispatchError::Rejected(format!("decode claimed: {error}")))?;
+        self.remember_claim(&claimed);
+        let _ = (lease_ms, now_ms);
+        Ok(claimed)
     }
 
     async fn renew_lease(
@@ -216,9 +257,11 @@ impl DispatchQueue for HttpDispatchQueue {
         let v = self
             .post(
                 "/v1/worker/dispatch/renew",
-                json!({ "run_id": run_id.0, "owner": owner, "lease_ms": lease_ms, "now_ms": now_ms }),
+                json!({ "run_id": run_id.0 }),
+                owner,
             )
             .await?;
+        let _ = (lease_ms, now_ms);
         Ok(v.get("renewed").and_then(|r| r.as_bool()).unwrap_or(false))
     }
 
@@ -229,11 +272,9 @@ impl DispatchQueue for HttpDispatchQueue {
         now_ms: u64,
     ) -> Result<usize, DispatchError> {
         let v = self
-            .post(
-                "/v1/worker/dispatch/renew_owned",
-                json!({ "owner": owner, "lease_ms": lease_ms, "now_ms": now_ms }),
-            )
+            .post("/v1/worker/dispatch/renew_owned", json!({}), owner)
             .await?;
+        let _ = (lease_ms, now_ms);
         Ok(v.get("renewed").and_then(|r| r.as_u64()).unwrap_or(0) as usize)
     }
 
@@ -244,10 +285,12 @@ impl DispatchQueue for HttpDispatchQueue {
         outcome: DispatchOutcome,
         consumed: &[String],
     ) -> Result<SettleOutcome, DispatchError> {
+        let worker_id = self.owner_for(run_id);
         let v = self
             .post(
                 "/v1/worker/dispatch/settle",
                 json!({ "run_id": run_id.0, "epoch": epoch, "outcome": outcome, "consumed": consumed }),
+                &worker_id,
             )
             .await?;
         // `settled` is the server's fence verdict: applied vs. stale-epoch fenced.
