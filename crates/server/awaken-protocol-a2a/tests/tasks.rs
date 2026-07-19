@@ -12,6 +12,7 @@ use awaken_protocol_a2a::router;
 use awaken_protocol_transport::{
     DriverError, Pending, ProtocolRuntime, Resume, StepOutcome, Terminal,
 };
+use axum::Router;
 use axum::body::Body;
 use axum::http::Request;
 use http_body_util::BodyExt;
@@ -22,6 +23,7 @@ use tower::ServiceExt;
 /// resumed with a denial.
 struct AwaitingRuntime {
     denied: Arc<AtomicBool>,
+    started: Arc<AtomicBool>,
 }
 
 #[async_trait]
@@ -32,6 +34,7 @@ impl ProtocolRuntime for AwaitingRuntime {
         _agent: Option<String>,
         _messages: Vec<Message>,
     ) -> Result<StepOutcome, DriverError> {
+        self.started.store(true, Ordering::SeqCst);
         Ok(StepOutcome {
             new_messages: Vec::new(),
             terminal: Terminal::Awaiting {
@@ -56,7 +59,7 @@ impl ProtocolRuntime for AwaitingRuntime {
     }
 
     async fn pending(&self, _thread: &str) -> Option<Pending> {
-        Some(pending())
+        self.started.load(Ordering::SeqCst).then(pending)
     }
 
     async fn history(&self, _thread: &str) -> Vec<Message> {
@@ -77,8 +80,7 @@ fn pending() -> Pending {
     }
 }
 
-async fn rpc(denied: Arc<AtomicBool>, body: Value) -> Value {
-    let app = router(Arc::new(AwaitingRuntime { denied }));
+async fn call(app: Router, body: Value) -> Value {
     let resp = app
         .oneshot(
             Request::builder()
@@ -94,11 +96,38 @@ async fn rpc(denied: Arc<AtomicBool>, body: Value) -> Value {
     serde_json::from_slice(&bytes).unwrap()
 }
 
+async fn rpc(denied: Arc<AtomicBool>, body: Value) -> Value {
+    call(
+        router(Arc::new(AwaitingRuntime {
+            denied,
+            started: Arc::new(AtomicBool::new(true)),
+        })),
+        body,
+    )
+    .await
+}
+
+async fn seed(app: Router) -> String {
+    let response = call(
+        app,
+        json!({
+            "jsonrpc": "2.0", "id": 0, "method": "message/send",
+            "params": { "message": { "messageId": "seed", "contextId": "ctx", "role": "user", "parts": [{ "kind": "text", "text": "start" }] } }
+        }),
+    ).await;
+    response["result"]["id"].as_str().unwrap().to_string()
+}
+
 #[tokio::test]
 async fn tasks_get_on_an_awaiting_run_reads_input_required() {
-    let r = rpc(
-        Arc::new(AtomicBool::new(false)),
-        json!({ "jsonrpc": "2.0", "id": 1, "method": "tasks/get", "params": { "id": "task-ctx" } }),
+    let app = router(Arc::new(AwaitingRuntime {
+        denied: Arc::new(AtomicBool::new(false)),
+        started: Arc::new(AtomicBool::new(false)),
+    }));
+    let task_id = seed(app.clone()).await;
+    let r = call(
+        app,
+        json!({ "jsonrpc": "2.0", "id": 1, "method": "tasks/get", "params": { "id": task_id } }),
     )
     .await;
     assert_eq!(r["result"]["status"]["state"], "input-required", "{r}");
@@ -210,9 +239,14 @@ async fn message_send_delivers_the_text_as_the_client_tool_result_on_resume() {
 #[tokio::test]
 async fn tasks_cancel_denies_the_awaiting_tool_and_reports_canceled() {
     let denied = Arc::new(AtomicBool::new(false));
-    let r = rpc(
-        denied.clone(),
-        json!({ "jsonrpc": "2.0", "id": 2, "method": "tasks/cancel", "params": { "id": "task-ctx" } }),
+    let app = router(Arc::new(AwaitingRuntime {
+        denied: denied.clone(),
+        started: Arc::new(AtomicBool::new(false)),
+    }));
+    let task_id = seed(app.clone()).await;
+    let r = call(
+        app,
+        json!({ "jsonrpc": "2.0", "id": 2, "method": "tasks/cancel", "params": { "id": task_id } }),
     )
     .await;
     assert_eq!(r["result"]["status"]["state"], "canceled", "{r}");
