@@ -102,9 +102,15 @@ fn end_cause_of(state: &TaskState) -> EndCause {
             message: "remote A2A task ended in the failed state".to_string(),
         }),
         TaskState::Canceled => EndCause::Cancelled,
-        TaskState::Working | TaskState::InputRequired | TaskState::AuthRequired => {
-            EndCause::Indeterminate
-        }
+        TaskState::Rejected => EndCause::Error(Failure::Inference {
+            code: "a2a_task_rejected".to_string(),
+            message: "remote A2A task ended in the rejected state".to_string(),
+        }),
+        TaskState::Submitted
+        | TaskState::Working
+        | TaskState::InputRequired
+        | TaskState::AuthRequired
+        | TaskState::Unknown => EndCause::Indeterminate,
     }
 }
 
@@ -297,11 +303,13 @@ mod tests {
             status: TaskStatus {
                 state: TaskState::Completed,
                 message: status_msg.map(a2a_msg),
+                timestamp: None,
             },
             history: history.iter().map(|t| a2a_msg(t)).collect(),
             artifacts: artifacts
                 .iter()
                 .map(|parts| Artifact {
+                    artifact_id: "artifact".into(),
                     name: None,
                     parts: parts.iter().map(|t| A2aPart::text(*t)).collect(),
                 })
@@ -489,7 +497,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn artifacts_are_preferred_over_status_and_history() {
         let backend = serve(
-            r#"{"task":{"kind":"task","id":"t","contextId":"c","status":{"state":"completed","message":{"messageId":"m","role":"agent","parts":[{"text":"status msg"}]}},"artifacts":[{"parts":[{"text":"artifact body"}]}]}}"#,
+            r#"{"task":{"kind":"task","id":"t","contextId":"c","status":{"state":"completed","message":{"messageId":"m","role":"agent","parts":[{"text":"status msg"}]}},"artifacts":[{"artifactId":"a1","parts":[{"text":"artifact body"}]}]}}"#,
         )
         .await;
         let rec = Arc::new(Rec::default());

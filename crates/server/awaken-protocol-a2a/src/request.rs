@@ -3,16 +3,21 @@
 //! router only routes.
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 
 use crate::types::{Part, SendMessageRequest};
 
-static SEQ: AtomicU64 = AtomicU64::new(0);
-
 fn next(prefix: &str) -> String {
-    format!("{prefix}-{}", SEQ.fetch_add(1, Ordering::SeqCst))
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock before Unix epoch")
+        .as_nanos();
+    let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    format!("{prefix}-{:x}-{nanos:x}-{sequence:x}", std::process::id())
 }
 
 /// A decoded `message:send` request ready for the runtime: the A2A `contextId`
@@ -20,6 +25,7 @@ fn next(prefix: &str) -> String {
 /// thread has an awaiting run, the tool answer the router delivers on resume).
 pub struct Processed {
     pub thread_id: String,
+    pub task_id: String,
     pub agent_id: Option<String>,
     pub text: String,
     /// The neutral user message for a fresh turn.
@@ -29,11 +35,17 @@ pub struct Processed {
 /// Decode a `message:send` request: the `contextId` (or `taskId`) is the thread;
 /// absent, a fresh one is minted. The message's text parts become the turn input.
 pub fn process(req: SendMessageRequest, path_agent: Option<String>) -> Processed {
+    let requested_task_id = req
+        .message
+        .task_id
+        .clone()
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty());
     let thread_id = req
         .message
         .context_id
         .clone()
-        .or_else(|| req.message.task_id.clone())
+        .or_else(|| requested_task_id.clone())
         .map(|t| t.trim().to_string())
         .filter(|t| !t.is_empty())
         .unwrap_or_else(|| next("thread"));
@@ -49,6 +61,7 @@ pub fn process(req: SendMessageRequest, path_agent: Option<String>) -> Processed
 
     Processed {
         thread_id,
+        task_id: requested_task_id.unwrap_or_else(|| next("task")),
         // The path agent (e.g. `/v1/a2a/agents/{agent}/...`) wins over a body
         // selector; either falls back to the host default.
         agent_id: path_agent.or(req.agent_id),
@@ -87,6 +100,7 @@ mod tests {
     fn req(context: Option<&str>, text: &str) -> SendMessageRequest {
         SendMessageRequest {
             agent_id: None,
+            configuration: None,
             message: SendMessage {
                 message_id: Some("m1".into()),
                 context_id: context.map(Into::into),
@@ -116,6 +130,7 @@ mod tests {
         use crate::types::FilePart;
         let r = SendMessageRequest {
             agent_id: None,
+            configuration: None,
             message: SendMessage {
                 message_id: Some("m1".into()),
                 context_id: Some("c".into()),
@@ -129,7 +144,9 @@ mod tests {
                             bytes: Some("AAAA".into()),
                             uri: None,
                             mime_type: Some("image/png".into()),
+                            name: None,
                         }),
+                        metadata: None,
                     },
                     Part::text("what is this"),
                 ],
@@ -152,6 +169,7 @@ mod tests {
     fn file_req(file: crate::types::FilePart) -> SendMessageRequest {
         SendMessageRequest {
             agent_id: None,
+            configuration: None,
             message: SendMessage {
                 message_id: Some("m1".into()),
                 context_id: Some("c".into()),
@@ -161,6 +179,7 @@ mod tests {
                     kind: Some("file".into()),
                     text: None,
                     file: Some(file),
+                    metadata: None,
                 }],
             },
         }
@@ -189,6 +208,7 @@ mod tests {
                 bytes: None,
                 uri: Some("https://x/y.png".into()),
                 mime_type: Some("image/png".into()),
+                name: None,
             }),
             None,
         );
@@ -206,6 +226,7 @@ mod tests {
                 bytes: Some("AAAA".into()),
                 uri: None,
                 mime_type: Some("application/pdf".into()),
+                name: None,
             }),
             None,
         );
@@ -220,6 +241,7 @@ mod tests {
                 bytes: None,
                 uri: None,
                 mime_type: Some("image/png".into()),
+                name: None,
             }),
             None,
         );
@@ -238,6 +260,7 @@ mod tests {
     fn a_data_kind_part_with_no_text_or_file_is_dropped() {
         let r = SendMessageRequest {
             agent_id: None,
+            configuration: None,
             message: SendMessage {
                 message_id: Some("m1".into()),
                 context_id: Some("c".into()),
@@ -248,6 +271,7 @@ mod tests {
                         kind: Some("data".into()),
                         text: None,
                         file: None,
+                        metadata: None,
                     },
                     Part::text("keep me"),
                 ],

@@ -932,9 +932,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "http-body-util",
     },
     # A2A protocol adapter: the anti-corruption boundary between the A2A HTTP+JSON
-    # `message:send` wire and the neutral runtime. Request/response (returns a
-    # `Task`), so it needs no streaming; drives an `A2aRuntime` port and constructs
-    # no runtime.
+    # wire and the neutral runtime. It supports request/response plus SSE streams
+    # while driving a `ProtocolRuntime` port and constructing no runtime.
     "awaken-protocol-a2a": {
         "awaken-agent-contract",
         "awaken-credential",
@@ -944,6 +943,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "serde_json",
         "thiserror",
         "tokio",
+        "tokio-stream",
         "axum",
         "tower",
         "http-body-util",

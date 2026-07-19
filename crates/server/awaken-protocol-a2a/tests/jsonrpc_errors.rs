@@ -81,21 +81,17 @@ async fn rpc(body: Value) -> Value {
 
 #[tokio::test]
 async fn unknown_method_is_method_not_found() {
-    // `message/stream` is not implemented (streaming is advertised off).
-    let r =
-        rpc(json!({ "jsonrpc": "2.0", "id": 1, "method": "message/stream", "params": {} })).await;
+    let r = rpc(json!({ "jsonrpc": "2.0", "id": 1, "method": "tasks/noSuchMethod", "params": {} }))
+        .await;
     assert_eq!(r["error"]["code"], -32601, "{r}");
     assert_eq!(r["id"], 1);
 }
 
 #[tokio::test]
-async fn tasks_get_reads_back_the_task_state() {
-    // `task-{thread}` recovers the context; a no-op runtime has no awaiting run, so
-    // the task reads back as completed on that context.
+async fn tasks_get_rejects_an_unknown_task() {
     let r = rpc(json!({ "jsonrpc": "2.0", "id": 5, "method": "tasks/get", "params": { "id": "task-ctxA" } })).await;
     assert_eq!(r["id"], 5);
-    assert_eq!(r["result"]["contextId"], "ctxA", "{r}");
-    assert_eq!(r["result"]["status"]["state"], "completed", "{r}");
+    assert_eq!(r["error"]["code"], -32001, "{r}");
 }
 
 #[tokio::test]
@@ -164,16 +160,12 @@ async fn tasks_cancel_without_an_id_is_invalid_params() {
 }
 
 #[tokio::test]
-async fn tasks_cancel_on_a_task_with_nothing_awaiting_is_not_falsely_canceled() {
-    // A cancel targeting a context with no awaiting run must report the task's
-    // real state (a no-op runtime reads back `completed`), NOT `canceled` — the
-    // client must not be told it canceled work that was never in flight.
+async fn tasks_cancel_rejects_an_unknown_task() {
     let r = rpc(
         json!({ "jsonrpc": "2.0", "id": 8, "method": "tasks/cancel", "params": { "id": "task-idle" } }),
     )
     .await;
-    assert_eq!(r["result"]["status"]["state"], "completed", "{r}");
-    assert_eq!(r["result"]["contextId"], "idle", "{r}");
+    assert_eq!(r["error"]["code"], -32001, "{r}");
 }
 
 /// A runtime whose fresh turn always faults with the configured driver error, so
@@ -264,11 +256,10 @@ async fn message_send_internal_fault_maps_to_jsonrpc_internal_error() {
 }
 
 #[tokio::test]
-async fn message_send_bad_request_fault_maps_to_jsonrpc_invalid_request() {
-    // A caller-fault driver error maps to JSON-RPC -32600 (invalid request), the
-    // JSON-RPC twin of the HTTP 400 the request/response binding returns.
+async fn message_send_bad_request_fault_maps_to_jsonrpc_invalid_params() {
+    // A caller-fault driver error maps to JSON-RPC -32602 (invalid params).
     let r = rpc_on(Arc::new(FaultingRuntime { internal: false }), send_body(12)).await;
-    assert_eq!(r["error"]["code"], -32600, "{r}");
+    assert_eq!(r["error"]["code"], -32602, "{r}");
     assert_eq!(r["id"], 12);
 }
 

@@ -134,12 +134,15 @@ fn step_from_task(agent_id: &str, task: Task) -> Result<DelegationStep, Delegati
             continuation: json!({ "agent_id": agent_id, "task_id": task.id }),
         }),
         TaskState::Failed => Err(DelegationExecutionError::new("remote A2A agent failed")),
+        TaskState::Rejected => Err(DelegationExecutionError::new(
+            "remote A2A task was rejected",
+        )),
         TaskState::Canceled => Err(DelegationExecutionError::new(
             "remote A2A task was canceled",
         )),
-        TaskState::Working => Err(DelegationExecutionError::new(
-            "remote A2A task did not reach a terminal state in time",
-        )),
+        TaskState::Submitted | TaskState::Working | TaskState::Unknown => Err(
+            DelegationExecutionError::new("remote A2A task did not reach a terminal state in time"),
+        ),
     }
 }
 
