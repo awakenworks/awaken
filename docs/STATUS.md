@@ -88,6 +88,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `STATUS.md` | Meta / introspection | Not required | n/a |
 | `INVARIANTS.md` | Guardrail registry | Not required | n/a |
 | `requirements-coverage.md` | Coverage map | Not required | n/a |
+| `formal-verification-expansion.md` | Coverage report | Not required | n/a |
 | `design/architecture-overview.md` | Navigation / context map | Delegated | [runtime-interface-boundaries.md](design/runtime-interface-boundaries.md#role-catalog) |
 | `design/config-to-run-execution-flow.md` | Delegated boundary narrative | Delegated | [runtime-interface-boundaries.md](design/runtime-interface-boundaries.md#role-catalog) |
 | `design/config-publication-lifecycle.md` | Delegated boundary narrative | Delegated | [runtime-interface-boundaries.md](design/runtime-interface-boundaries.md#role-catalog) |
