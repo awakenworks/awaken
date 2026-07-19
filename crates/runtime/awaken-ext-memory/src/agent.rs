@@ -68,7 +68,7 @@ comma-separated, at most the requested count. If none are relevant, reply NONE. 
 Do not explain, do not use tools.";
 
 /// A default `memory-selector` agent config: no tools, a single step (it replies
-/// once), and no plugins — so it cannot recurse into memory recall.
+/// once), and no plugins — its Agent config therefore cannot invoke memory recall.
 pub fn default_selector_agent(model_ref: &str, instructions: &str) -> RunnableConfig {
     RunnableConfig::builder(SELECTOR_AGENT_ID)
         .instructions(instructions)

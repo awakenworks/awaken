@@ -1,12 +1,15 @@
 //! Kernel-level guard for the delegation port: the runtime executes the delegation
-//! tool via an injected [`AgentResolver`] (not the tool registry), and awaits/resumes
+//! tool via an injected [`DelegationExecutor`] (not the tool registry), and awaits/resumes
 //! it — no host orchestration. Proves delegation is a runtime concern.
 
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::Role;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
-use awaken_runtime_contract::agent_resolver::{AgentError, AgentRequest, AgentResolver, AgentStep};
+use awaken_runtime_contract::delegation::{
+    DelegationExecutionError, DelegationExecutor, DelegationRequest, DelegationResume,
+    DelegationStep,
+};
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, THREAD_USAGE_STATE_KEY, ThreadUsage,
     TokenUsage, ToolCall,
@@ -67,23 +70,24 @@ fn block_text(block: &awaken_agent_contract::agent::content::ContentBlock) -> St
 struct DoneResolver;
 
 #[async_trait::async_trait]
-impl AgentResolver for DoneResolver {
+impl DelegationExecutor for DoneResolver {
     fn tool_id(&self) -> &str {
         "agent_run"
     }
-    async fn run(&self, request: AgentRequest) -> Result<AgentStep, AgentError> {
+    async fn start(
+        &self,
+        request: DelegationRequest,
+    ) -> Result<DelegationStep, DelegationExecutionError> {
         let agent = request.arguments["agent_id"].as_str().unwrap_or_default();
-        Ok(AgentStep::Done {
+        Ok(DelegationStep::Ended {
             text: format!("reply from {agent}"),
             usage: ThreadUsage::default(),
         })
     }
     async fn resume(
         &self,
-        _handle: &serde_json::Value,
-        _input: &str,
-        _cancellation: Option<&awaken_runtime_contract::CancellationToken>,
-    ) -> Result<AgentStep, AgentError> {
+        _request: DelegationResume,
+    ) -> Result<DelegationStep, DelegationExecutionError> {
         unreachable!("DoneResolver never awaits")
     }
 }
@@ -93,11 +97,14 @@ impl AgentResolver for DoneResolver {
 struct UsageResolver;
 
 #[async_trait::async_trait]
-impl AgentResolver for UsageResolver {
+impl DelegationExecutor for UsageResolver {
     fn tool_id(&self) -> &str {
         "agent_run"
     }
-    async fn run(&self, _request: AgentRequest) -> Result<AgentStep, AgentError> {
+    async fn start(
+        &self,
+        _request: DelegationRequest,
+    ) -> Result<DelegationStep, DelegationExecutionError> {
         let mut usage = ThreadUsage::default();
         usage.record(
             "sub-model",
@@ -108,17 +115,15 @@ impl AgentResolver for UsageResolver {
                 cache_creation_tokens: 0,
             },
         );
-        Ok(AgentStep::Done {
+        Ok(DelegationStep::Ended {
             text: "reply from sub".into(),
             usage,
         })
     }
     async fn resume(
         &self,
-        _handle: &serde_json::Value,
-        _input: &str,
-        _cancellation: Option<&awaken_runtime_contract::CancellationToken>,
-    ) -> Result<AgentStep, AgentError> {
+        _request: DelegationResume,
+    ) -> Result<DelegationStep, DelegationExecutionError> {
         unreachable!("UsageResolver never awaits")
     }
 }
@@ -127,24 +132,28 @@ impl AgentResolver for UsageResolver {
 struct AwaitingResolver;
 
 #[async_trait::async_trait]
-impl AgentResolver for AwaitingResolver {
+impl DelegationExecutor for AwaitingResolver {
     fn tool_id(&self) -> &str {
         "agent_run"
     }
-    async fn run(&self, _request: AgentRequest) -> Result<AgentStep, AgentError> {
-        Ok(AgentStep::Awaiting {
-            handle: serde_json::json!({ "task": "t-1" }),
+    async fn start(
+        &self,
+        _request: DelegationRequest,
+    ) -> Result<DelegationStep, DelegationExecutionError> {
+        Ok(DelegationStep::Awaiting {
+            continuation: serde_json::json!({ "task": "t-1" }),
         })
     }
     async fn resume(
         &self,
-        handle: &serde_json::Value,
-        input: &str,
-        _cancellation: Option<&awaken_runtime_contract::CancellationToken>,
-    ) -> Result<AgentStep, AgentError> {
-        assert_eq!(handle["task"], "t-1", "the durable handle round-trips");
-        Ok(AgentStep::Done {
-            text: format!("finished with: {input}"),
+        request: DelegationResume,
+    ) -> Result<DelegationStep, DelegationExecutionError> {
+        assert_eq!(
+            request.continuation["task"], "t-1",
+            "the durable continuation round-trips"
+        );
+        Ok(DelegationStep::Ended {
+            text: format!("finished with: {}", request.input),
             usage: ThreadUsage::default(),
         })
     }
@@ -176,7 +185,7 @@ async fn the_kernel_runs_agent_run_through_the_resolver() {
     let runtime = Runtime::new()
         .with_llm(Arc::new(CoordinatorLlm))
         .with_gate(Arc::new(allow_all()))
-        .with_resolver(Arc::new(DoneResolver));
+        .with_delegation_executor(Arc::new(DoneResolver));
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ctx = RuntimeRunContext::new()
@@ -206,7 +215,7 @@ async fn a_delegates_usage_folds_into_the_parent_thread_tally() {
     let runtime = Runtime::new()
         .with_llm(Arc::new(CoordinatorLlm))
         .with_gate(Arc::new(allow_all()))
-        .with_resolver(Arc::new(UsageResolver));
+        .with_delegation_executor(Arc::new(UsageResolver));
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ctx = RuntimeRunContext::new()
@@ -221,7 +230,7 @@ async fn a_delegates_usage_folds_into_the_parent_thread_tally() {
 
     // The coordinator model reports no usage, so the parent thread's committed
     // tally is exactly the delegate's spend — proving it rolled up rather than
-    // vanishing with the sub-run's isolated store.
+    // while the child also retains its own committed tally.
     let thread_id = commit
         .committed()
         .thread_id
@@ -254,7 +263,7 @@ async fn an_awaiting_delegation_resumes_through_the_resolver() {
     let runtime = Runtime::new()
         .with_llm(Arc::new(CoordinatorLlm))
         .with_gate(Arc::new(allow_all()))
-        .with_resolver(Arc::new(AwaitingResolver));
+        .with_delegation_executor(Arc::new(AwaitingResolver));
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ctx = RuntimeRunContext::new()

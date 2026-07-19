@@ -29,7 +29,7 @@ the source). Two concrete failures followed:
 
 1. **Internal vocabulary drift.** The corpus invented a `BackgroundTask`
    umbrella for work it already models as `ScheduledAction`, conflated its own
-   distinct resolver roles (`AgentResolver` / `Resolver` / `RunResolver`), and
+   distinct lookup/materialization roles (`AgentSnapshotResolver` / `RunResolver`), and
    used two names for the tool port (`ToolExecutionLocus` vs `ToolExecutor`).
 2. **Guardrails without enforcers.** `G1..G29` named only generic check
    categories ("dependency checks", "API surface tests"), not a corpus role or
@@ -80,7 +80,7 @@ a competing name.
 | Drifted doc vocabulary | Resolution (this corpus) | Owner |
 |---|---|---|
 | `BackgroundTask*` (invented type + 12th "axis" + state machine) | retired; deferred work is `ScheduledAction` (and the external wait/resume and dispatch axes) | [ADR-0003](0003-deferred-work-mechanism-selection.md) |
-| `AgentResolver` / `RunResolver` conflated; "the resolver" ambiguous | three distinct roles, named explicitly | [ADR-0002](0002-resolver-role-demarcation.md) |
+| snapshot lookup / Run materialization conflated; "the resolver" ambiguous | two distinct roles, named explicitly | [ADR-0002](0002-resolver-role-demarcation.md) |
 | `ToolExecutionLocus` vs `ToolExecutor` as the tool port | `ToolExecutor` is the sole neutral port; `ToolExecutionLocus` is removed — the executing side implements the port, and where execution runs is not a runtime role | [tool-and-capability.md](../design/tool-and-capability.md) |
 | `ResolvedRun` crosses the server seam | `ResolvedRun` is runtime-internal; `ResolvedSpec` + `CatalogFingerprint` are the crossing values | [key-design-decisions.md](../design/key-design-decisions.md) D3, G3 |
 

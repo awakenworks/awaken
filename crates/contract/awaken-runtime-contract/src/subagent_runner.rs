@@ -6,7 +6,7 @@
 //! implements it once over the sub-run substrate, replacing the per-extension
 //! `Summarizer` / `DelegateRunner` ports.
 //!
-//! Model-facing delegation ([`AgentResolver`](crate::agent_resolver)) stays
+//! Model-facing delegation ([`DelegationExecutor`](crate::delegation::DelegationExecutor)) stays
 //! separate: it is a tool with awaiting/resume semantics, not a fire-and-return aux
 //! run, so it is a distinct port by design.
 

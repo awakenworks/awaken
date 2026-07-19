@@ -97,14 +97,14 @@ no other crate depends on an adapter except a composition root, the host service
 the control plane, or a sibling/executor adapter. A newcomer adds a protocol by copying
 the shape, not by studying how the last one reached into the host.
 
-### 4. The remote-delegate seam (the ADR-0058 pattern, applied to delegation)
+### 4. The remote-Agent seam (the ADR-0058 pattern, applied to delegation)
 
-Remote-agent delegation is driven through the neutral `RemoteDelegate` port
-(`awaken-runtime-contract`): `run(agent_id, input, cancellation) → AgentStep` and
+Remote-agent delegation is driven through the neutral `RemoteAgent` interface
+(`awaken-runtime-contract`): `run(agent_id, input, cancellation) → DelegationStep` and
 `card(agent_id) → Value`, both neutral types. The A2A wire — `message:send`, task
-polling, the discovery card shape — lives entirely in `A2aRemoteDelegate`
-(`awaken-run-executor-a2a`), the adapter that implements the port. The host holds
-`dyn RemoteDelegate` and names no protocol. Native (in-process sub-run) and remote agents
+polling, the discovery card shape — lives entirely in `A2aRemoteAgent`
+(`awaken-run-executor-a2a`), the adapter that implements the interface. The host holds
+`dyn RemoteAgent` and names no protocol. Native (in-process child Run) and remote Agents
 are peer implementations chosen by `agent_id`.
 
 ### 5. Fitness functions (the invariant is enforced, not documented)
@@ -189,4 +189,4 @@ fields (`llm`, `sessions`, `hub`, `file_store`, model/provider) are the irreduci
   (a zero-depender member leaf).
 - This ADR is documentation *plus* code: Phases 0.1 / 0.2 / 3 of the layout work landed the
   three new fitness functions; the neutral-port extractions (session-contract, the InMemory
-  backends, the `RemoteDelegate` seam) landed the structural changes it describes.
+  backends, the `RemoteAgent` seam) landed the structural changes it describes.

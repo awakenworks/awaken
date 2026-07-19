@@ -95,7 +95,6 @@ pub enum DispatchOutcome {
     /// The run ended; the dispatch is finished and removed.
     Done,
     /// The run awaits external input; keep the dispatch for a later wake.
-    #[serde(alias = "Parked")]
     Awaiting,
 }
 

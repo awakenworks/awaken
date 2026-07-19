@@ -15,6 +15,7 @@
 
 use std::sync::Arc;
 
+use awaken_agent_contract::agent::delegation::DelegationOrigin;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
@@ -45,6 +46,11 @@ pub struct CaptureContext {
 
 #[derive(Clone, Default)]
 pub struct RuntimeRunContext {
+    /// The Agent Run that initiated this Run, when this is a delegated child.
+    /// `None` means the Run was admitted directly (user/system ingress). This is
+    /// the only semantic distinction between a delegated Run and any other Run;
+    /// the durable authority remains the corresponding `DelegationGroup`.
+    pub initiator: Option<DelegationOrigin>,
     /// Live best-effort progress delivery; absent means no live streaming.
     pub stream_sink: Option<Arc<dyn StreamSink>>,
     /// Durable write boundary for this attempt; absent means no persistence.
@@ -98,6 +104,34 @@ pub struct RuntimeRunContext {
 impl RuntimeRunContext {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Derive the process-local wiring for a child Run initiated by this Run.
+    ///
+    /// A delegated child is an ordinary Agent Run, so it inherits the same
+    /// persistence, execution, observability, and capture capabilities. The two
+    /// exceptions are handles whose identity belongs to one live Run:
+    ///
+    /// - cancellation uses a child token, giving parent → child propagation
+    ///   without allowing a child cancellation to cancel its parent;
+    /// - live input, live output, and pause handles are not inherited because
+    ///   their address is the parent Run; a separately controlled child receives
+    ///   its own handles from ingress.
+    ///
+    /// A separately dispatched child receives its own context from ingress; this
+    /// method is the in-process equivalent used by native delegation.
+    #[must_use]
+    pub fn for_delegated_child(&self, origin: DelegationOrigin) -> Self {
+        let mut child = self.clone();
+        child.initiator = Some(origin);
+        child.cancellation = self
+            .cancellation
+            .as_ref()
+            .map(CancellationToken::child_token);
+        child.stream_sink = None;
+        child.pause = None;
+        child.live_inbox = None;
+        child
     }
 
     #[must_use]
@@ -209,5 +243,60 @@ impl RuntimeRunContext {
     /// Observed only at safe loop boundaries.
     pub fn is_pause_requested(&self) -> bool {
         self.pause.as_ref().is_some_and(PauseSignal::requested)
+    }
+}
+
+#[cfg(test)]
+mod child_run_tests {
+    use super::*;
+
+    #[test]
+    fn child_run_inherits_capabilities_but_not_parent_live_input() {
+        let pause = PauseSignal::new();
+        let parent = RuntimeRunContext::new()
+            .with_pause(pause)
+            .with_live_inbox(LiveInbox::new());
+
+        let origin = DelegationOrigin::root(
+            awaken_agent_contract::agent::run::Id("parent".into()),
+            "call",
+        );
+        let child = parent.for_delegated_child(origin.clone());
+
+        assert!(parent.pause.is_some());
+        assert!(child.pause.is_none());
+        assert_eq!(child.initiator, Some(origin));
+        assert!(parent.live_inbox.is_some());
+        assert!(child.live_inbox.is_none());
+    }
+
+    #[test]
+    fn cancellation_propagates_only_from_parent_to_child() {
+        let parent_token = CancellationToken::new();
+        let parent = RuntimeRunContext::new().with_cancellation(parent_token.clone());
+        let child = parent.for_delegated_child(DelegationOrigin::root(
+            awaken_agent_contract::agent::run::Id("parent".into()),
+            "call-1",
+        ));
+        let child_token = child.cancellation.expect("child cancellation token");
+
+        child_token.cancel();
+        assert!(
+            !parent_token.is_cancelled(),
+            "child must not cancel its parent"
+        );
+
+        let second_child = parent.for_delegated_child(DelegationOrigin::root(
+            awaken_agent_contract::agent::run::Id("parent".into()),
+            "call-2",
+        ));
+        parent_token.cancel();
+        assert!(
+            second_child
+                .cancellation
+                .expect("second child cancellation token")
+                .is_cancelled(),
+            "parent cancellation must reach every child"
+        );
     }
 }

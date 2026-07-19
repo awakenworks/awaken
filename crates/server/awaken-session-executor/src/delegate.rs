@@ -1,30 +1,29 @@
-//! The delegation resolver: run a sub-agent behind the `agent_run` tool.
+//! The host delegation executor: run a child Agent behind the `agent_run` tool.
 //!
-//! This is the composition-root adapter of the kernel's [`AgentResolver`] port.
-//! The kernel routes the delegation tool to it; here, native (in-process sub-run)
+//! This is the composition-root implementation of the kernel's [`DelegationExecutor`].
+//! The kernel routes the delegation tool to it; here, native (in-process Agent Run)
 //! and remote agents are *peer* implementations chosen by `agent_id`. A remote agent
-//! is reached through the neutral [`RemoteDelegate`] port, so the wire (message shape,
+//! is reached through the neutral [`RemoteAgent`] interface, so the wire (message shape,
 //! task polling, discovery card) lives entirely in the adapter that implements it
 //! (e.g. `awaken-run-executor-a2a`); this module owns only the *dispatch* — routing an
-//! `agent_id` to its native sub-run or its remote delegate — and names no protocol.
+//! `agent_id` to its native or remote Agent execution — and names no protocol.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 use async_trait::async_trait;
 use awaken_ext_builtin_tools::AGENT_RUN;
-use awaken_runtime_contract::CancellationToken;
-use awaken_runtime_contract::agent_resolver::{
-    AgentError, AgentRequest, AgentResolver, AgentStep, RemoteDelegate,
+use awaken_runtime_contract::delegation::{
+    DelegationExecutionError, DelegationExecutor, DelegationRequest, DelegationResume,
+    DelegationStep, RemoteAgent,
 };
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_sandbox_local::{LocalProvider, LocalSandbox};
 
-use crate::subagent::SubrunSandbox;
+use crate::subagent::AgentRunSandbox;
 use serde_json::Value;
 
-use crate::host::{BASE_SEQ, HostError, SharedHost};
+use crate::host::{HostError, SharedHost};
 
 /// The host's delegate agents (local + A2A-remote), behind one type owning their
 /// shared invariant: `remotes` (agents fulfilled over A2A) is a *subset* of `ids`
@@ -33,16 +32,20 @@ use crate::host::{BASE_SEQ, HostError, SharedHost};
 /// the pair split let a caller register a remote delegate without also advertising
 /// the delegate, silently breaking the `multiagent` roster.
 ///
-/// `remotes` holds the neutral [`RemoteDelegate`] port, not a wire type: the A2A
+/// `remotes` holds the neutral [`RemoteAgent`] interface, not a wire type: the A2A
 /// transport + poll loop live in the adapter that implements it (Phase 2), so host
 /// state names no protocol.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Delegates {
     /// All delegate agent ids (advertised as the agent's `multiagent` roster).
     ids: HashSet<String>,
     /// The subset fulfilled by a remote peer (agent id → the neutral delegate port)
-    /// instead of a local sub-run. Invariant: every key is also in `ids`.
-    remotes: HashMap<String, Arc<dyn RemoteDelegate>>,
+    /// instead of a local Agent Run. Invariant: every key is also in `ids`.
+    remotes: HashMap<String, Arc<dyn RemoteAgent>>,
+    /// Per-Agent delegation rosters. Absence means that Agent has no delegation
+    /// capability; being initiated by another Agent never implicitly copies the
+    /// initiator's roster.
+    agent_rosters: HashMap<String, HashSet<String>>,
 }
 
 impl Delegates {
@@ -51,16 +54,23 @@ impl Delegates {
         Self::default()
     }
 
-    /// Add local delegate agents (fulfilled by an in-process sub-run).
+    /// Add local delegate Agents (fulfilled by an in-process child Run).
     pub(crate) fn add_local(&mut self, ids: HashSet<String>) {
         self.ids.extend(ids);
     }
 
     /// Register a remote delegate: advertised in the roster AND routed to its neutral
-    /// [`RemoteDelegate`] port. Maintains the `remotes ⊆ ids` invariant via both.
-    pub(crate) fn add_remote(&mut self, agent_id: String, delegate: Arc<dyn RemoteDelegate>) {
+    /// [`RemoteAgent`] interface. Maintains the `remotes ⊆ ids` invariant via both.
+    pub(crate) fn add_remote(&mut self, agent_id: String, delegate: Arc<dyn RemoteAgent>) {
         self.ids.insert(agent_id.clone());
         self.remotes.insert(agent_id, delegate);
+    }
+
+    /// Configure the delegation targets available when `agent_id` itself runs.
+    /// This is independent from whether `agent_id` appears in the root Agent's
+    /// roster: each Agent owns its ordinary capability set.
+    pub(crate) fn set_agent_roster(&mut self, agent_id: String, targets: HashSet<String>) {
+        self.agent_rosters.insert(agent_id, targets);
     }
 
     /// Whether the roster is empty (no delegates configured at all).
@@ -79,22 +89,8 @@ impl Delegates {
     }
 
     /// The remote-delegate port for `agent_id`, or `None` if it is local/unknown.
-    pub(crate) fn remote(&self, agent_id: &str) -> Option<&Arc<dyn RemoteDelegate>> {
+    pub(crate) fn remote(&self, agent_id: &str) -> Option<&Arc<dyn RemoteAgent>> {
         self.remotes.get(agent_id)
-    }
-
-    /// The native (in-process) delegate ids: the roster minus the remotes.
-    pub(crate) fn native_ids(&self) -> HashSet<String> {
-        self.ids
-            .iter()
-            .filter(|id| !self.remotes.contains_key(*id))
-            .cloned()
-            .collect()
-    }
-
-    /// A clone of the remote-delegate map, for injection into the delegation resolver.
-    pub(crate) fn remotes(&self) -> HashMap<String, Arc<dyn RemoteDelegate>> {
-        self.remotes.clone()
     }
 }
 
@@ -110,34 +106,36 @@ fn delegate_args(arguments: &Value) -> (String, String) {
     (field("agent_id"), field("input"))
 }
 
-/// Runs delegates behind `agent_run`: local agents as fresh rooted sub-runs, and
-/// A2A agents as remote turns — peers chosen by `agent_id`.
-pub(crate) struct DelegationResolver {
+/// Runs delegates behind `agent_run`: local and remote Agents share the same
+/// first-class child Run identity and lifecycle; only placement differs.
+#[derive(Clone)]
+pub(crate) struct HostDelegationExecutor {
     llm: Arc<dyn LlmExecutor>,
     model_ref: String,
-    provider: LocalProvider,
+    provider: Arc<LocalProvider>,
     /// The parent agent's sandbox, shared with a native delegate by default so the two
     /// collaborate in one workspace (`默认共用`); bypassed when `reuse_sandbox` is off.
     sandbox: Arc<LocalSandbox>,
     /// Whether a native delegate reuses the parent sandbox (default) or gets a fresh,
-    /// isolated one. The per-subagent knob behind "new sandbox vs. shared".
+    /// isolated one. Sandbox placement does not change child Run semantics.
     reuse_sandbox: bool,
-    /// Local (native) delegate ids.
+    /// Delegates this Agent may call, regardless of local/remote placement.
     roster: HashSet<String>,
-    /// Remote delegate ids → the neutral [`RemoteDelegate`] port.
-    remotes: HashMap<String, Arc<dyn RemoteDelegate>>,
+    /// All configured Agent identities, per-Agent rosters, and remote adapters.
+    /// A child receives its own roster, never an implicit copy of its initiator's.
+    delegates: Delegates,
 }
 
-impl DelegationResolver {
+impl HostDelegationExecutor {
     pub(crate) fn new(
         llm: Arc<dyn LlmExecutor>,
         model_ref: String,
-        provider: LocalProvider,
+        provider: Arc<LocalProvider>,
         sandbox: Arc<LocalSandbox>,
         reuse_sandbox: bool,
-        roster: HashSet<String>,
-        remotes: HashMap<String, Arc<dyn RemoteDelegate>>,
+        delegates: Delegates,
     ) -> Self {
+        let roster = delegates.ids.clone();
         Self {
             llm,
             model_ref,
@@ -145,90 +143,117 @@ impl DelegationResolver {
             sandbox,
             reuse_sandbox,
             roster,
-            remotes,
+            delegates,
         }
     }
 
-    /// Run a native (in-process) delegate: a rooted sub-run over the same model with no
-    /// delegation tool (a delegate cannot recurse). By default it shares the parent's
-    /// sandbox (`默认共用`); with `reuse_sandbox` off it gets a fresh, isolated one.
+    /// Run a native delegate as an ordinary Agent under a first-class child Run id.
+    /// It receives that Agent's configured delegation roster; it may recursively
+    /// delegate when its own config allows it. Sandbox placement is the only local
+    /// execution choice made here.
     async fn native_run(
         &self,
         agent_id: &str,
+        child_run_id: &awaken_agent_contract::agent::run::Id,
         input: &str,
-        cancellation: Option<&CancellationToken>,
-    ) -> Result<AgentStep, AgentError> {
-        let n = BASE_SEQ.fetch_add(1, Ordering::SeqCst);
-        let name = format!("{agent_id}-sub-{n}");
+        context: awaken_runtime_contract::runtime_context::RuntimeRunContext,
+    ) -> Result<DelegationStep, DelegationExecutionError> {
         let sandbox = if self.reuse_sandbox {
-            SubrunSandbox::Shared(&self.sandbox)
+            AgentRunSandbox::Shared(&self.sandbox)
         } else {
-            SubrunSandbox::Fresh(&self.provider)
+            AgentRunSandbox::Fresh(&self.provider)
         };
-        // The sub-run's usage rides back on the step so the kernel folds it into the
-        // parent thread's tally (its own isolated store is dropped here) — turn work,
-        // so it counts against the session.
-        let (text, usage) = crate::subagent::run_subagent(
+        // The child keeps its own committed usage; the returned value additionally
+        // rolls that usage into the initiating Run's accounting projection.
+        let delegates = self
+            .delegates
+            .agent_rosters
+            .get(agent_id)
+            .cloned()
+            .unwrap_or_default();
+        let delegation_executor = if delegates.is_empty() {
+            None
+        } else {
+            let mut child_executor = self.clone();
+            child_executor.roster.clone_from(&delegates);
+            Some(Arc::new(child_executor) as Arc<dyn DelegationExecutor>)
+        };
+        let (text, usage) = crate::subagent::run_agent(
             self.llm.clone(),
-            &self.model_ref,
+            crate::subagent::AgentExecution {
+                agent_id,
+                model_ref: &self.model_ref,
+                delegates: &delegates,
+                delegation_executor,
+                context: Some(context),
+            },
             sandbox,
-            &name,
+            crate::subagent::AgentRunIdentity::child(child_run_id),
             input,
-            cancellation.cloned(),
+            None,
             crate::subagent::UsageRollup::FoldIntoParent,
         )
         .await
-        .map_err(AgentError::new)?;
-        Ok(AgentStep::Done { text, usage })
+        .map_err(DelegationExecutionError::new)?;
+        Ok(DelegationStep::Ended { text, usage })
     }
 }
 
 #[async_trait]
-impl AgentResolver for DelegationResolver {
+impl DelegationExecutor for HostDelegationExecutor {
     fn tool_id(&self) -> &str {
         AGENT_RUN
     }
 
-    async fn run(&self, request: AgentRequest) -> Result<AgentStep, AgentError> {
+    async fn start(
+        &self,
+        request: DelegationRequest,
+    ) -> Result<DelegationStep, DelegationExecutionError> {
         let (agent_id, input) = delegate_args(&request.arguments);
-        if let Some(remote) = self.remotes.get(&agent_id) {
-            return remote
-                .run(&agent_id, &input, request.cancellation.as_ref())
-                .await;
-        }
         if !self.roster.contains(&agent_id) {
-            return Err(AgentError::new(format!(
-                "delegate agent {agent_id:?} is not in the roster"
+            return Err(DelegationExecutionError::new(format!(
+                "delegate agent {agent_id:?} is not in this Agent's roster"
             )));
         }
-        self.native_run(&agent_id, &input, request.cancellation.as_ref())
+        if let Some(remote) = self.delegates.remotes.get(&agent_id) {
+            return remote
+                .run(&agent_id, &input, request.context.cancellation.as_ref())
+                .await;
+        }
+        self.native_run(&agent_id, &request.child_run_id, &input, request.context)
             .await
     }
 
     async fn resume(
         &self,
-        handle: &Value,
-        input: &str,
-        cancellation: Option<&CancellationToken>,
-    ) -> Result<AgentStep, AgentError> {
+        request: DelegationResume,
+    ) -> Result<DelegationStep, DelegationExecutionError> {
         // The handle names the remote agent whose task awaiting for input; deliver
         // the user's input as a follow-up turn on the same context.
-        let agent_id = handle
+        let agent_id = request
+            .continuation
             .get("agent_id")
             .and_then(Value::as_str)
-            .ok_or_else(|| AgentError::new("delegation handle is missing agent_id"))?;
-        let remote = self
-            .remotes
-            .get(agent_id)
-            .ok_or_else(|| AgentError::new(format!("agent {agent_id:?} is not a remote agent")))?;
-        remote.run(agent_id, input, cancellation).await
+            .ok_or_else(|| {
+                DelegationExecutionError::new("delegation continuation is missing agent_id")
+            })?;
+        let remote = self.delegates.remotes.get(agent_id).ok_or_else(|| {
+            DelegationExecutionError::new(format!("agent {agent_id:?} is not a remote agent"))
+        })?;
+        remote
+            .run(
+                agent_id,
+                &request.input,
+                request.context.cancellation.as_ref(),
+            )
+            .await
     }
 }
 
 impl SharedHost {
     /// Fetch a remote delegate's discovery card (outbound discovery) as neutral JSON.
     /// Fails if the agent is not a registered remote. The wire card shape lives in the
-    /// adapter behind the [`RemoteDelegate`] port; the host only echoes the value.
+    /// adapter behind the [`RemoteAgent`] interface; the host only echoes the value.
     pub async fn remote_agent_card(&self, agent_id: &str) -> Result<Value, HostError> {
         let remote = self.delegates.remote(agent_id).ok_or_else(|| {
             HostError::bad_request(format!("agent {agent_id:?} is not a remote agent"))

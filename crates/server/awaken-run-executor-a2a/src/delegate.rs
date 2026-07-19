@@ -1,9 +1,9 @@
-//! `A2aRemoteDelegate` — the A2A adapter of the kernel's neutral [`RemoteDelegate`]
-//! port (the second peer implementation of delegation, beside a native sub-run).
+//! `A2aRemoteAgent` — the A2A adapter of the kernel's neutral [`RemoteAgent`]
+//! interface (the second peer implementation of delegation, beside a native sub-run).
 //!
 //! It owns the A2A wire entirely: a delegation turn is an A2A `message:send` polled to
-//! a terminal state and mapped to a neutral [`AgentStep`]; discovery is an A2A
-//! `agent_card` serialized to JSON. The host holds this behind `dyn RemoteDelegate` and
+//! a terminal state and mapped to a neutral [`DelegationStep`]; discovery is an A2A
+//! `agent_card` serialized to JSON. The host holds this behind `dyn RemoteAgent` and
 //! names no A2A type — the leak this crate absorbs (ADR: neutral-core / Phase 2).
 
 use std::sync::Arc;
@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use awaken_protocol_a2a::client::{self as a2a, Transport};
 use awaken_protocol_a2a::{Task, TaskState};
 use awaken_runtime_contract::CancellationToken;
-use awaken_runtime_contract::agent_resolver::{AgentError, AgentStep, RemoteDelegate};
+use awaken_runtime_contract::delegation::{DelegationExecutionError, DelegationStep, RemoteAgent};
 use awaken_runtime_contract::llm::ThreadUsage;
 use serde_json::{Value, json};
 
@@ -26,12 +26,12 @@ const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200)
 static BASE_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Drives one registered A2A remote agent (bound to its `transport`) as a neutral
-/// [`RemoteDelegate`]. The composition root builds one per remote `agent_id`.
-pub struct A2aRemoteDelegate {
+/// [`RemoteAgent`]. The composition root builds one per remote `agent_id`.
+pub struct A2aRemoteAgent {
     transport: Arc<dyn Transport>,
 }
 
-impl A2aRemoteDelegate {
+impl A2aRemoteAgent {
     /// Bind the delegate to the transport that reaches the remote agent's A2A endpoint.
     #[must_use]
     pub fn new(transport: Arc<dyn Transport>) -> Self {
@@ -40,21 +40,21 @@ impl A2aRemoteDelegate {
 }
 
 #[async_trait]
-impl RemoteDelegate for A2aRemoteDelegate {
+impl RemoteAgent for A2aRemoteAgent {
     async fn run(
         &self,
         agent_id: &str,
         input: &str,
         cancellation: Option<&CancellationToken>,
-    ) -> Result<AgentStep, AgentError> {
+    ) -> Result<DelegationStep, DelegationExecutionError> {
         remote_run(self.transport.as_ref(), agent_id, input, cancellation).await
     }
 
-    async fn card(&self, _agent_id: &str) -> Result<Value, AgentError> {
+    async fn card(&self, _agent_id: &str) -> Result<Value, DelegationExecutionError> {
         let card = a2a::agent_card(self.transport.as_ref())
             .await
-            .map_err(|e| AgentError::new(e.to_string()))?;
-        serde_json::to_value(card).map_err(|e| AgentError::new(e.to_string()))
+            .map_err(|e| DelegationExecutionError::new(e.to_string()))?;
+        serde_json::to_value(card).map_err(|e| DelegationExecutionError::new(e.to_string()))
     }
 }
 
@@ -80,20 +80,22 @@ fn completed_reply(task: &Task) -> String {
 /// Map a non-working task to a delegation step: completed → done; input/auth
 /// required → awaiting (the parent awaits for the user, resumed via the handle);
 /// failed → error.
-fn step_from_task(agent_id: &str, task: Task) -> Result<AgentStep, AgentError> {
+fn step_from_task(agent_id: &str, task: Task) -> Result<DelegationStep, DelegationExecutionError> {
     match task.status.state {
         // A remote (A2A) delegate runs on another host: its token spend is not
         // observable over the A2A wire, so no usage rolls into the parent tally.
-        TaskState::Completed => Ok(AgentStep::Done {
+        TaskState::Completed => Ok(DelegationStep::Ended {
             text: completed_reply(&task),
             usage: ThreadUsage::default(),
         }),
-        TaskState::InputRequired | TaskState::AuthRequired => Ok(AgentStep::Awaiting {
-            handle: json!({ "agent_id": agent_id, "task_id": task.id }),
+        TaskState::InputRequired | TaskState::AuthRequired => Ok(DelegationStep::Awaiting {
+            continuation: json!({ "agent_id": agent_id, "task_id": task.id }),
         }),
-        TaskState::Failed => Err(AgentError::new("remote A2A agent failed")),
-        TaskState::Canceled => Err(AgentError::new("remote A2A task was canceled")),
-        TaskState::Working => Err(AgentError::new(
+        TaskState::Failed => Err(DelegationExecutionError::new("remote A2A agent failed")),
+        TaskState::Canceled => Err(DelegationExecutionError::new(
+            "remote A2A task was canceled",
+        )),
+        TaskState::Working => Err(DelegationExecutionError::new(
             "remote A2A task did not reach a terminal state in time",
         )),
     }
@@ -107,18 +109,20 @@ async fn remote_run(
     agent_id: &str,
     input: &str,
     cancellation: Option<&CancellationToken>,
-) -> Result<AgentStep, AgentError> {
+) -> Result<DelegationStep, DelegationExecutionError> {
     let context_id = format!("deleg-{agent_id}");
     let message_id = format!("m-{}", BASE_SEQ.fetch_add(1, Ordering::SeqCst));
     let mut task = a2a::send_message(transport, Some(agent_id), &context_id, &message_id, input)
         .await
-        .map_err(|e| AgentError::new(e.to_string()))?;
+        .map_err(|e| DelegationExecutionError::new(e.to_string()))?;
 
     let mut polls = 0usize;
     while matches!(task.status.state, TaskState::Working) {
         if cancellation.is_some_and(CancellationToken::is_cancelled) {
             a2a::cancel_task(transport, &task.id).await;
-            return Err(AgentError::new("remote A2A delegation was cancelled"));
+            return Err(DelegationExecutionError::new(
+                "remote A2A delegation was cancelled",
+            ));
         }
         if polls >= MAX_TASK_POLLS {
             break;
@@ -126,7 +130,7 @@ async fn remote_run(
         polls += 1;
         task = a2a::get_task(transport, &task.id)
             .await
-            .map_err(|e| AgentError::new(e.to_string()))?;
+            .map_err(|e| DelegationExecutionError::new(e.to_string()))?;
         if matches!(task.status.state, TaskState::Working) {
             match cancellation {
                 Some(token) => {
@@ -134,7 +138,7 @@ async fn remote_run(
                         _ = tokio::time::sleep(POLL_INTERVAL) => {}
                         _ = token.cancelled() => {
                             a2a::cancel_task(transport, &task.id).await;
-                            return Err(AgentError::new("remote A2A delegation was cancelled"));
+                            return Err(DelegationExecutionError::new("remote A2A delegation was cancelled"));
                         }
                     }
                 }
@@ -188,7 +192,7 @@ mod tests {
             reply: r#"{"name":"researcher","description":"a remote agent","version":"1.2.3","protocolVersion":"1.0","capabilities":{"streaming":false,"pushNotifications":false}}"#
                 .to_string(),
         });
-        let delegate = A2aRemoteDelegate::new(transport.clone());
+        let delegate = A2aRemoteAgent::new(transport.clone());
 
         let card = delegate.card("researcher").await.expect("card");
         assert_eq!(card["name"], "researcher");
@@ -208,7 +212,7 @@ mod tests {
             status: 500,
             reply: r#"{"error":{"message":"boom"}}"#.to_string(),
         });
-        let delegate = A2aRemoteDelegate::new(transport);
+        let delegate = A2aRemoteAgent::new(transport);
         assert!(delegate.card("flaky").await.is_err());
     }
 }

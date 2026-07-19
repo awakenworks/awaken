@@ -69,9 +69,9 @@ impl SkillSource for SnapshotSkillSource {
     }
 }
 
-/// Runs a `context: fork` skill as a default-assistant sub-agent (no skills, so a
-/// fork cannot recurse), returning its reply. By default it shares the parent agent's
-/// sandbox (`默认共用`), so a forked skill sees the same workspace; with
+/// Runs a `context: fork` skill as an Agent with the capabilities declared by its
+/// config, returning its reply. By default it shares the parent Agent's sandbox
+/// (`默认共用`), so a forked skill sees the same workspace; with
 /// `reuse_sandbox` off it gets a fresh, isolated root. Implements the neutral
 /// [`SubagentRunner`] port — the same one the goal judge and compactor use.
 struct ForkRunner {
@@ -92,15 +92,22 @@ impl SubagentRunner for ForkRunner {
         // port surfaces only the reply text).
         let name = format!("skill-{}", request.agent_id);
         let sandbox = if self.reuse_sandbox {
-            crate::subagent::SubrunSandbox::Shared(&self.sandbox)
+            crate::subagent::AgentRunSandbox::Shared(&self.sandbox)
         } else {
-            crate::subagent::SubrunSandbox::Fresh(&self.provider)
+            crate::subagent::AgentRunSandbox::Fresh(&self.provider)
         };
-        crate::subagent::run_subagent(
+        let delegates = std::collections::HashSet::new();
+        crate::subagent::run_agent(
             self.llm.clone(),
-            &self.model_ref,
+            crate::subagent::AgentExecution {
+                agent_id: &request.agent_id,
+                model_ref: &self.model_ref,
+                delegates: &delegates,
+                delegation_executor: None,
+                context: None,
+            },
             sandbox,
-            &name,
+            crate::subagent::AgentRunIdentity::transient(&name),
             request.seed,
             request.cancellation,
             crate::subagent::UsageRollup::Isolated,
@@ -263,7 +270,7 @@ mod tests {
         let provider = LocalProvider::new(&base);
         let env = Arc::new(
             provider
-                .create_sandbox(&crate::provisioning::subrun_sandbox_spec("t"))
+                .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("t"))
                 .await
                 .unwrap(),
         );
@@ -304,7 +311,7 @@ mod tests {
         std::fs::remove_dir_all(&base).ok();
         let env = Arc::new(
             LocalProvider::new(&base)
-                .create_sandbox(&crate::provisioning::subrun_sandbox_spec("t"))
+                .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("t"))
                 .await
                 .unwrap(),
         );

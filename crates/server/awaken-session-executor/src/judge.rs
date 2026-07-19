@@ -2,7 +2,7 @@
 //!
 //! The outcome loop (`awaken-ext-goal`) grades a deliverable through a
 //! `DelegateRunner`; here that runner resolves a `judge` entry from an
-//! [`AgentCatalog`] and runs it through [`run_configured_subrun`], exactly like
+//! [`AgentCatalog`] and runs it through the shared Agent Run substrate, exactly like
 //! the memory and compact agents. So the judge's model, instructions, and window
 //! are configured per-agent rather than hard-coded — the same "just an agent"
 //! substrate, now covering evaluation too.
@@ -62,15 +62,18 @@ impl SubagentRunner for HostSubagentRunner {
         // Every sub-run behind this port is out-of-band housekeeping (judge,
         // compaction, memory selection), not the doer's turn — its usage stays
         // isolated on its own sub-thread rather than folding into the parent tally.
-        let (text, _usage) = crate::subagent::run_configured_subrun(
+        let (text, _usage) = crate::subagent::run_configured_agent(
             &self.catalog,
-            crate::subagent::SubrunSandbox::Fresh(&self.provider),
+            crate::subagent::AgentRunSandbox::Fresh(&self.provider),
             self.llm.clone(),
             &request.agent_id,
             &name,
             request.seed,
             Vec::new(),
             request.cancellation,
+            None,
+            None,
+            None,
             crate::subagent::UsageRollup::Isolated,
         )
         .await
