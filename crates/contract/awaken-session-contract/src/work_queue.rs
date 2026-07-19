@@ -51,6 +51,26 @@ impl WorkState {
             Self::Stopped => "stopped",
         }
     }
+
+    /// Parse the wire/persisted string back to a state — the exact inverse of
+    /// [`as_str`](Self::as_str), co-located here so the two CANNOT drift (adding a variant
+    /// forces `as_str` to grow an arm, and this round-trips it). Returns `None` for an
+    /// UNRECOGNIZED string rather than silently defaulting: a durable backend reading a
+    /// corrupt or newer-schema state must fail CLOSED (treat it as terminal / not
+    /// re-dispatchable), because silently mapping an unknown state to `Queued` would invite
+    /// a re-claim and double execution — the exactly-once violation this inverse exists to
+    /// prevent. See the round-trip property test in this crate.
+    #[must_use]
+    pub fn from_wire(s: &str) -> Option<Self> {
+        match s {
+            "queued" => Some(Self::Queued),
+            "starting" => Some(Self::Starting),
+            "active" => Some(Self::Active),
+            "stopping" => Some(Self::Stopping),
+            "stopped" => Some(Self::Stopped),
+            _ => None,
+        }
+    }
 }
 
 /// One queued/leased unit of work in an environment's queue (the domain shape; the

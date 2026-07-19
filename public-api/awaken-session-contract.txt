@@ -38,6 +38,7 @@ pub awaken_session_contract::work_queue::WorkState::Stopped
 pub awaken_session_contract::work_queue::WorkState::Stopping
 impl awaken_session_contract::work_queue::WorkState
 pub fn awaken_session_contract::work_queue::WorkState::as_str(self) -> &'static str
+pub fn awaken_session_contract::work_queue::WorkState::from_wire(&str) -> core::option::Option<Self>
 pub struct awaken_session_contract::work_queue::LeaseReceipt
 pub awaken_session_contract::work_queue::LeaseReceipt::lease_extended: bool
 pub awaken_session_contract::work_queue::LeaseReceipt::state: &'static str
