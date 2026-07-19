@@ -4,6 +4,23 @@
 use super::*;
 
 impl SharedHost {
+    pub(crate) fn resolved_dispatch(
+        &self,
+        activation: RunActivation,
+    ) -> Result<RunDispatch, HostError> {
+        let model_ref = activation.effective_model_ref().to_string();
+        let access = self
+            .model_route
+            .model_access_for(&model_ref)
+            .map_err(HostError::bad_request)?;
+        let mut request = RunDispatch::new(activation)
+            .with_traceparent(awaken_observability::current_traceparent());
+        if let Some(access) = access {
+            request = request.with_model_access(access);
+        }
+        Ok(request)
+    }
+
     /// The process dispatch pool, or a fail-closed error when durable ingress (and
     /// thus the pool) is not enabled.
     pub(crate) fn dispatch_pool_or_err(
@@ -35,6 +52,7 @@ impl SharedHost {
         // settles — held to the end of this method.
         let (settled, _waiter_guard) = self.completion.register(&run_id);
         let pool = self.dispatch_pool_or_err()?;
+        let request = self.resolved_dispatch(activation)?;
         // Enqueue only — never drive here; the pool is the sole claimer. The common
         // path goes through `pool.submit` (which stamps the trace); a superseding
         // submit needs the supersede option, so it enqueues on the shared store and
@@ -48,7 +66,7 @@ impl SharedHost {
                 .worker()
                 .store()
                 .enqueue_with(
-                    RunDispatch::new(activation),
+                    request,
                     SubmitOptions {
                         supersede: true,
                         ..Default::default()
@@ -58,7 +76,7 @@ impl SharedHost {
                 .map_err(|e| HostError::internal(e.to_string()))?;
             pool.notify().await;
         } else {
-            pool.submit(activation)
+            pool.submit_dispatch(request)
                 .await
                 .map_err(|e| HostError::internal(e.to_string()))?;
         }

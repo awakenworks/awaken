@@ -21,6 +21,12 @@ pub trait ExecutorProvider: Send + Sync {
     /// The executor for `model_ref`, or `None` to fall back to the host default.
     fn executor_for(&self, model_ref: &str) -> Option<Arc<dyn LlmExecutor>>;
 
+    /// Resolve and pin the non-secret provider/route/credential binding at
+    /// dispatch admission. Providers without dynamic credentials return `None`.
+    fn model_access_for(&self, _model_ref: &str) -> Result<Option<ModelAccessRef>, String> {
+        Ok(None)
+    }
+
     /// Resolve one durable run, including its opaque model-access capability.
     /// Existing local-credential providers inherit the compatibility default and
     /// ignore the capability. Secretless gateway providers override this method
@@ -112,6 +118,16 @@ impl ThreadModelBinding {
         self.provider
             .as_ref()
             .and_then(|provider| provider.executor_for_run(model_ref, model_access))
+    }
+
+    pub(crate) fn model_access_for(
+        &self,
+        model_ref: &str,
+    ) -> Result<Option<ModelAccessRef>, String> {
+        match &self.provider {
+            Some(provider) => provider.model_access_for(model_ref),
+            None => Ok(None),
+        }
     }
 }
 

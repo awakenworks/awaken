@@ -20,6 +20,10 @@ use serde::{Deserialize, Serialize};
 pub struct ModelAccessRef {
     pub scheme: String,
     pub reference: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_ref: Option<String>,
 }
 
 impl ModelAccessRef {
@@ -28,6 +32,22 @@ impl ModelAccessRef {
         Self {
             scheme: scheme.into(),
             reference: reference.into(),
+            provider_ref: None,
+            route_ref: None,
+        }
+    }
+
+    #[must_use]
+    pub fn exact_credential(
+        credential_ref: impl Into<String>,
+        provider_ref: impl Into<String>,
+        route_ref: impl Into<String>,
+    ) -> Self {
+        Self {
+            scheme: "credential-source/v1".to_string(),
+            reference: credential_ref.into(),
+            provider_ref: Some(provider_ref.into()),
+            route_ref: Some(route_ref.into()),
         }
     }
 }

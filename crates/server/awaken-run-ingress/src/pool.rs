@@ -285,12 +285,16 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
 
     /// Durably enqueue a run and nudge the pool to pick it up.
     pub async fn submit(&self, activation: RunActivation) -> Result<(), Error> {
-        self.store
-            .enqueue(
-                RunDispatch::new(activation)
-                    .with_traceparent(awaken_observability::current_traceparent()),
-            )
-            .await?;
+        self.submit_dispatch(RunDispatch::new(activation)).await
+    }
+
+    /// Enqueue an already-resolved durable execution envelope. Composition roots
+    /// use this when model access and placement were pinned at admission.
+    pub async fn submit_dispatch(&self, mut request: RunDispatch) -> Result<(), Error> {
+        if request.traceparent.is_none() {
+            request.traceparent = awaken_observability::current_traceparent();
+        }
+        self.store.enqueue(request).await?;
         let _ = self.wake.publish().await;
         Ok(())
     }

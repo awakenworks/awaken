@@ -374,10 +374,11 @@ impl SharedHost {
             BASE_SEQ.fetch_add(1, Ordering::SeqCst)
         ));
         activation.run_id = uid.clone();
+        let request = self.resolved_dispatch(activation)?;
         match self.dispatch_pool_or_err() {
             // Normal server: the local pool claims and drives it.
             Ok(pool) => pool
-                .submit(activation)
+                .submit_dispatch(request)
                 .await
                 .map_err(|e| HostError::internal(e.to_string()))?,
             // Coordinator-only durable server (no local pool): enqueue straight into
@@ -389,7 +390,7 @@ impl SharedHost {
                 let store =
                     crate::dispatch_backend::shared_durable_store(self.store_dir.as_deref())?;
                 store
-                    .enqueue(awaken_run_ingress::RunDispatch::new(activation))
+                    .enqueue(request)
                     .await
                     .map_err(|e| HostError::internal(e.to_string()))?;
             }
