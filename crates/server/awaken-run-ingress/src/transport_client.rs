@@ -219,6 +219,31 @@ impl DispatchQueue for HttpDispatchQueue {
         )
     }
 
+    async fn bind_sandbox(
+        &self,
+        claim: &RunClaim,
+        sandbox_ref: &str,
+    ) -> Result<SettleOutcome, DispatchError> {
+        let value = self
+            .post(
+                "/v1/worker/dispatch/bind_sandbox",
+                json!({
+                    "claim": claim,
+                    "sandbox_ref": sandbox_ref,
+                    "identity": self.worker_identity
+                }),
+                &self.default_worker_id,
+            )
+            .await?;
+        Ok(
+            if value.get("applied").and_then(|value| value.as_bool()) == Some(true) {
+                SettleOutcome::Applied
+            } else {
+                SettleOutcome::Fenced
+            },
+        )
+    }
+
     async fn enqueue_with(
         &self,
         request: RunDispatch,

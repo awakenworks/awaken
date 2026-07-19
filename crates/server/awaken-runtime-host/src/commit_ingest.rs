@@ -19,7 +19,9 @@ use awaken_agent_contract::agent::run::RunState;
 use awaken_agent_contract::thread::commit::coordinator::{Coordinator, Error as CommitError};
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::run_store::RunStore;
-use awaken_run_ingress::{ClaimedRunCommit, DispatchQueue, RunClaim};
+use awaken_run_ingress::{
+    ClaimedRunCommit, DispatchQueue, RunClaim, WorkerDirectory, WorkerIdentity, WorkerState,
+};
 
 use crate::host::{HostError, SharedHost};
 use crate::worker_http::respond;
@@ -47,6 +49,7 @@ struct CommitIngestState {
     /// The legacy facade leaves it empty and resolves the process store lazily.
     dispatch: Option<Arc<dyn DispatchQueue>>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
+    directory: Option<Arc<dyn WorkerDirectory>>,
 }
 
 /// The worker-facing commit-ingest router. Mount it on a cell server alongside the
@@ -56,6 +59,7 @@ pub fn commit_ingest_router(host: Arc<SharedHost>) -> Router {
         Arc::new(HostCommitApplier(host)),
         None,
         Arc::new(HeaderWorkerAuthenticator),
+        None,
         true,
     )
 }
@@ -73,6 +77,24 @@ pub fn claimed_commit_ingest_router(
         Arc::new(HostCommitApplier(host)),
         Some(dispatch),
         authenticator,
+        None,
+        false,
+    )
+}
+
+/// Registered-worker variant that validates the current incarnation before
+/// accepting the claim owner carried by an atomic commit.
+pub fn claimed_commit_ingest_router_with_directory(
+    host: Arc<SharedHost>,
+    dispatch: Arc<dyn DispatchQueue>,
+    authenticator: Arc<dyn WorkerRequestAuthenticator>,
+    directory: Arc<dyn WorkerDirectory>,
+) -> Router {
+    commit_ingest_router_from_parts(
+        Arc::new(HostCommitApplier(host)),
+        Some(dispatch),
+        authenticator,
+        Some(directory),
         false,
     )
 }
@@ -81,12 +103,14 @@ fn commit_ingest_router_from_parts(
     applier: Arc<dyn CommitApplier>,
     dispatch: Option<Arc<dyn DispatchQueue>>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
+    directory: Option<Arc<dyn WorkerDirectory>>,
     allow_unclaimed: bool,
 ) -> Router {
     let state = Arc::new(CommitIngestState {
         applier,
         dispatch,
         authenticator,
+        directory,
     });
     let router = Router::new().route(
         "/v1/worker/commit-claimed",
@@ -138,6 +162,8 @@ async fn commit_ingest(
 struct ClaimedCommitRequest {
     claim: RunClaim,
     commit: ThreadCommit,
+    #[serde(default)]
+    identity: Option<WorkerIdentity>,
 }
 
 /// Atomically validate a remote worker's claim and apply its ThreadCommit while
@@ -148,7 +174,26 @@ async fn commit_claimed(
     Extension(worker): Extension<VerifiedWorkerContext>,
     Json(request): Json<ClaimedCommitRequest>,
 ) -> (StatusCode, Json<Value>) {
-    if worker.worker_id() != request.claim.owner {
+    if let Some(directory) = &state.directory {
+        let Some(identity) = request.identity.as_ref() else {
+            return unauthorized("registered worker identity is required".to_string());
+        };
+        if worker.worker_id() != identity.worker_id {
+            return unauthorized("authenticated worker identity does not match".to_string());
+        }
+        let current = match directory.current(&identity.worker_id).await {
+            Ok(current) => current,
+            Err(error) => return unauthorized(error.to_string()),
+        };
+        if !current.as_ref().is_some_and(|record| {
+            &record.snapshot.identity == identity
+                && record.snapshot.state != WorkerState::Dead
+                && record.snapshot.expires_at_ms > unix_now_ms()
+        }) || request.claim.owner != identity.lease_owner()
+        {
+            return unauthorized("worker incarnation does not own the claim".to_string());
+        }
+    } else if worker.worker_id() != request.claim.owner {
         return unauthorized("authenticated worker does not own the claim".to_string());
     }
     let result = async {
@@ -209,6 +254,7 @@ pub struct RemoteCoordinator {
 pub struct RemoteClaimedRunCommit {
     base_url: String,
     client: reqwest::Client,
+    identity: Option<WorkerIdentity>,
 }
 
 impl RemoteClaimedRunCommit {
@@ -216,6 +262,7 @@ impl RemoteClaimedRunCommit {
         Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             client: reqwest::Client::new(),
+            identity: None,
         }
     }
 
@@ -224,6 +271,12 @@ impl RemoteClaimedRunCommit {
     #[must_use]
     pub fn with_client(mut self, client: reqwest::Client) -> Self {
         self.client = client;
+        self
+    }
+
+    #[must_use]
+    pub fn with_worker_identity(mut self, identity: WorkerIdentity) -> Self {
+        self.identity = Some(identity);
         self
     }
 }
@@ -235,11 +288,15 @@ impl ClaimedRunCommit for RemoteClaimedRunCommit {
         claim: &RunClaim,
         commit: ThreadCommit,
     ) -> Result<CommitRecord, CommitError> {
+        let authenticated_worker = self
+            .identity
+            .as_ref()
+            .map_or(claim.owner.as_str(), |identity| identity.worker_id.as_str());
         let response = self
             .client
             .post(format!("{}/v1/worker/commit-claimed", self.base_url))
-            .header(WORKER_ID_HEADER, &claim.owner)
-            .json(&json!({ "claim": claim, "commit": commit }))
+            .header(WORKER_ID_HEADER, authenticated_worker)
+            .json(&json!({ "claim": claim, "commit": commit, "identity": self.identity }))
             .send()
             .await
             .map_err(|error| CommitError::Rejected(format!("claimed commit transport: {error}")))?;
@@ -254,6 +311,13 @@ impl ClaimedRunCommit for RemoteClaimedRunCommit {
             .await
             .map_err(|error| CommitError::Rejected(format!("commit record decode: {error}")))
     }
+}
+
+fn unix_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or_default()
 }
 
 impl RemoteCoordinator {
@@ -417,6 +481,7 @@ mod postgres_tests {
             blocking.clone(),
             Some(store.clone() as Arc<dyn DispatchQueue>),
             Arc::new(HeaderWorkerAuthenticator),
+            None,
             false,
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")

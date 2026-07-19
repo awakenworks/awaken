@@ -13,7 +13,9 @@ use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator;
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_run_ingress::{
-    ClaimedRunCommit, DispatchQueue, MemoryDispatchStore, RunClaim, RunDispatch,
+    ClaimedRunCommit, DispatchQueue, MemoryDispatchStore, RegisteredWorker, RegistryError,
+    RegistryMutation, RunClaim, RunDispatch, WorkerDirectory, WorkerHeartbeat, WorkerIdentity,
+    WorkerManifest, WorkerRegistration, WorkerSnapshot, WorkerState,
 };
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::llm::{
@@ -25,12 +27,71 @@ use awaken_runtime_contract::snapshot::{
 };
 use awaken_runtime_host::{
     HeaderWorkerAuthenticator, RemoteClaimedRunCommit, RemoteCoordinator, SharedHost,
-    claimed_commit_ingest_router, commit_ingest_router,
+    claimed_commit_ingest_router, claimed_commit_ingest_router_with_directory,
+    commit_ingest_router,
 };
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use serde_json::json;
 use tower::ServiceExt;
+
+struct CurrentWorkerDirectory(RegisteredWorker);
+
+#[async_trait::async_trait]
+impl WorkerDirectory for CurrentWorkerDirectory {
+    async fn register(
+        &self,
+        _registration: WorkerRegistration,
+        _now_ms: u64,
+        _ttl_ms: u64,
+    ) -> Result<RegisteredWorker, RegistryError> {
+        Ok(self.0.clone())
+    }
+
+    async fn heartbeat(
+        &self,
+        _identity: &WorkerIdentity,
+        _heartbeat: WorkerHeartbeat,
+        _now_ms: u64,
+        _ttl_ms: u64,
+    ) -> Result<RegistryMutation, RegistryError> {
+        Ok(RegistryMutation::NotFound)
+    }
+
+    async fn begin_drain(
+        &self,
+        _identity: &WorkerIdentity,
+        _deadline_ms: u64,
+    ) -> Result<RegistryMutation, RegistryError> {
+        Ok(RegistryMutation::NotFound)
+    }
+
+    async fn mark_quiesced(
+        &self,
+        _identity: &WorkerIdentity,
+    ) -> Result<RegistryMutation, RegistryError> {
+        Ok(RegistryMutation::NotFound)
+    }
+
+    async fn deregister(
+        &self,
+        _identity: &WorkerIdentity,
+    ) -> Result<RegistryMutation, RegistryError> {
+        Ok(RegistryMutation::NotFound)
+    }
+
+    async fn current(&self, worker_id: &str) -> Result<Option<RegisteredWorker>, RegistryError> {
+        Ok((worker_id == self.0.snapshot.identity.worker_id).then(|| self.0.clone()))
+    }
+
+    async fn list(&self) -> Result<Vec<RegisteredWorker>, RegistryError> {
+        Ok(vec![self.0.clone()])
+    }
+
+    async fn expire(&self, _now_ms: u64) -> Result<Vec<WorkerIdentity>, RegistryError> {
+        Ok(Vec::new())
+    }
+}
 
 struct OkModel;
 
@@ -236,4 +297,70 @@ async fn remote_claim_and_commit_is_one_atomic_server_operation() {
     let messages = host.committed_messages("atomic-thread").await;
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].text_content(), "current");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn registered_claimed_commit_requires_the_current_worker_incarnation() {
+    let manifest = WorkerManifest::default();
+    let identity = WorkerIdentity::new("worker-a", "boot-current", 1);
+    let directory = Arc::new(CurrentWorkerDirectory(RegisteredWorker {
+        snapshot: WorkerSnapshot {
+            identity: identity.clone(),
+            state: WorkerState::Ready,
+            capability_fingerprint: manifest.fingerprint().unwrap(),
+            manifest,
+            in_flight: 0,
+            expires_at_ms: u64::MAX,
+        },
+        heartbeat_sequence: 0,
+        registered_at_ms: 0,
+        heartbeat_at_ms: 0,
+        drain_deadline_ms: None,
+    }));
+    let memory = Arc::new(MemoryDispatchStore::new());
+    memory
+        .enqueue(RunDispatch::new(activation(
+            "registered-run",
+            "registered-thread",
+        )))
+        .await
+        .unwrap();
+    let claimed = memory
+        .claim(&identity.lease_owner(), 1_000, 0)
+        .await
+        .unwrap()
+        .unwrap();
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let router = claimed_commit_ingest_router_with_directory(
+        host.clone(),
+        memory as Arc<dyn DispatchQueue>,
+        Arc::new(HeaderWorkerAuthenticator),
+        directory,
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let claim = RunClaim::from(&claimed.lease);
+
+    let stale = RemoteClaimedRunCommit::new(format!("http://{address}"))
+        .with_worker_identity(WorkerIdentity::new("worker-a", "boot-stale", 0));
+    assert!(
+        stale
+            .commit(
+                &claim,
+                claimed_commit("registered-run", "registered-thread", "stale")
+            )
+            .await
+            .is_err()
+    );
+    let current =
+        RemoteClaimedRunCommit::new(format!("http://{address}")).with_worker_identity(identity);
+    current
+        .commit(
+            &claim,
+            claimed_commit("registered-run", "registered-thread", "current"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(host.committed_messages("registered-thread").await.len(), 1);
 }

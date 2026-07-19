@@ -480,10 +480,13 @@ impl SharedHost {
                 reader: commit,
                 owner: crate::dispatch_backend::dispatch_owner(),
                 claimed_commit: self.upstream.as_ref().map(|upstream| {
-                    Arc::new(
+                    let mut commit =
                         crate::commit_ingest::RemoteClaimedRunCommit::new(upstream.base_url())
-                            .with_client(upstream.client().clone()),
-                    ) as Arc<dyn awaken_run_ingress::ClaimedRunCommit>
+                            .with_client(upstream.client().clone());
+                    if let Some(identity) = upstream.worker_identity() {
+                        commit = commit.with_worker_identity(identity.clone());
+                    }
+                    Arc::new(commit) as Arc<dyn awaken_run_ingress::ClaimedRunCommit>
                 }),
             })
         } else {

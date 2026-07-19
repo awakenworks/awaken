@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
+use awaken_run_ingress::WorkerIdentity;
 use axum::http::request::Parts;
 
 /// Compatibility identity header used by the local HTTP client and authenticator.
@@ -22,6 +23,7 @@ pub struct WorkerUpstream {
     base_url: String,
     client: reqwest::Client,
     worker_id: String,
+    worker_identity: Option<WorkerIdentity>,
 }
 
 impl WorkerUpstream {
@@ -34,6 +36,7 @@ impl WorkerUpstream {
                 .ok()
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or_else(|| "awaken-worker".to_string()),
+            worker_identity: None,
         }
     }
 
@@ -50,6 +53,13 @@ impl WorkerUpstream {
     }
 
     #[must_use]
+    pub fn with_worker_identity(mut self, identity: WorkerIdentity) -> Self {
+        self.worker_id = identity.worker_id.clone();
+        self.worker_identity = Some(identity);
+        self
+    }
+
+    #[must_use]
     pub fn base_url(&self) -> &str {
         &self.base_url
     }
@@ -60,6 +70,10 @@ impl WorkerUpstream {
 
     pub(crate) fn worker_id(&self) -> &str {
         &self.worker_id
+    }
+
+    pub(crate) fn worker_identity(&self) -> Option<&WorkerIdentity> {
+        self.worker_identity.as_ref()
     }
 }
 

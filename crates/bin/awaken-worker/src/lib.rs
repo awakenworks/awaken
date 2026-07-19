@@ -145,6 +145,7 @@ async fn run_configured(
         .register(new_incarnation_id()?, worker_manifest())
         .await
         .map_err(std::io::Error::other)?;
+    let upstream = upstream.with_worker_identity(registration.snapshot.identity.clone());
     // Route the dispatch pool's claim/settle over HTTP to the cell server.
     awaken_runtime_host::init_shared_dispatch_store(
         awaken_runtime_host::worker_dispatch_store_with_upstream(

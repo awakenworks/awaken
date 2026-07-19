@@ -22,7 +22,7 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_run_ingress::{
     DispatchError, DispatchOutcome, DispatchQueue, HttpDispatchQueue, Inbox, MemoryDispatchStore,
-    ModelAccessRef, Outbox, PendingInput, RunDispatch, SettleOutcome, SubmitOptions,
+    ModelAccessRef, Outbox, PendingInput, RunClaim, RunDispatch, SettleOutcome, SubmitOptions,
 };
 use awaken_runtime_contract::resume::ResumeResult;
 use axum::extract::State;
@@ -55,6 +55,7 @@ async fn spawn_transport_server() -> (String, Arc<MemoryDispatchStore>, Arc<Atom
         .route("/v1/worker/dispatch/claim_run", post(claim_run))
         .route("/v1/worker/dispatch/renew", post(renew))
         .route("/v1/worker/dispatch/renew_owned", post(renew_owned))
+        .route("/v1/worker/dispatch/bind_sandbox", post(bind_sandbox))
         .route("/v1/worker/dispatch/settle", post(settle))
         .with_state(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -198,6 +199,22 @@ async fn settle(
     Json(json!({ "settled": outcome.applied() }))
 }
 
+async fn bind_sandbox(
+    State(state): State<Arc<TransportState>>,
+    _headers: HeaderMap,
+    Json(req): Json<Value>,
+) -> Json<Value> {
+    assert_server_authority_fields_absent(&req);
+    let claim: awaken_run_ingress::RunClaim =
+        serde_json::from_value(req["claim"].clone()).expect("claim");
+    let outcome = state
+        .store
+        .bind_sandbox(&claim, req["sandbox_ref"].as_str().expect("sandbox_ref"))
+        .await
+        .expect("bind sandbox");
+    Json(json!({ "applied": outcome.applied() }))
+}
+
 // ── 1. The db-less remote-worker seam: enqueue → claim → fence → settle ──────────
 
 #[tokio::test]
@@ -236,6 +253,13 @@ async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
     );
     assert_eq!(claimed.lease.owner, "worker-A");
     assert_eq!(claimed.lease.epoch, 1);
+    assert!(
+        queue
+            .bind_sandbox(&RunClaim::from(&claimed.lease), "sandbox-http")
+            .await
+            .expect("bind sandbox over transport")
+            .applied()
+    );
 
     // A second claim finds nothing runnable (the only run is now leased): `None`.
     clock.store(10, Ordering::SeqCst);

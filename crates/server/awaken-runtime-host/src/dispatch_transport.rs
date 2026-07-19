@@ -198,6 +198,7 @@ pub fn dispatch_transport_router_with_service(service: Arc<WorkerDispatchService
         .route("/v1/worker/dispatch/claim_run", post(claim_run))
         .route("/v1/worker/dispatch/renew", post(renew))
         .route("/v1/worker/dispatch/renew_owned", post(renew_owned))
+        .route("/v1/worker/dispatch/bind_sandbox", post(bind_sandbox))
         .route("/v1/worker/dispatch/settle", post(settle))
         .route("/v1/worker/register", post(register_worker))
         .route("/v1/worker/heartbeat", post(heartbeat_worker))
@@ -230,6 +231,39 @@ struct CheckpointReq {
     identity: Option<WorkerIdentity>,
     #[serde(default)]
     checkpoint: Option<StreamCheckpoint>,
+}
+
+#[derive(Deserialize)]
+struct BindSandboxReq {
+    claim: RunClaim,
+    #[serde(default)]
+    identity: Option<WorkerIdentity>,
+    sandbox_ref: String,
+}
+
+async fn bind_sandbox(
+    State(service): State<Arc<WorkerDispatchService>>,
+    Extension(worker): Extension<VerifiedWorkerContext>,
+    Json(request): Json<BindSandboxReq>,
+) -> (StatusCode, Json<Value>) {
+    let result = async {
+        let authority =
+            claim_authority(&service, &worker, request.identity.as_ref(), false).await?;
+        if request.claim.owner != authority.owner {
+            return Err(HostError::bad_request("sandbox claim owner is stale"));
+        }
+        if request.sandbox_ref.is_empty() {
+            return Err(HostError::bad_request("sandbox reference is required"));
+        }
+        let outcome = service
+            .dispatch
+            .bind_sandbox(&request.claim, &request.sandbox_ref)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?;
+        Ok(json!({ "applied": outcome.applied() }))
+    }
+    .await;
+    respond(result)
 }
 
 async fn checkpoint_authority(

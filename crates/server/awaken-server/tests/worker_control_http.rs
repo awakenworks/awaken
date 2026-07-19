@@ -243,6 +243,13 @@ async fn registered_http_claim_skips_incompatible_work_and_uses_incarnation_owne
         registered.snapshot.identity
     );
     let claim = awaken_run_ingress::RunClaim::from(&claimed.lease);
+    assert!(
+        client
+            .bind_sandbox(&claim, "sandbox-cpu")
+            .await
+            .unwrap()
+            .applied()
+    );
     let partial = StreamCheckpoint {
         run_id: claimed.lease.run_id.0.clone(),
         thread_id: "thread-cpu".to_string(),
