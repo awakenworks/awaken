@@ -1109,6 +1109,7 @@ dependencies = [
  "awaken-agent-contract",
  "awaken-runtime-contract",
  "awaken-tenancy",
+ "awaken-worker-contract",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -1667,6 +1668,18 @@ dependencies = [
  "axum",
  "tokio",
  "tower",
+]
+
+[[package]]
+name = "awaken-worker-contract"
+version = "1.0.0-dev"
+dependencies = [
+ "awaken-provisioning-contract",
+ "proptest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

@@ -347,6 +347,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-agent-contract",
         "awaken-runtime-contract",
         "awaken-tenancy",
+        "awaken-worker-contract",
         # Serializable claim/settle payloads (the durable-persistence serde contract).
         "serde_json",
         "async-trait",
@@ -376,6 +377,18 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "thiserror",
         # dev-only: a fake exercises the async ports in unit tests.
         "tokio",
+    },
+    # Worker fleet vocabulary and pure placement kernel. It composes the existing
+    # provisioning capability vocabulary; persistence and channels stay in server
+    # adapters, so the isolated worker contract remains store-free.
+    "awaken-worker-contract": {
+        "awaken-provisioning-contract",
+        "serde",
+        "serde_json",
+        "sha2",
+        "thiserror",
+        # dev-only property verification.
+        "proptest",
     },
     # Content-addressed blob store (ADR-0041): the neutral file-store trait +
     # `content_id` (BLAKE3) + local backends (fs/in-mem). Network backends
