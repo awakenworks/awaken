@@ -264,6 +264,7 @@ fn claim_exact(
         request,
         lease,
         pending,
+        recovered: was_recovery,
         sandbox,
     })
 }
@@ -450,6 +451,7 @@ impl DispatchQueue for MemoryDispatchStore {
             request,
             lease,
             pending,
+            recovered: was_recovery,
             sandbox,
         }))
     }
@@ -478,6 +480,16 @@ impl DispatchQueue for MemoryDispatchStore {
             row.sandbox = Some(sandbox_ref.to_string());
         }
         Ok(())
+    }
+
+    async fn runnable_depth(&self, now_ms: u64) -> Result<Option<u64>, DispatchError> {
+        let state = lock(&self.state)?;
+        let depth = state
+            .rows
+            .keys()
+            .filter(|run_id| runnable(&state, run_id, now_ms).is_some())
+            .count() as u64;
+        Ok(Some(depth))
     }
 
     async fn renew_lease(

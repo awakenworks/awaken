@@ -14,6 +14,10 @@ impl SharedHost {
         // unset → ephemeral.
         let deployment = crate::deployment_config::DeploymentConfig::from_env();
         let store_dir = deployment.storage_dir.clone();
+        let sandbox_root = store_dir
+            .as_ref()
+            .map(|dir| dir.join("sandboxes"))
+            .unwrap_or_else(|| sub_base(""));
         // The ADR-0038/0053 memory content stores follow one storage-dir durability
         // rule, owned by `MemoryStores::open` (durable under the dir; ephemeral
         // per-process otherwise). Identity is a separate concern — see `memory_registry`.
@@ -23,7 +27,7 @@ impl SharedHost {
             model_ref: model_ref.into(),
             model_route: crate::model_route::ThreadModelBinding::new(),
             acp: None,
-            provider: LocalProvider::new(sub_base("")),
+            provider: LocalProvider::new(sandbox_root),
             grader: Arc::new(KeywordGrader),
             client_tools: HashSet::new(),
             skills: crate::skill_catalog::SkillCatalog::new(),
@@ -348,7 +352,12 @@ impl SharedHost {
     /// a host rebuilt over the same directory recovers the awaiting position and can
     /// resume it. Without this, sessions are in-memory and lost on restart.
     pub fn with_store_dir(mut self, dir: impl Into<PathBuf>) -> Self {
-        self.store_dir = Some(dir.into());
+        let dir = dir.into();
+        // A durable host must place its Workdir sandboxes under a stable root too;
+        // otherwise the dispatch row survives restart but its persisted handle
+        // points into the previous process's random temp directory.
+        self.provider = LocalProvider::new(dir.join("sandboxes"));
+        self.store_dir = Some(dir);
         self
     }
 

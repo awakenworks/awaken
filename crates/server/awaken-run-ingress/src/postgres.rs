@@ -211,6 +211,7 @@ impl DispatchQueue for PostgresDispatchStore {
                     epoch: epoch as u64,
                 },
                 pending: Vec::new(),
+                recovered: false,
                 sandbox: None,
             }));
         }
@@ -419,6 +420,7 @@ impl DispatchQueue for PostgresDispatchStore {
                 epoch: lease_epoch as u64,
             },
             pending,
+            recovered: recovery_pick,
         }))
     }
 
@@ -522,6 +524,7 @@ impl DispatchQueue for PostgresDispatchStore {
                 epoch: lease_epoch as u64,
             },
             pending,
+            recovered: status == "running",
         }))
     }
 
@@ -557,6 +560,24 @@ impl DispatchQueue for PostgresDispatchStore {
         .await
         .map_err(reject)?;
         Ok(())
+    }
+
+    async fn runnable_depth(&self, now_ms: u64) -> Result<Option<u64>, DispatchError> {
+        let p = NS;
+        let depth: i64 = sqlx::query_scalar(&format!(
+            "SELECT COUNT(*) FROM {p}_dispatch d WHERE \
+             d.status = 'pending' OR \
+             (d.status = 'running' AND d.lease_until < $1) OR \
+             (d.status = 'awaiting' AND EXISTS (\
+               SELECT 1 FROM {p}_pending i WHERE i.run_id = d.run_id \
+               AND (i.available_at IS NULL OR i.available_at <= $1)\
+             ))"
+        ))
+        .bind(now_ms as i64)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(reject)?;
+        Ok(Some(depth as u64))
     }
 
     async fn renew_owned_leases(
@@ -1058,6 +1079,7 @@ async fn claim_exact_transaction(
             epoch: lease_epoch as u64,
         },
         pending,
+        recovered: status == "running",
         sandbox,
     }))
 }

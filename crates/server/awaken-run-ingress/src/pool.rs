@@ -31,7 +31,7 @@ use awaken_runtime_contract::activation::RunActivation;
 
 use crate::Error;
 use crate::clock::Clock;
-use crate::dispatch::{Dispatch, PendingInput};
+use crate::dispatch::{Claimed, Dispatch, PendingInput};
 use crate::service::DispatchServiceConfig;
 use crate::wake::{LocalWakeSignal, WakeSignal};
 use crate::worker::DispatchWorker;
@@ -57,6 +57,16 @@ pub trait WorkerResolver<S>: Send + Sync {
         thread_id: &ThreadId,
         agent_id: Option<&str>,
     ) -> Result<Arc<DispatchWorker<S>>, Error>;
+
+    /// Resolve from the complete durable claim. The default preserves existing
+    /// resolvers while allowing recovery-aware adapters to consume opaque claim
+    /// metadata such as the sandbox binding without teaching the pool its shape.
+    async fn worker_for_claimed(&self, claimed: &Claimed) -> Result<Arc<DispatchWorker<S>>, Error> {
+        let thread_id = claimed.request.session_thread_id();
+        let agent_id = claimed.request.activation.snapshot.root_agent_id.0.as_str();
+        self.worker_for(thread_id, (!agent_id.is_empty()).then_some(agent_id))
+            .await
+    }
 }
 
 /// Notified the instant the pool settles a run, so a foreground submitter can await
@@ -409,14 +419,11 @@ async fn claim_and_drive<S: Dispatch + 'static>(
     // Route to the runtime that owns this run's thread, then drive+settle there.
     // The resolved worker shares this store and owner, so the settle it performs
     // acts on the same row this task just claimed.
-    let thread_id = claimed.request.session_thread_id().clone();
-    // The claimed run carries its own agent identity; hand it to the resolver so a
-    // cold worker opens the session bound to THAT agent's published config (its own
-    // catalog), not the host default — the run then resolves against a matching
-    // fingerprint instead of stranding.
-    let run_agent_id = claimed.request.activation.snapshot.root_agent_id.0.clone();
-    let agent_id = Some(run_agent_id).filter(|a| !a.is_empty());
-    let worker = resolver.worker_for(&thread_id, agent_id.as_deref()).await?;
+    // Give the adapter the complete claim: the neutral pool does not interpret
+    // sandbox/provider metadata, while a recovery-aware host can adopt it before
+    // constructing the session runtime. Legacy resolvers use the default method,
+    // which derives the same thread/agent arguments as before.
+    let worker = resolver.worker_for_claimed(&claimed).await?;
     if let Some((run_id, state)) = worker.drive_claimed(claimed, now).await?
         && let Some(sink) = completion
     {

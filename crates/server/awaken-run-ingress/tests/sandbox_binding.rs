@@ -3,32 +3,20 @@
 //! gated on `AWAKEN_TEST_DATABASE_URL`, the real Postgres backend (which also proves
 //! the V0011 `sandbox` column migration applies).
 //!
-//! SCOPE — what this proves and what it does NOT. This is the STORE-layer half: a
-//! bound sandbox ref survives a recovery re-claim, so no sandbox is leaked and a
-//! reclaimer *could* re-adopt it. It does NOT prove the execution path actually
-//! re-adopts: as of this writing that seam is unwired — `bind_sandbox` has no
-//! production caller, `Claimed.sandbox` is produced but never read, and the session
-//! path (`awaken-runtime-host` `host/session.rs` `ctx_for`) unconditionally calls
-//! `provider.create(...)` fresh, keyed by thread. So a reclaimed run today executes on
-//! a NEW sandbox and recovers only from committed history (no data loss — see
-//! `durable_memory::worker_recovery_runs_a_crashed_dispatch_to_completion`), losing
-//! any in-flight sandbox work.
+//! SCOPE — this is the STORE-layer half. The production pool now forwards the whole
+//! `Claimed` value to its host adapter; the runtime host persists a first placement
+//! before execution and validates/adopts this handle on recovery. Host tests cover
+//! that adapter and prove a replacement host over the same durable Workdir root sees
+//! the same files. This test stays focused on backend conformance.
 //!
-//! DESIGN ↔ GAP: wiring adopt-on-recovery is the subject of **ADR-0056** (Sandbox
-//! Reuse as Two Orthogonal Volumes, `docs/adr/0056-*.md`), which names this exact
-//! gap — "the already-written-but-uncalled reuse decision functions
-//! `reconcile_adoption` / `LeaseLiveness` … None of the decision functions has a
-//! caller." ADR-0056 §4 wires a `SandboxManager` reaper that CALLS `reconcile_adoption`
-//! and completes `adopt(handle)` + `process(pid)` reattach — but only on the Container
-//! tier, and deferred behind its G-Y scenario gate (the Workdir first slice ships NO
-//! reattach). Local tiers stay honestly `Unsupported` (a local sandbox dies with its
-//! owner), which is what this store-layer durable binding is the foundation for. This
-//! test is that foundation; the reattach it enables lands with ADR-0056's Container
-//! slice + its driving-scenario (see `e2e/k3d/worker_failover_e2e.sh`).
+//! A local provider still cannot reattach an OS child owned by a dead process; its
+//! `process(pid)` remains explicitly unsupported. Shared container/k8s providers plug
+//! into the same neutral handle/adopt/process/lease ports and may provide true process
+//! reattachment without changing the dispatch aggregate.
 
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_run_ingress::MemoryDispatchStore;
+use awaken_run_ingress::{AnyDispatchStore, MemoryDispatchStore};
 use awaken_run_ingress_contract::RunDispatch;
 use awaken_run_ingress_contract::dispatch::{DispatchOutcome, DispatchQueue};
 use awaken_runtime_contract::activation::RunActivation;
@@ -118,6 +106,12 @@ async fn binding_survives_a_recovery_claim(store: &dyn DispatchQueue) {
 #[tokio::test]
 async fn memory_backend_binds_and_recovers() {
     binding_survives_a_recovery_claim(&MemoryDispatchStore::new()).await;
+}
+
+#[tokio::test]
+async fn runtime_selected_store_delegates_the_sandbox_binding() {
+    let store = AnyDispatchStore::open_sqlite_in_memory().expect("sqlite adapter");
+    binding_survives_a_recovery_claim(&store).await;
 }
 
 #[tokio::test]

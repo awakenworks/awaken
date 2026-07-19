@@ -101,6 +101,11 @@ pub struct Claimed {
     /// from committed truth (the awaiting ticket), not from this field, and tells
     /// `settle` which inputs it consumed.
     pub pending: Vec<PendingInput>,
+    /// Whether this claim reclaimed an expired running lease. Kept explicit so
+    /// operations can distinguish crash recovery from an ordinary await/wake
+    /// claim (both advance the fencing epoch).
+    #[serde(default)]
+    pub recovered: bool,
     /// The sandbox this run is bound to for its lifetime (B-P3, ADR-0021 §6), as an
     /// **opaque** reference — the dispatch aggregate stays neutral (it names no
     /// provisioning type); the fleet serializes a `SandboxHandle` into it and
@@ -369,6 +374,14 @@ pub trait DispatchQueue: Send + Sync {
     /// for backends that do not persist the binding (the neutral seam).
     async fn bind_sandbox(&self, _run_id: &RunId, _sandbox_ref: &str) -> Result<(), DispatchError> {
         Ok(())
+    }
+
+    /// Current number of dispatches that are claimable at `now_ms`. Native stores
+    /// return an exact value; composed/remote backends may return `None` until they
+    /// expose an efficient server-side count. This is an operations query only and
+    /// never participates in scheduling correctness.
+    async fn runnable_depth(&self, _now_ms: u64) -> Result<Option<u64>, DispatchError> {
+        Ok(None)
     }
 
     /// The run ids currently dead-lettered, for operations.
@@ -667,6 +680,7 @@ mod tests {
                 epoch: 2,
             },
             pending: vec![pending()],
+            recovered: true,
             sandbox: Some("sbx-opaque-ref".into()),
         };
         let back: Claimed =

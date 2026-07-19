@@ -114,6 +114,9 @@ async fn a_terminal_drive_meters_one_claim_one_drive_and_one_done_settle() {
         0,
         "no awaiting settle for a terminal run"
     );
+    assert_eq!(metrics.commits_applied.load(Ordering::SeqCst), 1);
+    assert_eq!(metrics.in_flight.load(Ordering::SeqCst), 0);
+    assert_eq!(metrics.queue_depth.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
@@ -209,4 +212,57 @@ async fn an_early_terminal_recovery_return_is_still_fully_metered() {
         1,
         "the early recovery settle is metered exactly once"
     );
+}
+
+#[tokio::test]
+async fn an_expired_lease_reclaim_is_reported_as_recovery() {
+    let metrics = Arc::new(RecordingMetrics::default());
+    let runtime = text_runtime_with_metrics(metrics.clone() as Arc<_>);
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+
+    store
+        .enqueue(RunDispatch::new(activation("run-recovered")))
+        .await
+        .unwrap();
+    let abandoned = store.claim("crashed", 10, 0).await.unwrap().unwrap();
+    assert!(!abandoned.recovered);
+
+    let worker = DispatchWorker::new(runtime, store, commit, "replacement");
+    worker.tick(11).await.unwrap().expect("recovered drive");
+
+    assert_eq!(metrics.recovered.load(Ordering::SeqCst), 1);
+    assert_eq!(metrics.commits_applied.load(Ordering::SeqCst), 1);
+    assert_eq!(metrics.fenced.load(Ordering::SeqCst), 0);
+    assert_eq!(metrics.in_flight.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn a_stale_settlement_increments_the_fenced_metric() {
+    let metrics = Arc::new(RecordingMetrics::default());
+    let runtime = text_runtime_with_metrics(metrics.clone() as Arc<_>);
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+
+    store
+        .enqueue(RunDispatch::new(activation("run-fenced")))
+        .await
+        .unwrap();
+    let stale = store.claim("old", 10, 0).await.unwrap().unwrap();
+    let current = store.claim("new", 10, 11).await.unwrap().unwrap();
+    let worker = DispatchWorker::new(runtime, store, commit, "driver");
+
+    worker
+        .drive_claimed(current, 11)
+        .await
+        .unwrap()
+        .expect("current owner completes");
+    assert!(
+        worker.drive_claimed(stale, 11).await.unwrap().is_none(),
+        "the stale terminal replay is fenced rather than reported as applied"
+    );
+
+    assert_eq!(metrics.fenced.load(Ordering::SeqCst), 1);
+    assert_eq!(metrics.commits_applied.load(Ordering::SeqCst), 1);
+    assert_eq!(metrics.in_flight.load(Ordering::SeqCst), 0);
 }

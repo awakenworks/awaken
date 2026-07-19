@@ -1269,6 +1269,42 @@ async fn ctx_for_installs_a_catalog_so_any_node_can_resolve_a_claimed_run() {
     );
 }
 
+#[tokio::test]
+async fn replacement_host_adopts_the_dispatch_sandbox_from_a_stable_root() {
+    let storage = tempfile::tempdir().expect("storage dir");
+    let thread = "t-sandbox-recovery";
+
+    let first = SharedHost::new(Arc::new(OkModel), "stub").with_store_dir(storage.path());
+    let first_ctx = first.ctx_for(thread, None).await.expect("first session");
+    let handle = first_ctx.env.handle();
+    let marker = storage
+        .path()
+        .join("sandboxes")
+        .join(thread)
+        .join("recovery-marker");
+    std::fs::write(&marker, b"survived").expect("write sandbox marker");
+    drop(first_ctx);
+    drop(first);
+
+    let replacement = SharedHost::new(Arc::new(OkModel), "stub").with_store_dir(storage.path());
+    let adopted = replacement
+        .provider
+        .adopt_sandbox(&handle)
+        .await
+        .expect("adopt durable handle");
+    assert_eq!(
+        adopted.status().await.unwrap(),
+        awaken_provisioning_contract::SandboxStatus::Ready
+    );
+    let replacement_ctx = replacement
+        .ctx_for_with_sandbox(thread, None, Some(adopted))
+        .await
+        .expect("replacement session");
+
+    assert_eq!(replacement_ctx.env.handle(), handle);
+    assert_eq!(std::fs::read(marker).unwrap(), b"survived");
+}
+
 // ---------------------------------------------------------------------------
 // run/resume fail-closed boundaries (ADR-0048 gap review)
 //

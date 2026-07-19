@@ -168,8 +168,28 @@ impl SharedHost {
         thread: &str,
         agent: Option<&str>,
     ) -> Result<Arc<SessionCtx>, HostError> {
+        self.ctx_for_with_sandbox(thread, agent, None).await
+    }
+
+    /// Open a session over an already-adopted sandbox, or create one when this is
+    /// the first placement. The recovery adapter owns parsing/provider selection;
+    /// session construction only enforces that a resident thread cannot be rebound
+    /// to a different environment.
+    pub(crate) async fn ctx_for_with_sandbox(
+        &self,
+        thread: &str,
+        agent: Option<&str>,
+        adopted: Option<LocalSandbox>,
+    ) -> Result<Arc<SessionCtx>, HostError> {
         let mut sessions = self.sessions.lock().await;
         if let Some(ctx) = sessions.get(thread) {
+            if let Some(adopted) = &adopted
+                && ctx.env.handle() != adopted.handle()
+            {
+                return Err(HostError::internal(format!(
+                    "thread {thread} is already bound to a different sandbox"
+                )));
+            }
             let ctx = ctx.clone();
             drop(sessions);
             let _ = ctx
@@ -178,12 +198,14 @@ impl SharedHost {
                 .await;
             return Ok(ctx);
         }
-        let env = Arc::new(
-            self.provider
+        let env = Arc::new(match adopted {
+            Some(env) => env,
+            None => self
+                .provider
                 .create_sandbox(&self.sandbox_spec(thread))
                 .await
                 .map_err(|e| HostError::internal(e.to_string()))?,
-        );
+        });
         // Clone any staged github_repository resources into the fresh sandbox,
         // host-side (ADR-0038); fail-closed so a bad repo aborts session start.
         self.provision_thread_repos(thread, &env)?;

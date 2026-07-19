@@ -228,6 +228,7 @@ impl DispatchQueue for SqliteDispatchStore {
                         epoch: 1,
                     },
                     pending: Vec::new(),
+                    recovered: false,
                     sandbox: None,
                 }));
             }
@@ -442,6 +443,7 @@ impl DispatchQueue for SqliteDispatchStore {
                     epoch: lease_epoch as u64,
                 },
                 pending,
+                recovered: recovery_pick,
                 sandbox,
             }))
         })
@@ -503,6 +505,28 @@ impl DispatchQueue for SqliteDispatchStore {
             )
             .map_err(reject)?;
             Ok(())
+        })
+        .await
+    }
+
+    async fn runnable_depth(&self, now_ms: u64) -> Result<Option<u64>, DispatchError> {
+        self.with_conn(move |conn, p| {
+            let depth: i64 = conn
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM {p}_dispatch d WHERE \
+                         d.status = 'pending' OR \
+                         (d.status = 'running' AND d.lease_until < ?1) OR \
+                         (d.status = 'awaiting' AND EXISTS (\
+                           SELECT 1 FROM {p}_pending i WHERE i.run_id = d.run_id \
+                           AND (i.available_at IS NULL OR i.available_at <= ?1)\
+                         ))"
+                    ),
+                    params![now_ms as i64],
+                    |row| row.get(0),
+                )
+                .map_err(reject)?;
+            Ok(Some(depth as u64))
         })
         .await
     }
@@ -1114,6 +1138,7 @@ fn claim_exact_transaction(
             epoch: lease_epoch as u64,
         },
         pending: pending_for_run(tx, prefix, requested_run, now_ms)?,
+        recovered: status == "running",
         sandbox,
     }))
 }

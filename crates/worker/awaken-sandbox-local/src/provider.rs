@@ -223,6 +223,31 @@ impl LocalProvider {
         Ok(sandbox)
     }
 
+    /// Re-open a local sandbox from its durable handle without erasing any files.
+    ///
+    /// This is the concrete counterpart of [`pc::SandboxProvider::adopt`], exposed
+    /// for hosts that need the local-tier helpers on [`LocalSandbox`]. A handle is
+    /// provider-scoped: accepting a container/k8s handle here would silently place
+    /// work on the wrong isolation tier, so the boundary fails closed.
+    pub async fn adopt_sandbox(
+        &self,
+        handle: &pc::SandboxHandle,
+    ) -> Result<LocalSandbox, pc::SandboxError> {
+        if handle.provider_kind != "local" {
+            return Err(err(format!(
+                "local provider cannot adopt {:?} sandbox",
+                handle.provider_kind
+            )));
+        }
+        let outputs_path = handle
+            .extra
+            .as_ref()
+            .and_then(|v| v.get("outputs_path"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("/mnt/session/outputs");
+        Ok(self.build(&handle.sandbox_id, outputs_path))
+    }
+
     fn caps() -> pc::SandboxCapabilities {
         pc::SandboxCapabilities {
             isolation: pc::IsolationClass::Workdir,
@@ -340,13 +365,7 @@ impl pc::SandboxProvider for LocalProvider {
         &self,
         handle: &pc::SandboxHandle,
     ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
-        let outputs_path = handle
-            .extra
-            .as_ref()
-            .and_then(|v| v.get("outputs_path"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("/mnt/session/outputs");
-        Ok(Box::new(self.build(&handle.sandbox_id, outputs_path)))
+        Ok(Box::new(self.adopt_sandbox(handle).await?))
     }
 }
 

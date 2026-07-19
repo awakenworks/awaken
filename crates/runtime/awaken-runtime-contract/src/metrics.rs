@@ -59,6 +59,28 @@ pub trait MetricsRecorder: Send + Sync {
         let _ = duration;
     }
 
+    /// Exact claimable backlog observed from the dispatch authority.
+    fn record_dispatch_queue_depth(&self, depth: u64) {
+        let _ = depth;
+    }
+
+    /// One expired lease reclaimed by a replacement worker.
+    fn record_dispatch_recovered(&self) {}
+
+    /// Result and duration of committing a dispatch settlement. `outcome` is
+    /// `"applied"`, `"fenced"`, or `"error"`.
+    fn record_dispatch_commit(&self, outcome: &str, duration: Duration) {
+        let _ = (outcome, duration);
+    }
+
+    /// One stale settlement rejected by the monotone claim epoch.
+    fn record_dispatch_fenced(&self) {}
+
+    /// Change in currently driven claims (`+1` on entry, `-1` on every exit).
+    fn record_dispatch_in_flight(&self, delta: i64) {
+        let _ = delta;
+    }
+
     /// A per-model circuit-breaker state transition: `to_state` is `"open"`,
     /// `"half_open"`, or `"closed"`. Emitted for a transition an operator cannot
     /// otherwise see — notably an abandoned half-open probe reopening the circuit,
