@@ -133,11 +133,19 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
                 .ok_or_else(|| Self::execution_error("resolved session disappeared"))?;
             let encoded = serde_json::to_string(&ctx.env.handle())
                 .map_err(|e| Self::execution_error(e.to_string()))?;
-            crate::dispatch_backend::shared_durable_store(host.store_dir.as_deref())
+            let outcome = crate::dispatch_backend::shared_durable_store(host.store_dir.as_deref())
                 .map_err(|e| Self::execution_error(e.to_string()))?
-                .bind_sandbox(&claimed.lease.run_id, &encoded)
+                .bind_sandbox(
+                    &awaken_run_ingress::RunClaim::from(&claimed.lease),
+                    &encoded,
+                )
                 .await
                 .map_err(awaken_run_ingress::Error::from)?;
+            if !outcome.applied() {
+                return Err(Self::execution_error(
+                    "sandbox binding was fenced by a replacement claim",
+                ));
+            }
         }
         Ok(worker)
     }

@@ -701,16 +701,28 @@ impl DispatchQueue for SqliteDispatchStore {
         .await
     }
 
-    async fn bind_sandbox(&self, run_id: &RunId, sandbox_ref: &str) -> Result<(), DispatchError> {
-        let run_id = run_id.0.clone();
+    async fn bind_sandbox(
+        &self,
+        claim: &RunClaim,
+        sandbox_ref: &str,
+    ) -> Result<SettleOutcome, DispatchError> {
+        let claim = claim.clone();
         let sandbox_ref = sandbox_ref.to_string();
         self.with_conn(move |conn, p| {
-            conn.execute(
-                &format!("UPDATE {p}_dispatch SET sandbox = ?1 WHERE run_id = ?2"),
-                params![sandbox_ref, run_id],
-            )
-            .map_err(reject)?;
-            Ok(())
+            let changed = conn
+                .execute(
+                    &format!(
+                        "UPDATE {p}_dispatch SET sandbox = ?1 WHERE run_id = ?2 \
+                     AND status = 'running' AND lease_owner = ?3 AND lease_epoch = ?4"
+                    ),
+                    params![sandbox_ref, claim.run_id.0, claim.owner, claim.epoch as i64],
+                )
+                .map_err(reject)?;
+            Ok(if changed == 1 {
+                SettleOutcome::Applied
+            } else {
+                SettleOutcome::Fenced
+            })
         })
         .await
     }

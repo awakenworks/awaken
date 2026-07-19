@@ -21,6 +21,7 @@ mod commit_fence;
 mod dispatch;
 mod dispatch_schema;
 mod durable;
+mod fenced_checkpoint;
 mod live_control;
 pub mod memory;
 mod pool;
@@ -51,6 +52,7 @@ pub use dispatch::{
 };
 pub use dispatch_schema::dispatch_bundle;
 pub use durable::DurableRunIngress;
+pub use fenced_checkpoint::FencedStreamCheckpointStore;
 pub use live_control::{Error as LiveRunControlError, LiveRunControlService};
 pub use memory::MemoryDispatchStore;
 pub use pool::{CompletionSink, DispatchPool, WorkerResolver};

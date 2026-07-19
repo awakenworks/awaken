@@ -422,13 +422,19 @@ pub trait DispatchQueue: Send + Sync {
     /// a normal await/wake never spends the budget.
     async fn reap(&self, max_attempts: u64, now_ms: u64) -> Result<usize, DispatchError>;
 
-    /// Bind `run_id` to the sandbox it was placed on (B-P3, ADR-0021 §6). The
+    /// Bind a currently claimed run to the sandbox it was placed on (B-P3,
+    /// ADR-0021 §6). The complete claim is required so a stale incarnation cannot
+    /// overwrite the replacement's environment after its lease expires. The
     /// reference is opaque to the dispatch aggregate (the fleet serializes a
     /// `SandboxHandle` into it). Stored durably so `claim` returns it on recovery
     /// and `reconcile_adoption` can re-adopt the same sandbox. Default is a no-op
     /// for backends that do not persist the binding (the neutral seam).
-    async fn bind_sandbox(&self, _run_id: &RunId, _sandbox_ref: &str) -> Result<(), DispatchError> {
-        Ok(())
+    async fn bind_sandbox(
+        &self,
+        _claim: &RunClaim,
+        _sandbox_ref: &str,
+    ) -> Result<SettleOutcome, DispatchError> {
+        Ok(SettleOutcome::Fenced)
     }
 
     /// Current number of dispatches that are claimable at `now_ms`. Native stores
@@ -896,13 +902,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bind_sandbox_defaults_to_a_no_op_ok() {
-        // Backends that do not persist the binding inherit the neutral no-op seam.
+    async fn bind_sandbox_defaults_to_fail_closed() {
+        // Backends that do not persist the binding cannot pretend the write applied.
         let q = CapturingQueue::default();
-        assert!(
-            q.bind_sandbox(&RunId("run-1".into()), "sbx-ref")
-                .await
-                .is_ok()
+        assert_eq!(
+            q.bind_sandbox(
+                &RunClaim {
+                    run_id: RunId("run-1".into()),
+                    owner: "worker".into(),
+                    epoch: 1,
+                },
+                "sbx-ref"
+            )
+            .await
+            .unwrap(),
+            SettleOutcome::Fenced
         );
     }
 }

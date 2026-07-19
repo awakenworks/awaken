@@ -717,17 +717,28 @@ impl DispatchQueue for PostgresDispatchStore {
         Ok(result.rows_affected() > 0)
     }
 
-    async fn bind_sandbox(&self, run_id: &RunId, sandbox_ref: &str) -> Result<(), DispatchError> {
+    async fn bind_sandbox(
+        &self,
+        claim: &RunClaim,
+        sandbox_ref: &str,
+    ) -> Result<SettleOutcome, DispatchError> {
         let p = NS;
-        sqlx::query(&format!(
-            "UPDATE {p}_dispatch SET sandbox = $1 WHERE run_id = $2"
+        let result = sqlx::query(&format!(
+            "UPDATE {p}_dispatch SET sandbox = $1 WHERE run_id = $2 \
+             AND status = 'running' AND lease_owner = $3 AND lease_epoch = $4"
         ))
         .bind(sandbox_ref)
-        .bind(&run_id.0)
+        .bind(&claim.run_id.0)
+        .bind(&claim.owner)
+        .bind(claim.epoch as i64)
         .execute(&self.pool)
         .await
         .map_err(reject)?;
-        Ok(())
+        Ok(if result.rows_affected() == 1 {
+            SettleOutcome::Applied
+        } else {
+            SettleOutcome::Fenced
+        })
     }
 
     async fn runnable_depth(&self, now_ms: u64) -> Result<Option<u64>, DispatchError> {

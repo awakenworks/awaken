@@ -624,12 +624,24 @@ impl DispatchQueue for MemoryDispatchStore {
         ))
     }
 
-    async fn bind_sandbox(&self, run_id: &RunId, sandbox_ref: &str) -> Result<(), DispatchError> {
+    async fn bind_sandbox(
+        &self,
+        claim: &RunClaim,
+        sandbox_ref: &str,
+    ) -> Result<SettleOutcome, DispatchError> {
+        let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
-        if let Some(row) = state.rows.get_mut(run_id) {
+        if let Some(row) = state.rows.get_mut(&claim.run_id)
+            && row.lease_epoch == claim.epoch
+            && row
+                .lease
+                .as_ref()
+                .is_some_and(|lease| lease.owner == claim.owner)
+        {
             row.sandbox = Some(sandbox_ref.to_string());
+            return Ok(SettleOutcome::Applied);
         }
-        Ok(())
+        Ok(SettleOutcome::Fenced)
     }
 
     async fn runnable_depth(&self, now_ms: u64) -> Result<Option<u64>, DispatchError> {

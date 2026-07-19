@@ -318,10 +318,11 @@ async fn sandbox_binding_survives_recovery(
         .expect("claim sandbox run")
         .expect("sandbox run is runnable");
     let sandbox_ref = format!("opaque:{ns}");
-    store
-        .bind_sandbox(&run, &sandbox_ref)
+    let bound = store
+        .bind_sandbox(&RunClaim::from(&first.lease), &sandbox_ref)
         .await
         .expect("bind sandbox");
+    assert_eq!(bound, SettleOutcome::Applied, "current claim binds sandbox");
     clock.set(first.lease.expires_ms + 1);
     let recovered = store
         .claim_run(

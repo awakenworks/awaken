@@ -18,7 +18,9 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_run_ingress::{AnyDispatchStore, MemoryDispatchStore};
 use awaken_run_ingress_contract::RunDispatch;
-use awaken_run_ingress_contract::dispatch::{DispatchOutcome, DispatchQueue};
+use awaken_run_ingress_contract::dispatch::{
+    DispatchOutcome, DispatchQueue, RunClaim, SettleOutcome,
+};
 use awaken_runtime_contract::activation::RunActivation;
 
 fn activation(run: &str, thread: &str) -> RunActivation {
@@ -81,7 +83,13 @@ async fn binding_survives_a_recovery_claim(store: &dyn DispatchQueue) {
     assert_eq!(first.sandbox, None, "unbound before placement");
 
     // The fleet places the run on a sandbox and records the opaque handle.
-    store.bind_sandbox(&run, "docker:abc123").await.unwrap();
+    assert_eq!(
+        store
+            .bind_sandbox(&RunClaim::from(&first.lease), "docker:abc123")
+            .await
+            .unwrap(),
+        SettleOutcome::Applied
+    );
 
     // The lease expires (worker-a crashed); a recovery claim re-adopts the SAME
     // sandbox — the binding is durable, so no sandbox is leaked.
@@ -95,6 +103,14 @@ async fn binding_survives_a_recovery_claim(store: &dyn DispatchQueue) {
         recovered.sandbox.as_deref(),
         Some("docker:abc123"),
         "the sandbox binding survives crash recovery"
+    );
+    assert_eq!(
+        store
+            .bind_sandbox(&RunClaim::from(&first.lease), "docker:stale")
+            .await
+            .unwrap(),
+        SettleOutcome::Fenced,
+        "the expired claim cannot overwrite the replacement's binding"
     );
     // Clean up so a re-run on a shared schema starts fresh. The recovery re-claim
     // holds the current fence epoch, so settle under it.
