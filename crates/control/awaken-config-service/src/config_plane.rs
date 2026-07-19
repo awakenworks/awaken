@@ -13,7 +13,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use awaken_config_resolver::ResourceStore;
-use awaken_config_store::ModelSelection;
+use awaken_config_store::{
+    AuditedConfigWrite, ManagementAuditEntry, ManagementAuditRecord, ManagementEffect,
+    ModelSelection,
+};
 
 /// Stamp the agent's effective compaction trigger into BOTH realizations' `plugin_config`
 /// slots so native and ACP agree on one window (decided once, at publish, from the resolved
@@ -441,6 +444,88 @@ impl ConfigPlane {
     /// Store a config draft owned by `scope`.
     pub async fn put(&self, scope: &ScopeId, config: &AgentConfig) -> Result<(), String> {
         self.service.put(&self.registry_for(scope), config).await
+    }
+
+    pub async fn put_with_audit(
+        &self,
+        scope: &ScopeId,
+        config: &AgentConfig,
+        audit: &ManagementAuditRecord,
+    ) -> Result<AuditedConfigWrite, String> {
+        self.store
+            .put_config_with_audit_scoped(scope, config, audit)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    pub async fn put_with_audit_effect(
+        &self,
+        scope: &ScopeId,
+        config: &AgentConfig,
+        audit: &ManagementAuditRecord,
+        effect: Option<&ManagementEffect>,
+    ) -> Result<AuditedConfigWrite, String> {
+        self.store
+            .put_config_with_audit_effect_scoped(scope, config, audit, effect)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    pub async fn pending_management_effects(
+        &self,
+        scope: &ScopeId,
+    ) -> Result<Vec<ManagementEffect>, String> {
+        self.store
+            .pending_management_effects_scoped(scope)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    pub async fn complete_management_effect(
+        &self,
+        scope: &ScopeId,
+        kind: &str,
+        key: &str,
+    ) -> Result<(), String> {
+        self.store
+            .complete_management_effect_scoped(scope, kind, key)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    pub async fn record_management_audit(
+        &self,
+        scope: &ScopeId,
+        audit: &ManagementAuditRecord,
+    ) -> Result<AuditedConfigWrite, String> {
+        self.store
+            .record_management_audit_scoped(scope, audit)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    pub async fn get_management_audit(
+        &self,
+        scope: &ScopeId,
+        tool: &str,
+        call_id: &str,
+    ) -> Result<Option<ManagementAuditEntry>, String> {
+        self.store
+            .get_management_audit_scoped(scope, tool, call_id)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    pub async fn mark_management_audit_committed(
+        &self,
+        scope: &ScopeId,
+        tool: &str,
+        call_id: &str,
+    ) -> Result<(), String> {
+        self.store
+            .mark_management_audit_committed_scoped(scope, tool, call_id)
+            .await
+            .map_err(|error| error.to_string())
     }
 
     pub async fn put_if_generation(

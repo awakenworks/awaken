@@ -16,6 +16,7 @@ pub mod config;
 
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Duration;
 
 use awaken_protocol_managed::{EnvironmentState, ManagedState, VaultState};
 use awaken_runtime_contract::llm::LlmExecutor;
@@ -73,6 +74,7 @@ struct ManagementStores {
     /// so a store survives a restart, and into the capability inventory so the admin
     /// assistant can enumerate stores.
     memory_registry: Arc<dyn awaken_admin_config_api::MemoryStoreRegistry>,
+    resources: Arc<dyn awaken_config_resolver::ResourceStore>,
     /// Authored webhook endpoints (ADR-0048), an id-addressed config resource beside
     /// profiles/MCP — the same admin store, a distinct port.
     webhooks: Arc<dyn awaken_admin_config_api::WebhookStore>,
@@ -87,6 +89,46 @@ struct ManagementStores {
     environments: Arc<awaken_protocol_managed::EnvironmentState>,
 }
 
+const CREDENTIAL_RECONCILIATION_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Keep retrying interrupted credential creations after startup. A failed secret
+/// deletion leaves its durable intent intact, so the next tick resumes safely.
+fn spawn_credential_creation_reconciliation(
+    secrets: Arc<dyn awaken_credential_vault::SecretStore>,
+    credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
+) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(CREDENTIAL_RECONCILIATION_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // The composition root already performed the first pass synchronously.
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            if let Err(error) = awaken_credential_vault::repo::recover_credential_creations(
+                secrets.as_ref(),
+                credentials.as_ref(),
+            )
+            .await
+            {
+                eprintln!("credential creation reconciliation failed: {error}");
+            }
+            match awaken_credential_vault::repo::reconcile_credential_inventory(
+                secrets.as_ref(),
+                credentials.as_ref(),
+            )
+            .await
+            {
+                Ok(report) if !report.missing_material.is_empty() => eprintln!(
+                    "credential inventory is missing referenced material: {:?}",
+                    report.missing_material
+                ),
+                Err(error) => eprintln!("credential inventory reconciliation failed: {error}"),
+                _ => {}
+            }
+        }
+    });
+}
+
 /// Ephemeral management stores: everything in process memory (dev / e2e default).
 fn in_memory_management_stores() -> ManagementStores {
     ManagementStores {
@@ -96,6 +138,7 @@ fn in_memory_management_stores() -> ManagementStores {
         profiles: Arc::new(awaken_admin_config_api::InMemoryProfileStore::new()),
         mcp: Arc::new(awaken_admin_config_api::InMemoryMcpStore::new()),
         memory_registry: Arc::new(awaken_admin_config_api::InMemoryMemoryStoreRegistry::new()),
+        resources: Arc::new(awaken_admin_config_api::InMemoryResourceStore::new()),
         webhooks: Arc::new(awaken_admin_config_api::InMemoryWebhookStore::new()),
         sessions: Arc::new(awaken_protocol_managed::InMemorySessionRepository::default()),
         config: Arc::new(
@@ -139,6 +182,7 @@ fn durable_management_stores(dir: &std::path::Path, key: &[u8; 32]) -> Managemen
         // Memory-store identity is one more secret-free table under the `admin` bundle,
         // so the same admin store serves the registry port (durable across a restart).
         memory_registry: admin.clone(),
+        resources: admin.clone(),
         // Webhook endpoints share admin.db (one more secret-free table under the
         // `admin` bundle) — a config resource like the profiles/MCP defs above.
         webhooks: admin,
@@ -251,6 +295,7 @@ async fn open_management_stores(
     let admin_mcp: Arc<dyn awaken_admin_config_api::McpStore>;
     let admin_memory: Arc<dyn awaken_admin_config_api::MemoryStoreRegistry>;
     let admin_webhooks: Arc<dyn awaken_admin_config_api::WebhookStore>;
+    let admin_resources: Arc<dyn awaken_config_resolver::ResourceStore>;
     match &cfg.admin {
         StoreBackend::Sqlite(p) => {
             let admin = Arc::new(
@@ -260,6 +305,7 @@ async fn open_management_stores(
             admin_profiles = admin.clone();
             admin_mcp = admin.clone();
             admin_memory = admin.clone();
+            admin_resources = admin.clone();
             admin_webhooks = admin;
         }
         StoreBackend::Postgres(url) => {
@@ -277,6 +323,7 @@ async fn open_management_stores(
             admin_profiles = admin.clone();
             admin_mcp = admin.clone();
             admin_memory = admin.clone();
+            admin_resources = admin.clone();
             admin_webhooks = admin;
         }
     }
@@ -344,6 +391,7 @@ async fn open_management_stores(
         profiles: admin_profiles,
         mcp: admin_mcp,
         memory_registry: admin_memory,
+        resources: admin_resources,
         webhooks: admin_webhooks,
         sessions,
         config,
@@ -545,11 +593,36 @@ async fn management_router_over(
         profiles,
         mcp: mcp_store,
         memory_registry,
+        resources: resource_store,
         webhooks: webhook_store,
         sessions,
         config,
         environments,
     } = stores;
+    // Finish or compensate any credential creation interrupted by a prior hard
+    // process crash before exposing the management/data planes.
+    if let Err(error) = awaken_credential_vault::repo::recover_credential_creations(
+        secrets.as_ref(),
+        credentials.as_ref(),
+    )
+    .await
+    {
+        eprintln!("credential creation recovery failed: {error}");
+    }
+    match awaken_credential_vault::repo::reconcile_credential_inventory(
+        secrets.as_ref(),
+        credentials.as_ref(),
+    )
+    .await
+    {
+        Ok(report) if !report.missing_material.is_empty() => eprintln!(
+            "credential inventory is missing referenced material: {:?}",
+            report.missing_material
+        ),
+        Err(error) => eprintln!("credential inventory reconciliation failed: {error}"),
+        _ => {}
+    }
+    spawn_credential_creation_reconciliation(secrets.clone(), credentials.clone());
     // Clones for the config-plane executor provider (M2): it resolves a session's
     // model to a real executor from the live catalog + the workspace's credential.
     let exec_catalog = catalog.clone();
@@ -559,8 +632,6 @@ async fn management_router_over(
     // resources) and the config service (which reads them into resource prompts +
     // mounts at compile) — so a binding authored through the API reaches the compiled
     // config (ADR-0038).
-    let resource_store: Arc<dyn awaken_config_resolver::ResourceStore> =
-        Arc::new(awaken_admin_config_api::InMemoryResourceStore::new());
     // The Managed vault state, shared by the vault router (authoring) and the managed
     // state (data plane): a credential entered through either surface is the same row.
     let vault_state = Arc::new(
@@ -686,6 +757,7 @@ async fn management_router_over(
         profiles,
         mcp_store: mcp_store.clone(),
         webhook_store,
+        sessions: sessions.clone(),
         resource_store: resource_store.clone(),
         probe: Arc::new(GenaiProbe),
         vault_state: vault_state.clone(),

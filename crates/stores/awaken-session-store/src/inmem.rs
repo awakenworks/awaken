@@ -7,42 +7,116 @@
 //! neutral ports + `PersistedSession` value + the `ScopedSessionRepo` decorator they
 //! compose live inward in `awaken-session-contract`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Mutex;
 
 use async_trait::async_trait;
-use awaken_session_contract::{ManagedSessionRepository, PersistedSession, ScopedSessionStore};
+use awaken_session_contract::{
+    ManagedSessionRepository, PersistedSession, ScopedSessionStore, SessionLifecycleFact,
+};
 use awaken_tenancy::ScopeId;
 
 #[derive(Default)]
+struct InMemoryState {
+    rows: HashMap<String, (PersistedSession, String)>,
+    lifecycle: BTreeMap<String, SessionLifecycleFact>,
+}
+
+#[derive(Default)]
 pub struct InMemorySessionRepository {
-    rows: Mutex<HashMap<String, (PersistedSession, String)>>,
+    state: Mutex<InMemoryState>,
 }
 
 #[async_trait]
 impl ManagedSessionRepository for InMemorySessionRepository {
     async fn save_owned(&self, owner_scope: &str, session: PersistedSession) {
-        self.rows
+        self.state
             .lock()
             .expect("session repo mutex poisoned")
+            .rows
             .insert(
                 session.session_id.clone(),
                 (session, owner_scope.to_string()),
             );
     }
 
-    async fn get(&self, session_id: &str) -> Option<PersistedSession> {
-        self.rows
+    async fn save_owned_with_lifecycle(
+        &self,
+        owner_scope: &str,
+        session: PersistedSession,
+        fact: SessionLifecycleFact,
+    ) {
+        let mut state = self.state.lock().expect("session repo mutex poisoned");
+        state.rows.insert(
+            session.session_id.clone(),
+            (session, owner_scope.to_string()),
+        );
+        state.lifecycle.entry(fact.id.clone()).or_insert(fact);
+    }
+
+    async fn append_lifecycle(&self, fact: SessionLifecycleFact) {
+        self.state
             .lock()
             .expect("session repo mutex poisoned")
+            .lifecycle
+            .entry(fact.id.clone())
+            .or_insert(fact);
+    }
+
+    async fn archive_with_lifecycle(
+        &self,
+        session_id: &str,
+        archived_at: &str,
+        fact: SessionLifecycleFact,
+    ) {
+        let mut state = self.state.lock().expect("session repo mutex poisoned");
+        if let Some((session, _)) = state.rows.get_mut(session_id) {
+            session.status = "terminated".to_string();
+            session.archived_at = Some(archived_at.to_string());
+        }
+        state.lifecycle.entry(fact.id.clone()).or_insert(fact);
+    }
+
+    async fn delete_with_lifecycle(&self, session_id: &str, fact: SessionLifecycleFact) {
+        let mut state = self.state.lock().expect("session repo mutex poisoned");
+        if let Some((session, _)) = state.rows.get_mut(session_id) {
+            session.status = "deleted".to_string();
+        }
+        state.lifecycle.entry(fact.id.clone()).or_insert(fact);
+    }
+
+    async fn pending_lifecycle(&self) -> Vec<SessionLifecycleFact> {
+        self.state
+            .lock()
+            .expect("session repo mutex poisoned")
+            .lifecycle
+            .values()
+            .cloned()
+            .collect()
+    }
+
+    async fn complete_lifecycle(&self, fact_id: &str) {
+        self.state
+            .lock()
+            .expect("session repo mutex poisoned")
+            .lifecycle
+            .remove(fact_id);
+    }
+
+    async fn get(&self, session_id: &str) -> Option<PersistedSession> {
+        self.state
+            .lock()
+            .expect("session repo mutex poisoned")
+            .rows
             .get(session_id)
             .map(|(session, _)| session.clone())
     }
 
     async fn owner(&self, session_id: &str) -> Option<String> {
-        self.rows
+        self.state
             .lock()
             .expect("session repo mutex poisoned")
+            .rows
             .get(session_id)
             .map(|(_, owner)| owner.clone())
     }
@@ -52,8 +126,14 @@ impl ManagedSessionRepository for InMemorySessionRepository {
 /// definition of the isolation fence, used by tests and the single-process
 /// scoped default with zero durable dependencies.
 #[derive(Default)]
+struct ScopedState {
+    rows: HashMap<(String, String), PersistedSession>,
+    lifecycle: BTreeMap<(String, String), SessionLifecycleFact>,
+}
+
+#[derive(Default)]
 pub struct InMemoryScopedSessionStore {
-    rows: Mutex<HashMap<(String, String), PersistedSession>>,
+    state: Mutex<ScopedState>,
 }
 
 impl InMemoryScopedSessionStore {
@@ -66,16 +146,111 @@ impl InMemoryScopedSessionStore {
 #[async_trait]
 impl ScopedSessionStore for InMemoryScopedSessionStore {
     async fn save_scoped(&self, scope: &ScopeId, session: PersistedSession) {
-        self.rows
+        self.state
             .lock()
             .expect("scoped session store mutex poisoned")
+            .rows
             .insert((scope.0.clone(), session.session_id.clone()), session);
     }
 
-    async fn get_scoped(&self, scope: &ScopeId, session_id: &str) -> Option<PersistedSession> {
-        self.rows
+    async fn save_scoped_with_lifecycle(
+        &self,
+        scope: &ScopeId,
+        session: PersistedSession,
+        fact: SessionLifecycleFact,
+    ) {
+        let mut state = self
+            .state
+            .lock()
+            .expect("scoped session store mutex poisoned");
+        state
+            .rows
+            .insert((scope.0.clone(), session.session_id.clone()), session);
+        state
+            .lifecycle
+            .entry((scope.0.clone(), fact.id.clone()))
+            .or_insert(fact);
+    }
+
+    async fn append_lifecycle_scoped(&self, scope: &ScopeId, fact: SessionLifecycleFact) {
+        self.state
             .lock()
             .expect("scoped session store mutex poisoned")
+            .lifecycle
+            .entry((scope.0.clone(), fact.id.clone()))
+            .or_insert(fact);
+    }
+
+    async fn archive_scoped_with_lifecycle(
+        &self,
+        scope: &ScopeId,
+        session_id: &str,
+        archived_at: &str,
+        fact: SessionLifecycleFact,
+    ) {
+        let mut state = self
+            .state
+            .lock()
+            .expect("scoped session store mutex poisoned");
+        if let Some(session) = state
+            .rows
+            .get_mut(&(scope.0.clone(), session_id.to_string()))
+        {
+            session.status = "terminated".to_string();
+            session.archived_at = Some(archived_at.to_string());
+        }
+        state
+            .lifecycle
+            .entry((scope.0.clone(), fact.id.clone()))
+            .or_insert(fact);
+    }
+
+    async fn delete_scoped_with_lifecycle(
+        &self,
+        scope: &ScopeId,
+        session_id: &str,
+        fact: SessionLifecycleFact,
+    ) {
+        let mut state = self
+            .state
+            .lock()
+            .expect("scoped session store mutex poisoned");
+        if let Some(session) = state
+            .rows
+            .get_mut(&(scope.0.clone(), session_id.to_string()))
+        {
+            session.status = "deleted".to_string();
+        }
+        state
+            .lifecycle
+            .entry((scope.0.clone(), fact.id.clone()))
+            .or_insert(fact);
+    }
+
+    async fn pending_lifecycle_scoped(&self, scope: &ScopeId) -> Vec<SessionLifecycleFact> {
+        self.state
+            .lock()
+            .expect("scoped session store mutex poisoned")
+            .lifecycle
+            .iter()
+            .filter(|((owner, _), _)| owner == &scope.0)
+            .map(|(_, fact)| fact.clone())
+            .collect()
+    }
+
+    async fn complete_lifecycle_scoped(&self, scope: &ScopeId, fact_id: &str) {
+        self.state
+            .lock()
+            .expect("scoped session store mutex poisoned")
+            .lifecycle
+            .remove(&(scope.0.clone(), fact_id.to_string()));
+    }
+
+    async fn get_scoped(&self, scope: &ScopeId, session_id: &str) -> Option<PersistedSession> {
+        self.state
+            .lock()
+            .expect("scoped session store mutex poisoned")
+            .rows
             .get(&(scope.0.clone(), session_id.to_string()))
             .cloned()
     }
@@ -98,6 +273,8 @@ mod tests {
             environment_id: "env".into(),
             // The wire-echo shape the agent object reports — never a credential.
             mcp_servers: vec![json!({"name": "gh", "type": "url", "url": "https://mcp.example"})],
+            status: "idle".into(),
+            archived_at: None,
         }
     }
 
@@ -170,6 +347,8 @@ mod scoped_tests {
             metadata: BTreeMap::new(),
             environment_id: "env".into(),
             mcp_servers: Vec::new(),
+            status: "idle".into(),
+            archived_at: None,
         }
     }
 

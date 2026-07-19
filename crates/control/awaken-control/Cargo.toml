@@ -45,6 +45,7 @@ awaken-runtime-contract = { workspace = true }
 rusqlite = { version = "0.32", features = ["bundled"] }
 async-trait.workspace = true
 serde_json.workspace = true
+sha2 = "0.10"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
 axum = { version = "0.8", features = ["multipart"] }
 

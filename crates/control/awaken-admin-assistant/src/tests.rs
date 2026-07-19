@@ -57,6 +57,7 @@ impl DraftValidator for FakeValidator {
 struct MemDraftStore {
     configs: Mutex<HashMap<String, AgentConfig>>,
     resources: Mutex<HashMap<String, Vec<ResourceSpec>>>,
+    audits: Mutex<HashMap<String, (AdminAuditEvent, bool)>>,
 }
 
 #[async_trait]
@@ -67,6 +68,40 @@ impl DraftStore for MemDraftStore {
             .unwrap()
             .insert(draft.id.clone(), draft.clone());
         Ok(())
+    }
+    async fn put_audited(
+        &self,
+        draft: &AgentConfig,
+        audit: &AdminAuditEvent,
+    ) -> Result<(), String> {
+        let audit_key = format!("{}:{}", audit.tool, audit.call_id);
+        if self
+            .audits
+            .lock()
+            .unwrap()
+            .get(&audit_key)
+            .is_some_and(|(_, committed)| *committed)
+        {
+            return Ok(());
+        }
+        self.put(draft).await?;
+        self.audits
+            .lock()
+            .unwrap()
+            .insert(audit_key, (audit.clone(), true));
+        Ok(())
+    }
+    async fn record_audit(&self, audit: &AdminAuditEvent) -> Result<(), String> {
+        let audit_key = format!("{}:{}", audit.tool, audit.call_id);
+        let mut audits = self.audits.lock().unwrap();
+        match audits.get(&audit_key) {
+            Some((existing, _)) if existing != audit => Err("conflicting audit id".into()),
+            Some(_) => Ok(()),
+            None => {
+                audits.insert(audit_key, (audit.clone(), false));
+                Ok(())
+            }
+        }
     }
     async fn get(&self, id: &str) -> Result<Option<AgentConfig>, String> {
         Ok(self.configs.lock().unwrap().get(id).cloned())
@@ -455,16 +490,18 @@ async fn draft_agent_derives_plugin_ids_and_size_bounds_sections() {
 
     // A section over the byte cap is rejected and NOT persisted.
     let big = "x".repeat(MAX_PLUGIN_CONFIG_BYTES + 1);
+    let mut oversized_call = call(
+        CREATE_DRAFT_TOOL,
+        serde_json::json!({
+            "id": "toobig",
+            "instructions": "hi",
+            "plugin_config": { "state_machine": { "blob": big } }
+        }),
+    );
+    oversized_call.call_id = "c2".into();
     let out = h
         .tool(CREATE_DRAFT_TOOL)
-        .invoke(call(
-            CREATE_DRAFT_TOOL,
-            serde_json::json!({
-                "id": "toobig",
-                "instructions": "hi",
-                "plugin_config": { "state_machine": { "blob": big } }
-            }),
-        ))
+        .invoke(oversized_call)
         .await
         .unwrap();
     assert!(out.is_error);
@@ -898,6 +935,7 @@ async fn explain_console_tool_falls_back_to_index_for_an_unknown_topic() {
 struct FaultyStore {
     fail_put: bool,
     fail_put_resources: bool,
+    fail_audit: bool,
     inner: MemDraftStore,
 }
 
@@ -908,6 +946,22 @@ impl DraftStore for FaultyStore {
             return Err("disk full".into());
         }
         self.inner.put(draft).await
+    }
+    async fn put_audited(
+        &self,
+        draft: &AgentConfig,
+        audit: &AdminAuditEvent,
+    ) -> Result<(), String> {
+        if self.fail_put {
+            return Err("disk full".into());
+        }
+        self.inner.put_audited(draft, audit).await
+    }
+    async fn record_audit(&self, audit: &AdminAuditEvent) -> Result<(), String> {
+        if self.fail_audit {
+            return Err("audit store offline".into());
+        }
+        self.inner.record_audit(audit).await
     }
     async fn get(&self, id: &str) -> Result<Option<AgentConfig>, String> {
         self.inner.get(id).await
@@ -925,6 +979,24 @@ impl DraftStore for FaultyStore {
     async fn get_resources(&self, agent_id: &str) -> Result<Vec<ResourceSpec>, String> {
         self.inner.get_resources(agent_id).await
     }
+}
+
+#[tokio::test]
+async fn durable_audit_failure_prevents_the_business_write() {
+    let store = Arc::new(FaultyStore {
+        fail_audit: true,
+        ..Default::default()
+    });
+    let (tools, _audit) = tools_over_store(store.clone());
+    let error = find_tool(&tools, CREATE_DRAFT_TOOL)
+        .invoke(call(
+            CREATE_DRAFT_TOOL,
+            serde_json::json!({ "id": "blocked", "instructions": "hi" }),
+        ))
+        .await
+        .expect_err("audit failure must fail the tool before business persistence");
+    assert!(error.to_string().contains("durable audit failed"));
+    assert!(store.inner.stored("blocked").is_none());
 }
 
 /// Build the admin toolset over an arbitrary `DraftStore` (so a test can inject a

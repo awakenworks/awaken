@@ -1,35 +1,45 @@
 ----------------------- MODULE CredentialCreation -----------------------
 EXTENDS TLC
 
-VARIABLE intent, secret, row, failed
+VARIABLE intent, secret, row, processUp
 
-vars == <<intent, secret, row, failed>>
+vars == <<intent, secret, row, processUp>>
 
 Init == /\ intent = FALSE /\ secret = FALSE /\ row = FALSE
-        /\ failed = FALSE
+        /\ processUp = TRUE
 
-Begin == /\ ~intent
-         /\ intent' = TRUE
-         /\ UNCHANGED <<secret, row, failed>>
+BeginIntent == /\ processUp /\ ~intent /\ ~row
+               /\ intent' = TRUE
+               /\ UNCHANGED <<secret, row, processUp>>
 
-WriteSecret == /\ intent /\ ~secret /\ ~failed
+WriteSecret == /\ processUp /\ intent /\ ~secret /\ ~row
                /\ secret' = TRUE
-               /\ UNCHANGED <<intent, row, failed>>
+               /\ UNCHANGED <<intent, row, processUp>>
 
-CommitRow == /\ secret /\ ~row /\ ~failed
-             /\ row' = TRUE
-             /\ UNCHANGED <<intent, secret, failed>>
+\* The source publication and intent retirement share one repository transaction.
+CommitSourceAndRetireIntent ==
+    /\ processUp /\ intent /\ secret /\ ~row
+    /\ row' = TRUE /\ intent' = FALSE
+    /\ UNCHANGED <<secret, processUp>>
 
-FailAndCompensate == /\ intent /\ ~row /\ ~failed
-                     /\ failed' = TRUE /\ secret' = FALSE
-                     /\ UNCHANGED <<intent, row>>
+\* Startup recovery compensates every unpublished tracked secret.
+RecoverPending == /\ processUp /\ intent /\ ~row
+                  /\ intent' = FALSE /\ secret' = FALSE
+                  /\ UNCHANGED <<row, processUp>>
 
-Next == Begin \/ WriteSecret \/ CommitRow \/ FailAndCompensate
+Crash == /\ processUp /\ processUp' = FALSE
+         /\ UNCHANGED <<intent, secret, row>>
+Restart == /\ ~processUp /\ processUp' = TRUE
+           /\ UNCHANGED <<intent, secret, row>>
+
+Next == BeginIntent \/ WriteSecret \/ CommitSourceAndRetireIntent \/
+        RecoverPending \/ Crash \/ Restart
 
 TypeOK == /\ intent \in BOOLEAN /\ secret \in BOOLEAN /\ row \in BOOLEAN
-          /\ failed \in BOOLEAN
-VisibleRowAlwaysHasMaterial == row => secret
-FailedCreationLeavesNoMaterial == failed => (~row /\ ~secret)
+          /\ processUp \in BOOLEAN
+VisibleRowAlwaysHasMaterial == row => (secret /\ ~intent)
+MaterialIsNeverUntracked == secret => (intent \/ row)
+RetiredUnpublishedIntentHasNoMaterial == (~intent /\ ~row) => ~secret
 
 Spec == Init /\ [][Next]_vars
 =============================================================================

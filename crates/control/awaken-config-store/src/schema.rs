@@ -76,5 +76,27 @@ pub fn config_bundle() -> Result<MigrationBundle, MigrationError> {
         "agent configs: monotonic generation for atomic compare-and-set",
         "ALTER TABLE {prefix}_agent ADD COLUMN generation BIGINT NOT NULL DEFAULT 1",
     )?);
+    migrations.push(Migration::new(
+        7,
+        "durable management audit keyed by scope and stable call id",
+        "CREATE TABLE {prefix}_management_audit (\
+            scope_id TEXT NOT NULL, \
+            call_id TEXT NOT NULL, \
+            record {json} NOT NULL, \
+            business_committed BIGINT NOT NULL DEFAULT 0, \
+            created_at {timestamptz} NOT NULL DEFAULT {now}, \
+            PRIMARY KEY (scope_id, call_id))",
+    )?);
+    migrations.push(Migration::new(
+        8,
+        "durable idempotent effects for stores outside the config transaction",
+        "CREATE TABLE {prefix}_management_effect (\
+            scope_id TEXT NOT NULL, \
+            kind TEXT NOT NULL, \
+            effect_key TEXT NOT NULL, \
+            payload {json} NOT NULL, \
+            created_at {timestamptz} NOT NULL DEFAULT {now}, \
+            PRIMARY KEY (scope_id, kind, effect_key))",
+    )?);
     MigrationBundle::new(BUNDLE_ID, migrations)
 }

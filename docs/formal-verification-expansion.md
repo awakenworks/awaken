@@ -1,9 +1,10 @@
-# Formal verification expansion: 64 additional obligations
+# Formal verification expansion: 79 additional obligations
 
 The first batch expanded the versioned safety ledger from 28 to 56 formalizable,
 machine-linked obligations. The original 28 remain unchanged. Those additional
 28 are grouped below by the production boundary they verify; the second batch
-below raises the final total to 92.
+below raises the total to 92; transactional hardening raises it to 97; the
+production-completion batch at the end raises the final total to 107.
 
 ## No distributed-architecture change required
 
@@ -55,9 +56,9 @@ production architecture first.
 The 56/56 metric is safety coverage, not a claim of end-to-end exactly-once
 effects. Eventual network delivery, correctness of external database engines,
 LLM semantics, and exactly-once third-party side effects remain environmental.
-Webhook commit-to-enqueue atomicity would require a transactional outbox in the
-same database transaction as the lifecycle fact; it is intentionally not
-mislabelled as proved by delivery retry tests alone.
+The transaction-hardening batch below now places lifecycle facts and their outbox
+rows in the same session-repository transaction. The four environmental classes
+remain deliberately outside the safety percentage.
 
 ## Second batch: 36 additional obligations
 
@@ -100,21 +101,45 @@ pure kernels.
 - Audit ordering (2): a management business action follows its audit call and the
   call id is stable across the modeled retry boundary.
 
-### Deliberately narrower guarantees
+## Transaction hardening: 5 additional obligations
 
-Three boundaries remain narrower than a cross-process atomicity claim:
+- Session lifecycle/outbox (1): create commits the session row, owner and lifecycle
+  fact together; archive commits its durable terminal state with the fact; delete
+  commits a tombstone with the fact. Production Webhook assembly consumes this
+  session-local outbox, including rows present before process restart.
+- Credential creation recovery (2): a secret-free intent is durable before the
+  secret write, source publication atomically retires it, and CLI startup
+  plus periodic reconciliation either preserves a published source or
+  idempotently removes the unpublished material.
+- Durable management audit (2): the config store records a pending stable call
+  before the action, then commits the draft and pending→committed transition in one
+  SQLite/PostgreSQL transaction. A committed call replay is a business no-op and a
+  conflicting reuse of the identity fails closed. Structured tracing is now only
+  an observability projection, not the audit authority.
 
-- Session persistence and webhook enqueue use different repositories. Once
-  `emit_fact` runs, the outbox row is durable and retryable, but a process crash
-  between the session commit and that call is still a gap. Closing it requires
-  placing the lifecycle outbox in the session repository transaction.
-- Credential compensation is guaranteed when `repo.put` returns an error. A hard
-  process crash after the secret write but before compensation still requires a
-  durable creation-intent journal or a same-database transaction.
-- `AuditCommit.tla` verifies audit-before-business ordering and stable identity.
-  The default sink is structured tracing, not a database transaction shared with
-  every management store. End-to-end durable audit/business atomicity therefore
-  requires a durable audit-intent store or per-domain transactional outbox.
+These changes close the three previously documented cross-process transaction
+gaps. They do not claim eventual network delivery or exactly-once third-party
+effects; those remain environmental.
 
-These limitations are not counted as eventual-delivery or exactly-once claims.
-The ledger names only the safety boundary actually linked to production code.
+## Production completion: 10 additional obligations
+
+- Webhook retry (1): both legacy and session-local outboxes now have an immediate
+  drain and a periodic serialized reconciliation loop. A failed delivery remains
+  pending; a later tick can redeliver it without a restart or new event.
+- Credential inventory (3): sealed stores enumerate opaque references; the
+  reconciler preserves committed and pending-intent references, deletes only
+  unreferenced `sec:cred:` material, reports referenced-but-missing material, and
+  runs at startup plus every 60 seconds. Foreign keys sharing the store are fenced.
+- All management HTTP mutations (3): non-read requests are body-fingerprinted and
+  durably audited before the handler runs. Audit failure blocks the business
+  operation; a successful response marks the intent committed. A crash between
+  the two leaves a durable pending record instead of an unaudited write.
+- Resource bindings (3): draft, audit completion, and a secret-free resource
+  effect are committed in one config-store transaction. The effect is applied by
+  an idempotent startup/30-second reconciler and retired only after durable
+  read-back. SQLite and PostgreSQL implement the same protocol.
+
+The production composition root now passes the durable SQLite/PostgreSQL admin
+store as the shared `ResourceStore`; the previous unconditional in-memory store
+was removed. Real child-process kill tests cover session, credential, and audit
+crash windows, and restart persistence covers HTTP audit plus resource bindings.

@@ -18,7 +18,7 @@ use awaken_config_resolver::{
     ResourceKind, ResourceStore,
 };
 use awaken_config_service::{ConfigPlane, RESERVED_ADMIN_SCOPE};
-use awaken_config_store::{AgentConfig, DEFAULT_SCOPE};
+use awaken_config_store::{AgentConfig, DEFAULT_SCOPE, ManagementEffect};
 use awaken_model_catalog::repo::CatalogRepo;
 use awaken_runtime_contract::capability::PluginCapability;
 use awaken_runtime_contract::resolved::ToolDescriptor;
@@ -246,12 +246,60 @@ impl ConfigServiceDraftStore {
         scope: impl Into<ScopeId>,
         resources: Arc<dyn ResourceStore>,
     ) -> Self {
-        Self {
+        let store = Self {
             plane,
             scope: scope.into(),
             resources,
+        };
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let plane = store.plane.clone();
+            let scope = store.scope.clone();
+            let resources = store.resources.clone();
+            handle.spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    interval.tick().await;
+                    if let Err(error) =
+                        apply_pending_resource_effects(&plane, &scope, resources.as_ref()).await
+                    {
+                        eprintln!("resource binding reconciliation failed: {error}");
+                    }
+                }
+            });
         }
+        store
     }
+}
+
+const RESOURCE_EFFECT_KIND: &str = "agent_resource_binding";
+
+async fn apply_pending_resource_effects(
+    plane: &ConfigPlane,
+    scope: &ScopeId,
+    resources: &dyn ResourceStore,
+) -> Result<usize, String> {
+    let effects = plane.pending_management_effects(scope).await?;
+    let mut completed = 0;
+    for effect in effects {
+        if effect.kind != RESOURCE_EFFECT_KIND {
+            continue;
+        }
+        let config: AgentResourceConfig =
+            serde_json::from_value(effect.payload).map_err(|error| error.to_string())?;
+        resources.put_agent_resource(config.clone());
+        if resources.get_agent_resource(&config.agent_id).as_ref() != Some(&config) {
+            return Err(format!(
+                "resource store did not durably read back binding `{}`",
+                config.agent_id
+            ));
+        }
+        plane
+            .complete_management_effect(scope, &effect.kind, &effect.key)
+            .await?;
+        completed += 1;
+    }
+    Ok(completed)
 }
 
 /// Map the neutral `kind` string to a [`ResourceKind`] (the assistant's leaf spec never
@@ -300,10 +348,84 @@ fn default_mount_path(kind: ResourceKind) -> &'static str {
     }
 }
 
+fn resource_config(
+    agent_id: &str,
+    resources: Vec<ResourceSpec>,
+) -> Result<AgentResourceConfig, String> {
+    let mut bindings = Vec::with_capacity(resources.len());
+    for spec in resources {
+        let kind = parse_kind(&spec.kind)?;
+        let access = parse_access(spec.access.as_deref())?;
+        let mount_path = spec
+            .mount_path
+            .filter(|p| !p.is_empty())
+            .unwrap_or_else(|| default_mount_path(kind).to_string());
+        bindings.push(ResourceBinding {
+            kind,
+            resource_id: spec.resource_id,
+            mount_path,
+            access,
+            instructions: spec.instructions,
+        });
+    }
+    Ok(AgentResourceConfig {
+        agent_id: agent_id.to_string(),
+        resources: bindings,
+        version: 1,
+    })
+}
+
 #[async_trait]
 impl DraftStore for ConfigServiceDraftStore {
     async fn put(&self, draft: &AgentConfig) -> Result<(), String> {
         self.plane.put(&self.scope, draft).await
+    }
+
+    async fn put_audited(
+        &self,
+        draft: &AgentConfig,
+        audit: &awaken_admin_assistant::AdminAuditEvent,
+    ) -> Result<(), String> {
+        self.plane
+            .put_with_audit(&self.scope, draft, audit)
+            .await
+            .map(|_| ())
+    }
+
+    async fn put_audited_with_resources(
+        &self,
+        draft: &AgentConfig,
+        audit: &awaken_admin_assistant::AdminAuditEvent,
+        resources: Option<Vec<ResourceSpec>>,
+    ) -> Result<(), String> {
+        let resource_config = resources
+            .map(|resources| resource_config(&draft.id, resources))
+            .transpose()?;
+        let effect = match resource_config.as_ref() {
+            Some(config) => Some(ManagementEffect {
+                kind: RESOURCE_EFFECT_KIND.to_string(),
+                key: config.agent_id.clone(),
+                payload: serde_json::to_value(config).map_err(|error| error.to_string())?,
+            }),
+            None => None,
+        };
+        self.plane
+            .put_with_audit_effect(&self.scope, draft, audit, effect.as_ref())
+            .await?;
+        apply_pending_resource_effects(&self.plane, &self.scope, self.resources.as_ref())
+            .await
+            .map_err(|error| format!("resources could not be bound: {error}"))?;
+        Ok(())
+    }
+
+    async fn record_audit(
+        &self,
+        audit: &awaken_admin_assistant::AdminAuditEvent,
+    ) -> Result<(), String> {
+        self.plane
+            .record_management_audit(&self.scope, audit)
+            .await
+            .map(|_| ())
     }
 
     async fn get(&self, id: &str) -> Result<Option<AgentConfig>, String> {
@@ -315,27 +437,8 @@ impl DraftStore for ConfigServiceDraftStore {
         agent_id: &str,
         resources: Vec<ResourceSpec>,
     ) -> Result<(), String> {
-        let mut bindings = Vec::with_capacity(resources.len());
-        for spec in resources {
-            let kind = parse_kind(&spec.kind)?;
-            let access = parse_access(spec.access.as_deref())?;
-            let mount_path = spec
-                .mount_path
-                .filter(|p| !p.is_empty())
-                .unwrap_or_else(|| default_mount_path(kind).to_string());
-            bindings.push(ResourceBinding {
-                kind,
-                resource_id: spec.resource_id,
-                mount_path,
-                access,
-                instructions: spec.instructions,
-            });
-        }
-        self.resources.put_agent_resource(AgentResourceConfig {
-            agent_id: agent_id.to_string(),
-            resources: bindings,
-            version: 1,
-        });
+        self.resources
+            .put_agent_resource(resource_config(agent_id, resources)?);
         Ok(())
     }
 

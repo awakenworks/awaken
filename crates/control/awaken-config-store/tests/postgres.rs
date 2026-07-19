@@ -2,8 +2,9 @@
 //! each test in a fresh schema (the store takes no prefix; ADR-0029/ADR-0031).
 
 use awaken_config_store::{
-    AgentConfig, ConfigRegistry, PostgresConfigStore, PublicationState, ScopeId,
-    ScopedConfigRegistry, StoredPublication, compile,
+    AgentConfig, AuditedConfigWrite, ConfigRegistry, ManagementAuditRecord, ManagementEffect,
+    PostgresConfigStore, PublicationState, ScopeId, ScopedConfigRegistry, StoredPublication,
+    compile,
 };
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use sqlx::Executor;
@@ -13,6 +14,97 @@ fn database_url() -> String {
     std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
         "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".to_string()
     })
+}
+
+#[tokio::test]
+async fn postgres_audit_and_config_commit_are_atomic_replay_safe_and_scope_fenced() {
+    let Some(pool) = schema_pool("t_config_audit").await else {
+        return;
+    };
+    let effect = ManagementEffect {
+        kind: "agent_resource_binding".into(),
+        key: "agent-1".into(),
+        payload: serde_json::json!({"agent_id":"agent-1","resources":[],"version":1}),
+    };
+    let store = PostgresConfigStore::with_pool(pool).await.expect("store");
+    let scope = ScopeId::from("ws_a");
+    let audit = ManagementAuditRecord {
+        tool: "admin_draft_agent".into(),
+        call_id: "call_pg_1".into(),
+        summary: "draft agent `agent-1`".into(),
+    };
+    assert_eq!(
+        store
+            .record_management_audit_scoped(&scope, &audit)
+            .await
+            .unwrap(),
+        AuditedConfigWrite::Applied
+    );
+    let config = agent_config();
+    assert_eq!(
+        store
+            .put_config_with_audit_effect_scoped(&scope, &config, &audit, Some(&effect))
+            .await
+            .unwrap(),
+        AuditedConfigWrite::Applied
+    );
+    let generation = store
+        .get_config_versioned_scoped(&scope, &config.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .generation;
+    assert_eq!(
+        store
+            .put_config_with_audit_scoped(&scope, &config, &audit)
+            .await
+            .unwrap(),
+        AuditedConfigWrite::Replayed
+    );
+    assert_eq!(
+        store
+            .get_config_versioned_scoped(&scope, &config.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .generation,
+        generation
+    );
+    assert_eq!(
+        store
+            .pending_management_effects_scoped(&scope)
+            .await
+            .unwrap(),
+        vec![effect.clone()]
+    );
+    store
+        .complete_management_effect_scoped(&scope, &effect.kind, &effect.key)
+        .await
+        .unwrap();
+
+    let other = ScopeId::from("ws_b");
+    let other_audit = ManagementAuditRecord {
+        tool: "admin_draft_agent".into(),
+        call_id: "call_pg_2".into(),
+        summary: "draft agent `agent-1`".into(),
+    };
+    store
+        .record_management_audit_scoped(&other, &other_audit)
+        .await
+        .unwrap();
+    assert!(
+        store
+            .put_config_with_audit_scoped(&other, &config, &other_audit)
+            .await
+            .is_err()
+    );
+    assert!(
+        store
+            .get_config_scoped(&other, &config.id)
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 async fn schema_pool(schema: &'static str) -> Option<PgPool> {

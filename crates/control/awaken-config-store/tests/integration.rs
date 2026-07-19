@@ -11,8 +11,9 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_config_store::{
-    AgentConfig, ConfigRegistry, ConfigWrite, DEFAULT_SCOPE, ModelSelection, PublicationState,
-    ScopeId, ScopedConfig, ScopedConfigRegistry, SqliteConfigStore, StoredPublication, compile,
+    AgentConfig, AuditedConfigWrite, ConfigRegistry, ConfigWrite, DEFAULT_SCOPE,
+    ManagementAuditRecord, ManagementEffect, ModelSelection, PublicationState, ScopeId,
+    ScopedConfig, ScopedConfigRegistry, SqliteConfigStore, StoredPublication, compile,
 };
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
@@ -60,6 +61,54 @@ fn tool_catalog() -> Vec<ToolDescriptor> {
         "Echo",
         serde_json::json!({"type": "object"}),
     )]
+}
+
+#[tokio::test]
+async fn audited_config_and_external_effect_are_journaled_atomically_and_replay_safely() {
+    let store = SqliteConfigStore::open_in_memory().expect("store");
+    let scope = ScopeId::from("ws");
+    let audit = ManagementAuditRecord {
+        tool: "admin_draft_agent".into(),
+        call_id: "resource-call".into(),
+        summary: "draft with resource".into(),
+    };
+    let effect = ManagementEffect {
+        kind: "agent_resource_binding".into(),
+        key: "support-agent".into(),
+        payload: serde_json::json!({"agent_id":"support-agent","resources":[],"version":1}),
+    };
+    assert_eq!(
+        store
+            .put_config_with_audit_effect_scoped(&scope, &agent_config(), &audit, Some(&effect))
+            .await
+            .unwrap(),
+        AuditedConfigWrite::Applied
+    );
+    assert_eq!(
+        store
+            .pending_management_effects_scoped(&scope)
+            .await
+            .unwrap(),
+        vec![effect.clone()]
+    );
+    assert_eq!(
+        store
+            .put_config_with_audit_effect_scoped(&scope, &agent_config(), &audit, Some(&effect))
+            .await
+            .unwrap(),
+        AuditedConfigWrite::Replayed
+    );
+    store
+        .complete_management_effect_scoped(&scope, &effect.kind, &effect.key)
+        .await
+        .unwrap();
+    assert!(
+        store
+            .pending_management_effects_scoped(&scope)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[tokio::test]

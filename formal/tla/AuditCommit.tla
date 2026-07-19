@@ -3,34 +3,38 @@ EXTENDS TLC
 
 CONSTANT StableCallId
 
-VARIABLE auditRecorded, businessCommitted, callId, processUp
+VARIABLE auditState, businessCommitted, callId, processUp
 
-vars == <<auditRecorded, businessCommitted, callId, processUp>>
+vars == <<auditState, businessCommitted, callId, processUp>>
 
-Init == /\ auditRecorded = FALSE /\ businessCommitted = FALSE
+Init == /\ auditState = "none" /\ businessCommitted = FALSE
         /\ callId = StableCallId /\ processUp = TRUE
 
-RecordAudit == /\ processUp /\ ~auditRecorded
-               /\ auditRecorded' = TRUE
-               /\ UNCHANGED <<businessCommitted, callId, processUp>>
+RecordAuditIntent == /\ processUp /\ auditState = "none"
+                     /\ auditState' = "pending"
+                     /\ UNCHANGED <<businessCommitted, callId, processUp>>
 
-CommitBusiness == /\ processUp /\ auditRecorded /\ ~businessCommitted
-                  /\ businessCommitted' = TRUE
-                  /\ UNCHANGED <<auditRecorded, callId, processUp>>
+\* The config mutation and pending->committed audit transition are one transaction.
+CommitBusinessAndAudit ==
+    /\ processUp /\ auditState = "pending" /\ ~businessCommitted
+    /\ auditState' = "committed" /\ businessCommitted' = TRUE
+    /\ UNCHANGED <<callId, processUp>>
 
-RetryAudit == /\ processUp /\ auditRecorded
-              /\ UNCHANGED vars
+RetryCommittedCall == /\ processUp /\ auditState = "committed"
+                      /\ UNCHANGED vars
 
 Crash == /\ processUp /\ processUp' = FALSE
-         /\ UNCHANGED <<auditRecorded, businessCommitted, callId>>
+         /\ UNCHANGED <<auditState, businessCommitted, callId>>
 Restart == /\ ~processUp /\ processUp' = TRUE
-           /\ UNCHANGED <<auditRecorded, businessCommitted, callId>>
+           /\ UNCHANGED <<auditState, businessCommitted, callId>>
 
-Next == RecordAudit \/ CommitBusiness \/ RetryAudit \/ Crash \/ Restart
+Next == RecordAuditIntent \/ CommitBusinessAndAudit \/ RetryCommittedCall \/ Crash \/ Restart
 
-TypeOK == /\ auditRecorded \in BOOLEAN /\ businessCommitted \in BOOLEAN
+TypeOK == /\ auditState \in {"none", "pending", "committed"}
+          /\ businessCommitted \in BOOLEAN
           /\ callId = StableCallId /\ processUp \in BOOLEAN
-CommittedBusinessHasAudit == businessCommitted => auditRecorded
+BusinessCommitIffAuditCommitted == businessCommitted <=> auditState = "committed"
+PendingAuditHasNoBusinessCommit == auditState = "pending" => ~businessCommitted
 AuditIdentityIsStable == callId = StableCallId
 
 Spec == Init /\ [][Next]_vars

@@ -6,7 +6,7 @@
 //! suite checks that universal invariant for both backends; durable restart persistence
 //! remains in the backend-specific suite.
 
-use awaken_session_contract::{ManagedSessionRepository, PersistedSession};
+use awaken_session_contract::{ManagedSessionRepository, PersistedSession, SessionLifecycleFact};
 use awaken_session_store::{InMemorySessionRepository, SqliteManagedSessionRepository};
 use serde_json::json;
 
@@ -26,6 +26,18 @@ fn session(id: &str, title: &str) -> PersistedSession {
         metadata: std::collections::BTreeMap::from([("k".into(), "v".into())]),
         environment_id: "env".into(),
         mcp_servers: vec![json!({ "name": "fs", "type": "stdio", "url": "x" })],
+        status: "idle".into(),
+        archived_at: None,
+    }
+}
+
+fn fact(id: &str, session_id: &str, event_type: &str) -> SessionLifecycleFact {
+    SessionLifecycleFact {
+        id: id.into(),
+        session_id: session_id.into(),
+        workspace_id: Some("ws_a".into()),
+        event_type: event_type.into(),
+        timestamp: 1_700_000_000,
     }
 }
 
@@ -72,11 +84,49 @@ async fn save_owned_is_one_atomic_repository_fact<R: ManagedSessionRepository>(r
     );
 }
 
+/// The lifecycle fact is committed in the same repository transaction as the
+/// aggregate and owner. Notification may crash afterwards without losing the fact.
+async fn lifecycle_outbox_tracks_every_committed_transition<R: ManagedSessionRepository>(r: &R) {
+    let created = fact("evt:create", "sesn_lifecycle", "session.created");
+    r.save_owned_with_lifecycle(
+        "ws_a",
+        session("sesn_lifecycle", "lifecycle"),
+        created.clone(),
+    )
+    .await;
+    assert!(r.get("sesn_lifecycle").await.is_some());
+    assert_eq!(r.owner("sesn_lifecycle").await.as_deref(), Some("ws_a"));
+    assert_eq!(r.pending_lifecycle().await, vec![created.clone()]);
+
+    // Stable event identity makes an enqueue retry a no-op.
+    r.append_lifecycle(created.clone()).await;
+    assert_eq!(r.pending_lifecycle().await, vec![created.clone()]);
+    r.complete_lifecycle(&created.id).await;
+    assert!(r.pending_lifecycle().await.is_empty());
+
+    let archived = fact("evt:archive", "sesn_lifecycle", "session.archived");
+    r.archive_with_lifecycle("sesn_lifecycle", "2026-07-19T00:00:00Z", archived.clone())
+        .await;
+    let durable = r.get("sesn_lifecycle").await.expect("archived session");
+    assert_eq!(durable.status, "terminated");
+    assert_eq!(durable.archived_at.as_deref(), Some("2026-07-19T00:00:00Z"));
+    assert_eq!(r.pending_lifecycle().await, vec![archived.clone()]);
+    r.complete_lifecycle(&archived.id).await;
+
+    let deleted = fact("evt:delete", "sesn_lifecycle", "session.deleted");
+    r.delete_with_lifecycle("sesn_lifecycle", deleted.clone())
+        .await;
+    let durable = r.get("sesn_lifecycle").await.expect("delete tombstone");
+    assert_eq!(durable.status, "deleted");
+    assert_eq!(r.pending_lifecycle().await, vec![deleted]);
+}
+
 async fn run_suite<R: ManagedSessionRepository>(fresh: impl Fn() -> R) {
     save_get_round_trips(&fresh()).await;
     absent_id_reads_none(&fresh()).await;
     save_is_idempotent_upsert(&fresh()).await;
     save_owned_is_one_atomic_repository_fact(&fresh()).await;
+    lifecycle_outbox_tracks_every_committed_transition(&fresh()).await;
 }
 
 // ── Backend rows: each must pass the identical universal suite ───────────────────

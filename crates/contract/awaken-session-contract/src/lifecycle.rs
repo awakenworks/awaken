@@ -4,6 +4,17 @@
 //! construction (all `&str`) — the delivery machinery lives in the assembly layer,
 //! so neither this contract nor the wire adapter depends on it.
 
+/// A secret-free lifecycle fact committed beside the session aggregate. Its
+/// stable id is both the durable outbox key and the receiver idempotency key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionLifecycleFact {
+    pub id: String,
+    pub session_id: String,
+    pub workspace_id: Option<String>,
+    pub event_type: String,
+    pub timestamp: i64,
+}
+
 /// A sink notified of a session's committed lifecycle transitions (webhooks).
 /// Implemented in the assembly layer over a webhook dispatcher.
 #[async_trait::async_trait]

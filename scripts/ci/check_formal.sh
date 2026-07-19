@@ -192,6 +192,15 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/config-activation" \
     -config formal/tla/ConfigActivation.cfg formal/tla/ConfigActivation.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/resource-binding-effect" \
+    -config formal/tla/ResourceBindingEffect.cfg formal/tla/ResourceBindingEffect.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/management-audit-intent" \
+    -config formal/tla/ManagementAuditIntent.cfg formal/tla/ManagementAuditIntent.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/credential-inventory" \
+    -config formal/tla/CredentialInventory.cfg formal/tla/CredentialInventory.tla
   for trace_config in "$rendered_trace_dir"/RustTrace*.cfg; do
     trace_module="${trace_config%.cfg}.tla"
     trace_name="$(basename "$trace_module" .tla)"

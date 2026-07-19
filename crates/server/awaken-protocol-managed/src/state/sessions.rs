@@ -3,6 +3,25 @@
 
 use super::*;
 
+fn lifecycle_fact(
+    id: String,
+    session_id: &str,
+    workspace_id: Option<String>,
+    event_type: &str,
+) -> SessionLifecycleFact {
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0);
+    SessionLifecycleFact {
+        id,
+        session_id: session_id.to_string(),
+        workspace_id,
+        event_type: event_type.to_string(),
+        timestamp,
+    }
+}
+
 impl ManagedState {
     /// `POST /v1/sessions`.
     ///
@@ -208,8 +227,14 @@ impl ManagedState {
         let owner_scope = workspace_id
             .clone()
             .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
+        let created_fact = lifecycle_fact(
+            format!("session:{id}:created"),
+            &id,
+            workspace_id.clone(),
+            lifecycle_event::SESSION_IDLED,
+        );
         self.sessions_repo
-            .save_owned(
+            .save_owned_with_lifecycle(
                 &owner_scope,
                 PersistedSession {
                     session_id: id.clone(),
@@ -219,7 +244,10 @@ impl ManagedState {
                     metadata: session.metadata.clone(),
                     environment_id: session.environment_id.clone(),
                     mcp_servers: session.agent.mcp_servers.clone(),
+                    status: "idle".to_string(),
+                    archived_at: None,
                 },
+                created_fact.clone(),
             )
             .await;
         self.owners.lock().unwrap().insert(id.clone(), owner_scope);
@@ -239,7 +267,7 @@ impl ManagedState {
         // aspect), passed in — never read back from the core record. Out-of-band.
         if let Some(sink) = &self.lifecycle_sink {
             sink.emit_fact(
-                &format!("session:{id}:created"),
+                &created_fact.id,
                 &id,
                 workspace_id.as_deref(),
                 lifecycle_event::SESSION_IDLED,
@@ -282,24 +310,32 @@ impl ManagedState {
         persisted: Option<PersistedSession>,
     ) -> Session {
         let caps = self.runtime.capabilities();
-        let (agent_id, model, environment_id, title, metadata, mcp_servers) = match persisted {
-            Some(p) => (
-                p.agent_id,
-                p.model,
-                p.environment_id,
-                p.title,
-                p.metadata,
-                p.mcp_servers,
-            ),
-            None => (
-                "assistant".to_string(),
-                self.runtime.model(),
-                "env_local".to_string(),
-                None,
-                Default::default(),
-                Vec::new(),
-            ),
-        };
+        let (agent_id, model, environment_id, title, metadata, mcp_servers, status, archived_at) =
+            match persisted {
+                Some(p) => (
+                    p.agent_id,
+                    p.model,
+                    p.environment_id,
+                    p.title,
+                    p.metadata,
+                    p.mcp_servers,
+                    match p.status.as_str() {
+                        "terminated" => "terminated",
+                        _ => "idle",
+                    },
+                    p.archived_at,
+                ),
+                None => (
+                    "assistant".to_string(),
+                    self.runtime.model(),
+                    "env_local".to_string(),
+                    None,
+                    Default::default(),
+                    Vec::new(),
+                    "idle",
+                    None,
+                ),
+            };
         Session {
             id: id.to_string(),
             kind: "session",
@@ -319,7 +355,7 @@ impl ManagedState {
             environment_id,
             created_at: PROCESSED_AT.to_string(),
             updated_at: PROCESSED_AT.to_string(),
-            archived_at: None,
+            archived_at,
             title,
             metadata,
             // Non-durable: `PersistedSession` does not carry the create-time mounts,
@@ -329,7 +365,7 @@ impl ManagedState {
             // the sandbox no longer has.)
             resources: Vec::new(),
             outcome_evaluations: Vec::new(),
-            status: "idle",
+            status,
             stats: SessionStats::default(),
             usage: Usage::default(),
             vault_ids: Vec::new(),
@@ -359,6 +395,12 @@ impl ManagedState {
             })
             .collect();
         let persisted = self.sessions_repo.get(id).await;
+        if persisted
+            .as_ref()
+            .is_some_and(|session| session.status == "deleted")
+        {
+            return Err(StateError::NotFound);
+        }
         let agent_id = persisted
             .as_ref()
             .map_or_else(|| "assistant".to_string(), |p| p.agent_id.clone());
@@ -468,10 +510,28 @@ impl ManagedState {
     /// is a 404 (delete removes the session; it does not tombstone it as archive
     /// does).
     pub async fn delete_session(&self, id: &str) -> Result<(), StateError> {
-        // Broadcast + drop under the lock, then release it before the async sink
-        // (a std `MutexGuard` must not be held across `.await`). The owner index is
-        // left intact by the removal, so it is still resolvable for the fact below.
+        // Snapshot before the durable commit, but do not remove the visible record
+        // until the repository has atomically stored its tombstone and outbox fact.
         let child_threads = {
+            let sessions = self.sessions.lock().unwrap();
+            sessions
+                .get(id)
+                .ok_or(StateError::NotFound)?
+                .child_threads
+                .clone()
+        };
+        let owner = self.resolve_owner(id).await;
+        let deleted_fact = lifecycle_fact(
+            format!("session:{id}:deleted"),
+            id,
+            owner.clone(),
+            lifecycle_event::SESSION_DELETED,
+        );
+        self.sessions_repo
+            .delete_with_lifecycle(id, deleted_fact.clone())
+            .await;
+
+        {
             let deleted_id = self.next_event_id();
             let mut sessions = self.sessions.lock().unwrap();
             let record = sessions.get_mut(id).ok_or(StateError::NotFound)?;
@@ -482,10 +542,8 @@ impl ManagedState {
                 processed_at: Some(PROCESSED_AT.to_string()),
             });
             self.broadcast_committed_from(id, record, from);
-            let children = record.child_threads.clone();
             sessions.remove(id);
-            children
-        };
+        }
         // Terminal edge: dispose the session's sandbox(es) at the host — the main
         // thread is the session id, and each spawned child agent thread gets its own.
         // Best-effort teardown: the session IS deleted from the client's view
@@ -496,9 +554,8 @@ impl ManagedState {
         // `session.status_terminated`. The owner is resolved from the persisted
         // owner (the delete edge carries only the id).
         if let Some(sink) = &self.lifecycle_sink {
-            let owner = self.resolve_owner(id).await;
             sink.emit_fact(
-                &format!("session:{id}:deleted"),
+                &deleted_fact.id,
                 id,
                 owner.as_deref(),
                 lifecycle_event::SESSION_DELETED,
@@ -539,15 +596,31 @@ impl ManagedState {
     /// terminal transition (not just the mutated status field). Idempotent: a
     /// re-archive returns the same terminal record without a second event.
     pub async fn archive_session(&self, id: &str) -> Result<Session, StateError> {
-        // Mutate under the lock, then release it before any await (the sink is async,
-        // and a std `MutexGuard` must not be held across `.await`). `newly_terminated`
-        // gates the projection so a re-archive (idempotent) fans out no second event.
-        let (session, newly_terminated, child_threads) = {
+        let (newly_terminated, child_threads) = {
+            let sessions = self.sessions.lock().unwrap();
+            let record = sessions.get(id).ok_or(StateError::NotFound)?;
+            (
+                record.session.archived_at.is_none(),
+                record.child_threads.clone(),
+            )
+        };
+        let owner = self.resolve_owner(id).await;
+        let terminated_fact = lifecycle_fact(
+            format!("session:{id}:terminated"),
+            id,
+            owner.clone(),
+            lifecycle_event::SESSION_TERMINATED,
+        );
+        if newly_terminated {
+            self.sessions_repo
+                .archive_with_lifecycle(id, PROCESSED_AT, terminated_fact.clone())
+                .await;
+        }
+        let session = {
             let terminated_id = self.next_event_id();
             let mut sessions = self.sessions.lock().unwrap();
             let record = sessions.get_mut(id).ok_or(StateError::NotFound)?;
-            let newly = record.session.archived_at.is_none();
-            if newly {
+            if newly_terminated && record.session.archived_at.is_none() {
                 record.session.archived_at = Some(PROCESSED_AT.to_string());
                 record.session.status = "terminated";
                 record.events.push(Event {
@@ -556,7 +629,7 @@ impl ManagedState {
                     processed_at: Some(PROCESSED_AT.to_string()),
                 });
             }
-            (record.session.clone(), newly, record.child_threads.clone())
+            record.session.clone()
         };
         // Archive is terminal (no further turns run on this session), so reap its
         // sandbox — but only on the transition, so a re-archive (idempotent) does
@@ -569,9 +642,8 @@ impl ManagedState {
         // persisted owner (the archive edge carries only the id) so a subscription in
         // that workspace is matched even after a restart lost the in-memory index.
         if newly_terminated && let Some(sink) = &self.lifecycle_sink {
-            let owner = self.resolve_owner(id).await;
             sink.emit_fact(
-                &format!("session:{id}:terminated"),
+                &terminated_fact.id,
                 id,
                 owner.as_deref(),
                 lifecycle_event::SESSION_TERMINATED,

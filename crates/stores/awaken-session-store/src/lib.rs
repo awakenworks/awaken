@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
-use awaken_session_contract::{ManagedSessionRepository, PersistedSession};
+use awaken_session_contract::{ManagedSessionRepository, PersistedSession, SessionLifecycleFact};
 
 // The in-memory reference backends (plain + scoped) live here beside the durable
 // siblings (issue A / Phase 1); the ports + PersistedSession value + the
@@ -61,6 +61,24 @@ fn session_bundle() -> Result<MigrationBundle, MigrationError> {
                 "managed session owner scope_id (ADR-0051)",
                 "ALTER TABLE {prefix}_session ADD COLUMN scope_id TEXT NOT NULL DEFAULT 'default'",
             )?,
+            Migration::new(
+                3,
+                "session lifecycle transactional outbox",
+                "CREATE TABLE {prefix}_lifecycle_outbox (\
+                    fact_id TEXT PRIMARY KEY, \
+                    data TEXT NOT NULL, \
+                    created_at {timestamptz} NOT NULL DEFAULT {now})",
+            )?,
+            Migration::new(
+                4,
+                "managed session durable lifecycle status",
+                "ALTER TABLE {prefix}_session ADD COLUMN status TEXT NOT NULL DEFAULT 'idle'",
+            )?,
+            Migration::new(
+                5,
+                "managed session durable archive timestamp",
+                "ALTER TABLE {prefix}_session ADD COLUMN archived_at TEXT",
+            )?,
         ],
     )
 }
@@ -71,6 +89,28 @@ fn metadata_str(session: &PersistedSession) -> String {
 
 fn mcp_str(session: &PersistedSession) -> String {
     serde_json::to_string(&session.mcp_servers).expect("session mcp servers serialize")
+}
+
+fn lifecycle_str(fact: &SessionLifecycleFact) -> String {
+    serde_json::json!({
+        "id": fact.id,
+        "session_id": fact.session_id,
+        "workspace_id": fact.workspace_id,
+        "event_type": fact.event_type,
+        "timestamp": fact.timestamp,
+    })
+    .to_string()
+}
+
+fn decode_lifecycle(data: &str) -> Result<SessionLifecycleFact, serde_json::Error> {
+    let value: serde_json::Value = serde_json::from_str(data)?;
+    Ok(SessionLifecycleFact {
+        id: value["id"].as_str().unwrap_or_default().to_string(),
+        session_id: value["session_id"].as_str().unwrap_or_default().to_string(),
+        workspace_id: value["workspace_id"].as_str().map(str::to_string),
+        event_type: value["event_type"].as_str().unwrap_or_default().to_string(),
+        timestamp: value["timestamp"].as_i64().unwrap_or_default(),
+    })
 }
 
 /// Decode a persisted row's JSON payload columns. A corrupt column (truncated
@@ -87,6 +127,8 @@ fn decode(
     metadata_json: &str,
     environment_id: String,
     mcp_json: &str,
+    status: String,
+    archived_at: Option<String>,
 ) -> Result<PersistedSession, serde_json::Error> {
     Ok(PersistedSession {
         session_id,
@@ -96,6 +138,8 @@ fn decode(
         metadata: serde_json::from_str(metadata_json)?,
         environment_id,
         mcp_servers: serde_json::from_str(mcp_json)?,
+        status,
+        archived_at,
     })
 }
 
@@ -137,8 +181,8 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         let conn = self.conn.lock().expect("session store mutex poisoned");
         conn.execute(
             "INSERT INTO managed_session
-                (session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, scope_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                (session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, scope_id, status, archived_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT(session_id) DO UPDATE SET
                 agent_id = excluded.agent_id,
                 model = excluded.model,
@@ -146,7 +190,9 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                 metadata_json = excluded.metadata_json,
                 environment_id = excluded.environment_id,
                 mcp_json = excluded.mcp_json,
-                scope_id = excluded.scope_id",
+                scope_id = excluded.scope_id,
+                status = excluded.status,
+                archived_at = excluded.archived_at",
             params![
                 session.session_id,
                 session.agent_id,
@@ -156,16 +202,143 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                 session.environment_id,
                 mcp_json,
                 owner_scope,
+                session.status,
+                session.archived_at,
             ],
         )
         .expect("persist managed session");
+    }
+
+    async fn save_owned_with_lifecycle(
+        &self,
+        owner_scope: &str,
+        session: PersistedSession,
+        fact: SessionLifecycleFact,
+    ) {
+        let metadata_json = metadata_str(&session);
+        let mcp_json = mcp_str(&session);
+        let fact_id = fact.id.clone();
+        let fact_json = lifecycle_str(&fact);
+        let mut conn = self.conn.lock().expect("session store mutex poisoned");
+        let tx = conn
+            .transaction()
+            .expect("begin session lifecycle transaction");
+        tx.execute(
+            "INSERT INTO managed_session
+                (session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, scope_id, status, archived_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT(session_id) DO UPDATE SET
+                agent_id = excluded.agent_id, model = excluded.model, title = excluded.title,
+                metadata_json = excluded.metadata_json, environment_id = excluded.environment_id,
+                mcp_json = excluded.mcp_json, scope_id = excluded.scope_id,
+                status = excluded.status, archived_at = excluded.archived_at",
+            params![
+                session.session_id,
+                session.agent_id,
+                session.model,
+                session.title,
+                metadata_json,
+                session.environment_id,
+                mcp_json,
+                owner_scope,
+                session.status,
+                session.archived_at,
+            ],
+        )
+        .expect("persist managed session in lifecycle transaction");
+        tx.execute(
+            "INSERT OR IGNORE INTO managed_lifecycle_outbox (fact_id, data) VALUES (?1, ?2)",
+            params![fact_id, fact_json],
+        )
+        .expect("persist lifecycle fact in session transaction");
+        tx.commit().expect("commit session lifecycle transaction");
+    }
+
+    async fn append_lifecycle(&self, fact: SessionLifecycleFact) {
+        let data = lifecycle_str(&fact);
+        self.conn
+            .lock()
+            .expect("session store mutex poisoned")
+            .execute(
+                "INSERT OR IGNORE INTO managed_lifecycle_outbox (fact_id, data) VALUES (?1, ?2)",
+                params![fact.id, data],
+            )
+            .expect("append session lifecycle fact");
+    }
+
+    async fn archive_with_lifecycle(
+        &self,
+        session_id: &str,
+        archived_at: &str,
+        fact: SessionLifecycleFact,
+    ) {
+        let data = lifecycle_str(&fact);
+        let mut conn = self.conn.lock().expect("session store mutex poisoned");
+        let tx = conn
+            .transaction()
+            .expect("begin archive lifecycle transaction");
+        tx.execute(
+            "UPDATE managed_session SET status = 'terminated', archived_at = ?2 WHERE session_id = ?1",
+            params![session_id, archived_at],
+        )
+        .expect("archive managed session");
+        tx.execute(
+            "INSERT OR IGNORE INTO managed_lifecycle_outbox (fact_id, data) VALUES (?1, ?2)",
+            params![fact.id, data],
+        )
+        .expect("persist archive lifecycle fact");
+        tx.commit().expect("commit archive lifecycle transaction");
+    }
+
+    async fn delete_with_lifecycle(&self, session_id: &str, fact: SessionLifecycleFact) {
+        let data = lifecycle_str(&fact);
+        let mut conn = self.conn.lock().expect("session store mutex poisoned");
+        let tx = conn
+            .transaction()
+            .expect("begin delete lifecycle transaction");
+        tx.execute(
+            "UPDATE managed_session SET status = 'deleted' WHERE session_id = ?1",
+            params![session_id],
+        )
+        .expect("delete managed session");
+        tx.execute(
+            "INSERT OR IGNORE INTO managed_lifecycle_outbox (fact_id, data) VALUES (?1, ?2)",
+            params![fact.id, data],
+        )
+        .expect("persist delete lifecycle fact");
+        tx.commit().expect("commit delete lifecycle transaction");
+    }
+
+    async fn pending_lifecycle(&self) -> Vec<SessionLifecycleFact> {
+        let conn = self.conn.lock().expect("session store mutex poisoned");
+        let mut statement = conn
+            .prepare("SELECT data FROM managed_lifecycle_outbox ORDER BY created_at, fact_id")
+            .expect("prepare pending lifecycle facts");
+        statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("query pending lifecycle facts")
+            .map(|row| {
+                decode_lifecycle(&row.expect("read lifecycle fact")).expect("decode lifecycle fact")
+            })
+            .collect()
+    }
+
+    async fn complete_lifecycle(&self, fact_id: &str) {
+        self.conn
+            .lock()
+            .expect("session store mutex poisoned")
+            .execute(
+                "DELETE FROM managed_lifecycle_outbox WHERE fact_id = ?1",
+                params![fact_id],
+            )
+            .expect("complete lifecycle fact");
     }
 
     async fn get(&self, session_id: &str) -> Option<PersistedSession> {
         let conn = self.conn.lock().expect("session store mutex poisoned");
         let raw = conn
             .query_row(
-                "SELECT agent_id, model, title, metadata_json, environment_id, mcp_json
+                "SELECT agent_id, model, title, metadata_json, environment_id, mcp_json, status, archived_at
                  FROM managed_session WHERE session_id = ?1",
                 params![session_id],
                 |row| {
@@ -176,12 +349,15 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                         row.get::<_, String>(3)?,
                         row.get::<_, String>(4)?,
                         row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, Option<String>>(7)?,
                     ))
                 },
             )
             .optional()
             .expect("read managed session")?;
-        let (agent_id, model, title, metadata_json, environment_id, mcp_json) = raw;
+        let (agent_id, model, title, metadata_json, environment_id, mcp_json, status, archived_at) =
+            raw;
         Some(
             decode(
                 session_id.to_string(),
@@ -191,6 +367,8 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                 &metadata_json,
                 environment_id,
                 &mcp_json,
+                status,
+                archived_at,
             )
             .expect("decode managed session"),
         )
@@ -239,8 +417,8 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
     async fn save_owned(&self, owner_scope: &str, session: PersistedSession) {
         sqlx::query(
             "INSERT INTO managed_session \
-                (session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, scope_id) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
+                (session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, scope_id, status, archived_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
              ON CONFLICT (session_id) DO UPDATE SET \
                 agent_id = excluded.agent_id, \
                 model = excluded.model, \
@@ -248,7 +426,7 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
                 metadata_json = excluded.metadata_json, \
                 environment_id = excluded.environment_id, \
                 mcp_json = excluded.mcp_json, \
-                scope_id = excluded.scope_id",
+                scope_id = excluded.scope_id, status = excluded.status, archived_at = excluded.archived_at",
         )
         .bind(&session.session_id)
         .bind(&session.agent_id)
@@ -258,14 +436,155 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         .bind(&session.environment_id)
         .bind(mcp_str(&session))
         .bind(owner_scope)
+        .bind(&session.status)
+        .bind(&session.archived_at)
         .execute(&self.pool)
         .await
         .expect("persist managed session");
     }
 
+    async fn save_owned_with_lifecycle(
+        &self,
+        owner_scope: &str,
+        session: PersistedSession,
+        fact: SessionLifecycleFact,
+    ) {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .expect("begin session lifecycle transaction");
+        sqlx::query(
+            "INSERT INTO managed_session
+                (session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, scope_id, status, archived_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+             ON CONFLICT (session_id) DO UPDATE SET
+                agent_id = excluded.agent_id, model = excluded.model, title = excluded.title,
+                metadata_json = excluded.metadata_json, environment_id = excluded.environment_id,
+                mcp_json = excluded.mcp_json, scope_id = excluded.scope_id,
+                status = excluded.status, archived_at = excluded.archived_at",
+        )
+        .bind(&session.session_id)
+        .bind(&session.agent_id)
+        .bind(&session.model)
+        .bind(&session.title)
+        .bind(metadata_str(&session))
+        .bind(&session.environment_id)
+        .bind(mcp_str(&session))
+        .bind(owner_scope)
+        .bind(&session.status)
+        .bind(&session.archived_at)
+        .execute(&mut *tx)
+        .await
+        .expect("persist managed session in lifecycle transaction");
+        sqlx::query(
+            "INSERT INTO managed_lifecycle_outbox (fact_id, data) VALUES ($1, $2)
+             ON CONFLICT (fact_id) DO NOTHING",
+        )
+        .bind(&fact.id)
+        .bind(lifecycle_str(&fact))
+        .execute(&mut *tx)
+        .await
+        .expect("persist lifecycle fact in session transaction");
+        tx.commit()
+            .await
+            .expect("commit session lifecycle transaction");
+    }
+
+    async fn append_lifecycle(&self, fact: SessionLifecycleFact) {
+        sqlx::query(
+            "INSERT INTO managed_lifecycle_outbox (fact_id, data) VALUES ($1, $2)
+             ON CONFLICT (fact_id) DO NOTHING",
+        )
+        .bind(&fact.id)
+        .bind(lifecycle_str(&fact))
+        .execute(&self.pool)
+        .await
+        .expect("append session lifecycle fact");
+    }
+
+    async fn archive_with_lifecycle(
+        &self,
+        session_id: &str,
+        archived_at: &str,
+        fact: SessionLifecycleFact,
+    ) {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .expect("begin archive lifecycle transaction");
+        sqlx::query(
+            "UPDATE managed_session SET status = 'terminated', archived_at = $2 WHERE session_id = $1",
+        )
+        .bind(session_id)
+        .bind(archived_at)
+        .execute(&mut *tx)
+        .await
+        .expect("archive managed session");
+        sqlx::query(
+            "INSERT INTO managed_lifecycle_outbox (fact_id, data) VALUES ($1, $2)
+             ON CONFLICT (fact_id) DO NOTHING",
+        )
+        .bind(&fact.id)
+        .bind(lifecycle_str(&fact))
+        .execute(&mut *tx)
+        .await
+        .expect("persist archive lifecycle fact");
+        tx.commit()
+            .await
+            .expect("commit archive lifecycle transaction");
+    }
+
+    async fn delete_with_lifecycle(&self, session_id: &str, fact: SessionLifecycleFact) {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .expect("begin delete lifecycle transaction");
+        sqlx::query("UPDATE managed_session SET status = 'deleted' WHERE session_id = $1")
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await
+            .expect("delete managed session");
+        sqlx::query(
+            "INSERT INTO managed_lifecycle_outbox (fact_id, data) VALUES ($1, $2)
+             ON CONFLICT (fact_id) DO NOTHING",
+        )
+        .bind(&fact.id)
+        .bind(lifecycle_str(&fact))
+        .execute(&mut *tx)
+        .await
+        .expect("persist delete lifecycle fact");
+        tx.commit()
+            .await
+            .expect("commit delete lifecycle transaction");
+    }
+
+    async fn pending_lifecycle(&self) -> Vec<SessionLifecycleFact> {
+        sqlx::query("SELECT data FROM managed_lifecycle_outbox ORDER BY created_at, fact_id")
+            .fetch_all(&self.pool)
+            .await
+            .expect("read pending lifecycle facts")
+            .into_iter()
+            .map(|row| {
+                let data: String = row.get("data");
+                decode_lifecycle(&data).expect("decode lifecycle fact")
+            })
+            .collect()
+    }
+
+    async fn complete_lifecycle(&self, fact_id: &str) {
+        sqlx::query("DELETE FROM managed_lifecycle_outbox WHERE fact_id = $1")
+            .bind(fact_id)
+            .execute(&self.pool)
+            .await
+            .expect("complete lifecycle fact");
+    }
+
     async fn get(&self, session_id: &str) -> Option<PersistedSession> {
         let row = sqlx::query(
-            "SELECT agent_id, model, title, metadata_json, environment_id, mcp_json \
+            "SELECT agent_id, model, title, metadata_json, environment_id, mcp_json, status, archived_at \
              FROM managed_session WHERE session_id = $1",
         )
         .bind(session_id)
@@ -283,6 +602,8 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
                 &metadata_json,
                 row.get("environment_id"),
                 &mcp_json,
+                row.get("status"),
+                row.get("archived_at"),
             )
             .expect("decode managed session"),
         )
@@ -315,7 +636,81 @@ mod tests {
             metadata,
             environment_id: "env_local".to_string(),
             mcp_servers: vec![serde_json::json!({"name":"calc","type":"url","url":"https://x"})],
+            status: "idle".into(),
+            archived_at: None,
         }
+    }
+
+    fn fact(id: &str, session_id: &str, event_type: &str) -> SessionLifecycleFact {
+        SessionLifecycleFact {
+            id: id.into(),
+            session_id: session_id.into(),
+            workspace_id: Some("ws_a".into()),
+            event_type: event_type.into(),
+            timestamp: 1_700_000_000,
+        }
+    }
+
+    #[tokio::test]
+    async fn lifecycle_fact_survives_the_commit_to_notification_crash_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessions-outbox.db");
+        let path = path.to_string_lossy().to_string();
+        {
+            let repo = SqliteManagedSessionRepository::open(&path).unwrap();
+            repo.save_owned_with_lifecycle(
+                "ws_a",
+                sample("sesn_tx"),
+                fact("session:sesn_tx:created", "sesn_tx", "session.status_idled"),
+            )
+            .await;
+            // Simulated hard crash: the lifecycle sink is deliberately never called.
+        }
+
+        let reopened = SqliteManagedSessionRepository::open(&path).unwrap();
+        assert_eq!(reopened.owner("sesn_tx").await.as_deref(), Some("ws_a"));
+        let pending = reopened.pending_lifecycle().await;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, "session:sesn_tx:created");
+
+        reopened.complete_lifecycle(&pending[0].id).await;
+        reopened.complete_lifecycle(&pending[0].id).await;
+        assert!(reopened.pending_lifecycle().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn terminal_state_and_its_fact_share_one_repository_commit() {
+        let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
+        repo.save_owned_with_lifecycle(
+            "ws_a",
+            sample("sesn_terminal"),
+            fact("created", "sesn_terminal", "session.status_idled"),
+        )
+        .await;
+        repo.complete_lifecycle("created").await;
+
+        repo.archive_with_lifecycle(
+            "sesn_terminal",
+            "2026-01-01T00:00:00Z",
+            fact("terminated", "sesn_terminal", "session.status_terminated"),
+        )
+        .await;
+        let archived = repo.get("sesn_terminal").await.unwrap();
+        assert_eq!(archived.status, "terminated");
+        assert_eq!(
+            archived.archived_at.as_deref(),
+            Some("2026-01-01T00:00:00Z")
+        );
+        assert_eq!(repo.pending_lifecycle().await[0].id, "terminated");
+
+        repo.complete_lifecycle("terminated").await;
+        repo.delete_with_lifecycle(
+            "sesn_terminal",
+            fact("deleted", "sesn_terminal", "session.deleted"),
+        )
+        .await;
+        assert_eq!(repo.get("sesn_terminal").await.unwrap().status, "deleted");
+        assert_eq!(repo.pending_lifecycle().await[0].id, "deleted");
     }
 
     #[tokio::test]
@@ -446,6 +841,38 @@ mod tests {
         updated.title = None; // exercises the nullable title column
         repo.save(updated.clone()).await;
         assert_eq!(repo.get("sesn_1").await, Some(updated));
+
+        repo.save_owned_with_lifecycle(
+            "ws_a",
+            sample("sesn_pg_tx"),
+            fact(
+                "session:sesn_pg_tx:created",
+                "sesn_pg_tx",
+                "session.status_idled",
+            ),
+        )
+        .await;
+        assert_eq!(repo.owner("sesn_pg_tx").await.as_deref(), Some("ws_a"));
+        assert_eq!(
+            repo.pending_lifecycle().await[0].id,
+            "session:sesn_pg_tx:created"
+        );
+        repo.complete_lifecycle("session:sesn_pg_tx:created").await;
+        repo.archive_with_lifecycle(
+            "sesn_pg_tx",
+            "2026-07-19T00:00:00Z",
+            fact(
+                "session:sesn_pg_tx:terminated",
+                "sesn_pg_tx",
+                "session.status_terminated",
+            ),
+        )
+        .await;
+        assert_eq!(repo.get("sesn_pg_tx").await.unwrap().status, "terminated");
+        assert_eq!(
+            repo.pending_lifecycle().await[0].id,
+            "session:sesn_pg_tx:terminated"
+        );
     }
 
     /// Postgres parity for the ADR-0051 owner `scope_id` — the same atomic
