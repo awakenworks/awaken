@@ -1,6 +1,16 @@
 use std::sync::Arc;
 
-use awaken_run_ingress::{DispatchQueue, MemoryDispatchStore};
+use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+use awaken_agent_contract::agent::run::Id as RunId;
+use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_run_ingress::{
+    DispatchQueue, HttpDispatchQueue, MemoryDispatchStore, PlacementRequirements, RunDispatch,
+};
+use awaken_runtime_contract::activation::RunActivation;
+use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
+use awaken_runtime_contract::snapshot::{
+    AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
+};
 use awaken_runtime_host::{
     FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, ManualWorkerClock, WorkerControlClient,
     WorkerDispatchService, WorkerUpstream, dispatch_transport_router_with_service,
@@ -133,4 +143,110 @@ async fn authenticated_header_cannot_register_a_different_worker_id() {
         .unwrap();
     let response = router.oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+fn dispatch_with_capability(run: &str, capability: &str) -> RunDispatch {
+    let activation = RunActivation::new(
+        RunId(run.to_string()),
+        ThreadId(format!("thread-{run}")),
+        ExecutableAgentSnapshot {
+            id: ExecutableAgentSnapshotId("snapshot".to_string()),
+            root_agent_id: AgentId("agent".to_string()),
+            resolved_spec: ResolvedSpec {
+                model_candidates: Vec::new(),
+                catalog_fingerprint: CatalogFingerprint("catalog".to_string()),
+                instructions: String::new(),
+                max_steps: 1,
+                delegation_limits: Default::default(),
+                model_binding: ModelBinding::new("provider", "model", "native"),
+                tool_descriptors: Vec::new(),
+                plugin_ids: Vec::new(),
+                plugin_config: Default::default(),
+                context_policy: Default::default(),
+                tool_presentation: Default::default(),
+            },
+            fingerprint: CatalogFingerprint("catalog".to_string()),
+        },
+        vec![Message::text(
+            MessageId("message".to_string()),
+            Role::User,
+            "run",
+        )],
+    );
+    let mut placement = PlacementRequirements::remote_required();
+    placement
+        .required_capabilities
+        .insert(capability.to_string());
+    RunDispatch::new(activation).with_placement(placement)
+}
+
+#[tokio::test]
+async fn registered_http_claim_skips_incompatible_work_and_uses_incarnation_owner() {
+    let clock = Arc::new(ManualWorkerClock::new(100));
+    let directory = Arc::new(MemoryWorkerDirectory::new());
+    let dispatch = Arc::new(MemoryDispatchStore::new());
+    dispatch
+        .enqueue(dispatch_with_capability("gpu", "gpu"))
+        .await
+        .unwrap();
+    dispatch
+        .enqueue(dispatch_with_capability("cpu", "cpu"))
+        .await
+        .unwrap();
+    let service = WorkerDispatchService::new(
+        dispatch as Arc<dyn DispatchQueue>,
+        Arc::new(HeaderWorkerAuthenticator),
+        clock,
+        Arc::new(FixedWorkerLeasePolicy::new(1_000)),
+    )
+    .with_worker_directory(directory, 1_000);
+    let router = dispatch_transport_router_with_service(Arc::new(service));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+
+    let upstream = WorkerUpstream::new(format!("http://{address}")).with_worker_id("worker-cpu");
+    let control = WorkerControlClient::new(upstream);
+    let mut manifest = WorkerManifest::default();
+    manifest.capabilities.insert("cpu".to_string());
+    let registered = control.register("boot-cpu", manifest).await.unwrap();
+    control
+        .heartbeat(
+            &registered.snapshot.identity,
+            WorkerHeartbeat {
+                sequence: 1,
+                ready: true,
+                in_flight: 0,
+            },
+        )
+        .await
+        .unwrap();
+
+    let client = HttpDispatchQueue::new(format!("http://{address}"))
+        .with_worker_identity(registered.snapshot.identity.clone());
+    let claimed = client
+        .claim("ignored-local-owner", 99, 99)
+        .await
+        .unwrap()
+        .expect("compatible work");
+    assert_eq!(claimed.request.run_id().0, "cpu");
+    assert_eq!(
+        claimed.lease.owner,
+        registered.snapshot.identity.lease_owner()
+    );
+    assert_eq!(
+        claimed.assignment.unwrap().identity,
+        registered.snapshot.identity
+    );
+    assert_eq!(
+        control
+            .begin_drain(&registered.snapshot.identity, Some(1_000))
+            .await
+            .unwrap(),
+        RegistryMutation::Applied
+    );
+    assert!(
+        client.claim("ignored", 99, 99).await.is_err(),
+        "a draining incarnation cannot receive new work"
+    );
 }

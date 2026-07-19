@@ -23,6 +23,7 @@ use crate::dispatch::{
     SettleOutcome, SubmitOptions,
 };
 use crate::dispatch_schema::dispatch_bundle;
+use crate::{WorkerAssignment, WorkerSnapshot};
 use awaken_run_ingress_contract::RunDispatch;
 
 /// Errors from constructing or migrating the dispatch store. Claim/settle-time
@@ -230,12 +231,83 @@ impl DispatchQueue for SqliteDispatchStore {
                     pending: Vec::new(),
                     recovered: false,
                     sandbox: None,
+                    assignment: None,
                 }));
             }
 
             // A retry follows the same exact-claim kernel as explicit recovery.
             let claimed =
-                claim_exact_transaction(&tx, p, &run_id, &owner, lease_ms, now_ms)?;
+                claim_exact_transaction(&tx, p, &run_id, &owner, lease_ms, now_ms, None)?;
+            tx.commit().map_err(reject)?;
+            Ok(claimed)
+        })
+        .await
+    }
+
+    async fn claim_new_run_compatible(
+        &self,
+        request: RunDispatch,
+        worker: &WorkerSnapshot,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        if !worker.accepts(&request.placement, now_ms) {
+            return Ok(None);
+        }
+        let run_id = request.run_id().0.clone();
+        let thread_id = request.thread_id().0.clone();
+        let request_json = json(&request)?;
+        let worker = worker.clone();
+        let expires = now_ms + lease_ms;
+        self.with_conn(move |conn, p| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(reject)?;
+            let owner = worker.identity.lease_owner();
+            let assignment = WorkerAssignment::from(&worker);
+            let inserted = tx
+                .execute(
+                    &format!(
+                        "INSERT INTO {p}_dispatch \
+                         (run_id, thread_id, request, status, lease_owner, lease_until, lease_epoch, worker_assignment) \
+                         VALUES (?1,?2,?3,'running',?4,?5,1,?6) \
+                         ON CONFLICT(run_id) DO NOTHING"
+                    ),
+                    params![
+                        run_id,
+                        thread_id,
+                        request_json,
+                        owner,
+                        expires as i64,
+                        json(&assignment)?
+                    ],
+                )
+                .map_err(reject)?;
+            if inserted == 1 {
+                tx.commit().map_err(reject)?;
+                return Ok(Some(Claimed {
+                    request,
+                    lease: Lease {
+                        run_id: RunId(run_id),
+                        owner,
+                        expires_ms: expires,
+                        epoch: 1,
+                    },
+                    pending: Vec::new(),
+                    recovered: false,
+                    sandbox: None,
+                    assignment: Some(assignment),
+                }));
+            }
+            let claimed = claim_exact_transaction(
+                &tx,
+                p,
+                &run_id,
+                &owner,
+                lease_ms,
+                now_ms,
+                Some(&worker),
+            )?;
             tx.commit().map_err(reject)?;
             Ok(claimed)
         })
@@ -272,7 +344,52 @@ impl DispatchQueue for SqliteDispatchStore {
                 ],
             )
             .map_err(reject)?;
-            let claimed = claim_exact_transaction(&tx, p, &run_id, &owner, lease_ms, now_ms)?;
+            let claimed = claim_exact_transaction(&tx, p, &run_id, &owner, lease_ms, now_ms, None)?;
+            tx.commit().map_err(reject)?;
+            Ok(claimed)
+        })
+        .await
+    }
+
+    async fn deliver_and_claim_compatible(
+        &self,
+        input: PendingInput,
+        worker: &WorkerSnapshot,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        let run_id = input.run_id.0.clone();
+        let worker = worker.clone();
+        let result_json = json(&input.result)?;
+        self.with_conn(move |conn, p| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(reject)?;
+            tx.execute(
+                &format!(
+                    "INSERT INTO {p}_pending \
+                     (message_id, run_id, thread_id, correlation_id, result, available_at) \
+                     VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(message_id) DO NOTHING"
+                ),
+                params![
+                    input.message_id,
+                    input.run_id.0,
+                    input.thread_id.0,
+                    input.correlation_id,
+                    result_json,
+                    input.available_at_ms.map(|time| time as i64)
+                ],
+            )
+            .map_err(reject)?;
+            let claimed = claim_exact_transaction(
+                &tx,
+                p,
+                &run_id,
+                &worker.identity.lease_owner(),
+                lease_ms,
+                now_ms,
+                Some(&worker),
+            )?;
             tx.commit().map_err(reject)?;
             Ok(claimed)
         })
@@ -381,7 +498,7 @@ impl DispatchQueue for SqliteDispatchStore {
                 &format!(
                     "UPDATE {p}_dispatch SET status = 'running', lease_owner = ?1, \
                      lease_until = ?2, attempt_count = attempt_count + ?3, \
-                     lease_epoch = lease_epoch + 1 WHERE run_id = ?4"
+                     lease_epoch = lease_epoch + 1, worker_assignment = NULL WHERE run_id = ?4"
                 ),
                 params![owner, expires as i64, i64::from(recovery_pick), run_id],
             )
@@ -445,7 +562,68 @@ impl DispatchQueue for SqliteDispatchStore {
                 pending,
                 recovered: recovery_pick,
                 sandbox,
+                assignment: None,
             }))
+        })
+        .await
+    }
+
+    async fn claim_compatible(
+        &self,
+        worker: &WorkerSnapshot,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        let worker = worker.clone();
+        self.with_conn(move |conn, p| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(reject)?;
+            let sql = format!(
+                "SELECT d.run_id, d.request FROM {p}_dispatch d WHERE \
+                 (d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until < ?1) OR \
+                 (d.status = 'awaiting' AND EXISTS (SELECT 1 FROM {p}_pending pe \
+                   WHERE pe.run_id = d.run_id AND (pe.available_at IS NULL OR pe.available_at <= ?1)) \
+                   AND NOT EXISTS (SELECT 1 FROM {p}_dispatch r WHERE r.thread_id = d.thread_id AND r.status = 'running')) OR \
+                 (d.status = 'pending' AND NOT EXISTS (SELECT 1 FROM {p}_dispatch r \
+                   WHERE r.thread_id = d.thread_id AND r.status = 'running')) \
+                 ORDER BY CASE WHEN d.status = 'running' THEN 0 WHEN d.status = 'awaiting' THEN 1 ELSE 2 END, \
+                          d.priority DESC, d.created_at"
+            );
+            let selected = {
+                let mut stmt = tx.prepare(&sql).map_err(reject)?;
+                let rows = stmt
+                    .query_map(params![now_ms as i64], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })
+                    .map_err(reject)?;
+                let mut selected = None;
+                for row in rows {
+                    let (run_id, request_json) = row.map_err(reject)?;
+                    let request: RunDispatch =
+                        serde_json::from_str(&request_json).map_err(json_err)?;
+                    if worker.accepts(&request.placement, now_ms) {
+                        selected = Some(run_id);
+                        break;
+                    }
+                }
+                selected
+            };
+            let Some(run_id) = selected else {
+                tx.commit().map_err(reject)?;
+                return Ok(None);
+            };
+            let claimed = claim_exact_transaction(
+                &tx,
+                p,
+                &run_id,
+                &worker.identity.lease_owner(),
+                lease_ms,
+                now_ms,
+                Some(&worker),
+            )?;
+            tx.commit().map_err(reject)?;
+            Ok(claimed)
         })
         .await
     }
@@ -464,7 +642,35 @@ impl DispatchQueue for SqliteDispatchStore {
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(reject)?;
             let claimed =
-                claim_exact_transaction(&tx, p, &requested_run, &owner, lease_ms, now_ms)?;
+                claim_exact_transaction(&tx, p, &requested_run, &owner, lease_ms, now_ms, None)?;
+            tx.commit().map_err(reject)?;
+            Ok(claimed)
+        })
+        .await
+    }
+
+    async fn claim_run_compatible(
+        &self,
+        requested_run: &RunId,
+        worker: &WorkerSnapshot,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        let requested_run = requested_run.0.clone();
+        let worker = worker.clone();
+        self.with_conn(move |conn, p| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(reject)?;
+            let claimed = claim_exact_transaction(
+                &tx,
+                p,
+                &requested_run,
+                &worker.identity.lease_owner(),
+                lease_ms,
+                now_ms,
+                Some(&worker),
+            )?;
             tx.commit().map_err(reject)?;
             Ok(claimed)
         })
@@ -1082,6 +1288,7 @@ fn claim_exact_transaction(
     owner: &str,
     lease_ms: u64,
     now_ms: u64,
+    worker: Option<&WorkerSnapshot>,
 ) -> Result<Option<Claimed>, DispatchError> {
     let not_running = format!(
         "NOT EXISTS (SELECT 1 FROM {prefix}_dispatch r \
@@ -1107,18 +1314,27 @@ fn claim_exact_transaction(
         return Ok(None);
     };
     let request: RunDispatch = serde_json::from_str(&request_json).map_err(json_err)?;
+    if let Some(worker) = worker
+        && !worker.accepts(&request.placement, now_ms)
+    {
+        return Ok(None);
+    }
     let expires = now_ms + lease_ms;
     tx.execute(
         &format!(
             "UPDATE {prefix}_dispatch SET status = 'running', lease_owner = ?1, \
              lease_until = ?2, attempt_count = attempt_count + ?3, \
-             lease_epoch = lease_epoch + 1 WHERE run_id = ?4"
+             lease_epoch = lease_epoch + 1, worker_assignment = ?5 WHERE run_id = ?4"
         ),
         params![
             owner,
             expires as i64,
             i64::from(status == "running"),
-            requested_run
+            requested_run,
+            worker
+                .map(WorkerAssignment::from)
+                .map(|value| json(&value))
+                .transpose()?
         ],
     )
     .map_err(reject)?;
@@ -1140,6 +1356,7 @@ fn claim_exact_transaction(
         pending: pending_for_run(tx, prefix, requested_run, now_ms)?,
         recovered: status == "running",
         sandbox,
+        assignment: worker.map(WorkerAssignment::from),
     }))
 }
 

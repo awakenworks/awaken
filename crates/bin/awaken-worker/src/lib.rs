@@ -141,9 +141,16 @@ async fn run_configured(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let upstream_url = upstream.base_url().to_string();
     let control = WorkerControlClient::new(upstream.clone());
+    let registration = control
+        .register(new_incarnation_id()?, worker_manifest())
+        .await
+        .map_err(std::io::Error::other)?;
     // Route the dispatch pool's claim/settle over HTTP to the cell server.
     awaken_runtime_host::init_shared_dispatch_store(
-        awaken_runtime_host::worker_dispatch_store_with_upstream(&upstream),
+        awaken_runtime_host::worker_dispatch_store_with_upstream(
+            &upstream,
+            registration.snapshot.identity.clone(),
+        ),
     );
 
     let mut host = SharedHost::new(Arc::new(NoModelConfiguredExecutor), "worker")
@@ -166,10 +173,6 @@ async fn run_configured(
     host = host.with_acp_from_env().await;
 
     let host = Arc::new(host);
-    let registration = control
-        .register(new_incarnation_id()?, worker_manifest())
-        .await
-        .map_err(std::io::Error::other)?;
     let lifecycle = Arc::new(WorkerLifecycle {
         host: host.clone(),
         control: control.clone(),

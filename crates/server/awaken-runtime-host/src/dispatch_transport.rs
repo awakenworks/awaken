@@ -19,7 +19,7 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_run_ingress::{
     AnyDispatchStore, Dispatch, DispatchOutcome, DispatchQueue, HttpDispatchQueue, PendingInput,
     RunClaim, RunDispatch, SubmitOptions, WorkerDirectory, WorkerHeartbeat, WorkerIdentity,
-    WorkerRegistration,
+    WorkerRegistration, WorkerSnapshot, WorkerState,
 };
 
 use crate::dispatch_backend::shared_durable_store;
@@ -32,11 +32,15 @@ use crate::worker_security::{
 
 /// Build the database-less worker's dispatch store from the same authenticated
 /// upstream configuration used by its commit clients.
-pub fn worker_dispatch_store_with_upstream(upstream: &WorkerUpstream) -> Arc<AnyDispatchStore> {
+pub fn worker_dispatch_store_with_upstream(
+    upstream: &WorkerUpstream,
+    identity: WorkerIdentity,
+) -> Arc<AnyDispatchStore> {
     Arc::new(AnyDispatchStore::from_dispatch(Arc::new(
         HttpDispatchQueue::new(upstream.base_url())
             .with_client(upstream.client().clone())
-            .with_worker_id(upstream.worker_id()),
+            .with_worker_id(upstream.worker_id())
+            .with_worker_identity(identity),
     ) as Arc<dyn Dispatch>))
 }
 
@@ -90,14 +94,57 @@ impl WorkerDispatchService {
             Arc::new(FixedWorkerLeasePolicy::default()),
         )
     }
+}
 
-    fn authority<'a>(&self, worker: &'a VerifiedWorkerContext) -> (&'a str, u64, u64) {
-        (
-            worker.worker_id(),
-            self.lease_policy.lease_ms(worker),
-            self.clock.now_ms(),
-        )
+struct ClaimAuthority {
+    owner: String,
+    lease_ms: u64,
+    now_ms: u64,
+    snapshot: Option<WorkerSnapshot>,
+}
+
+async fn claim_authority(
+    service: &WorkerDispatchService,
+    worker: &VerifiedWorkerContext,
+    identity: Option<&WorkerIdentity>,
+    require_ready: bool,
+) -> Result<ClaimAuthority, HostError> {
+    let now_ms = service.clock.now_ms();
+    let lease_ms = service.lease_policy.lease_ms(worker);
+    let Some(directory) = &service.directory else {
+        return Ok(ClaimAuthority {
+            owner: worker.worker_id().to_string(),
+            lease_ms,
+            now_ms,
+            snapshot: None,
+        });
+    };
+    let identity = identity.ok_or_else(|| {
+        HostError::bad_request("registered worker identity is required for dispatch authority")
+    })?;
+    verify_worker_id(worker, &identity.worker_id)?;
+    let record = directory
+        .current(&identity.worker_id)
+        .await
+        .map_err(|error| HostError::internal(error.to_string()))?
+        .ok_or_else(|| HostError::bad_request("worker is not registered"))?;
+    if &record.snapshot.identity != identity {
+        return Err(HostError::bad_request("worker incarnation is stale"));
     }
+    if (require_ready && record.snapshot.state != WorkerState::Ready)
+        || record.snapshot.expires_at_ms <= now_ms
+        || record.snapshot.state == WorkerState::Dead
+    {
+        return Err(HostError::bad_request(
+            "worker is not ready or its registry lease expired",
+        ));
+    }
+    Ok(ClaimAuthority {
+        owner: identity.lease_owner(),
+        lease_ms,
+        now_ms,
+        snapshot: Some(record.snapshot),
+    })
 }
 
 /// Compatibility facade used by existing composition roots. The host parameter
@@ -326,6 +373,8 @@ async fn enqueue(
 #[derive(Deserialize)]
 struct ClaimNewRunReq {
     request: RunDispatch,
+    #[serde(default)]
+    identity: Option<WorkerIdentity>,
 }
 
 async fn claim_new_run(
@@ -334,12 +383,29 @@ async fn claim_new_run(
     Json(request): Json<ClaimNewRunReq>,
 ) -> (StatusCode, Json<Value>) {
     let result = async {
-        let (owner, lease_ms, now_ms) = service.authority(&worker);
-        let claimed = service
-            .dispatch
-            .claim_new_run(request.request, owner, lease_ms, now_ms)
-            .await
-            .map_err(|error| HostError::internal(error.to_string()))?;
+        let authority = claim_authority(&service, &worker, request.identity.as_ref(), true).await?;
+        let claimed = if let Some(snapshot) = &authority.snapshot {
+            service
+                .dispatch
+                .claim_new_run_compatible(
+                    request.request,
+                    snapshot,
+                    authority.lease_ms,
+                    authority.now_ms,
+                )
+                .await
+        } else {
+            service
+                .dispatch
+                .claim_new_run(
+                    request.request,
+                    &authority.owner,
+                    authority.lease_ms,
+                    authority.now_ms,
+                )
+                .await
+        }
+        .map_err(|error| HostError::internal(error.to_string()))?;
         Ok(json!({ "claimed": claimed }))
     }
     .await;
@@ -349,6 +415,8 @@ async fn claim_new_run(
 #[derive(Deserialize)]
 struct DeliverAndClaimReq {
     input: PendingInput,
+    #[serde(default)]
+    identity: Option<WorkerIdentity>,
 }
 
 async fn deliver_and_claim(
@@ -357,12 +425,29 @@ async fn deliver_and_claim(
     Json(request): Json<DeliverAndClaimReq>,
 ) -> (StatusCode, Json<Value>) {
     let result = async {
-        let (owner, lease_ms, now_ms) = service.authority(&worker);
-        let claimed = service
-            .dispatch
-            .deliver_and_claim(request.input, owner, lease_ms, now_ms)
-            .await
-            .map_err(|error| HostError::internal(error.to_string()))?;
+        let authority = claim_authority(&service, &worker, request.identity.as_ref(), true).await?;
+        let claimed = if let Some(snapshot) = &authority.snapshot {
+            service
+                .dispatch
+                .deliver_and_claim_compatible(
+                    request.input,
+                    snapshot,
+                    authority.lease_ms,
+                    authority.now_ms,
+                )
+                .await
+        } else {
+            service
+                .dispatch
+                .deliver_and_claim(
+                    request.input,
+                    &authority.owner,
+                    authority.lease_ms,
+                    authority.now_ms,
+                )
+                .await
+        }
+        .map_err(|error| HostError::internal(error.to_string()))?;
         Ok(json!({ "claimed": claimed }))
     }
     .await;
@@ -372,23 +457,39 @@ async fn deliver_and_claim(
 async fn claim(
     State(service): State<Arc<WorkerDispatchService>>,
     Extension(worker): Extension<VerifiedWorkerContext>,
+    Json(request): Json<ClaimWorkerReq>,
 ) -> (StatusCode, Json<Value>) {
     let result = async {
-        let (owner, lease_ms, now_ms) = service.authority(&worker);
-        let claimed = service
-            .dispatch
-            .claim(owner, lease_ms, now_ms)
-            .await
-            .map_err(|error| HostError::internal(error.to_string()))?;
+        let authority = claim_authority(&service, &worker, request.identity.as_ref(), true).await?;
+        let claimed = if let Some(snapshot) = &authority.snapshot {
+            service
+                .dispatch
+                .claim_compatible(snapshot, authority.lease_ms, authority.now_ms)
+                .await
+        } else {
+            service
+                .dispatch
+                .claim(&authority.owner, authority.lease_ms, authority.now_ms)
+                .await
+        }
+        .map_err(|error| HostError::internal(error.to_string()))?;
         Ok(json!({ "claimed": claimed }))
     }
     .await;
     respond(result)
 }
 
+#[derive(Default, Deserialize)]
+struct ClaimWorkerReq {
+    #[serde(default)]
+    identity: Option<WorkerIdentity>,
+}
+
 #[derive(Deserialize)]
 struct ClaimRunReq {
     run_id: String,
+    #[serde(default)]
+    identity: Option<WorkerIdentity>,
 }
 
 async fn claim_run(
@@ -397,12 +498,25 @@ async fn claim_run(
     Json(request): Json<ClaimRunReq>,
 ) -> (StatusCode, Json<Value>) {
     let result = async {
-        let (owner, lease_ms, now_ms) = service.authority(&worker);
-        let claimed = service
-            .dispatch
-            .claim_run(&RunId(request.run_id), owner, lease_ms, now_ms)
-            .await
-            .map_err(|error| HostError::internal(error.to_string()))?;
+        let authority = claim_authority(&service, &worker, request.identity.as_ref(), true).await?;
+        let run_id = RunId(request.run_id);
+        let claimed = if let Some(snapshot) = &authority.snapshot {
+            service
+                .dispatch
+                .claim_run_compatible(&run_id, snapshot, authority.lease_ms, authority.now_ms)
+                .await
+        } else {
+            service
+                .dispatch
+                .claim_run(
+                    &run_id,
+                    &authority.owner,
+                    authority.lease_ms,
+                    authority.now_ms,
+                )
+                .await
+        }
+        .map_err(|error| HostError::internal(error.to_string()))?;
         Ok(json!({ "claimed": claimed }))
     }
     .await;
@@ -412,6 +526,8 @@ async fn claim_run(
 #[derive(Deserialize)]
 struct RenewReq {
     run_id: String,
+    #[serde(default)]
+    identity: Option<WorkerIdentity>,
 }
 
 async fn renew(
@@ -420,10 +536,16 @@ async fn renew(
     Json(request): Json<RenewReq>,
 ) -> (StatusCode, Json<Value>) {
     let result = async {
-        let (owner, lease_ms, now_ms) = service.authority(&worker);
+        let authority =
+            claim_authority(&service, &worker, request.identity.as_ref(), false).await?;
         let renewed = service
             .dispatch
-            .renew_lease(&RunId(request.run_id), owner, lease_ms, now_ms)
+            .renew_lease(
+                &RunId(request.run_id),
+                &authority.owner,
+                authority.lease_ms,
+                authority.now_ms,
+            )
             .await
             .map_err(|error| HostError::internal(error.to_string()))?;
         Ok(json!({ "renewed": renewed }))
@@ -435,12 +557,14 @@ async fn renew(
 async fn renew_owned(
     State(service): State<Arc<WorkerDispatchService>>,
     Extension(worker): Extension<VerifiedWorkerContext>,
+    Json(request): Json<ClaimWorkerReq>,
 ) -> (StatusCode, Json<Value>) {
     let result = async {
-        let (owner, lease_ms, now_ms) = service.authority(&worker);
+        let authority =
+            claim_authority(&service, &worker, request.identity.as_ref(), false).await?;
         let renewed = service
             .dispatch
-            .renew_owned_leases(owner, lease_ms, now_ms)
+            .renew_owned_leases(&authority.owner, authority.lease_ms, authority.now_ms)
             .await
             .map_err(|error| HostError::internal(error.to_string()))?;
         Ok(json!({ "renewed": renewed }))
@@ -457,6 +581,8 @@ struct SettleReq {
     outcome: DispatchOutcome,
     #[serde(default)]
     consumed: Vec<String>,
+    #[serde(default)]
+    identity: Option<WorkerIdentity>,
 }
 
 async fn settle(
@@ -465,12 +591,14 @@ async fn settle(
     Json(request): Json<SettleReq>,
 ) -> (StatusCode, Json<Value>) {
     let result = async {
+        let authority =
+            claim_authority(&service, &worker, request.identity.as_ref(), false).await?;
         // Bind the epoch to the authenticated owner before settling. Dropping the
         // guard before `settle` is safe: any intervening re-owner increments epoch,
         // causing the subsequent settle to be fenced.
         let claim = RunClaim {
             run_id: RunId(request.run_id.clone()),
-            owner: worker.worker_id().to_string(),
+            owner: authority.owner,
             epoch: request.epoch,
         };
         let authorized = service

@@ -18,6 +18,7 @@ use async_trait::async_trait;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime_contract::resume::ResumeResult;
+use awaken_worker_contract::{WorkerAssignment, WorkerSnapshot};
 use serde::{Deserialize, Serialize};
 
 use crate::run_dispatch::RunDispatch;
@@ -113,6 +114,10 @@ pub struct Claimed {
     /// Durable so crash recovery (`reconcile_adoption`) can re-adopt the same
     /// sandbox instead of leaking it.
     pub sandbox: Option<String>,
+    /// Worker incarnation selected for this lease epoch. Legacy/local claims omit
+    /// it; registered remote claims always persist and return it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assignment: Option<WorkerAssignment>,
 }
 
 /// How a claimed attempt resolved. Settled atomically with releasing the lease.
@@ -254,6 +259,18 @@ pub trait DispatchQueue: Send + Sync {
         now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError>;
 
+    async fn claim_new_run_compatible(
+        &self,
+        _request: RunDispatch,
+        _worker: &WorkerSnapshot,
+        _lease_ms: u64,
+        _now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        Err(DispatchError::Rejected(
+            "backend does not support registered-worker exact claims".to_string(),
+        ))
+    }
+
     /// Atomically append one idempotent input and claim its exact Run.
     ///
     /// This is the resume-side twin of [`claim_new_run`](Self::claim_new_run): a
@@ -269,6 +286,18 @@ pub trait DispatchQueue: Send + Sync {
         now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError>;
 
+    async fn deliver_and_claim_compatible(
+        &self,
+        _input: PendingInput,
+        _worker: &WorkerSnapshot,
+        _lease_ms: u64,
+        _now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        Err(DispatchError::Rejected(
+            "backend does not support registered-worker delivery claims".to_string(),
+        ))
+    }
+
     /// Claim one runnable dispatch for `owner`, single owner per run: a fresh
     /// `pending` run, an awaiting run with pending input (a wake), or a running
     /// dispatch whose lease expired (recovery). Returns `None` when nothing is
@@ -279,6 +308,20 @@ pub trait DispatchQueue: Send + Sync {
         lease_ms: u64,
         now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError>;
+
+    /// Atomically claim only work compatible with the registered worker snapshot.
+    /// Implementations must evaluate the shared compatibility kernel before the
+    /// lease transition and persist the resulting assignment with that transition.
+    async fn claim_compatible(
+        &self,
+        _worker: &WorkerSnapshot,
+        _lease_ms: u64,
+        _now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        Err(DispatchError::Rejected(
+            "backend does not support registered-worker claims".to_string(),
+        ))
+    }
 
     /// Claim one specific runnable Run without consuming unrelated queue work.
     ///
@@ -294,6 +337,18 @@ pub trait DispatchQueue: Send + Sync {
         lease_ms: u64,
         now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError>;
+
+    async fn claim_run_compatible(
+        &self,
+        _run_id: &RunId,
+        _worker: &WorkerSnapshot,
+        _lease_ms: u64,
+        _now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        Err(DispatchError::Rejected(
+            "backend does not support registered-worker run claims".to_string(),
+        ))
+    }
 
     /// Extend the lease on a run this `owner` is executing, so a long run is not
     /// reclaimed by another node's recovery while it is still making progress.
@@ -682,6 +737,7 @@ mod tests {
             pending: vec![pending()],
             recovered: true,
             sandbox: Some("sbx-opaque-ref".into()),
+            assignment: None,
         };
         let back: Claimed =
             serde_json::from_str(&serde_json::to_string(&claimed).expect("serializes"))

@@ -23,6 +23,7 @@ use crate::dispatch::{
     SettleOutcome, SubmitOptions,
 };
 use crate::dispatch_schema::dispatch_bundle;
+use crate::{WorkerAssignment, WorkerSnapshot};
 use awaken_run_ingress_contract::RunDispatch;
 
 /// Errors from constructing or migrating the dispatch store. Claim/settle-time
@@ -213,12 +214,69 @@ impl DispatchQueue for PostgresDispatchStore {
                 pending: Vec::new(),
                 recovered: false,
                 sandbox: None,
+                assignment: None,
             }));
         }
 
         // Idempotent retries share the exact-claim transition kernel.
         let run_id = request.run_id().clone();
-        let claimed = claim_exact_transaction(&mut tx, &run_id, owner, lease_ms, now_ms).await?;
+        let claimed =
+            claim_exact_transaction(&mut tx, &run_id, owner, lease_ms, now_ms, None).await?;
+        tx.commit().await.map_err(reject)?;
+        Ok(claimed)
+    }
+
+    async fn claim_new_run_compatible(
+        &self,
+        request: RunDispatch,
+        worker: &WorkerSnapshot,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        if !worker.accepts(&request.placement, now_ms) {
+            return Ok(None);
+        }
+        let p = NS;
+        let expires = now_ms + lease_ms;
+        let assignment = WorkerAssignment::from(worker);
+        let owner = worker.identity.lease_owner();
+        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let inserted = sqlx::query_scalar::<_, i64>(&format!(
+            "INSERT INTO {p}_dispatch \
+             (run_id, thread_id, request, status, lease_owner, lease_until, lease_epoch, worker_assignment) \
+             VALUES ($1,$2,$3,'running',$4,$5,1,$6) \
+             ON CONFLICT (run_id) DO NOTHING RETURNING lease_epoch"
+        ))
+        .bind(&request.run_id().0)
+        .bind(&request.thread_id().0)
+        .bind(Json(&request))
+        .bind(&owner)
+        .bind(expires as i64)
+        .bind(Json(&assignment))
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(reject)?;
+        if let Some(epoch) = inserted {
+            let run_id = request.run_id().clone();
+            tx.commit().await.map_err(reject)?;
+            return Ok(Some(Claimed {
+                request,
+                lease: Lease {
+                    run_id,
+                    owner,
+                    expires_ms: expires,
+                    epoch: epoch as u64,
+                },
+                pending: Vec::new(),
+                recovered: false,
+                sandbox: None,
+                assignment: Some(assignment),
+            }));
+        }
+        let run_id = request.run_id().clone();
+        let claimed =
+            claim_exact_transaction(&mut tx, &run_id, &owner, lease_ms, now_ms, Some(worker))
+                .await?;
         tx.commit().await.map_err(reject)?;
         Ok(claimed)
     }
@@ -247,7 +305,45 @@ impl DispatchQueue for PostgresDispatchStore {
         .execute(&mut *tx)
         .await
         .map_err(reject)?;
-        let claimed = claim_exact_transaction(&mut tx, &run_id, owner, lease_ms, now_ms).await?;
+        let claimed =
+            claim_exact_transaction(&mut tx, &run_id, owner, lease_ms, now_ms, None).await?;
+        tx.commit().await.map_err(reject)?;
+        Ok(claimed)
+    }
+
+    async fn deliver_and_claim_compatible(
+        &self,
+        input: PendingInput,
+        worker: &WorkerSnapshot,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        let p = NS;
+        let run_id = input.run_id.clone();
+        let mut tx = self.pool.begin().await.map_err(reject)?;
+        sqlx::query(&format!(
+            "INSERT INTO {p}_pending \
+             (message_id, run_id, thread_id, correlation_id, result, available_at) \
+             VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (message_id) DO NOTHING"
+        ))
+        .bind(&input.message_id)
+        .bind(&input.run_id.0)
+        .bind(&input.thread_id.0)
+        .bind(&input.correlation_id)
+        .bind(Json(&input.result))
+        .bind(input.available_at_ms.map(|time| time as i64))
+        .execute(&mut *tx)
+        .await
+        .map_err(reject)?;
+        let claimed = claim_exact_transaction(
+            &mut tx,
+            &run_id,
+            &worker.identity.lease_owner(),
+            lease_ms,
+            now_ms,
+            Some(worker),
+        )
+        .await?;
         tx.commit().await.map_err(reject)?;
         Ok(claimed)
     }
@@ -354,7 +450,8 @@ impl DispatchQueue for PostgresDispatchStore {
         // back, so the returned lease carries the epoch the holder settles under.
         let claimed = sqlx::query_scalar::<_, i64>(&format!(
             "UPDATE {p}_dispatch SET status = 'running', lease_owner = $1, lease_until = $2, \
-             attempt_count = attempt_count + $3, lease_epoch = lease_epoch + 1 \
+             attempt_count = attempt_count + $3, lease_epoch = lease_epoch + 1, \
+             worker_assignment = NULL \
              WHERE run_id = $4 RETURNING lease_epoch"
         ))
         .bind(owner)
@@ -421,7 +518,55 @@ impl DispatchQueue for PostgresDispatchStore {
             },
             pending,
             recovered: recovery_pick,
+            assignment: None,
         }))
+    }
+
+    async fn claim_compatible(
+        &self,
+        worker: &WorkerSnapshot,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        let p = NS;
+        let rows = sqlx::query(&format!(
+            "SELECT d.run_id, d.request FROM {p}_dispatch d WHERE \
+             (d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until < $1) OR \
+             (d.status = 'awaiting' AND EXISTS (SELECT 1 FROM {p}_pending pe \
+               WHERE pe.run_id = d.run_id AND (pe.available_at IS NULL OR pe.available_at <= $1)) \
+               AND NOT EXISTS (SELECT 1 FROM {p}_dispatch r WHERE r.thread_id = d.thread_id AND r.status = 'running')) OR \
+             (d.status = 'pending' AND NOT EXISTS (SELECT 1 FROM {p}_dispatch r \
+               WHERE r.thread_id = d.thread_id AND r.status = 'running')) \
+             ORDER BY CASE WHEN d.status = 'running' THEN 0 WHEN d.status = 'awaiting' THEN 1 ELSE 2 END, \
+                      d.priority DESC, d.created_at"
+        ))
+        .bind(now_ms as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(reject)?;
+        let mut selected = None;
+        for row in rows {
+            let Json(request): Json<RunDispatch> = row.try_get("request").map_err(reject)?;
+            if worker.accepts(&request.placement, now_ms) {
+                selected = Some(RunId(row.try_get("run_id").map_err(reject)?));
+                break;
+            }
+        }
+        let Some(run_id) = selected else {
+            return Ok(None);
+        };
+        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let claimed = claim_exact_transaction(
+            &mut tx,
+            &run_id,
+            &worker.identity.lease_owner(),
+            lease_ms,
+            now_ms,
+            Some(worker),
+        )
+        .await?;
+        tx.commit().await.map_err(reject)?;
+        Ok(claimed)
     }
 
     async fn claim_run(
@@ -464,7 +609,8 @@ impl DispatchQueue for PostgresDispatchStore {
         let expires = now_ms + lease_ms;
         let claimed = sqlx::query_scalar::<_, i64>(&format!(
             "UPDATE {p}_dispatch SET status = 'running', lease_owner = $1, lease_until = $2, \
-             attempt_count = attempt_count + $3, lease_epoch = lease_epoch + 1 \
+             attempt_count = attempt_count + $3, lease_epoch = lease_epoch + 1, \
+             worker_assignment = NULL \
              WHERE run_id = $4 RETURNING lease_epoch"
         ))
         .bind(owner)
@@ -525,7 +671,29 @@ impl DispatchQueue for PostgresDispatchStore {
             },
             pending,
             recovered: status == "running",
+            assignment: None,
         }))
+    }
+
+    async fn claim_run_compatible(
+        &self,
+        requested_run: &RunId,
+        worker: &WorkerSnapshot,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let claimed = claim_exact_transaction(
+            &mut tx,
+            requested_run,
+            &worker.identity.lease_owner(),
+            lease_ms,
+            now_ms,
+            Some(worker),
+        )
+        .await?;
+        tx.commit().await.map_err(reject)?;
+        Ok(claimed)
     }
 
     async fn renew_lease(
@@ -1004,6 +1172,7 @@ async fn claim_exact_transaction(
     owner: &str,
     lease_ms: u64,
     now_ms: u64,
+    worker: Option<&WorkerSnapshot>,
 ) -> Result<Option<Claimed>, DispatchError> {
     let p = NS;
     let not_running = format!(
@@ -1030,18 +1199,24 @@ async fn claim_exact_transaction(
         return Ok(None);
     };
     let Json(request): Json<RunDispatch> = row.try_get("request").map_err(reject)?;
+    if let Some(worker) = worker
+        && !worker.accepts(&request.placement, now_ms)
+    {
+        return Ok(None);
+    }
     let sandbox: Option<String> = row.try_get("sandbox").map_err(reject)?;
     let status: String = row.try_get("status").map_err(reject)?;
     let expires = now_ms + lease_ms;
     let lease_epoch = sqlx::query_scalar::<_, i64>(&format!(
         "UPDATE {p}_dispatch SET status = 'running', lease_owner = $1, lease_until = $2, \
          attempt_count = attempt_count + $3, lease_epoch = lease_epoch + 1 \
-         WHERE run_id = $4 RETURNING lease_epoch"
+         , worker_assignment = $5 WHERE run_id = $4 RETURNING lease_epoch"
     ))
     .bind(owner)
     .bind(expires as i64)
     .bind(i64::from(status == "running"))
     .bind(&requested_run.0)
+    .bind(worker.map(WorkerAssignment::from).map(Json))
     .fetch_one(&mut **tx)
     .await
     .map_err(reject)?;
@@ -1081,6 +1256,7 @@ async fn claim_exact_transaction(
         pending,
         recovered: status == "running",
         sandbox,
+        assignment: worker.map(WorkerAssignment::from),
     }))
 }
 

@@ -22,6 +22,7 @@ use crate::{
     DispatchSummary, Inbox, Outbox, PendingInput, PendingRecord, RunClaim, RunDispatch,
     SettleOutcome, SubmitOptions,
 };
+use crate::{WorkerIdentity, WorkerSnapshot};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime_contract::resume::ResumeResult;
@@ -44,7 +45,8 @@ pub struct HttpDispatchQueue {
     base_url: String,
     client: reqwest::Client,
     default_worker_id: String,
-    claimed_owners: std::sync::Mutex<std::collections::HashMap<String, String>>,
+    worker_identity: Option<WorkerIdentity>,
+    legacy_claimed_owners: std::sync::Mutex<std::collections::HashMap<String, String>>,
 }
 
 impl HttpDispatchQueue {
@@ -58,7 +60,8 @@ impl HttpDispatchQueue {
                 .ok()
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or_else(|| "awaken-worker".to_string()),
-            claimed_owners: std::sync::Mutex::new(std::collections::HashMap::new()),
+            worker_identity: None,
+            legacy_claimed_owners: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -68,6 +71,15 @@ impl HttpDispatchQueue {
     #[must_use]
     pub fn with_worker_id(mut self, worker_id: impl Into<String>) -> Self {
         self.default_worker_id = worker_id.into();
+        self
+    }
+
+    /// Pin the durable registry identity allocated at startup. Registered-worker
+    /// transports use it for every authority-bearing verb.
+    #[must_use]
+    pub fn with_worker_identity(mut self, identity: WorkerIdentity) -> Self {
+        self.default_worker_id = identity.worker_id.clone();
+        self.worker_identity = Some(identity);
         self
     }
 
@@ -104,26 +116,38 @@ impl HttpDispatchQueue {
             .map_err(|e| DispatchError::Rejected(format!("dispatch transport decode: {e}")))
     }
 
-    fn remember_claim(&self, claimed: &Option<Claimed>) {
-        if let Some(claimed) = claimed
-            && let Ok(mut owners) = self.claimed_owners.lock()
+    fn server_local<T>(verb: &str) -> Result<T, DispatchError> {
+        Err(DispatchError::Rejected(format!(
+            "{verb} is a server-local operation, not available on the worker dispatch transport"
+        )))
+    }
+
+    fn authenticated_worker<'a>(&'a self, legacy_owner: &'a str) -> &'a str {
+        if self.worker_identity.is_some() {
+            &self.default_worker_id
+        } else {
+            legacy_owner
+        }
+    }
+
+    fn remember_legacy_claim(&self, claimed: &Option<Claimed>) {
+        if self.worker_identity.is_none()
+            && let Some(claimed) = claimed
+            && let Ok(mut owners) = self.legacy_claimed_owners.lock()
         {
             owners.insert(claimed.lease.run_id.0.clone(), claimed.lease.owner.clone());
         }
     }
 
-    fn owner_for(&self, run_id: &RunId) -> String {
-        self.claimed_owners
+    fn settlement_worker(&self, run_id: &RunId) -> String {
+        if self.worker_identity.is_some() {
+            return self.default_worker_id.clone();
+        }
+        self.legacy_claimed_owners
             .lock()
             .ok()
             .and_then(|owners| owners.get(&run_id.0).cloned())
             .unwrap_or_else(|| self.default_worker_id.clone())
-    }
-
-    fn server_local<T>(verb: &str) -> Result<T, DispatchError> {
-        Err(DispatchError::Rejected(format!(
-            "{verb} is a server-local operation, not available on the worker dispatch transport"
-        )))
     }
 }
 
@@ -162,8 +186,8 @@ impl DispatchQueue for HttpDispatchQueue {
         let value = self
             .post(
                 "/v1/worker/dispatch/claim_new_run",
-                json!({ "request": request }),
-                owner,
+                json!({ "request": request, "identity": self.worker_identity }),
+                self.authenticated_worker(owner),
             )
             .await?;
         let claimed = serde_json::from_value(
@@ -173,9 +197,20 @@ impl DispatchQueue for HttpDispatchQueue {
                 .unwrap_or(serde_json::Value::Null),
         )
         .map_err(|error| DispatchError::Rejected(format!("decode claimed: {error}")))?;
-        self.remember_claim(&claimed);
+        self.remember_legacy_claim(&claimed);
         let _ = (lease_ms, now_ms);
         Ok(claimed)
+    }
+
+    async fn claim_new_run_compatible(
+        &self,
+        request: RunDispatch,
+        worker: &WorkerSnapshot,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        self.claim_new_run(request, &worker.identity.lease_owner(), lease_ms, now_ms)
+            .await
     }
 
     async fn deliver_and_claim(
@@ -188,8 +223,8 @@ impl DispatchQueue for HttpDispatchQueue {
         let value = self
             .post(
                 "/v1/worker/dispatch/deliver_and_claim",
-                json!({ "input": input }),
-                owner,
+                json!({ "input": input, "identity": self.worker_identity }),
+                self.authenticated_worker(owner),
             )
             .await?;
         let claimed = serde_json::from_value(
@@ -199,9 +234,20 @@ impl DispatchQueue for HttpDispatchQueue {
                 .unwrap_or(serde_json::Value::Null),
         )
         .map_err(|error| DispatchError::Rejected(format!("decode claimed: {error}")))?;
-        self.remember_claim(&claimed);
+        self.remember_legacy_claim(&claimed);
         let _ = (lease_ms, now_ms);
         Ok(claimed)
+    }
+
+    async fn deliver_and_claim_compatible(
+        &self,
+        input: PendingInput,
+        worker: &WorkerSnapshot,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        self.deliver_and_claim(input, &worker.identity.lease_owner(), lease_ms, now_ms)
+            .await
     }
 
     async fn claim(
@@ -211,14 +257,27 @@ impl DispatchQueue for HttpDispatchQueue {
         now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
         let v = self
-            .post("/v1/worker/dispatch/claim", json!({}), owner)
+            .post(
+                "/v1/worker/dispatch/claim",
+                json!({ "identity": self.worker_identity }),
+                self.authenticated_worker(owner),
+            )
             .await?;
         let claimed =
             serde_json::from_value(v.get("claimed").cloned().unwrap_or(serde_json::Value::Null))
                 .map_err(|e| DispatchError::Rejected(format!("decode claimed: {e}")))?;
-        self.remember_claim(&claimed);
+        self.remember_legacy_claim(&claimed);
         let _ = (lease_ms, now_ms);
         Ok(claimed)
+    }
+
+    async fn claim_compatible(
+        &self,
+        _worker: &WorkerSnapshot,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        self.claim(&self.default_worker_id, lease_ms, now_ms).await
     }
 
     async fn claim_run(
@@ -231,8 +290,8 @@ impl DispatchQueue for HttpDispatchQueue {
         let value = self
             .post(
                 "/v1/worker/dispatch/claim_run",
-                json!({ "run_id": run_id.0 }),
-                owner,
+                json!({ "run_id": run_id.0, "identity": self.worker_identity }),
+                self.authenticated_worker(owner),
             )
             .await?;
         let claimed = serde_json::from_value(
@@ -242,9 +301,20 @@ impl DispatchQueue for HttpDispatchQueue {
                 .unwrap_or(serde_json::Value::Null),
         )
         .map_err(|error| DispatchError::Rejected(format!("decode claimed: {error}")))?;
-        self.remember_claim(&claimed);
+        self.remember_legacy_claim(&claimed);
         let _ = (lease_ms, now_ms);
         Ok(claimed)
+    }
+
+    async fn claim_run_compatible(
+        &self,
+        run_id: &RunId,
+        worker: &WorkerSnapshot,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        self.claim_run(run_id, &worker.identity.lease_owner(), lease_ms, now_ms)
+            .await
     }
 
     async fn renew_lease(
@@ -257,8 +327,8 @@ impl DispatchQueue for HttpDispatchQueue {
         let v = self
             .post(
                 "/v1/worker/dispatch/renew",
-                json!({ "run_id": run_id.0 }),
-                owner,
+                json!({ "run_id": run_id.0, "identity": self.worker_identity }),
+                self.authenticated_worker(owner),
             )
             .await?;
         let _ = (lease_ms, now_ms);
@@ -272,7 +342,11 @@ impl DispatchQueue for HttpDispatchQueue {
         now_ms: u64,
     ) -> Result<usize, DispatchError> {
         let v = self
-            .post("/v1/worker/dispatch/renew_owned", json!({}), owner)
+            .post(
+                "/v1/worker/dispatch/renew_owned",
+                json!({ "identity": self.worker_identity }),
+                self.authenticated_worker(owner),
+            )
             .await?;
         let _ = (lease_ms, now_ms);
         Ok(v.get("renewed").and_then(|r| r.as_u64()).unwrap_or(0) as usize)
@@ -285,11 +359,11 @@ impl DispatchQueue for HttpDispatchQueue {
         outcome: DispatchOutcome,
         consumed: &[String],
     ) -> Result<SettleOutcome, DispatchError> {
-        let worker_id = self.owner_for(run_id);
+        let worker_id = self.settlement_worker(run_id);
         let v = self
             .post(
                 "/v1/worker/dispatch/settle",
-                json!({ "run_id": run_id.0, "epoch": epoch, "outcome": outcome, "consumed": consumed }),
+                json!({ "run_id": run_id.0, "epoch": epoch, "outcome": outcome, "consumed": consumed, "identity": self.worker_identity }),
                 &worker_id,
             )
             .await?;

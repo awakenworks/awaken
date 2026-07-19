@@ -412,6 +412,24 @@ pub struct WorkerSnapshot {
     pub expires_at_ms: u64,
 }
 
+/// Durable, non-secret record of the worker incarnation selected for one claim.
+/// The dispatch lease epoch remains the fencing token; this record explains who
+/// received that epoch and which immutable capability set was evaluated.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkerAssignment {
+    pub identity: WorkerIdentity,
+    pub capability_fingerprint: String,
+}
+
+impl From<&WorkerSnapshot> for WorkerAssignment {
+    fn from(snapshot: &WorkerSnapshot) -> Self {
+        Self {
+            identity: snapshot.identity.clone(),
+            capability_fingerprint: snapshot.capability_fingerprint.clone(),
+        }
+    }
+}
+
 /// Durable registry record. Placement consumes `snapshot`; sequence/timestamps
 /// remain control-plane concurrency and observability facts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

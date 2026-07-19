@@ -15,6 +15,7 @@
 
 use std::sync::Arc;
 
+use crate::WorkerSnapshot;
 use async_trait::async_trait;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
@@ -154,6 +155,19 @@ impl DispatchQueue for AnyDispatchStore {
         delegate!(self, claim_new_run(request, owner, lease_ms, now_ms))
     }
 
+    async fn claim_new_run_compatible(
+        &self,
+        request: RunDispatch,
+        worker: &WorkerSnapshot,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        delegate!(
+            self,
+            claim_new_run_compatible(request, worker, lease_ms, now_ms)
+        )
+    }
+
     async fn deliver_and_claim(
         &self,
         input: PendingInput,
@@ -162,6 +176,19 @@ impl DispatchQueue for AnyDispatchStore {
         now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
         delegate!(self, deliver_and_claim(input, owner, lease_ms, now_ms))
+    }
+
+    async fn deliver_and_claim_compatible(
+        &self,
+        input: PendingInput,
+        worker: &WorkerSnapshot,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        delegate!(
+            self,
+            deliver_and_claim_compatible(input, worker, lease_ms, now_ms)
+        )
     }
 
     async fn claim(
@@ -173,6 +200,15 @@ impl DispatchQueue for AnyDispatchStore {
         delegate!(self, claim(owner, lease_ms, now_ms))
     }
 
+    async fn claim_compatible(
+        &self,
+        worker: &WorkerSnapshot,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        delegate!(self, claim_compatible(worker, lease_ms, now_ms))
+    }
+
     async fn claim_run(
         &self,
         run_id: &RunId,
@@ -181,6 +217,16 @@ impl DispatchQueue for AnyDispatchStore {
         now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
         delegate!(self, claim_run(run_id, owner, lease_ms, now_ms))
+    }
+
+    async fn claim_run_compatible(
+        &self,
+        run_id: &RunId,
+        worker: &WorkerSnapshot,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        delegate!(self, claim_run_compatible(run_id, worker, lease_ms, now_ms))
     }
 
     async fn renew_lease(

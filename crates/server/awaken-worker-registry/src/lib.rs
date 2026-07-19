@@ -11,8 +11,9 @@ mod sqlite;
 mod transition;
 
 pub use awaken_worker_contract::{
-    RegisteredWorker, RegistryError, RegistryMutation, WorkerDirectory, WorkerHeartbeat,
-    WorkerIdentity, WorkerManifest, WorkerRegistration, WorkerSnapshot, WorkerState,
+    RegisteredWorker, RegistryError, RegistryMutation, WorkerAssignment, WorkerDirectory,
+    WorkerHeartbeat, WorkerIdentity, WorkerManifest, WorkerRegistration, WorkerSnapshot,
+    WorkerState,
 };
 pub use memory::MemoryWorkerDirectory;
 pub use postgres::PostgresWorkerDirectory;
