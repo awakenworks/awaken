@@ -20,13 +20,6 @@ use awaken_agent_contract::thread::read::checkpoint::CheckpointReader;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_store_fs::FsCommitCoordinator;
 
-async fn fresh(name: &str) -> (FsCommitCoordinator, std::path::PathBuf) {
-    let dir = std::env::temp_dir().join(format!("awaken_store_fs_iso_{name}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    let store = FsCommitCoordinator::open(&dir).await.expect("open");
-    (store, dir)
-}
-
 fn ended(thread: &str, run: &str, text: &str) -> ThreadCommit {
     ThreadCommit {
         thread_id: ThreadId(thread.to_string()),

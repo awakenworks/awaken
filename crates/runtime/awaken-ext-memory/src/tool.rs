@@ -121,7 +121,7 @@ mod tests {
             );
         }
         for content in [
-            serde_json::json!(3.14),
+            serde_json::json!(42.0),
             serde_json::json!(false),
             serde_json::json!([]),
             serde_json::Value::Null,

@@ -133,6 +133,7 @@ async fn sqlite_mints_dense_ids() {
 /// The core lifecycle: create/version/sha, PathConflict, get, CAS update (right +
 /// stale + idempotent base), list under a prefix, rename-replace, idempotent delete,
 /// path validation, and the size cap. (Ported from `memfs::tests::conformance`.)
+#[allow(dead_code)] // the MemoryFs conformance suite is wired only to the postgres-feature backend
 async fn memfs_conformance(fs: &dyn MemoryFs) {
     let store = "memstore_1";
 
@@ -264,6 +265,7 @@ async fn memfs_conformance(fs: &dyn MemoryFs) {
 /// Cause-effect-graph edges beyond the core suite: remaining validation branches,
 /// CAS/rename precedence (validate-before-lookup, from==to), and prefix-boundary
 /// correctness. (Ported from `memfs::tests::extended_conformance`.)
+#[allow(dead_code)] // postgres-feature only (see memfs_conformance)
 async fn memfs_extended(fs: &dyn MemoryFs) {
     let store = "ext";
 
@@ -350,6 +352,7 @@ async fn memfs_extended(fs: &dyn MemoryFs) {
 
 /// The `NotFound` paths of `update`/`rename`. (Ported from
 /// `memfs::tests::not_found_paths`.)
+#[allow(dead_code)] // postgres-feature only (see memfs_conformance)
 async fn memfs_not_found(fs: &dyn MemoryFs) {
     let store = "s";
     assert!(matches!(
