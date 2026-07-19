@@ -53,10 +53,14 @@ echo "-> AWAKEN_TEST_DATABASE_URL=$AWAKEN_TEST_DATABASE_URL"
 # in a fresh schema.
 status=0
 cargo test -p awaken-run-ingress \
+  --test dispatch_conformance \
   --test durable_postgres \
   --test runtime_postgres \
   --test any_store \
   --test sandbox_binding \
+  || status=1
+cargo test -p awaken-runtime-host \
+  commit_claimed_postgres_guard_blocks_reclaim_until_http_commit_finishes \
   || status=1
 cargo test -p awaken-config-store --test postgres || status=1
 cargo test -p awaken-admin-config-api --test postgres_store || status=1
