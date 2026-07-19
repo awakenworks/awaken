@@ -18,7 +18,8 @@ use serde_json::{Value, json};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_run_ingress::{
     AnyDispatchStore, Dispatch, DispatchOutcome, DispatchQueue, HttpDispatchQueue, PendingInput,
-    RunClaim, RunDispatch, SubmitOptions,
+    RunClaim, RunDispatch, SubmitOptions, WorkerDirectory, WorkerHeartbeat, WorkerIdentity,
+    WorkerRegistration,
 };
 
 use crate::dispatch_backend::shared_durable_store;
@@ -45,6 +46,8 @@ pub struct WorkerDispatchService {
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     clock: Arc<dyn WorkerClock>,
     lease_policy: Arc<dyn WorkerLeasePolicy>,
+    directory: Option<Arc<dyn WorkerDirectory>>,
+    registry_ttl_ms: u64,
 }
 
 impl WorkerDispatchService {
@@ -60,7 +63,20 @@ impl WorkerDispatchService {
             authenticator,
             clock,
             lease_policy,
+            directory: None,
+            registry_ttl_ms: 30_000,
         }
+    }
+
+    #[must_use]
+    pub fn with_worker_directory(
+        mut self,
+        directory: Arc<dyn WorkerDirectory>,
+        ttl_ms: u64,
+    ) -> Self {
+        self.directory = Some(directory);
+        self.registry_ttl_ms = ttl_ms.max(1);
+        self
     }
 
     /// Local/test composition. Managed deployments should use [`Self::new`] with
@@ -87,10 +103,21 @@ impl WorkerDispatchService {
 /// Compatibility facade used by existing composition roots. The host parameter
 /// is retained for source compatibility; new compositions inject an explicit
 /// [`WorkerDispatchService`] through [`dispatch_transport_router_with_service`].
-pub fn dispatch_transport_router(_host: Arc<SharedHost>) -> Router {
-    let dispatch = shared_durable_store(None)
+pub fn dispatch_transport_router(host: Arc<SharedHost>) -> Router {
+    let dispatch = shared_durable_store(host.store_dir.as_deref())
         .expect("worker dispatch router requires the durable backend initialized at startup");
     dispatch_transport_router_with_service(Arc::new(WorkerDispatchService::local(dispatch)))
+}
+
+pub fn dispatch_transport_router_with_directory(
+    host: Arc<SharedHost>,
+    directory: Arc<dyn WorkerDirectory>,
+) -> Router {
+    let dispatch = shared_durable_store(host.store_dir.as_deref())
+        .expect("worker dispatch router requires the durable backend initialized at startup");
+    dispatch_transport_router_with_service(Arc::new(
+        WorkerDispatchService::local(dispatch).with_worker_directory(directory, 30_000),
+    ))
 }
 
 pub fn dispatch_transport_router_with_service(service: Arc<WorkerDispatchService>) -> Router {
@@ -106,11 +133,150 @@ pub fn dispatch_transport_router_with_service(service: Arc<WorkerDispatchService
         .route("/v1/worker/dispatch/renew", post(renew))
         .route("/v1/worker/dispatch/renew_owned", post(renew_owned))
         .route("/v1/worker/dispatch/settle", post(settle))
+        .route("/v1/worker/register", post(register_worker))
+        .route("/v1/worker/heartbeat", post(heartbeat_worker))
+        .route("/v1/worker/drain", post(drain_worker))
+        .route("/v1/worker/quiesced", post(quiesce_worker))
+        .route("/v1/worker/deregister", post(deregister_worker))
         .layer(axum::middleware::from_fn_with_state(
             service.clone(),
             authenticate_worker,
         ))
         .with_state(service)
+}
+
+fn directory(service: &WorkerDispatchService) -> Result<&Arc<dyn WorkerDirectory>, HostError> {
+    service
+        .directory
+        .as_ref()
+        .ok_or_else(|| HostError::internal("worker directory is not configured"))
+}
+
+fn verify_worker_id(worker: &VerifiedWorkerContext, worker_id: &str) -> Result<(), HostError> {
+    if worker.worker_id() != worker_id {
+        return Err(HostError::bad_request(
+            "authenticated worker id does not match request identity",
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct RegisterWorkerReq {
+    registration: WorkerRegistration,
+}
+
+async fn register_worker(
+    State(service): State<Arc<WorkerDispatchService>>,
+    Extension(worker): Extension<VerifiedWorkerContext>,
+    Json(request): Json<RegisterWorkerReq>,
+) -> (StatusCode, Json<Value>) {
+    let result = async {
+        verify_worker_id(&worker, &request.registration.worker_id)?;
+        let record = directory(&service)?
+            .register(
+                request.registration,
+                service.clock.now_ms(),
+                service.registry_ttl_ms,
+            )
+            .await
+            .map_err(|error| HostError::bad_request(error.to_string()))?;
+        Ok(json!({ "worker": record }))
+    }
+    .await;
+    respond(result)
+}
+
+#[derive(Deserialize)]
+struct HeartbeatWorkerReq {
+    identity: WorkerIdentity,
+    heartbeat: WorkerHeartbeat,
+}
+
+async fn heartbeat_worker(
+    State(service): State<Arc<WorkerDispatchService>>,
+    Extension(worker): Extension<VerifiedWorkerContext>,
+    Json(request): Json<HeartbeatWorkerReq>,
+) -> (StatusCode, Json<Value>) {
+    let result = async {
+        verify_worker_id(&worker, &request.identity.worker_id)?;
+        let mutation = directory(&service)?
+            .heartbeat(
+                &request.identity,
+                request.heartbeat,
+                service.clock.now_ms(),
+                service.registry_ttl_ms,
+            )
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?;
+        Ok(json!({ "mutation": mutation }))
+    }
+    .await;
+    respond(result)
+}
+
+#[derive(Deserialize)]
+struct WorkerIdentityReq {
+    identity: WorkerIdentity,
+    #[serde(default)]
+    deadline_ms: Option<u64>,
+}
+
+async fn drain_worker(
+    State(service): State<Arc<WorkerDispatchService>>,
+    Extension(worker): Extension<VerifiedWorkerContext>,
+    Json(request): Json<WorkerIdentityReq>,
+) -> (StatusCode, Json<Value>) {
+    let result = async {
+        verify_worker_id(&worker, &request.identity.worker_id)?;
+        let deadline = request.deadline_ms.unwrap_or_else(|| {
+            service
+                .clock
+                .now_ms()
+                .saturating_add(service.registry_ttl_ms)
+        });
+        let mutation = directory(&service)?
+            .begin_drain(&request.identity, deadline)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?;
+        Ok(json!({ "mutation": mutation }))
+    }
+    .await;
+    respond(result)
+}
+
+async fn quiesce_worker(
+    State(service): State<Arc<WorkerDispatchService>>,
+    Extension(worker): Extension<VerifiedWorkerContext>,
+    Json(request): Json<WorkerIdentityReq>,
+) -> (StatusCode, Json<Value>) {
+    let result = async {
+        verify_worker_id(&worker, &request.identity.worker_id)?;
+        let mutation = directory(&service)?
+            .mark_quiesced(&request.identity)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?;
+        Ok(json!({ "mutation": mutation }))
+    }
+    .await;
+    respond(result)
+}
+
+async fn deregister_worker(
+    State(service): State<Arc<WorkerDispatchService>>,
+    Extension(worker): Extension<VerifiedWorkerContext>,
+    Json(request): Json<WorkerIdentityReq>,
+) -> (StatusCode, Json<Value>) {
+    let result = async {
+        verify_worker_id(&worker, &request.identity.worker_id)?;
+        let mutation = directory(&service)?
+            .deregister(&request.identity)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?;
+        Ok(json!({ "mutation": mutation }))
+    }
+    .await;
+    respond(result)
 }
 
 async fn authenticate_worker(

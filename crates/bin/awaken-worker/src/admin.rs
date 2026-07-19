@@ -14,35 +14,41 @@
 
 use std::sync::Arc;
 
-use awaken_server::SharedHost;
 use axum::Router;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 
-/// The worker admin router over the process's host (its dispatch pool carries the
-/// readiness/drain state). Serve it on the admin port, never the data path.
-pub fn worker_admin_router(host: Arc<SharedHost>) -> Router {
+pub(crate) fn worker_admin_router_with_lifecycle(lifecycle: Arc<crate::WorkerLifecycle>) -> Router {
     Router::new()
         .route("/livez", get(livez))
-        .route("/readyz", get(readyz))
+        .route("/readyz", get(lifecycle_readyz))
         .route("/metrics", get(metrics))
-        .route("/admin/drain", post(drain))
-        .with_state(host)
+        .route("/admin/drain", post(lifecycle_drain))
+        .with_state(lifecycle)
+}
+
+async fn lifecycle_readyz(
+    State(lifecycle): State<Arc<crate::WorkerLifecycle>>,
+) -> impl IntoResponse {
+    awaken_server::admin::readyz(lifecycle.host.pool_accepting_work())
+}
+
+async fn lifecycle_drain(
+    State(lifecycle): State<Arc<crate::WorkerLifecycle>>,
+) -> impl IntoResponse {
+    match lifecycle.begin_drain(None).await {
+        Ok(()) => (StatusCode::OK, "draining\n"),
+        Err(_) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "draining locally; registry unavailable\n",
+        ),
+    }
 }
 
 async fn livez() -> impl IntoResponse {
     (StatusCode::OK, "ok\n")
-}
-
-async fn readyz(State(host): State<Arc<SharedHost>>) -> impl IntoResponse {
-    awaken_server::admin::readyz(host.pool_accepting_work())
-}
-
-async fn drain(State(host): State<Arc<SharedHost>>) -> impl IntoResponse {
-    host.begin_pool_drain().await;
-    (StatusCode::OK, "draining\n")
 }
 
 /// The worker's Prometheus scrape: the whole process's OTel metrics (the
@@ -83,19 +89,31 @@ mod tests {
     // readiness reports 503 — the worker is not routable until its pool is up.
     #[tokio::test]
     async fn readyz_is_503_without_a_running_pool() {
-        let host = Arc::new(SharedHost::new(
+        let host = Arc::new(awaken_server::SharedHost::new(
             Arc::new(awaken_server::no_model::NoModelConfiguredExecutor),
             "worker-test",
         ));
-        let app = worker_admin_router(host);
+        let lifecycle = Arc::new(crate::WorkerLifecycle {
+            host,
+            control: awaken_runtime_host::WorkerControlClient::new(
+                awaken_runtime_host::WorkerUpstream::new("http://127.0.0.1:1")
+                    .with_worker_id("admin-test"),
+            ),
+            identity: awaken_worker_contract::WorkerIdentity::new("admin-test", "boot", 1),
+        });
+        let app = worker_admin_router_with_lifecycle(lifecycle);
         assert_eq!(
             call(&app, "GET", "/readyz").await.0,
             StatusCode::SERVICE_UNAVAILABLE
         );
         // Liveness is independent of readiness — the process is up.
         assert_eq!(call(&app, "GET", "/livez").await.0, StatusCode::OK);
-        // The drain endpoint is idempotent and safe even with no pool.
-        assert_eq!(call(&app, "POST", "/admin/drain").await.0, StatusCode::OK);
+        // Registry acknowledgement is unavailable, so HTTP fails closed while the
+        // lifecycle still closes the local claim gate.
+        assert_eq!(
+            call(&app, "POST", "/admin/drain").await.0,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
         // /metrics renders the process's Prometheus scrape (the global OTel registry).
         // In this unit test no meter provider is installed, so it is an empty 200 —
         // the render path is exercised at the observability level. The worker's real

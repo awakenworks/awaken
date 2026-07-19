@@ -65,6 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let url = std::env::var("AWAKEN_DATABASE_URL")
             .map_err(|_| "AWAKEN_DISPATCH_BACKEND=postgres requires AWAKEN_DATABASE_URL")?;
         awaken_runtime_host::init_shared_postgres_dispatch(&url).await?;
+        awaken_server::init_postgres_worker_registry(&url).await?;
     }
     if std::env::var("AWAKEN_STORE").as_deref() == Ok("postgres") {
         let url = std::env::var("AWAKEN_DATABASE_URL")

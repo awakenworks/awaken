@@ -26,6 +26,7 @@ pub mod no_model;
 pub mod placement;
 pub mod resource_owner;
 pub mod webhooks;
+mod worker_registry;
 pub mod workspace_path;
 
 use std::sync::Arc;
@@ -46,6 +47,9 @@ pub use awaken_runtime_host::{
     ProtocolHost, SharedHost, SkillContext, SkillSpec, ThreadEvent, ThreadEventHub, VaultRefresher,
     advertised_tools, capabilities_router, config_router, content_fingerprint, durable_ops_router,
     memory_stores_router, parse_skill_md, skills_router,
+};
+pub use worker_registry::{
+    init_postgres as init_postgres_worker_registry, inject as init_worker_registry,
 };
 
 /// An [`ExecutorProvider`] mapping a model ref to a labeled executor, so a
@@ -152,7 +156,10 @@ pub fn mount_with_managed(host: Arc<SharedHost>, managed_state: Arc<ManagedState
     let durable_ops = durable_ops_router(host.clone());
     // The worker-facing cross-node seam: a database-less worker claims/settles runs
     // over the dispatch transport and pushes committed facts to the commit ingest.
-    let dispatch_transport = awaken_runtime_host::dispatch_transport_router(host.clone());
+    let dispatch_transport = awaken_runtime_host::dispatch_transport_router_with_directory(
+        host.clone(),
+        worker_registry::shared(),
+    );
     let commit_ingest = awaken_runtime_host::commit_ingest_router(host.clone());
     // The Files API (`/v1/files`) over the host's blob store — file resources + artifacts.
     let files = files_router(host.clone());

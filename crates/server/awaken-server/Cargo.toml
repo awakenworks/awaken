@@ -9,6 +9,7 @@ license.workspace = true
 # The extracted service layer: SharedHost / ManagedHost / ProtocolHost and all
 # host modules live here; this bin only composes them into router modes.
 awaken-runtime-host = { workspace = true }
+awaken-worker-registry = { workspace = true }
 awaken-managed-routers = { workspace = true }
 awaken-admin-assistant = { workspace = true }
 awaken-tenancy = { workspace = true }
@@ -94,6 +95,7 @@ container-k8s = ["awaken-runtime-host/container-k8s"]
 
 [dev-dependencies]
 awaken-scenario-host = { workspace = true }
+awaken-run-ingress = { workspace = true }
 # The A2A remote-delegate adapter the a2a-loopback e2e wraps its mock transports in.
 awaken-run-executor-a2a = { workspace = true }
 http-body-util = "0.1"

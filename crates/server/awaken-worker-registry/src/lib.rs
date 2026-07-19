@@ -10,6 +10,10 @@ mod schema;
 mod sqlite;
 mod transition;
 
+pub use awaken_worker_contract::{
+    RegisteredWorker, RegistryError, RegistryMutation, WorkerDirectory, WorkerHeartbeat,
+    WorkerIdentity, WorkerManifest, WorkerRegistration, WorkerSnapshot, WorkerState,
+};
 pub use memory::MemoryWorkerDirectory;
 pub use postgres::PostgresWorkerDirectory;
 pub use schema::{BUNDLE_ID, registry_bundle};

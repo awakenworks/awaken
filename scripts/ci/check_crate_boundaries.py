@@ -1354,7 +1354,11 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     },
     "awaken-server": {
         "awaken-scenario-host",
+        # dev-only: transport conformance assembles the real dispatch service over
+        # the in-memory queue while exercising the server's worker registry.
+        "awaken-run-ingress",
         "awaken-runtime-host",
+        "awaken-worker-registry",
         "awaken-managed-routers",
         # dev-only: the a2a-loopback e2e wraps its mock transports in the A2A
         # remote-Agent adapter (the host now holds the neutral RemoteAgent interface).
@@ -1544,6 +1548,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-runtime-host",
         "awaken-server",
         "awaken-control",
+        "awaken-worker-contract",
+        "awaken-provisioning-contract",
+        "getrandom",
         "tokio",
         # The cloud-native admin surface (ADR-0022 D7): an axum router serving
         # /livez /readyz /admin/drain + the process Prometheus scrape.

@@ -10,6 +10,10 @@
 pub mod dispatch;
 pub mod run_dispatch;
 
+pub use awaken_worker_contract::{
+    RegisteredWorker, RegistryError, RegistryMutation, WorkerDirectory, WorkerHeartbeat,
+    WorkerIdentity, WorkerManifest, WorkerRegistration, WorkerSnapshot, WorkerState,
+};
 pub use dispatch::{
     CasOutcome, Claimed, CommitEpochGuard, Dispatch, DispatchError, DispatchOutcome, DispatchQueue,
     DispatchState, DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, RunClaim,

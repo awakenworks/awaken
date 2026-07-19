@@ -45,6 +45,9 @@ axum = { workspace = true }
 # The admin `/metrics` scrape renders the process's OTel metrics (via the Prometheus
 # exporter installed by `awaken_observability::init`).
 awaken-observability = { workspace = true }
+awaken-worker-contract = { workspace = true }
+awaken-provisioning-contract = { workspace = true }
+getrandom = "0.2"
 
 [dev-dependencies]
 # The admin router tests drive the axum router directly (oneshot).

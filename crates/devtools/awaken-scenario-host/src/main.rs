@@ -43,6 +43,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let url = std::env::var("AWAKEN_DATABASE_URL")
             .map_err(|_| "AWAKEN_DISPATCH_BACKEND=postgres requires AWAKEN_DATABASE_URL")?;
         awaken_runtime_host::init_shared_postgres_dispatch(&url).await?;
+        // The worker transport mounted by awaken-server shares the same durable
+        // Postgres topology. Initialize its sole process-wide directory before the
+        // router is built, matching the production awaken composition root.
+        awaken_server::init_postgres_worker_registry(&url).await?;
     }
     // Shared Postgres commit backend (ADR-0022 D6): thread history on one DB so any
     // node warm-reloads any thread. Connected once here (non-Send sqlx out of the run

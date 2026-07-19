@@ -36,6 +36,7 @@ use crate::service::DispatchServiceConfig;
 use crate::wake::{LocalWakeSignal, WakeSignal};
 use crate::worker::DispatchWorker;
 use awaken_run_ingress_contract::RunDispatch;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 /// Resolves the worker that owns a thread's runtime. The pool claims from the one
 /// shared queue, then asks the resolver for the session worker carrying the
@@ -85,13 +86,27 @@ pub struct DispatchPool<S> {
     drains: Vec<JoinHandle<()>>,
     maintenance: JoinHandle<()>,
     renewal: Option<JoinHandle<()>>,
-    admission: Arc<tokio::sync::RwLock<DrainAdmission>>,
+    admission: Arc<PoolAdmission>,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct DrainAdmission {
     open: bool,
     generation: u64,
+}
+
+struct PoolAdmission {
+    gate: tokio::sync::RwLock<DrainAdmission>,
+    in_flight: Arc<AtomicU32>,
+}
+
+impl Default for PoolAdmission {
+    fn default() -> Self {
+        Self {
+            gate: tokio::sync::RwLock::new(DrainAdmission::default()),
+            in_flight: Arc::new(AtomicU32::new(0)),
+        }
+    }
 }
 
 impl Default for DrainAdmission {
@@ -223,7 +238,7 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
     ) -> Self {
         let owner = owner.into();
         let shutdown = CancellationToken::new();
-        let admission = Arc::new(tokio::sync::RwLock::new(DrainAdmission::default()));
+        let admission = Arc::new(PoolAdmission::default());
         let drains = (0..concurrency.max(1))
             .map(|_| {
                 tokio::spawn(drain_loop(
@@ -313,7 +328,7 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
         // critical section. Once this returns, every claim either completed
         // before the drain generation advanced (and is now in-flight), or saw
         // `open = false` and did not touch the store.
-        let mut admission = self.admission.write().await;
+        let mut admission = self.admission.gate.write().await;
         if admission.open {
             admission.open = false;
             admission.generation = admission.generation.saturating_add(1);
@@ -326,6 +341,13 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
     /// Whether a drain has been requested (the drain tasks are stopping/stopped).
     pub fn is_draining(&self) -> bool {
         self.shutdown.is_cancelled()
+    }
+
+    /// Exact process-local number of claims currently being driven. The worker
+    /// heartbeat reports this value; capacity enforcement remains server-side.
+    #[must_use]
+    pub fn in_flight(&self) -> u32 {
+        self.admission.in_flight.load(Ordering::SeqCst)
     }
 
     /// Stop every task and wait for the in-flight drains to finish.
@@ -355,7 +377,7 @@ async fn drain_loop<S: Dispatch + 'static>(
     resolver: Arc<dyn WorkerResolver<S>>,
     poll_interval: Duration,
     completion: Option<Arc<dyn CompletionSink>>,
-    admission: Arc<tokio::sync::RwLock<DrainAdmission>>,
+    admission: Arc<PoolAdmission>,
 ) {
     loop {
         if shutdown.is_cancelled() {
@@ -403,11 +425,11 @@ async fn claim_and_drive<S: Dispatch + 'static>(
     lease_ms: u64,
     resolver: &dyn WorkerResolver<S>,
     completion: &Option<Arc<dyn CompletionSink>>,
-    admission: &Arc<tokio::sync::RwLock<DrainAdmission>>,
+    admission: &Arc<PoolAdmission>,
 ) -> Result<bool, Error> {
     let now = clock.now_ms();
     let claimed = {
-        let gate = admission.read().await;
+        let gate = admission.gate.read().await;
         if !gate.open {
             return Ok(false);
         }
@@ -416,6 +438,7 @@ async fn claim_and_drive<S: Dispatch + 'static>(
     let Some(claimed) = claimed else {
         return Ok(false);
     };
+    let _in_flight = InFlightGuard::new(admission.in_flight.clone());
     // Route to the runtime that owns this run's thread, then drive+settle there.
     // The resolved worker shares this store and owner, so the settle it performs
     // acts on the same row this task just claimed.
@@ -431,6 +454,21 @@ async fn claim_and_drive<S: Dispatch + 'static>(
         sink.settled(&run_id, &state);
     }
     Ok(true)
+}
+
+struct InFlightGuard(Arc<AtomicU32>);
+
+impl InFlightGuard {
+    fn new(counter: Arc<AtomicU32>) -> Self {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Self(counter)
+    }
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 /// Reap poison runs, GC aged dead-letters, and relay the cross-thread outbox — the
@@ -483,5 +521,25 @@ async fn renewal_loop<S: Dispatch + 'static>(
                 let _ = store.renew_owned_leases(&owner, lease_ms, now).await;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod in_flight_tests {
+    use super::*;
+
+    #[test]
+    fn guard_tracks_and_releases_exactly_once() {
+        let counter = Arc::new(AtomicU32::new(0));
+        {
+            let _first = InFlightGuard::new(counter.clone());
+            assert_eq!(counter.load(Ordering::SeqCst), 1);
+            {
+                let _second = InFlightGuard::new(counter.clone());
+                assert_eq!(counter.load(Ordering::SeqCst), 2);
+            }
+            assert_eq!(counter.load(Ordering::SeqCst), 1);
+        }
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
     }
 }
