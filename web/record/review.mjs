@@ -87,8 +87,20 @@ const checks = [
   }],
   ["feature breadth", () => {
     const corpus = [...flows.values()].join("\n");
-    for (const claim of ["model", "agent", "permission", "memory", "State Machine", "trace"]) {
+    for (const claim of ["model", "agent", "permission", "memory", "State Machine", "trace", "Managed Agents", "ACP", "MCP", "sandbox"]) {
       assert.ok(corpus.toLowerCase().includes(claim.toLowerCase()), `series: missing ${claim}`);
+    }
+  }],
+  ["agent control proof", () => {
+    const source = requiredFlow("08-agent-control-plane.mjs");
+    for (const claim of ["context_policy", "compact.instructions", "memory.instructions", "memory.extraction_prompt", "continuation"]) {
+      assert.ok(source.includes(claim), `08-agent-control-plane.mjs: missing ${claim} checkpoint`);
+    }
+  }],
+  ["protocol composition proof", () => {
+    const source = requiredFlow("09-protocol-composition.mjs");
+    for (const claim of ["Managed Agents", "acp:claude", "credential_binding", "Project-bound MCP servers merge"]) {
+      assert.ok(source.includes(claim), `09-protocol-composition.mjs: missing ${claim}`);
     }
   }],
   ["interaction pacing", () => eachFlow((name, source) => {
@@ -109,6 +121,8 @@ const checks = [
       "05-ai-authoring.mjs",
       "06-ai-state-machine.mjs",
       "07-runtime-sandbox.mjs",
+      "08-agent-control-plane.mjs",
+      "09-protocol-composition.mjs",
     ]);
   }],
 ];
