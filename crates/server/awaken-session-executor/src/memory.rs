@@ -105,6 +105,7 @@ pub struct MemoryExtraction {
     background: Arc<BackgroundRuns>,
     store: MemoryDir,
     bounds: RecallBounds,
+    model_ref: String,
 }
 
 impl MemoryExtraction {
@@ -114,6 +115,7 @@ impl MemoryExtraction {
         catalog: Arc<AgentCatalog>,
         background: Arc<BackgroundRuns>,
         root: impl Into<std::path::PathBuf>,
+        model_ref: impl Into<String>,
     ) -> Self {
         Self {
             llm,
@@ -122,13 +124,20 @@ impl MemoryExtraction {
             background,
             store: MemoryDir::new(root),
             bounds: RecallBounds::default(),
+            model_ref: model_ref.into(),
         }
     }
 
     /// Fire-and-forget: seed the extractor with `committed` (the finished turn's
     /// history) and let it save memories via `write_memory`, scoped to the store.
     /// Returns immediately; the run is tracked for [`drain`](Self::drain).
-    pub async fn trigger(&self, thread: &str, committed: Vec<Message>) {
+    pub async fn trigger(
+        &self,
+        thread: &str,
+        committed: Vec<Message>,
+        instructions: Option<&str>,
+        extraction_prompt: Option<&str>,
+    ) {
         if self.catalog.resolve(MEMORY_AGENT_ID).is_none() {
             return;
         }
@@ -142,12 +151,24 @@ impl MemoryExtraction {
         seed.push(Message {
             id: MessageId(format!("{thread}-mem-prompt")),
             role: Role::User,
-            content: vec![ContentBlock::text(EXTRACT_PROMPT)],
+            content: vec![ContentBlock::text(
+                extraction_prompt
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or(EXTRACT_PROMPT),
+            )],
         });
 
         let llm = self.llm.clone();
         let provider = self.provider.clone();
-        let catalog = self.catalog.clone();
+        let catalog = instructions
+            .filter(|value| !value.trim().is_empty())
+            .map(|instructions| {
+                Arc::new(
+                    AgentCatalog::new()
+                        .with_agent(default_memory_agent(&self.model_ref, instructions)),
+                )
+            })
+            .unwrap_or_else(|| self.catalog.clone());
         let store = self.store.clone();
         let mem_thread = format!("{thread}::mem");
 
@@ -284,10 +305,11 @@ mod tests {
             catalog,
             Arc::new(BackgroundRuns::new()),
             &mem_root,
+            "stub",
         );
 
         extraction
-            .trigger("thread-1", vec![user("I really like rust")])
+            .trigger("thread-1", vec![user("I really like rust")], None, None)
             .await;
         assert!(extraction.drain(Duration::from_secs(10)).await);
 
@@ -362,6 +384,7 @@ mod tests {
             catalog,
             Arc::new(BackgroundRuns::new()),
             &mem_root,
+            "stub",
         );
 
         // A committed history with a recalled-memory system message + a real turn.
@@ -371,7 +394,7 @@ mod tests {
             "RECALLED SECRET",
         );
         extraction
-            .trigger("t", vec![recall, user("please note this")])
+            .trigger("t", vec![recall, user("please note this")], None, None)
             .await;
         assert!(extraction.drain(Duration::from_secs(10)).await);
 
@@ -380,6 +403,48 @@ mod tests {
         assert!(
             !seen.contains("RECALLED SECRET"),
             "recalled content must not reach the extractor: {seen}"
+        );
+    }
+
+    #[tokio::test]
+    async fn extraction_uses_the_per_agent_memory_prompts() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let sandbox_base = std::env::temp_dir().join(format!("awaken-mem3-sbx-{stamp}"));
+        let mem_root = std::env::temp_dir().join(format!("awaken-mem3-root-{stamp}"));
+        let catalog = Arc::new(
+            AgentCatalog::new()
+                .with_agent(default_memory_agent("stub", DEFAULT_MEMORY_INSTRUCTIONS)),
+        );
+        let extraction = MemoryExtraction::new(
+            Arc::new(SeedEchoModel),
+            Arc::new(LocalProvider::new(&sandbox_base)),
+            catalog,
+            Arc::new(BackgroundRuns::new()),
+            &mem_root,
+            "stub",
+        );
+
+        extraction
+            .trigger(
+                "t-custom",
+                vec![user("remember this")],
+                Some("CUSTOM MEMORY SYSTEM"),
+                Some("CUSTOM EXTRACTION TASK"),
+            )
+            .await;
+        assert!(extraction.drain(Duration::from_secs(10)).await);
+
+        let seen = std::fs::read_to_string(mem_root.join("seen.md")).expect("seen file");
+        assert!(
+            seen.contains("CUSTOM MEMORY SYSTEM"),
+            "custom instructions reached extractor: {seen}"
+        );
+        assert!(
+            seen.contains("CUSTOM EXTRACTION TASK"),
+            "custom task reached extractor: {seen}"
         );
     }
 }

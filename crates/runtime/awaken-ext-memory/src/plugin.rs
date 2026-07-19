@@ -28,6 +28,29 @@ use crate::localfs::MemoryDir;
 use crate::recall::{RecallBounds, render};
 use crate::select::{RecallSelector, manifest, query_from};
 
+/// Per-Agent memory behavior. Recall bounds shape request context; the two prompt
+/// fields shape the ordinary background extraction Agent owned by the host.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct MemoryConfig {
+    #[serde(flatten)]
+    pub recall: RecallBounds,
+    /// System instructions for the memory-extractor Agent. Blank/absent uses the
+    /// platform default taxonomy.
+    pub instructions: Option<String>,
+    /// User task appended to each completed step handed to the extractor.
+    pub extraction_prompt: Option<String>,
+}
+
+impl MemoryConfig {
+    pub fn from_value(value: Option<&serde_json::Value>) -> Result<Self, serde_json::Error> {
+        value.map_or_else(
+            || Ok(Self::default()),
+            |value| serde_json::from_value(value.clone()),
+        )
+    }
+}
+
 /// The plugin id under which memory recall is activated (must be listed in a run's
 /// `plugin_ids` to contribute, G30).
 pub const MEMORY_PLUGIN_ID: &str = "memory";
@@ -97,8 +120,11 @@ impl Plugin for MemoryPlugin {
         // constructed defaults. `#[serde(default)]` on `RecallBounds` fills any
         // unset field, so a partial section is valid.
         let bounds = match config {
-            Some(value) => serde_json::from_value::<RecallBounds>(value.clone())
-                .map_err(|e| PluginConfigError::new(MEMORY_PLUGIN_ID, e.to_string()))?,
+            Some(value) => {
+                MemoryConfig::from_value(Some(value))
+                    .map_err(|e| PluginConfigError::new(MEMORY_PLUGIN_ID, e.to_string()))?
+                    .recall
+            }
             None => self.bounds.clone(),
         };
         Ok(self.contribute(bounds))
@@ -126,10 +152,57 @@ pub fn config_schema() -> serde_json::Value {
             "select_over": {
                 "type": "integer", "minimum": 0,
                 "description": "Use relevance selection once the store holds more than this many memories."
+            },
+            "instructions": {
+                "type": ["string", "null"], "format": "textarea",
+                "title": "Memory extraction instructions",
+                "description": "Memory-extraction system prompt: what durable facts to save or ignore. Blank uses the built-in taxonomy."
+            },
+            "extraction_prompt": {
+                "type": ["string", "null"], "format": "textarea",
+                "title": "Extraction task prompt",
+                "description": "Task prompt appended when a completed step is handed to the background memory extractor."
             }
         },
         "additionalProperties": false
     })
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+
+    #[test]
+    fn memory_config_round_trips_per_agent_prompts_and_bounds() {
+        let config = MemoryConfig::from_value(Some(&serde_json::json!({
+            "max_entries": 7,
+            "instructions": "Save only durable user preferences.",
+            "extraction_prompt": "Review the completed work and persist useful facts."
+        })))
+        .unwrap();
+        assert_eq!(config.recall.max_entries, 7);
+        assert_eq!(
+            config.instructions.as_deref(),
+            Some("Save only durable user preferences.")
+        );
+        assert!(
+            config
+                .extraction_prompt
+                .as_deref()
+                .unwrap()
+                .contains("completed work")
+        );
+    }
+
+    #[test]
+    fn schema_exposes_both_memory_prompts_to_generic_authoring_surfaces() {
+        let schema = config_schema();
+        assert_eq!(schema["properties"]["instructions"]["format"], "textarea");
+        assert_eq!(
+            schema["properties"]["extraction_prompt"]["format"],
+            "textarea"
+        );
+    }
 }
 
 /// The `BeforeInference` hook. Relevance selection runs at most once per run (the

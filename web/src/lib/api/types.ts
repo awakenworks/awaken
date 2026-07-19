@@ -186,6 +186,7 @@ export type OutboundKind =
   | { type: "agent.custom_tool_use"; name: string; input: unknown }
   | { type: "session.status_running" }
   | { type: "session.status_idle"; stop_reason: StopReason }
+  | { type: "session.error"; error?: { type?: string; message?: string }; message?: string }
   | { type: "span.outcome_evaluation_start"; outcome_id: string; iteration: number }
   | {
       type: "span.outcome_evaluation_end";

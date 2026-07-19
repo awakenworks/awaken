@@ -13,6 +13,7 @@ export const SSE_EVENT_NAMES = [
   "agent.custom_tool_use",
   "session.status_running",
   "session.status_idle",
+  "session.error",
   "span.outcome_evaluation_start",
   "span.outcome_evaluation_end",
 ] as const;
@@ -59,6 +60,26 @@ export function isRunning(log: SessionEvent[]): boolean {
   return log[log.length - 1]?.type === "session.status_running";
 }
 
+/** A concise, actionable explanation for a committed run failure. */
+export function sessionErrorText(event: SessionEvent): string {
+  if (event.type !== "session.error") return "";
+  const raw = "error" in event && event.error && typeof event.error === "object"
+    ? (event.error as { type?: unknown; message?: unknown })
+    : {};
+  const message = typeof raw.message === "string"
+    ? raw.message
+    : "message" in event && typeof event.message === "string"
+      ? event.message
+      : "The run failed without an error message.";
+  if (/usage limit|quota/i.test(message)) {
+    return "Model-provider quota is exhausted. Check billing/quota or switch the credential or model, then retry.";
+  }
+  if (/401|403|unauthorized|forbidden/i.test(message)) {
+    return "The model provider rejected this request. Check the credential, endpoint access, and account quota, then retry.";
+  }
+  return message.length > 600 ? `${message.slice(0, 597)}…` : message;
+}
+
 // ---- trace projection (the same log read as spans) ----
 
 export type SpanKind = "inference" | "tool" | "tool_result" | "status" | "outcome" | "other";
@@ -87,6 +108,7 @@ function spanKind(type: string): SpanKind {
       return "tool_result";
     case "session.status_running":
     case "session.status_idle":
+    case "session.error":
       return "status";
     case "span.outcome_evaluation_start":
     case "span.outcome_evaluation_end":
@@ -118,16 +140,18 @@ export function traceSpans(log: SessionEvent[]): TraceSpan[] {
     } else if (kind === "status" && "stop_reason" in ev) {
       const sr = ev.stop_reason as { type?: string };
       label = sr?.type ?? ev.type;
+    } else if (ev.type === "session.error") {
+      label = "run failed";
     }
     const detail =
-      "input" in ev ? ev.input : "content" in ev ? ev.content : "stop_reason" in ev ? ev.stop_reason : undefined;
+      "input" in ev ? ev.input : "content" in ev ? ev.content : "stop_reason" in ev ? ev.stop_reason : ev.type === "session.error" ? ev.error : undefined;
     return {
       id: ev.id,
       kind,
       label,
       durationMs: spanDurationMs(log[i - 1]?.processed_at, ev.processed_at),
       detail,
-      error: kind === "tool_result" && "is_error" in ev && ev.is_error === true,
+      error: ev.type === "session.error" || (kind === "tool_result" && "is_error" in ev && ev.is_error === true),
     };
   });
 }
