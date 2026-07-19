@@ -17,7 +17,7 @@ test("Environment: create in the UI and see it listed", async ({ page }) => {
   const name = `env-${Date.now()}`;
   await page.goto("/w/default/environments");
   await page.getByRole("button", { name: /New environment/ }).click();
-  await page.getByPlaceholder("my-dev-env").fill(name);
+  await page.getByPlaceholder("claude-sandbox-github").fill(name);
   await page.getByRole("button", { name: "Create", exact: true }).click();
   await expect(page.getByText(name)).toBeVisible();
 });
@@ -29,7 +29,7 @@ test("Environment work queue: a fresh env shows its seeded healthcheck queued", 
   const name = `envq-${Date.now()}`;
   await page.goto("/w/default/environments");
   await page.getByRole("button", { name: /New environment/ }).click();
-  await page.getByPlaceholder("my-dev-env").fill(name);
+  await page.getByPlaceholder("claude-sandbox-github").fill(name);
   await page.getByRole("button", { name: "Create", exact: true }).click();
   const row = page.locator("tr", { hasText: name });
   await expect(row).toContainText(/1 queued|1 排队/);

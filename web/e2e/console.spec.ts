@@ -59,7 +59,7 @@ test("Tools tab renders the Permissions editor (data-driven from capabilities.po
   await expect(page.getByText("Default decision", { exact: true })).toBeVisible();
   // Add a rule → an editable glob-pattern row appears.
   await page.getByRole("button", { name: /add rule/ }).click();
-  await expect(page.getByPlaceholder("Bash(*rm*)")).toBeVisible();
+  await expect(page.getByPlaceholder('bash(command ~ "*rm -rf*")')).toBeVisible();
 });
 
 test("PermissionEditor authors a rule and persists it through save + reload", async ({ page }) => {
@@ -73,7 +73,8 @@ test("PermissionEditor authors a rule and persists it through save + reload", as
   // Default decision → Deny (only the default-decision Segmented exists yet).
   await editor.getByRole("button", { name: "Deny" }).first().click();
   await page.getByRole("button", { name: /add rule/ }).click();
-  await editor.getByPlaceholder("Bash(*rm*)").fill("Bash(*rm*)");
+  const pattern = 'bash(command ~ "*rm -rf*")';
+  await editor.getByPlaceholder(pattern).fill(pattern);
 
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.locator(".toast").filter({ hasText: /Saved|已保存/ })).toBeVisible();
@@ -82,7 +83,7 @@ test("PermissionEditor authors a rule and persists it through save + reload", as
   // Reload → the authored policy rehydrates from the stored config (round-trips).
   await page.reload();
   await page.getByRole("tab", { name: "Tools" }).click();
-  await expect(editor.getByPlaceholder("Bash(*rm*)")).toHaveValue("Bash(*rm*)");
+  await expect(editor.getByPlaceholder(pattern)).toHaveValue(pattern);
 });
 
 test("enabling a behavior renders a schema-driven form (not raw JSON)", async ({ page }) => {
@@ -144,12 +145,14 @@ test("Models Test opens a live model dialog (scratch session + composer)", async
   await expect(page.getByPlaceholder("Say hello…")).toBeVisible();
 });
 
-test("Admin Assistant is live: the seeded assistant opens a session composer", async ({ page }) => {
+test("Admin Assistant truthfully shows a composer or the missing-model prerequisite", async ({ page }) => {
   await page.goto("/w/default/assistant");
   await expect(page.getByRole("heading", { name: /Admin Assistant|控制台助手/ })).toBeVisible();
-  // The assistant is seeded into the reserved scope (ADR-0052), so the surface opens
-  // a live session composer rather than the "not installed" gate.
-  await expect(page.getByPlaceholder("Describe the agent you want…")).toBeVisible();
+  // The assistant is seeded into the reserved scope (ADR-0052), but a composer is
+  // only runnable when the current backend has a credentialed model.
+  const composer = page.getByPlaceholder("Describe the agent you want…");
+  const prerequisite = page.getByText(/The assistant needs a model to run on|助手需要一个模型才能运行/i);
+  await expect(composer.or(prerequisite)).toBeVisible();
 });
 
 test("Sandbox tab gates an unpublished draft (nothing live to talk to yet)", async ({ page }) => {

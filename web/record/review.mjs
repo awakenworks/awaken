@@ -1,0 +1,154 @@
+// Deterministic 100-round review gate for product videos. Each round rotates a
+// different UX/marketing/testability lens across every flow and prints actionable
+// feedback on failure. This complements (not replaces) real recording + frame review.
+
+import assert from "node:assert/strict";
+import { readdirSync, readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const flowDir = resolve(here, "flows");
+const flowNames = readdirSync(flowDir).filter((name) => name.endsWith(".mjs")).sort();
+const flows = new Map(flowNames.map((name) => [name, readFileSync(resolve(flowDir, name), "utf8")]));
+const harness = readFileSync(resolve(here, "harness.mjs"), "utf8");
+const readme = readFileSync(resolve(here, "README.md"), "utf8");
+
+const checks = [
+  ["story order", () => eachFlow((name, source) => {
+    const intro = source.indexOf("await intro(");
+    const firstOperation = firstIndex(source, ["await click(", "await type(", "await say("]);
+    assert.ok(intro >= 0 && intro < firstOperation, `${name}: explain intent/function before UI operations`);
+  })],
+  ["executable claim", () => eachFlow((name, source) => {
+    assert.match(source, /await checkpoint\(/, `${name}: add an observable checkpoint`);
+    assert.match(source, /expect\(|waitForFunction\(/, `${name}: checkpoint must assert UI/API truth`);
+  })],
+  ["shareable payoff", () => eachFlow((name, source) => {
+    assert.equal(matches(source, /await aha\(/g), 1, `${name}: land exactly one focused AHA`);
+    assert.ok(source.lastIndexOf("await aha(") > source.lastIndexOf("await checkpoint("), `${name}: AHA must follow proof`);
+  })],
+  ["no swallowed interaction", () => eachFlow((name, source) => {
+    assert.doesNotMatch(source, /(?:click|fill|selectOption|waitFor)[^;\n]*\.catch\(/, `${name}: visible interaction failure is being swallowed`);
+  })],
+  ["intent and function copy", () => eachFlow((name, source) => {
+    const intro = source.match(/await intro\(\s*"([^"]+)",\s*"([^"]+)"/s);
+    assert.ok(intro, `${name}: intro needs literal intent and capability copy`);
+    assert.ok(intro[1].length >= 35 && intro[2].length >= 35, `${name}: intro is too vague`);
+  })],
+  ["caption readability", () => eachFlow((name, source) => {
+    for (const text of literalCallArgs(source, ["say", "aha"])) {
+      assert.ok([...text].length <= 150, `${name}: caption exceeds 150 characters: ${text}`);
+    }
+  })],
+  ["brand close", () => {
+    assert.match(harness, /awaken · configure, prove, and run agents/);
+    assert.match(harness, /AHA ·/);
+  }],
+  ["subtitle deliverables", () => {
+    for (const extension of ["captions.json", ".vtt", ".srt"]) assert.ok(harness.includes(extension), `harness: missing ${extension}`);
+    assert.match(harness, /readingMs/);
+  }],
+  ["visible verification", () => {
+    assert.match(harness, /Live verification/);
+    assert.match(harness, /✓ Verified/);
+    assert.match(harness, /rec-proof/);
+  }],
+  ["failure artifact", () => {
+    assert.match(harness, /\.failed/);
+    assert.match(readme, /failed assertion produces only/);
+  }],
+  ["no turn vocabulary", () => eachFlow((name, source) => {
+    assert.doesNotMatch(source, /\bturns?\b/i, `${name}: use run/step/thread vocabulary`);
+  })],
+  ["real product surfaces", () => eachFlow((name, source) => {
+    assert.match(source, /page\.|goto\(/, `${name}: no real product surface is driven`);
+    assert.doesNotMatch(source, /mock|fake response/i, `${name}: scripted model result presented as real`);
+  })],
+  ["state runtime proof", () => {
+    const source = requiredFlow("06-ai-state-machine.mjs");
+    assert.match(source, /Try it\|试运行/);
+    assert.match(source, /State Machine blocks the unread write at runtime/);
+    assert.match(source, /Agent working\|Agent 工作中/);
+  }],
+  ["repeat-safe state", () => {
+    const source = requiredFlow("06-ai-state-machine.mjs");
+    assert.match(source, /\[read, written\]/);
+    assert.match(source, /arrayContaining\(\["read", "written"\]\)/);
+  }],
+  ["runtime tool identity", () => {
+    assert.match(requiredFlow("03-tools-permissions.mjs"), /bash\(command/);
+    assert.doesNotMatch(requiredFlow("06-ai-state-machine.mjs"), /\bRead\(|\bWrite\(/);
+  }],
+  ["credential safety", () => {
+    const source = requiredFlow("01-connect-model.mjs");
+    assert.match(source, /type="password"|getByLabel\(\/Secret/i);
+    assert.doesNotMatch(source, /console\.log\([^\n]*KEY/);
+  }],
+  ["feature breadth", () => {
+    const corpus = [...flows.values()].join("\n");
+    for (const claim of ["model", "agent", "permission", "memory", "State Machine", "trace"]) {
+      assert.ok(corpus.toLowerCase().includes(claim.toLowerCase()), `series: missing ${claim}`);
+    }
+  }],
+  ["interaction pacing", () => eachFlow((name, source) => {
+    assert.match(source, /await wait\(/, `${name}: add a visual settle after interaction`);
+  })],
+  ["recording test contract", () => {
+    assert.match(readme, /intro\(intent, capability\)/);
+    assert.match(readme, /checkpoint\(name, assertion\)/);
+    assert.match(readme, /aha\(text\)/);
+  }],
+  ["series completeness", () => {
+    assert.deepEqual(flowNames, [
+      "00-platform-overview.mjs",
+      "01-connect-model.mjs",
+      "02-build-agent.mjs",
+      "03-tools-permissions.mjs",
+      "04-resources-transparency.mjs",
+      "05-ai-authoring.mjs",
+      "06-ai-state-machine.mjs",
+      "07-runtime-sandbox.mjs",
+    ]);
+  }],
+];
+
+for (let round = 1; round <= 100; round += 1) {
+  const [name, check] = checks[(round - 1) % checks.length];
+  try {
+    check();
+    console.log(`[review ${String(round).padStart(3, "0")}/100] PASS · ${name}`);
+  } catch (error) {
+    console.error(`[review ${String(round).padStart(3, "0")}/100] FIX · ${name} · ${error.message}`);
+    process.exitCode = 1;
+    break;
+  }
+}
+
+if (!process.exitCode) console.log("[review] 100/100 UX and product-claim rounds passed");
+
+function eachFlow(check) {
+  for (const [name, source] of flows) check(name, source);
+}
+
+function requiredFlow(name) {
+  const source = flows.get(name);
+  assert.ok(source, `missing flow ${name}`);
+  return source;
+}
+
+function matches(source, pattern) {
+  return [...source.matchAll(pattern)].length;
+}
+
+function firstIndex(source, needles) {
+  return Math.min(...needles.map((needle) => {
+    const index = source.indexOf(needle);
+    return index < 0 ? Number.POSITIVE_INFINITY : index;
+  }));
+}
+
+function literalCallArgs(source, names) {
+  const pattern = new RegExp(`await (?:${names.join("|")})\\(\\s*([\"'\\\`])([\\s\\S]*?)\\1`, "g");
+  return [...source.matchAll(pattern)].map((match) => match[2]);
+}

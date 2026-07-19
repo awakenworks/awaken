@@ -6,11 +6,14 @@
 const AGENT_ID = "file-ops-agent";
 const SYSTEM = "You are a careful file-operations assistant. Prefer read-only actions.";
 
-export async function run({ page, goto, say, clearCaption, click, type, wait, cursorTo, tap }) {
+export async function run({ page, goto, say, clearCaption, intro, checkpoint, aha, expect, click, type, wait, cursorTo, tap }) {
   await page.request.delete(`http://127.0.0.1:38080/v1/config/agents/${AGENT_ID}`).catch(() => {});
 
   await goto("/w/default/agents/new");
-  await say("What an agent CAN do is configuration — pick tools, shape them, gate them.", 4200);
+  await intro(
+    "Give an agent useful tools without giving it unchecked authority.",
+    "Separate capability, model-facing presentation, and runtime permission policy—all as versioned config.",
+  );
   await type(page.getByPlaceholder("coding-agent"), AGENT_ID);
   await click(page.locator("select").first());
   await page.locator("select").first().selectOption("kimi-for-coding");
@@ -44,7 +47,7 @@ export async function run({ page, goto, say, clearCaption, click, type, wait, cu
   await wait(500);
   await say("And add a hard rule: shell deletes are always denied. Deny always wins.", 4200);
   await click(perm.getByRole("button", { name: /add rule|添加规则/ }));
-  await type(perm.getByPlaceholder("Bash(*rm*)"), "Bash(*rm*)");
+  await type(perm.getByPlaceholder("Bash(*rm*)"), 'bash(command ~ "*rm *")');
   const ruleRow = perm.locator(".row").filter({ has: page.getByPlaceholder("Bash(*rm*)") });
   await cursorTo(ruleRow.getByRole("button", { name: /^Deny|拒绝/ }));
   await tap();
@@ -55,11 +58,18 @@ export async function run({ page, goto, say, clearCaption, click, type, wait, cu
   // Persist.
   await click(page.getByRole("button", { name: "Save", exact: true }));
   await wait(1000);
+  await checkpoint("the lowercase runtime tool rule is persisted as deny", async () => {
+    const response = await page.request.get(`http://127.0.0.1:38080/v1/config/agents/${AGENT_ID}`);
+    expect(response.ok()).toBeTruthy();
+    const config = await response.json();
+    const rules = config.plugin_config?.permission?.rules ?? [];
+    expect(rules).toEqual(expect.arrayContaining([expect.objectContaining({ pattern: 'bash(command ~ "*rm *")', behavior: "deny" })]));
+  });
   await say("Save, then Publish — the gate compiles into the agent's runtime config.", 4000);
   await click(page.getByRole("button", { name: /Publish/ }));
   await wait(900);
   await click(page.locator(".modal").getByRole("button", { name: /Publish/ }));
   await wait(1200);
-  await say("Tools chosen, presented, and gated — all declarative, all versioned.", 4000);
+  await aha("The same tool can be useful to the model, understandable by humans, and still denied at execution time.");
   await clearCaption();
 }

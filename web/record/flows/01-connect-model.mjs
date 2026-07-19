@@ -5,10 +5,12 @@
 
 const KEY = process.env.KIMI_KEY ?? "";
 
-export async function run({ page, goto, say, clearCaption, click, type, wait }) {
+export async function run({ page, goto, say, clearCaption, intro, checkpoint, aha, expect, click, type, wait }) {
   await goto("/w/default/models");
-  await say("Every model the platform can run is declared here — in the console, never in env vars.", 4200);
-  await clearCaption();
+  await intro(
+    "Make a model usable without leaking credentials into code or deployment manifests.",
+    "Declare supply in the model catalog, then seal its credential through a write-only control plane.",
+  );
 
   const authorCard = page.locator(".card").filter({ hasText: "Author provider" });
   const inputs = authorCard.locator("input.input");
@@ -21,6 +23,10 @@ export async function run({ page, goto, say, clearCaption, click, type, wait }) 
   await type(page.getByPlaceholder("200000"), "262144"); // Context window
   await click(authorCard.getByRole("button", { name: /Author|写入/ }));
   await wait(1200);
+
+  await checkpoint("the authored KIMI offering is visible in the catalog", async () => {
+    await expect(page.getByText("kimi-for-coding").first()).toBeVisible();
+  });
 
   await say("The catalog now carries the model — 262k context and all.", 3400);
   await clearCaption();
@@ -37,9 +43,19 @@ export async function run({ page, goto, say, clearCaption, click, type, wait }) 
     await say("The console never reads a stored secret back — it only ever writes one in.", 4000);
     await click(modal.getByRole("button", { name: /Seal & save|密封保存/ }));
     await wait(1500);
-    await say("Sealed. The model is now runnable — provider, endpoint, offering, and key.", 3800);
+    await checkpoint("the sealed credential is accepted", async () => {
+      await expect(page.locator(".toast").filter({ hasText: /saved|sealed|已保存|密封/i })).toBeVisible();
+    });
   } else {
-    await say("(No key supplied — the seal step is shown but skipped.)", 3000);
+    await say("No key supplied for this recording, so the write-only secret form is left untouched.", 3400);
+    await page.keyboard.press("Escape");
+    await goto("/w/default/models");
+    await checkpoint("the model remains an explicit catalog entry without exposing a secret", async () => {
+      await expect(page.getByText("kimi-for-coding").first()).toBeVisible();
+    });
   }
+  await aha(KEY
+    ? "A runnable model is a versioned catalog entry plus a secret the console can write—but never read back."
+    : "Model supply is explicit and inspectable; secrets remain outside code.");
   await clearCaption();
 }
