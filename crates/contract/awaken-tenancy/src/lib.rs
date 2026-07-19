@@ -154,6 +154,52 @@ pub enum ScopeRejection {
     NoAuthority,
 }
 
+/// Data-independent reconciliation result used by [`resolve_scope`]. Keeping the
+/// policy over indices makes the security-critical decision independent of the
+/// representation used for scope identifiers, and gives formal verification a
+/// finite production kernel to exhaustively explore.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Resolution {
+    Authority(usize),
+    Selection(usize),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KernelRejection {
+    NotAuthorized(usize),
+    SelectionRequired,
+    NoAuthority,
+}
+
+fn resolve_indices<T: Eq>(
+    authority: &[T],
+    selections: &[T],
+) -> Result<Resolution, KernelRejection> {
+    if authority.is_empty() {
+        return Err(KernelRejection::NoAuthority);
+    }
+    if selections.is_empty() {
+        return if authority.len() == 1 {
+            Ok(Resolution::Authority(0))
+        } else {
+            Err(KernelRejection::SelectionRequired)
+        };
+    }
+    for (index, selected) in selections.iter().enumerate() {
+        if !authority.iter().any(|scope| scope == selected) {
+            return Err(KernelRejection::NotAuthorized(index));
+        }
+    }
+    if selections[1..]
+        .iter()
+        .all(|selected| selected == &selections[0])
+    {
+        Ok(Resolution::Selection(0))
+    } else {
+        Err(KernelRejection::SelectionRequired)
+    }
+}
+
 impl std::fmt::Display for ScopeRejection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -194,35 +240,18 @@ pub fn resolve_scope(
     authority: &Authority,
     claims: &[ScopeClaim],
 ) -> Result<ScopeId, ScopeRejection> {
-    if authority.reachable.is_empty() {
-        return Err(ScopeRejection::NoAuthority);
-    }
     // Collect EVERY selecting vehicle (path/domain); the token is authority, never a
     // selection. First-wins would let a disagreeing, unauthorized second selector
     // slip through unchecked (fail-open), so each selector is reconciled below.
     let selections: Vec<ScopeId> = claims.iter().filter_map(ScopeClaim::selection).collect();
-    let Some((first, rest)) = selections.split_first() else {
-        // No selection: a singleton authority resolves to its sole scope; a broader
-        // one is ambiguous and must be named.
-        return match authority.reachable.as_slice() {
-            [only] => Ok(only.clone()),
-            _ => Err(ScopeRejection::SelectionRequired),
-        };
-    };
-    // Fail closed on ANY uncovered selector, even if an earlier one was authorized —
-    // an unauthorized selector is never masked by an authorized peer.
-    for selected in &selections {
-        if !authority.covers(selected) {
-            return Err(ScopeRejection::NotAuthorized {
-                selected: selected.clone(),
-            });
-        }
-    }
-    // All covered — they must also agree on one target; a disagreement is ambiguous.
-    if rest.iter().all(|s| s == first) {
-        Ok(first.clone())
-    } else {
-        Err(ScopeRejection::SelectionRequired)
+    match resolve_indices(&authority.reachable, &selections) {
+        Ok(Resolution::Authority(index)) => Ok(authority.reachable[index].clone()),
+        Ok(Resolution::Selection(index)) => Ok(selections[index].clone()),
+        Err(KernelRejection::NotAuthorized(index)) => Err(ScopeRejection::NotAuthorized {
+            selected: selections[index].clone(),
+        }),
+        Err(KernelRejection::SelectionRequired) => Err(ScopeRejection::SelectionRequired),
+        Err(KernelRejection::NoAuthority) => Err(ScopeRejection::NoAuthority),
     }
 }
 
@@ -490,6 +519,49 @@ mod tests {
             Err(ScopeRejection::NotAuthorized {
                 selected: ws("ws_evil")
             })
+        );
+    }
+}
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    #[kani::proof]
+    fn successful_scope_resolution_never_widens_authority() {
+        let authority = [kani::any::<u8>(), kani::any::<u8>()];
+        let selections = [kani::any::<u8>(), kani::any::<u8>()];
+
+        if let Ok(Resolution::Selection(index)) = resolve_indices(&authority, &selections) {
+            let resolved = selections[index];
+            assert!(authority.contains(&resolved));
+            assert!(selections.iter().all(|selected| *selected == resolved));
+        }
+    }
+
+    #[kani::proof]
+    fn any_uncovered_selector_fails_closed() {
+        let authorized = kani::any::<u8>();
+        let unauthorized = kani::any::<u8>();
+        kani::assume(unauthorized != authorized);
+        let authority = [authorized];
+        let selections = [authorized, unauthorized];
+        assert!(matches!(
+            resolve_indices(&authority, &selections),
+            Err(KernelRejection::NotAuthorized(1))
+        ));
+    }
+
+    #[kani::proof]
+    fn selector_order_cannot_change_an_authorized_result() {
+        let a = kani::any::<u8>();
+        let b = kani::any::<u8>();
+        let authority = [a, b];
+        let left = [a, b];
+        let right = [b, a];
+        assert_eq!(
+            resolve_indices(&authority, &left).is_ok(),
+            resolve_indices(&authority, &right).is_ok()
         );
     }
 }

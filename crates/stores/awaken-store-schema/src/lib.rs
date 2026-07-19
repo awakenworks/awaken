@@ -76,14 +76,78 @@ const COMMIT_SPECS: [(i64, &str, &str); 6] = [
     ),
 ];
 
+/// Portable migration-plan invariant shared by every bundle audit: versions are
+/// the dense positive prefix `1..=n`. A dense stream is intentionally stronger
+/// than merely increasing, preventing a skipped migration from being silently
+/// treated as already applied.
+#[must_use]
+pub fn versions_are_dense_from_one(versions: &[i64]) -> bool {
+    versions
+        .iter()
+        .enumerate()
+        .all(|(index, version)| *version == index as i64 + 1)
+}
+
+/// One migration-runner decision over abstract versions. It advances by at most
+/// one available version, never rolls back, and becomes an idempotent no-op at the
+/// tip. Concrete runners repeat this kernel until `applied == available`.
+#[must_use]
+pub const fn migration_step(applied: u32, available: u32) -> u32 {
+    if applied < available {
+        applied + 1
+    } else {
+        applied
+    }
+}
+
 /// Build the commit-schema migration bundle. The version stream is independent
 /// and strictly increasing; later schema changes append new specs.
 pub fn commit_bundle() -> Result<MigrationBundle, MigrationError> {
+    let versions = COMMIT_SPECS.map(|(version, _, _)| version);
+    assert!(
+        versions_are_dense_from_one(&versions),
+        "runtime commit migrations must be a dense prefix"
+    );
     let migrations = COMMIT_SPECS
         .iter()
         .map(|(version, description, sql)| Migration::new(*version, *description, *sql))
         .collect::<Result<Vec<_>, _>>()?;
     MigrationBundle::new(COMMIT_BUNDLE_ID, migrations)
+}
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    #[kani::proof]
+    fn dense_migration_versions_are_strictly_increasing() {
+        let versions = [
+            kani::any::<i64>(),
+            kani::any::<i64>(),
+            kani::any::<i64>(),
+            kani::any::<i64>(),
+        ];
+        if versions_are_dense_from_one(&versions) {
+            assert!(versions.windows(2).all(|pair| pair[0] < pair[1]));
+        }
+    }
+
+    #[kani::proof]
+    fn migration_step_never_rolls_back_or_skips_a_version() {
+        let applied = kani::any::<u32>();
+        let available = kani::any::<u32>();
+        let next = migration_step(applied, available);
+        assert!(next >= applied);
+        assert!(next <= applied.saturating_add(1));
+    }
+
+    #[kani::proof]
+    fn replaying_a_fully_applied_migration_plan_is_a_noop() {
+        let version = kani::any::<u32>();
+        assert_eq!(migration_step(version, version), version);
+        let older_plan = version.saturating_sub(1);
+        assert_eq!(migration_step(version, older_plan), version);
+    }
 }
 
 #[cfg(test)]

@@ -71,5 +71,10 @@ pub fn config_bundle() -> Result<MigrationBundle, MigrationError> {
         "CREATE INDEX IF NOT EXISTS {prefix}_publication_created_at_idx \
          ON {prefix}_publication (created_at)",
     )?);
+    migrations.push(Migration::new(
+        6,
+        "agent configs: monotonic generation for atomic compare-and-set",
+        "ALTER TABLE {prefix}_agent ADD COLUMN generation BIGINT NOT NULL DEFAULT 1",
+    )?);
     MigrationBundle::new(BUNDLE_ID, migrations)
 }

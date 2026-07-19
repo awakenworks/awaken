@@ -47,6 +47,10 @@ const FILES: &[(&str, &str)] = &[
         "V0006__memory_store.sql",
         include_str!("migrations/V0006__memory_store.sql"),
     ),
+    (
+        "V0007__webhook_outbox.sql",
+        include_str!("migrations/V0007__webhook_outbox.sql"),
+    ),
 ];
 
 /// Parse the version from a `Vnnnn__slug.sql` file name (`V0005__…` ⇒ 5). A name
@@ -101,6 +105,6 @@ mod tests {
     fn versions_parse_contiguously_from_file_names() {
         let bundle = admin_bundle().expect("bundle builds");
         let versions: Vec<i64> = bundle.migrations().iter().map(|m| m.version()).collect();
-        assert_eq!(versions, (1..=6).collect::<Vec<_>>());
+        assert_eq!(versions, (1..=7).collect::<Vec<_>>());
     }
 }

@@ -30,7 +30,7 @@ pub mod telemetry;
 pub use stores::{
     InMemoryMcpStore, InMemoryMemoryStoreRegistry, InMemoryProfileStore, InMemoryResourceStore,
     InMemoryWebhookStore, InferenceProfileStore, McpStore, MemoryStoreDef, MemoryStoreRegistry,
-    ResourceStore, WebhookStore,
+    ResourceStore, WebhookOutboxEvent, WebhookStore,
 };
 pub use telemetry::{RedactionMode, TelemetryCeiling};
 

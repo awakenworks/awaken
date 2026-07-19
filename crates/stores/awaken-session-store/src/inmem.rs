@@ -16,16 +16,19 @@ use awaken_tenancy::ScopeId;
 
 #[derive(Default)]
 pub struct InMemorySessionRepository {
-    rows: Mutex<HashMap<String, PersistedSession>>,
+    rows: Mutex<HashMap<String, (PersistedSession, String)>>,
 }
 
 #[async_trait]
 impl ManagedSessionRepository for InMemorySessionRepository {
-    async fn save(&self, session: PersistedSession) {
+    async fn save_owned(&self, owner_scope: &str, session: PersistedSession) {
         self.rows
             .lock()
             .expect("session repo mutex poisoned")
-            .insert(session.session_id.clone(), session);
+            .insert(
+                session.session_id.clone(),
+                (session, owner_scope.to_string()),
+            );
     }
 
     async fn get(&self, session_id: &str) -> Option<PersistedSession> {
@@ -33,7 +36,15 @@ impl ManagedSessionRepository for InMemorySessionRepository {
             .lock()
             .expect("session repo mutex poisoned")
             .get(session_id)
-            .cloned()
+            .map(|(session, _)| session.clone())
+    }
+
+    async fn owner(&self, session_id: &str) -> Option<String> {
+        self.rows
+            .lock()
+            .expect("session repo mutex poisoned")
+            .get(session_id)
+            .map(|(_, owner)| owner.clone())
     }
 }
 
@@ -106,17 +117,14 @@ mod tests {
         assert_eq!(repo.get("s1").await, Some(updated));
     }
 
-    // Item 3: the tenancy-owner hooks default to no-op / None on the in-memory repo
-    // (same-process ownership lives in `ManagedState`'s index, not this store).
+    // The row and owner share one lock/update, matching the durable adapters'
+    // single-statement invariant.
     #[tokio::test]
-    async fn in_memory_repo_owner_defaults_are_noop_and_none() {
+    async fn in_memory_repo_persists_owner_atomically() {
         let repo = InMemorySessionRepository::default();
-        repo.save(session("s1")).await;
-        // `set_owner` is a no-op that must not error or affect `get`.
-        repo.set_owner("s1", "ws_a").await;
+        repo.save_owned("ws_a", session("s1")).await;
         assert_eq!(repo.get("s1").await, Some(session("s1")));
-        // `owner` reports nothing for a backend that records no scope.
-        assert_eq!(repo.owner("s1").await, None);
+        assert_eq!(repo.owner("s1").await.as_deref(), Some("ws_a"));
     }
 
     // Item 6: `PersistedSession` equality + a serde-free structural round-trip through

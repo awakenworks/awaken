@@ -4,11 +4,12 @@
 //! the seal-failure / missing-url faults.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use awaken_agent_contract::RedactedString;
-use awaken_config_resolver::{WebhookEndpointDef, WebhookStore};
+use awaken_config_resolver::{WebhookEndpointDef, WebhookOutboxEvent, WebhookStore};
 use awaken_credential_vault::{CredentialError, SecretRef, SecretStore};
 use awaken_session_contract::SessionLifecycleSink;
 use awaken_tenancy::WorkspaceScope;
@@ -25,7 +26,10 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 #[derive(Default)]
-struct MemStore(Mutex<HashMap<String, WebhookEndpointDef>>);
+struct MemStore(
+    Mutex<HashMap<String, WebhookEndpointDef>>,
+    Mutex<HashMap<String, WebhookOutboxEvent>>,
+);
 
 impl WebhookStore for MemStore {
     fn put(&self, def: WebhookEndpointDef) {
@@ -45,6 +49,20 @@ impl WebhookStore for MemStore {
     }
     fn delete(&self, id: &str) -> bool {
         self.0.lock().unwrap().remove(id).is_some()
+    }
+    fn enqueue_outbox(&self, event: WebhookOutboxEvent) -> bool {
+        let mut rows = self.1.lock().unwrap();
+        if rows.contains_key(&event.id) {
+            return false;
+        }
+        rows.insert(event.id.clone(), event);
+        true
+    }
+    fn pending_outbox(&self) -> Vec<WebhookOutboxEvent> {
+        self.1.lock().unwrap().values().cloned().collect()
+    }
+    fn complete_outbox(&self, event_id: &str) -> bool {
+        self.1.lock().unwrap().remove(event_id).is_some()
     }
 }
 
@@ -89,6 +107,10 @@ impl SecretStore for MemSecrets {
             .get(&r.0)
             .map(|s| RedactedString::new(s.clone()))
             .ok_or_else(|| CredentialError::SecretNotFound(r.0.clone()))
+    }
+    async fn delete(&self, r: &SecretRef) -> Result<(), CredentialError> {
+        self.map.lock().unwrap().remove(&r.0);
+        Ok(())
     }
 }
 
@@ -517,6 +539,129 @@ impl SubscriptionSource for OneSubSource {
         }]
     }
     async fn disable(&self, _id: &str) {}
+}
+
+struct CountingStatusSender {
+    calls: Arc<AtomicUsize>,
+    status: Result<u16, String>,
+}
+
+#[async_trait]
+impl WebhookSender for CountingStatusSender {
+    async fn post(&self, _u: &str, _h: Vec<(String, String)>, _b: String) -> Result<u16, String> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.status.clone()
+    }
+}
+
+async fn wait_for_calls(calls: &AtomicUsize, expected: usize) {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while calls.load(Ordering::SeqCst) < expected {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("webhook attempts within the deadline");
+}
+
+#[tokio::test]
+async fn a_stable_fact_id_is_enqueued_and_delivered_only_once_per_pending_row() {
+    let store = Arc::new(MemStore::default());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let dispatcher = Arc::new(WebhookDispatcher::new(
+        Arc::new(OneSubSource(awaken_webhook::generate_secret())),
+        Arc::new(CountingStatusSender {
+            calls: calls.clone(),
+            status: Ok(200),
+        }),
+    ));
+    let sink =
+        WebhookLifecycleSink::with_outbox(dispatcher, None, store.clone() as Arc<dyn WebhookStore>);
+
+    sink.emit_fact(
+        "session:sesn_1:created",
+        "sesn_1",
+        Some("ws_a"),
+        "session.created",
+    )
+    .await;
+    sink.emit_fact(
+        "session:sesn_1:created",
+        "sesn_1",
+        Some("ws_a"),
+        "session.created",
+    )
+    .await;
+    wait_for_calls(&calls, 1).await;
+    tokio::task::yield_now().await;
+
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(
+        store.pending_outbox().is_empty(),
+        "successful delivery retires the row"
+    );
+}
+
+#[tokio::test]
+async fn failed_delivery_keeps_the_stable_fact_pending_for_recovery() {
+    let store = Arc::new(MemStore::default());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let dispatcher = Arc::new(WebhookDispatcher::new(
+        Arc::new(OneSubSource(awaken_webhook::generate_secret())),
+        Arc::new(CountingStatusSender {
+            calls: calls.clone(),
+            status: Err("injected outage".into()),
+        }),
+    ));
+    let sink =
+        WebhookLifecycleSink::with_outbox(dispatcher, None, store.clone() as Arc<dyn WebhookStore>);
+
+    sink.emit_fact(
+        "session:sesn_1:archived",
+        "sesn_1",
+        Some("ws_a"),
+        "session.archived",
+    )
+    .await;
+    wait_for_calls(&calls, 3).await;
+    tokio::task::yield_now().await;
+
+    let pending = store.pending_outbox();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].id, "session:sesn_1:archived");
+    assert_eq!(pending[0].object_id, "sesn_1");
+}
+
+#[tokio::test]
+async fn rebuilding_the_sink_drains_rows_left_by_the_prior_process() {
+    let store = Arc::new(MemStore::default());
+    store.enqueue_outbox(WebhookOutboxEvent {
+        id: "session:sesn_1:deleted".into(),
+        created_at: "2026-07-19T00:00:00Z".into(),
+        event_type: "session.deleted".into(),
+        object_id: "sesn_1".into(),
+        workspace_id: "ws_a".into(),
+        organization_id: None,
+        timestamp: 1_768_780_800,
+    });
+    let calls = Arc::new(AtomicUsize::new(0));
+    let dispatcher = Arc::new(WebhookDispatcher::new(
+        Arc::new(OneSubSource(awaken_webhook::generate_secret())),
+        Arc::new(CountingStatusSender {
+            calls: calls.clone(),
+            status: Ok(200),
+        }),
+    ));
+
+    let _rebuilt =
+        WebhookLifecycleSink::with_outbox(dispatcher, None, store.clone() as Arc<dyn WebhookStore>);
+    wait_for_calls(&calls, 1).await;
+    tokio::task::yield_now().await;
+
+    assert!(
+        store.pending_outbox().is_empty(),
+        "startup recovery retires a successfully redelivered row"
+    );
 }
 
 #[tokio::test]

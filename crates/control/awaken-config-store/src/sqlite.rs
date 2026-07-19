@@ -10,7 +10,8 @@ use awaken_tenancy::ScopeId;
 use crate::config::AgentConfig;
 use crate::schema::config_bundle;
 use crate::store::{
-    ConfigRegistry, ConfigStoreError, DEFAULT_SCOPE, ScopedConfigRegistry, StoredPublication,
+    ConfigRegistry, ConfigStoreError, ConfigWrite, DEFAULT_SCOPE, ScopedConfigRegistry,
+    StoredPublication, VersionedAgentConfig,
 };
 
 /// The config component's table namespace (ADR-0029/ADR-0031). Built in.
@@ -92,14 +93,55 @@ impl ScopedConfigRegistry for SqliteConfigStore {
             // write updates the data.
             conn.execute(
                 &format!(
-                    "INSERT INTO {p}_agent (id, data, scope_id) VALUES (?1, ?2, ?3) \
-                     ON CONFLICT(id) DO UPDATE SET data = excluded.data \
+                    "INSERT INTO {p}_agent (id, data, scope_id, generation) VALUES (?1, ?2, ?3, 1) \
+                     ON CONFLICT(id) DO UPDATE SET data = excluded.data, \
+                     generation = {p}_agent.generation + 1 \
                      WHERE {p}_agent.scope_id = excluded.scope_id"
                 ),
                 params![id, data, scope],
             )
             .map_err(reject)?;
             Ok(())
+        })
+        .await
+    }
+
+    async fn put_config_if_generation_scoped(
+        &self,
+        scope: &ScopeId,
+        config: &AgentConfig,
+        expected_generation: u64,
+    ) -> Result<ConfigWrite, ConfigStoreError> {
+        let id = config.id.clone();
+        let data = serde_json::to_string(config).map_err(reject)?;
+        let scope = scope.0.clone();
+        self.with_conn(move |conn, p| {
+            let changed = conn
+                .execute(
+                    &format!(
+                        "INSERT INTO {p}_agent (id, data, scope_id, generation) \
+                         VALUES (?1, ?2, ?3, 1) ON CONFLICT(id) DO UPDATE SET \
+                         data = excluded.data, generation = {p}_agent.generation + 1 \
+                         WHERE {p}_agent.scope_id = excluded.scope_id \
+                         AND {p}_agent.generation = ?4"
+                    ),
+                    params![id, data, scope, expected_generation],
+                )
+                .map_err(reject)?;
+            if changed == 1 {
+                return Ok(ConfigWrite::Applied {
+                    generation: expected_generation.saturating_add(1).max(1),
+                });
+            }
+            let current_generation = conn
+                .query_row(
+                    &format!("SELECT generation FROM {p}_agent WHERE id = ?1 AND scope_id = ?2"),
+                    params![id, scope],
+                    |row| row.get::<_, u64>(0),
+                )
+                .optional()
+                .map_err(reject)?;
+            Ok(ConfigWrite::Conflict { current_generation })
         })
         .await
     }
@@ -122,6 +164,35 @@ impl ScopedConfigRegistry for SqliteConfigStore {
                 .map_err(reject)?;
             data.map(|s| serde_json::from_str(&s).map_err(reject))
                 .transpose()
+        })
+        .await
+    }
+
+    async fn get_config_versioned_scoped(
+        &self,
+        scope: &ScopeId,
+        id: &str,
+    ) -> Result<Option<VersionedAgentConfig>, ConfigStoreError> {
+        let id = id.to_string();
+        let scope = scope.0.clone();
+        self.with_conn(move |conn, p| {
+            let row: Option<(String, u64)> = conn
+                .query_row(
+                    &format!(
+                        "SELECT data, generation FROM {p}_agent WHERE id = ?1 AND scope_id = ?2"
+                    ),
+                    params![id, scope],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(reject)?;
+            row.map(|(data, generation)| {
+                Ok(VersionedAgentConfig {
+                    config: serde_json::from_str(&data).map_err(reject)?,
+                    generation,
+                })
+            })
+            .transpose()
         })
         .await
     }
@@ -170,6 +241,46 @@ impl ScopedConfigRegistry for SqliteConfigStore {
             )
             .map_err(reject)?;
             Ok(())
+        })
+        .await
+    }
+
+    async fn put_publication_if_config_generation_scoped(
+        &self,
+        scope: &ScopeId,
+        publication: &StoredPublication,
+        expected_generation: u64,
+    ) -> Result<ConfigWrite, ConfigStoreError> {
+        let fingerprint = publication.fingerprint.clone();
+        let agent_id = publication.agent_id.clone();
+        let state = publication.state.as_str().to_string();
+        let record = serde_json::to_string(publication).map_err(reject)?;
+        let scope = scope.0.clone();
+        self.with_conn(move |conn, p| {
+            let tx = conn.transaction().map_err(reject)?;
+            let current_generation = tx
+                .query_row(
+                    &format!("SELECT generation FROM {p}_agent WHERE id = ?1 AND scope_id = ?2"),
+                    params![agent_id, scope],
+                    |row| row.get::<_, u64>(0),
+                )
+                .optional()
+                .map_err(reject)?;
+            if current_generation != Some(expected_generation) {
+                return Ok(ConfigWrite::Conflict { current_generation });
+            }
+            tx.execute(
+                &format!(
+                    "INSERT INTO {p}_publication (fingerprint, agent_id, state, record, scope_id) \
+                     VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT(fingerprint) DO NOTHING"
+                ),
+                params![fingerprint, agent_id, state, record, scope],
+            )
+            .map_err(reject)?;
+            tx.commit().map_err(reject)?;
+            Ok(ConfigWrite::Applied {
+                generation: expected_generation,
+            })
         })
         .await
     }
@@ -235,8 +346,29 @@ impl ConfigRegistry for SqliteConfigStore {
             .await
     }
 
+    async fn put_config_if_generation(
+        &self,
+        config: &AgentConfig,
+        expected_generation: u64,
+    ) -> Result<ConfigWrite, ConfigStoreError> {
+        self.put_config_if_generation_scoped(
+            &ScopeId::from(DEFAULT_SCOPE),
+            config,
+            expected_generation,
+        )
+        .await
+    }
+
     async fn get_config(&self, id: &str) -> Result<Option<AgentConfig>, ConfigStoreError> {
         self.get_config_scoped(&ScopeId::from(DEFAULT_SCOPE), id)
+            .await
+    }
+
+    async fn get_config_versioned(
+        &self,
+        id: &str,
+    ) -> Result<Option<VersionedAgentConfig>, ConfigStoreError> {
+        self.get_config_versioned_scoped(&ScopeId::from(DEFAULT_SCOPE), id)
             .await
     }
 
@@ -251,6 +383,19 @@ impl ConfigRegistry for SqliteConfigStore {
     ) -> Result<(), ConfigStoreError> {
         self.put_publication_scoped(&ScopeId::from(DEFAULT_SCOPE), publication)
             .await
+    }
+
+    async fn put_publication_if_config_generation(
+        &self,
+        publication: &StoredPublication,
+        expected_generation: u64,
+    ) -> Result<ConfigWrite, ConfigStoreError> {
+        self.put_publication_if_config_generation_scoped(
+            &ScopeId::from(DEFAULT_SCOPE),
+            publication,
+            expected_generation,
+        )
+        .await
     }
 
     async fn get_publication(

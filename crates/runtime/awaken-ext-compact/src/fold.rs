@@ -35,6 +35,35 @@ fn fold_prefix(committed_len: usize, keep_last: usize, triggered: bool) -> Optio
     if fold_to == 0 { None } else { Some(fold_to) }
 }
 
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    #[kani::proof]
+    fn fold_point_preserves_the_requested_suffix() {
+        let committed_len = kani::any::<usize>();
+        let threshold = kani::any::<usize>();
+        let keep_last = kani::any::<usize>();
+        if let Some(prefix) = fold_point(committed_len, threshold, keep_last) {
+            assert!(committed_len > threshold);
+            assert!(prefix > 0);
+            assert!(prefix <= committed_len);
+            assert_eq!(committed_len - prefix, keep_last.min(committed_len));
+        }
+    }
+
+    #[kani::proof]
+    fn fold_point_is_present_exactly_when_triggered_with_nonempty_prefix() {
+        let committed_len = kani::any::<usize>();
+        let threshold = kani::any::<usize>();
+        let keep_last = kani::any::<usize>();
+        assert_eq!(
+            fold_point(committed_len, threshold, keep_last).is_some(),
+            committed_len > threshold && committed_len > keep_last
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

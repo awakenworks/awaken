@@ -26,6 +26,7 @@ pub struct RemoteToolExecutor<S> {
     framed: Mutex<Framed<S, LengthDelimitedCodec>>,
     next_id: AtomicU64,
     catalog_fingerprint: Option<String>,
+    operation_scope: Option<String>,
 }
 
 impl<S> RemoteToolExecutor<S>
@@ -38,7 +39,16 @@ where
             framed: Mutex::new(Framed::new(channel, LengthDelimitedCodec::new())),
             next_id: AtomicU64::new(1),
             catalog_fingerprint: None,
+            operation_scope: None,
         }
+    }
+
+    /// Namespace stable operation ids by the owning run/session when one hand
+    /// ledger serves more than one execution scope.
+    #[must_use]
+    pub fn with_operation_scope(mut self, scope: impl Into<String>) -> Self {
+        self.operation_scope = Some(scope.into());
+        self
     }
 
     /// Stamp every request with the run's catalog fingerprint so the hand can
@@ -57,8 +67,13 @@ where
     /// success or failure.
     pub async fn call_hand(&self, call: &ToolCall) -> HandResult {
         let correlation_id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let operation_id = self.operation_scope.as_ref().map_or_else(
+            || call.call_id.clone(),
+            |scope| format!("{scope}:{}", call.call_id),
+        );
         let request = HandRequest {
             correlation_id,
+            operation_id,
             catalog_fingerprint: self.catalog_fingerprint.clone(),
             deadline_unix_ms: None,
             call: call.clone(),
