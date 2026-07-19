@@ -867,6 +867,9 @@ fn seeded_instructions_are_authorable_and_mention_no_publish() {
             .to_lowercase()
             .contains("never publish")
     );
+    assert!(ADMIN_ASSISTANT_INSTRUCTIONS.contains("[read, written]"));
+    assert!(ADMIN_ASSISTANT_INSTRUCTIONS.contains("cooldown_steps"));
+    assert!(ADMIN_ASSISTANT_INSTRUCTIONS.contains("fact adapter"));
 }
 
 /// A validator that mimics the real default/tenant-scope catalog projection: the four

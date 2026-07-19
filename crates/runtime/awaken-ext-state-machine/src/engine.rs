@@ -12,7 +12,7 @@ use serde_json::Value;
 
 use crate::machine::{Emit, EmitTarget, Machine, MachineScope, Transition, ViolationAction};
 use crate::result::ToolResultView;
-use crate::state::FsmStore;
+use crate::state::{FsmStore, MachineInstance};
 
 fn store_for<'a>(scope: MachineScope, thread: &'a FsmStore, run: &'a FsmStore) -> &'a FsmStore {
     match scope {
@@ -79,6 +79,11 @@ pub fn gate_evaluate(
         };
         let store = store_for(machine.scope, thread, run);
         let current = current_state(machine, store, &key);
+        let render = instance_context(
+            tool_args.clone(),
+            current,
+            store.instance(&machine.name, &key),
+        );
 
         let mut matched_any = false;
         let mut allowed: Option<&str> = None;
@@ -116,7 +121,7 @@ pub fn gate_evaluate(
                 .on_violation
                 .reason
                 .as_ref()
-                .map(|r| r.render_lossy(tool_args))
+                .map(|r| r.render_lossy(&render))
                 .unwrap_or_else(|| default_reason(&machine.name, tool_name, current));
             out.push(MachineEval::Violation {
                 action: t.on_violation.action,
@@ -194,15 +199,32 @@ pub enum AdvanceOp {
         key: String,
         to: String,
     },
+    Update {
+        scope: MachineScope,
+        machine: String,
+        key: String,
+        initial: String,
+        data: Vec<(String, String)>,
+        increment: Vec<String>,
+        reset: Vec<String>,
+    },
     Emit {
         machine: String,
         key: String,
         reason: EmitReason,
         target: EmitTarget,
         content: String,
-        cooldown_turns: u32,
+        cooldown_steps: u32,
         role: Option<Role>,
     },
+}
+
+/// Generic non-tool event consumed by the same machine aggregate. Event names
+/// are configuration vocabulary; the core does not enumerate business events.
+#[derive(Debug, Clone, Copy)]
+pub struct MachineEventView<'a> {
+    pub name: &'a str,
+    pub data: &'a Value,
 }
 
 /// Why a context message was emitted.
@@ -229,17 +251,24 @@ pub fn advance_evaluate(
         };
         let store = store_for(machine.scope, thread, run);
         let current = current_state(machine, store, &key);
+        let render = instance_context(
+            tool_context(tool_name, tool_args, result),
+            current,
+            store.instance(&machine.name, &key),
+        );
 
         let from_ok: Vec<&Transition> = machine
             .matching_transitions(tool_name, tool_args)
-            .filter(|t| t.allows_from(current))
+            .filter(|t| {
+                t.allows_from(current) && counters_match(t, store.instance(&machine.name, &key))
+            })
             .collect();
 
         if !from_ok.is_empty() {
             let fired = from_ok.iter().copied().find(|t| t.result_matches(result));
             match fired {
                 Some(t) => {
-                    if t.to != current {
+                    if t.to != current || store.instance(&machine.name, &key).is_none() {
                         out.push(AdvanceOp::Transition {
                             scope: machine.scope,
                             machine: machine.name.clone(),
@@ -247,8 +276,9 @@ pub fn advance_evaluate(
                             to: t.to.clone(),
                         });
                     }
+                    push_update(&mut out, machine, &key, t, &render);
                     if let Some(emit) = &t.emit {
-                        out.push(emit_op(&machine.name, &key, emit, tool_args));
+                        out.push(emit_op(&machine.name, &key, emit, &render));
                     }
                 }
                 None => {
@@ -273,7 +303,7 @@ pub fn advance_evaluate(
                 .on_violation
                 .reason
                 .as_ref()
-                .map(|r| r.render_lossy(tool_args))
+                .map(|r| r.render_lossy(&render))
                 .unwrap_or_else(|| default_reason(&machine.name, tool_name, current));
             out.push(AdvanceOp::Emit {
                 machine: machine.name.clone(),
@@ -281,12 +311,152 @@ pub fn advance_evaluate(
                 reason: EmitReason::Warning,
                 target: EmitTarget::SuffixSystem,
                 content: reason,
-                cooldown_turns: 0,
+                cooldown_steps: 0,
                 role: None,
             });
         }
     }
     out
+}
+
+/// Evaluate a generic runtime event. Unlike a tool transition this is a single
+/// atomic phase: matching, state/data/counter updates, then optional reminder.
+#[must_use]
+pub fn event_evaluate(
+    machines: &[Machine],
+    thread: &FsmStore,
+    run: &FsmStore,
+    event: MachineEventView<'_>,
+) -> Vec<AdvanceOp> {
+    let mut out = Vec::new();
+    for machine in machines {
+        let event_render = event_context(event);
+        let Some(key) = machine.render_key(&event_render) else {
+            continue;
+        };
+        let store = store_for(machine.scope, thread, run);
+        let current = current_state(machine, store, &key);
+        let render = instance_context(event_render, current, store.instance(&machine.name, &key));
+        let Some(transition) = machine
+            .matching_event_transitions(event.name, event.data)
+            .find(|transition| {
+                transition.allows_from(current)
+                    && counters_match(transition, store.instance(&machine.name, &key))
+            })
+        else {
+            continue;
+        };
+
+        if transition.to != current || store.instance(&machine.name, &key).is_none() {
+            out.push(AdvanceOp::Transition {
+                scope: machine.scope,
+                machine: machine.name.clone(),
+                key: key.clone(),
+                to: transition.to.clone(),
+            });
+        }
+        push_update(&mut out, machine, &key, transition, &render);
+        if let Some(emit) = &transition.emit {
+            out.push(emit_op(&machine.name, &key, emit, &render));
+        }
+    }
+    out
+}
+
+fn counters_match(transition: &Transition, instance: Option<&MachineInstance>) -> bool {
+    transition.counters.iter().all(|(name, condition)| {
+        let value = instance
+            .and_then(|instance| instance.counters.get(name))
+            .copied()
+            .unwrap_or_default();
+        condition.matches(value)
+    })
+}
+
+fn push_update(
+    out: &mut Vec<AdvanceOp>,
+    machine: &Machine,
+    key: &str,
+    transition: &Transition,
+    context: &Value,
+) {
+    if transition.update.capture.is_empty()
+        && transition.update.increment.is_empty()
+        && transition.update.reset.is_empty()
+    {
+        return;
+    }
+    let data = transition
+        .update
+        .capture
+        .iter()
+        .map(|(name, template)| (name.clone(), template.render_lossy(context)))
+        .collect();
+    out.push(AdvanceOp::Update {
+        scope: machine.scope,
+        machine: machine.name.clone(),
+        key: key.to_string(),
+        initial: machine.initial.clone(),
+        data,
+        increment: transition.update.increment.clone(),
+        reset: transition.update.reset.clone(),
+    });
+}
+
+fn event_context(event: MachineEventView<'_>) -> Value {
+    let mut context = match event.data {
+        Value::Object(map) => map.clone(),
+        value => serde_json::Map::from_iter([("value".to_string(), value.clone())]),
+    };
+    context.insert(
+        "event".to_string(),
+        serde_json::json!({ "name": event.name, "data": event.data }),
+    );
+    Value::Object(context)
+}
+
+fn instance_context(
+    mut context: Value,
+    current: &str,
+    instance: Option<&MachineInstance>,
+) -> Value {
+    let Value::Object(ref mut map) = context else {
+        return context;
+    };
+    map.insert(
+        "instance".to_string(),
+        serde_json::json!({
+            "state": current,
+            "data": instance.map(|value| &value.data).cloned().unwrap_or_default(),
+            "counters": instance
+                .map(|value| &value.counters)
+                .cloned()
+                .unwrap_or_default(),
+        }),
+    );
+    context
+}
+
+fn tool_context(tool_name: &str, tool_args: &Value, result: &ToolResultView<'_>) -> Value {
+    let mut context = match tool_args {
+        Value::Object(map) => map.clone(),
+        value => serde_json::Map::from_iter([("arguments".to_string(), value.clone())]),
+    };
+    let result_content = serde_json::from_str::<Value>(result.content)
+        .unwrap_or_else(|_| Value::String(result.content.to_string()));
+    context.insert(
+        "event".to_string(),
+        serde_json::json!({
+            "name": "tool.result",
+            "data": {
+                "tool": tool_name,
+                "arguments": tool_args,
+                "is_error": result.is_error,
+                "content": result_content,
+            }
+        }),
+    );
+    Value::Object(context)
 }
 
 fn emit_op(machine: &str, key: &str, emit: &Emit, tool_args: &Value) -> AdvanceOp {
@@ -296,7 +466,7 @@ fn emit_op(machine: &str, key: &str, emit: &Emit, tool_args: &Value) -> AdvanceO
         reason: EmitReason::Transition,
         target: emit.target,
         content: emit.content.render_lossy(tool_args),
-        cooldown_turns: emit.cooldown_turns,
+        cooldown_steps: emit.cooldown_steps,
         role: emit.role,
     }
 }
@@ -321,7 +491,7 @@ mod tests {
             "name":"rbw","scope":"thread","key":"{file_path}","initial":"unread",
             "transitions":[
                 {"on":"Read(file_path ~ \"*\")","from":["unread","written","read"],"to":"read"},
-                {"on":"Write(file_path ~ \"*\")","from":"read","to":"written",
+                {"on":"Write(file_path ~ \"*\")","from":["read","written"],"to":"written",
                  "on_violation":{"action":"deny","reason":"Read {file_path} before writing."}}
             ]}]}"#,
         )
@@ -394,6 +564,20 @@ mod tests {
     }
 
     #[test]
+    fn repeated_write_after_one_read_is_allowed() {
+        let thread = advanced("rbw", "a.rs", "written");
+        let run = FsmStore::default();
+        let evals = gate_evaluate(
+            &read_before_write(),
+            &thread,
+            &run,
+            "Write",
+            &json!({"file_path":"a.rs"}),
+        );
+        assert!(gate_decision(&evals).is_none());
+    }
+
+    #[test]
     fn path_normalized_keys_share_instance() {
         let ms = machines(
             r#"{"machines":[{"name":"rbw","scope":"thread","key":"{file_path}",
@@ -435,7 +619,7 @@ mod tests {
     }
 
     #[test]
-    fn advance_read_moves_to_read_and_self_loop_noop() {
+    fn advance_read_moves_to_read_and_self_loop_preserves_materialized_instance() {
         let ms = read_before_write();
         let (thread, run) = (FsmStore::default(), FsmStore::default());
         let ops = advance_evaluate(
@@ -457,7 +641,159 @@ mod tests {
             &json!({"file_path":"a.rs"}),
             &ok("x"),
         );
-        assert!(ops.is_empty());
+        assert!(ops.is_empty(), "an existing no-update self-loop is a no-op");
+    }
+
+    #[test]
+    fn event_transition_materializes_updates_and_emits_after_counter_threshold() {
+        let ms = machines(
+            r#"{"machines":[{"name":"todo","scope":"thread","key":"","initial":"tracking",
+                "transitions":[
+                  {"on":{"event":"step.after_inference"},"from":"tracking","to":"tracking",
+                   "update":{"increment":["steps"]}},
+                  {"on":{"event":"step.before_inference"},"from":"tracking","to":"tracking",
+                   "counters":{"steps":{"gte":1}},
+                   "emit":{"target":"context","content":"review todos at {step}"},
+                   "update":{"reset":["steps"]}}
+                ]}]}"#,
+        );
+        let mut thread = FsmStore::default();
+        let run = FsmStore::default();
+        let after = json!({"step": 0});
+        let ops = event_evaluate(
+            &ms,
+            &thread,
+            &run,
+            MachineEventView {
+                name: "step.after_inference",
+                data: &after,
+            },
+        );
+        assert!(matches!(ops[0], AdvanceOp::Transition { .. }));
+        for op in ops {
+            match op {
+                AdvanceOp::Transition {
+                    machine, key, to, ..
+                } => {
+                    thread.mutate(crate::state::InstanceMutation {
+                        machine,
+                        key,
+                        initial: "tracking".into(),
+                        to: Some(to),
+                        data: vec![],
+                        increment: vec![],
+                        reset: vec![],
+                    });
+                }
+                AdvanceOp::Update {
+                    machine,
+                    key,
+                    initial,
+                    data,
+                    increment,
+                    reset,
+                    ..
+                } => thread.mutate(crate::state::InstanceMutation {
+                    machine,
+                    key,
+                    initial,
+                    to: None,
+                    data,
+                    increment,
+                    reset,
+                }),
+                AdvanceOp::Emit { .. } => {}
+            }
+        }
+        assert_eq!(thread.instance("todo", "").unwrap().counters["steps"], 1);
+
+        let before = json!({"step": 1});
+        let ops = event_evaluate(
+            &ms,
+            &thread,
+            &run,
+            MachineEventView {
+                name: "step.before_inference",
+                data: &before,
+            },
+        );
+        assert!(ops.iter().any(|op| matches!(
+            op,
+            AdvanceOp::Emit { target: EmitTarget::Context, content, .. }
+                if content == "review todos at 1"
+        )));
+    }
+
+    #[test]
+    fn captured_data_is_available_to_later_transition_templates() {
+        let ms = machines(
+            r#"{"machines":[{"name":"facts","scope":"thread","key":"","initial":"tracking",
+                "transitions":[
+                  {"on":{"event":"todo.changed"},"from":"tracking","to":"tracking",
+                   "update":{"capture":{"snapshot":"{event.data.snapshot}"}}},
+                  {"on":{"event":"step.before_inference"},"from":"tracking","to":"tracking",
+                   "emit":{"target":"context","content":"TODO: {instance.data.snapshot}"}}
+                ]}]}"#,
+        );
+        let mut thread = FsmStore::default();
+        let run = FsmStore::default();
+        let changed = json!({"snapshot": "ship backend"});
+        for op in event_evaluate(
+            &ms,
+            &thread,
+            &run,
+            MachineEventView {
+                name: "todo.changed",
+                data: &changed,
+            },
+        ) {
+            match op {
+                AdvanceOp::Transition {
+                    machine, key, to, ..
+                } => thread.mutate(crate::state::InstanceMutation {
+                    machine,
+                    key,
+                    initial: "tracking".into(),
+                    to: Some(to),
+                    data: vec![],
+                    increment: vec![],
+                    reset: vec![],
+                }),
+                AdvanceOp::Update {
+                    machine,
+                    key,
+                    initial,
+                    data,
+                    increment,
+                    reset,
+                    ..
+                } => thread.mutate(crate::state::InstanceMutation {
+                    machine,
+                    key,
+                    initial,
+                    to: None,
+                    data,
+                    increment,
+                    reset,
+                }),
+                AdvanceOp::Emit { .. } => {}
+            }
+        }
+
+        let before = json!({"step": 1});
+        let ops = event_evaluate(
+            &ms,
+            &thread,
+            &run,
+            MachineEventView {
+                name: "step.before_inference",
+                data: &before,
+            },
+        );
+        assert!(ops.iter().any(|op| matches!(
+            op,
+            AdvanceOp::Emit { content, .. } if content == "TODO: ship backend"
+        )));
     }
 
     fn test_flow() -> Vec<Machine> {

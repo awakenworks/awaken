@@ -4,7 +4,14 @@
 // emits a reminder and a ✕/⚠ badge when it denies/warns. A self-transition draws as a loop.
 // No graph library: hand-rolled SVG, sized for the small machines agents actually use.
 
-import { type SmMachine, fromList, machineStates } from "./state-machine-presets";
+import {
+  type SmMachine,
+  type SmTrigger,
+  fromList,
+  machineStates,
+  triggerKind,
+  triggerText,
+} from "./state-machine-presets";
 
 const COL_W = 168;
 const ROW_H = 70;
@@ -13,10 +20,12 @@ const NODE_H = 34;
 const PAD = 24;
 
 /** Shorten a tool pattern to its head, e.g. `Read(file_path ~ "*")` → `Read`, `*` → `any`. */
-function triggerLabel(on: string): string {
-  if (on.trim() === "*") return "any";
-  const head = on.split("(")[0].trim();
-  return head || on;
+function triggerLabel(on: SmTrigger): string {
+  const text = triggerText(on);
+  if (text.trim() === "*") return "any tool";
+  if (triggerKind(on) === "event") return text.replace("step.", "").replaceAll("_", " ");
+  const head = text.split("(")[0].trim();
+  return head || text;
 }
 
 /** Column per state = BFS shortest distance from `initial` (compact; back-edges don't
@@ -76,21 +85,18 @@ export default function StateDiagram({ machine }: { machine: SmMachine }) {
         <marker id="sm-arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
           <path d="M0,0 L7,3 L0,6 Z" fill="var(--fg3)" />
         </marker>
-        <marker id="sm-arrow-deny" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
-          <path d="M0,0 L7,3 L0,6 Z" fill="var(--danger)" />
-        </marker>
       </defs>
 
       {/* Edges first (under nodes). */}
       {machine.transitions.flatMap((t, ti) =>
         fromList(t.from).map((f, fi) => {
-          const deny = t.on_violation?.action === "deny";
-          const warn = t.on_violation?.action === "warn";
-          const stroke = deny ? "var(--danger)" : warn ? "var(--warn)" : "var(--fg3)";
-          const marker = deny ? "url(#sm-arrow-deny)" : "url(#sm-arrow)";
+          // on_violation applies when the current state is *outside* `from`;
+          // the rendered edge itself is allowed, so never color it as denied.
+          const stroke = "var(--fg3)";
+          const marker = "url(#sm-arrow)";
           const a = center(f);
           const b = center(t.to);
-          const badge = `${t.emit ? "📢" : ""}${deny ? " ✕" : warn ? " ⚠" : ""}`.trim();
+          const badge = t.emit ? "📢" : "";
           const key = `${ti}-${fi}`;
           if (f === t.to) {
             // Self-loop: an arc above the node.
@@ -105,7 +111,6 @@ export default function StateDiagram({ machine }: { machine: SmMachine }) {
                   stroke={stroke}
                   strokeWidth={1.4}
                   markerEnd={marker}
-                  strokeDasharray={deny || warn ? "4 3" : undefined}
                 />
                 <text x={cx} y={top - 30} textAnchor="middle" fontSize={10.5} fill="var(--fg2)">
                   {triggerLabel(t.on)} {badge}
@@ -129,7 +134,6 @@ export default function StateDiagram({ machine }: { machine: SmMachine }) {
                 stroke={stroke}
                 strokeWidth={1.4}
                 markerEnd={marker}
-                strokeDasharray={deny || warn ? "4 3" : undefined}
               />
               <text x={midx} y={midy} textAnchor="middle" fontSize={10.5} fill="var(--fg2)">
                 {triggerLabel(t.on)} {badge}

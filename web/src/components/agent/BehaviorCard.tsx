@@ -27,10 +27,10 @@ export const BEHAVIORS: Record<string, { title: string; zh: string; desc: string
     descZh: "按需把相关的长期记忆召回到上下文。",
   },
   state_machine: {
-    title: "Tool-call ordering & reminders",
-    zh: "工具顺序与提醒",
-    desc: "A state machine over tool calls: constrain their order (e.g. read a file before writing it) and/or emit periodic system reminders (background tasks, todos).",
-    descZh: "一台跑在工具调用上的状态机:约束调用顺序(如先读后写),并/或周期性注入 system reminder(后台任务、待办)。",
+    title: "Agent behavior state machine",
+    zh: "Agent 行为状态机",
+    desc: "Control tool preconditions, durable run/thread state, lifecycle facts, reminders, and completion constraints as agent configuration.",
+    descZh: "在 Agent 配置中统一控制工具前置条件、run/thread 持久状态、生命周期事实、reminder 与完成约束。",
   },
 };
 
