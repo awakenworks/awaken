@@ -19,6 +19,8 @@ thiserror.workspace = true
 [dev-dependencies]
 # The work-queue port's in-memory impl is exercised by `#[tokio::test]`s.
 tokio = { workspace = true, features = ["rt", "macros"] }
+# Property-based (formal) verification of the WorkState wire bijection (ADR-0059, issue C).
+proptest = { workspace = true }
 
 [lints]
 workspace = true

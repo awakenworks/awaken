@@ -99,6 +99,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "serde_json",
         "thiserror",
         "tokio",
+        # dev-only: property-based verification of the WorkState wire bijection (ADR-0059).
+        "proptest",
     },
     # Resources-plane ports (FileStore / MemoryBlobStore / MemoryFs / SkillStore) +
     # the value/error types in their signatures — mirrors awaken-provisioning-contract.

@@ -64,13 +64,11 @@ fn work_bundle() -> Result<MigrationBundle, MigrationError> {
 }
 
 fn state_from_wire(s: &str) -> WorkState {
-    match s {
-        "starting" => WorkState::Starting,
-        "active" => WorkState::Active,
-        "stopping" => WorkState::Stopping,
-        "stopped" => WorkState::Stopped,
-        _ => WorkState::Queued,
-    }
+    // Single source of truth (the exact inverse of `WorkState::as_str`, in the contract).
+    // An UNRECOGNIZED persisted state fails CLOSED to `Stopped` (terminal, never
+    // re-claimed) rather than the old silent `Queued` default — mapping a corrupt/newer
+    // state to `Queued` would re-dispatch it and double-execute (exactly-once violation).
+    WorkState::from_wire(s).unwrap_or(WorkState::Stopped)
 }
 
 fn data_of(data_type: &str, data_id: String) -> WorkPayload {
