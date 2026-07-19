@@ -861,6 +861,8 @@ fn seed_config_is_an_ordinary_auto_bound_config_naming_the_admin_tools() {
 #[test]
 fn seeded_instructions_are_authorable_and_mention_no_publish() {
     assert!(ADMIN_ASSISTANT_INSTRUCTIONS.contains("management assistant"));
+    assert!(ADMIN_ASSISTANT_INSTRUCTIONS.contains("self-contained visible answer"));
+    assert!(ADMIN_ASSISTANT_INSTRUCTIONS.contains("Never say the answer was given above"));
     // The no-publish safety invariant (case-insensitive — the prompt may emphasize it).
     assert!(
         ADMIN_ASSISTANT_INSTRUCTIONS

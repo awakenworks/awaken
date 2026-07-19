@@ -7,7 +7,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Button, Card, Pill } from "../ui";
 import type { ContentBlock, InboundEvent, SessionEvent } from "../../lib/api/types";
 import { useApp } from "../../lib/app-state";
-import { textOf } from "../../lib/session-log";
+import { sessionErrorText, textOf } from "../../lib/session-log";
 import { useSessionLog } from "../../lib/useSessionLog";
 
 function ToolCard({
@@ -235,12 +235,9 @@ export default function Transcript({
               />
             );
           case "session.status_running":
-            return (
-              <div key={ev.id} className="row mut" style={{ fontSize: 12 }}>
-                <span className="dot pulse" style={{ background: "var(--agent)" }} />
-                {app.t("Agent working", "Agent 工作中")}
-              </div>
-            );
+            // Historical running frames are facts for Trace, not permanent chat
+            // messages. The derived live indicator below is the only working state.
+            return null;
           case "session.status_idle": {
             const sr = ("stop_reason" in ev ? ev.stop_reason : { type: "?" }) as { type: string };
             if (sr.type === "end_turn") return null;
@@ -256,6 +253,17 @@ export default function Transcript({
               </div>
             );
           }
+          case "session.error":
+            return (
+              <div key={ev.id} className="banner warn" style={{ alignItems: "flex-start" }}>
+                <span>✕</span>
+                <span>
+                  <strong>{app.t("Run failed", "运行失败")}</strong>
+                  <br />
+                  {sessionErrorText(ev)}
+                </span>
+              </div>
+            );
           case "span.outcome_evaluation_start":
           case "span.outcome_evaluation_end":
             return (

@@ -23,8 +23,8 @@ export const BEHAVIORS: Record<string, { title: string; zh: string; desc: string
   memory: {
     title: "Memory recall",
     zh: "记忆召回",
-    desc: "Recall relevant long-term memories into context on demand.",
-    descZh: "按需把相关的长期记忆召回到上下文。",
+    desc: "Control what the background extractor remembers, then recall relevant long-term memory as bounded request context.",
+    descZh: "控制后台抽取器记住什么，再把相关长期记忆作为有界请求上下文召回。",
   },
   state_machine: {
     title: "Agent behavior state machine",

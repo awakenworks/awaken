@@ -5,6 +5,7 @@ import {
   mergeEvents,
   pairToolResults,
   pendingConfirmIds,
+  sessionErrorText,
   spanDurationMs,
   textOf,
   traceSpans,
@@ -113,5 +114,20 @@ describe("isRunning", () => {
   });
   it("is false for an empty log", () => {
     expect(isRunning([])).toBe(false);
+  });
+});
+
+describe("sessionErrorText", () => {
+  it("turns provider quota failures into an actionable message", () => {
+    expect(sessionErrorText(ev({
+      id: "e1",
+      type: "session.error",
+      error: { type: "model_request_failed_error", message: "403: usage limit reached for this quota" },
+    }))).toMatch(/quota is exhausted.*switch the credential or model/i);
+  });
+
+  it("preserves an ordinary runtime failure", () => {
+    expect(sessionErrorText(ev({ id: "e1", type: "session.error", error: { message: "worker disconnected" } })))
+      .toBe("worker disconnected");
   });
 });

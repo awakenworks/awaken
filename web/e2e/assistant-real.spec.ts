@@ -11,6 +11,10 @@ import { expect, test, type APIRequestContext } from "@playwright/test";
 //   Run:  KIMI_EXISTING_CREDENTIAL=1 pnpm exec playwright test assistant-real.spec.ts
 
 const KIMI = process.env.KIMI_KEY ?? "";
+const KIMI_UPSTREAM_MODEL = process.env.KIMI_MODEL ?? "kimi-for-coding";
+// Keep the catalog identity private to this real-provider suite. Reusing the
+// upstream name lets an earlier UI test's synthetic offering hijack resolution.
+const KIMI_MODEL = "e2e-real-kimi-for-coding";
 const USE_EXISTING_KIMI = process.env.KIMI_EXISTING_CREDENTIAL === "1";
 test.skip(!KIMI && !USE_EXISTING_KIMI, "needs KIMI_KEY or KIMI_EXISTING_CREDENTIAL=1");
 test.setTimeout(120_000);
@@ -20,7 +24,7 @@ test.setTimeout(120_000);
 async function configureKimi(request: APIRequestContext) {
   await request.put("/v1/config/providers/kimi", { data: { id: "kimi", slug: "kimi", display_name: "Kimi", version: 1 } });
   await request.put("/v1/config/endpoints/kimi-ep", { data: { id: "kimi-ep", provider_id: "kimi", dialect: "anthropic_messages", base_url: "https://api.kimi.com/coding/v1/", timeout_secs: 60, display_name: "Kimi", version: 1 } });
-  await request.post("/v1/config/offerings", { data: { model_id: "moonshot-v1-8k", provider_id: "kimi", protocol_endpoint_id: "kimi-ep", dialect: "anthropic_messages", upstream_model: null } });
+  await request.post("/v1/config/offerings", { data: { model_id: KIMI_MODEL, provider_id: "kimi", protocol_endpoint_id: "kimi-ep", dialect: "anthropic_messages", upstream_model: KIMI_UPSTREAM_MODEL } });
   if (KIMI) {
     await request.post("/v1/config/credentials", { data: { workspace_id: "wrkspc_default", kind: "vault", provider_id: "kimi", secret: KIMI } });
   }
@@ -42,7 +46,10 @@ test("Admin Assistant authors an agent with tools + a memory-store binding (real
   await composer.press("Enter");
 
   // The draft is a real unpublished agent → a status card with Open-in-editor appears.
-  await expect(page.getByRole("button", { name: /Open in editor|在编辑器打开/ }).first()).toBeVisible({ timeout: 90_000 });
+  const open = page.getByRole("button", { name: /Open in editor|在编辑器打开/ }).first();
+  const failed = page.getByText(/Run failed|运行失败|session\.error|retries_exhausted/).first();
+  await expect(open.or(failed)).toBeVisible({ timeout: 90_000 });
+  if (await failed.isVisible()) throw new Error(`Admin Assistant failed before drafting: ${await failed.textContent()}`);
 
   // The full config round-trips: the agent has the tools AND the resource binding.
   const cfg = await (await request.get(`/v1/config/agents/${agentId}`)).json();
@@ -70,6 +77,7 @@ test("Admin Assistant authors an ACP + sandbox environment from plain English (r
     const envs = (await (await request.get("/v1/environments")).json()).data as typeof env[];
     env = envs.find((e) => e!.name === "e2e-claude-locked");
     if (env) break;
+    await throwOnSessionFailure(request, s.id);
   }
   expect(env, "assistant authored the environment").toBeTruthy();
   expect(env!.config.runtime).toBe("acp:claude");
@@ -84,7 +92,13 @@ test("Admin Assistant answers a how-to question as an in-console manual (real mo
   await composer.fill("How do I connect a model to this platform? Keep it short.");
   await composer.press("Enter");
   // A grounded answer (from admin_explain_console) names the real Models/Credentials flow.
-  await expect(page.getByText(/Models|Inference credentials|Provider|Offering/i).first()).toBeVisible({ timeout: 90_000 });
+  const answer = page.getByText("⬡ agent").last();
+  const failed = page.getByText(/Run failed|运行失败|session\.error|retries_exhausted/).first();
+  await expect(answer.or(failed)).toBeVisible({ timeout: 90_000 });
+  if (await failed.isVisible()) throw new Error(`Admin Assistant failed before answering: ${await failed.textContent()}`);
+  const visibleAnswer = page.locator("main").getByText(/Models|Credentials|provider|offering/i).filter({ visible: true }).last();
+  await expect(visibleAnswer).toBeVisible();
+  await expect(page.locator("main")).not.toContainText(/Already answered above/i);
 });
 
 test("Admin Assistant authors a repeat-safe read-before-write machine (real model)", async ({ request }) => {
@@ -109,6 +123,7 @@ test("Admin Assistant authors a repeat-safe read-before-write machine (real mode
       config = await response.json();
       break;
     }
+    await throwOnSessionFailure(request, session.id);
   }
 
   const machine = config?.plugin_config?.state_machine?.machines?.[0];
@@ -121,3 +136,11 @@ test("Admin Assistant authors a repeat-safe read-before-write machine (real mode
     expect.arrayContaining(["read", "written"]),
   );
 });
+
+async function throwOnSessionFailure(request: APIRequestContext, sessionId: string) {
+  const response = await request.get(`/v1/sessions/${sessionId}/events`);
+  const events = (await response.json()).data as Array<{ type: string; stop_reason?: { type?: string } }>;
+  const failed = events.find((event) => event.type === "session.error")
+    ?? events.find((event) => event.type === "session.status_idle" && event.stop_reason?.type === "retries_exhausted");
+  if (failed) throw new Error(`session ${sessionId} failed: ${JSON.stringify(failed)}`);
+}

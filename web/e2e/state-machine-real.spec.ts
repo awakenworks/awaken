@@ -9,13 +9,15 @@ import { PRESETS } from "../src/components/agent/state-machine-presets";
 // a fresh KIMI_KEY or reuse a previously validated local vault credential.
 
 const KIMI = process.env.KIMI_KEY ?? "";
+const KIMI_UPSTREAM_MODEL = process.env.KIMI_MODEL ?? "kimi-for-coding";
+const KIMI_MODEL = "e2e-real-kimi-for-coding";
 const USE_EXISTING_KIMI = process.env.KIMI_EXISTING_CREDENTIAL === "1";
 test.skip(!KIMI && !USE_EXISTING_KIMI, "needs KIMI_KEY or KIMI_EXISTING_CREDENTIAL=1");
 
 async function configureKimi(request: APIRequestContext) {
   await request.put("/v1/config/providers/kimi", { data: { id: "kimi", slug: "kimi", display_name: "Kimi", version: 1 } });
   await request.put("/v1/config/endpoints/kimi-ep", { data: { id: "kimi-ep", provider_id: "kimi", dialect: "anthropic_messages", base_url: "https://api.kimi.com/coding/v1/", timeout_secs: 60, display_name: "Kimi", version: 1 } });
-  await request.post("/v1/config/offerings", { data: { model_id: "kimi-k2-0711-preview", provider_id: "kimi", protocol_endpoint_id: "kimi-ep", dialect: "anthropic_messages", upstream_model: null } });
+  await request.post("/v1/config/offerings", { data: { model_id: KIMI_MODEL, provider_id: "kimi", protocol_endpoint_id: "kimi-ep", dialect: "anthropic_messages", upstream_model: KIMI_UPSTREAM_MODEL } });
   if (KIMI) {
     await request.post("/v1/config/credentials", { data: { workspace_id: "wrkspc_default", kind: "vault", provider_id: "kimi", secret: KIMI } });
   }
@@ -29,7 +31,7 @@ test("read-before-write state machine blocks an unread write at runtime (real mo
     data: {
       id,
       name: "SM RBW",
-      model: { id: "kimi-k2-0711-preview" },
+      model: { id: KIMI_MODEL },
       system: "You are a file assistant.",
       tools: ["read", "write"],
       plugins: ["state_machine"],
@@ -54,9 +56,12 @@ test("read-before-write state machine blocks an unread write at runtime (real mo
   let blocked = false;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 2000));
-    const evs = (await (await request.get(`/v1/sessions/${s.id}/events`)).json()).data as Array<{ type: string; content?: Array<{ text?: string }> }>;
+    const evs = (await (await request.get(`/v1/sessions/${s.id}/events`)).json()).data as Array<{ type: string; content?: Array<{ text?: string }>; stop_reason?: { type?: string } }>;
     blocked = evs.some((e) => e.type === "agent.tool_result" && (e.content ?? []).some((c) => /blocked|Read .* before writing/i.test(c.text ?? "")));
     if (blocked) break;
+    const failed = evs.find((event) => event.type === "session.error")
+      ?? evs.find((event) => event.type === "session.status_idle" && event.stop_reason?.type === "retries_exhausted");
+    if (failed) throw new Error(`real KIMI session failed: ${JSON.stringify(failed)}`);
     if (evs[evs.length - 1]?.type === "session.status_idle") break;
   }
   expect(blocked).toBe(true);
