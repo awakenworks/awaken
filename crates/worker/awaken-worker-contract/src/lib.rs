@@ -8,6 +8,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
+use async_trait::async_trait;
 use awaken_provisioning_contract::{
     IsolationClass, ResourceLimits, SandboxCapabilities, capability_requirements_satisfied,
 };
@@ -409,6 +410,95 @@ pub struct WorkerSnapshot {
     pub capability_fingerprint: String,
     pub in_flight: u32,
     pub expires_at_ms: u64,
+}
+
+/// Durable registry record. Placement consumes `snapshot`; sequence/timestamps
+/// remain control-plane concurrency and observability facts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegisteredWorker {
+    pub snapshot: WorkerSnapshot,
+    pub heartbeat_sequence: u64,
+    pub registered_at_ms: u64,
+    pub heartbeat_at_ms: u64,
+    pub drain_deadline_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkerRegistration {
+    pub worker_id: String,
+    pub incarnation_id: String,
+    pub manifest: WorkerManifest,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkerHeartbeat {
+    pub sequence: u64,
+    pub ready: bool,
+    pub in_flight: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RegistryMutation {
+    Applied,
+    NotFound,
+    StaleIncarnation,
+    StaleSequence,
+    InvalidTransition,
+}
+
+#[derive(Debug, Error)]
+pub enum RegistryError {
+    #[error("worker id and incarnation id must be non-empty")]
+    InvalidIdentity,
+    #[error("worker slot {worker_id} is occupied by generation {generation}")]
+    SlotOccupied { worker_id: String, generation: u64 },
+    #[error("an incarnation cannot change its registered manifest")]
+    ManifestChanged,
+    #[error("worker registry persistence failed: {0}")]
+    Persistence(String),
+}
+
+/// Worker-directory authority. Implementations must make every mutation atomic;
+/// expired/dead records remain tombstones so late messages cannot resurrect them.
+#[async_trait]
+pub trait WorkerDirectory: Send + Sync {
+    async fn register(
+        &self,
+        registration: WorkerRegistration,
+        now_ms: u64,
+        ttl_ms: u64,
+    ) -> Result<RegisteredWorker, RegistryError>;
+
+    async fn heartbeat(
+        &self,
+        identity: &WorkerIdentity,
+        heartbeat: WorkerHeartbeat,
+        now_ms: u64,
+        ttl_ms: u64,
+    ) -> Result<RegistryMutation, RegistryError>;
+
+    async fn begin_drain(
+        &self,
+        identity: &WorkerIdentity,
+        deadline_ms: u64,
+    ) -> Result<RegistryMutation, RegistryError>;
+
+    async fn mark_quiesced(
+        &self,
+        identity: &WorkerIdentity,
+    ) -> Result<RegistryMutation, RegistryError>;
+
+    async fn deregister(
+        &self,
+        identity: &WorkerIdentity,
+    ) -> Result<RegistryMutation, RegistryError>;
+
+    async fn current(&self, worker_id: &str) -> Result<Option<RegisteredWorker>, RegistryError>;
+
+    async fn list(&self) -> Result<Vec<RegisteredWorker>, RegistryError>;
+
+    async fn expire(&self, now_ms: u64) -> Result<Vec<WorkerIdentity>, RegistryError>;
 }
 
 impl WorkerSnapshot {

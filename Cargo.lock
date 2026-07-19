@@ -1674,12 +1674,30 @@ dependencies = [
 name = "awaken-worker-contract"
 version = "1.0.0-dev"
 dependencies = [
+ "async-trait",
  "awaken-provisioning-contract",
  "proptest",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "awaken-worker-registry"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "awaken-scoped-migration",
+ "awaken-scoped-migration-sqlite",
+ "awaken-worker-contract",
+ "proptest",
+ "rusqlite",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]

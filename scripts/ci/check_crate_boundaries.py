@@ -383,6 +383,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # adapters, so the isolated worker contract remains store-free.
     "awaken-worker-contract": {
         "awaken-provisioning-contract",
+        "async-trait",
         "serde",
         "serde_json",
         "sha2",
@@ -774,6 +775,23 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "serde",
         "serde_json",
         "thiserror",
+    },
+    # Durable worker-directory adapter. One shared transition kernel drives its
+    # memory/SQLite/Postgres stores; the neutral identity/placement vocabulary
+    # remains in the store-free worker contract.
+    "awaken-worker-registry": {
+        "awaken-worker-contract",
+        "async-trait",
+        "serde_json",
+        "thiserror",
+        "tokio",
+        "rusqlite",
+        "sqlx",
+        "awaken-scoped-migration",
+        "awaken-scoped-migration-sqlite",
+        # dev-only.
+        "proptest",
+        "tempfile",
     },
     # Shared protocol transport seam: the neutral vocabulary every streaming /
     # request-response adapter drives (`ProtocolRuntime` + its step/pending/resume
