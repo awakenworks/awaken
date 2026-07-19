@@ -118,6 +118,7 @@ awaken-sandbox-manager = { path = "crates/worker/awaken-sandbox-manager" }
 awaken-runtime-examples = { path = "crates/devtools/awaken-runtime-examples" }
 awaken-run-ingress-contract = { path = "crates/server/awaken-run-ingress-contract" }
 awaken-run-ingress = { path = "crates/server/awaken-run-ingress" }
+awaken-run-ingress-testkit = { path = "crates/server/awaken-run-ingress-testkit" }
 awaken-runtime-host = { path = "crates/server/awaken-runtime-host" }
 awaken-managed-routers = { path = "crates/server/awaken-managed-routers" }
 awaken-admin-assistant = { path = "crates/control/awaken-admin-assistant" }

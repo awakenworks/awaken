@@ -12,6 +12,7 @@ use awaken_run_ingress::{
     AnyDispatchStore, Dispatch, DispatchOutcome, DispatchQueue, MemoryDispatchStore, PendingInput,
     RunDispatch,
 };
+use awaken_run_ingress_testkit::{ConformanceCapabilities, assert_dispatch_conformance};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult,
@@ -196,10 +197,27 @@ async fn db_less_worker_drives_runs_over_real_http() {
         .expect("awaiting child is claimed");
     assert_eq!(resumed.pending.len(), 1);
 
+    queue
+        .settle(
+            &RunId("run-B".into()),
+            resumed.lease.epoch,
+            DispatchOutcome::Done,
+            &["child-answer".to_string()],
+        )
+        .await
+        .expect("finish child over http");
+
     // A server-local write verb is refused on the worker transport (cancel is the
     // server's to make — a worker never cancels a peer's run).
     assert!(
         queue.cancel(&RunId("no-such-run".into())).await.is_err(),
         "cancel is not available on the worker dispatch transport"
     );
+
+    assert_dispatch_conformance(
+        &queue,
+        "conformance-http",
+        ConformanceCapabilities::WORKER_TRANSPORT,
+    )
+    .await;
 }

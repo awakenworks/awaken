@@ -99,6 +99,7 @@ container-podman = ["awaken-sandbox-container/podman"]
 container-k8s = ["awaken-sandbox-container/k8s"]
 
 [dev-dependencies]
+awaken-run-ingress-testkit = { workspace = true }
 # The durable session-store round-trip test opens a real sessions.db under a temp dir.
 tempfile = "3"
 # The sandboxed-channel-source integration test observes what the bwrap-confined

@@ -166,7 +166,7 @@ fn select(state: &State, now_ms: u64) -> Option<RunId> {
     for run in &state.order {
         if let Some(row) = state.rows.get(run)
             && row.state == RowState::Leased
-            && row.lease.as_ref().is_some_and(|l| l.expires_ms <= now_ms)
+            && row.lease.as_ref().is_some_and(|l| l.expires_ms < now_ms)
         {
             return Some(run.clone());
         }
@@ -207,7 +207,7 @@ fn runnable(state: &State, run_id: &RunId, now_ms: u64) -> Option<bool> {
         && row
             .lease
             .as_ref()
-            .is_some_and(|lease| lease.expires_ms <= now_ms)
+            .is_some_and(|lease| lease.expires_ms < now_ms)
     {
         return Some(true);
     }
@@ -578,7 +578,7 @@ impl DispatchQueue for MemoryDispatchStore {
         let mut reaped = 0;
         for row in state.rows.values_mut() {
             let expired = row.state == RowState::Leased
-                && row.lease.as_ref().is_some_and(|l| l.expires_ms <= now_ms);
+                && row.lease.as_ref().is_some_and(|l| l.expires_ms < now_ms);
             if expired && row.attempt_count >= max_attempts {
                 row.state = RowState::DeadLetter;
                 row.lease = None;

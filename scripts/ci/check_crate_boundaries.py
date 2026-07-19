@@ -354,6 +354,16 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # Dev-only: drive the async port default methods in unit tests.
         "tokio",
     },
+    # Public, backend-agnostic conformance driver for DispatchQueue adapters and
+    # decorators. It depends only on the durable wire contract and the value types
+    # needed to construct a self-contained RunDispatch fixture; production crates
+    # consume it only as a dev-dependency.
+    "awaken-run-ingress-testkit": {
+        "awaken-agent-contract",
+        "awaken-runtime-contract",
+        "awaken-run-ingress-contract",
+        "serde_json",
+    },
     # Provisioning contract: the neutral, data-only sandbox vocabulary and ports
     # (SandboxProvider / Sandbox / prepare_environment / admission). Names no OS
     # mechanism, host path, wire, or runtime type, so concrete realizers (lexical /
@@ -723,6 +733,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-agent-contract",
         "awaken-runtime-contract",
         "awaken-run-ingress-contract",
+        # dev-only: run the public DispatchQueue conformance suite against every
+        # in-tree backend.
+        "awaken-run-ingress-testkit",
         "awaken-runtime",
         "awaken-ext-builtin-tools",
         "awaken-observability",
@@ -1183,6 +1196,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # tool catalog and the scoped config plane are keyed by.
         "awaken-tenancy",
         "awaken-run-ingress",
+        # dev-only: the real worker HTTP adapter runs the shared dispatch suite.
+        "awaken-run-ingress-testkit",
         "awaken-run-executor-acp",
         "awaken-config-resolver",
         "awaken-credential-vault",

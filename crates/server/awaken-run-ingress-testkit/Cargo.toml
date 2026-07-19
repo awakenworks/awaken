@@ -1,0 +1,15 @@
+[package]
+name = "awaken-run-ingress-testkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Reusable conformance suite for DispatchQueue implementations and decorators"
+
+[dependencies]
+awaken-agent-contract.workspace = true
+awaken-runtime-contract.workspace = true
+awaken-run-ingress-contract.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

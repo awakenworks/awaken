@@ -36,6 +36,7 @@ futures-lite = { version = "2", optional = true }
 nats = ["dep:async-nats", "dep:futures-lite"]
 
 [dev-dependencies]
+awaken-run-ingress-testkit = { workspace = true }
 awaken-store-postgres = { workspace = true }
 awaken-store-sqlite = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net"] }
