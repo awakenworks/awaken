@@ -467,7 +467,8 @@ impl SharedHost {
         let scheduler = if self.deployment.durable {
             Some(crate::agent_runner::RunScheduler {
                 store: crate::dispatch_backend::shared_durable_store(self.store_dir.as_deref())?,
-                commit,
+                commit: commit.clone(),
+                reader: commit,
                 owner: crate::dispatch_backend::dispatch_owner(),
                 claimed_commit: self.upstream.as_ref().map(|upstream| {
                     Arc::new(
