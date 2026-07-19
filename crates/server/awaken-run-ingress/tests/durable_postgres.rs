@@ -13,6 +13,9 @@ use std::sync::atomic::Ordering;
 
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::stream::checkpoint::{
+    PartialToolCall, StreamCheckpoint, StreamCheckpointStore,
+};
 use awaken_agent_contract::thread::commit::coordinator::{
     Coordinator as CommitCoordinator, Error as CommitError,
 };
@@ -21,8 +24,8 @@ use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_run_ingress::{
     ClaimedCommitCoordinator, ClaimedRunCommit, DispatchQueue, DispatchWorker, DurableRunIngress,
-    GuardedRunCommit, Inbox, PendingInput, PostgresDispatchStore, RunClaim, RunDispatch,
-    SubmitOptions,
+    GuardedRunCommit, Inbox, PendingInput, PostgresDispatchStore, PostgresStreamCheckpointStore,
+    RunClaim, RunDispatch, SubmitOptions,
 };
 use awaken_runtime::RunIngress;
 use awaken_runtime_contract::resume::ResumeResult;
@@ -53,6 +56,53 @@ fn running_commit(run_id: &str) -> ThreadCommit {
         Vec::new(),
         Vec::new(),
     )
+}
+
+fn stream_checkpoint(run_id: &str, text: &str) -> StreamCheckpoint {
+    StreamCheckpoint {
+        run_id: run_id.to_owned(),
+        thread_id: "checkpoint-thread".to_owned(),
+        model: "provider/model".to_owned(),
+        partial_text: text.to_owned(),
+        partial_tools: vec![PartialToolCall {
+            call_id: "call-1".to_owned(),
+            tool_id: "tool-1".to_owned(),
+            raw_arguments: "{\"incomplete\":".to_owned(),
+        }],
+    }
+}
+
+#[tokio::test]
+async fn postgres_stream_checkpoint_survives_restart_overwrites_and_deletes() {
+    let Some(pool) = harness::schema_pool("t_pg_stream_checkpoint").await else {
+        return;
+    };
+    let store = PostgresStreamCheckpointStore::with_pool(pool.clone())
+        .await
+        .expect("checkpoint store");
+    assert_eq!(store.get("run-checkpoint").await, None);
+
+    store
+        .put(stream_checkpoint("run-checkpoint", "partial-a"))
+        .await;
+    assert_eq!(
+        store.get("run-checkpoint").await,
+        Some(stream_checkpoint("run-checkpoint", "partial-a"))
+    );
+
+    let restarted = PostgresStreamCheckpointStore::with_pool(pool)
+        .await
+        .expect("restarted checkpoint store");
+    restarted
+        .put(stream_checkpoint("run-checkpoint", "partial-b"))
+        .await;
+    assert_eq!(
+        restarted.get("run-checkpoint").await,
+        Some(stream_checkpoint("run-checkpoint", "partial-b"))
+    );
+    restarted.delete("run-checkpoint").await;
+    restarted.delete("run-checkpoint").await;
+    assert_eq!(restarted.get("run-checkpoint").await, None);
 }
 
 /// Single-writer-per-thread (ADR-0022), topology-independent: two runs of the SAME

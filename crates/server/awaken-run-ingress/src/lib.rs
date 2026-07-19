@@ -57,7 +57,9 @@ pub use fenced_checkpoint::FencedStreamCheckpointStore;
 pub use live_control::{Error as LiveRunControlError, LiveRunControlService};
 pub use memory::MemoryDispatchStore;
 pub use pool::{CompletionSink, DispatchPool, WorkerResolver};
-pub use postgres::{PostgresDispatchStore, StoreError as PostgresStoreError};
+pub use postgres::{
+    PostgresDispatchStore, PostgresStreamCheckpointStore, StoreError as PostgresStoreError,
+};
 pub use send_message::OutboxMessageSender;
 pub use service::{DispatchService, DispatchServiceConfig};
 pub use sqlite::{SqliteDispatchStore, StoreError as SqliteStoreError};
