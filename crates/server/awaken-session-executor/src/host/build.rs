@@ -273,6 +273,7 @@ impl SharedHost {
             catalog,
             Arc::new(BackgroundRuns::new()),
             mem_dir.into(),
+            self.model_ref.clone(),
         );
         self.memory = Some(Arc::new(extraction));
         // The recall plugin uses this selector once the store grows: a single-step

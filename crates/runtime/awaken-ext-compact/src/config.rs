@@ -173,6 +173,7 @@ pub fn config_schema() -> serde_json::Value {
             },
             "instructions": {
                 "type": ["string", "null"], "format": "textarea",
+                "title": "Compaction instructions",
                 "description": "Compaction prompt: what the summary should preserve. Blank uses the built-in default."
             }
         },

@@ -4,7 +4,7 @@
 // / boolean / enum / array; ANY node it can't model (oneOf/anyOf/$ref/untyped)
 // falls back to a validated JSON textarea, so it never blocks authoring.
 
-import { useState } from "react";
+import { useId, useState } from "react";
 import { cx } from "./cx";
 
 export interface JsonSchema {
@@ -17,6 +17,10 @@ export interface JsonSchema {
   enum?: unknown[];
   default?: unknown;
   [k: string]: unknown;
+}
+
+export function stringControlForSchema(schema: JsonSchema): "input" | "textarea" {
+  return schema.format === "textarea" ? "textarea" : "input";
 }
 
 function firstType(s: JsonSchema): string | undefined {
@@ -49,13 +53,14 @@ function renderable(s: JsonSchema): boolean {
   return t === "object" || t === "string" || t === "number" || t === "integer" || t === "boolean" || t === "array";
 }
 
-function JsonFallback({ value, onChange }: { value: unknown; onChange: (v: unknown) => void }) {
+function JsonFallback({ value, onChange, controlId }: { value: unknown; onChange: (v: unknown) => void; controlId?: string }) {
   const [draft, setDraft] = useState<string | null>(null);
   const [err, setErr] = useState("");
   const text = draft ?? JSON.stringify(value ?? null, null, 2);
   return (
     <div>
       <textarea
+        id={controlId}
         className="input mono"
         rows={4}
         value={text}
@@ -74,13 +79,13 @@ function JsonFallback({ value, onChange }: { value: unknown; onChange: (v: unkno
   );
 }
 
-function Node({ schema, value, onChange }: { schema: JsonSchema; value: unknown; onChange: (v: unknown) => void }) {
-  if (!renderable(schema)) return <JsonFallback value={value} onChange={onChange} />;
+function Node({ schema, value, onChange, controlId }: { schema: JsonSchema; value: unknown; onChange: (v: unknown) => void; controlId?: string }) {
+  if (!renderable(schema)) return <JsonFallback value={value} onChange={onChange} controlId={controlId} />;
   const t = firstType(schema);
 
   if (schema.enum) {
     return (
-      <select className="input" value={String(value ?? "")} onChange={(e) => onChange(e.target.value)}>
+      <select id={controlId} className="input" value={String(value ?? "")} onChange={(e) => onChange(e.target.value)}>
         {schema.enum.map((o) => (
           <option key={String(o)} value={String(o)}>
             {String(o)}
@@ -92,7 +97,7 @@ function Node({ schema, value, onChange }: { schema: JsonSchema; value: unknown;
   if (t === "boolean") {
     return (
       <label className="row" style={{ gap: 6 }}>
-        <input type="checkbox" checked={!!value} onChange={(e) => onChange(e.target.checked)} style={{ accentColor: "var(--accent)" }} />
+        <input id={controlId} type="checkbox" checked={!!value} onChange={(e) => onChange(e.target.checked)} style={{ accentColor: "var(--accent)" }} />
         <span className="mut">{schema.description ?? ""}</span>
       </label>
     );
@@ -100,6 +105,7 @@ function Node({ schema, value, onChange }: { schema: JsonSchema; value: unknown;
   if (t === "number" || t === "integer") {
     return (
       <input
+        id={controlId}
         className="input mono"
         type="number"
         value={value === null || value === undefined ? "" : Number(value)}
@@ -108,7 +114,18 @@ function Node({ schema, value, onChange }: { schema: JsonSchema; value: unknown;
     );
   }
   if (t === "string") {
-    return <input className="input" value={String(value ?? "")} onChange={(e) => onChange(e.target.value)} />;
+    if (stringControlForSchema(schema) === "textarea") {
+      return (
+        <textarea
+          id={controlId}
+          className="input mono"
+          rows={5}
+          value={String(value ?? "")}
+          onChange={(e) => onChange(e.target.value)}
+        />
+      );
+    }
+    return <input id={controlId} className="input" value={String(value ?? "")} onChange={(e) => onChange(e.target.value)} />;
   }
   if (t === "array") {
     const arr = Array.isArray(value) ? value : [];
@@ -118,7 +135,7 @@ function Node({ schema, value, onChange }: { schema: JsonSchema; value: unknown;
         {arr.map((el, i) => (
           <div key={i} className="row" style={{ alignItems: "flex-start" }}>
             <div style={{ flex: 1 }}>
-              <Node schema={items} value={el} onChange={(v) => onChange(arr.map((x, j) => (j === i ? v : x)))} />
+              <Node schema={items} value={el} controlId={controlId ? `${controlId}-${i}` : undefined} onChange={(v) => onChange(arr.map((x, j) => (j === i ? v : x)))} />
             </div>
             <button className="btn ghost" style={{ height: 24 }} onClick={() => onChange(arr.filter((_, j) => j !== i))}>
               ✕
@@ -139,12 +156,12 @@ function Node({ schema, value, onChange }: { schema: JsonSchema; value: unknown;
     <div className="schema-object">
       {Object.entries(props).map(([key, sub]) => (
         <div className="field" key={key}>
-          <label style={{ textTransform: "none", letterSpacing: 0, fontSize: 12 }}>
+          <label htmlFor={controlId ? `${controlId}-${key}` : undefined} style={{ textTransform: "none", letterSpacing: 0, fontSize: 12 }}>
             {sub.title ?? key}
             {required.includes(key) && <span style={{ color: "var(--danger)" }}> *</span>}
           </label>
           {sub.description && firstType(sub) !== "boolean" && <span className="mut">{sub.description}</span>}
-          <Node schema={sub} value={obj[key]} onChange={(v) => onChange({ ...obj, [key]: v })} />
+          <Node schema={sub} value={obj[key]} controlId={controlId ? `${controlId}-${key}` : undefined} onChange={(v) => onChange({ ...obj, [key]: v })} />
         </div>
       ))}
     </div>
@@ -161,9 +178,10 @@ export interface SchemaFormProps {
 /** Render `value` as a form driven by `schema`. Unsupported subtrees fall back to
  * a JSON textarea. */
 export function SchemaForm({ schema, value, onChange, className }: SchemaFormProps) {
+  const controlId = `schema-${useId().replaceAll(":", "")}`;
   return (
     <div className={cx("schema-form", className)}>
-      <Node schema={schema} value={value} onChange={onChange} />
+      <Node schema={schema} value={value} controlId={controlId} onChange={onChange} />
     </div>
   );
 }

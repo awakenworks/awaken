@@ -23,7 +23,9 @@ pub mod recall;
 pub mod select;
 pub mod tool;
 
-pub use plugin::{MEMORY_PLUGIN_ID, MemoryPlugin, config_schema as memory_config_schema};
+pub use plugin::{
+    MEMORY_PLUGIN_ID, MemoryConfig, MemoryPlugin, config_schema as memory_config_schema,
+};
 
 pub use agent::{
     DEFAULT_MEMORY_INSTRUCTIONS, DEFAULT_SELECTOR_INSTRUCTIONS, EXTRACT_PROMPT, MEMORY_AGENT_ID,

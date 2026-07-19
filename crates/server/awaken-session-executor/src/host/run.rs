@@ -225,6 +225,22 @@ impl SharedHost {
         let Some(mem) = &self.memory else {
             return;
         };
+        let snapshot = ctx.config.snapshot();
+        if !snapshot
+            .resolved_spec
+            .plugin_ids
+            .iter()
+            .any(|id| id == awaken_ext_memory::MEMORY_PLUGIN_ID)
+        {
+            return;
+        }
+        let memory_config = awaken_ext_memory::MemoryConfig::from_value(
+            snapshot
+                .resolved_spec
+                .plugin_config
+                .get(awaken_ext_memory::MEMORY_PLUGIN_ID),
+        )
+        .unwrap_or_default();
         let committed = ctx.commit.committed_messages(&ctx.thread_id);
         let mut st = ctx.state.lock().await;
         let cursor = st.last_extracted_len.min(committed.len());
@@ -234,7 +250,13 @@ impl SharedHost {
         let delta = committed[cursor..].to_vec();
         st.last_extracted_len = committed.len();
         drop(st);
-        mem.trigger(thread, delta).await;
+        mem.trigger(
+            thread,
+            delta,
+            memory_config.instructions.as_deref(),
+            memory_config.extraction_prompt.as_deref(),
+        )
+        .await;
     }
 
     /// The durable ingress for `thread`, building the session if needed. Errors
