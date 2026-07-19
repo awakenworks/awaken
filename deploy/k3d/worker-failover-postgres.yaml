@@ -13,14 +13,14 @@
 # proving a worker is not a data-loss SPOF: no run is lost when a worker dies, and
 # the committed log stays exactly-once (the commit fence rejects a stale re-commit).
 #
-# NOTE: this proves NO-LOSS recovery over the worker HTTP path. It does NOT prove
-# sandbox re-adoption (a reclaimed run currently executes on a fresh sandbox — that
-# seam is unwired; see sandbox_binding.rs). The echo model has no sandbox state, so
-# recovery-from-committed-history is loss-free here.
+# NOTE: this proves NO-LOSS recovery over the worker HTTP path. It does not prove
+# sandbox re-adoption because every pod has a private Workdir. The production seam
+# does adopt a persisted handle when the provider can resolve it; stable-root and
+# container-provider tests cover that behavior. Echo safely uses rebuild-from-truth.
 #
 # ADR-0056 (Sandbox Reuse as Two Orthogonal Volumes): this scenario is the G-Y
-# driving-scenario gate for the ADR's deferred Container-tier adopt/reattach — flip it
-# to a Container image + a same-sandbox-continuation assertion when that slice lands.
+# driving-scenario gate for a future shared Container-tier cluster fixture — switch
+# it to a shared provider and add a same-handle/in-flight-marker assertion.
 #
 # Requires: k3d, kubectl, docker, rustc 1.96 (host build), node (e2e/).
 # Driver: e2e/k3d/worker_failover_e2e.sh
@@ -101,8 +101,9 @@ apiVersion: apps/v1
 kind: Deployment
 metadata: { name: worker, labels: { app: worker } }
 spec:
-  # Two stateless db-less workers; anti-affinity spreads them onto distinct nodes so
-  # killing one pod is a real cross-node worker crash, not a co-located restart.
+  # Two stateless db-less workers; required anti-affinity places them on distinct
+  # nodes so killing one pod is a real cross-node worker crash, not a co-located
+  # restart. The fixture therefore requires at least two schedulable nodes.
   replicas: 2
   selector: { matchLabels: { app: worker } }
   template:
@@ -111,17 +112,21 @@ spec:
       terminationGracePeriodSeconds: 1
       affinity:
         podAntiAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
-            - weight: 100
-              podAffinityTerm:
-                labelSelector: { matchLabels: { app: worker } }
-                topologyKey: kubernetes.io/hostname
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector: { matchLabels: { app: worker } }
+              topologyKey: kubernetes.io/hostname
       containers:
         - name: worker
           image: awaken-topology:latest
           imagePullPolicy: Never
           env:
             - { name: AWAKEN_ROLE, value: worker }
+            # Every replica is a distinct logical fleet member. Without this
+            # downward-API identity both pods default to `awaken-worker` and their
+            # incarnation registrations continuously replace one another.
+            - name: AWAKEN_WORKER_ID
+              valueFrom:
+                fieldRef: { fieldPath: metadata.name }
             - { name: AWAKEN_MODEL_MODE, value: echo }
             - { name: AWAKEN_INGRESS, value: durable }
             # Drain the coordinator's shared queue over the HTTP worker transport.

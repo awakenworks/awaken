@@ -124,7 +124,7 @@ pub use crate::deployment_config::{
 pub use crate::dispatch_transport::{
     WorkerDispatchService, dispatch_transport_router, dispatch_transport_router_with_directory,
     dispatch_transport_router_with_directory_and_policy, dispatch_transport_router_with_service,
-    worker_dispatch_store_with_upstream,
+    registered_worker_transport_router, worker_dispatch_store_with_upstream,
 };
 pub use crate::worker_security::{
     FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, ManualWorkerClock, SystemWorkerClock,

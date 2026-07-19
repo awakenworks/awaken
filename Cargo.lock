@@ -1367,6 +1367,7 @@ dependencies = [
  "awaken-tool-relay",
  "awaken-webhook",
  "awaken-webhook-managed",
+ "awaken-worker",
  "axum",
  "bytes",
  "futures",

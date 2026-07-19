@@ -20,7 +20,7 @@ BIN=$(cargo build -q -p awaken-scenario-host --bin awaken-scenario-host --messag
 for l in sys.stdin:
  try:
   m=json.loads(l)
-  if m.get('executable') and m.get('target',{}).get('name')=='awaken-server': print(m['executable'])
+  if m.get('executable') and m.get('target',{}).get('name')=='awaken-scenario-host': print(m['executable'])
  except Exception: pass" | tail -1)
 [ -n "$BIN" ] || { echo 'could not resolve server binary'; exit 1; }
 

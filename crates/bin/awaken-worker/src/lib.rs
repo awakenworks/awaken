@@ -79,6 +79,7 @@ pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error>> {
         run_configured(
             WorkerUpstream::new(upstream),
             None,
+            &[],
             "secretless (gateway-only; awaiting an injected gateway provider)",
         )
         .await
@@ -96,6 +97,7 @@ pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error>> {
         run_configured(
             WorkerUpstream::new(upstream),
             Some(Arc::new(config_exec_provider)),
+            &["credential-source/v1"],
             "per-run model resolution from the config plane",
         )
         .await
@@ -114,6 +116,7 @@ pub async fn run_with_executor_provider(
     run_configured(
         WorkerUpstream::new(upstream),
         Some(provider),
+        &[],
         "secretless (injected gateway executor provider; no vault/seal key)",
     )
     .await
@@ -129,6 +132,7 @@ pub async fn run_with_executor_provider_and_upstream(
     run_configured(
         upstream,
         Some(provider),
+        &[],
         "secretless (injected gateway provider and authenticated upstream)",
     )
     .await
@@ -137,12 +141,16 @@ pub async fn run_with_executor_provider_and_upstream(
 async fn run_configured(
     upstream: WorkerUpstream,
     provider: Option<Arc<dyn ExecutorProvider>>,
+    built_in_capabilities: &[&str],
     posture: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let upstream_url = upstream.base_url().to_string();
     let control = WorkerControlClient::new(upstream.clone());
     let registration = control
-        .register(new_incarnation_id()?, worker_manifest())
+        .register(
+            new_incarnation_id()?,
+            worker_manifest(built_in_capabilities),
+        )
         .await
         .map_err(std::io::Error::other)?;
     let upstream = upstream.with_worker_identity(registration.snapshot.identity.clone());
@@ -179,14 +187,17 @@ async fn run_configured(
         control: control.clone(),
         identity: registration.snapshot.identity,
     });
-    host.ensure_dispatch_pool();
+    // Publish Ready before starting the pull loop. Starting the pool while the
+    // directory still says Starting creates a tight claim/reject race; publishing
+    // first is safe because any assignment remains queued until this process starts
+    // polling immediately below.
     let initial = control
         .heartbeat(
             &lifecycle.identity,
             WorkerHeartbeat {
                 sequence: 1,
-                ready: host.pool_accepting_work(),
-                in_flight: host.pool_in_flight(),
+                ready: true,
+                in_flight: 0,
             },
         )
         .await
@@ -197,6 +208,7 @@ async fn run_configured(
         ))
         .into());
     }
+    host.ensure_dispatch_pool();
     let heartbeat = spawn_heartbeat(lifecycle.clone(), 2);
     eprintln!("awaken-worker draining from {upstream_url} ({posture})");
 
@@ -276,7 +288,7 @@ fn new_incarnation_id() -> Result<String, getrandom::Error> {
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
-fn worker_manifest() -> WorkerManifest {
+fn worker_manifest(built_in_capabilities: &[&str]) -> WorkerManifest {
     use awaken_provisioning_contract::{IsolationClass, SandboxCapabilities};
     let tier = std::env::var("AWAKEN_SANDBOX_TIER").unwrap_or_else(|_| "namespace".to_string());
     let (sandbox, backend) = match tier.as_str() {
@@ -309,6 +321,11 @@ fn worker_manifest() -> WorkerManifest {
         ),
     };
     let mut capabilities = std::collections::BTreeSet::from(["native-runtime".to_string()]);
+    capabilities.extend(
+        built_in_capabilities
+            .iter()
+            .map(|capability| (*capability).to_string()),
+    );
     capabilities.extend(
         std::env::var("AWAKEN_WORKER_CAPABILITIES")
             .unwrap_or_default()

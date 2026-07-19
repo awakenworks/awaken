@@ -221,26 +221,15 @@ pub fn build_error_router() -> Router {
 /// e2e can assert the worker drove the run without configuring a provider. The
 /// PRODUCTION worker (real per-run model resolution) lives in `awaken-worker`.
 pub async fn run_echo_worker(upstream: &str) -> Result<(), Box<dyn std::error::Error>> {
-    awaken_runtime_host::init_shared_dispatch_store(awaken_runtime_host::worker_dispatch_store(
-        upstream,
-    ));
-    let host = Arc::new(SharedHost::new(Arc::new(EchoModel), "worker").with_upstream(upstream));
-    host.ensure_dispatch_pool();
-    eprintln!("awaken-scenario-host echo worker draining from {upstream}");
-    #[cfg(unix)]
-    {
-        use tokio::signal::unix::{SignalKind, signal};
-        let mut term = signal(SignalKind::terminate())?;
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {}
-            _ = term.recv() => {}
+    struct EchoWorkerProvider;
+
+    impl ExecutorProvider for EchoWorkerProvider {
+        fn executor_for(&self, _model_ref: &str) -> Option<Arc<dyn LlmExecutor>> {
+            Some(Arc::new(EchoModel))
         }
     }
-    #[cfg(not(unix))]
-    {
-        let _ = tokio::signal::ctrl_c().await;
-    }
-    Ok(())
+
+    awaken_worker::run_with_executor_provider(upstream, Arc::new(EchoWorkerProvider)).await
 }
 
 pub fn build_worker_router() -> Router {

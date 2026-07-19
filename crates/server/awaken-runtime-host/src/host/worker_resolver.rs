@@ -24,6 +24,46 @@ fn decode_binding(
     Ok(handle)
 }
 
+async fn adopt_bound_sandbox(
+    host: &SharedHost,
+    encoded: Option<&str>,
+    expected_sandbox_id: &str,
+    run_id: &RunId,
+    recovery: awaken_run_ingress::WorkerRecoveryMode,
+) -> Result<(Option<LocalSandbox>, bool), awaken_run_ingress::Error> {
+    let Some(encoded) = encoded else {
+        return Ok((None, false));
+    };
+    let handle = decode_binding(encoded, expected_sandbox_id, run_id)?;
+    let adoption = async {
+        let sandbox = host
+            .provider
+            .adopt_sandbox(&handle)
+            .await
+            .map_err(|e| HostWorkerResolver::execution_error(e.to_string()))?;
+        if sandbox
+            .status()
+            .await
+            .map_err(|e| HostWorkerResolver::execution_error(e.to_string()))?
+            != awaken_provisioning_contract::SandboxStatus::Ready
+        {
+            return Err(HostWorkerResolver::execution_error(format!(
+                "run {} sandbox {} is no longer available",
+                run_id.0, handle.sandbox_id
+            )));
+        }
+        Ok(sandbox)
+    }
+    .await;
+    match adoption {
+        Ok(sandbox) => Ok((Some(sandbox), false)),
+        Err(_) if recovery == awaken_run_ingress::WorkerRecoveryMode::RebuildFromCommittedTruth => {
+            Ok((None, true))
+        }
+        Err(error) => Err(error),
+    }
+}
+
 /// Routes a claimed run to the worker that owns its thread, opening (or reusing)
 /// the session through the host. Holds a `Weak` back-reference so the pool's tasks
 /// never keep the host alive; if the host is dropped, `worker_for` fails and the
@@ -95,43 +135,14 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
         let agent_id = claimed.request.activation.snapshot.root_agent_id.0.as_str();
         let agent_id = (!agent_id.is_empty()).then_some(agent_id);
 
-        let mut rebuild_binding = false;
-        let adopted = if let Some(encoded) = &claimed.sandbox {
-            let handle = decode_binding(encoded, &thread_id.0, &claimed.lease.run_id)?;
-            let adoption = async {
-                let sandbox = host
-                    .provider
-                    .adopt_sandbox(&handle)
-                    .await
-                    .map_err(|e| Self::execution_error(e.to_string()))?;
-                if sandbox
-                    .status()
-                    .await
-                    .map_err(|e| Self::execution_error(e.to_string()))?
-                    != awaken_provisioning_contract::SandboxStatus::Ready
-                {
-                    return Err(Self::execution_error(format!(
-                        "run {} sandbox {} is no longer available",
-                        claimed.lease.run_id.0, handle.sandbox_id
-                    )));
-                }
-                Ok(sandbox)
-            }
-            .await;
-            match adoption {
-                Ok(sandbox) => Some(sandbox),
-                Err(_)
-                    if claimed.request.placement.recovery
-                        == awaken_run_ingress::WorkerRecoveryMode::RebuildFromCommittedTruth =>
-                {
-                    rebuild_binding = true;
-                    None
-                }
-                Err(error) => return Err(error),
-            }
-        } else {
-            None
-        };
+        let (adopted, rebuild_binding) = adopt_bound_sandbox(
+            &host,
+            claimed.sandbox.as_deref(),
+            &thread_id.0,
+            &claimed.lease.run_id,
+            claimed.request.placement.recovery,
+        )
+        .await?;
 
         let worker = self.resolve(&host, thread_id, agent_id, adopted).await?;
 
@@ -169,6 +180,22 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_runtime_contract::llm::{
+        AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult,
+    };
+
+    struct AdoptionModel;
+
+    #[async_trait::async_trait]
+    impl LlmExecutor for AdoptionModel {
+        async fn infer(&self, _request: ChatRequest) -> LlmResult<ChatResponse> {
+            Ok(ChatResponse {
+                output: AssistantOutput::text("ok"),
+                usage: None,
+                stop_reason: None,
+            })
+        }
+    }
 
     #[test]
     fn sandbox_binding_is_validated_before_provider_adoption() {
@@ -188,6 +215,63 @@ mod tests {
         assert_eq!(
             decode_binding(&valid, "thread-a", &run).unwrap().sandbox_id,
             "thread-a"
+        );
+    }
+
+    #[tokio::test]
+    async fn recovery_mode_controls_the_production_adoption_seam() {
+        let storage = tempfile::tempdir().expect("storage");
+        let thread = "thread-adoption";
+        let first = SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
+        let first_ctx = first.ctx_for(thread, None).await.expect("first session");
+        let handle = first_ctx.env.handle();
+        let encoded = serde_json::to_string(&handle).unwrap();
+        drop(first_ctx);
+        drop(first);
+
+        let replacement =
+            SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
+        let run_id = RunId("run-adoption".into());
+        let (adopted, rebuild) = adopt_bound_sandbox(
+            &replacement,
+            Some(&encoded),
+            thread,
+            &run_id,
+            awaken_run_ingress::WorkerRecoveryMode::RequireSandboxContinuity,
+        )
+        .await
+        .expect("continuity mode adopts the durable handle");
+        assert!(!rebuild);
+        assert_eq!(adopted.unwrap().handle(), handle);
+
+        let missing_thread = "thread-missing";
+        let missing = serde_json::to_string(&awaken_provisioning_contract::SandboxHandle::new(
+            handle.provider_kind,
+            missing_thread,
+        ))
+        .unwrap();
+        let (adopted, rebuild) = adopt_bound_sandbox(
+            &replacement,
+            Some(&missing),
+            missing_thread,
+            &run_id,
+            awaken_run_ingress::WorkerRecoveryMode::RebuildFromCommittedTruth,
+        )
+        .await
+        .expect("rebuild mode may replace a missing sandbox from committed truth");
+        assert!(adopted.is_none());
+        assert!(rebuild);
+        assert!(
+            adopt_bound_sandbox(
+                &replacement,
+                Some(&missing),
+                missing_thread,
+                &run_id,
+                awaken_run_ingress::WorkerRecoveryMode::RequireSandboxContinuity,
+            )
+            .await
+            .is_err(),
+            "continuity mode fails closed when the bound sandbox is gone"
         );
     }
 }

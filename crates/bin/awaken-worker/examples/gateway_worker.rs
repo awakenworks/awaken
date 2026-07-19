@@ -49,6 +49,7 @@ impl ExecutorProvider for GatewayProvider {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    awaken_observability::init();
     let upstream = std::env::var("AWAKEN_UPSTREAM_URL")?;
     awaken_worker::run_with_executor_provider(&upstream, Arc::new(GatewayProvider)).await
 }

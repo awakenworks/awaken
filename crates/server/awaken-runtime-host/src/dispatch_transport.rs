@@ -210,6 +210,31 @@ pub fn dispatch_transport_router_with_directory_and_policy(
     ))
 }
 
+/// Production worker transport: lifecycle/dispatch and atomic claimed commit are
+/// mounted over the same durable queue, authenticator, and incarnation directory.
+/// Keeping this as one composition entry prevents a server from pairing registered
+/// claims with the legacy unregistered commit route.
+pub fn registered_worker_transport_router(
+    host: Arc<SharedHost>,
+    directory: Arc<dyn WorkerDirectory>,
+    policy: Arc<dyn PlacementPolicy>,
+) -> Router {
+    let dispatch = shared_durable_store(host.store_dir.as_deref())
+        .expect("registered worker transport requires the durable backend at startup");
+    let dispatch_router = dispatch_transport_router_with_directory_and_policy(
+        host.clone(),
+        directory.clone(),
+        policy,
+    );
+    let commit_router = crate::commit_ingest::claimed_commit_ingest_router_with_directory(
+        host,
+        dispatch as Arc<dyn DispatchQueue>,
+        Arc::new(HeaderWorkerAuthenticator),
+        directory,
+    );
+    dispatch_router.merge(commit_router)
+}
+
 pub fn dispatch_transport_router_with_service(service: Arc<WorkerDispatchService>) -> Router {
     Router::new()
         .route("/v1/worker/dispatch/enqueue", post(enqueue))

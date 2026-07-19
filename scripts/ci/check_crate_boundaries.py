@@ -1323,6 +1323,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-iam-server",
         "awaken-memory-store",
         "awaken-model-catalog",
+        # Worker-fleet E2E reuses the production registration/heartbeat/drain
+        # lifecycle and injects only a deterministic executor provider.
+        "awaken-worker",
         "awaken-observability",
         "awaken-protocol-a2a",
         # The A2A remote-delegate adapter the delegate-remote scenario injects.

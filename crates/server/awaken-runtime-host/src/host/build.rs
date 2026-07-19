@@ -73,6 +73,14 @@ impl SharedHost {
         }
     }
 
+    /// Whether this process owns a co-located dispatch pool. Composition roots use
+    /// the same parsed deployment value that admission uses, so the process cannot
+    /// accidentally both advertise coordinator-only behavior and drain locally.
+    #[must_use]
+    pub fn runs_local_dispatch_pool(&self) -> bool {
+        !self.deployment.disable_local_pool
+    }
+
     /// Opt this host into **β** (trusted-inline) MCP credential delivery for its ACP
     /// runs: a staged server's raw bearer is handed to the CLI inline instead of as a
     /// secretless α reference. Only sound when the CLI is a trusted-local (non-sandboxed)

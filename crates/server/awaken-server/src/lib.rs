@@ -141,7 +141,7 @@ pub fn mount_with_managed(host: Arc<SharedHost>, managed_state: Arc<ManagedState
     // A coordinator-only cell server (`AWAKEN_DISABLE_LOCAL_POOL=1`) skips its
     // co-located pool so remote database-less workers are the sole drainers, claiming
     // and settling over the dispatch transport.
-    if std::env::var("AWAKEN_DISABLE_LOCAL_POOL").as_deref() != Ok("1") {
+    if host.runs_local_dispatch_pool() {
         host.ensure_dispatch_pool();
     }
     let managed = router(managed_state);
@@ -156,13 +156,11 @@ pub fn mount_with_managed(host: Arc<SharedHost>, managed_state: Arc<ManagedState
     let durable_ops = durable_ops_router(host.clone());
     // The worker-facing cross-node seam: a database-less worker claims/settles runs
     // over the dispatch transport and pushes committed facts to the commit ingest.
-    let dispatch_transport =
-        awaken_runtime_host::dispatch_transport_router_with_directory_and_policy(
-            host.clone(),
-            worker_registry::shared(),
-            dynamic_placement::shared_worker_placement_policy(),
-        );
-    let commit_ingest = awaken_runtime_host::commit_ingest_router(host.clone());
+    let worker_transport = awaken_runtime_host::registered_worker_transport_router(
+        host.clone(),
+        worker_registry::shared(),
+        dynamic_placement::shared_worker_placement_policy(),
+    );
     // The Files API (`/v1/files`) over the host's blob store — file resources + artifacts.
     let files = files_router(host.clone());
     // Tenant ownership for memory stores (ADR-0053 / ADR-0051): fence cross-tenant
@@ -194,8 +192,7 @@ pub fn mount_with_managed(host: Arc<SharedHost>, managed_state: Arc<ManagedState
         .merge(ag_ui)
         .merge(a2a)
         .merge(durable_ops)
-        .merge(dispatch_transport)
-        .merge(commit_ingest)
+        .merge(worker_transport)
         .merge(files)
         .merge(memory_stores)
         .merge(skills)
