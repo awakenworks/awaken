@@ -13,7 +13,7 @@ DispatchStates == {
     "DeadLetter",
     "Superseded"
 }
-TerminalDispatchStates == {"Removed", "DeadLetter", "Superseded"}
+TerminalDispatchStates == {"Removed", "Superseded"}
 
 VARIABLES
     runState,
@@ -93,12 +93,19 @@ ExhaustRetries(candidate, epoch) ==
     /\ dispatchState = "Leased"
     /\ owner = candidate
     /\ epoch = leaseEpoch
-    /\ runState' = "Ended"
-    /\ hasTicket' = FALSE
     /\ dispatchState' = "DeadLetter"
     /\ owner' = NoOwner
-    /\ endedOnce' = TRUE
-    /\ UNCHANGED leaseEpoch
+    /\ UNCHANGED <<runState, hasTicket, leaseEpoch, endedOnce>>
+
+\* Dead-lettering is an operational dispatch condition, not an Agent outcome.
+\* An operator may requeue it without reopening an Ended Run.
+RequeueDeadLetter ==
+    /\ dispatchState = "DeadLetter"
+    /\ runState = "Running"
+    /\ ~hasTicket
+    /\ dispatchState' = "Pending"
+    /\ owner' = NoOwner
+    /\ UNCHANGED <<runState, hasTicket, leaseEpoch, endedOnce>>
 
 Supersede ==
     /\ runState # "Ended"
@@ -131,6 +138,7 @@ Next ==
            StaleSettle(candidate, epoch)
     \/ Cancel
     \/ Supersede
+    \/ RequeueDeadLetter
 
 Spec == Init /\ [][Next]_vars
 
@@ -151,6 +159,7 @@ RunDispatchCoherence ==
     /\ (dispatchState = "Awaiting") \equiv (runState = "Awaiting")
     /\ (dispatchState \in {"Pending", "Leased"}) => (runState = "Running")
     /\ (dispatchState \in TerminalDispatchStates) => (runState = "Ended")
+    /\ (dispatchState = "DeadLetter") => (runState = "Running")
 
 EndedIsAbsorbing == endedOnce => (runState = "Ended")
 

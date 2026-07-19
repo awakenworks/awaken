@@ -4,7 +4,7 @@
 //! and prompts, the file store, and bounded recall — lives in `awaken-ext-memory`
 //! (a bounded context). This module wires those onto the host's aux-agent
 //! substrate: it runs the extractor as an ordinary sub-agent through
-//! [`run_configured_subrun`], fire-and-forget via [`BackgroundRuns`], triggered by
+//! the shared Agent Run substrate, fire-and-forget via [`BackgroundRuns`], triggered by
 //! the host after a turn, and reads memories back for recall.
 
 use std::sync::Arc;
@@ -27,7 +27,7 @@ use awaken_sandbox_local::LocalProvider;
 use crate::agent_catalog::AgentCatalog;
 use crate::background::BackgroundRuns;
 use crate::judge::HostSubagentRunner;
-use crate::subagent::{UsageRollup, run_configured_subrun};
+use crate::subagent::{UsageRollup, run_configured_agent};
 
 // The config pieces the host wires (registering the default extractor agent).
 pub use awaken_ext_memory::{DEFAULT_MEMORY_INSTRUCTIONS, default_memory_agent};
@@ -35,9 +35,9 @@ pub use awaken_ext_memory::{DEFAULT_MEMORY_INSTRUCTIONS, default_memory_agent};
 /// A [`RecallSelector`] backed by the `memory-selector` sub-agent: a single-step,
 /// tool-free, plugin-free run driven through the shared aux-run port
 /// ([`SubagentRunner`] — the same one the judge and compactor use) rather than the
-/// sub-run substrate directly. Because it activates no plugins, it cannot recurse
-/// into memory recall; the port keeps its usage isolated (housekeeping, not turn
-/// work).
+/// Agent Run substrate directly. Its configuration activates no plugins, so memory
+/// recall cannot recursively invoke itself; the port keeps its usage outside the
+/// user session's accounting projection (housekeeping, not delegated work).
 pub(crate) struct AgentSelector {
     runner: Arc<dyn SubagentRunner>,
 }
@@ -155,14 +155,17 @@ impl MemoryExtraction {
                 // store, which the thin `SubagentRunner` port deliberately does not
                 // carry — so it runs on the substrate directly. Fire-and-forget, and
                 // its usage stays isolated (background housekeeping, not turn work).
-                let _ = run_configured_subrun(
+                let _ = run_configured_agent(
                     &catalog,
-                    crate::subagent::SubrunSandbox::Fresh(&provider),
+                    crate::subagent::AgentRunSandbox::Fresh(&provider),
                     llm,
                     MEMORY_AGENT_ID,
                     &mem_thread,
                     seed,
                     vec![tool],
+                    None,
+                    None,
+                    None,
                     None,
                     UsageRollup::Isolated,
                 )

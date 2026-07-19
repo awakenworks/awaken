@@ -117,10 +117,10 @@ async fn custom_factory_exposes_the_client_executed_submit_answer_tool() {
 }
 
 #[tokio::test]
-async fn delegation_factory_routes_a_delegated_sub_run_to_completion() {
+async fn delegation_factory_routes_a_child_run_to_completion() {
     // `build_delegation_router` wires the `agent_run` delegation tool + the
     // `researcher` roster and the `DelegatingModel`. A turn must delegate (server-side
-    // sub-run), then report the delegate's answer — the whole delegate loop running
+    // child Run), then report the delegate's answer — the whole delegate loop running
     // to a final text proves the delegation topology (roster + tool), not just a model.
     let frames = drive_turn(build_delegation_router(), "go research this").await;
     assert_eq!(assistant_text(&frames), "delegate said: researched: 42");

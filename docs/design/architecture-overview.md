@@ -105,7 +105,7 @@ The server consumes the runtime through one gated port:
 ```text
 AgentRuntime
 CommitCoordinator + contract::store traits
-ResolvedSpec (serializable config edge; ResolvedRun and AgentResolver are runtime-internal — ADR-0002, D3)
+ResolvedSpec (serializable config edge; ResolvedRun is runtime-internal — ADR-0002)
 RunExecutor / LiveRunControl / RunResolver / CommitCoordinatorSource
 RuntimeCatalogInstaller / RunWithSnapshotExecutor
 AgentSnapshotResolver / AgentSnapshotCatalog

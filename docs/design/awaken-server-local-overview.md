@@ -52,7 +52,7 @@ the doc that owns its authority.
 
 The kernel's entire tool vocabulary is `RawTool::invoke(call) -> ToolOutput` by id.
 A typed `Tool` (erased), a native `RawTool`, a **relay** `RawTool`, a
-client-executed call (a suspending gate), and a delegated sub-run all collapse to
+client-executed call (a suspending gate), and a delegated child Run all collapse to
 that one uniform boundary — which is precisely why the kernel is relay-, binding-,
 placement-, and scheduling-agnostic ([ADR-0034](../adr/0034-runtime-axis-model-and-orthogonality.md) D6).
 

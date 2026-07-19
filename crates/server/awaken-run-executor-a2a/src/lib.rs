@@ -25,13 +25,13 @@ use awaken_runtime_contract::execution::{
 use awaken_runtime_contract::resolved::Backend;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 
-// The A2A adapter of the neutral `RemoteDelegate` port (Phase 2): the host holds a
+// The A2A adapter of the neutral `RemoteAgent` interface: the host holds a
 // remote delegate behind the port and names no A2A type. The transport constructors
 // are re-exported so a composition root can build a delegate without depending on the
 // A2A protocol crate directly.
 mod delegate;
 pub use awaken_protocol_a2a::{HttpTransport, Transport};
-pub use delegate::A2aRemoteDelegate;
+pub use delegate::A2aRemoteAgent;
 
 /// Builds a [`Transport`] for a dial endpoint. Injectable so a test can substitute a
 /// mock for the `HttpTransport`.

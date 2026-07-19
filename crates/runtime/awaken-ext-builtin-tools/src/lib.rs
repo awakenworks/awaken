@@ -25,7 +25,7 @@ use awaken_runtime_contract::resolved::ToolDescriptor;
 use serde::{Deserialize, Serialize};
 
 /// The delegation tool id. The model-visible descriptor and the runtime resolver
-/// that backs it (`AgentResolver::tool_id`) must agree on this one value.
+/// that backs it (`DelegationExecutor::tool_id`) must agree on this one value.
 pub const AGENT_RUN: &str = "agent_run";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

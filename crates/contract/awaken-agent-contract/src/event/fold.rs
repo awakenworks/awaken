@@ -389,7 +389,7 @@ mod tests {
     // --- terminal(): the remaining state rows of the decision table ---
 
     #[test]
-    fn running_state_projects_as_run_started_not_a_terminus() {
+    fn running_state_projects_as_run_started_not_run_ended() {
         assert_eq!(terminal(&RunState::Running, None), Fact::RunStarted);
     }
 

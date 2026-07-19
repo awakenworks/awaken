@@ -1,5 +1,5 @@
-//! Delegation (ADR-0044): a tool call whose id matches the resolver's `tool_id` is
-//! routed to the `AgentResolver` instead of the tool registry. A `Done` step folds
+//! Delegation (ADR-0044): a tool call whose id matches the executor's `tool_id` is
+//! routed to the `DelegationExecutor` instead of the tool registry. An `Ended` step folds
 //! the delegate's token usage into the parent thread and feeds its reply back; a
 //! `Awaiting` step awaits the parent on a `Delegation` ticket carrying the opaque
 //! handle; an `Err` feeds a model-visible error. A awaiting delegation resumes
@@ -11,15 +11,19 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::awaiting::AwaitReason;
 use awaken_agent_contract::agent::content::ContentBlock;
+use awaken_agent_contract::agent::delegation::DelegationOrigin;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::agent_resolver::{AgentError, AgentRequest, AgentResolver, AgentStep};
 use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
 use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
+use awaken_runtime_contract::delegation::{
+    DelegationExecutionError, DelegationExecutor, DelegationRequest, DelegationResume,
+    DelegationStep,
+};
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ThreadUsage, TokenUsage, ToolCall,
@@ -79,7 +83,7 @@ enum Step {
     Fail(String),
 }
 
-fn step_to_result(step: &Step) -> Result<AgentStep, AgentError> {
+fn step_to_result(step: &Step) -> Result<DelegationStep, DelegationExecutionError> {
     match step {
         Step::Done(text, tokens) => {
             let mut usage = ThreadUsage::default();
@@ -93,15 +97,15 @@ fn step_to_result(step: &Step) -> Result<AgentStep, AgentError> {
                     },
                 );
             }
-            Ok(AgentStep::Done {
+            Ok(DelegationStep::Ended {
                 text: text.clone(),
                 usage,
             })
         }
-        Step::Awaiting(handle) => Ok(AgentStep::Awaiting {
-            handle: handle.clone(),
+        Step::Awaiting(continuation) => Ok(DelegationStep::Awaiting {
+            continuation: continuation.clone(),
         }),
-        Step::Fail(err) => Err(AgentError::new(err.clone())),
+        Step::Fail(err) => Err(DelegationExecutionError::new(err.clone())),
     }
 }
 
@@ -110,6 +114,7 @@ fn step_to_result(step: &Step) -> Result<AgentStep, AgentError> {
 struct MockResolver {
     run_step: Step,
     resume_step: Step,
+    started: Mutex<Vec<DelegationOrigin>>,
     resumed_with: Mutex<Vec<(serde_json::Value, String)>>,
 }
 
@@ -118,29 +123,32 @@ impl MockResolver {
         Self {
             run_step,
             resume_step,
+            started: Mutex::new(Vec::new()),
             resumed_with: Mutex::new(Vec::new()),
         }
     }
 }
 
 #[async_trait::async_trait]
-impl AgentResolver for MockResolver {
+impl DelegationExecutor for MockResolver {
     fn tool_id(&self) -> &str {
         DELEGATE_TOOL
     }
-    async fn run(&self, _request: AgentRequest) -> Result<AgentStep, AgentError> {
+    async fn start(
+        &self,
+        request: DelegationRequest,
+    ) -> Result<DelegationStep, DelegationExecutionError> {
+        self.started.lock().unwrap().push(request.origin);
         step_to_result(&self.run_step)
     }
     async fn resume(
         &self,
-        handle: &serde_json::Value,
-        input: &str,
-        _cancellation: Option<&awaken_runtime_contract::CancellationToken>,
-    ) -> Result<AgentStep, AgentError> {
+        request: DelegationResume,
+    ) -> Result<DelegationStep, DelegationExecutionError> {
         self.resumed_with
             .lock()
             .unwrap()
-            .push((handle.clone(), input.to_string()));
+            .push((request.continuation, request.input));
         step_to_result(&self.resume_step)
     }
 }
@@ -175,7 +183,7 @@ fn runtime(resolver: Arc<MockResolver>) -> Runtime {
         .with_llm(Arc::new(DelegateThenText {
             calls: AtomicUsize::new(0),
         }))
-        .with_resolver(resolver);
+        .with_delegation_executor(resolver);
     let fingerprint = CatalogFingerprint(FINGERPRINT.to_string());
     runtime
         .install_catalog(RuntimeCatalogInstall {
@@ -257,6 +265,28 @@ async fn delegation_done_folds_delegate_usage_and_feeds_the_reply_back() {
         5,
         "the parent thread's tally counts the delegate's tokens"
     );
+}
+
+#[tokio::test]
+async fn a_child_run_delegates_with_the_next_depth_and_ordinary_runtime_path() {
+    let resolver = Arc::new(MockResolver::new(
+        Step::Done("grandchild replied".to_string(), 0),
+        Step::Fail("unused".to_string()),
+    ));
+    let runtime = runtime(resolver.clone());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let parent_origin = DelegationOrigin::root(RunId("root-run".into()), "root-call");
+    let context = RuntimeRunContext::new()
+        .with_commit(commit)
+        .for_delegated_child(parent_origin);
+
+    let state = runtime.execute(activation(), context).await.expect("runs");
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
+
+    let started = resolver.started.lock().unwrap();
+    assert_eq!(started.len(), 1);
+    let expected = DelegationOrigin::nested(RunId("run-1".into()), CALL_ID, 1).unwrap();
+    assert_eq!(started[0], expected, "the child continues its Run lineage");
 }
 
 #[tokio::test]
