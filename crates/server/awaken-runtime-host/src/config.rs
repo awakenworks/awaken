@@ -221,6 +221,7 @@ fn model_fallbacks() -> Vec<ModelBinding> {
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn server_config(
+    agent_id: &str,
     model_ref: &str,
     client_tools: &HashSet<String>,
     delegates: &HashSet<String>,
@@ -230,7 +231,7 @@ pub(crate) fn server_config(
     context_policy: ContextPolicy,
 ) -> RunnableConfig {
     let tools = advertised_tools(client_tools, delegates, dynamic_descriptors);
-    RunnableConfig::builder("assistant")
+    RunnableConfig::builder(agent_id)
         .instructions(SYSTEM_PROMPT)
         .model(ModelBinding::new("default", model_ref, "default"))
         .model_candidates(model_fallbacks())
@@ -340,6 +341,7 @@ mod tests {
 
     fn config_with(section: serde_json::Value) -> ResolvedSpec {
         let config = server_config(
+            "assistant",
             "m",
             &HashSet::new(),
             &HashSet::new(),
@@ -358,6 +360,7 @@ mod tests {
     fn server_config_advertises_the_state_machine_schema() {
         // A2/A4: the schema is discoverable in the installed catalog.
         let config = server_config(
+            "assistant",
             "m",
             &HashSet::new(),
             &HashSet::new(),
@@ -451,7 +454,7 @@ mod tests {
         // A3: a malformed section fails closed at publish-time validation.
         let tmp = tempfile::tempdir().unwrap();
         let sandbox = awaken_sandbox_local::LocalProvider::new(tmp.path())
-            .create_sandbox(&crate::provisioning::subrun_sandbox_spec("t"))
+            .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("t"))
             .await
             .unwrap();
         let runtime = build_runtime(Arc::new(NoLlm), &sandbox);

@@ -15,7 +15,7 @@ authority, credential secrets, or public protocol DTOs.
 |---|---|---|---|
 | `builtin-hand-tools` | local hand operations | Runtime extension (in-process) | `bash`, `read`, `write`, `edit`, `glob`, `grep`, `web_fetch`, `web_search` |
 | `builtin-task-tools` | runtime task and recovery helpers | Runtime extension plus Dispatch / Server | `send_message`, `cancel_task`, `recover_failed_messages` |
-| `builtin-delegation-tools` | sub-agent invocation | Runtime extension (in-process sub-run) | one `agent_run` tool with `agent_id` argument |
+| `builtin-delegation-tools` | Agent delegation | Runtime extension (local or remote child Run) | one `agent_run` tool with `agent_id` argument |
 
 Each toolset is independently enabled. Installing the package does not make every
 tool visible to every agent.

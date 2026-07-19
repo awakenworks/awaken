@@ -1,13 +1,13 @@
 //! Runtime-facing contract: activation data, snapshot execution, and narrow ports.
 
 pub mod activation;
-pub mod agent_resolver;
 pub mod boundary;
 pub mod capability;
 pub mod capture;
 pub mod catalog;
 pub mod control;
 pub mod data_subject;
+pub mod delegation;
 pub mod execution;
 pub mod live_inbox;
 pub mod llm;
@@ -26,7 +26,6 @@ pub mod subagent_runner;
 pub mod tool;
 
 pub use activation::RunActivation;
-pub use agent_resolver::{AgentError, AgentRequest, AgentResolver, AgentStep, RemoteDelegate};
 pub use boundary::{BoundaryOutcome, evaluate_boundary};
 pub use capture::{CaptureDecision, ContentCapture, ContentKind, ContentRedactor, NoopRedactor};
 pub use catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
@@ -34,6 +33,10 @@ pub use control::LiveRunControl;
 pub use data_subject::{
     CaptureSink, ContentEraser, DataSubjectId, DataSubjectResolver, ErasureError, ErasureReceipt,
     NullResolver, Purpose,
+};
+pub use delegation::{
+    DelegationExecutionError, DelegationExecutor, DelegationRequest, DelegationResume,
+    DelegationStep, RemoteAgent,
 };
 pub use execution::{Cancellation, ExecutorCapabilities, RunExecutor, Wait};
 pub use live_inbox::{LiveInbox, LiveInboxMessage, LiveInboxMessageId};

@@ -213,7 +213,7 @@ wrappers = [
 ]
 reason = "protocol adapters are leaves; a new reverse edge onto the managed adapter means a neutral port must move to a contract/ leaf first (Phase 0.2 neutral-core)"
 
-# A2A adapter. run-executor-a2a implements the neutral RemoteDelegate port over it;
+# A2A adapter. run-executor-a2a implements the neutral RemoteAgent interface over it;
 # server/scenario are composition roots. The host itself no longer depends on it.
 [[bans.deny]]
 name = "awaken-protocol-a2a"
@@ -222,7 +222,7 @@ wrappers = [
     "awaken-server",
     "awaken-scenario-host",
 ]
-reason = "protocol adapters are leaves; the host holds the neutral RemoteDelegate port, not the A2A wire (Phase 0.2 neutral-core)"
+reason = "protocol adapters are leaves; the host holds the neutral RemoteAgent interface, not the A2A wire (Phase 0.2 neutral-core)"
 
 # AI SDK v6 adapter — composition roots only.
 [[bans.deny]]

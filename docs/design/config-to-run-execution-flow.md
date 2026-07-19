@@ -66,7 +66,7 @@ Each arrow has one owner and one allowed interface:
 | Executable snapshot selection | Runtime-facing contract plus config surface adapter | inline executable snapshot data or `ExecutableAgentSnapshotId` | `ExecutableAgentSnapshot` for one run/thread scope | `RunWithSnapshotExecutor`, `AgentSnapshotResolver`, `AgentSnapshotCatalog` |
 | Run parsing | Product adapter / Server route | public protocol payload, resume decisions, client-executed tools | neutral `RunActivation` data plus optional runtime context wiring | anti-corruption adapter, `RunIngress` |
 | Run delivery | Dispatch / Server | `RunActivation` and `RuntimeRunContext` | direct execution attempt or durable dispatch | `DirectRunIngress` or `DurableRunIngress` |
-| Run resolution | Runtime Core | activation agent id or pinned resolved data, registry fingerprint | `ResolvedRun` and `ResolvedExecutionEnv` | `RunResolver`, `AgentResolver` |
+| Run resolution | Runtime Core | pinned executable snapshot and registry fingerprint | `ResolvedRun` and `ResolvedExecutionEnv` | `RunResolver` |
 | Execution preparation | Runtime Core | resolved agent, messages, inherited context | prepared loop state | `RunExecutor`, phase runtime |
 | Step execution | Runtime Core and runtime extensions | prepared loop state | stream events, state commands, tool outputs | `LlmExecutor`, `Tool`, plugin hooks, tool gates |
 | Commit and projection | Runtime Core, Stores, Protocol adapters | commit plan and event drafts | committed facts/events and projected public stream | `CommitCoordinator`, event reader/subscriber |

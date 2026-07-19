@@ -2,7 +2,7 @@
 //! `with_*` methods, per-thread registration, and the process dispatch pool.
 
 use super::*;
-use awaken_runtime_contract::agent_resolver::RemoteDelegate;
+use awaken_runtime_contract::delegation::{DelegationExecutor, RemoteAgent};
 
 impl SharedHost {
     /// A host over `llm`. Configure it with the chainable `with_*` builders
@@ -225,6 +225,18 @@ impl SharedHost {
         self
     }
 
+    /// Configure the delegation roster owned by a locally runnable Agent.
+    /// A child Run uses this roster exactly as the same Agent would when started
+    /// directly; delegation never copies the initiating Agent's capabilities.
+    pub fn with_agent_delegates(
+        mut self,
+        agent_id: impl Into<String>,
+        delegates: HashSet<String>,
+    ) -> Self {
+        self.delegates.set_agent_roster(agent_id.into(), delegates);
+        self
+    }
+
     /// Whether native subagents (delegation / skill fork) reuse the parent agent's
     /// sandbox (`true`, the default) or run in a fresh, isolated one. Housekeeping
     /// sub-runs (judge / memory / compaction) stay isolated regardless.
@@ -414,40 +426,39 @@ impl SharedHost {
         self
     }
 
-    /// Register a remote delegate behind the neutral [`RemoteDelegate`] port. The
+    /// Register a remote Agent behind the neutral [`RemoteAgent`] interface. The
     /// composition root builds the protocol adapter (e.g. an A2A delegate over an
     /// `HttpTransport`) and injects it here, so the host names no wire type.
-    pub fn with_remote_delegate(
+    pub fn with_remote_agent(
         mut self,
         agent_id: impl Into<String>,
-        delegate: Arc<dyn RemoteDelegate>,
+        delegate: Arc<dyn RemoteAgent>,
     ) -> Self {
         let agent_id = agent_id.into();
         self.delegates.add_remote(agent_id, delegate);
         self
     }
 
-    /// Build the delegation resolver from the configured roster and remotes, or
+    /// Build the delegation executor from the configured roster and remotes, or
     /// `None` when the host has no delegates. Injected into each thread's runtime.
-    /// Build the per-session delegation resolver. `sandbox` is the calling thread's
+    /// Build the per-session delegation executor. `sandbox` is the calling thread's
     /// live sandbox: a native delegate shares it by default (`默认共用`), so the parent
     /// and its subagent collaborate in one workspace; `subagent_reuse_sandbox = false`
     /// gives each delegate a fresh, isolated root instead.
-    pub(crate) fn agent_resolver(
+    pub(crate) fn delegation_executor(
         &self,
         sandbox: Arc<LocalSandbox>,
-    ) -> Option<Arc<dyn AgentResolver>> {
+    ) -> Option<Arc<dyn DelegationExecutor>> {
         if self.delegates.is_empty() {
             return None;
         }
-        Some(Arc::new(DelegationResolver::new(
+        Some(Arc::new(HostDelegationExecutor::new(
             self.llm.clone(),
             self.model_ref.clone(),
-            LocalProvider::new(sub_base("deleg")),
+            Arc::new(LocalProvider::new(sub_base("deleg"))),
             sandbox,
             self.subagent_reuse_sandbox,
-            self.delegates.native_ids(),
-            self.delegates.remotes(),
+            self.delegates.clone(),
         )))
     }
 

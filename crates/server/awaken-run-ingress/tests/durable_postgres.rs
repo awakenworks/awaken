@@ -11,19 +11,62 @@ mod harness;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+use awaken_agent_contract::agent::delegation::{
+    DelegationGroup, DelegationId, DelegationKind, DelegationLimits, RequestDelegation,
+};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_run_ingress::{
-    DispatchQueue, DispatchWorker, DurableRunIngress, Inbox, PendingInput, PostgresDispatchStore,
-    RunExecutionRequest, SubmitOptions,
+    DelegationCas, DelegationStore, DispatchQueue, DispatchWorker, DurableRunIngress, Inbox,
+    PendingInput, PostgresDispatchStore, RunExecutionRequest, SubmitOptions,
 };
 use awaken_runtime::RunIngress;
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_store_postgres::PostgresCommitCoordinator;
 
 use harness::{THREAD, TICKET, activation, activation_on, blocking_tool_runtime, tool_runtime};
+
+#[tokio::test]
+async fn postgres_delegation_group_is_durable_and_revision_fenced() {
+    let schema = "t_pg_delegation_group";
+    let Some(pool) = harness::schema_pool(schema).await else {
+        return;
+    };
+    let store = PostgresDispatchStore::with_pool(pool).await.expect("store");
+    let mut group = DelegationGroup::new(
+        RunId("parent".into()),
+        "coordinator",
+        Vec::new(),
+        0,
+        DelegationLimits::new(3, 2, 4),
+    );
+    store.create(group.clone()).await.unwrap();
+    let stale = store.load(&RunId("parent".into())).await.unwrap().unwrap();
+    group
+        .request(RequestDelegation {
+            id: DelegationId("d1".into()),
+            parent_call_id: "c1".into(),
+            target_agent_id: "researcher".into(),
+            child_run_id: RunId("child".into()),
+            kind: DelegationKind::Remote,
+        })
+        .unwrap();
+    assert_eq!(
+        store.compare_and_set(0, group).await.unwrap(),
+        DelegationCas::Applied { revision: 1 }
+    );
+    assert_eq!(
+        store
+            .compare_and_set(stale.revision, stale.group)
+            .await
+            .unwrap(),
+        DelegationCas::Fenced {
+            current_revision: 1
+        }
+    );
+}
 
 /// Single-writer-per-thread (ADR-0022), topology-independent: two runs of the SAME
 /// thread are both pending; two claimers race concurrently. The V0012

@@ -42,22 +42,22 @@ as a top-level turn:
   (`awaken-ext-compact/src/agent.rs:23`, `default_compact_agent`).
 - Its host adapter `AgentSummarizer::summarize`
   (`awaken-runtime-host/src/compact.rs:64`) runs it through the shared sub-run
-  substrate `run_configured_subrun(...)` (`awaken-runtime-host/src/subagent.rs:41`),
+  substrate `run_configured_agent(...)` (`awaken-runtime-host/src/subagent.rs`),
   which builds a `Runtime` and calls `run_to_completion`
   (`subagent.rs:72`) → `self.execute(...)` (`awaken-runtime/src/run.rs:63`) →
   the `RunExecutor::execute` trait (`awaken-runtime-contract/src/execution.rs:18`).
-- Native delegates (`awaken-runtime-host/src/delegate.rs:161`, `native_run` →
-  `run_subagent`) and the goal judge
-  (`awaken-runtime-host/src/judge.rs:44`, `KernelJudgeRunner` → `run_configured_subrun`)
+- Native delegates (`awaken-runtime-host/src/delegate.rs`, `native_run` →
+  `run_agent`) and the goal judge
+  (`awaken-runtime-host/src/judge.rs`, `KernelJudgeRunner` → `run_configured_agent`)
   ride the **same** substrate. A top-level session turn reaches the **same**
   `RunExecutor::execute` (`awaken-runtime-host/src/turn_exec.rs:19` → ingress →
   `runtime.execute`).
 
-So at the execution layer the compactor and the main assistant's turn go through
-one seam. The only things a sub-run does differently (`subagent.rs:55-75`): a
-fresh in-process `Runtime` with (a) an **isolated `MemoryCommitCoordinator`**
-instead of the session's durable store, (b) an ephemeral sandbox, (c) **no
-delegation resolver** (no recursion), and it bypasses durable/ACP ingress.
+So at the execution layer the compactor and the main assistant's Run go through
+one seam. A delegated Agent receives the initiating Run's durable commit/history
+wiring, first-class child identity, cancellation lineage, and delegation
+capability. Auxiliary housekeeping currently chooses an ephemeral context and
+sandbox as a host policy; that choice is not a different Runtime lifecycle.
 
 ### Why the compactor is *invisible* today
 
@@ -163,8 +163,9 @@ Migrating aux sub-runs to the session's durable store with parent-thread linkage
 is the whole change, subject to:
 
 - **G13**: sub-run commits must go through the session's single `CommitCoordinator`.
-- **No recursion**: a sub-run must not attach the compaction/delegation resolver
-  (already true — `subagent.rs:55-75`).
+- **Capability policy**: an auxiliary Agent receives only the tools/plugins in
+  its compiled Agent config; delegated Agents retain the normal delegation
+  capability and may create further child Runs subject to depth/cycle/budget limits.
 - **Depends on** full multiagent child-thread enumeration in the managed adapter
   (`list_threads` is primary-only today, `state.rs:1050`).
 
@@ -173,8 +174,8 @@ This is its own initiative; compaction is its first client.
 ### D5: Converge the three aux-agent ports into one run-subagent port (deferred)
 
 `Summarizer` (ext-compact, `plugin.rs:29`), `DelegateRunner` (ext-goal,
-`lib.rs:218`), and `AgentResolver` / `agent_run` (delegate) are three traits
-whose host impls all bottom out in `run_configured_subrun`. Collapse them into a
+`lib.rs:218`), and `DelegationExecutor` / `agent_run` (delegation) are three traits
+whose host impls all bottom out in `run_configured_agent`. Collapse them into a
 single neutral "run a sub-agent" capability port; remote A2A delegates
 (`delegate.rs:87`, `remote_run`) stay separate (network semantics). Fewer ports,
 one substrate — a simplification, not a feature cut.

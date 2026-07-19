@@ -356,7 +356,7 @@ internals or mutate runtime state directly.
 
 | External need | Stable exposure | Extension point | Runtime-owned validation |
 |---|---|---|---|
-| let a model call another agent | model-visible `agent_run` descriptor from an extension | config publishes delegate roster; the sub-run executes in-process through `RunIngress` | target is in resolved roster, descriptor fingerprint matches, permission gate passes |
+| let a model call another Agent | model-visible `agent_run` descriptor from an extension | config publishes the Agent's delegate roster; a first-class child Run executes locally or remotely through the same lifecycle | target is in resolved roster, descriptor fingerprint matches, permission gate passes |
 | let agents or external callers send messages | shared target-thread pending append mechanism | internal `send_message` tool/effect or external message adapter; durable input buffer | message id idempotency, target thread binding, pending freeze before runtime consumption |
 | let plugins schedule later work | `ScheduledAction` request committed with the run/thread checkpoint | plugin registers action kinds and result adapter; server owns timer/wake | committed request exists, correlation/idempotency key matches, snapshot/fingerprint match |
 | let a client execute a tool | wait/resume channel (client-tool await reason) | protocol adapter projects wait/result; tool descriptor may come from per-run client config | pending wait exists, descriptor fingerprint matches, result is not duplicate/expired/mismatched |

@@ -219,6 +219,7 @@ pub fn awaken_runtime_host::SharedHost::register_thread_mcp(&self, &str, alloc::
 pub fn awaken_runtime_host::SharedHost::register_thread_model(&self, &str, impl core::convert::Into<alloc::string::String>)
 pub fn awaken_runtime_host::SharedHost::thread_egress(&self) -> awaken_runtime_host::ThreadEgress
 pub fn awaken_runtime_host::SharedHost::with_admin_tools(self, alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>) -> Self
+pub fn awaken_runtime_host::SharedHost::with_agent_delegates(self, impl core::convert::Into<alloc::string::String>, std::collections::hash::set::HashSet<alloc::string::String>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_capture_sink(self, alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::CaptureSink>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_client_tools(self, std::collections::hash::set::HashSet<alloc::string::String>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_compaction(self, usize, usize) -> Self
@@ -230,7 +231,7 @@ pub fn awaken_runtime_host::SharedHost::with_gate_override(self, alloc::sync::Ar
 pub fn awaken_runtime_host::SharedHost::with_judge(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_memory(self, impl core::convert::Into<std::path::PathBuf>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_memory_registry(self, alloc::sync::Arc<dyn awaken_config_resolver::stores::MemoryStoreRegistry>) -> Self
-pub fn awaken_runtime_host::SharedHost::with_remote_delegate(self, impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_runtime_contract::agent_resolver::RemoteDelegate>) -> Self
+pub fn awaken_runtime_host::SharedHost::with_remote_agent(self, impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_runtime_contract::delegation::RemoteAgent>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_remote_hand(self, alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolExecutor>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_session_blob_root(self, impl core::convert::Into<std::path::PathBuf>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_skill_store(self, impl core::convert::Into<std::path::PathBuf>) -> Self

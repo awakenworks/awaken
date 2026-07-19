@@ -60,6 +60,48 @@ impl Runtime {
         F: FnMut(&ResumeTicket) -> ResumeResult,
     {
         let (run_id, activation) = self.prepare(config, thread.into(), input)?;
+        self.drive_to_completion(run_id, activation, context, &mut decide)
+            .await
+    }
+
+    /// Drive a Run to completion under a caller-supplied durable identity.
+    /// Delegation uses this entry so the child identity committed by the parent
+    /// is the identity executed by the child Runtime, including after a retry.
+    pub async fn run_to_completion_with_id<F>(
+        &self,
+        config: &RunnableConfig,
+        run_id: RunId,
+        thread: impl Into<String>,
+        input: impl Into<RunInput>,
+        context: RuntimeRunContext,
+        mut decide: F,
+    ) -> Result<RunState, Error>
+    where
+        F: FnMut(&ResumeTicket) -> ResumeResult,
+    {
+        self.install_catalog(config.install().clone())
+            .map_err(|err| Error::Execution(err.to_string()))?;
+        self.register_snapshot(config.snapshot().clone());
+        let activation = RunActivation::new(
+            run_id.clone(),
+            ThreadId(thread.into()),
+            config.snapshot().clone(),
+            input.into().0,
+        );
+        self.drive_to_completion(run_id, activation, context, &mut decide)
+            .await
+    }
+
+    async fn drive_to_completion<F>(
+        &self,
+        run_id: RunId,
+        activation: RunActivation,
+        context: RuntimeRunContext,
+        decide: &mut F,
+    ) -> Result<RunState, Error>
+    where
+        F: FnMut(&ResumeTicket) -> ResumeResult,
+    {
         let mut state = self.execute(activation, context.clone()).await?;
         while state == RunState::Awaiting {
             let reader = context.reader.as_deref().ok_or_else(|| {

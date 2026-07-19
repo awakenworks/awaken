@@ -501,6 +501,7 @@ impl SharedHost {
         // The outcome/goal run does not offer skills (ADR-0036): it auto-approves
         // tools to drive a deliverable and does not register the `Skill` tool.
         let config = server_config(
+            "assistant",
             &self.model_ref,
             &self.client_tools,
             &HashSet::new(),

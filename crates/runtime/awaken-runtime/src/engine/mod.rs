@@ -9,6 +9,7 @@
 use async_trait::async_trait;
 use awaken_agent_contract::agent::awaiting::{AwaitReason, PendingTool, ResumeTicket};
 use awaken_agent_contract::agent::content::ContentBlock;
+use awaken_agent_contract::agent::delegation::DelegationOrigin;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, RunState};
 use awaken_agent_contract::agent::state::{
@@ -25,8 +26,10 @@ use awaken_agent_contract::stream::event::Event as StreamEvent;
 use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::agent_resolver::{AgentRequest, AgentStep};
 use awaken_runtime_contract::boundary::{BoundaryOutcome, evaluate_boundary};
+use awaken_runtime_contract::delegation::{
+    DelegationExecutionError, DelegationRequest, DelegationResume, DelegationStep,
+};
 use awaken_runtime_contract::execution::{Error, Result, RunExecutor};
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatMessage, ChatRequest, ChatResponse, DeltaSink, StopReason, ThreadUsage,
@@ -48,9 +51,11 @@ use crate::runtime::Runtime;
 
 mod content;
 mod convert;
+mod delegation;
 mod dispatch;
 mod inference;
 pub(crate) use convert::*;
+use delegation::{resume_delegation, run_delegation};
 use inference::infer_with_retry;
 
 /// Message-id base for messages produced by a resumed attempt, kept distinct
@@ -262,8 +267,8 @@ pub(crate) async fn resume_run(
 
     emit(&context, &run_id, AgentEvent::Fact(Fact::RunStarted)).await;
 
-    // A awaiting delegation resumes through the resolver, not the tool registry: the
-    // resolver runs one more step with the user's input and the run continues or
+    // An awaiting delegation resumes through its executor, not the tool registry: the
+    // executor runs one more step with the user's input and the run continues or
     // re-awaits.
     if ticket.reason == AwaitReason::Delegation {
         return resume_delegation(
@@ -1474,84 +1479,6 @@ fn resume_ticket(
     }
 }
 
-/// The user input carried by a delegation resume (a client result, plain input,
-/// or a decision note).
-fn delegation_resume_input(result: &ResumeResult) -> String {
-    match result {
-        ResumeResult::ToolResult(output) => output.content.clone(),
-        ResumeResult::Input(text) => text.clone(),
-        ResumeResult::Decision { note, .. } => note.clone().unwrap_or_default(),
-    }
-}
-
-/// Resume an awaiting delegation: run the resolver one more step with the user's
-/// input. On `Done`/error the result is injected as the delegate tool's output and
-/// the run drives on; on `Awaiting` the run re-awaits on a fresh Delegation ticket
-/// carrying the new handle.
-#[allow(clippy::too_many_arguments)]
-async fn resume_delegation(
-    runtime: &Runtime,
-    ticket: &ResumeTicket,
-    result: ResumeResult,
-    resolved: &ResolvedRun,
-    env: &ResolvedExecutionEnv,
-    run_id: &RunId,
-    thread_id: &ThreadId,
-    reader: &dyn ThreadReader,
-    context: &RuntimeRunContext,
-) -> Result<RunState> {
-    let call_id = ticket.call_id.clone().unwrap_or_default();
-    let handle = ticket
-        .pending_tool
-        .as_ref()
-        .and_then(|tool| tool.resume_handle.clone())
-        .unwrap_or(serde_json::Value::Null);
-    let input = delegation_resume_input(&result);
-
-    let Some(resolver) = runtime.resolver() else {
-        return finish(
-            context,
-            thread_id,
-            run_id.clone(),
-            RunStepResult::capability_bound(run_id.clone()),
-        )
-        .await;
-    };
-    let step = resolver
-        .resume(&handle, &input, context.cancellation.as_ref())
-        .await;
-
-    let synthetic = match step {
-        // Only remote (A2A) delegates await and resume, and their token spend is not
-        // observable over the wire — so there is no usage to fold in here.
-        Ok(AgentStep::Done { text, .. }) => {
-            ResumeResult::ToolResult(ToolOutput::ok(&call_id, text))
-        }
-        Ok(AgentStep::Awaiting { handle }) => {
-            // Re-await on a fresh Delegation ticket carrying the new handle.
-            let mut next_ticket = ticket.clone();
-            if let Some(pending) = next_ticket.pending_tool.as_mut() {
-                pending.resume_handle = Some(handle);
-            }
-            return finish(
-                context,
-                thread_id,
-                run_id.clone(),
-                RunStepResult::awaiting(next_ticket),
-            )
-            .await;
-        }
-        Err(err) => ResumeResult::ToolResult(ToolOutput::error(&call_id, err.to_string())),
-    };
-
-    // The delegate's step, folded back as the delegate tool's replayed result,
-    // rebuilds committed truth and drives on — the same glue as a direct resume.
-    drive_resumed(
-        runtime, resolved, env, run_id, thread_id, ticket, synthetic, reader, context,
-    )
-    .await
-}
-
 /// Turn a resumed result into the tool/user message(s) and any staged state.
 /// An `allow` decision executes the pending tool now; a `deny` feeds a blocked
 /// result; a `ToolResult`/`Input` is used directly.
@@ -1717,25 +1644,6 @@ async fn collect_tool_reactions(
         messages.extend(reaction.messages);
     }
     (commands, messages)
-}
-
-/// Run `call` as a delegation when it is the tool the resolver backs, returning
-/// the resolver's step; `None` means it is an ordinary tool for the registry. The
-/// kernel matches by `resolver.tool_id()`, so it never hard-codes the tool id.
-async fn run_delegation(
-    runtime: &Runtime,
-    context: &RuntimeRunContext,
-    call: &ToolCall,
-) -> Option<std::result::Result<AgentStep, awaken_runtime_contract::agent_resolver::AgentError>> {
-    let resolver = runtime.resolver()?;
-    if resolver.tool_id() != call.tool_id {
-        return None;
-    }
-    let request = AgentRequest {
-        arguments: call.arguments.clone(),
-        cancellation: context.cancellation.clone(),
-    };
-    Some(resolver.run(request).await)
 }
 
 /// Fold a delegate's accumulated [`ThreadUsage`] into the parent thread's committed

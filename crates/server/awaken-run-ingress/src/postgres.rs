@@ -10,8 +10,12 @@
 //! matches [`MemoryDispatchStore`](crate::MemoryDispatchStore) exactly.
 
 use async_trait::async_trait;
+use awaken_agent_contract::agent::delegation::DelegationGroup;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_run_ingress_contract::{
+    DelegationCas, DelegationStore, DelegationStoreError, StoredDelegationGroup,
+};
 use awaken_runtime_contract::resume::ResumeResult;
 use sqlx::Row;
 use sqlx::postgres::PgPool;
@@ -117,6 +121,109 @@ impl PostgresDispatchStore {
                     .map_err(reject)
             })
             .collect()
+    }
+}
+
+#[async_trait]
+impl DelegationStore for PostgresDispatchStore {
+    async fn create(&self, group: DelegationGroup) -> Result<(), DelegationStoreError> {
+        group
+            .validate()
+            .map_err(|error| DelegationStoreError::Rejected(error.to_string()))?;
+        let parent_run_id = group.parent_run_id().0.clone();
+        let p = NS;
+        sqlx::query(&format!(
+            "INSERT INTO {p}_delegation_group (parent_run_id, revision, group_json) \
+             VALUES ($1, 0, $2) ON CONFLICT (parent_run_id) DO NOTHING"
+        ))
+        .bind(&parent_run_id)
+        .bind(Json(group.clone()))
+        .execute(&self.pool)
+        .await
+        .map_err(|error| DelegationStoreError::Rejected(error.to_string()))?;
+        let stored: Json<DelegationGroup> = sqlx::query_scalar(&format!(
+            "SELECT group_json FROM {p}_delegation_group WHERE parent_run_id = $1"
+        ))
+        .bind(parent_run_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|error| DelegationStoreError::Rejected(error.to_string()))?;
+        if stored.0 == group {
+            Ok(())
+        } else {
+            Err(DelegationStoreError::Conflict)
+        }
+    }
+
+    async fn load(
+        &self,
+        parent_run_id: &RunId,
+    ) -> Result<Option<StoredDelegationGroup>, DelegationStoreError> {
+        let p = NS;
+        let row: Option<(i64, Json<DelegationGroup>)> = sqlx::query_as(&format!(
+            "SELECT revision, group_json FROM {p}_delegation_group WHERE parent_run_id = $1"
+        ))
+        .bind(&parent_run_id.0)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|error| DelegationStoreError::Rejected(error.to_string()))?;
+        row.map(|(revision, group)| {
+            Ok(StoredDelegationGroup {
+                revision: u64::try_from(revision)
+                    .map_err(|_| DelegationStoreError::RevisionOverflow)?,
+                group: group.0,
+            })
+        })
+        .transpose()
+    }
+
+    async fn compare_and_set(
+        &self,
+        expected_revision: u64,
+        group: DelegationGroup,
+    ) -> Result<DelegationCas, DelegationStoreError> {
+        group
+            .validate()
+            .map_err(|error| DelegationStoreError::Rejected(error.to_string()))?;
+        let next_revision = expected_revision
+            .checked_add(1)
+            .and_then(|revision| i64::try_from(revision).ok())
+            .ok_or(DelegationStoreError::RevisionOverflow)?;
+        let expected_revision =
+            i64::try_from(expected_revision).map_err(|_| DelegationStoreError::RevisionOverflow)?;
+        let parent_run_id = group.parent_run_id().0.clone();
+        let p = NS;
+        let updated: Option<i64> = sqlx::query_scalar(&format!(
+            "UPDATE {p}_delegation_group SET revision = $1, group_json = $2 \
+             WHERE parent_run_id = $3 AND revision = $4 RETURNING revision"
+        ))
+        .bind(next_revision)
+        .bind(Json(group))
+        .bind(&parent_run_id)
+        .bind(expected_revision)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|error| DelegationStoreError::Rejected(error.to_string()))?;
+        if let Some(revision) = updated {
+            return Ok(DelegationCas::Applied {
+                revision: u64::try_from(revision)
+                    .map_err(|_| DelegationStoreError::RevisionOverflow)?,
+            });
+        }
+        let current: Option<i64> = sqlx::query_scalar(&format!(
+            "SELECT revision FROM {p}_delegation_group WHERE parent_run_id = $1"
+        ))
+        .bind(parent_run_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|error| DelegationStoreError::Rejected(error.to_string()))?;
+        match current {
+            Some(revision) => Ok(DelegationCas::Fenced {
+                current_revision: u64::try_from(revision)
+                    .map_err(|_| DelegationStoreError::RevisionOverflow)?,
+            }),
+            None => Err(DelegationStoreError::NotFound),
+        }
     }
 }
 

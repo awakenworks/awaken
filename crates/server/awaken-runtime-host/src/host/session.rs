@@ -271,10 +271,10 @@ impl SharedHost {
         if let Some(gate) = &self.gate_override {
             runtime = runtime.with_gate(gate.clone());
         }
-        // Delegation is a runtime concern: inject the resolver so the kernel runs
+        // Delegation is a runtime concern: inject the executor so the kernel runs
         // `agent_run` as a sub-agent (native or remote), not the tool registry.
-        if let Some(resolver) = self.agent_resolver(env.clone()) {
-            runtime = runtime.with_resolver(resolver);
+        if let Some(executor) = self.delegation_executor(env.clone()) {
+            runtime = runtime.with_delegation_executor(executor);
         }
         // Skills are fronted by two stable tools (ADR-0036); all skill behavior is
         // in `awaken-ext-skills`. The host only wires the pieces it alone owns —
@@ -345,6 +345,7 @@ impl SharedHost {
         dynamic_descriptors.extend(mcp_descriptors);
         let config = installed.unwrap_or_else(|| {
             server_config(
+                "assistant",
                 &self.model_route.model_ref(thread, &self.model_ref),
                 &self.client_tools,
                 self.delegates.ids_set(),

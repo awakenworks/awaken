@@ -19,7 +19,7 @@ const OUTPUTS_PATH: &str = "/outputs";
 
 /// A bare Workdir spec for an ephemeral sub-run sandbox (judge / delegate / compact /
 /// skill fork): scoped to the thread, no staged resource mounts, host-shared network.
-pub(crate) fn subrun_sandbox_spec(thread: &str) -> pc::SandboxSpec {
+pub(crate) fn agent_run_sandbox_spec(thread: &str) -> pc::SandboxSpec {
     pc::SandboxSpec {
         scope: thread.to_string(),
         isolation: pc::IsolationClass::Workdir,
@@ -744,7 +744,7 @@ mod provisioning_registry_tests {
         // starts believing a repo mounted when it did not.
         let tmp = tempfile::tempdir().unwrap();
         let env = LocalProvider::new(tmp.path())
-            .create_sandbox(&subrun_sandbox_spec("s"))
+            .create_sandbox(&agent_run_sandbox_spec("s"))
             .await
             .unwrap();
         let host = host();
@@ -798,7 +798,7 @@ mod provisioning_registry_tests {
         // A real sandbox env with a skill authored under the workspace `skills/` dir.
         let base = dir.join("sbx");
         let env = LocalProvider::new(&base)
-            .create_sandbox(&subrun_sandbox_spec("t"))
+            .create_sandbox(&agent_run_sandbox_spec("t"))
             .await
             .unwrap();
         let skill_dir = base.join("t").join("skills").join("notes");

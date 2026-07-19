@@ -42,25 +42,25 @@ pub(super) async fn run_tool_calls(
                 audit.push(permission_audit(&call, &outcome));
             }
             match outcome {
-                GateOutcome::Allow => match run_delegation(runtime, context, &call).await {
-                    Some(Ok(AgentStep::Done { text, usage })) => {
+                GateOutcome::Allow => match run_delegation(runtime, context, run_id, &call).await {
+                    Some(Ok(DelegationStep::Ended { text, usage })) => {
                         // Fold the delegate's token spend into this thread's running
                         // tally, so a session's usage counts delegated work (the
-                        // sub-run's own isolated store is already gone).
+                        // child Run has already committed its own usage).
                         merge_thread_usage(store, staged_state, &usage);
                         ToolOutput::ok(&call.call_id, text)
                     }
                     // The delegate awaiting needing input: await the parent on a
                     // Delegation ticket carrying the opaque handle (durable), resumed
-                    // through the resolver.
-                    Some(Ok(AgentStep::Awaiting { handle })) => {
+                    // through the delegation executor.
+                    Some(Ok(DelegationStep::Awaiting { continuation })) => {
                         let ticket = resume_ticket(
                             resolved,
                             run_id,
                             &call.call_id,
                             &call,
                             AwaitReason::Delegation,
-                            Some(handle),
+                            Some(continuation),
                         );
                         emit(
                             context,

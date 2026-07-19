@@ -86,8 +86,8 @@ type rather than duplicate schemas, state machines, or role catalogs.
   — documentation model, guardrail-enforcer rule, one internally consistent
   vocabulary, and the link-only/meta-process treatment of the wiki/coverage layers.
 - [adr/0002-resolver-role-demarcation.md](adr/0002-resolver-role-demarcation.md)
-  — the three canonical resolver roles (`AgentResolver` / `Resolver` /
-  `RunResolver`), their boundaries, and an open renaming question.
+  — the two canonical lookup/materialization roles (`AgentSnapshotResolver` and
+  `RunResolver`) and their boundaries.
 - [adr/0003-deferred-work-mechanism-selection.md](adr/0003-deferred-work-mechanism-selection.md)
   — which deferred-work mechanism to use (`ScheduledAction`, resume ticket, or
   `RunDispatch`); why no `BackgroundTask` umbrella.

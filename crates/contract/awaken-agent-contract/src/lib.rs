@@ -9,6 +9,7 @@ pub mod secret;
 pub mod stream;
 pub mod thread;
 
+pub use agent::delegation::{DelegationId, DelegationOrigin};
 pub use agent::message::Message;
 pub use agent::run::{Id as RunId, Record as RunRecord};
 pub use agent::state::Key as StateKey;

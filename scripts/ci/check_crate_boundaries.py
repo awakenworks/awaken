@@ -851,7 +851,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-protocol-a2a",
         "async-trait",
         "tokio",
-        # The RemoteDelegate adapter serializes the A2A discovery card to neutral JSON.
+        # The RemoteAgent adapter serializes the A2A discovery card to neutral JSON.
         "serde_json",
         # dev-only: a real localhost HTTP server the executor dials over real TCP.
         "axum",
@@ -1280,7 +1280,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-runtime-host",
         "awaken-managed-routers",
         # dev-only: the a2a-loopback e2e wraps its mock transports in the A2A
-        # remote-delegate adapter (the host now holds the neutral RemoteDelegate port).
+        # remote-Agent adapter (the host now holds the neutral RemoteAgent interface).
         "awaken-run-executor-a2a",
         # ADR-0052: the management assistant's descriptors seed the scope-keyed tool
         # catalog, and its executables/ports are wired at assembly.

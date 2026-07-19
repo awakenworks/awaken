@@ -15,6 +15,12 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness ended_is_absorbing_for_every_next_state
   cargo kani -p awaken-agent-contract \
     --harness legacy_wire_accepts_exactly_the_legal_dispositions
+  cargo kani -p awaken-agent-contract \
+    --harness a_result_can_be_marked_delivered_only_from_pending
+  cargo kani -p awaken-agent-contract \
+    --harness an_ended_parent_never_accepts_a_result_delivery
+  cargo kani -p awaken-agent-contract \
+    --harness exactly_once_effects_have_unique_preconditions
   cargo kani -p awaken-session-contract \
     --harness awaiting_constructor_cannot_create_a_terminal_or_failed_outcome
   cargo kani -p awaken-session-contract \
@@ -28,6 +34,8 @@ tla_jar="${TLA2TOOLS_JAR:-}"
 if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; then
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -config formal/tla/RunIngress.cfg formal/tla/RunIngress.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -config formal/tla/Delegation.cfg formal/tla/Delegation.tla
 else
   echo "skipped TLC: set TLA2TOOLS_JAR and install Java 11+"
   missing=1
