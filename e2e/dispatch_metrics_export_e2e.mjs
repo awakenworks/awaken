@@ -1,17 +1,17 @@
 // e2e for the durable DISPATCH operational metrics over OTLP.
 //
-// GAP CLOSED: the durable dispatch/worker layer previously emitted NO operational
-// metrics (see the note in durable_worker_metrics_e2e.mjs — no runs-claimed /
-// runs-settled counter, no drive-duration histogram). The worker now records, on
-// the SAME injected recorder that meters model/tool calls (so it exports on the one
-// OTLP pipeline with no extra wiring):
-//   - `awaken.dispatch.runs.claimed`  (counter) per claimed dispatch driven,
-//   - `awaken.dispatch.runs.settled`  (counter, `outcome`=done|awaiting) per settle,
-//   - `awaken.dispatch.drive.duration` (histogram, seconds) per drive_claimed.
+// The worker records the normal-path operational surface on the SAME injected
+// recorder that meters model/tool calls (one OTLP pipeline, no duplicate wiring):
+//   - claim / settle counters and drive duration,
+//   - exact queue depth and process in-flight work,
+//   - applied/fenced/error commit count and commit duration.
+// Recovery and fenced-only counters require fault scenarios; recovery is asserted
+// by durable_child_sandbox_recovery_e2e.ts, while fenced commit emission remains an
+// explicitly reported E2E gap in stage_change_coverage_e2e.ts.
 //
 // This test boots a DURABLE server (AWAKEN_INGRESS=durable) pointed at a fake
 // OTLP/HTTP collector, drives several real runs through the enqueue→claim→worker→
-// commit path, and asserts the exported OTLP payload carries all three metric names
+// commit path, and asserts the exported OTLP payload carries all seven metric names
 // (verbatim from the Rust source) — proving the dispatch instruments recorded data
 // points and left the process over the shared OTLP pipeline. It also proves the
 // server still shuts down cleanly (the bounded metric flush never hangs exit).
@@ -97,8 +97,16 @@ async function main() {
     pass(`${N} runs drove through the durable dispatch worker (enqueue→claim→worker→commit)`);
 
     // Let the periodic OTLP pipeline flush the recorded dispatch metrics.
-    for (let i = 0; i < 40 && !(has('awaken.dispatch.runs.claimed') &&
-      has('awaken.dispatch.runs.settled') && has('awaken.dispatch.drive.duration')); i++) {
+    const normalMetrics = [
+      'awaken.dispatch.runs.claimed',
+      'awaken.dispatch.runs.settled',
+      'awaken.dispatch.drive.duration',
+      'awaken.dispatch.queue.depth',
+      'awaken.dispatch.commits',
+      'awaken.dispatch.commit.duration',
+      'awaken.dispatch.runs.in_flight',
+    ];
+    for (let i = 0; i < 40 && !normalMetrics.every(has); i++) {
       await new Promise((r) => setTimeout(r, 200));
     }
   } finally {
@@ -110,28 +118,27 @@ async function main() {
 
   assert.ok(bodies.length > 0, 'the OTLP collector received telemetry from the durable server');
 
-  // The three dispatch instruments each recorded ≥1 data point and were exported.
-  assert.ok(
-    has('awaken.dispatch.runs.claimed'),
-    'awaken.dispatch.runs.claimed was exported over OTLP (worker counted the claims)',
-  );
-  assert.ok(
-    has('awaken.dispatch.runs.settled'),
-    'awaken.dispatch.runs.settled was exported over OTLP (worker counted the settles)',
-  );
-  assert.ok(
-    has('awaken.dispatch.drive.duration'),
-    'awaken.dispatch.drive.duration histogram was exported over OTLP (worker timed the drives)',
-  );
+  const expected = [
+    'awaken.dispatch.runs.claimed',
+    'awaken.dispatch.runs.settled',
+    'awaken.dispatch.drive.duration',
+    'awaken.dispatch.queue.depth',
+    'awaken.dispatch.commits',
+    'awaken.dispatch.commit.duration',
+    'awaken.dispatch.runs.in_flight',
+  ];
+  for (const metric of expected) {
+    assert.ok(has(metric), `${metric} recorded a data point and was exported over OTLP`);
+  }
   // The settle counter's outcome label is present; echo runs end naturally → `done`.
   assert.ok(has('done'), 'runs.settled carried an outcome=done data point');
-  pass('all three awaken.dispatch.* metrics exported over the shared OTLP pipeline');
+  pass('all seven normal-path awaken.dispatch.* metrics exported over the shared OTLP pipeline');
 
   // Reaching here means the durable server also shut down cleanly — the bounded
   // metric flush did not hang process exit.
   console.log(
-    `E2E PASS: durable dispatch worker exports awaken.dispatch.runs.claimed/settled ` +
-      `and drive.duration over OTLP, and the server shut down cleanly.`,
+    `E2E PASS: durable dispatch worker exports claim/settle/drive/queue/commit/in-flight ` +
+      `metrics over OTLP, and the server shut down cleanly.`,
   );
 }
 

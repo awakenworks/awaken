@@ -1522,6 +1522,11 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-model-catalog",
         "awaken-credential-vault",
         "awaken-agent-contract",
+        # dev-only: the gateway-worker E2E example implements the public
+        # ExecutorProvider/LlmExecutor SPI. It reaches ModelAccessRef through the
+        # host facade, never by depending on the run-ingress implementation.
+        "awaken-runtime-contract",
+        "async-trait",
     },
 }
 

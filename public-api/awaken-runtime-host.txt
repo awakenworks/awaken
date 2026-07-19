@@ -5,6 +5,7 @@ pub use awaken_runtime_host::ConfigService
 pub use awaken_runtime_host::ConfigServiceAgentSource
 pub use awaken_runtime_host::ConfigServiceReconciler
 pub use awaken_runtime_host::HttpDispatchQueue
+pub use awaken_runtime_host::ModelAccessRef
 pub use awaken_runtime_host::ModelResolver
 pub use awaken_runtime_host::PostgresEnvRegistry
 pub use awaken_runtime_host::PostgresManagedSessionRepository

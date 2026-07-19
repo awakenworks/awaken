@@ -9,6 +9,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import fs, { mkdtempSync } from 'node:fs';
+import http from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
@@ -158,6 +159,19 @@ async function waitForReply(thread: string, timeoutMs = 30_000): Promise<string>
 
 async function main(): Promise<void> {
   const storage = mkdtempSync(path.join(tmpdir(), 'awaken-child-sandbox-recovery-'));
+  const metricBodies: string[] = [];
+  const metricReceiver = http.createServer((request, response) => {
+    const chunks: Buffer[] = [];
+    request.on('data', (chunk) => chunks.push(chunk));
+    request.on('end', () => {
+      metricBodies.push(Buffer.concat(chunks).toString('latin1'));
+      response.writeHead(200, { 'content-type': 'application/x-protobuf' });
+      response.end();
+    });
+  });
+  await new Promise<void>((resolve) => metricReceiver.listen(0, '127.0.0.1', resolve));
+  const metricAddress = metricReceiver.address();
+  assert.ok(metricAddress && typeof metricAddress !== 'string');
   // Delay every real Anthropic response to leave a deterministic crash window
   // after the child is durably created/bound but before its inference completes.
   const upstream = await startFakeAnthropic(FAKE_KEY, { behavior: 'delegating', delayMs: 1_500 });
@@ -166,6 +180,9 @@ async function main(): Promise<void> {
     extraEnv: {
       AWAKEN_INGRESS: 'durable',
       AWAKEN_STORAGE_DIR: storage,
+      OTEL_EXPORTER_OTLP_ENDPOINT: `http://127.0.0.1:${metricAddress.port}`,
+      OTEL_EXPORTER_OTLP_PROTOCOL: 'http/protobuf',
+      OTEL_METRIC_EXPORT_INTERVAL: '250',
     },
   });
   let server = spawnServer('delegate', PORT, environment).server;
@@ -257,6 +274,17 @@ async function main(): Promise<void> {
       'stable child recovery committed one terminal result',
     );
     assert.equal(rows(before.database).length, 0, 'parent and child dispatches settled exactly once');
+    const metricDeadline = Date.now() + 10_000;
+    while (
+      !metricBodies.some((body) => body.includes('awaken.dispatch.runs.recovered')) &&
+      Date.now() <= metricDeadline
+    ) {
+      await sleep(50);
+    }
+    assert.ok(
+      metricBodies.some((body) => body.includes('awaken.dispatch.runs.recovered')),
+      'replacement worker exported the expired-lease recovery metric',
+    );
 
     console.log(
       'DURABLE CHILD/SANDBOX TS E2E PASS: hard crash recovered one stable child, adopted its session sandbox, resumed the parent and avoided duplicate execution.',
@@ -264,6 +292,7 @@ async function main(): Promise<void> {
   } finally {
     await stopServer(server).catch(() => {});
     upstream.close();
+    metricReceiver.close();
     fs.rmSync(storage, { recursive: true, force: true });
   }
 }

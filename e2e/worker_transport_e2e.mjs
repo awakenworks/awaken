@@ -23,15 +23,19 @@ const THREAD = 'worker-transport-1';
 const ENV = {
   AWAKEN_INGRESS: 'durable',
   AWAKEN_STORAGE_DIR: mkdtempSync(path.join(tmpdir(), 'awaken-worker-transport-')),
+  // Keep queued work available for this external worker instead of racing the
+  // scenario host's in-process drain pool.
+  AWAKEN_DISABLE_LOCAL_POOL: '1',
 };
+const WORKER = 'ts-worker-1';
 
 // The exact ThreadCommit wire shape (dumped from the neutral Rust types).
-function threadCommit() {
+function threadCommit(runId = 'run-A', threadId = THREAD, text = 'hi from a db-less worker') {
   return {
-    thread_id: THREAD,
-    run_fact: { run_id: 'run-A', phase: { Ended: 'NaturalEnd' } },
+    thread_id: threadId,
+    run_fact: { run_id: runId, phase: { Ended: 'NaturalEnd' } },
     messages: [
-      { id: 'a1', role: 'Assistant', content: [{ type: 'text', text: 'hi from a db-less worker' }] },
+      { id: `a-${runId}`, role: 'Assistant', content: [{ type: 'text', text }] },
     ],
     state: [],
     events: [],
@@ -39,10 +43,12 @@ function threadCommit() {
   };
 }
 
-async function postJson(pathname, body) {
+async function postJson(pathname, body, worker = WORKER) {
+  const headers = { 'content-type': 'application/json' };
+  if (worker !== null) headers['x-awaken-worker-id'] = worker;
   const res = await fetch(`${BASE}${pathname}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers,
     body: JSON.stringify(body),
   });
   const text = await res.text();
@@ -65,6 +71,13 @@ async function main() {
   const { server } = spawnServer('echo', PORT, ENV);
   try {
     await waitForPort(PORT);
+
+    // Every worker route is authenticated. The local composition uses the
+    // compatibility identity header; cloud replaces the authenticator with a
+    // WorkerLease/mTLS implementation behind the same port.
+    const anonymous = await postJson('/v1/worker/commit', threadCommit(), null);
+    assert.equal(anonymous.status, 401, `anonymous worker is rejected: ${anonymous.text}`);
+    pass('worker transport rejects a request with no authenticated identity');
 
     // --- commit ingest: a db-less worker pushes facts; the server commits them ---
     const first = await postJson('/v1/worker/commit', threadCommit());
@@ -92,21 +105,99 @@ async function main() {
     pass('commit ingest: an at-least-once redelivery is idempotent (no duplicate)');
 
     // --- dispatch transport: the claim endpoint is live and wired to the store ---
+    // Queue a real run, then claim it over the authenticated transport. Legacy
+    // owner/time/lease fields in the body are deliberately malicious: the server
+    // must ignore them and derive authority from the verified identity + clock.
+    const dispatchThread = 'worker-dispatch-auth-1';
+    const queued = await postJson(`/v1/durable/threads/${dispatchThread}/submit_background`, {
+      text: 'carry model grant to worker',
+    }, null);
+    assert.equal(queued.status, 200, `background run queued: ${queued.text}`);
     const claim = await postJson('/v1/worker/dispatch/claim', {
-      owner: 'ts-worker-1',
-      lease_ms: 30_000,
-      now_ms: Date.now(),
+      owner: 'forged-owner',
+      lease_ms: 9_999_999,
+      now_ms: 1,
     });
     assert.equal(claim.status, 200, `dispatch claim endpoint live: ${claim.text}`);
-    assert.ok('claimed' in (claim.json ?? {}), `claim returns the wire shape: ${claim.text}`);
-    // Settling an unknown run is a tolerated no-op (the worker's settle path is live).
+    const claimed = claim.json?.claimed;
+    assert.ok(claimed, `claim returns the queued run: ${claim.text}`);
+    assert.equal(claimed.lease.owner, WORKER, 'claim owner comes from authenticated identity');
+    assert.ok(claimed.lease.epoch >= 1, `claim carries a fencing epoch: ${claim.text}`);
+    pass('dispatch claim binds owner to authenticated worker and returns a fencing epoch');
+
+    // Re-enqueue the exact durable wire record with an opaque gateway grant. This
+    // is the open-runtime side of secretless execution: persist/transport the
+    // capability reference without interpreting it or carrying a provider key.
+    const granted = structuredClone(claimed.request);
+    granted.activation.run_id = `${claimed.request.activation.run_id}-grant`;
+    granted.activation.thread_id = `${claimed.request.activation.thread_id}-grant`;
+    granted.session_thread_id = granted.activation.thread_id;
+    granted.execution_scope = 'scope-ts-17';
+    granted.model_access = { scheme: 'cloud-gateway', reference: 'grant-ts-17' };
+    const enqueuedGrant = await postJson('/v1/worker/dispatch/enqueue', { request: granted });
+    assert.equal(enqueuedGrant.status, 200, `grant-bearing dispatch enqueued: ${enqueuedGrant.text}`);
+
+    // Complete the first ownership before claiming the next run.
     const settle = await postJson('/v1/worker/dispatch/settle', {
-      run_id: 'no-such-run',
+      run_id: claimed.lease.run_id,
+      epoch: claimed.lease.epoch,
       outcome: 'Done',
       consumed: [],
     });
     assert.equal(settle.status, 200, `dispatch settle endpoint live: ${settle.text}`);
-    pass('dispatch transport: worker claim/settle endpoints are live over HTTP on the real server');
+    assert.equal(settle.json?.settled, true, `current epoch settles: ${settle.text}`);
+
+    const grantClaim = await postJson('/v1/worker/dispatch/claim', {});
+    assert.equal(grantClaim.status, 200, `grant dispatch claimed: ${grantClaim.text}`);
+    const grant = grantClaim.json?.claimed;
+    assert.deepEqual(
+      grant?.request?.model_access,
+      { scheme: 'cloud-gateway', reference: 'grant-ts-17' },
+      'model_access survives enqueue → durable store → authenticated claim unchanged',
+    );
+    assert.equal(
+      grant?.request?.execution_scope,
+      'scope-ts-17',
+      'verified execution scope survives the durable worker boundary as an opaque coordinate',
+    );
+    assert.ok(!JSON.stringify(grant).includes('provider-key'), 'claim contains no provider credential');
+    pass('secretless model_access grant survives durable dispatch without a provider key');
+
+    // A different authenticated worker cannot commit the claim. The owner-bound
+    // request is rejected before thread facts are applied.
+    const claimedCommit = {
+      claim: {
+        run_id: grant.lease.run_id,
+        owner: grant.lease.owner,
+        epoch: grant.lease.epoch,
+      },
+      commit: threadCommit(
+        grant.lease.run_id,
+        grant.request.activation.thread_id,
+        'claimed commit from authenticated worker',
+      ),
+    };
+    const wrongOwner = await postJson('/v1/worker/commit-claimed', claimedCommit, 'worker-thief');
+    assert.equal(wrongOwner.status, 401, `wrong claim owner rejected: ${wrongOwner.text}`);
+    const committedClaim = await postJson('/v1/worker/commit-claimed', claimedCommit);
+    assert.equal(committedClaim.status, 200, `current owner/epoch commits: ${committedClaim.text}`);
+    pass('commit-claimed enforces authenticated owner + epoch before applying facts');
+
+    const grantSettle = await postJson('/v1/worker/dispatch/settle', {
+      run_id: grant.lease.run_id,
+      epoch: grant.lease.epoch,
+      outcome: 'Done',
+      consumed: [],
+    });
+    assert.equal(grantSettle.json?.settled, true, `grant dispatch settled: ${grantSettle.text}`);
+    const stale = await postJson('/v1/worker/dispatch/settle', {
+      run_id: grant.lease.run_id,
+      epoch: grant.lease.epoch,
+      outcome: 'Done',
+      consumed: [],
+    });
+    assert.equal(stale.json?.settled, false, 'a final/stale epoch cannot settle twice');
+    pass('dispatch transport fences stale duplicate settlement after the final outcome');
   } finally {
     await stopServer(server);
   }

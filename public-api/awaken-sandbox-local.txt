@@ -31,6 +31,7 @@ pub fn awaken_sandbox_local::LocalProcess::signal<'life0, 'async_trait>(&'life0 
 pub fn awaken_sandbox_local::LocalProcess::wait<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_provisioning_contract::sandbox::ExitStatus, awaken_provisioning_contract::sandbox::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub struct awaken_sandbox_local::LocalProvider
 impl awaken_sandbox_local::LocalProvider
+pub async fn awaken_sandbox_local::LocalProvider::adopt_sandbox(&self, &awaken_provisioning_contract::sandbox::SandboxHandle) -> core::result::Result<awaken_sandbox_local::LocalSandbox, awaken_provisioning_contract::sandbox::SandboxError>
 pub async fn awaken_sandbox_local::LocalProvider::create_sandbox(&self, &awaken_provisioning_contract::spec::SandboxSpec) -> core::result::Result<awaken_sandbox_local::LocalSandbox, awaken_provisioning_contract::sandbox::SandboxError>
 pub fn awaken_sandbox_local::LocalProvider::new(impl core::convert::Into<std::path::PathBuf>) -> Self
 pub fn awaken_sandbox_local::LocalProvider::with_blob(self, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::vec::Vec<u8>>) -> Self

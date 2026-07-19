@@ -1653,11 +1653,13 @@ dependencies = [
 name = "awaken-worker"
 version = "1.0.0-dev"
 dependencies = [
+ "async-trait",
  "awaken-agent-contract",
  "awaken-control",
  "awaken-credential-vault",
  "awaken-model-catalog",
  "awaken-observability",
+ "awaken-runtime-contract",
  "awaken-runtime-host",
  "awaken-server",
  "axum",
