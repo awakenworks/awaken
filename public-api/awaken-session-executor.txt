@@ -5,6 +5,7 @@ pub use awaken_session_executor::ConfigService
 pub use awaken_session_executor::ConfigServiceAgentSource
 pub use awaken_session_executor::ConfigServiceReconciler
 pub use awaken_session_executor::HttpDispatchQueue
+pub use awaken_session_executor::ModelAccessRef
 pub use awaken_session_executor::ModelResolver
 pub use awaken_session_executor::PostgresEnvRegistry
 pub use awaken_session_executor::PostgresManagedSessionRepository

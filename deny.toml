@@ -120,6 +120,9 @@ wrappers = [
     "awaken-sandbox",
     "awaken-protocol-mcp",
     "awaken-server",
+    # The execution-plane composition root implements the public ExecutorProvider
+    # SPI in dev-only E2E fixtures; it may depend on runtime-contract value objects.
+    "awaken-worker",
     # Stage B2: the authoring plane + the composition root.
     "awaken-control",
     "awaken-cli",

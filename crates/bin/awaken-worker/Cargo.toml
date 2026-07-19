@@ -55,6 +55,8 @@ tower = { version = "0.5", features = ["util"] }
 awaken-model-catalog = { workspace = true }
 awaken-credential-vault = { workspace = true }
 awaken-agent-contract = { workspace = true }
+awaken-runtime-contract = { workspace = true }
+async-trait = { workspace = true }
 
 [lints]
 workspace = true
