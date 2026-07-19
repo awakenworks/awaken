@@ -414,7 +414,7 @@ async fn remote_artifacts_are_included_in_the_reply() {
             _path: &str,
             _body: Option<Vec<u8>>,
         ) -> Result<Response, String> {
-            let json = r#"{"task":{"id":"t","contextId":"c","status":{"state":"TASK_STATE_COMPLETED","message":{"messageId":"a","role":"ROLE_AGENT","parts":[{"text":"summary"}]}},"artifacts":[{"parts":[{"text":"the report body"}]}]}}"#;
+            let json = r#"{"task":{"id":"t","contextId":"c","status":{"state":"TASK_STATE_COMPLETED","message":{"messageId":"a","role":"ROLE_AGENT","parts":[{"text":"summary"}]}},"artifacts":[{"artifactId":"report","parts":[{"text":"the report body"}]}]}}"#;
             Ok(Response::new(200, json.as_bytes().to_vec()))
         }
     }
