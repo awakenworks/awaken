@@ -7,7 +7,29 @@
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime_contract::activation::RunActivation;
+pub use awaken_tenancy::ExecutionScopeRef;
 use serde::{Deserialize, Serialize};
+
+/// Opaque reference to a renewable model-access grant.
+///
+/// It identifies a capability understood by the host's `ExecutorProvider`; it is
+/// never a provider API key. The runtime and dispatch stores persist and forward
+/// the value without interpreting its scheme or reference.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelAccessRef {
+    pub scheme: String,
+    pub reference: String,
+}
+
+impl ModelAccessRef {
+    #[must_use]
+    pub fn new(scheme: impl Into<String>, reference: impl Into<String>) -> Self {
+        Self {
+            scheme: scheme.into(),
+            reference: reference.into(),
+        }
+    }
+}
 
 /// The durable, serializable record of an accepted run. It holds no `Arc<dyn ...>`,
 /// registry, or live handle (G3); the runtime builds live execution objects from
@@ -27,6 +49,15 @@ pub struct RunDispatch {
     /// writer): a pre-existing queue row simply deserializes it as `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub traceparent: Option<String>,
+    /// Authorized execution ownership resolved at the ingress edge. The dispatch
+    /// aggregate treats it as an opaque coordinate and never derives it from a
+    /// thread id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_scope: Option<ExecutionScopeRef>,
+    /// Opaque, non-secret capability reference used to resolve the run's model on
+    /// a remote worker. It follows the durable dispatch through recovery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_access: Option<ModelAccessRef>,
 }
 
 impl RunDispatch {
@@ -35,6 +66,8 @@ impl RunDispatch {
             activation,
             session_thread_id: None,
             traceparent: None,
+            execution_scope: None,
+            model_access: None,
         }
     }
 
@@ -48,6 +81,20 @@ impl RunDispatch {
     /// Attach the admitting request's W3C `traceparent` (see the field docs).
     pub fn with_traceparent(mut self, traceparent: Option<String>) -> Self {
         self.traceparent = traceparent;
+        self
+    }
+
+    /// Attach the verified scope's durable opaque representation.
+    #[must_use]
+    pub fn with_execution_scope(mut self, scope: ExecutionScopeRef) -> Self {
+        self.execution_scope = Some(scope);
+        self
+    }
+
+    /// Attach a renewable, non-secret model-access reference.
+    #[must_use]
+    pub fn with_model_access(mut self, access: ModelAccessRef) -> Self {
+        self.model_access = Some(access);
         self
     }
 
@@ -132,6 +179,8 @@ mod tests {
         // produced; it must load as None.
         let back: RunDispatch = serde_json::from_str(&json).expect("legacy row loads");
         assert!(back.traceparent.is_none());
+        assert!(back.execution_scope.is_none());
+        assert!(back.model_access.is_none());
     }
 
     /// A durable queue row written by an OLDER peer — no `traceparent`, no
@@ -178,6 +227,8 @@ mod tests {
             serde_json::from_str(LEGACY_QUEUE_ROW).expect("a persisted legacy row must still load");
         // The envelope's own newer field defaults.
         assert!(back.traceparent.is_none());
+        assert!(back.execution_scope.is_none());
+        assert!(back.model_access.is_none());
         // The activation's newer field defaults, and the run resolves to its pinned
         // binding — exactly how a run admitted before per-turn overrides behaves.
         assert!(back.activation.model_ref_override.is_none());
@@ -221,5 +272,25 @@ mod tests {
             restored.activation.snapshot.resolved_spec.delegation_limits,
             awaken_agent_contract::agent::delegation::DelegationLimits::new(3, 4, 5)
         );
+    }
+
+    #[test]
+    fn execution_envelope_round_trips_without_exposing_provider_credentials() {
+        let authority =
+            awaken_tenancy::Authority::bound(awaken_tenancy::ScopeId("workspace-a".to_string()));
+        let claimed = ExecutionScopeRef(awaken_tenancy::ScopeId("workspace-a".to_string()));
+        let verified = authority
+            .verify_execution_scope(&claimed)
+            .expect("scope belongs to authority");
+        let request = RunDispatch::new(activation())
+            .with_execution_scope(verified.into_ref())
+            .with_model_access(ModelAccessRef::new("cloud-gateway", "grant-17"));
+        let wire = serde_json::to_value(&request).expect("serializes");
+        assert_eq!(wire["execution_scope"], "workspace-a");
+        assert_eq!(wire["model_access"]["scheme"], "cloud-gateway");
+        assert_eq!(wire["model_access"]["reference"], "grant-17");
+        assert!(!wire.to_string().contains("provider-key"));
+        let restored: RunDispatch = serde_json::from_value(wire).expect("deserializes");
+        assert_eq!(restored, request);
     }
 }

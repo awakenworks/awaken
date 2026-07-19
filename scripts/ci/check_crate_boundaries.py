@@ -346,6 +346,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     "awaken-dispatch-contract": {
         "awaken-agent-contract",
         "awaken-runtime-contract",
+        "awaken-tenancy",
         # Serializable claim/settle payloads (the durable-persistence serde contract).
         "serde_json",
         "async-trait",
@@ -353,6 +354,16 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "thiserror",
         # Dev-only: drive the async port default methods in unit tests.
         "tokio",
+    },
+    # Public, backend-agnostic conformance driver for DispatchQueue adapters and
+    # decorators. It depends only on the durable wire contract and the value types
+    # needed to construct a self-contained RunDispatch fixture; production crates
+    # consume it only as a dev-dependency.
+    "awaken-dispatch-testkit": {
+        "awaken-agent-contract",
+        "awaken-runtime-contract",
+        "awaken-dispatch-contract",
+        "serde_json",
     },
     # Provisioning contract: the neutral, data-only sandbox vocabulary and ports
     # (SandboxProvider / Sandbox / prepare_environment / admission). Names no OS
@@ -723,6 +734,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-agent-contract",
         "awaken-runtime-contract",
         "awaken-dispatch-contract",
+        # dev-only: run the public DispatchQueue conformance suite against every
+        # in-tree backend.
+        "awaken-dispatch-testkit",
         "awaken-runtime",
         "awaken-ext-builtin-tools",
         "awaken-observability",
@@ -1183,6 +1197,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # tool catalog and the scoped config plane are keyed by.
         "awaken-tenancy",
         "awaken-dispatch",
+        # dev-only: the real worker HTTP adapter runs the shared dispatch suite.
+        "awaken-dispatch-testkit",
         "awaken-run-executor-acp",
         "awaken-config-resolver",
         "awaken-credential-vault",
