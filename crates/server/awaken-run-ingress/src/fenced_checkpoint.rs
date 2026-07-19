@@ -31,14 +31,6 @@ impl FencedStreamCheckpointStore {
             claim,
         }
     }
-
-    async fn guard(&self) -> Option<crate::CommitEpochGuard> {
-        self.dispatch
-            .lock_commit_epoch(&self.claim)
-            .await
-            .ok()
-            .flatten()
-    }
 }
 
 #[async_trait]
@@ -47,27 +39,44 @@ impl StreamCheckpointStore for FencedStreamCheckpointStore {
         if run_id != self.claim.run_id.0 {
             return None;
         }
-        let _guard = self.guard().await?;
-        self.inner.get(run_id).await
+        match self.dispatch.lock_commit_epoch(&self.claim).await {
+            Ok(Some(_guard)) => self.inner.get(run_id).await,
+            Ok(None) => None,
+            Err(_) => self
+                .dispatch
+                .load_stream_checkpoint(&self.claim)
+                .await
+                .ok()
+                .flatten(),
+        }
     }
 
     async fn put(&self, checkpoint: StreamCheckpoint) {
         if checkpoint.run_id != self.claim.run_id.0 {
             return;
         }
-        let Some(_guard) = self.guard().await else {
-            return;
-        };
-        self.inner.put(checkpoint).await;
+        match self.dispatch.lock_commit_epoch(&self.claim).await {
+            Ok(Some(_guard)) => self.inner.put(checkpoint).await,
+            Ok(None) => {}
+            Err(_) => {
+                let _ = self
+                    .dispatch
+                    .put_stream_checkpoint(&self.claim, checkpoint)
+                    .await;
+            }
+        }
     }
 
     async fn delete(&self, run_id: &str) {
         if run_id != self.claim.run_id.0 {
             return;
         }
-        let Some(_guard) = self.guard().await else {
-            return;
-        };
-        self.inner.delete(run_id).await;
+        match self.dispatch.lock_commit_epoch(&self.claim).await {
+            Ok(Some(_guard)) => self.inner.delete(run_id).await,
+            Ok(None) => {}
+            Err(_) => {
+                let _ = self.dispatch.delete_stream_checkpoint(&self.claim).await;
+            }
+        }
     }
 }

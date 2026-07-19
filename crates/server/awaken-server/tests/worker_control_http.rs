@@ -3,9 +3,11 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpointStore};
 use awaken_run_ingress::{
     DispatchQueue, HttpDispatchQueue, MemoryDispatchStore, PlacementRequirements, RunDispatch,
 };
+use awaken_runtime::memory::MemoryStreamCheckpointStore;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
 use awaken_runtime_contract::snapshot::{
@@ -185,6 +187,7 @@ async fn registered_http_claim_skips_incompatible_work_and_uses_incarnation_owne
     let clock = Arc::new(ManualWorkerClock::new(100));
     let directory = Arc::new(MemoryWorkerDirectory::new());
     let dispatch = Arc::new(MemoryDispatchStore::new());
+    let checkpoints = Arc::new(MemoryStreamCheckpointStore::new());
     dispatch
         .enqueue(dispatch_with_capability("gpu", "gpu"))
         .await
@@ -199,7 +202,8 @@ async fn registered_http_claim_skips_incompatible_work_and_uses_incarnation_owne
         clock,
         Arc::new(FixedWorkerLeasePolicy::new(1_000)),
     )
-    .with_worker_directory(directory, 1_000);
+    .with_worker_directory(directory, 1_000)
+    .with_checkpoint_store(checkpoints.clone());
     let router = dispatch_transport_router_with_service(Arc::new(service));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -238,6 +242,25 @@ async fn registered_http_claim_skips_incompatible_work_and_uses_incarnation_owne
         claimed.assignment.unwrap().identity,
         registered.snapshot.identity
     );
+    let claim = awaken_run_ingress::RunClaim::from(&claimed.lease);
+    let partial = StreamCheckpoint {
+        run_id: claimed.lease.run_id.0.clone(),
+        thread_id: "thread-cpu".to_string(),
+        model: "model".to_string(),
+        partial_text: "partial".to_string(),
+        partial_tools: Vec::new(),
+    };
+    assert!(
+        client
+            .put_stream_checkpoint(&claim, partial.clone())
+            .await
+            .unwrap()
+            .applied()
+    );
+    assert_eq!(
+        client.load_stream_checkpoint(&claim).await.unwrap(),
+        Some(partial)
+    );
     assert_eq!(
         control
             .begin_drain(&registered.snapshot.identity, Some(1_000))
@@ -249,4 +272,5 @@ async fn registered_http_claim_skips_incompatible_work_and_uses_incarnation_owne
         client.claim("ignored", 99, 99).await.is_err(),
         "a draining incarnation cannot receive new work"
     );
+    assert!(checkpoints.get(&claim.run_id.0).await.is_some());
 }

@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use crate::{WorkerAssignment, WorkerSnapshot};
+use crate::{WorkerAssignment, WorkerSnapshot, can_assign};
 use async_trait::async_trait;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
@@ -153,11 +153,7 @@ fn is_due(input: &PendingInput, now_ms: u64) -> bool {
 /// Pick the next runnable run, oldest-first within each priority band: reclaim an
 /// expired lease (recovery), then wake an awaiting run with pending input, then a
 /// fresh pending run. This is the claim policy the Postgres store must match.
-fn select_where(
-    state: &State,
-    now_ms: u64,
-    compatible: impl Fn(&RunDispatch) -> bool,
-) -> Option<RunId> {
+fn select_where(state: &State, now_ms: u64, compatible: impl Fn(&Row) -> bool) -> Option<RunId> {
     // Single-writer-per-thread (ADR-0022): a wake or fresh pick must not start a
     // second concurrent run for a thread that already has one running. A recovery
     // pick is exempt — it re-owns the SAME running row, it does not add a second.
@@ -173,7 +169,7 @@ fn select_where(
         if let Some(row) = state.rows.get(run)
             && row.state == RowState::Leased
             && row.lease.as_ref().is_some_and(|l| l.expires_ms < now_ms)
-            && compatible(&row.request)
+            && compatible(row)
         {
             return Some(run.clone());
         }
@@ -187,7 +183,7 @@ fn select_where(
                 .iter()
                 .any(|p| &p.input.run_id == run && is_due(&p.input, now_ms))
             && !thread_running(row.request.thread_id())
-            && compatible(&row.request)
+            && compatible(row)
         {
             return Some(run.clone());
         }
@@ -199,7 +195,7 @@ fn select_where(
         if let Some(row) = state.rows.get(run)
             && row.state == RowState::Pending
             && !thread_running(row.request.thread_id())
-            && compatible(&row.request)
+            && compatible(row)
             && best.is_none_or(|(_, p)| row.priority > p)
         {
             best = Some((run, row.priority));
@@ -407,7 +403,7 @@ impl DispatchQueue for MemoryDispatchStore {
         lease_ms: u64,
         now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
-        if !worker.accepts(&request.placement, now_ms) {
+        if can_assign(worker, &request.placement, None, false, now_ms).is_err() {
             return Ok(None);
         }
         let _authority = self.authority.lock().await;
@@ -481,11 +477,16 @@ impl DispatchQueue for MemoryDispatchStore {
         {
             state.pending.push(PendingRow { input, revision: 1 });
         }
-        if state
-            .rows
-            .get(&run_id)
-            .is_none_or(|row| !worker.accepts(&row.request.placement, now_ms))
-        {
+        if state.rows.get(&run_id).is_none_or(|row| {
+            can_assign(
+                worker,
+                &row.request.placement,
+                row.assignment.as_ref(),
+                row.sandbox.is_some(),
+                now_ms,
+            )
+            .is_err()
+        }) {
             return Ok(None);
         }
         Ok(claim_exact(
@@ -564,8 +565,15 @@ impl DispatchQueue for MemoryDispatchStore {
     ) -> Result<Option<Claimed>, DispatchError> {
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
-        let Some(run_id) = select_where(&state, now_ms, |request| {
-            worker.accepts(&request.placement, now_ms)
+        let Some(run_id) = select_where(&state, now_ms, |row| {
+            can_assign(
+                worker,
+                &row.request.placement,
+                row.assignment.as_ref(),
+                row.sandbox.is_some(),
+                now_ms,
+            )
+            .is_ok()
         }) else {
             return Ok(None);
         };
@@ -607,11 +615,16 @@ impl DispatchQueue for MemoryDispatchStore {
     ) -> Result<Option<Claimed>, DispatchError> {
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
-        if state
-            .rows
-            .get(requested_run)
-            .is_none_or(|row| !worker.accepts(&row.request.placement, now_ms))
-        {
+        if state.rows.get(requested_run).is_none_or(|row| {
+            can_assign(
+                worker,
+                &row.request.placement,
+                row.assignment.as_ref(),
+                row.sandbox.is_some(),
+                now_ms,
+            )
+            .is_err()
+        }) {
             return Ok(None);
         }
         Ok(claim_exact(

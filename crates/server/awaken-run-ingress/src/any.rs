@@ -19,6 +19,7 @@ use crate::WorkerSnapshot;
 use async_trait::async_trait;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::stream::checkpoint::StreamCheckpoint;
 use awaken_runtime_contract::resume::ResumeResult;
 
 use crate::dispatch::{
@@ -135,6 +136,28 @@ impl DispatchQueue for AnyDispatchStore {
         claim: &RunClaim,
     ) -> Result<Option<CommitEpochGuard>, DispatchError> {
         delegate!(self, lock_commit_epoch(claim))
+    }
+
+    async fn load_stream_checkpoint(
+        &self,
+        claim: &RunClaim,
+    ) -> Result<Option<StreamCheckpoint>, DispatchError> {
+        delegate!(self, load_stream_checkpoint(claim))
+    }
+
+    async fn put_stream_checkpoint(
+        &self,
+        claim: &RunClaim,
+        checkpoint: StreamCheckpoint,
+    ) -> Result<SettleOutcome, DispatchError> {
+        delegate!(self, put_stream_checkpoint(claim, checkpoint))
+    }
+
+    async fn delete_stream_checkpoint(
+        &self,
+        claim: &RunClaim,
+    ) -> Result<SettleOutcome, DispatchError> {
+        delegate!(self, delete_stream_checkpoint(claim))
     }
 
     async fn enqueue_with(

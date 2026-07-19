@@ -17,6 +17,7 @@
 use async_trait::async_trait;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::stream::checkpoint::StreamCheckpoint;
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_worker_contract::{WorkerAssignment, WorkerSnapshot};
 use serde::{Deserialize, Serialize};
@@ -413,6 +414,37 @@ pub trait DispatchQueue: Send + Sync {
         &self,
         claim: &RunClaim,
     ) -> Result<Option<CommitEpochGuard>, DispatchError>;
+
+    /// Remote-capable checkpoint operations. Native stores normally use
+    /// `lock_commit_epoch` around their colocated checkpoint store; transports
+    /// override these to execute the guarded operation on the authority server.
+    async fn load_stream_checkpoint(
+        &self,
+        _claim: &RunClaim,
+    ) -> Result<Option<StreamCheckpoint>, DispatchError> {
+        Err(DispatchError::Rejected(
+            "claimed checkpoint transport is unavailable".to_string(),
+        ))
+    }
+
+    async fn put_stream_checkpoint(
+        &self,
+        _claim: &RunClaim,
+        _checkpoint: StreamCheckpoint,
+    ) -> Result<SettleOutcome, DispatchError> {
+        Err(DispatchError::Rejected(
+            "claimed checkpoint transport is unavailable".to_string(),
+        ))
+    }
+
+    async fn delete_stream_checkpoint(
+        &self,
+        _claim: &RunClaim,
+    ) -> Result<SettleOutcome, DispatchError> {
+        Err(DispatchError::Rejected(
+            "claimed checkpoint transport is unavailable".to_string(),
+        ))
+    }
 
     /// Dead-letter every *crashed* dispatch — one whose lease expired without a
     /// settle — that has used up its crash-retry budget (`attempt_count >=

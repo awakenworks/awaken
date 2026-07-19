@@ -25,6 +25,7 @@ use crate::{
 use crate::{WorkerIdentity, WorkerSnapshot};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::stream::checkpoint::StreamCheckpoint;
 use awaken_runtime_contract::resume::ResumeResult;
 
 /// Build a worker's process dispatch store: an [`HttpDispatchQueue`] pointed at the
@@ -160,6 +161,62 @@ impl DispatchQueue for HttpDispatchQueue {
         Err(DispatchError::Rejected(
             "remote claims require the atomic claimed-commit endpoint".to_string(),
         ))
+    }
+
+    async fn load_stream_checkpoint(
+        &self,
+        claim: &RunClaim,
+    ) -> Result<Option<StreamCheckpoint>, DispatchError> {
+        let value = self
+            .post(
+                "/v1/worker/checkpoint/get",
+                json!({ "claim": claim, "identity": self.worker_identity }),
+                &self.default_worker_id,
+            )
+            .await?;
+        serde_json::from_value(value.get("checkpoint").cloned().unwrap_or_default())
+            .map_err(|error| DispatchError::Rejected(format!("decode checkpoint: {error}")))
+    }
+
+    async fn put_stream_checkpoint(
+        &self,
+        claim: &RunClaim,
+        checkpoint: StreamCheckpoint,
+    ) -> Result<SettleOutcome, DispatchError> {
+        let value = self
+            .post(
+                "/v1/worker/checkpoint/put",
+                json!({ "claim": claim, "checkpoint": checkpoint, "identity": self.worker_identity }),
+                &self.default_worker_id,
+            )
+            .await?;
+        Ok(
+            if value.get("applied").and_then(|v| v.as_bool()) == Some(true) {
+                SettleOutcome::Applied
+            } else {
+                SettleOutcome::Fenced
+            },
+        )
+    }
+
+    async fn delete_stream_checkpoint(
+        &self,
+        claim: &RunClaim,
+    ) -> Result<SettleOutcome, DispatchError> {
+        let value = self
+            .post(
+                "/v1/worker/checkpoint/delete",
+                json!({ "claim": claim, "identity": self.worker_identity }),
+                &self.default_worker_id,
+            )
+            .await?;
+        Ok(
+            if value.get("applied").and_then(|v| v.as_bool()) == Some(true) {
+                SettleOutcome::Applied
+            } else {
+                SettleOutcome::Fenced
+            },
+        )
     }
 
     async fn enqueue_with(

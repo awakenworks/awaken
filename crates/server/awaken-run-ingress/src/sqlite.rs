@@ -23,7 +23,7 @@ use crate::dispatch::{
     SettleOutcome, SubmitOptions,
 };
 use crate::dispatch_schema::dispatch_bundle;
-use crate::{WorkerAssignment, WorkerSnapshot};
+use crate::{WorkerAssignment, WorkerSnapshot, can_assign};
 use awaken_run_ingress_contract::RunDispatch;
 
 /// Errors from constructing or migrating the dispatch store. Claim/settle-time
@@ -251,7 +251,7 @@ impl DispatchQueue for SqliteDispatchStore {
         lease_ms: u64,
         now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
-        if !worker.accepts(&request.placement, now_ms) {
+        if can_assign(worker, &request.placement, None, false, now_ms).is_err() {
             return Ok(None);
         }
         let run_id = request.run_id().0.clone();
@@ -580,7 +580,7 @@ impl DispatchQueue for SqliteDispatchStore {
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(reject)?;
             let sql = format!(
-                "SELECT d.run_id, d.request FROM {p}_dispatch d WHERE \
+                "SELECT d.run_id, d.request, d.sandbox, d.worker_assignment FROM {p}_dispatch d WHERE \
                  (d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until < ?1) OR \
                  (d.status = 'awaiting' AND EXISTS (SELECT 1 FROM {p}_pending pe \
                    WHERE pe.run_id = d.run_id AND (pe.available_at IS NULL OR pe.available_at <= ?1)) \
@@ -594,15 +594,31 @@ impl DispatchQueue for SqliteDispatchStore {
                 let mut stmt = tx.prepare(&sql).map_err(reject)?;
                 let rows = stmt
                     .query_map(params![now_ms as i64], |row| {
-                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, Option<String>>(3)?,
+                        ))
                     })
                     .map_err(reject)?;
                 let mut selected = None;
                 for row in rows {
-                    let (run_id, request_json) = row.map_err(reject)?;
+                    let (run_id, request_json, sandbox, previous_json) = row.map_err(reject)?;
                     let request: RunDispatch =
                         serde_json::from_str(&request_json).map_err(json_err)?;
-                    if worker.accepts(&request.placement, now_ms) {
+                    let previous: Option<WorkerAssignment> = previous_json
+                        .map(|value| serde_json::from_str(&value).map_err(json_err))
+                        .transpose()?;
+                    if can_assign(
+                        &worker,
+                        &request.placement,
+                        previous.as_ref(),
+                        sandbox.is_some(),
+                        now_ms,
+                    )
+                    .is_ok()
+                    {
                         selected = Some(run_id);
                         break;
                     }
@@ -1307,7 +1323,7 @@ fn claim_exact_transaction(
          WHERE r.thread_id = d.thread_id AND r.status = 'running')"
     );
     let sql = format!(
-        "SELECT d.request, d.sandbox, d.status FROM {prefix}_dispatch d \
+        "SELECT d.request, d.sandbox, d.status, d.worker_assignment FROM {prefix}_dispatch d \
          WHERE d.run_id = ?1 AND ( \
            (d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until < ?2) \
            OR (d.status = 'awaiting' AND EXISTS ( \
@@ -1316,18 +1332,28 @@ fn claim_exact_transaction(
            OR (d.status = 'pending' AND {not_running}) \
          ) LIMIT 1"
     );
-    let picked: Option<(String, Option<String>, String)> = tx
+    let picked: Option<(String, Option<String>, String, Option<String>)> = tx
         .query_row(&sql, params![requested_run, now_ms as i64], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
         })
         .optional()
         .map_err(reject)?;
-    let Some((request_json, sandbox, status)) = picked else {
+    let Some((request_json, sandbox, status, previous_json)) = picked else {
         return Ok(None);
     };
     let request: RunDispatch = serde_json::from_str(&request_json).map_err(json_err)?;
+    let previous: Option<WorkerAssignment> = previous_json
+        .map(|value| serde_json::from_str(&value).map_err(json_err))
+        .transpose()?;
     if let Some(worker) = worker
-        && !worker.accepts(&request.placement, now_ms)
+        && can_assign(
+            worker,
+            &request.placement,
+            previous.as_ref(),
+            sandbox.is_some(),
+            now_ms,
+        )
+        .is_err()
     {
         return Ok(None);
     }

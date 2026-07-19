@@ -23,7 +23,7 @@ use crate::dispatch::{
     SettleOutcome, SubmitOptions,
 };
 use crate::dispatch_schema::dispatch_bundle;
-use crate::{WorkerAssignment, WorkerSnapshot};
+use crate::{WorkerAssignment, WorkerSnapshot, can_assign};
 use awaken_run_ingress_contract::RunDispatch;
 
 /// Errors from constructing or migrating the dispatch store. Claim/settle-time
@@ -233,7 +233,7 @@ impl DispatchQueue for PostgresDispatchStore {
         lease_ms: u64,
         now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
-        if !worker.accepts(&request.placement, now_ms) {
+        if can_assign(worker, &request.placement, None, false, now_ms).is_err() {
             return Ok(None);
         }
         let p = NS;
@@ -530,7 +530,7 @@ impl DispatchQueue for PostgresDispatchStore {
     ) -> Result<Option<Claimed>, DispatchError> {
         let p = NS;
         let rows = sqlx::query(&format!(
-            "SELECT d.run_id, d.request FROM {p}_dispatch d WHERE \
+            "SELECT d.run_id, d.request, d.sandbox, d.worker_assignment FROM {p}_dispatch d WHERE \
              (d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until < $1) OR \
              (d.status = 'awaiting' AND EXISTS (SELECT 1 FROM {p}_pending pe \
                WHERE pe.run_id = d.run_id AND (pe.available_at IS NULL OR pe.available_at <= $1)) \
@@ -547,7 +547,18 @@ impl DispatchQueue for PostgresDispatchStore {
         let mut selected = None;
         for row in rows {
             let Json(request): Json<RunDispatch> = row.try_get("request").map_err(reject)?;
-            if worker.accepts(&request.placement, now_ms) {
+            let sandbox: Option<String> = row.try_get("sandbox").map_err(reject)?;
+            let previous: Option<Json<WorkerAssignment>> =
+                row.try_get("worker_assignment").map_err(reject)?;
+            if can_assign(
+                worker,
+                &request.placement,
+                previous.as_ref().map(|value| &value.0),
+                sandbox.is_some(),
+                now_ms,
+            )
+            .is_ok()
+            {
                 selected = Some(RunId(row.try_get("run_id").map_err(reject)?));
                 break;
             }
@@ -1191,7 +1202,7 @@ async fn claim_exact_transaction(
          WHERE r.thread_id = d.thread_id AND r.status = 'running')"
     );
     let sql = format!(
-        "SELECT d.request, d.sandbox, d.status FROM {p}_dispatch d \
+        "SELECT d.request, d.sandbox, d.status, d.worker_assignment FROM {p}_dispatch d \
          WHERE d.run_id = $1 AND ( \
            (d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until < $2) \
            OR (d.status = 'awaiting' AND EXISTS ( \
@@ -1210,12 +1221,21 @@ async fn claim_exact_transaction(
         return Ok(None);
     };
     let Json(request): Json<RunDispatch> = row.try_get("request").map_err(reject)?;
+    let previous: Option<Json<WorkerAssignment>> =
+        row.try_get("worker_assignment").map_err(reject)?;
+    let sandbox: Option<String> = row.try_get("sandbox").map_err(reject)?;
     if let Some(worker) = worker
-        && !worker.accepts(&request.placement, now_ms)
+        && can_assign(
+            worker,
+            &request.placement,
+            previous.as_ref().map(|value| &value.0),
+            sandbox.is_some(),
+            now_ms,
+        )
+        .is_err()
     {
         return Ok(None);
     }
-    let sandbox: Option<String> = row.try_get("sandbox").map_err(reject)?;
     let status: String = row.try_get("status").map_err(reject)?;
     let expires = now_ms + lease_ms;
     let lease_epoch = sqlx::query_scalar::<_, i64>(&format!(

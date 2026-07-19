@@ -15,6 +15,7 @@ use awaken_run_ingress::{
     PlacementRequirements, RunDispatch, SubmitOptions, WorkerIdentity, WorkerManifest,
     WorkerSnapshot, WorkerState,
 };
+use awaken_run_ingress::{RunClaim, SettleOutcome, WorkerRecoveryMode};
 use awaken_runtime::RunIngress;
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_store_sqlite::SqliteCommitCoordinator;
@@ -68,6 +69,92 @@ async fn compatible_claim_skips_ineligible_work_and_pins_the_incarnation() {
     let assignment = claimed.assignment.expect("remote claim pins assignment");
     assert_eq!(assignment.identity, worker.identity);
     assert_eq!(assignment.capability_fingerprint, fingerprint);
+}
+
+fn worker_snapshot(id: &str, boot: &str, generation: u64) -> WorkerSnapshot {
+    let mut manifest = WorkerManifest::default();
+    manifest.capabilities.insert("cpu".to_string());
+    let capability_fingerprint = manifest.fingerprint().unwrap();
+    WorkerSnapshot {
+        identity: WorkerIdentity::new(id, boot, generation),
+        state: WorkerState::Ready,
+        manifest,
+        capability_fingerprint,
+        in_flight: 0,
+        expires_at_ms: 100_000,
+    }
+}
+
+#[tokio::test]
+async fn recovery_mode_is_enforced_from_the_durable_previous_assignment() {
+    let store = any_in_memory();
+    let mut never = PlacementRequirements::remote_required();
+    never.required_capabilities.insert("cpu".to_string());
+    never.recovery = WorkerRecoveryMode::NeverReplace;
+    store
+        .enqueue(RunDispatch::new(activation_on("never", "never-thread")).with_placement(never))
+        .await
+        .unwrap();
+    let original = worker_snapshot("worker", "boot-a", 1);
+    let replacement = worker_snapshot("worker", "boot-b", 2);
+    let _first = store
+        .claim_compatible(&original, 10, 0)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        store
+            .claim_compatible(&replacement, 10, 11)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        store
+            .claim_compatible(&original, 10, 11)
+            .await
+            .unwrap()
+            .is_some(),
+        "the same incarnation may recover its own expired lease"
+    );
+
+    let mut continuity = PlacementRequirements::remote_required();
+    continuity.required_capabilities.insert("cpu".to_string());
+    continuity.recovery = WorkerRecoveryMode::RequireSandboxContinuity;
+    store
+        .enqueue(
+            RunDispatch::new(activation_on("continuous", "continuous-thread"))
+                .with_placement(continuity),
+        )
+        .await
+        .unwrap();
+    let initial = store
+        .claim_compatible(&original, 10, 20)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        store
+            .claim_run_compatible(initial.request.run_id(), &replacement, 10, 31)
+            .await
+            .unwrap()
+            .is_none(),
+        "continuity replacement is blocked until a sandbox was bound"
+    );
+    assert_eq!(
+        store
+            .bind_sandbox(&RunClaim::from(&initial.lease), "sandbox:durable")
+            .await
+            .unwrap(),
+        SettleOutcome::Applied
+    );
+    assert!(
+        store
+            .claim_run_compatible(initial.request.run_id(), &replacement, 10, 31)
+            .await
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[tokio::test]

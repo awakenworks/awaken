@@ -16,6 +16,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use awaken_agent_contract::agent::run::Id as RunId;
+use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpointStore};
 use awaken_run_ingress::{
     AnyDispatchStore, Dispatch, DispatchOutcome, DispatchQueue, HttpDispatchQueue, PendingInput,
     RunClaim, RunDispatch, SubmitOptions, WorkerDirectory, WorkerHeartbeat, WorkerIdentity,
@@ -52,6 +53,7 @@ pub struct WorkerDispatchService {
     lease_policy: Arc<dyn WorkerLeasePolicy>,
     directory: Option<Arc<dyn WorkerDirectory>>,
     registry_ttl_ms: u64,
+    checkpoint: Option<Arc<dyn StreamCheckpointStore>>,
 }
 
 impl WorkerDispatchService {
@@ -69,7 +71,14 @@ impl WorkerDispatchService {
             lease_policy,
             directory: None,
             registry_ttl_ms: 30_000,
+            checkpoint: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_checkpoint_store(mut self, checkpoint: Arc<dyn StreamCheckpointStore>) -> Self {
+        self.checkpoint = Some(checkpoint);
+        self
     }
 
     #[must_use]
@@ -162,8 +171,18 @@ pub fn dispatch_transport_router_with_directory(
 ) -> Router {
     let dispatch = shared_durable_store(host.store_dir.as_deref())
         .expect("worker dispatch router requires the durable backend initialized at startup");
+    let checkpoint: Arc<dyn StreamCheckpointStore> = if let Some(root) = &host.store_dir {
+        Arc::new(
+            awaken_store_fs::FsStreamCheckpointStore::open(root.join("worker-stream-checkpoints"))
+                .expect("worker checkpoint store must open"),
+        )
+    } else {
+        Arc::new(awaken_runtime::memory::MemoryStreamCheckpointStore::new())
+    };
     dispatch_transport_router_with_service(Arc::new(
-        WorkerDispatchService::local(dispatch).with_worker_directory(directory, 30_000),
+        WorkerDispatchService::local(dispatch)
+            .with_worker_directory(directory, 30_000)
+            .with_checkpoint_store(checkpoint),
     ))
 }
 
@@ -185,11 +204,122 @@ pub fn dispatch_transport_router_with_service(service: Arc<WorkerDispatchService
         .route("/v1/worker/drain", post(drain_worker))
         .route("/v1/worker/quiesced", post(quiesce_worker))
         .route("/v1/worker/deregister", post(deregister_worker))
+        .route("/v1/worker/checkpoint/get", post(get_checkpoint))
+        .route("/v1/worker/checkpoint/put", post(put_checkpoint))
+        .route("/v1/worker/checkpoint/delete", post(delete_checkpoint))
         .layer(axum::middleware::from_fn_with_state(
             service.clone(),
             authenticate_worker,
         ))
         .with_state(service)
+}
+
+fn checkpoint_store(
+    service: &WorkerDispatchService,
+) -> Result<&Arc<dyn StreamCheckpointStore>, HostError> {
+    service
+        .checkpoint
+        .as_ref()
+        .ok_or_else(|| HostError::internal("worker checkpoint store is not configured"))
+}
+
+#[derive(Deserialize)]
+struct CheckpointReq {
+    claim: RunClaim,
+    #[serde(default)]
+    identity: Option<WorkerIdentity>,
+    #[serde(default)]
+    checkpoint: Option<StreamCheckpoint>,
+}
+
+async fn checkpoint_authority(
+    service: &WorkerDispatchService,
+    worker: &VerifiedWorkerContext,
+    request: &CheckpointReq,
+) -> Result<(), HostError> {
+    let authority = claim_authority(service, worker, request.identity.as_ref(), false).await?;
+    if request.claim.owner != authority.owner {
+        return Err(HostError::bad_request("checkpoint claim owner is stale"));
+    }
+    Ok(())
+}
+
+async fn get_checkpoint(
+    State(service): State<Arc<WorkerDispatchService>>,
+    Extension(worker): Extension<VerifiedWorkerContext>,
+    Json(request): Json<CheckpointReq>,
+) -> (StatusCode, Json<Value>) {
+    let result = async {
+        checkpoint_authority(&service, &worker, &request).await?;
+        let Some(_guard) = service
+            .dispatch
+            .lock_commit_epoch(&request.claim)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?
+        else {
+            return Ok(json!({ "checkpoint": null }));
+        };
+        let checkpoint = checkpoint_store(&service)?
+            .get(&request.claim.run_id.0)
+            .await;
+        Ok(json!({ "checkpoint": checkpoint }))
+    }
+    .await;
+    respond(result)
+}
+
+async fn put_checkpoint(
+    State(service): State<Arc<WorkerDispatchService>>,
+    Extension(worker): Extension<VerifiedWorkerContext>,
+    Json(request): Json<CheckpointReq>,
+) -> (StatusCode, Json<Value>) {
+    let result = async {
+        checkpoint_authority(&service, &worker, &request).await?;
+        let checkpoint = request
+            .checkpoint
+            .ok_or_else(|| HostError::bad_request("checkpoint payload is required"))?;
+        if checkpoint.run_id != request.claim.run_id.0 {
+            return Err(HostError::bad_request(
+                "checkpoint run id does not match claim",
+            ));
+        }
+        let Some(_guard) = service
+            .dispatch
+            .lock_commit_epoch(&request.claim)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?
+        else {
+            return Ok(json!({ "applied": false }));
+        };
+        checkpoint_store(&service)?.put(checkpoint).await;
+        Ok(json!({ "applied": true }))
+    }
+    .await;
+    respond(result)
+}
+
+async fn delete_checkpoint(
+    State(service): State<Arc<WorkerDispatchService>>,
+    Extension(worker): Extension<VerifiedWorkerContext>,
+    Json(request): Json<CheckpointReq>,
+) -> (StatusCode, Json<Value>) {
+    let result = async {
+        checkpoint_authority(&service, &worker, &request).await?;
+        let Some(_guard) = service
+            .dispatch
+            .lock_commit_epoch(&request.claim)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?
+        else {
+            return Ok(json!({ "applied": false }));
+        };
+        checkpoint_store(&service)?
+            .delete(&request.claim.run_id.0)
+            .await;
+        Ok(json!({ "applied": true }))
+    }
+    .await;
+    respond(result)
 }
 
 fn directory(service: &WorkerDispatchService) -> Result<&Arc<dyn WorkerDirectory>, HostError> {

@@ -421,6 +421,41 @@ pub struct WorkerAssignment {
     pub capability_fingerprint: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum AssignmentRejection {
+    #[error("worker is not currently eligible for the pinned requirements")]
+    Ineligible,
+    #[error("the run forbids replacement by another worker incarnation")]
+    ReplacementForbidden,
+    #[error("replacement requires an existing sandbox binding")]
+    SandboxContinuityUnavailable,
+}
+
+/// Shared admission kernel for initial placement, wake, and crash replacement.
+pub fn can_assign(
+    worker: &WorkerSnapshot,
+    requirements: &PlacementRequirements,
+    previous: Option<&WorkerAssignment>,
+    sandbox_bound: bool,
+    now_ms: u64,
+) -> Result<(), AssignmentRejection> {
+    if !worker.accepts(requirements, now_ms) {
+        return Err(AssignmentRejection::Ineligible);
+    }
+    let replacing = previous.is_some_and(|prior| prior.identity != worker.identity);
+    if !replacing {
+        return Ok(());
+    }
+    match requirements.recovery {
+        WorkerRecoveryMode::NeverReplace => Err(AssignmentRejection::ReplacementForbidden),
+        WorkerRecoveryMode::RequireSandboxContinuity if !sandbox_bound => {
+            Err(AssignmentRejection::SandboxContinuityUnavailable)
+        }
+        WorkerRecoveryMode::RequireSandboxContinuity
+        | WorkerRecoveryMode::RebuildFromCommittedTruth => Ok(()),
+    }
+}
+
 impl From<&WorkerSnapshot> for WorkerAssignment {
     fn from(snapshot: &WorkerSnapshot) -> Self {
         Self {
@@ -858,6 +893,32 @@ mod tests {
         let old = first.fingerprint().unwrap();
         first.capabilities.insert("gpu".to_string());
         assert_ne!(old, first.fingerprint().unwrap());
+    }
+
+    #[test]
+    fn recovery_mode_controls_cross_incarnation_assignment() {
+        let first = manifest("worker-a", 0);
+        let replacement = manifest("worker-b", 0);
+        let previous = WorkerAssignment::from(&first);
+
+        let mut never = requirements();
+        never.recovery = WorkerRecoveryMode::NeverReplace;
+        assert_eq!(
+            can_assign(&replacement, &never, Some(&previous), true, 10),
+            Err(AssignmentRejection::ReplacementForbidden)
+        );
+        assert!(can_assign(&first, &never, Some(&previous), false, 10).is_ok());
+
+        let mut continuity = requirements();
+        continuity.recovery = WorkerRecoveryMode::RequireSandboxContinuity;
+        assert_eq!(
+            can_assign(&replacement, &continuity, Some(&previous), false, 10),
+            Err(AssignmentRejection::SandboxContinuityUnavailable)
+        );
+        assert!(can_assign(&replacement, &continuity, Some(&previous), true, 10).is_ok());
+
+        let rebuild = requirements();
+        assert!(can_assign(&replacement, &rebuild, Some(&previous), false, 10).is_ok());
     }
 
     proptest! {
