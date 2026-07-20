@@ -47,8 +47,8 @@ impl SharedHost {
                 .await
                 .map_err(|e| HostError::internal(e.to_string()))?
                 .with_live_inbox(ctx.open_live_inbox());
-            let result = acp
-                .executor
+            let executor = acp.executor_for(ctx.env.clone());
+            let result = executor
                 .execute(activation, context)
                 .await
                 .map_err(|e| HostError::internal(e.to_string()));

@@ -97,8 +97,9 @@ pub use crate::hub::{ThreadEvent, ThreadEventHub};
 pub use crate::memory_store_api::{memory_stores_router, memory_stores_router_with_catalog};
 pub use crate::redact::PiiRedactor;
 pub use crate::sandbox_source::{
-    AcpSandboxBindings, ContainerChannelSource, LaunchSource, SandboxChannelSource, ThreadEgress,
-    ThreadResources, ThreadSandbox, build_acp_channel_source, resolve_sandbox_tier,
+    AcpSandboxBindings, BoundLocalChannelSource, ContainerChannelSource, LaunchSource,
+    SandboxChannelSource, ThreadEgress, ThreadResources, ThreadSandbox,
+    build_acp_channel_source, resolve_sandbox_tier,
 };
 pub use crate::skills_api::skills_router;
 // The config data plane (ADR-0036/slice A): the service + its router + the

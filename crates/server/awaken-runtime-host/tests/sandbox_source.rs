@@ -13,6 +13,7 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_provisioning_contract::{Command, Sandbox, SandboxSpec};
 use awaken_run_executor_acp::AgentChannelSource;
 use awaken_run_executor_acp::{AcpLaunch, AcpRunExecutor};
 use awaken_runtime_contract::activation::RunActivation;
@@ -22,7 +23,10 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
-use awaken_runtime_host::{SandboxChannelSource, ThreadEgress};
+use awaken_runtime_host::{
+    BoundLocalChannelSource, LaunchSource, SandboxChannelSource, ThreadEgress,
+};
+use awaken_sandbox_local::LocalProvider;
 use awaken_store_inmem::MemoryCommitCoordinator;
 
 async fn bwrap_available() -> bool {
@@ -75,6 +79,59 @@ fn sandbox_base(label: &str) -> std::path::PathBuf {
 const SANDBOXED_ACP_SCRIPT: &str = "read _p; \
     printf '%s\\n' '{\"type\":\"message\",\"text\":\"sandboxed reply\"}'; \
     printf '%s\\n' '{\"type\":\"turn_end\",\"reason\":\"natural_end\"}'";
+
+#[tokio::test]
+async fn bound_source_observes_native_state_without_a_second_sandbox() {
+    let base = sandbox_base("bound-local");
+    let provider = LocalProvider::new(&base);
+    let sandbox = Arc::new(
+        provider
+            .create_sandbox(&SandboxSpec {
+                scope: "shared".into(),
+                isolation: awaken_provisioning_contract::IsolationClass::Workdir,
+                mounts: Vec::new(),
+                env: Vec::new(),
+                network: awaken_provisioning_contract::NetworkPolicy::Unrestricted,
+                outputs_path: "/mnt/session/outputs".into(),
+                limits: Default::default(),
+                lease_ttl_secs: None,
+                extra: None,
+            })
+            .await
+            .unwrap(),
+    );
+    let native = sandbox
+        .spawn(Command::new(["sh", "-c", "printf native-state > marker"]))
+        .await
+        .unwrap();
+    assert_eq!(native.wait().await.unwrap().code, Some(0));
+
+    let script = "read _p; r=$(cat marker); \
+        printf '%s\\n' \"{\\\"type\\\":\\\"message\\\",\\\"text\\\":\\\"$r\\\"}\"; \
+        printf '%s\\n' '{\"type\":\"turn_end\",\"reason\":\"natural_end\"}'";
+    let launch = AcpLaunch::custom(vec!["/bin/sh".into(), "-c".into(), script.into()], vec![]);
+    let source = BoundLocalChannelSource::new(sandbox.clone(), LaunchSource::Fixed(launch));
+    let exec = AcpRunExecutor::new(Arc::new(source));
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let state = exec
+        .execute(
+            activation("shared"),
+            RuntimeRunContext::new().with_commit(commit.clone()),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
+    assert!(
+        commit
+            .committed()
+            .messages
+            .iter()
+            .any(|message| message.text_content().contains("native-state"))
+    );
+    assert_eq!(sandbox.handle().sandbox_id, "shared");
+    sandbox.dispose().await.unwrap();
+}
 
 #[tokio::test]
 async fn sandboxed_source_drives_a_real_acp_agent_to_natural_end() {
