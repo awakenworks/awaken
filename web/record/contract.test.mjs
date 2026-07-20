@@ -34,3 +34,21 @@ test("interactive transcripts follow committed SSE frames without a manual refre
   assert.match(hook, /if \(followLive\)/);
   assert.match(hook, /setQueryData<SessionEvent\[\]>/);
 });
+
+test("overview captions point to visible UI evidence without long static waits", () => {
+  const overview = readFileSync(resolve(flowsDir, "00-platform-overview.mjs"), "utf8");
+  const harness = readFileSync(resolve(here, "harness.mjs"), "utf8");
+  assert.ok([...overview.matchAll(/await beat\(/g)].length >= 7);
+  assert.match(harness, /\.rec-focus/);
+  assert.match(harness, /Math\.min\(5200,/);
+});
+
+test("MCP and Memory videos prove runtime-relevant effects", () => {
+  const tools = readFileSync(resolve(flowsDir, "03-tools-permissions.mjs"), "utf8");
+  const memory = readFileSync(resolve(flowsDir, "04-resources-transparency.mjs"), "utf8");
+  assert.match(tools, /mcp__issues__create_issue/);
+  assert.match(tools, /config\.tools\)\.not\.toContain/);
+  assert.ok([...memory.matchAll(/\/v1\/sessions/g)].length >= 2);
+  assert.match(memory, /persisted\.content/);
+  assert.match(memory, /getByText\(secret/);
+});

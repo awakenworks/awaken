@@ -8,8 +8,8 @@ const SYSTEM =
   "You are a release-notes writer. Given a list of merged PRs, produce concise, " +
   "friendly notes grouped into Features, Fixes, and Breaking changes. Keep each " +
   "bullet under 100 characters.";
-const ASK =
-  "Draft release notes for: #482 add dark mode, #491 fix crash on export, #500 drop Node 18";
+const ASK_HEAD = "Draft release notes from these merged PRs:";
+const ASK_DETAIL = "#482 dark mode · #491 export crash · #500 drop Node 18";
 
 export async function run({ page, goto, say, clearCaption, intro, checkpoint, aha, expect, click, type, wait }) {
   // Fresh start (idempotent): drop any prior agent so the walkthrough always creates.
@@ -30,7 +30,7 @@ export async function run({ page, goto, say, clearCaption, intro, checkpoint, ah
   await say("Its behavior is just the system prompt — no code, no redeploy.", 3600);
   await type(page.locator("textarea").first(), SYSTEM, { delay: 12 });
 
-  await say("The left rail organizes every knob by intent: Behavior, Tools, Resources.", 4000);
+  await say("Numbered chapters organize every knob by intent: Behavior, Tools, Integrations, and Resources.", 4000);
   await click(page.getByRole("tab", { name: /Behavior|行为/ }));
   await wait(900);
   await click(page.getByRole("tab", { name: /Overview|概览/ }));
@@ -61,9 +61,14 @@ export async function run({ page, goto, say, clearCaption, intro, checkpoint, ah
   await click(page.getByRole("button", { name: /Start session|开始会话/ }));
   await wait(800);
   const ask = page.getByPlaceholder(/Ask the agent|问问这个 agent/);
-  await type(ask, ASK, { delay: 12 });
-  await say("The runtime resolves model → offering → credential → a real KIMI executor.", 4200);
+  await say("Keep the request concise. Shift+Enter adds context; the bound Skill and tools own procedural detail.", 3600);
+  await type(ask, ASK_HEAD, { delay: 14 });
+  await ask.press("Shift+Enter");
+  await ask.pressSequentially(ASK_DETAIL, { delay: 12 });
   await ask.press("Enter");
+  await expect(page.locator(".transcript-pending-message")).toContainText(ASK_DETAIL);
+  await expect(page.locator(".agent-working")).toBeVisible();
+  await say("The full multiline request stays visible and the Agent shows work immediately while KIMI executes.", 3800);
   // Wait for the live reply to render (poll for assistant text, up to 60s).
   await checkpoint("the published agent returns structured release notes from the live model", async () => {
     await page.waitForFunction(
