@@ -3,7 +3,10 @@
 
 use std::sync::Arc;
 
-use awaken_protocol_managed::{DeploymentState, deployments_router};
+use awaken_protocol_managed::{
+    DeploymentLaunch, DeploymentLaunchOutcome, DeploymentSessionLauncher, DeploymentState,
+    deployments_router,
+};
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -12,7 +15,19 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 fn app() -> Router {
-    deployments_router(Arc::new(DeploymentState::new()))
+    struct Launcher;
+    #[async_trait::async_trait]
+    impl DeploymentSessionLauncher for Launcher {
+        async fn launch(&self, request: DeploymentLaunch) -> DeploymentLaunchOutcome {
+            DeploymentLaunchOutcome {
+                session_id: Some(format!("sesn_for_{}", request.deployment_id)),
+                error: None,
+            }
+        }
+    }
+    let state = Arc::new(DeploymentState::new());
+    state.bind_launcher(Arc::new(Launcher));
+    deployments_router(state)
 }
 
 async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
@@ -107,6 +122,7 @@ async fn deployment_lifecycle_and_runs() {
     assert_eq!(run["deployment_id"], id);
     assert_eq!(run["trigger_context"]["type"], "manual");
     assert!(run["error"].is_null());
+    assert_eq!(run["session_id"], format!("sesn_for_{id}"));
     let run_id = run["id"].as_str().unwrap().to_string();
     assert!(run_id.starts_with("deprun_"));
 
