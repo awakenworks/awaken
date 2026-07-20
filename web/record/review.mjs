@@ -106,6 +106,38 @@ const checks = [
   ["interaction pacing", () => eachFlow((name, source) => {
     assert.match(source, /await wait\(/, `${name}: add a visual settle after interaction`);
   })],
+  ["caption-scene coupling", () => {
+    const overview = requiredFlow("00-platform-overview.mjs");
+    assert.ok(matches(overview, /await beat\(/g) >= 7, "overview: every capability beat should focus its visible evidence");
+    assert.match(harness, /\.rec-focus/);
+  }],
+  ["no static pauses", () => {
+    assert.match(harness, /Math\.min\(5200,/);
+    eachFlow((name, source) => {
+      for (const match of source.matchAll(/await wait\(([0-9_]+)\)/g)) {
+        const milliseconds = Number(match[1].replaceAll("_", ""));
+        assert.ok(milliseconds <= 2500, `${name}: unexplained static wait is ${milliseconds}ms`);
+      }
+    });
+  }],
+  ["responsive Agent feedback", () => {
+    const authoring = requiredFlow("02-build-agent.mjs");
+    assert.match(authoring, /Shift\+Enter/);
+    assert.match(authoring, /transcript-pending-message/);
+    assert.match(authoring, /agent-working/);
+  }],
+  ["MCP override proof", () => {
+    const tools = requiredFlow("03-tools-permissions.mjs");
+    assert.match(tools, /mcp__issues__create_issue/);
+    assert.match(tools, /config\.tools\)\.not\.toContain/);
+    assert.match(tools, /config\.mcp_servers/);
+  }],
+  ["Memory effect proof", () => {
+    const memory = requiredFlow("04-resources-transparency.mjs");
+    assert.ok(matches(memory, /\/v1\/sessions/g) >= 2, "memory: use two fresh sessions");
+    assert.match(memory, /persisted\.content/);
+    assert.match(memory, /getByText\(secret/);
+  }],
   ["recording test contract", () => {
     assert.match(readme, /intro\(intent, capability\)/);
     assert.match(readme, /checkpoint\(name, assertion\)/);

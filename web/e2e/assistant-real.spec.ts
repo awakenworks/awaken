@@ -30,6 +30,29 @@ async function configureKimi(request: APIRequestContext) {
   }
 }
 
+async function runTurn(request: APIRequestContext, sessionId: string, prompt: string): Promise<string> {
+  await request.post(`/v1/sessions/${sessionId}/events`, {
+    data: { events: [{ type: "user.message", content: [{ type: "text", text: prompt }] }] },
+  });
+  const deadline = Date.now() + 90_000;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    const events = (await (await request.get(`/v1/sessions/${sessionId}/events`)).json()).data as Array<{
+      type: string;
+      content?: Array<{ text?: string }>;
+      stop_reason?: { type?: string };
+    }>;
+    const failed = events.find((event) => event.type === "session.error")
+      ?? events.find((event) => event.type === "session.status_idle" && event.stop_reason?.type === "retries_exhausted");
+    if (failed) throw new Error(`session ${sessionId} failed: ${JSON.stringify(failed)}`);
+    const messages = events.filter((event) => event.type === "agent.message");
+    if (events.at(-1)?.type === "session.status_idle" && messages.length > 0) {
+      return messages.flatMap((message) => (message.content ?? []).map((block) => block.text ?? "")).join("\n");
+    }
+  }
+  throw new Error(`session ${sessionId} did not settle within 90s`);
+}
+
 test("Admin Assistant authors an agent with tools + a memory-store binding (real model)", async ({ page, request }) => {
   await configureKimi(request);
   const ms = (await (await request.post("/v1/memory_stores", { data: { name: "e2e-notes" } })).json()).id as string;
@@ -56,6 +79,49 @@ test("Admin Assistant authors an agent with tools + a memory-store binding (real
   expect(cfg.tools).toEqual(expect.arrayContaining(["read", "write"]));
   const res = await (await request.get(`/v1/config/agents/${agentId}/resources`)).json();
   expect(res.resources?.[0]).toMatchObject({ kind: "memory_store", resource_id: ms });
+});
+
+test("KIMI writes and recalls an Agent-bound memory store across fresh sessions", async ({ page, request }) => {
+  test.setTimeout(180_000);
+  await configureKimi(request);
+  const secret = `KIMI-MEMORY-${Date.now()}`;
+  const agent = `kimi-memory-${Date.now()}`;
+  const store = await (await request.post("/v1/memory_stores", {
+    data: { name: `kimi-brain-${Date.now()}` },
+  })).json();
+
+  await request.put(`/v1/config/agents/${agent}`, {
+    data: {
+      id: agent,
+      name: agent,
+      model: { id: KIMI_MODEL },
+      system: "Use the persistent memory file. WRITE facts the user asks you to remember; READ it when asked to recall. Always use the file tools.",
+      tools: ["bash", "read", "write", "glob", "grep"],
+      plugins: [],
+      plugin_config: { permission: { default_behavior: "allow", mode: "bypassPermissions", rules: [] } },
+      context_policy: { kind: "keep_all" },
+      max_steps: 8,
+    },
+  });
+
+  await page.goto(`/w/default/agents/${agent}`);
+  await page.getByRole("tab", { name: "Resources", exact: true }).click();
+  await page.getByRole("button", { name: /bind a store/ }).click();
+  await page.locator("select").nth(1).selectOption({ label: store.name });
+  await page.getByRole("button", { name: /Save resources/ }).click();
+  await expect(page.locator(".toast").filter({ hasText: /Resources saved|资源已保存/ })).toBeVisible();
+  const published = await request.post(`/v1/config/agents/${agent}/publish`);
+  expect(published.ok()).toBe(true);
+
+  const first = await (await request.post("/v1/sessions", { data: { agent, title: "remember" } })).json();
+  await runTurn(request, first.id, `Remember this exact code: ${secret}. Write it to your persistent memory file now.`);
+  await request.get(`/v1/files?scope_id=${first.id}`);
+  const persisted = await (await request.get(`/v1/memory_stores/${store.id}`)).json();
+  expect(persisted.content ?? "").toContain(secret);
+
+  const second = await (await request.post("/v1/sessions", { data: { agent, title: "recall" } })).json();
+  const recalled = await runTurn(request, second.id, "Read your persistent memory and answer with only the exact code I asked you to remember.");
+  expect(recalled).toContain(secret);
 });
 
 test("Admin Assistant authors an ACP + sandbox environment from plain English (real model)", async ({ request }) => {
