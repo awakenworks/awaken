@@ -75,11 +75,11 @@ impl SharedHost {
                 .map_err(|e| HostError::internal(e.to_string()))?
                 .with_live_inbox(ctx.open_live_inbox());
             // Route this attempt's inference through the run's effective model,
-            // resolved through the host's ExecutorProvider. `None` leaves the
+            // resolved through the host's InferenceExecutorMaterializer. `None` leaves the
             // runtime's bound (host default) executor — a single-model deployment is
             // unaffected.
             if let Some(exec) = self
-                .model_route
+                .inference_routing
                 .executor_for_activation(&activation)
                 .map_err(HostError::bad_request)?
             {

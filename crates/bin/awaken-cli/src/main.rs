@@ -50,7 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         awaken_server::Role::Worker => {
             let upstream = std::env::var("AWAKEN_UPSTREAM_URL").unwrap_or_default();
             // The PRODUCTION worker (Stage C): drains runs and resolves EACH run's
-            // model from the DB-configured catalog + vault via ConfigExecutorProvider.
+            // model from the DB-configured catalog + vault via ConfiguredInferenceMaterializer.
             return awaken_worker::run(&upstream).await;
         }
         awaken_server::Role::Serve => {}
@@ -74,7 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // The production management assembly (this crate's own composition-root library):
-    // the full protocol surface over a host whose ExecutorProvider resolves each
+    // the full protocol surface over a host whose InferenceExecutorMaterializer resolves each
     // session's model from the DB-configured catalog + credential vault. Configure a
     // provider/model/credential through /v1/config/* + /v1/vaults/* and sessions run
     // that real model.

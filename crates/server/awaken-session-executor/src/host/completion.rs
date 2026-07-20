@@ -32,8 +32,8 @@ impl SharedHost {
         activation: RunActivation,
     ) -> Result<RunDispatch, HostError> {
         let access = self
-            .model_route
-            .model_access_for_activation(&activation)
+            .inference_routing
+            .pin_access(&activation)
             .map_err(HostError::bad_request)?;
         let mut request = RunDispatch::new(activation)
             .with_traceparent(awaken_observability::current_traceparent());
@@ -254,7 +254,7 @@ mod completion_tests {
             ),
             (
                 "fallback".to_string(),
-                ModelAccessRef::new("cloud-gateway/v1", "grant-b"),
+                ModelAccessRef::new("credential-reference/v1", "grant-b"),
             ),
         ])
         .unwrap();
@@ -268,6 +268,10 @@ mod completion_tests {
                 .required_capabilities
                 .contains("credential-source/v1")
         );
-        assert!(placement.required_capabilities.contains("cloud-gateway/v1"));
+        assert!(
+            placement
+                .required_capabilities
+                .contains("credential-reference/v1")
+        );
     }
 }

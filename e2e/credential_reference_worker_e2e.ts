@@ -1,7 +1,7 @@
 // Secretless model execution over the real cell + awaken-worker processes.
 //
 // TypeScript injects an opaque grant into a durable dispatch. A real database-less
-// worker claims it over HTTP, passes it to its injected ExecutorProvider, executes
+// worker claims it over HTTP, passes it to its inference materializer, executes
 // the returned model, commits through the claimed epoch, and settles the queue.
 
 import assert from 'node:assert/strict';
@@ -29,7 +29,7 @@ function buildGatewayWorker(): string {
       '-p',
       'awaken-worker',
       '--example',
-      'gateway_worker',
+      'credential_reference_worker',
     ],
     { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
   );
@@ -37,12 +37,12 @@ function buildGatewayWorker(): string {
     if (!line.trim()) continue;
     try {
       const message = JSON.parse(line);
-      if (message.executable && message.target?.name === 'gateway_worker') return message.executable;
+      if (message.executable && message.target?.name === 'credential_reference_worker') return message.executable;
     } catch {
       // Only Cargo artifact records are relevant.
     }
   }
-  throw new Error('could not resolve gateway_worker example');
+  throw new Error('could not resolve credential_reference_worker example');
 }
 
 async function post(pathname: string, body: unknown, worker?: string): Promise<any> {
@@ -110,7 +110,7 @@ async function waitForGatewayReply(timeoutMs = 30_000): Promise<any[]> {
     const response = await fetch(`${BASE}/v1/durable/threads/${THREAD}/messages`);
     if (response.status === 200) {
       observed = ((await response.json()) as any).messages ?? [];
-      if (observed.some((message) => String(message.text ?? '').includes(`gateway-grant:${GRANT}`))) {
+      if (observed.some((message) => String(message.text ?? '').includes(`credential-reference:${GRANT}`))) {
         return observed;
       }
     }
@@ -143,8 +143,8 @@ async function main(): Promise<void> {
     request.activation.run_id = `${seed.request.activation.run_id}-gateway`;
     request.activation.thread_id = THREAD;
     request.session_thread_id = THREAD;
-    request.model_access = { scheme: 'cloud-gateway', reference: GRANT };
-    request.placement.required_capabilities = ['cloud-gateway', 'native-runtime'];
+    request.model_access = { scheme: 'credential-reference/v1', reference: GRANT };
+    request.placement.required_capabilities = ['credential-reference/v1', 'native-runtime'];
     await post('/v1/worker/dispatch/enqueue', { request }, 'seed-worker');
     const seedSettle = await post(
       '/v1/worker/dispatch/settle',
@@ -166,7 +166,7 @@ async function main(): Promise<void> {
       AWAKEN_UPSTREAM_URL: BASE,
       AWAKEN_INGRESS: 'durable',
       AWAKEN_WORKER_GATEWAY_ONLY: '1',
-      AWAKEN_WORKER_CAPABILITIES: 'cloud-gateway',
+      AWAKEN_WORKER_CAPABILITIES: 'credential-reference/v1',
       AWAKEN_WORKER_ID: 'gateway-worker-ts',
       AWAKEN_WORKER_ADMIN_LISTEN: `127.0.0.1:${WORKER_ADMIN_PORT}`,
     });
@@ -185,7 +185,7 @@ async function main(): Promise<void> {
         });
     });
     assert.equal(
-      messages.filter((message) => String(message.text ?? '').includes(`gateway-grant:${GRANT}`)).length,
+      messages.filter((message) => String(message.text ?? '').includes(`credential-reference:${GRANT}`)).length,
       1,
       'the provider-routed model result committed exactly once',
     );
@@ -196,7 +196,7 @@ async function main(): Promise<void> {
     assert.equal(((await dispatches.json()) as any).dispatches.length, 0, 'gateway dispatch settled');
 
     console.log(
-      'SECRETLESS GATEWAY WORKER TS E2E PASS: opaque grant reached ExecutorProvider, selected the model executor, committed once and exposed no provider key.',
+      'CREDENTIAL REFERENCE WORKER TS E2E PASS: opaque reference reached the materializer, selected the model executor, committed once and exposed no provider key.',
     );
   } finally {
     if (worker) await stopServer(worker).catch(() => {});

@@ -227,7 +227,7 @@ async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
     queue
         .enqueue(
             RunDispatch::new(activation("run-1"))
-                .with_model_access(ModelAccessRef::new("cloud-gateway", "grant-http")),
+                .with_model_access(ModelAccessRef::new("credential-reference/v1", "grant-http")),
         )
         .await
         .expect("enqueue over transport");
@@ -248,7 +248,7 @@ async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
     assert_eq!(claimed.request.run_id(), &run);
     assert_eq!(
         claimed.request.model_access,
-        Some(ModelAccessRef::new("cloud-gateway", "grant-http")),
+        Some(ModelAccessRef::new("credential-reference/v1", "grant-http")),
         "the opaque grant survives the worker HTTP boundary"
     );
     assert_eq!(claimed.lease.owner, "worker-A");

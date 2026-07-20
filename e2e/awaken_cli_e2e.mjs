@@ -4,7 +4,7 @@
 // configuration (AWAKEN_ROLE + the deployment axes) decides the deployment. The
 // default Serve role mounts the production management assembly, whose
 // host resolves each session's model from the **database-configured** catalog +
-// credential vault (ConfigExecutorProvider) — not a baked-in demo model.
+// credential vault (ConfiguredInferenceMaterializer) — not a baked-in demo model.
 //
 // This test proves that path through the real binary: author a provider / endpoint /
 // offering + an Anthropic credential through the console API, publish an agent bound
