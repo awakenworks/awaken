@@ -4,10 +4,21 @@
 /// managed wire shows. A neutral view so `/v1/agents` presents an agent authored on
 /// the config plane (`/v1/config/agents`) as a *projection* of that single truth
 /// rather than a second copy — the "retreat to projection" direction (ADR-0043).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentMcpServerView {
+    pub name: String,
+    pub url: String,
+}
+
 pub struct AgentConfigView {
     pub model: Option<String>,
     pub system: Option<String>,
     pub tool_ids: Vec<String>,
+    /// Direct MCP servers inherited by Sessions of this published Agent.
+    pub mcp_servers: Vec<AgentMcpServerView>,
+    /// The delivered Skills selected by this Agent. Empty is an intentional empty
+    /// selection for newly published configs, not "all global skills".
+    pub skill_ids: Vec<String>,
     /// Resources bound to the published Agent. The runtime mounts these at Session
     /// preparation; protocol projections expose the same effective inputs.
     pub resources: Vec<crate::SessionResource>,
