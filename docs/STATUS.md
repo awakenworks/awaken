@@ -178,6 +178,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0059-neutral-core-and-leaf-evolution.md` | Decision record | Not required | n/a |
 | `adr/0060-durable-dispatch-completion-tombstone.md` | Decision record | Not required | n/a |
 | `adr/0061-selectable-identity-and-platform-managed-resource-scopes.md` | Decision record | Not required | n/a |
+| `adr/0062-published-inference-access-and-runtime-credential-injection.md` | Decision record | Not required | n/a |
 
 ## Implementation Context
 

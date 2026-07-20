@@ -20,7 +20,7 @@ fn remote_worker_placement(access: Option<&InferenceAccess>) -> PlacementRequire
                 access
                     .candidates
                     .iter()
-                    .map(|candidate| candidate.scheme.clone()),
+                    .map(|candidate| candidate.access.scheme.clone()),
             );
         }
     }

@@ -50,7 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         awaken_server::Role::Worker => {
             let upstream = std::env::var("AWAKEN_UPSTREAM_URL").unwrap_or_default();
             // The PRODUCTION worker (Stage C): drains runs and resolves EACH run's
-            // model from the DB-configured catalog + vault via ConfiguredInferenceMaterializer.
+            // model from snapshot-pinned access via CredentialInferenceMaterializer.
             return awaken_worker::run(&upstream).await;
         }
         awaken_server::Role::Serve => {}

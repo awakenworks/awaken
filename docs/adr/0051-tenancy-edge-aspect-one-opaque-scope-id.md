@@ -170,6 +170,13 @@ persistence solely through the scope-bound `ScopedRepo` handle the edge injects,
 the neutral core contracts stay tenancy-free and the snapshot the runtime consumes
 is a pre-authorized, tenancy-free artifact (the ADR-0043 seam, extended).
 
+**Amended by ADR-0062:** no ambient request/authorization scope was added to
+`RunActivation`, but fingerprinted `InferenceAccess` may carry the owning
+Workspace id as a secret-free integrity pin. The host compares that pin with the
+credential row and fails closed; it is not authority, does not invoke IAM, and
+cannot select another tenant. This narrow owner pin supersedes the absolute “no
+scope field” wording above while preserving the scoped-repository decision.
+
 ### D6: Retire the orphaned `awaken-scope` tree
 
 The `Org ⊃ Workspace` tree — membership, slug uniqueness, archive, ancestry — is an

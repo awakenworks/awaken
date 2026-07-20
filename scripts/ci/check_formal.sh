@@ -218,6 +218,10 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -metadir "$tlc_state_root/config-activation" \
     -config formal/tla/ConfigActivation.cfg formal/tla/ConfigActivation.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/inference-access-publication" \
+    -config formal/tla/InferenceAccessPublication.cfg \
+    formal/tla/InferenceAccessPublication.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/resource-binding-effect" \
     -config formal/tla/ResourceBindingEffect.cfg formal/tla/ResourceBindingEffect.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
