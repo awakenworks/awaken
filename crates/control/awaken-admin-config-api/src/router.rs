@@ -473,6 +473,7 @@ pub struct ResolvedCandidatesView {
 /// use. An unresolvable model is skipped; all-unresolvable is fail-closed.
 async fn resolve_profile_candidates_route(
     State(state): State<AdminState>,
+    scope: Option<Extension<ResourceWorkspace>>,
     Path(id): Path<String>,
     headers: HeaderMap,
     Json(request): Json<ResolveProfileRequest>,
@@ -482,12 +483,17 @@ async fn resolve_profile_candidates_route(
         .profiles
         .get(&id)
         .ok_or_else(|| profile_missing(&id, &rid))?;
+    let scoped_workspace = scope.map(|Extension(scope)| scope.0);
+    let workspace = scoped_workspace.clone().unwrap_or(request.workspace_id);
+    if scoped_workspace.is_some() && profile.workspace_id != workspace {
+        return Err(profile_missing(&id, &rid));
+    }
     let catalog = state
         .catalog
         .snapshot()
         .await
         .map_err(|e| repo_problem(&e, &rid))?;
-    let lookup = workspace_lookup(&state, &request.workspace_id, &rid).await?;
+    let lookup = workspace_lookup(&state, &workspace, &rid).await?;
     let resolved = resolve_profile_candidates(&catalog, &profile, &lookup, &*state.secrets)
         .await
         .map_err(|e| resolve_problem(&e, &rid))?;
@@ -627,23 +633,39 @@ async fn workspace_lookup(
 
 async fn put_profile(
     State(state): State<AdminState>,
+    scope: Option<Extension<ResourceWorkspace>>,
     Path(id): Path<String>,
-    Json(profile): Json<InferenceProfile>,
+    headers: HeaderMap,
+    Json(mut profile): Json<InferenceProfile>,
 ) -> Result<Json<InferenceProfile>, Problem> {
+    if let Some(Extension(scope)) = scope {
+        if state
+            .profiles
+            .get(&id)
+            .is_some_and(|current| current.workspace_id != scope.0)
+        {
+            return Err(profile_missing(&id, &req_id(&headers)));
+        }
+        profile.workspace_id = scope.0;
+    }
     state.profiles.put(id, profile.clone());
     Ok(Json(profile))
 }
 
 async fn get_profile(
     State(state): State<AdminState>,
+    scope: Option<Extension<ResourceWorkspace>>,
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<InferenceProfile>, Problem> {
-    state
+    let profile = state
         .profiles
         .get(&id)
-        .map(Json)
-        .ok_or_else(|| profile_missing(&id, &req_id(&headers)))
+        .ok_or_else(|| profile_missing(&id, &req_id(&headers)))?;
+    if scope.is_some_and(|Extension(scope)| profile.workspace_id != scope.0) {
+        return Err(profile_missing(&id, &req_id(&headers)));
+    }
+    Ok(Json(profile))
 }
 
 /// Resolve an authored profile within a workspace's credential scope.
@@ -657,6 +679,7 @@ pub struct ResolveProfileRequest {
 /// model + binding + disabled endpoints come from the stored [`InferenceProfile`].
 async fn resolve_profile_route(
     State(state): State<AdminState>,
+    scope: Option<Extension<ResourceWorkspace>>,
     Path(id): Path<String>,
     headers: HeaderMap,
     Json(request): Json<ResolveProfileRequest>,
@@ -666,12 +689,17 @@ async fn resolve_profile_route(
         .profiles
         .get(&id)
         .ok_or_else(|| profile_missing(&id, &rid))?;
+    let scoped_workspace = scope.map(|Extension(scope)| scope.0);
+    let workspace = scoped_workspace.clone().unwrap_or(request.workspace_id);
+    if scoped_workspace.is_some() && profile.workspace_id != workspace {
+        return Err(profile_missing(&id, &rid));
+    }
     let catalog = state
         .catalog
         .snapshot()
         .await
         .map_err(|e| repo_problem(&e, &rid))?;
-    let lookup = workspace_lookup(&state, &request.workspace_id, &rid).await?;
+    let lookup = workspace_lookup(&state, &workspace, &rid).await?;
     let resolved = resolve_profile(&catalog, &profile, &lookup, &*state.secrets)
         .await
         .map_err(|e| resolve_problem(&e, &rid))?;
@@ -694,29 +722,46 @@ fn profile_missing(id: &str, rid: &str) -> Problem {
 /// unknown pool) is a 404, so a def that can never resolve is never stored.
 async fn put_mcp_server(
     State(state): State<AdminState>,
+    scope: Option<Extension<ResourceWorkspace>>,
     Path(id): Path<String>,
     headers: HeaderMap,
     Json(mut def): Json<McpServerDef>,
 ) -> Result<Json<McpServerDef>, Problem> {
     let rid = req_id(&headers);
     def.id = McpServerId(id);
+    if let Some(Extension(scope)) = scope {
+        if state
+            .mcp
+            .get_server(&def.id.0)
+            .is_some_and(|current| current.workspace_id != scope.0)
+        {
+            return Err(mcp_server_missing(&def.id.0, &rid));
+        }
+        def.workspace_id = scope.0;
+    }
     match &def.credential_binding {
         CredentialBinding::None => {}
         CredentialBinding::Exact {
             credential_source_id,
         } => {
-            state
+            let source = state
                 .credentials
                 .get(credential_source_id)
                 .await
                 .map_err(|e| cred_problem(&e, &rid))?;
+            if !def.workspace_id.is_empty() && source.workspace_id != def.workspace_id {
+                return Err(mcp_server_missing(&def.id.0, &rid));
+            }
         }
         CredentialBinding::OneOfCredentialPool { credential_pool_id } => {
-            state
+            let pool = state
                 .credentials
                 .get_pool(credential_pool_id)
                 .await
                 .map_err(|e| cred_problem(&e, &rid))?;
+            if !def.workspace_id.is_empty() && pool.workspace_id != def.workspace_id {
+                return Err(mcp_server_missing(&def.id.0, &rid));
+            }
         }
     }
     state.mcp.put_server(def.clone());
@@ -725,18 +770,29 @@ async fn put_mcp_server(
 
 async fn get_mcp_server(
     State(state): State<AdminState>,
+    scope: Option<Extension<ResourceWorkspace>>,
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<McpServerDef>, Problem> {
-    state
+    let def = state
         .mcp
         .get_server(&id)
-        .map(Json)
-        .ok_or_else(|| mcp_server_missing(&id, &req_id(&headers)))
+        .ok_or_else(|| mcp_server_missing(&id, &req_id(&headers)))?;
+    if scope.is_some_and(|Extension(scope)| def.workspace_id != scope.0) {
+        return Err(mcp_server_missing(&id, &req_id(&headers)));
+    }
+    Ok(Json(def))
 }
 
-async fn list_mcp_servers(State(state): State<AdminState>) -> Json<Vec<McpServerDef>> {
-    Json(state.mcp.list_servers())
+async fn list_mcp_servers(
+    State(state): State<AdminState>,
+    scope: Option<Extension<ResourceWorkspace>>,
+) -> Json<Vec<McpServerDef>> {
+    let mut servers = state.mcp.list_servers();
+    if let Some(Extension(scope)) = scope {
+        servers.retain(|server| server.workspace_id == scope.0);
+    }
+    Json(servers)
 }
 
 /// Bind which MCP servers an agent uses. The path agent id is authoritative, and
@@ -744,14 +800,20 @@ async fn list_mcp_servers(State(state): State<AdminState>) -> Json<Vec<McpServer
 /// an unknown server is a 404, never a dangling reference).
 async fn put_agent_mcp(
     State(state): State<AdminState>,
+    scope: Option<Extension<ResourceWorkspace>>,
     Path(agent_id): Path<String>,
     headers: HeaderMap,
     Json(mut config): Json<AgentMcpConfig>,
 ) -> Result<Json<AgentMcpConfig>, Problem> {
     let rid = req_id(&headers);
     config.agent_id = agent_id;
+    let workspace = scope.map(|Extension(scope)| scope.0);
     for server_id in &config.mcp_server_ids {
-        if state.mcp.get_server(&server_id.0).is_none() {
+        if state.mcp.get_server(&server_id.0).is_none_or(|server| {
+            workspace
+                .as_ref()
+                .is_some_and(|workspace| server.workspace_id != *workspace)
+        }) {
             return Err(mcp_server_missing(&server_id.0, &rid));
         }
     }
@@ -836,6 +898,7 @@ pub struct ResolvedMcpServerView {
 /// `resolve_mcp_servers` path a run uses — returning the secret-free views.
 async fn resolve_agent_mcp(
     State(state): State<AdminState>,
+    scope: Option<Extension<ResourceWorkspace>>,
     Path(agent_id): Path<String>,
     headers: HeaderMap,
     Json(request): Json<ResolveAgentMcpRequest>,
@@ -845,16 +908,20 @@ async fn resolve_agent_mcp(
         .mcp
         .get_agent_config(&agent_id)
         .ok_or_else(|| agent_mcp_missing(&agent_id, &rid))?;
+    let scoped_workspace = scope.map(|Extension(scope)| scope.0);
+    let workspace = scoped_workspace.clone().unwrap_or(request.workspace_id);
     let mut defs = Vec::with_capacity(config.mcp_server_ids.len());
     for server_id in &config.mcp_server_ids {
-        defs.push(
-            state
-                .mcp
-                .get_server(&server_id.0)
-                .ok_or_else(|| mcp_server_missing(&server_id.0, &rid))?,
-        );
+        let def = state
+            .mcp
+            .get_server(&server_id.0)
+            .ok_or_else(|| mcp_server_missing(&server_id.0, &rid))?;
+        if scoped_workspace.is_some() && def.workspace_id != workspace {
+            return Err(mcp_server_missing(&server_id.0, &rid));
+        }
+        defs.push(def);
     }
-    let lookup = workspace_lookup(&state, &request.workspace_id, &rid).await?;
+    let lookup = workspace_lookup(&state, &workspace, &rid).await?;
     let resolved = resolve_mcp_servers(&defs, &lookup, &*state.secrets)
         .await
         .map_err(|e| resolve_problem(&e, &rid))?;

@@ -7,9 +7,9 @@
 //! cross-tenant access to that store (or its memories/versions) with **404**, and
 //! filters the store *list* to the caller's own scope so ids do not leak across
 //! tenants. A single-tenant deployment resolves every request to [`DEFAULT_SCOPE`], so
-//! it never fences itself. A store created before the guard saw it (unrecorded) stays
-//! reachable by direct id — first-touch does not steal ownership — but an unrecorded
-//! store belongs to no scope, so it never appears in a scoped list.
+//! it never fences itself. A legacy store without durable ownership is quarantined:
+//! it is neither listed nor reachable by direct id until an explicit migration assigns
+//! it, so first-touch can never steal ownership.
 //!
 //! This is the data-plane sibling of the config-resource ownership guard, which lives
 //! in the authoring plane (`awaken-control`); the two guards are independent (each

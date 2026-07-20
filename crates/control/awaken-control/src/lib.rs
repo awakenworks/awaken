@@ -276,7 +276,7 @@ pub fn control_router(input: ControlRouterInput) -> (Router, Arc<WebhookLifecycl
     // config). Wraps the admin router only; these are matched routes, so a route
     // `layer` runs correctly.
     let admin = admin.layer(axum::middleware::from_fn_with_state(
-        ResourceOwners::new(),
+        ResourceOwners::open_from_env(),
         resource_ownership_guard,
     ));
     let vaults = vault_router(vault_state);

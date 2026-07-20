@@ -264,6 +264,7 @@ async fn profile_skips_a_disabled_endpoint_and_selects_the_next() {
     };
 
     let profile = InferenceProfile {
+        workspace_id: "ws".into(),
         model_id: "claude-opus-4-8".into(),
         model_fallbacks: Vec::new(),
         credential_binding: CredentialBinding::Exact {
@@ -303,6 +304,7 @@ async fn profile_candidates_resolve_the_model_axis_in_order_and_skip_unresolvabl
     // A single unresolvable primary but a resolvable fallback: the primary is
     // skipped, the fallback still yields a candidate (one bad model ≠ dead profile).
     let profile = InferenceProfile {
+        workspace_id: "ws".into(),
         model_id: "no-such-model".into(),
         model_fallbacks: vec!["claude-opus-4-8".into()],
         credential_binding: CredentialBinding::Exact {
@@ -318,6 +320,7 @@ async fn profile_candidates_resolve_the_model_axis_in_order_and_skip_unresolvabl
 
     // Every model unresolvable → fail-closed, not an empty Ok.
     let dead = InferenceProfile {
+        workspace_id: "ws".into(),
         model_id: "no-such-model".into(),
         model_fallbacks: vec!["also-missing".into()],
         credential_binding: CredentialBinding::Exact {
@@ -389,6 +392,7 @@ async fn profile_candidates_all_resolvable_preserve_axis_order() {
         },
     };
     let profile = InferenceProfile {
+        workspace_id: "ws".into(),
         model_id: "claude-opus-4-8".into(),
         model_fallbacks: vec!["claude-haiku".into()],
         credential_binding: CredentialBinding::Exact {
@@ -428,6 +432,7 @@ async fn profile_candidates_mixed_keeps_only_the_resolvable_in_order() {
         },
     };
     let profile = InferenceProfile {
+        workspace_id: "ws".into(),
         model_id: "claude-opus-4-8".into(),
         model_fallbacks: vec!["no-such-model".into()],
         credential_binding: CredentialBinding::Exact {
