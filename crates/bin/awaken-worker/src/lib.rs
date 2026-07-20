@@ -59,33 +59,32 @@ impl WorkerLifecycle {
 /// 3. Build a [`CredentialInferenceMaterializer`] over those stores, so each drained
 ///    run consumes only its snapshot-pinned inference access.
 /// 4. Assemble a [`SharedHost`] whose default executor is the production
-///    `NoModelConfiguredExecutor` fallback and whose per-run resolution is the
-///    config-plane provider, pushing committed facts to `upstream`.
+///    `NoModelConfiguredExecutor` fallback and whose per-run access is realized
+///    by the materializer, pushing committed facts to `upstream`.
 /// 5. Start the dispatch pool and drain in the background until SIGINT / SIGTERM.
 ///
 /// Requires `AWAKEN_INGRESS=durable` (the pool's enable gate); the injected remote
 /// store routes the drain over HTTP instead of a local queue.
 pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error>> {
     let stores = awaken_control::open_inference_materialization_stores_from_env().await;
-    let provider = CredentialInferenceMaterializer::new(stores.credentials, stores.secrets);
+    let materializer = CredentialInferenceMaterializer::new(stores.credentials, stores.secrets);
     run_configured(
         WorkerUpstream::new(upstream),
-        Some(Arc::new(provider)),
+        Some(Arc::new(materializer)),
         &["credential-source/v1"],
     )
     .await
 }
 
-/// Run a genuinely secretless worker with a deployment-provided executor
-/// provider. The provider receives each durable run's snapshot-pinned inference access
-/// reference through [`InferenceExecutorMaterializer::executor_for_run`]; it can return a
-/// executor that injects or renews the referenced credential without requiring
-/// the worker to open a credential vault or persist provider keys.
+/// Run a genuinely secretless worker with a deployment-provided materializer.
+/// It receives each durable run's snapshot-pinned inference access and may
+/// realize an executor through a remote broker without opening a credential
+/// vault or persisting provider keys in this process.
 pub async fn run_with_inference_materializer(
     upstream: &str,
-    provider: Arc<dyn InferenceExecutorMaterializer>,
+    materializer: Arc<dyn InferenceExecutorMaterializer>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    run_configured(WorkerUpstream::new(upstream), Some(provider), &[]).await
+    run_configured(WorkerUpstream::new(upstream), Some(materializer), &[]).await
 }
 
 /// Secretless worker composition with one shared authenticated transport. The
@@ -93,14 +92,14 @@ pub async fn run_with_inference_materializer(
 /// it is reused for claim/settle and both commit paths.
 pub async fn run_with_inference_materializer_and_upstream(
     upstream: WorkerUpstream,
-    provider: Arc<dyn InferenceExecutorMaterializer>,
+    materializer: Arc<dyn InferenceExecutorMaterializer>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    run_configured(upstream, Some(provider), &[]).await
+    run_configured(upstream, Some(materializer), &[]).await
 }
 
 async fn run_configured(
     upstream: WorkerUpstream,
-    provider: Option<Arc<dyn InferenceExecutorMaterializer>>,
+    materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,
     built_in_capabilities: &[&str],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let upstream_url = upstream.base_url().to_string();
@@ -123,8 +122,8 @@ async fn run_configured(
 
     let mut host = SharedHost::new(Arc::new(NoModelConfiguredExecutor), "worker")
         .with_worker_upstream(upstream);
-    if let Some(provider) = provider {
-        host = host.with_inference_materializer(provider);
+    if let Some(materializer) = materializer {
+        host = host.with_inference_materializer(materializer);
     }
 
     // Serve `acp:*` runs this worker claims on the config-selected CLI, realized in the
