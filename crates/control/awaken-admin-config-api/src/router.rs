@@ -858,15 +858,32 @@ async fn put_agent_mcp(
 ) -> Result<Json<AgentMcpConfig>, Problem> {
     let rid = req_id(&headers);
     config.agent_id = agent_id;
-    let workspace = scope.map(|Extension(scope)| scope.0);
+    let trusted_workspace = scope.map(|Extension(scope)| scope.0);
+    let mut workspace = trusted_workspace
+        .clone()
+        .or_else(|| (!config.workspace_id.is_empty()).then(|| config.workspace_id.clone()));
+    if let Some(workspace) = &trusted_workspace
+        && state
+            .mcp
+            .get_agent_config(&config.agent_id)
+            .is_some_and(|current| current.workspace_id != *workspace)
+    {
+        return Err(agent_mcp_missing(&config.agent_id, &rid));
+    }
     for server_id in &config.mcp_server_ids {
-        if state.mcp.get_server(&server_id.0).is_none_or(|server| {
-            workspace
-                .as_ref()
-                .is_some_and(|workspace| server.workspace_id != *workspace)
-        }) {
+        let Some(server) = state.mcp.get_server(&server_id.0) else {
             return Err(mcp_server_missing(&server_id.0, &rid));
+        };
+        if let Some(workspace) = &workspace {
+            if server.workspace_id != *workspace {
+                return Err(mcp_server_missing(&server_id.0, &rid));
+            }
+        } else {
+            workspace = Some(server.workspace_id);
         }
+    }
+    if let Some(workspace) = workspace {
+        config.workspace_id = workspace;
     }
     state.mcp.put_agent_config(config.clone());
     Ok(Json(config))
@@ -874,14 +891,18 @@ async fn put_agent_mcp(
 
 async fn get_agent_mcp(
     State(state): State<AdminState>,
+    scope: Option<Extension<ResourceWorkspace>>,
     Path(agent_id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<AgentMcpConfig>, Problem> {
-    state
+    let config = state
         .mcp
         .get_agent_config(&agent_id)
-        .map(Json)
-        .ok_or_else(|| agent_mcp_missing(&agent_id, &req_id(&headers)))
+        .ok_or_else(|| agent_mcp_missing(&agent_id, &req_id(&headers)))?;
+    if scope.is_some_and(|Extension(scope)| config.workspace_id != scope.0) {
+        return Err(agent_mcp_missing(&agent_id, &req_id(&headers)));
+    }
+    Ok(Json(config))
 }
 
 /// Bind which resources an agent mounts (ADR-0038). The path agent id is
@@ -961,13 +982,16 @@ async fn resolve_agent_mcp(
         .ok_or_else(|| agent_mcp_missing(&agent_id, &rid))?;
     let scoped_workspace = scope.map(|Extension(scope)| scope.0);
     let workspace = scoped_workspace.clone().unwrap_or(request.workspace_id);
+    if config.workspace_id != workspace {
+        return Err(agent_mcp_missing(&agent_id, &rid));
+    }
     let mut defs = Vec::with_capacity(config.mcp_server_ids.len());
     for server_id in &config.mcp_server_ids {
         let def = state
             .mcp
             .get_server(&server_id.0)
             .ok_or_else(|| mcp_server_missing(&server_id.0, &rid))?;
-        if scoped_workspace.is_some() && def.workspace_id != workspace {
+        if def.workspace_id != workspace {
             return Err(mcp_server_missing(&server_id.0, &rid));
         }
         defs.push(def);

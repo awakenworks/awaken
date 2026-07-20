@@ -900,22 +900,31 @@ impl SessionRuntime for ManagedHost {
                 refresh,
             });
         }
-        // The agent's authored workspace-level MCP binding (tenancy-agnostic core:
-        // MCP selection is by agent id, not by any tenancy tier).
+        // The agent's authored workspace-level MCP binding. The aggregate carries
+        // its owner, so execution verifies the config and every referenced server
+        // against the already-trusted session workspace without a side projection.
         let authored = mcp
             .mcp_store
             .get_agent_config(&init.agent_id)
-            .map(|c| c.mcp_server_ids);
+            .filter(|config| config.workspace_id == init.workspace_id)
+            .map(|config| config.mcp_server_ids);
         if let Some(mcp_server_ids) = authored {
             let config_ids = mcp_server_ids;
             let mut defs = Vec::with_capacity(config_ids.len());
             for server_id in &config_ids {
-                defs.push(mcp.mcp_store.get_server(&server_id.0).ok_or_else(|| {
+                let def = mcp.mcp_store.get_server(&server_id.0).ok_or_else(|| {
                     RunError::internal(format!(
                         "agent `{}` references unknown mcp server `{}`",
                         init.agent_id, server_id.0
                     ))
-                })?);
+                })?;
+                if def.workspace_id != init.workspace_id {
+                    return Err(RunError::internal(format!(
+                        "agent `{}` references an mcp server outside its workspace",
+                        init.agent_id
+                    )));
+                }
+                defs.push(def);
             }
             let lookup = PrefetchedSourceLookup::for_defs(&defs, &*mcp.credentials).await;
             let resolved =

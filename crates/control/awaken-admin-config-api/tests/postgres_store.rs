@@ -104,6 +104,7 @@ async fn postgres_admin_store_serves_every_port() {
     let ids: Vec<String> = store.list_servers().into_iter().map(|s| s.id.0).collect();
     assert_eq!(ids, vec!["alpha".to_string(), "zeta".to_string()]);
     let cfg = AgentMcpConfig {
+        workspace_id: "ws".into(),
         agent_id: "agent-1".into(),
         mcp_server_ids: vec![McpServerId("alpha".into())],
         version: 1,

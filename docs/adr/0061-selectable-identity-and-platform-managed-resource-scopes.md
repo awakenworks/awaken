@@ -108,6 +108,11 @@ authorization governance.
 - **Agents:** config aggregates already use scoped repositories. Auxiliary
   agent-resource bindings now use a composite `(workspace, agent)` key in memory,
   SQLite, and Postgres; compile and runtime mount resolution pass the same scope.
+- **MCP/Profile/Webhook config:** ownership is intrinsic to the durable aggregate
+  row. `AgentMcpConfig` also carries the edge-stamped Workspace, and authoring,
+  reading, dry-run resolution, and session preparation verify the same owner.
+  The former `ResourceOwners`/`resource-owners.sqlite` side projection is removed;
+  it duplicated aggregate truth, could drift, and was not needed for authorization.
 
 Flat no-login requests receive only the installation `WorkspaceScope` ownership
 context. They do not receive a caller `RequestTenancy` selector. Authenticated

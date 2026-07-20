@@ -38,6 +38,10 @@ export interface AgentMCPConfig {
     agent_id:       string;
     mcp_server_ids: string[];
     version:        number;
+    /**
+     * Owning workspace, stamped by the trusted configuration edge.
+     */
+    workspace_id?: string;
     [property: string]: any;
 }
 
@@ -133,6 +137,40 @@ export interface Error {
     code:     string;
     field:    string;
     message?: string;
+    [property: string]: any;
+}
+
+/**
+ * The availability of one credential source at a point in time.
+ *
+ * Selectable now.
+ *
+ * Cooled by a transient quota/rate signal until `retry_at_ms`; selectable
+ * again at or after that wall-clock deadline (auto-resume, no timer).
+ *
+ * Cooled by a hard exhaustion with no known reset — excluded until explicitly
+ * [`cleared`](AvailabilityLedger::clear) (e.g. a fresh availability check
+ * passes).
+ */
+export interface AvailabilityState {
+    state:        State;
+    retry_at_ms?: number;
+    [property: string]: any;
+}
+
+export type State = "available" | "cooled_down" | "exhausted";
+
+/**
+ * A cooldown signal an operator (or an external rate-limit integration) records
+ * against a credential source. `kind` maps to a failure
+ * [`Disposition`](awaken_runtime_contract::resilience::Disposition): `quota` cools
+ * until `retry_after_secs` (or a default window); `exhausted` cools until cleared;
+ * `available` / `clear` lifts any cooldown; `transient` / `permanent` are no-ops on
+ * availability (they are retry/next-binding decisions, not identity cooldowns).
+ */
+export interface CooldownRequest {
+    kind:              string;
+    retry_after_secs?: number | null;
     [property: string]: any;
 }
 
@@ -346,6 +384,11 @@ export interface InferenceProfile {
      * [`model_fallbacks`]: InferenceProfile::model_fallbacks
      */
     model_id: string;
+    /**
+     * Owning workspace, stamped by the trusted configuration edge. Empty only
+     * for legacy rows, which scoped APIs treat as unowned.
+     */
+    workspace_id?: string;
     [property: string]: any;
 }
 
@@ -384,6 +427,10 @@ export interface MCPServerDef {
     id:                 string;
     url:                string;
     version:            number;
+    /**
+     * Owning workspace, stamped by the trusted configuration edge.
+     */
+    workspace_id?: string;
     [property: string]: any;
 }
 
@@ -401,6 +448,26 @@ export interface MCPServerDefCredentialBinding {
     type:                  Type;
     credential_source_id?: string;
     credential_pool_id?:   string;
+    [property: string]: any;
+}
+
+/**
+ * The published intrinsic attributes of a catalog model, keyed by `model_id`. This is
+ * the control plane's OWN projection of what a console publishes — deliberately not the
+ * agent-domain `ModelSpec` (a runtime type the control plane must not depend on, per the
+ * dependency-direction ban); it carries only what the catalog's consumers read. Extended
+ * as the console publishes more attributes.
+ */
+export interface ModelAttributes {
+    /**
+     * Max context window in tokens — the single budget both the ACP CLIs' auto-compact
+     * window and the native compaction ext derive from. Absent → the consumer falls back.
+     */
+    context_window?: number | null;
+    /**
+     * Max output tokens the model emits, when published.
+     */
+    max_output_tokens?: number | null;
     [property: string]: any;
 }
 
@@ -436,6 +503,16 @@ export interface Offering {
 export type APIDialect = "anthropic_messages" | "open_ai_chat" | "gemini";
 
 /**
+ * Which members of a pool are selectable right now — `selection_order` with cooled
+ * members dropped (`eligible_order`). The ops view of the mid-run rotation.
+ */
+export interface PoolEligibleView {
+    cooled:   string[];
+    eligible: string[];
+    [property: string]: any;
+}
+
+/**
  * A concrete protocol surface of a provider: which wire + which URL. Distinct
  * flavors of one provider typically have distinct `base_url`s.
  */
@@ -453,6 +530,23 @@ export interface ProtocolEndpoint {
      */
     timeout_secs: number;
     version:      number;
+    [property: string]: any;
+}
+
+/**
+ * A vendor namespace (`anthropic`, `openai`, …).
+ */
+export interface Provider {
+    display_name: string;
+    id:           string;
+    /**
+     * URL-safe vendor slug, unique in the catalog.
+     */
+    slug: string;
+    /**
+     * Append-only version bumped on change.
+     */
+    version: number;
     [property: string]: any;
 }
 
@@ -551,27 +645,46 @@ export interface ProviderValue {
 }
 
 /**
- * A vendor namespace (`anthropic`, `openai`, …).
- */
-export interface Provider {
-    display_name: string;
-    id:           string;
-    /**
-     * URL-safe vendor slug, unique in the catalog.
-     */
-    slug: string;
-    /**
-     * Append-only version bumped on change.
-     */
-    version: number;
-    [property: string]: any;
-}
-
-/**
  * Resolve an agent's MCP binding within a workspace's credential scope.
  */
 export interface ResolveAgentMCPRequest {
     workspace_id: string;
+    [property: string]: any;
+}
+
+/**
+ * Resolve an authored profile within a workspace's credential scope.
+ */
+export interface ResolveProfileRequest {
+    workspace_id: string;
+    [property: string]: any;
+}
+
+/**
+ * A dry-run resolve request: bind `model_id` (+ credential `binding`) against the
+ * authored catalog. The workspace scopes which credential sources are visible.
+ */
+export interface ResolveRequest {
+    binding:      Binding;
+    model_id:     string;
+    workspace_id: string;
+    [property: string]: any;
+}
+
+/**
+ * The "which credential" axis (oversight-next / awaken-management-contract).
+ *
+ * No credential is needed.
+ *
+ * Use exactly one source.
+ *
+ * Use one eligible member of a pool; the resolver selects by policy and may
+ * fail over to the next member if the chosen one cannot be materialized.
+ */
+export interface Binding {
+    type:                  Type;
+    credential_source_id?: string;
+    credential_pool_id?:   string;
     [property: string]: any;
 }
 
@@ -632,42 +745,6 @@ export interface ResolvedMCPServerView {
     credential_present: boolean;
     name:               string;
     url:                string;
-    [property: string]: any;
-}
-
-/**
- * Resolve an authored profile within a workspace's credential scope.
- */
-export interface ResolveProfileRequest {
-    workspace_id: string;
-    [property: string]: any;
-}
-
-/**
- * A dry-run resolve request: bind `model_id` (+ credential `binding`) against the
- * authored catalog. The workspace scopes which credential sources are visible.
- */
-export interface ResolveRequest {
-    binding:      Binding;
-    model_id:     string;
-    workspace_id: string;
-    [property: string]: any;
-}
-
-/**
- * The "which credential" axis (oversight-next / awaken-management-contract).
- *
- * No credential is needed.
- *
- * Use exactly one source.
- *
- * Use one eligible member of a pool; the resolver selects by policy and may
- * fail over to the next member if the chosen one cannot be materialized.
- */
-export interface Binding {
-    type:                  Type;
-    credential_source_id?: string;
-    credential_pool_id?:   string;
     [property: string]: any;
 }
 
