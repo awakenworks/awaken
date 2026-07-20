@@ -82,8 +82,11 @@ async function installChrome() {
         box-shadow:0 0 0 4px rgba(122,162,255,.25),0 3px 12px rgba(0,0,0,.5);
         transition:left .5s cubic-bezier(.4,0,.2,1),top .5s cubic-bezier(.4,0,.2,1);pointer-events:none}
       #rec-cur.tap{animation:rec-tap .4s ease}
+      .rec-focus{position:relative;z-index:3;outline:2px solid rgba(122,162,255,.78)!important;
+        outline-offset:4px;animation:rec-focus 1.4s ease-in-out infinite alternate}
       @keyframes rec-tap{0%{transform:scale(1)}40%{transform:scale(.7)}100%{transform:scale(1)}}
       @keyframes rec-pulse{0%,100%{opacity:.35;transform:scale(.8)}50%{opacity:1;transform:scale(1.2)}}
+      @keyframes rec-focus{from{box-shadow:0 0 0 0 rgba(122,162,255,.08)}to{box-shadow:0 0 0 9px rgba(122,162,255,.16)}}
     `,
   });
   await page.evaluate(() => {
@@ -123,8 +126,8 @@ async function say(text, holdMs) {
       c.classList.add("on");
     }
   }, text);
-  const readingMs = Math.min(7200, 1400 + [...text].length * 45);
-  const duration = Math.max(holdMs ?? 0, readingMs);
+  const readingMs = Math.min(4800, 850 + [...text].length * 28);
+  const duration = Math.min(5200, Math.max(holdMs ?? 0, readingMs));
   const startMs = Date.now() - recordStartedAt;
   captions.push({ start_ms: startMs, end_ms: startMs + duration, text });
   await wait(duration);
@@ -132,6 +135,20 @@ async function say(text, holdMs) {
 async function clearCaption() {
   await page.evaluate(() => document.getElementById("rec-cap")?.classList.remove("on"));
   await wait(250);
+}
+
+/** Keep narration and evidence visually coupled; the pulse prevents a caption beat
+ * from becoming a static hold while showing exactly which product surface proves it. */
+async function focus(locator) {
+  await locator.scrollIntoViewIfNeeded({ timeout: 3000 });
+  await page.evaluate(() => document.querySelectorAll(".rec-focus").forEach((node) => node.classList.remove("rec-focus")));
+  await locator.evaluate((node) => node.classList.add("rec-focus"));
+  await cursorTo(locator);
+}
+
+async function beat(text, locator, holdMs) {
+  await focus(locator);
+  await say(text, holdMs);
 }
 
 /** Establish the story before operating the UI: why this matters, then what Awaken does. */
@@ -171,7 +188,7 @@ async function showProof(text, tone, holdMs = 0) {
 }
 
 /** The shareable payoff. Every flow must visibly land one concise product truth. */
-async function aha(text, holdMs = 4600) {
+async function aha(text, holdMs = 4200) {
   ahaCount += 1;
   await say(`AHA · ${text}`, holdMs);
 }
@@ -233,6 +250,8 @@ const api = {
   wait,
   say,
   clearCaption,
+  focus,
+  beat,
   intro,
   checkpoint,
   aha,
@@ -260,7 +279,7 @@ try {
   if (introCount === 0) throw new Error("story contract failed: flow has no intent/capability intro");
   if (checkpointCount === 0) throw new Error("test contract failed: flow has no passing checkpoint");
   if (ahaCount === 0) throw new Error("story contract failed: flow has no AHA payoff");
-  await say("awaken · configure, prove, and run agents — fully in the browser.", 3800);
+  await say("awaken · configure, prove, and run agents — fully in the browser.", 3000);
   await clearCaption();
 } catch (e) {
   failed = true;

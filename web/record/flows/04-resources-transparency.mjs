@@ -1,59 +1,78 @@
-// V — "Resources & transparency." Create a memory store, bind it to an agent as a
-// mounted resource (it rides into every session the agent runs), then open a real
-// session and read its execution as a Trace — the run rendered as spans. Configure the
-// context; inspect the internals.
+// Memory effect, not just binding UI: one real-model session writes a random fact,
+// the store is harvested, and a fresh session recalls it with no shared chat history.
 
-const STORE = "release-memory";
+const AGENT = "release-notes-writer";
 
-export async function run({ page, goto, say, clearCaption, intro, checkpoint, aha, expect, click, type, wait }) {
-  // 1) Create a memory store (a durable, mountable resource) — through the UI.
-  await goto("/w/default/memory");
+export async function run({ page, goto, say, clearCaption, intro, checkpoint, aha, expect, click, type, wait, beat }) {
+  const secret = `AHA-${Date.now()}`;
+  const store = await (await page.request.post("http://127.0.0.1:38080/v1/memory_stores", {
+    data: { name: `release-memory-${Date.now()}` },
+  })).json();
+  await page.request.put(`http://127.0.0.1:38080/v1/config/agents/${AGENT}`, {
+    data: {
+      id: AGENT,
+      name: "Release memory keeper",
+      model: { id: "kimi-for-coding" },
+      system: "Use the persistent memory file. WRITE exact facts the user asks you to remember; READ it to recall. Always use file tools.",
+      tools: ["bash", "read", "write", "glob", "grep"],
+      plugins: [],
+      plugin_config: { permission: { default_behavior: "allow", mode: "bypassPermissions", rules: [] } },
+      context_policy: { kind: "keep_all" },
+      max_steps: 8,
+    },
+  });
+
+  await goto(`/w/default/agents/${AGENT}`);
   await intro(
-    "Give an agent durable context while keeping every mounted resource and execution step inspectable.",
-    "Bind a first-class memory store, then inspect the resulting session as conversation, trace, and files.",
+    "Give an Agent durable memory and prove it survives beyond the conversation that created it.",
+    "Awaken mounts a first-class Memory store, writes it back after execution, and recalls it in every fresh Agent session.",
   );
-  await click(page.getByRole("button", { name: /New memory store|新建记忆库/ }));
-  await wait(400);
-  await type(page.getByPlaceholder("project-memory"), STORE);
-  await click(page.getByRole("button", { name: "Create", exact: true }));
-  await wait(1000);
-  await clearCaption();
-
-  // 2) Bind it to an agent — mounted in every session it runs.
-  await goto("/w/default/agents/release-notes-writer");
-  await say("Bind the store to an agent — it mounts into every session automatically.", 4000);
-  await click(page.getByRole("tab", { name: /Resources|资源/ }));
-  await wait(500);
+  await click(page.getByRole("tab", { name: /Resources|资源/, exact: true }));
+  await say("Bind an explicit read-write Memory store; the mount path and access stay visible in Agent config.", 3800);
   await click(page.getByRole("button", { name: /bind a store|绑定记忆库/ }));
-  await wait(400);
-  await expect(page.locator("select").nth(1)).toContainText(STORE);
-  await page.locator("select").nth(1).selectOption({ label: STORE });
-  await type(page.getByPlaceholder("/mnt/…"), "/mnt/memory/notes");
+  await page.locator("select").nth(1).selectOption({ label: store.name });
+  await type(page.getByPlaceholder("/mnt/…"), "/mnt/memory/project");
   await click(page.getByRole("button", { name: /Save resources|保存资源/ }));
-  await wait(1200);
-  await checkpoint("the memory-store binding round-trips through the resource API", async () => {
-    const response = await page.request.get("http://127.0.0.1:38080/v1/config/agents/release-notes-writer/resources");
-    expect(response.ok()).toBeTruthy();
-    const body = await response.json();
-    expect(body.resources?.some((resource) => resource.kind === "memory_store")).toBeTruthy();
-  });
-  await clearCaption();
+  await wait(600);
+  const publish = await page.request.post(`http://127.0.0.1:38080/v1/config/agents/${AGENT}/publish`);
+  expect(publish.ok()).toBeTruthy();
 
-  // 3) Transparency: open a real session and read it as a Trace.
-  await goto("/w/default/sessions");
-  await say("Every run is inspectable. Open a session…", 3000);
-  await click(page.locator('tr[data-click="true"]').first());
-  await wait(1200);
-  await say("…read the conversation, then switch to Trace.", 3200);
-  await click(page.getByRole("button", { name: "Trace", exact: true }));
-  await wait(1500);
-  await checkpoint("the session exposes an execution trace", async () => {
-    await expect(page.getByRole("button", { name: "Files", exact: true })).toBeVisible();
+  const first = await (await page.request.post("http://127.0.0.1:38080/v1/sessions", {
+    data: { agent: AGENT, title: "Write durable memory" },
+  })).json();
+  await goto(`/w/default/sessions/${first.id}`);
+  await beat("Session one receives a concise goal; the Agent handles the file location and write procedure.", page.locator(".transcript-composer"), 3400);
+  const firstComposer = page.getByLabel(/Message to agent|给 Agent 的消息/);
+  await type(firstComposer, `Remember this exact release code: ${secret}`, { delay: 16 });
+  await firstComposer.press("Enter");
+  await expect(page.locator(".agent-working")).toBeVisible();
+  await say("Immediate working feedback keeps the conversation alive while the real model and tools execute.", 3400);
+
+  await checkpoint("session one writes the random code into the bound durable store", async () => {
+    await expect(page.locator(".agent-working")).not.toBeVisible({ timeout: 60000 });
+    await expect(page.getByText("⬡ agent").last()).toBeVisible();
+    await page.request.get(`http://127.0.0.1:38080/v1/files?scope_id=${first.id}`);
+    const persisted = await (await page.request.get(`http://127.0.0.1:38080/v1/memory_stores/${store.id}`)).json();
+    expect(persisted.content ?? "").toContain(secret);
   });
-  await say("The run rendered as spans — invoke, chat, tools. Internals, made transparent.", 4400);
-  await wait(1500);
-  await click(page.getByRole("button", { name: "Files", exact: true }));
-  await aha("Context is not hidden prompt magic: you can trace the run and inspect exactly what the agent mounted.");
-  await wait(1500);
+
+  const second = await (await page.request.post("http://127.0.0.1:38080/v1/sessions", {
+    data: { agent: AGENT, title: "Recall durable memory" },
+  })).json();
+  await goto(`/w/default/sessions/${second.id}`);
+  await say("Session two is fresh—no shared transcript. Ask for the fact using only the bound Memory.", 3800);
+  const secondComposer = page.getByLabel(/Message to agent|给 Agent 的消息/);
+  await type(secondComposer, "Read your persistent memory and answer with only the exact release code.", { delay: 12 });
+  await secondComposer.press("Enter");
+
+  await checkpoint("a fresh Agent session recalls the exact code from Memory", async () => {
+    await expect(page.getByText(secret, { exact: false })).toBeVisible({ timeout: 60000 });
+    await expect(page.locator(".agent-working")).not.toBeVisible({ timeout: 10000 });
+  });
+  await click(page.getByRole("button", { name: "Trace", exact: true }));
+  await say("Trace keeps the evidence inspectable after the payoff: model, tools, and lifecycle remain observable.", 3600);
+  await clearCaption();
+  await aha("The second session knows what the first one learned—because Memory is a mounted resource, not hidden chat history.");
+  await wait(800);
   await clearCaption();
 }
