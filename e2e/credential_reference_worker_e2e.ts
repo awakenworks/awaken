@@ -143,7 +143,13 @@ async function main(): Promise<void> {
     request.activation.run_id = `${seed.request.activation.run_id}-gateway`;
     request.activation.thread_id = THREAD;
     request.session_thread_id = THREAD;
-    request.model_access = { scheme: 'credential-reference/v1', reference: GRANT };
+    request.activation.snapshot.metadata = {
+      source: { agent_id: '', revision: 0 },
+      publication_version: '',
+      resolution: { inputs: [] },
+      fingerprint: '',
+      inference_access: { scheme: 'credential-reference/v1', reference: GRANT },
+    };
     request.placement.required_capabilities = ['credential-reference/v1', 'native-runtime'];
     await post('/v1/worker/dispatch/enqueue', { request }, 'seed-worker');
     const seedSettle = await post(

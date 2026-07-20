@@ -709,6 +709,39 @@ mod tests {
     }
 
     #[test]
+    fn publication_pinned_inference_access_is_part_of_the_fingerprint() {
+        let cfg = config(&[]);
+        let metadata = |credential: &str| AgentSnapshotMetadata {
+            source: awaken_runtime_contract::AgentConfigRevisionRef {
+                agent_id: awaken_runtime_contract::snapshot::AgentId("agent-1".into()),
+                revision: 1,
+            },
+            inference_access: Some(
+                awaken_runtime_contract::InferenceAccess::resolved_credential(
+                    credential,
+                    1,
+                    "workspace-a",
+                    "anthropic@1",
+                    "primary@1",
+                    awaken_runtime_contract::InferenceEndpoint {
+                        adapter_kind: "anthropic".into(),
+                        base_url: "https://api.example/v1".into(),
+                        upstream_model: "model-a".into(),
+                    },
+                ),
+            ),
+            ..Default::default()
+        };
+        let first = compile_resolved(&cfg, &[], &[], metadata("credential-a")).unwrap();
+        let second = compile_resolved(&cfg, &[], &[], metadata("credential-b")).unwrap();
+        assert_ne!(first.fingerprint, second.fingerprint);
+        assert_eq!(
+            first.metadata.inference_access.unwrap().reference,
+            "credential-a"
+        );
+    }
+
+    #[test]
     fn wire_identity_metadata_is_excluded_from_the_fingerprint() {
         // name / description / metadata are authoring metadata the runtime never
         // consumes — editing them must NOT mint a new content-address for a

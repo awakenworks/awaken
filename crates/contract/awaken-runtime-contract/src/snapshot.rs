@@ -39,6 +39,10 @@ pub struct AgentSnapshotMetadata {
     pub publication_version: AgentPublicationVersion,
     pub resolution: ResolutionManifest,
     pub fingerprint: AgentSnapshotFingerprint,
+    /// Secret-free provider route and credential-injection references resolved once
+    /// for this publication. It is part of the snapshot content fingerprint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inference_access: Option<crate::InferenceAccess>,
 }
 
 impl Default for AgentSnapshotMetadata {
@@ -48,6 +52,7 @@ impl Default for AgentSnapshotMetadata {
             publication_version: AgentPublicationVersion(String::new()),
             resolution: ResolutionManifest::default(),
             fingerprint: AgentSnapshotFingerprint(String::new()),
+            inference_access: None,
         }
     }
 }
@@ -107,6 +112,7 @@ mod metadata_tests {
             publication_version: AgentPublicationVersion("v3".into()),
             resolution,
             fingerprint: AgentSnapshotFingerprint("sha256:abc".into()),
+            inference_access: None,
         };
         let wire = serde_json::to_value(&metadata).unwrap();
         assert_eq!(wire["source"]["revision"], 7);

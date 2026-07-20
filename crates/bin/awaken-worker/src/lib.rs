@@ -68,12 +68,8 @@ impl WorkerLifecycle {
 /// store routes the drain over HTTP instead of a local queue.
 pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error>> {
     let stores = awaken_control::open_shared_config_stores_from_env().await;
-    let provider = ConfiguredInferenceMaterializer::new(
-        stores.catalog,
-        stores.credentials,
-        stores.secrets,
-        awaken_control::BOOTSTRAP_WORKSPACE,
-    );
+    let provider =
+        ConfiguredInferenceMaterializer::new(stores.catalog, stores.credentials, stores.secrets);
     run_configured(
         WorkerUpstream::new(upstream),
         Some(Arc::new(provider)),
@@ -83,7 +79,7 @@ pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Run a genuinely secretless worker with a deployment-provided executor
-/// provider. The provider receives each durable run's opaque `model_access`
+/// provider. The provider receives each durable run's snapshot-pinned inference access
 /// reference through [`InferenceExecutorMaterializer::executor_for_run`]; it can return a
 /// executor that injects or renews the referenced credential without requiring
 /// the worker to open a credential vault or persist provider keys.
