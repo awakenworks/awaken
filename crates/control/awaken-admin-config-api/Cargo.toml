@@ -14,6 +14,7 @@ awaken-api-contract.workspace = true
 awaken-config-resolver.workspace = true
 # Failure disposition (Disposition) for the credential-cooldown ops route.
 awaken-runtime-contract.workspace = true
+awaken-tenancy.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
