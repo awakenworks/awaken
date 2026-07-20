@@ -46,8 +46,16 @@ Two hard requirements frame the decision:
    through one identical entrypoint.** Both arrive **already resolved**: "normal" =
    the credential is literal material; "vault-backed" = the **host** resolved the
    binding/handle upstream. The runtime never resolves and never sees the
-   difference — matching the existing D6/D9 boundary (`awaken-ext-mcp::Credential`
-   takes already-resolved values; resolution stays in the host).
+difference — matching the existing D6/D9 boundary (`awaken-ext-mcp::Credential`
+takes already-resolved values; resolution stays in the host).
+
+**Amended by ADR-0062:** the durable snapshot now carries secret-free,
+fingerprinted `InferenceAccess`/`CredentialAccess`, not a `RedactedString`.
+Configuration publication selects the exact reference once; the host execution
+adapter materializes it immediately before constructing/calling the provider
+executor. Runtime core still links no vault/catalog and never performs selection.
+This supersedes later references in this ADR to a materialized credential value
+inside `ExecutableAgentSnapshot`.
 
 ## Decision
 
