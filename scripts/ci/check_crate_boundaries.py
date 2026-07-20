@@ -251,6 +251,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # The neutral `Disposition` resilience taxonomy: the ops cooldown routes map
         # a credential-probe failure onto a retry/cool-down policy (E3-4).
         "awaken-runtime-contract",
+        # HTTP adapters consume the neutral trusted WorkspaceScope coordinate;
+        # authorization remains at the composition PEP.
+        "awaken-tenancy",
         "serde",
         "serde_json",
         "thiserror",
@@ -1203,6 +1206,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # the host stays the substrate and the wire surface stays thin (Step 3b).
     "awaken-managed-routers": {
         "awaken-runtime-host",
+        # File ownership is selected by the same neutral WorkspaceScope used by
+        # every other platform resource adapter.
+        "awaken-tenancy",
         "axum",
         "serde_json",
     },

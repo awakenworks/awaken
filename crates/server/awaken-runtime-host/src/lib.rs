@@ -86,10 +86,6 @@ pub use crate::dispatch_backend::{
 };
 pub use crate::host::{HostResume, SharedHost};
 pub use crate::worker_control_client::WorkerControlClient;
-/// Trusted resource ownership coordinate passed from a wire/composition edge.
-/// Resource adapters consume it without depending on tenancy or IAM layers.
-#[derive(Debug, Clone)]
-pub struct ResourceWorkspace(pub String);
 // The sandboxed ACP channel source (bwrap-confined agent launch) and the shared
 // per-thread egress handle a composition root wires it with.
 pub use crate::data_subject_api::{consent_router, erasure_router, install_capture_sink};

@@ -8,6 +8,7 @@ license.workspace = true
 # The host substrate these HTTP adapters drive: they call only its public API
 # (`SharedHost` file methods, or nothing at all) — thin driving adapters, not core.
 awaken-runtime-host = { workspace = true }
+awaken-tenancy.workspace = true
 axum = { version = "0.8", features = ["multipart"] }
 serde_json.workspace = true
 

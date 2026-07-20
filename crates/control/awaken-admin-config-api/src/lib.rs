@@ -35,7 +35,7 @@ pub use awaken_config_resolver::{
 pub use router::{
     AdminState, CooldownRequest, CredentialProbe, CredentialValidation, EnterCredentialRequest,
     PoolEligibleView, ProbeStatus, ResolveAgentMcpRequest, ResolveProfileRequest, ResolveRequest,
-    ResolvedCandidatesView, ResolvedInferenceView, ResolvedMcpServerView, ResourceWorkspace,
+    ResolvedCandidatesView, ResolvedInferenceView, ResolvedMcpServerView,
     ValidateCredentialRequest, admin_router,
 };
 

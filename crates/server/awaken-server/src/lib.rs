@@ -162,20 +162,7 @@ pub fn mount_with_managed(host: Arc<SharedHost>, managed_state: Arc<ManagedState
         dynamic_placement::shared_worker_placement_policy(),
     );
     // The Files API (`/v1/files`) over the host's blob store — file resources + artifacts.
-    let files = files_router(host.clone()).layer(axum::middleware::from_fn(
-        |mut request: axum::extract::Request, next: axum::middleware::Next| async move {
-            if let Some(scope) = request
-                .extensions()
-                .get::<awaken_protocol_managed::WorkspaceScope>()
-                .cloned()
-            {
-                request
-                    .extensions_mut()
-                    .insert(awaken_runtime_host::ResourceWorkspace(scope.0));
-            }
-            next.run(request).await
-        },
-    ));
+    let files = files_router(host.clone());
     // Tenant ownership for memory stores (ADR-0053 / ADR-0051): fence cross-tenant
     // access to a store (and its memories/versions) by the scope that created it. A
     // single-tenant deployment resolves to the default scope and is never fenced.

@@ -20,22 +20,6 @@ pub mod authz;
 pub mod control_stores;
 pub mod worker_stores;
 
-async fn stamp_admin_resource_workspace(
-    mut request: axum::extract::Request,
-    next: axum::middleware::Next,
-) -> axum::response::Response {
-    if let Some(scope) = request
-        .extensions()
-        .get::<awaken_tenancy::WorkspaceScope>()
-        .cloned()
-    {
-        request
-            .extensions_mut()
-            .insert(awaken_admin_config_api::ResourceWorkspace(scope.0));
-    }
-    next.run(request).await
-}
-
 #[cfg(test)]
 mod audit_tests;
 
@@ -264,9 +248,7 @@ pub fn control_router(input: ControlRouterInput) -> (Router, Arc<WebhookLifecycl
     // sink (fed the same store + secrets) fans committed session facts out-of-band.
     let (webhook_sink, webhook_crud) =
         assemble_with_session_repo(webhook_store, secrets.clone(), org_id, sessions);
-    let admin = admin
-        .merge(webhook_crud)
-        .layer(axum::middleware::from_fn(stamp_admin_resource_workspace));
+    let admin = admin.merge(webhook_crud);
     let vaults = vault_router(vault_state);
     // The user-profiles front door (`/v1/user_profiles`) over its own in-mem store.
     let user_profiles = user_profiles_router(Arc::new(UserProfileState::new()));
