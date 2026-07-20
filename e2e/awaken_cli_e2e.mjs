@@ -27,9 +27,9 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 const PORT = Number(process.env.E2E_PORT ?? 38411);
 const BETAS = ['managed-agents-2026-04-01'];
 const FAKE_KEY = 'sk-awaken-cli-fake-key'; // awaken-allow: secret
-// The management plane's per-provider credential derive resolves in this workspace
-// (authz::BOOTSTRAP_WORKSPACE); the console credential must land here to be picked up.
-const WORKSPACE = 'wrkspc_default';
+// The composition root receives the platform-owned coordinate explicitly; no test
+// or resource adapter relies on a compiled Workspace id.
+const WORKSPACE = `workspace_e2e_${process.pid}`;
 const AGENT = 'db-model-agent';
 const MODEL = 'fake-haiku';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -123,7 +123,7 @@ async function main() {
   const bin = awakenBin();
   // In-memory management stores (no AWAKEN_MGMT_DIR): the console config lives for the
   // process lifetime, which is all this resolve→run proof needs.
-  const h = startAwaken(bin, PORT);
+  const h = startAwaken(bin, PORT, { AWAKEN_LOCAL_WORKSPACE_ID: WORKSPACE });
   try {
     await waitForPort(PORT);
     await ready(h.baseUrl);
@@ -145,6 +145,11 @@ async function main() {
       protocol_endpoint_id: 'ep1', dialect: 'anthropic_messages', upstream_model: null,
     });
     assert.equal(r.status, 200, `offering: ${JSON.stringify(r.json)}`);
+    r = await req(base, 'PUT', `/v1/config/model-attributes/${MODEL}`, {
+      context_window: 4096,
+      max_output_tokens: 1024,
+    });
+    assert.equal(r.status, 200, `model attributes: ${JSON.stringify(r.json)}`);
     r = await req(base, 'POST', '/v1/config/credentials', {
       workspace_id: WORKSPACE, kind: 'vault', provider_id: 'anthropic',
       env_key: 'ANTHROPIC_API_KEY', secret: FAKE_KEY,
@@ -161,6 +166,9 @@ async function main() {
       model: { id: MODEL },
       system: 'You are a test agent.',
       max_steps: 2,
+      plugins: ['compact'],
+      plugin_config: { compact: {}, acp: {} },
+      compaction: { keep_recent: 2 },
     });
     assert.equal(r.status, 200, `agent config: ${JSON.stringify(r.json)}`);
     r = await req(base, 'POST', `/v1/config/agents/${AGENT}/publish`, undefined);

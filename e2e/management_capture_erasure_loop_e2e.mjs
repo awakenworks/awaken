@@ -50,12 +50,17 @@ async function main() {
       );
       pass(`run→capture→store→erase: ${body.records_removed} captured records erased`);
 
-      // The content is gone: a second erasure removes nothing.
+      // A retry returns the same durable receipt. `records_removed` is cumulative
+      // accountability evidence, not the delta of this HTTP attempt.
       const again = await (
         await fetch(`${base}/v1/user_profiles/dsub_full/erasure`, { method: 'POST' })
       ).json();
-      assert.equal(again.records_removed, 0, 'no captured content remains after erasure');
-      pass('erasure is idempotent — the subject content is gone');
+      assert.equal(
+        again.records_removed,
+        body.records_removed,
+        'an idempotent retry returns the original durable erasure receipt',
+      );
+      pass('erasure is idempotent — retry returned the same accountability receipt');
     },
     { extraEnv: { AWAKEN_CONTENT_CAPTURE: 'full', AWAKEN_CONTENT_SUBJECT: 'dsub_full' } },
   );

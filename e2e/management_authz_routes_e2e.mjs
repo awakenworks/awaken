@@ -25,16 +25,18 @@ async function req(base, method, uri, token, body) {
   return { status: res.status };
 }
 
-const ROUTES = [
+function routes(workspace) {
+  return [
   ['GET', '/v1/config/catalog'],
   ['GET', '/v1/config/providers/ghost'],
   ['GET', '/v1/config/endpoints/ghost'],
-  ['GET', '/v1/config/credentials?workspace_id=wrkspc_default'],
+  ['GET', `/v1/config/credentials?workspace_id=${encodeURIComponent(workspace)}`],
   ['GET', '/v1/config/credential-pools/ghost'],
   ['GET', '/v1/config/inference-profiles/ghost'],
   ['GET', '/v1/config/mcp-servers/ghost'],
   ['GET', '/v1/config/mcp-servers'],
-];
+  ];
+}
 
 async function main() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-authz-routes-'));
@@ -46,14 +48,16 @@ async function main() {
     await waitForPort(PORT);
     const base = `http://127.0.0.1:${PORT}`;
     const token = fs.readFileSync(path.join(dir, 'admin-token'), 'utf8').trim();
+    const workspace = fs.readFileSync(path.join(dir, 'platform-workspace-id'), 'utf8').trim();
+    const guardedRoutes = routes(workspace);
 
-    for (const [m, uri] of ROUTES) {
+    for (const [m, uri] of guardedRoutes) {
       const r = await req(base, m, uri, token);
       assert.ok(r.status !== 401 && r.status !== 403, `admin authorized on ${m} ${uri} (got ${r.status})`);
     }
     pass('admin token authorized across every guarded config route (action_for arms)');
 
-    for (const [m, uri] of ROUTES) {
+    for (const [m, uri] of guardedRoutes) {
       const r = await req(base, m, uri);
       assert.equal(r.status, 401, `${m} ${uri} without token -> 401 (got ${r.status})`);
     }
@@ -61,7 +65,7 @@ async function main() {
 
     // Token-admin edge: minting with an unknown role is rejected.
     const bad = await req(base, 'POST', '/v1/config/iam/tokens', token, {
-      workspace_id: 'ws',
+      workspace_id: workspace,
       role: 'not-a-real-role',
     });
     assert.ok([400, 422].includes(bad.status), `unknown role -> 4xx (got ${bad.status})`);

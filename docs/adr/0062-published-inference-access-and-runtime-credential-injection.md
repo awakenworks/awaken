@@ -43,8 +43,8 @@ Forbidden runtime dependencies:
 
 `InferenceAccess` is immutable, secret-free snapshot data. It contains the
 published provider/route/endpoint pins, Workspace owner, and `CredentialAccess`.
-`CredentialAccess` is the single description of credential revision, allowed
-injection mechanisms and provider usage. Candidate failover composes complete
+`CredentialAccess` is the single description of credential revision, the one
+injection mechanism selected at publication, and provider usage. Candidate failover composes complete
 `InferenceAccess` values; it does not maintain a second parallel field set.
 
 `ExecutableAgentSnapshot.metadata.inference_access` participates in snapshot
@@ -128,7 +128,10 @@ The implementation removes `RunDispatch.model_access`, its builder, runtime
 child-dispatch re-resolution, `ConfiguredInferenceMaterializer`, and its fixed
 Workspace field. `credential_version` is replaced by the existing typed
 `CredentialAccess.credential.revision`; duplicated candidate access fields are
-replaced by composition of one `InferenceAccess` value.
+replaced by composition of one `InferenceAccess` value. The unused
+`CredentialInjectionPolicy`, `CredentialPolicyError`, and `InjectedCredential`
+types are deleted: execution receives one selected `CredentialInjectionKind`,
+not a fallback list it could reinterpret.
 
 No `InferencePlan`, local/gateway mode, or runtime `ExecutorProvider` is part of
 the resulting domain language.

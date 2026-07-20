@@ -338,6 +338,17 @@ async fn put_pool(
     // The path id is authoritative.
     pool.id = CredentialPoolId(id);
     if let Some(Extension(scope)) = scope {
+        if state
+            .credentials
+            .get_pool(&pool.id)
+            .await
+            .is_ok_and(|current| current.workspace_id != scope.0)
+        {
+            return Err(cred_problem(
+                &CredentialError::PoolNotFound(pool.id.0.clone()),
+                &req_id(&headers),
+            ));
+        }
         pool.workspace_id = scope.0;
     }
     state
