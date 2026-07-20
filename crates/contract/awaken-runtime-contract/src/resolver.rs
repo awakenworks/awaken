@@ -2,9 +2,7 @@ use thiserror::Error;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum Error {
-    #[error("no active runtime catalog is installed")]
-    NoActiveCatalog,
-    #[error("catalog fingerprint mismatch")]
+    #[error("snapshot fingerprint is empty or internally inconsistent")]
     FingerprintMismatch,
     #[error("snapshot not found")]
     SnapshotNotFound,

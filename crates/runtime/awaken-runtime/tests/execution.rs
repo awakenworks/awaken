@@ -147,21 +147,22 @@ async fn one_model_step_commits_facts_and_streams_progress() {
 #[tokio::test]
 async fn execution_fails_closed_on_fingerprint_mismatch() {
     let runtime = Runtime::new().with_llm(Arc::new(TextLlm("hi")));
-    install(&runtime, "catalog-a");
+    let mut activation = activation("catalog-a");
+    activation.snapshot.resolved_spec.catalog_fingerprint =
+        CatalogFingerprint("catalog-b".to_string());
 
-    let result = runtime
-        .execute(activation("catalog-b"), RuntimeRunContext::new())
-        .await;
+    let result = runtime.execute(activation, RuntimeRunContext::new()).await;
     assert!(matches!(result, Err(Error::Resolution(_))));
 }
 
 #[tokio::test]
-async fn execution_fails_without_a_catalog() {
+async fn execution_does_not_require_an_installed_catalog() {
     let runtime = Runtime::new().with_llm(Arc::new(TextLlm("hi")));
-    let result = runtime
+    let outcome = runtime
         .execute(activation("catalog-a"), RuntimeRunContext::new())
-        .await;
-    assert!(matches!(result, Err(Error::Resolution(_))));
+        .await
+        .expect("snapshot is the execution authority");
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
 }
 
 #[tokio::test]
