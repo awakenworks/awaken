@@ -22,5 +22,6 @@ pub use dispatch::{
     PendingInput, PendingRecord, RunClaim, SettleOutcome, SubmitOptions,
 };
 pub use run_dispatch::{
-    ExecutionScopeRef, ModelAccessCandidate, ModelAccessRef, PlacementRequirements, RunDispatch,
+    ExecutionScopeRef, InferenceAccess, InferenceAccessCandidate, PlacementRequirements,
+    RunDispatch,
 };

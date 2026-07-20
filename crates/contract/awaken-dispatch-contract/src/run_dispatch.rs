@@ -7,136 +7,10 @@
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime_contract::activation::RunActivation;
+pub use awaken_runtime_contract::{InferenceAccess, InferenceAccessCandidate};
 pub use awaken_tenancy::ExecutionScopeRef;
 pub use awaken_worker_contract::PlacementRequirements;
 use serde::{Deserialize, Serialize};
-
-/// Opaque reference to a renewable model-access grant.
-///
-/// It identifies a capability understood by the host's `InferenceExecutorMaterializer`; it is
-/// never a provider API key. The runtime and dispatch stores persist and forward
-/// the value without interpreting its scheme or reference.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ModelAccessCandidate {
-    pub model_ref: String,
-    pub scheme: String,
-    pub reference: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider_ref: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub route_ref: Option<String>,
-}
-
-/// Opaque reference to a renewable model-access grant.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ModelAccessRef {
-    pub scheme: String,
-    pub reference: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider_ref: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub route_ref: Option<String>,
-    /// Ordered, dispatch-pinned candidate bindings. Empty preserves the legacy
-    /// single-model representation above. Every entry is non-secret and names
-    /// the exact credential/provider/route identities materializable by a worker.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub candidates: Vec<ModelAccessCandidate>,
-}
-
-impl ModelAccessRef {
-    #[must_use]
-    pub fn new(scheme: impl Into<String>, reference: impl Into<String>) -> Self {
-        Self {
-            scheme: scheme.into(),
-            reference: reference.into(),
-            provider_ref: None,
-            route_ref: None,
-            candidates: Vec::new(),
-        }
-    }
-
-    #[must_use]
-    pub fn exact_credential(
-        credential_ref: impl Into<String>,
-        provider_ref: impl Into<String>,
-        route_ref: impl Into<String>,
-    ) -> Self {
-        Self {
-            scheme: "credential-source/v1".to_string(),
-            reference: credential_ref.into(),
-            provider_ref: Some(provider_ref.into()),
-            route_ref: Some(route_ref.into()),
-            candidates: Vec::new(),
-        }
-    }
-
-    /// Pin an explicitly installed host executor without serializing executable
-    /// state. The model ref is the stable identity replacement workers must
-    /// advertise through the same composition; a different default cannot
-    /// consume this capability accidentally.
-    pub fn host_executor(model_ref: impl Into<String>) -> Self {
-        let model_ref = model_ref.into();
-        Self {
-            scheme: "host-executor/v1".to_string(),
-            reference: model_ref,
-            provider_ref: None,
-            route_ref: None,
-            candidates: Vec::new(),
-        }
-    }
-
-    #[must_use]
-    pub fn is_host_executor_for(&self, model_ref: &str) -> bool {
-        self.scheme == "host-executor/v1"
-            && self.reference == model_ref
-            && self.provider_ref.is_none()
-            && self.route_ref.is_none()
-            && self.candidates.is_empty()
-    }
-
-    /// Pin the ordered subset of authored candidates that admission could
-    /// resolve. Runtime failover may select only one of these entries.
-    pub fn candidate_set(
-        candidates: impl IntoIterator<Item = (String, ModelAccessRef)>,
-    ) -> Option<Self> {
-        let candidates = candidates
-            .into_iter()
-            .map(|(model_ref, access)| ModelAccessCandidate {
-                model_ref,
-                scheme: access.scheme,
-                reference: access.reference,
-                provider_ref: access.provider_ref,
-                route_ref: access.route_ref,
-            })
-            .collect::<Vec<_>>();
-        let first = candidates.first()?;
-        Some(Self {
-            scheme: first.scheme.clone(),
-            reference: first.reference.clone(),
-            provider_ref: first.provider_ref.clone(),
-            route_ref: first.route_ref.clone(),
-            candidates,
-        })
-    }
-
-    #[must_use]
-    pub fn for_model(&self, model_ref: &str) -> Option<Self> {
-        if self.candidates.is_empty() {
-            return Some(self.clone());
-        }
-        let candidate = self
-            .candidates
-            .iter()
-            .find(|candidate| candidate.model_ref == model_ref)?;
-        Some(Self {
-            scheme: candidate.scheme.clone(),
-            reference: candidate.reference.clone(),
-            provider_ref: candidate.provider_ref.clone(),
-            route_ref: candidate.route_ref.clone(),
-            candidates: Vec::new(),
-        })
-    }
-}
 
 /// The durable, serializable record of an accepted run. It holds no `Arc<dyn ...>`,
 /// registry, or live handle (G3); the runtime builds live execution objects from
@@ -164,7 +38,7 @@ pub struct RunDispatch {
     /// Opaque, non-secret capability reference used to resolve the run's model on
     /// a remote worker. It follows the durable dispatch through recovery.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model_access: Option<ModelAccessRef>,
+    pub model_access: Option<InferenceAccess>,
     /// Hard worker requirements pinned at admission. Older durable rows omit this
     /// field and deserialize through the contract's explicit legacy posture;
     /// strict remote callers attach `PlacementRequirements::remote_required()`.
@@ -209,7 +83,7 @@ impl RunDispatch {
 
     /// Attach a renewable, non-secret model-access reference.
     #[must_use]
-    pub fn with_model_access(mut self, access: ModelAccessRef) -> Self {
+    pub fn with_model_access(mut self, access: InferenceAccess) -> Self {
         self.model_access = Some(access);
         self
     }
@@ -411,7 +285,7 @@ mod tests {
             .expect("scope belongs to authority");
         let request = RunDispatch::new(activation())
             .with_execution_scope(verified.into_ref())
-            .with_model_access(ModelAccessRef::new("credential-reference/v1", "grant-17"));
+            .with_model_access(InferenceAccess::new("credential-reference/v1", "grant-17"));
         let wire = serde_json::to_value(&request).expect("serializes");
         assert_eq!(wire["execution_scope"], "workspace-a");
         assert_eq!(wire["model_access"]["scheme"], "credential-reference/v1");
@@ -423,14 +297,14 @@ mod tests {
 
     #[test]
     fn candidate_access_is_ordered_pinned_and_model_scoped() {
-        let access = ModelAccessRef::candidate_set([
+        let access = InferenceAccess::candidate_set([
             (
                 "primary".to_string(),
-                ModelAccessRef::exact_credential("cred-a", "provider-a@1", "route-a@2"),
+                InferenceAccess::exact_credential("cred-a", "provider-a@1", "route-a@2"),
             ),
             (
                 "fallback".to_string(),
-                ModelAccessRef::exact_credential("cred-b", "provider-b@4", "route-b@3"),
+                InferenceAccess::exact_credential("cred-b", "provider-b@4", "route-b@3"),
             ),
         ])
         .unwrap();
@@ -450,14 +324,14 @@ mod tests {
         let wire = serde_json::to_string(&access).unwrap();
         assert!(!wire.contains("secret"));
         assert_eq!(
-            serde_json::from_str::<ModelAccessRef>(&wire).unwrap(),
+            serde_json::from_str::<InferenceAccess>(&wire).unwrap(),
             access
         );
     }
 
     #[test]
     fn host_executor_access_is_exact_and_non_secret() {
-        let access = ModelAccessRef::host_executor("embedded-model");
+        let access = InferenceAccess::host_executor("embedded-model");
         assert!(access.is_host_executor_for("embedded-model"));
         assert!(!access.is_host_executor_for("another-model"));
         assert!(access.provider_ref.is_none());
