@@ -512,9 +512,8 @@ async fn archive_disables_credential_and_bumps_version() {
 // post_credential: secret-in / secret-free-out
 // ---------------------------------------------------------------------------
 
-/// post_credential (a)+(b): a create returns 201 with a secret-free row (a bare
-/// `material_ref`, never the cleartext), and the sealed secret does not appear
-/// anywhere in the response.
+/// post_credential (a)+(b): a create returns 201 with a secret-free public view;
+/// neither the cleartext nor the internal vault reference crosses the boundary.
 #[tokio::test]
 async fn post_credential_is_201_and_never_echoes_the_secret() {
     let h = harness();
@@ -530,9 +529,9 @@ async fn post_credential_is_201_and_never_echoes_the_secret() {
     )
     .await;
     assert_eq!(s, StatusCode::CREATED);
-    // A secret-free row: carries a reference, not the value.
+    // A secret-free projection: carries stable identity, not vault internals.
     assert_eq!(cred["status"], "active");
-    assert!(cred["material_ref"].is_string());
+    assert!(cred.get("material_ref").is_none());
     let text = serde_json::to_string(&cred).unwrap();
     assert!(
         !text.contains(secret),
@@ -551,4 +550,40 @@ async fn post_credential_is_201_and_never_echoes_the_secret() {
     )
     .await;
     assert!(!serde_json::to_string(&listed).unwrap().contains(secret));
+}
+
+#[tokio::test]
+async fn oauth_credentials_accept_only_the_allowlisted_gcloud_helper() {
+    let h = harness();
+    let (status, credential) = call(
+        &h.app,
+        "POST",
+        "/v1/config/credentials",
+        Some(json!({
+            "workspace_id": "ws",
+            "kind": "oauth",
+            "provider_id": "google-vertex",
+            "oauth_helper": "gcloud"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{credential}");
+    assert_eq!(credential["kind"], "oauth");
+    assert_eq!(credential["oauth_helper"], "gcloud");
+    assert!(credential.get("material_ref").is_none());
+    assert!(credential.get("oauth_command").is_none());
+
+    let (status, problem) = call(
+        &h.app,
+        "POST",
+        "/v1/config/credentials",
+        Some(json!({
+            "workspace_id": "ws",
+            "kind": "oauth",
+            "provider_id": "google-vertex"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{problem}");
+    assert_eq!(problem["code"], "credential_invalid");
 }

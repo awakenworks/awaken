@@ -1,9 +1,9 @@
 // Deployment proof: configure a standing schedule, launch a real Session, and
 // inspect the Agent output produced by the kickoff event.
-import { configureKimi } from "../support/models.mjs";
+import { LIVE_MODEL_ID, configureLiveModel } from "../support/models.mjs";
 
 const AGENT_ID = "scheduled-report-agent";
-const MODEL_ID = "kimi-for-coding";
+const MODEL_ID = LIVE_MODEL_ID;
 const DEPLOYMENT_NAME = `Weekly release report · ${Date.now()}`;
 
 export const story = {
@@ -16,7 +16,7 @@ export const story = {
 };
 
 export async function run({ page, goto, intro, say, clearCaption, checkpoint, aha, expect, click, type, wait }) {
-  await configureKimi(page);
+  await configureLiveModel(page);
   await page.request.put(`http://127.0.0.1:38080/v1/config/agents/${AGENT_ID}`, {
     data: {
       id: AGENT_ID, name: "Scheduled report agent", model: { id: MODEL_ID },

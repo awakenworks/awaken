@@ -1,7 +1,6 @@
-// Workspace · Inference credentials: the SUPPLY-side sources and pools that
-// authenticate the MODEL PROVIDER (secret-in / secret-free-out). This is one of
-// two credential axes (design/web-ui.md §1): inference lives here; runtime/tool
-// credentials (MCP OAuth, static bearer, env-var) live in the project Vault.
+// Workspace credential sources: one secret-in / secret-free-out materialization
+// surface shared by model providers, MCP servers, and A2A remotes. Consumers bind
+// the source by id; none of them owns OAuth refresh behavior.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
@@ -80,7 +79,7 @@ export default function CredentialsSurface() {
     queryFn: () => api.get<CredentialSource[]>(`/v1/config/credentials?workspace_id=${WORKSPACE}`),
   });
   const [entering, setEntering] = useState(false);
-  const [form, setForm] = useState({ kind: "vault", provider: "anthropic", envKey: "", secret: "" });
+  const [form, setForm] = useState({ kind: "vault", provider: "anthropic", envKey: "", secret: "", oauthHelper: "gcloud" });
   const enter = useMutation({
     mutationFn: () =>
       api.post<CredentialSource>("/v1/config/credentials", {
@@ -89,6 +88,7 @@ export default function CredentialsSurface() {
         provider_id: form.provider || undefined,
         env_key: form.envKey || undefined,
         secret: form.secret,
+        oauth_helper: form.kind === "oauth" ? form.oauthHelper : undefined,
       }),
     onSuccess: () => {
       setEntering(false);
@@ -102,14 +102,14 @@ export default function CredentialsSurface() {
         <span>ⓘ</span>
         <span>
           {app.t(
-            "Inference credentials only — these authenticate the model provider. Runtime/tool credentials (MCP OAuth, static bearer, env-var) live in the project Vault.",
-            "仅推理凭证——用于模型供应商鉴权。运行/工具凭证(MCP OAuth、static bearer、env-var)在 Project Vault。",
+            "One credential source, reusable by Model Providers, MCP servers, and A2A remotes. Consumers store only a binding; secrets never return to the UI.",
+            "一个凭证源可被 Model Provider、MCP 和 A2A 复用。消费者只保存 binding，secret 永不回显。",
           )}
         </span>
       </div>
       <div className="row" style={{ justifyContent: "space-between" }}>
         <span className="mut">
-          {app.t("Supply-side sources — never echoed; validation is a live provider probe.", "供给侧凭证——永不回显;验证是真实的供应商探针。")}
+          {app.t("Credential sources — materialized only at the outbound adapter boundary.", "凭证源——仅在出站适配器边界实例化。")}
         </span>
         <Button variant="primary" onClick={() => setEntering(true)}>
           + {app.t("Enter credential", "录入凭证")}
@@ -158,7 +158,7 @@ export default function CredentialsSurface() {
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h3>{app.t("Enter credential", "录入凭证")}</h3>
             <div className="row">
-              {["vault", "env"].map((k) => (
+              {["vault", "env", "oauth"].map((k) => (
                 <Button key={k} variant={form.kind === k ? "primary" : "ghost"} onClick={() => setForm({ ...form, kind: k })}>
                   {k}
                 </Button>
@@ -167,6 +167,19 @@ export default function CredentialsSurface() {
             <TextField label="provider_id" mono value={form.provider} onChange={(e) => setForm({ ...form, provider: e.target.value })} />
             {form.kind === "env" ? (
               <TextField label="env_key" mono placeholder="ANTHROPIC_API_KEY" value={form.envKey} onChange={(e) => setForm({ ...form, envKey: e.target.value })} />
+            ) : form.kind === "oauth" ? (
+              <label className="field">
+                <span>{app.t("OAuth helper", "OAuth 辅助程序")}</span>
+                <select className="input mono" value={form.oauthHelper} onChange={(e) => setForm({ ...form, oauthHelper: e.target.value })}>
+                  <option value="gcloud">gcloud · active account</option>
+                </select>
+                <small className="hint">
+                  {app.t(
+                    "Awaken stores only the helper id and refreshes a short-lived token when a run starts.",
+                    "Awaken 只保存 helper id，并在 run 开始时刷新短期 token。",
+                  )}
+                </small>
+              </label>
             ) : (
               // The single secret-entry seam (ADR-0038 invariant: a stored secret is
               // never read back into the UI — write-only). For a new credential nothing

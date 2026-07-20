@@ -35,10 +35,7 @@ pub fn contract_schemas() -> Map<String, Value> {
     add!("ProviderCatalog", awaken_model_catalog::ProviderCatalog);
 
     // Credential domain (secret-free projections only).
-    add!(
-        "CredentialSource",
-        awaken_credential_vault::CredentialSource
-    );
+    add!("CredentialSource", crate::CredentialSourceView);
     add!(
         "CredentialBinding",
         awaken_credential_vault::CredentialBinding

@@ -1,5 +1,5 @@
 // Skill proof: a concise user goal activates delivered procedural guidance.
-import { configureKimi } from "../support/models.mjs";
+import { LIVE_MODEL_ID, configureLiveModel } from "../support/models.mjs";
 
 const AGENT_ID = "skill-briefing-agent";
 const SKILL_TEXT = `---
@@ -21,7 +21,7 @@ export const story = {
 };
 
 export async function run({ page, goto, intro, say, clearCaption, checkpoint, runtimeCheckpoint, aha, expect, click, type, wait }) {
-  await configureKimi(page);
+  await configureLiveModel(page);
   const skillResponse = await page.request.post("http://127.0.0.1:38080/v1/skills", {
     multipart: {
       file: { name: "SKILL.md", mimeType: "text/markdown", buffer: Buffer.from(SKILL_TEXT) },
@@ -34,7 +34,7 @@ export async function run({ page, goto, intro, say, clearCaption, checkpoint, ru
     data: {
       id: AGENT_ID,
       name: "Skill briefing agent",
-      model: { id: "kimi-for-coding" },
+      model: { id: LIVE_MODEL_ID },
       system: "Use the delivered Skill that matches the user's goal. Keep the response concise.",
       tools: [], mcp_servers: [], skills: [{ id: skill.id }], plugins: [], plugin_config: {},
       context_policy: { kind: "keep_all" }, max_steps: 4,

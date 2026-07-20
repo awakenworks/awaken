@@ -22,11 +22,21 @@ Run the fast structural contract before recording:
 pnpm record:test
 ```
 
-Record against the real console/backend (and supply `KIMI_KEY` for live-model flows):
+Record against the real console/backend. Live-model flows use the active gcloud
+account and require `GEMINI_PROJECT` (optionally `GEMINI_LOCATION` and
+`GEMINI_MODEL`):
 
 ```sh
+AWAKEN_LOCAL_WORKSPACE_ID=wrkspc_default \
+  CLOUDSDK_CORE_ACCOUNT=you@example.com \
+  AWAKEN_HTTP_ADDR=127.0.0.1:38080 cargo run -p awaken-cli --bin awaken
+pnpm dev
+GEMINI_PROJECT=my-project pnpm -C web record 01-connect-model
 pnpm record 06-ai-state-machine
 ```
+
+The explicit local workspace id keeps the ephemeral recording backend aligned
+with the console's default workspace. Durable installations persist their own id.
 
 Recommended release order (see `VIDEO_STRATEGY.md` for the user-value map):
 
@@ -48,7 +58,8 @@ Recommended release order (see `VIDEO_STRATEGY.md` for the user-value map):
 
 Release gates are intentionally strict:
 
-- `01`, `02`, and `10` require a working `KIMI_KEY` and assert real model output.
+- `01`, `02`, and `10` require a working Vertex AI gcloud grant and assert real
+  Gemini output. The long-lived grant never enters Awaken.
 - `15` requires `A2A_DELEGATE_ID` for a registered, reachable remote delegate.
 - `16` requires embedded IAM plus `AWAKEN_RECORD_ADMIN_TOKEN`; the token is injected
   into browser storage and is never rendered in captions or logs.

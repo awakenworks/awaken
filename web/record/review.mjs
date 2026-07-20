@@ -83,7 +83,9 @@ const checks = [
   }],
   ["credential safety", () => {
     const source = requiredFlow("01-connect-model.mjs");
-    assert.match(source, /type="password"|getByLabel\(\/Secret/i);
+    assert.match(source, /oauth_helper: "gcloud"/);
+    assert.match(source, /not\.toHaveProperty\("material_ref"\)/);
+    assert.match(source, /not\.toHaveProperty\("oauth_command"\)/);
     assert.doesNotMatch(source, /console\.log\([^\n]*KEY/);
   }],
   ["feature breadth", () => {

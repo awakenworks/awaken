@@ -1,8 +1,8 @@
 // V — "Build an agent, prove it live." Configure an agent from empty in the
 // intent-sectioned editor (model, system prompt, behavior), Save, Publish (with a
 // domain-labeled config diff — transparency), then Try it in the Sandbox for a REAL
-// KIMI reply. Agents are configured, not coded.
-import { configureKimi } from "../support/models.mjs";
+// live-model reply. Agents are configured, not coded.
+import { LIVE_MODEL_ID, LIVE_MODEL_LABEL, configureLiveModel } from "../support/models.mjs";
 
 const AGENT_ID = "release-notes-writer";
 const SYSTEM =
@@ -22,7 +22,7 @@ export const story = {
 };
 
 export async function run({ page, goto, say, clearCaption, intro, checkpoint, runtimeCheckpoint, aha, expect, click, type, wait }) {
-  await configureKimi(page);
+  await configureLiveModel(page);
   // Fresh start (idempotent): drop any prior agent so the walkthrough always creates.
   await page.request.delete(`http://127.0.0.1:38080/v1/config/agents/${AGENT_ID}`).catch(() => {});
 
@@ -35,7 +35,7 @@ export async function run({ page, goto, say, clearCaption, intro, checkpoint, ru
   await type(page.getByPlaceholder("coding-agent"), AGENT_ID);
   await say("Pick a model from the catalog — only credentialed models are offered.", 3600);
   await click(page.locator("select").first());
-  await page.locator("select").first().selectOption("kimi-for-coding");
+  await page.locator("select").first().selectOption(LIVE_MODEL_ID);
   await wait(400);
 
   await say("Its behavior is just the system prompt — no code, no redeploy.", 3600);
@@ -57,7 +57,7 @@ export async function run({ page, goto, say, clearCaption, intro, checkpoint, ru
     expect(response.ok()).toBeTruthy();
     const config = await response.json();
     expect(config.id).toBe(AGENT_ID);
-    expect(config.model?.id).toBe("kimi-for-coding");
+    expect(config.model?.id).toBe(LIVE_MODEL_ID);
   });
   await say("The exact domain-labeled diff is visible; this is the one decision the user owns.", 4000);
   await click(publishModal.getByRole("button", { name: /Publish/ }));
@@ -78,7 +78,7 @@ export async function run({ page, goto, say, clearCaption, intro, checkpoint, ru
   await ask.press("Enter");
   await expect(page.locator(".transcript-pending-message")).toContainText(ASK_DETAIL);
   await expect(page.locator(".agent-working")).toBeVisible();
-  await say("The full multiline request stays visible and the Agent shows work immediately while KIMI executes.", 3800);
+  await say(`The full multiline request stays visible and the Agent shows work immediately while ${LIVE_MODEL_LABEL} executes.`, 3800);
   const agentReply = page.locator(".card").filter({ hasText: "⬡ agent" }).last();
   await runtimeCheckpoint("the published agent returns structured release notes from the live model", async () => {
     await expect(agentReply).toContainText(/Features|Fixes|Breaking changes/i, { timeout: 60_000 });

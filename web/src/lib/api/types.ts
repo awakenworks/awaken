@@ -39,7 +39,7 @@ export interface ProviderCatalog {
   model_attributes?: Record<string, ModelAttributes>;
 }
 
-export type ApiDialect = "anthropic_messages" | "open_ai_chat" | "gemini";
+export type ApiDialect = "anthropic_messages" | "open_ai_chat" | "gemini" | "vertex_gemini";
 
 export type CredentialBinding =
   | { type: "none" }
@@ -52,6 +52,7 @@ export interface CredentialSource {
   kind: string;
   provider_id?: string | null;
   env_key?: string | null;
+  oauth_helper?: "gcloud" | null;
   status: string;
   version: number;
 }

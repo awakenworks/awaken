@@ -1,9 +1,9 @@
 // V — "Author an agent in plain English." Open the Admin Assistant from the Agents
 // list, describe an agent, and watch it draft a FULL config — auto-picked tools plus a
-// tool-description override — live via KIMI. The draft is a real unpublished agent, so
+// tool-description override — live via Vertex Gemini. The draft is a real unpublished agent, so
 // Open-in-editor lands on the editor to review and Publish. The whole authoring loop,
 // closed in the console.
-import { configureKimi } from "../support/models.mjs";
+import { LIVE_MODEL_LABEL, configureLiveModel } from "../support/models.mjs";
 
 const ASK =
   "Draft an agent id 'pr-reviewer' that reviews pull requests. Give it the read and grep " +
@@ -19,7 +19,7 @@ export const story = {
 };
 
 export async function run({ page, goto, say, clearCaption, intro, runtimeCheckpoint, aha, expect, click, type, wait }) {
-  await configureKimi(page);
+  await configureLiveModel(page);
   // Fresh start (idempotent): drop any prior draft so the walkthrough always authors anew.
   await page.request.delete("http://127.0.0.1:38080/v1/config/agents/pr-reviewer").catch(() => {});
 
@@ -35,7 +35,7 @@ export async function run({ page, goto, say, clearCaption, intro, runtimeCheckpo
   const composer = page.getByPlaceholder(/Describe the agent you want|描述你想要的 agent/);
   await type(composer, ASK, { delay: 10 });
   await composer.press("Enter");
-  await say("Live via KIMI — it picks tools and even renames one for the model.", 4200);
+  await say(`Live via ${LIVE_MODEL_LABEL} — it picks tools and even renames one for the model.`, 4200);
 
   // Wait for the assistant to draft (its tool calls persist a real unpublished agent,
   // which surfaces as an Open-in-editor chip below the chat).

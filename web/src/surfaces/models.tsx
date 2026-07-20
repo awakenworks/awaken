@@ -212,6 +212,7 @@ export default function ModelsSurface() {
             <option value="anthropic_messages">anthropic_messages</option>
             <option value="open_ai_chat">open_ai_chat</option>
             <option value="gemini">gemini</option>
+            <option value="vertex_gemini">vertex_gemini</option>
           </SelectField>
           <TextField label="Model id" mono placeholder="model-id" value={draft.model} onChange={(e) => setDraft({ ...draft, model: e.target.value })} />
           <TextField

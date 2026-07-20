@@ -44,7 +44,7 @@ before asking the viewer to learn the architecture.
 | 07 · Isolation | Where and how does it run? | Environments, Native/ACP, sandbox | Protocol, placement, and containment are replaceable config |
 | 08 · Agent control plane | Can every behavior be tuned per Agent? | context, compaction, Memory prompts, reminders, continuation | What the model sees, remembers, and must finish lives together |
 | 09 · Protocol composition | Can I use Managed Agents and MCP directly? | Managed session, environment, ACP, inline MCP, Vault hint | Protocol choices compose at the boundary without changing the Agent |
-| 10 · Skill effect | Can a short goal invoke a repeatable procedure? | Skill upload, Agent binding, live KIMI result | Two words produce the exact specialist result because the procedure travels with the Agent |
+| 10 · Skill effect | Can a short goal invoke a repeatable procedure? | Skill upload, Agent binding, live Gemini result | Two words produce the exact specialist result because the procedure travels with the Agent |
 | 11 · Resource provenance | What did this Session actually receive? | Memory, file, Skill, Agent resources, Session Files | Every mounted input has a type, path, and source id |
 | 12 · Deployment | Can a published Agent become recurring operation? | Deployment, Environment, cron, real Session | One trigger creates and drives an inspectable Session |
 | 13 · Managed API ingress | Does API integration remain operable in the console? | `POST /v1/sessions`, Sessions detail | The API and UI reveal the same governed Session |
@@ -59,7 +59,7 @@ before asking the viewer to learn the architecture.
 | Video | Visible effect that closes the story | Loyalty | Satisfaction | Word of mouth |
 |---|---|---|---|---|
 | 00 · One Agent journey | One configured Agent reaches a Managed session with explicit ACP provenance | A stable mental model makes later workflows feel familiar | The platform breadth is understood through one object, not a feature dump | “One Agent, many realizations” works as the series trailer |
-| 01 · Connect KIMI | A write-only credential produces a real `MODEL READY` response | Secure, repeatable model supply builds operational trust | The viewer knows setup works before leaving the page | Security plus a live answer is an easy proof to share |
+| 01 · Connect Gemini | A gcloud OAuth source produces a real `MODEL READY` response without copying a key | Secure, repeatable model supply builds operational trust | The viewer knows setup works before leaving the page | Secret-free setup plus a live answer is an easy proof to share |
 | 02 · Build specialist | Three PR titles become structured live release notes | A repeatable Draft-to-proof loop invites the next Agent | Auto-save/validate and immediate output reduce friction | The input/output transformation is useful on its own |
 | 03 · Govern tools | A real model calls `bash`; policy denies it before execution | Teams can safely grant more capability over time | Tool identity and denial reason remain visible | Prompt tries, runtime refuses: a memorable trust clip |
 | 04 · Durable Memory | A fresh session recalls a random code from an explicit store | Accumulated value rewards continued use | Randomized recall removes ambiguity about runtime effect | Anyone can repeat the fresh-session proof |
@@ -93,7 +93,7 @@ prove a result; a gated or empty page is not a product payoff.
 
 ## Series groups
 
-- Start: 00–02 — promise, KIMI connection, and the first useful published Agent.
+- Start: 00–02 — promise, Gemini connection, and the first useful published Agent.
 - Control: 03–08 — tools, Memory, AI editing, State Machine, sandbox/ACP, and behavior.
 - Integrate: 09–10, 13, 15, 17–18 — MCP both ways, Managed Agents, A2A, AI SDK, AG-UI, Skills.
 - Operate: 11–12, 14 — provenance, recurring Deployment Sessions, and lifecycle enforcement.
@@ -109,7 +109,7 @@ constraint, not a copywriting omission.
 | Class | Videos | Publication rule |
 |---|---|---|
 | Deterministic platform proof | 00, 03–09, 11, 13–14 | UI/API checkpoints must pass against the release build |
-| Real-model proof | 01, 02, 10, 12, 17 | Requires a live KIMI response; quota/auth diagnostics never ship as marketing footage |
+| Real-model proof | 01, 02, 10, 12, 17 | Requires a live Vertex Gemini response via gcloud OAuth; quota/auth diagnostics never ship as marketing footage |
 | Integration scenario | 15 | Requires a registered and reachable remote A2A delegate |
 | Security scenario | 16, 18 | Requires embedded IAM or the dedicated MCP export bearer |
 | Product-gated | Dashboard, Eval, Datasets, Audit | No video until backend capability and a visible effect exist |
