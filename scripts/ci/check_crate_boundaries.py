@@ -1502,6 +1502,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-skill-store",
         "awaken-admin-assistant",
         "awaken-tenancy",
+        "awaken-iam-client",
         "awaken-provider-genai",
         "awaken-agent-contract",
         "awaken-runtime-contract",

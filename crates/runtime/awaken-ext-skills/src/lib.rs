@@ -18,8 +18,9 @@
 //! References/scripts (tier 3) and authoring are done with the built-in
 //! `read`/`bash`/`write` tools over materialized skill files — no dedicated tool.
 //! The registry ([`SkillRegistry`] / [`InMemorySkillRegistry`]) is the source of
-//! the catalog and the activation body. Sandbox materialization, `allowed_tools`
-//! gating, and conditional activation are later slices.
+//! the catalog and activation body. `allowed_tools` is enforced as a
+//! session-local, monotonic restriction after the platform gate; it never grants
+//! a capability. Full sandbox bundle materialization remains a separate slice.
 
 mod registry;
 mod spec;
@@ -31,7 +32,7 @@ pub use registry::{
 };
 pub use spec::{SkillContext, SkillProvenance, SkillSpec, parse_skill_md};
 pub use tool::{
-    ListSkillsTool, PathActivations, RecordingGate, SKILL_LIST_TOOL_ID, SKILL_TOOL_ID, SkillTool,
-    expand_slash_commands, list_skills_tool_descriptor, render_user_invocation,
-    skill_tool_descriptor,
+    ActiveSkillTools, ListSkillsTool, PathActivations, RecordingGate, SKILL_LIST_TOOL_ID,
+    SKILL_TOOL_ID, SkillAllowedToolsGate, SkillTool, expand_slash_commands,
+    list_skills_tool_descriptor, render_user_invocation, skill_tool_descriptor,
 };

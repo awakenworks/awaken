@@ -49,6 +49,9 @@ awaken-skill-store = { workspace = true }
 awaken-admin-assistant = { workspace = true }
 # The opaque scope id the warm-load + reserved-scope seeding are keyed by.
 awaken-tenancy = { workspace = true }
+# Shared Awaken Cloud login cache; credential acquisition stays in the
+# composition root, outside the authorization/resource services.
+awaken-iam-client = { workspace = true, features = ["credential-cache"] }
 # The live credential probe backing the admin router — the only place the model SDK
 # is named in the composition (mirrors the standalone's GenaiProbe).
 awaken-provider-genai = { workspace = true }

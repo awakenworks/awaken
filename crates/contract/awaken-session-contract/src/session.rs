@@ -178,6 +178,9 @@ pub struct OutcomeReport {
 /// bound to a vault credential's neutral domain id (or none). Consumed by the
 /// server's `ManagedHost` through [`SessionRuntime::prepare_session`].
 pub struct SessionInit {
+    /// Trusted owning workspace resolved by the platform edge before runtime
+    /// preparation. Resource stores never infer or hard-code it.
+    pub workspace_id: String,
     pub agent_id: String,
     pub mcp_servers: Vec<McpServerBinding>,
     /// The session's mounted resources (ADR-0038), parsed from the wire `resources[]`:
@@ -466,6 +469,13 @@ pub trait SessionRuntime: Send + Sync {
     fn capabilities(&self) -> AgentCapabilities {
         AgentCapabilities::default()
     }
+
+    /// The capability surface visible to one prepared session. Runtimes whose
+    /// catalogs are workspace-scoped override this; simple runtimes inherit the
+    /// process-wide view for backwards compatibility.
+    fn capabilities_for(&self, _thread: &str) -> AgentCapabilities {
+        self.capabilities()
+    }
 }
 
 /// A runtime failure. `kind` classifies who is at fault so the router can map it
@@ -661,6 +671,7 @@ mod tests {
 
     fn init() -> SessionInit {
         SessionInit {
+            workspace_id: "ws_test".into(),
             agent_id: "a".into(),
             mcp_servers: Vec::new(),
             resources: Vec::new(),

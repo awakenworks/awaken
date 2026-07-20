@@ -143,10 +143,14 @@ impl ManagedState {
             Some(e) => e.deny_egress(&environment_id).await,
             None => false,
         };
+        let owner_scope = workspace_id
+            .clone()
+            .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
         self.runtime
             .prepare_session(
                 &id,
                 SessionInit {
+                    workspace_id: owner_scope.clone(),
                     agent_id: agent_id.clone(),
                     mcp_servers: bindings,
                     resources,
@@ -170,7 +174,7 @@ impl ManagedState {
         // the run can actually do (built-in toolset, custom tools, skills, delegates),
         // not an empty set. The wire shaping lives in `project`; the host supplies
         // neutral data.
-        let caps = self.runtime.capabilities();
+        let caps = self.runtime.capabilities_for(&id);
         // Fail closed on a custom tool the real Managed API would reject at
         // definition time (charset / reserved `mcp__` prefix / `$ref`·`oneOf` /
         // length), so an invalid tool surfaces here as a 400 instead of silently
@@ -224,9 +228,6 @@ impl ManagedState {
         // rehydrates its real agent/model/title/metadata/MCP, not a placeholder.
         // The core session record is tenancy-agnostic (authz is an edge aspect) —
         // it never stores a workspace/org.
-        let owner_scope = workspace_id
-            .clone()
-            .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
         let created_fact = lifecycle_fact(
             format!("session:{id}:created"),
             &id,
@@ -309,7 +310,7 @@ impl ManagedState {
         id: &str,
         persisted: Option<PersistedSession>,
     ) -> Session {
-        let caps = self.runtime.capabilities();
+        let caps = self.runtime.capabilities_for(id);
         let (agent_id, model, environment_id, title, metadata, mcp_servers, status, archived_at) =
             match persisted {
                 Some(p) => (

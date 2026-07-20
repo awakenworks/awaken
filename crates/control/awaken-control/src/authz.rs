@@ -15,23 +15,19 @@
 //!
 //! **Bootstrap contract.** On first boot over an empty token directory a
 //! single `admin`-role token is minted for the service principal
-//! `mgmt-bootstrap` in workspace `wrkspc_default`, logged once to stderr with
+//! `mgmt-bootstrap` in workspace `wrkspc_default` under the hidden local Org,
+//! logged once to stderr with
 //! a rotate-me warning, and written to `<dir>/admin-token`. That file is the
 //! single-machine operator hand-off; rotate by minting a successor admin token
 //! through `POST /v1/config/iam/tokens` and revoking the bootstrap token
 //! through `DELETE /v1/config/iam/tokens/{id}` (or from an embedding via
 //! [`ManagementAuthz::mint_service_token`]).
 //!
-//! **Bootstrap scope.** The mint path writes the bootstrap principal's `admin`
-//! role binding at `Workspace { wrkspc_default }` — which alone could not
-//! administer any *other* workspace, defeating a bootstrap credential. So boot
-//! additionally binds the bootstrap principal's `admin` role at
-//! [`ScopeRef::Global`]: in the scope graph, `Global` is an ancestor of every
-//! workspace scope, so the global binding lets the bootstrap credential
-//! provision per-workspace tokens for ANY workspace through the token routes
-//! and then be revoked. The binding persists in the SqlStore as a real
-//! `ScopeRef::Global` row and is ensured idempotently on every boot, so
-//! existing installs bootstrapped before this fix gain it on their next start.
+//! **Bootstrap scope.** The platform registers exactly `Org -> Workspace` in
+//! the scope graph and binds the bootstrap principal at that Org. The Org is a
+//! hidden default in single-machine mode (or an explicit platform coordinate),
+//! while Workspace remains the finest Runtime authorization scope. A project
+//! id may appear in resource routes but never becomes an IAM scope.
 //!
 //! **Token management surface.** `POST /v1/config/iam/tokens` mints a
 //! workspace token (the cleartext is returned EXACTLY once, alongside the
@@ -77,8 +73,8 @@
 //! `iam_role_binding` tables, kept while iam-server's rusqlite pin was
 //! links-incompatible) are imported once at boot and the legacy tables renamed.
 //!
-//! **What P1 defers**: custom roles, org-level scopes, group rosters,
-//! entitlements, and approval discharge.
+//! **What P1 defers**: custom roles, group rosters, entitlements, and approval
+//! discharge.
 //!
 //! **iam-host (ADR-0048) — `IamGate` is the PDP; the guard is the Managed PEP.**
 //! authn and authz run through iam-host's [`IamGate`] (rev `9aa91e1`), the single
@@ -111,17 +107,23 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use awaken_iam_contract::{
-    ActionKey, ApiToken, ApiTokenId, AuthorizationDecision, AuthorizationRequest, PrincipalRef,
-    ScopeRef, Timestamp, WorkspaceId,
+    ActionKey, ActionScopeRule, ActivateAuthorizationProfile, ApiToken, ApiTokenId,
+    AuthorizationDecision, AuthorizationProfileDocument, AuthorizationRequest,
+    CreateAuthorizationProfile, GrantEffect, GrantSnapshot, GrantSubjectRef, NamespaceId, OrgId,
+    PrincipalRef, ResourceModelRegistration, ScopeKind, ScopeRef, Timestamp, WorkspaceId,
 };
 use awaken_iam_core::{
-    ApiTokenDirectory, ApiTokenMinter, Effect, EntropySource, Grant, GrantId, GrantSubject,
-    IamError, IssuedApiToken, OsEntropy, RoleBinding, RoleId,
+    ApiTokenDirectory, ApiTokenMinter, EntropySource, IamError, IssuedApiToken, OsEntropy,
+    RoleBinding, RoleId,
 };
 use awaken_iam_core::{ApiTokenRepo, RoleBindingRepo};
-use awaken_iam_host::{AuthReject, IamClient, IamGate, LocalIamState};
+#[cfg(test)]
+use awaken_iam_core::{Effect, Grant, GrantId, GrantSubject};
+use awaken_iam_host::{AuthReject, HostConfig, IamClient, IamGate, LocalIamState, connect_remote};
 use awaken_iam_preset::{named_role_catalog, seed_named_roles};
-use awaken_iam_server::{AuthzApi, SqlStore, SqliteBackend, sqlite_migrated_store};
+use awaken_iam_server::{
+    AuthorizationProfileAdmin, AuthzApi, SqlStore, SqliteBackend, sqlite_migrated_store,
+};
 use awaken_protocol_managed::types::ErrorResponse;
 use axum::body::Body;
 use axum::extract::{Query, Request, State};
@@ -137,6 +139,10 @@ pub const ADMIN_TOKEN_FILE: &str = "admin-token";
 
 /// Workspace the bootstrap admin token is bound to.
 pub const BOOTSTRAP_WORKSPACE: &str = "wrkspc_default";
+
+/// Hidden Org used by a single-machine installation unless the platform
+/// supplies `AWAKEN_ORG_ID`. It is a parent coordinate, not a UI concept.
+pub const DEFAULT_ORG_ID: &str = "org_default";
 
 /// Service principal id of the bootstrap admin token.
 pub const BOOTSTRAP_PRINCIPAL: &str = "mgmt-bootstrap";
@@ -162,6 +168,25 @@ const WORKSPACE_READ: &str = "workspace.read";
 const WORKSPACE_WRITE: &str = "workspace.write";
 const APIKEY_READ: &str = "apikey.read";
 const APIKEY_WRITE: &str = "apikey.write";
+const MANAGEMENT_POLICY_NAMESPACE: &str = "awaken.runtime.management";
+
+fn qualify_action(action: &str) -> ActionKey {
+    ActionKey::in_namespace(&NamespaceId(MANAGEMENT_POLICY_NAMESPACE.to_owned()), action)
+}
+
+fn qualify_role(role: &str) -> RoleId {
+    let prefix = format!("{MANAGEMENT_POLICY_NAMESPACE}:");
+    if role.starts_with(&prefix) {
+        RoleId(role.to_owned())
+    } else {
+        RoleId(format!("{prefix}{role}"))
+    }
+}
+
+fn local_role(role: &str) -> &str {
+    role.strip_prefix(&format!("{MANAGEMENT_POLICY_NAMESPACE}:"))
+        .unwrap_or(role)
+}
 
 /// The embedded management-plane authorizer: authn (bearer token → principal)
 /// and authz (principal × action × workspace scope → decision), with its
@@ -181,6 +206,77 @@ pub struct ManagementAuthz {
     /// iam-server's repository adapter over `<dir>/iam.sqlite` (tokens,
     /// bindings, role defs — its schema, its migration ledger).
     store: SqlStore<SqliteBackend>,
+}
+
+/// Remote awaken-iam relying-party adapter for a locally running management
+/// plane. The cached user token authenticates local single-user requests and,
+/// unless a separate service credential is configured, the remote PDP call.
+pub struct RemoteManagementAuthz {
+    gate: IamGate,
+    user_token: String,
+}
+
+/// User-selectable identity posture for the local product.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagementIdentityMode {
+    /// Single-user local operation without login.
+    NoLogin,
+    /// Awaken Cloud account, reused by the local process.
+    AwakenCloud,
+    /// Separately configured embedded/self-managed IAM.
+    SelfManaged,
+}
+
+impl ManagementIdentityMode {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "none" | "no-login" => Some(Self::NoLogin),
+            "cloud" | "awaken-cloud" => Some(Self::AwakenCloud),
+            "embedded" | "local" | "self-managed" => Some(Self::SelfManaged),
+            _ => None,
+        }
+    }
+}
+
+impl RemoteManagementAuthz {
+    /// Connect to the authoritative IAM service and fetch its JWKS. Startup is
+    /// fail-closed when no cloud credential or trust anchor is available.
+    pub fn connect(
+        base_url: String,
+        audience: String,
+        issuer: String,
+        user_token: String,
+        service_token: Option<String>,
+    ) -> Result<Arc<Self>, String> {
+        let mut config = HostConfig::remote(base_url)
+            .with_audience(audience)
+            .with_issuer(issuer);
+        config.service_token = Some(service_token.unwrap_or_else(|| user_token.clone()));
+        let handle = connect_remote(&config).map_err(|error| error.to_string())?;
+        Ok(Arc::new(Self {
+            gate: handle.gate,
+            user_token,
+        }))
+    }
+
+    fn authenticate(&self, presented: Option<String>) -> Result<PrincipalRef, AuthReject> {
+        let token = presented.as_deref().unwrap_or(&self.user_token);
+        self.gate
+            .authenticate_detailed(token, &Timestamp(now_rfc3339()), now_unix())
+            .map(|(principal, _)| principal)
+    }
+
+    fn authorize(
+        &self,
+        principal: PrincipalRef,
+        action: &str,
+        scope: ScopeRef,
+    ) -> AuthorizationDecision {
+        IamClient::authorize(
+            &self.gate,
+            AuthorizationRequest::direct(principal, qualify_action(action), scope),
+        )
+    }
 }
 
 /// A mint request for a workspace-scoped service token (operator embeddings
@@ -220,7 +316,7 @@ impl ManagementAuthz {
             id: ApiTokenId(spec.token_id),
             principal: principal.clone(),
             workspace: WorkspaceId(spec.workspace_id.clone()),
-            role: RoleId(spec.role.clone()),
+            role: qualify_role(&spec.role),
             created_at: Timestamp(spec.created_at.unwrap_or_else(now_rfc3339)),
             expires_at: spec.expires_at.map(Timestamp),
         };
@@ -238,7 +334,7 @@ impl ManagementAuthz {
             &self.store,
             RoleBinding {
                 principal,
-                role: RoleId(spec.role),
+                role: qualify_role(&spec.role),
                 scope: ScopeRef::Workspace {
                     workspace_id: WorkspaceId(spec.workspace_id),
                 },
@@ -327,7 +423,7 @@ impl ManagementAuthz {
                 matches!(&b.scope, ScopeRef::Workspace { workspace_id } if workspace_id == &token.workspace)
             })
             .or_else(|| bindings.first())
-            .map(|b| b.role.0.clone())
+            .map(|b| local_role(&b.role.0).to_owned())
     }
 
     /// The persisted mint-time role of token `id`, when derivable.
@@ -360,15 +456,9 @@ impl ManagementAuthz {
         &self,
         principal: PrincipalRef,
         action: &str,
-        workspace: WorkspaceId,
+        scope: ScopeRef,
     ) -> AuthorizationDecision {
-        let request = AuthorizationRequest::direct(
-            principal,
-            ActionKey(action.to_string()),
-            ScopeRef::Workspace {
-                workspace_id: workspace,
-            },
-        );
+        let request = AuthorizationRequest::direct(principal, qualify_action(action), scope);
         self.gate.authorize(request)
     }
 }
@@ -382,6 +472,23 @@ impl ManagementAuthz {
 /// management server that silently came up open would be worse than one that
 /// refuses to start.
 pub fn embedded_iam(dir: &Path) -> Arc<ManagementAuthz> {
+    embedded_iam_for_tenant(dir, DEFAULT_ORG_ID, BOOTSTRAP_WORKSPACE)
+}
+
+/// Open embedded IAM for the platform-provisioned local Workspace. Production
+/// composition roots use this entry point so IAM bootstrap authority and
+/// resource ownership share one durable coordinate rather than a compiled id.
+pub fn embedded_iam_for_workspace(dir: &Path, workspace_id: &str) -> Arc<ManagementAuthz> {
+    embedded_iam_for_tenant(dir, DEFAULT_ORG_ID, workspace_id)
+}
+
+/// Open embedded IAM for the platform-owned `Org -> Workspace` coordinates.
+/// Runtime deliberately has no Project authorization scope.
+pub fn embedded_iam_for_tenant(
+    dir: &Path,
+    org_id: &str,
+    workspace_id: &str,
+) -> Arc<ManagementAuthz> {
     std::fs::create_dir_all(dir).expect("create AWAKEN_MGMT_DIR for embedded IAM");
     let db_path = dir.join("iam.sqlite");
     import_legacy_layout(&db_path);
@@ -394,46 +501,134 @@ pub fn embedded_iam(dir: &Path) -> Arc<ManagementAuthz> {
     let now = Timestamp(now_rfc3339());
     seed_named_roles(&store, &now).expect("seed the preset role catalog");
 
-    // Bootstrap scope fix (module doc): ensure the bootstrap principal's
-    // `admin` role is bound at Global — without it the bootstrap credential
-    // could only administer wrkspc_default and could not provision tokens for
-    // any other workspace. `RoleBindingRepo::add` is idempotent, and the row is
-    // written before hydration so the loop below binds it into the live
-    // policy. It is inert unless a live token authenticates as the bootstrap
-    // principal, so re-ensuring it after the bootstrap token is revoked grants
-    // nothing.
+    // Single-machine Runtime has one hidden Org and one platform-provisioned
+    // Workspace. Bind bootstrap authority at the Org (never Global) so it can
+    // reach registered child workspaces but cannot escape the product tenant.
+    let legacy_global_bootstrap = RoleBinding {
+        principal: PrincipalRef::Service {
+            service_id: BOOTSTRAP_PRINCIPAL.to_string(),
+        },
+        role: qualify_role("admin"),
+        scope: ScopeRef::Global,
+    };
+    if RoleBindingRepo::list(&store)
+        .expect("list bindings before bootstrap scope migration")
+        .contains(&legacy_global_bootstrap)
+    {
+        RoleBindingRepo::remove(&store, &legacy_global_bootstrap)
+            .expect("remove legacy global bootstrap binding");
+    }
     RoleBindingRepo::add(
         &store,
         RoleBinding {
             principal: PrincipalRef::Service {
                 service_id: BOOTSTRAP_PRINCIPAL.to_string(),
             },
-            role: RoleId("admin".to_string()),
-            scope: ScopeRef::Global,
+            role: qualify_role("admin"),
+            scope: ScopeRef::Org {
+                org_id: OrgId(org_id.to_owned()),
+            },
         },
     )
-    .expect("ensure the bootstrap principal's global admin binding");
+    .expect("ensure the bootstrap principal's org admin binding");
 
     let mut directory = ApiTokenDirectory::new();
     let mut engine = AuthzApi::new();
-    let policy = engine.policy_mut();
 
     // The preset Anthropic role catalog, as data: every role's action patterns
     // become `GrantSubject::Role` grants at Global scope. Global here is NOT a
     // wildcard of authority — a principal only *holds* a role where its
     // workspace-scoped RoleBinding covers, so the binding confines the reach.
     // Re-derived every boot (roles are seed data; custom roles are post-P1).
+    let mut profile_grants = Vec::new();
     for role in named_role_catalog(&now) {
         for (index, pattern) in role.action_patterns.iter().enumerate() {
-            policy.add_grant(Grant {
-                id: GrantId(format!("role:{}:{index}", role.id.0)),
-                subject: GrantSubject::Role(role.id.clone()),
-                action_pattern: pattern.clone(),
+            if !(pattern.0.starts_with("workspace.") || pattern.0.starts_with("apikey.")) {
+                continue;
+            }
+            profile_grants.push(GrantSnapshot {
+                id: format!(
+                    "{MANAGEMENT_POLICY_NAMESPACE}:grant:role:{}:{index}",
+                    role.id.0
+                ),
+                subject: GrantSubjectRef::Role {
+                    role_id: qualify_role(&role.id.0).0,
+                },
+                action_pattern: qualify_action(&pattern.0).0,
                 scope: ScopeRef::Global,
-                effect: Effect::Allow,
+                effect: GrantEffect::Allow,
             });
         }
     }
+
+    let profile_store = sqlite_migrated_store(
+        SqliteBackend::open_path(&db_path).expect("reopen iam.sqlite for profile PAP"),
+        "iam",
+    )
+    .expect("migrate authorization profile store");
+    let profiles = AuthorizationProfileAdmin::new(Arc::new(profile_store));
+    let namespace = NamespaceId(MANAGEMENT_POLICY_NAMESPACE.to_owned());
+    if profiles
+        .active(&namespace)
+        .expect("read active management profile")
+        .is_some()
+    {
+        profiles
+            .hydrate(&mut engine, &namespace)
+            .expect("hydrate active management profile");
+    } else {
+        let patterns = ["workspace.*", "apikey.*"];
+        let draft = profiles
+            .create_draft(CreateAuthorizationProfile {
+                namespace: namespace.clone(),
+                document: AuthorizationProfileDocument {
+                    resource_model: ResourceModelRegistration {
+                        actions: patterns
+                            .iter()
+                            .map(|pattern| qualify_action(pattern))
+                            .collect(),
+                        ..ResourceModelRegistration::default()
+                    },
+                    action_scope_rules: vec![
+                        ActionScopeRule {
+                            action_pattern: qualify_action("workspace.*").0,
+                            allowed_scope_kinds: vec![ScopeKind::Workspace],
+                        },
+                        ActionScopeRule {
+                            action_pattern: qualify_action("apikey.*").0,
+                            allowed_scope_kinds: vec![ScopeKind::Workspace],
+                        },
+                    ],
+                    grants: profile_grants,
+                    ..AuthorizationProfileDocument::default()
+                },
+                created_at: now.clone(),
+            })
+            .expect("create built-in management profile");
+        let validation = profiles
+            .validate(&namespace, draft.revision)
+            .expect("validate built-in management profile");
+        assert!(
+            validation.valid,
+            "invalid built-in management profile: {:?}",
+            validation.errors
+        );
+        profiles
+            .activate(
+                &mut engine,
+                &namespace,
+                draft.revision,
+                ActivateAuthorizationProfile {
+                    expected_active_revision: None,
+                },
+            )
+            .expect("activate built-in management profile");
+    }
+
+    engine.policy_mut().scope_graph_mut().assign_workspace(
+        WorkspaceId(workspace_id.to_owned()),
+        OrgId(org_id.to_owned()),
+    );
 
     // Hydrate the durable rows into the in-memory evaluator (it is never
     // auto-hydrated): bindings into the policy, and — since `ApiTokenRepo` has
@@ -452,7 +647,11 @@ pub fn embedded_iam(dir: &Path) -> Arc<ManagementAuthz> {
                 hydrated_tokens += 1;
             }
         }
-        engine.policy_mut().bind_role(binding);
+        engine.policy_mut().bind_role(RoleBinding {
+            principal: binding.principal,
+            role: qualify_role(&binding.role.0),
+            scope: binding.scope,
+        });
     }
 
     // One lock over the authz engine + token directory, wrapped as the gate's
@@ -466,7 +665,7 @@ pub fn embedded_iam(dir: &Path) -> Arc<ManagementAuthz> {
     let authz = Arc::new(ManagementAuthz { state, gate, store });
 
     if hydrated_tokens == 0 {
-        bootstrap_admin_token(&authz, dir);
+        bootstrap_admin_token(&authz, dir, workspace_id);
     }
     authz
 }
@@ -566,12 +765,12 @@ fn import_legacy_layout(db_path: &Path) {
 /// First-boot bootstrap: mint the one `admin`-role token the operator starts
 /// from, log its cleartext once to stderr, and write it to `<dir>/admin-token`
 /// (mode 0600). Single-machine hand-off by design (P1); rotate it early.
-fn bootstrap_admin_token(authz: &ManagementAuthz, dir: &Path) {
+fn bootstrap_admin_token(authz: &ManagementAuthz, dir: &Path, workspace_id: &str) {
     let secret = authz
         .mint_service_token(TokenSpec {
             token_id: "tok_mgmt_bootstrap".to_string(),
             service_id: BOOTSTRAP_PRINCIPAL.to_string(),
-            workspace_id: BOOTSTRAP_WORKSPACE.to_string(),
+            workspace_id: workspace_id.to_string(),
             role: "admin".to_string(),
             created_at: None,
             expires_at: None,
@@ -581,7 +780,7 @@ fn bootstrap_admin_token(authz: &ManagementAuthz, dir: &Path) {
     write_owner_only(&path, &secret).expect("write the bootstrap admin-token file");
     eprintln!(
         "awaken-server: EMBEDDED IAM BOOTSTRAP — minted the admin API token \
-         for principal `{BOOTSTRAP_PRINCIPAL}` in workspace `{BOOTSTRAP_WORKSPACE}`.\n\
+         for principal `{BOOTSTRAP_PRINCIPAL}` in workspace `{workspace_id}`.\n\
          It is printed ONCE and written to {} (mode 0600).\n\
          ROTATE IT: anyone holding this token has full management authority.\n\
          {secret}",
@@ -609,7 +808,10 @@ fn write_owner_only(path: &Path, contents: &str) -> std::io::Result<()> {
 enum RouteAuthz {
     /// The default: fence any named `workspace_id` against the token's
     /// workspace, then authorize this action at the token's workspace scope.
-    Scoped(&'static str),
+    Scoped {
+        action: &'static str,
+        scope: ScopeClass,
+    },
     /// The `/v1/config/iam/tokens*` family: the guard authenticates and stamps
     /// the principal on the request; the handler authorizes `apikey.*` at the
     /// TARGET workspace (body/query for mint/list, the token's own workspace
@@ -617,6 +819,13 @@ enum RouteAuthz {
     /// cross-workspace reach. Fail-closed both ways: the handler 401s without
     /// the stamp, and these routes are only mounted when the guard is on.
     TokenAdmin,
+}
+
+/// Resource classes whose target scope is centrally defined by the IAM resource
+/// model. Route handlers never choose a scope ad hoc.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScopeClass {
+    Workspace,
 }
 
 /// The authenticated principal the guard stamps on a [`RouteAuthz::TokenAdmin`]
@@ -655,8 +864,8 @@ pub async fn management_guard(
         Err(AuthReject::Invalid) => return unauthorized("invalid API token"),
     };
 
-    let action = match route {
-        RouteAuthz::Scoped(action) => action,
+    let (action, scope_class) = match route {
+        RouteAuthz::Scoped { action, scope } => (action, scope),
         RouteAuthz::TokenAdmin => {
             // Delegated authorization: no equality fence here — the handler
             // evaluates apikey.* at the TARGET workspace, and the scope graph
@@ -717,7 +926,11 @@ pub async fn management_guard(
     req.extensions_mut()
         .insert(awaken_tenancy::WorkspaceScope(workspace.0.clone()));
 
-    match authz.authorize(principal, action, workspace) {
+    let Some(target_scope) = target_scope(scope_class, &workspace.0, req.uri().path()) else {
+        return forbidden("the route has no resolvable authorization target");
+    };
+
+    match authz.authorize(principal, action, target_scope) {
         AuthorizationDecision::Allow => next.run(req).await,
         // P1 has no approval flow to discharge the obligation, so an
         // approval-gated action is refused with its own message (documented).
@@ -727,6 +940,72 @@ pub async fn management_guard(
         AuthorizationDecision::Deny => {
             forbidden("the API token's role does not authorize this action")
         }
+    }
+}
+
+/// Management PEP for Awaken Cloud identity. The request's explicit bearer
+/// overrides the cached single-user login. Scope comes only from trusted edge
+/// resolution; a missing scope is denied instead of falling back to a compiled
+/// workspace constant.
+pub async fn cloud_management_guard(
+    State(authz): State<Arc<RemoteManagementAuthz>>,
+    mut req: Request,
+    next: Next,
+) -> Response {
+    let Some(route) = action_for(req.method(), req.uri().path()) else {
+        return forbidden("no management action is mapped for this route");
+    };
+    let RouteAuthz::Scoped {
+        action,
+        scope: scope_class,
+    } = route
+    else {
+        return forbidden("API-token administration belongs to self-managed IAM");
+    };
+
+    let principal = match authz.authenticate(bearer_token(req.headers())) {
+        Ok(principal) => principal,
+        Err(AuthReject::Expired) => return unauthorized("cloud access token is expired"),
+        Err(AuthReject::Revoked) => return unauthorized("cloud access token is revoked"),
+        Err(AuthReject::Invalid) => return unauthorized("invalid cloud access token"),
+    };
+    let workspace = req
+        .extensions()
+        .get::<awaken_authz_enforce::RequestTenancy>()
+        .map(|scope| scope.workspace_id.clone())
+        .or_else(|| {
+            req.extensions()
+                .get::<awaken_tenancy::WorkspaceScope>()
+                .map(|scope| scope.0.clone())
+        });
+    let Some(workspace) = workspace else {
+        return forbidden("no trusted workspace context was resolved");
+    };
+
+    let Some(target_scope) = target_scope(scope_class, &workspace, req.uri().path()) else {
+        return forbidden("the route has no resolvable authorization target");
+    };
+    let authz_for_pdp = authz.clone();
+    let principal_for_pdp = principal.clone();
+    let decision = match tokio::task::spawn_blocking(move || {
+        authz_for_pdp.authorize(principal_for_pdp, action, target_scope)
+    })
+    .await
+    {
+        Ok(decision) => decision,
+        Err(_) => return forbidden("cloud IAM authorization transport failed"),
+    };
+    match decision {
+        AuthorizationDecision::Allow => {
+            req.extensions_mut().insert(principal);
+            req.extensions_mut()
+                .insert(awaken_tenancy::WorkspaceScope(workspace));
+            next.run(req).await
+        }
+        AuthorizationDecision::RequireApproval => {
+            forbidden("this action requires approval and was not executed")
+        }
+        AuthorizationDecision::Deny => forbidden("cloud IAM denied this action"),
     }
 }
 
@@ -771,7 +1050,12 @@ fn query_workspace_id(query: Option<&str>) -> Option<String> {
 /// authorization in the handler).
 fn action_for(method: &Method, path: &str) -> Option<RouteAuthz> {
     let read = *method == Method::GET;
-    let scoped = |action| Some(RouteAuthz::Scoped(action));
+    let scoped = |action| {
+        Some(RouteAuthz::Scoped {
+            action,
+            scope: ScopeClass::Workspace,
+        })
+    };
     let segments: Vec<&str> = path.trim_start_matches('/').split('/').collect();
     match segments.as_slice() {
         // -- catalog (providers / endpoints / offerings / snapshot) --
@@ -924,6 +1208,17 @@ fn action_for(method: &Method, path: &str) -> Option<RouteAuthz> {
             "ack" | "heartbeat" | "stop",
         ] if !read => scoped(WORKSPACE_WRITE),
         _ => None,
+    }
+}
+
+/// Resolve the concrete IAM target from one centrally classified resource
+/// family. Runtime authorization intentionally stops at Workspace; project ids
+/// remain resource data and never become an IAM scope.
+fn target_scope(class: ScopeClass, workspace: &str, _path: &str) -> Option<ScopeRef> {
+    match class {
+        ScopeClass::Workspace => Some(ScopeRef::Workspace {
+            workspace_id: WorkspaceId(workspace.to_string()),
+        }),
     }
 }
 
@@ -1091,7 +1386,13 @@ fn authorize_at_target(
     action: &str,
     workspace_id: &str,
 ) -> Option<Response> {
-    match authz.authorize(principal, action, WorkspaceId(workspace_id.to_string())) {
+    match authz.authorize(
+        principal,
+        action,
+        ScopeRef::Workspace {
+            workspace_id: WorkspaceId(workspace_id.to_string()),
+        },
+    ) {
         AuthorizationDecision::Allow => None,
         AuthorizationDecision::RequireApproval => Some(forbidden(
             "this action requires approval, which the embedded P1 plane cannot grant",
@@ -1286,6 +1587,13 @@ fn now_rfc3339() -> String {
         (rem / 60) % 60,
         rem % 60
     )
+}
+
+fn now_unix() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// Days since 1970-01-01 → (year, month, day). Howard Hinnant's public-domain

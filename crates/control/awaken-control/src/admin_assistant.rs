@@ -153,22 +153,22 @@ impl CapabilityReader for CatalogCapabilityReader {
 pub struct HostResourceInventory {
     memory: Arc<dyn MemoryStoreRegistry>,
     skills: Arc<dyn awaken_skill_store::SkillStore>,
-    /// The workspace the single-catalog host addresses its skills under (mirrors the
-    /// host's `HOST_SKILL_WORKSPACE`, the default scope).
+    /// Platform-provisioned workspace used to address the skill catalog.
     skill_workspace: String,
 }
 
 impl HostResourceInventory {
-    /// Build the inventory from the two live handles (the memory-store identity registry
-    /// and the skill store), scoped to the default workspace.
+    /// Build the inventory from the two live handles and an edge-provisioned
+    /// workspace coordinate. The adapter never invents a tenant.
     pub fn new(
         memory: Arc<dyn MemoryStoreRegistry>,
         skills: Arc<dyn awaken_skill_store::SkillStore>,
+        skill_workspace: impl Into<String>,
     ) -> Self {
         Self {
             memory,
             skills,
-            skill_workspace: DEFAULT_SCOPE.to_string(),
+            skill_workspace: skill_workspace.into(),
         }
     }
 }
@@ -180,6 +180,7 @@ impl ResourceInventory for HostResourceInventory {
         self.memory
             .list_memory_stores()
             .into_iter()
+            .filter(|def| def.workspace_id == self.skill_workspace)
             .map(|d| d.id)
             .collect()
     }
@@ -635,6 +636,7 @@ mod tests {
         let registry = Arc::new(InMemoryMemoryStoreRegistry::new());
         registry.put_memory_store(MemoryStoreDef {
             id: "mem-1".into(),
+            workspace_id: DEFAULT_SCOPE.into(),
             name: "Prefs".into(),
             description: String::new(),
             metadata: std::collections::BTreeMap::new(),
@@ -643,6 +645,7 @@ mod tests {
         // An archived store must NOT be enumerated.
         registry.put_memory_store(MemoryStoreDef {
             id: "mem-gone".into(),
+            workspace_id: DEFAULT_SCOPE.into(),
             name: "Old".into(),
             description: String::new(),
             metadata: std::collections::BTreeMap::new(),
@@ -651,7 +654,7 @@ mod tests {
         let skills = Arc::new(InMemorySkillStore::new());
         skills.put(DEFAULT_SCOPE, "greet", "# greet").await.unwrap();
 
-        let inv = HostResourceInventory::new(registry, skills);
+        let inv = HostResourceInventory::new(registry, skills, DEFAULT_SCOPE);
         assert_eq!(inv.memory_stores().await, vec!["mem-1".to_string()]);
         assert_eq!(inv.skills().await, vec!["greet".to_string()]);
     }
