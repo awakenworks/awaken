@@ -46,11 +46,13 @@ before asking the viewer to learn the architecture.
 | 09 · Protocol composition | Can I use Managed Agents and MCP directly? | Managed session, environment, ACP, inline MCP, Vault hint | Protocol choices compose at the boundary without changing the Agent |
 | 10 · Skill effect | Can a short goal invoke a repeatable procedure? | Skill upload, Agent binding, live KIMI result | Two words produce the exact specialist result because the procedure travels with the Agent |
 | 11 · Resource provenance | What did this Session actually receive? | Memory, file, Skill, Agent resources, Session Files | Every mounted input has a type, path, and source id |
-| 12 · Deployment | Can a published Agent become recurring operation? | Deployment, Environment, cron, run receipt | One trigger creates an auditable deployment-run identity |
+| 12 · Deployment | Can a published Agent become recurring operation? | Deployment, Environment, cron, real Session | One trigger creates and drives an inspectable Session |
 | 13 · Managed API ingress | Does API integration remain operable in the console? | `POST /v1/sessions`, Sessions detail | The API and UI reveal the same governed Session |
 | 14 · Session lifecycle | Can an operator close work without deleting evidence? | Interrupt receipt, archive, rejected write | Archive stays inspectable and becomes an enforced read-only boundary |
-| 15 · A2A discovery | Can I inspect a remote Agent before delegation? | Delegate lookup, remote Agent Card | The platform discovers a published contract instead of guessing |
+| 15 · A2A discovery | Can peers discover each other before delegation? | Local well-known Card, inbound endpoints, remote Card lookup | A2A discovery is symmetric and contract-driven |
 | 16 · Access boundary | Can integration access be scoped and revoked? | Client token issue, protected read, revoke | The same credential moves visibly from allowed to denied |
+| 17 · Frontend protocols | Can AI SDK and AG-UI share one Agent? | Protocol guide, AI SDK stream, AG-UI stream, shared history | Two framework protocols commit to one durable thread |
+| 18 · MCP server export | Can existing MCP clients control Awaken? | `/v1/mcp`, bearer handshake, explicit tool catalog | Awaken is both an MCP consumer and a protected MCP server |
 
 ## Customer relationship and sharing objective by story
 
@@ -68,11 +70,13 @@ before asking the viewer to learn the architecture.
 | 09 · Protocol composition | Creating the session shows ACP runtime while MCP/Vault stay boundary config | Protocol evolution does not invalidate Agents | One form makes ownership and composition explicit | The unchanged-Agent architecture is easy to explain peer-to-peer |
 | 10 · Skill effect | A two-word request returns `SKILL READY` through a bound Skill | Reusable procedure compounds across Agents | Users stop repeating operational detail | The tiny-input/precise-output contrast is inherently shareable |
 | 11 · Resource provenance | Session Files exposes Memory, file, and Skill mounts | Reusable knowledge stays transparent | One view answers “what did it receive?” | Security teams can inspect the proof without narration |
-| 12 · Deployment | A schedule persists and Run returns a visible receipt | Recurring work makes Awaken part of operations | Immediate receipt removes click uncertainty | Chat becoming scheduled operation signals production value |
+| 12 · Deployment | A schedule launches a Session whose Agent output is inspectable | Recurring work makes Awaken part of operations | Output plus linked Session removes click uncertainty | Chat becoming scheduled operation signals production value |
 | 13 · Managed API ingress | An API-created Session appears unchanged in the console | Stable wire objects protect integration investment | Developers and operators share one source of truth | The API-to-console handoff is easy to demonstrate |
 | 14 · Session lifecycle | Interrupt is acknowledged; archive rejects every later write | Enforced lifecycle boundaries earn trust | Receipt plus archived state removes ambiguity | Operations teams see concise fail-closed governance proof |
 | 15 · A2A discovery | A real remote Agent Card appears with protocol and capability data | Standards-based discovery preserves portability | Connection diagnosis is immediate | Cross-platform interoperability becomes visible evidence |
 | 16 · Access boundary | A scoped token works, is revoked, then fails closed | Reliable revocation supports durable enterprise use | One-time copy plus denial test removes ambiguity | Allowed-to-denied is a concise governance proof |
+| 17 · Frontend protocols | AI SDK and AG-UI both expose the same committed history | Framework changes do not strand Agents | Built-in paths and shared history shorten integration diagnosis | Cross-framework continuity is directly reproducible |
+| 18 · MCP server export | Authenticated discovery returns only explicit management tools | Standard clients preserve integration investment | Opt-in enablement and a dedicated bearer are unambiguous | Bidirectional MCP is a memorable platform proof |
 
 Loyalty comes from accumulated value and predictable control; satisfaction comes from
 short time-to-proof and actionable failures; advocacy comes from a visually obvious
@@ -87,14 +91,27 @@ Dashboard, Eval, Datasets, and Audit remain in the UI smoke inventory only while
 routes are gated. They enter the series after the backend is enabled and a recording can
 prove a result; a gated or empty page is not a product payoff.
 
+## Series groups
+
+- Start: 00–02 — promise, KIMI connection, and the first useful published Agent.
+- Control: 03–08 — tools, Memory, AI editing, State Machine, sandbox/ACP, and behavior.
+- Integrate: 09–10, 13, 15, 17–18 — MCP both ways, Managed Agents, A2A, AI SDK, AG-UI, Skills.
+- Operate: 11–12, 14 — provenance, recurring Deployment Sessions, and lifecycle enforcement.
+- Govern: 16 — issue, scope, and revoke access.
+
+The release still has no publishable closed-loop story for Dashboard, Eval, Datasets,
+Audit, Webhooks, self-hosted worker placement, or data-subject erasure. Keep them out
+until their UI can create an effect and inspect the result. This is a release-truth
+constraint, not a copywriting omission.
+
 ## Release matrix
 
 | Class | Videos | Publication rule |
 |---|---|---|
-| Deterministic platform proof | 00, 03–09, 11–14 | UI/API checkpoints must pass against the release build |
-| Real-model proof | 01, 02, 10 | Requires a live KIMI response; quota/auth diagnostics never ship as marketing footage |
+| Deterministic platform proof | 00, 03–09, 11, 13–14 | UI/API checkpoints must pass against the release build |
+| Real-model proof | 01, 02, 10, 12, 17 | Requires a live KIMI response; quota/auth diagnostics never ship as marketing footage |
 | Integration scenario | 15 | Requires a registered and reachable remote A2A delegate |
-| Security scenario | 16 | Requires embedded IAM and an administrator recording token |
+| Security scenario | 16, 18 | Requires embedded IAM or the dedicated MCP export bearer |
 | Product-gated | Dashboard, Eval, Datasets, Audit | No video until backend capability and a visible effect exist |
 
 ## Copy and interaction rules
