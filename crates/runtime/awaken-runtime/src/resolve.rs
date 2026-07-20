@@ -2,8 +2,8 @@
 //!
 //! Resolution is the runtime's fail-closed gate (G4/G22). Both execution inputs
 //! — an inline `ExecutableAgentSnapshot` and an `ExecutableAgentSnapshotId` —
-//! converge here through [`Runtime::load_snapshot`] and are validated against
-//! the active catalog fingerprint before any model call (G28).
+//! converge here through [`Runtime::load_snapshot`] and are validated for
+//! content-address consistency before any model call (G28).
 
 use awaken_runtime_contract::resolved::ResolvedRun;
 use awaken_runtime_contract::resolver::{
@@ -32,12 +32,12 @@ impl Runtime {
 
 impl RunResolver for Runtime {
     fn resolve(&self, snapshot: &ExecutableAgentSnapshot) -> Result<ResolvedRun, Error> {
-        let active = self.active_fingerprint().ok_or(Error::NoActiveCatalog)?;
-
-        // Fail closed unless every fingerprint the snapshot carries matches the
-        // installed catalog: the snapshot identity and its resolved spec must
-        // both descend from the active publication (G4).
-        if snapshot.fingerprint != active || snapshot.resolved_spec.catalog_fingerprint != active {
+        // The configuration plane resolved and signed off one immutable value.
+        // Execution validates that value; node topology and installed catalogs do
+        // not alter its meaning.
+        if snapshot.fingerprint.0.trim().is_empty()
+            || snapshot.resolved_spec.catalog_fingerprint != snapshot.fingerprint
+        {
             return Err(Error::FingerprintMismatch);
         }
 

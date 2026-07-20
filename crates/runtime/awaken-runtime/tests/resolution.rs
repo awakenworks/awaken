@@ -1,9 +1,7 @@
-//! Resolution converges inline and by-id snapshot inputs and fails closed on a
-//! fingerprint mismatch or a missing catalog (G4/G22/G28).
+//! Resolution converges inline and by-id snapshot inputs and fails closed when
+//! an immutable snapshot is internally inconsistent (G4/G22/G28).
 
 use awaken_runtime::Runtime;
-use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
-use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec,
 };
@@ -13,23 +11,6 @@ use awaken_runtime_contract::resolver::{
 use awaken_runtime_contract::snapshot::{
     AgentId, AgentSnapshotInput, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
-
-fn install(runtime: &Runtime, fingerprint: &str) {
-    let fingerprint = CatalogFingerprint(fingerprint.to_string());
-    runtime
-        .install_catalog(RuntimeCatalogInstall {
-            publication_id: "pub-1".to_string(),
-            fingerprint: fingerprint.clone(),
-            source_revisions: vec!["rev-1".to_string()],
-            capabilities: RuntimeCapabilityCatalog {
-                catalog_fingerprint: fingerprint,
-                runtime_version: "test".to_string(),
-                tools: Vec::new(),
-                plugins: Vec::new(),
-            },
-        })
-        .expect("catalog installs");
-}
 
 fn snapshot(fingerprint: &str) -> ExecutableAgentSnapshot {
     let fingerprint = CatalogFingerprint(fingerprint.to_string());
@@ -61,7 +42,6 @@ fn snapshot(fingerprint: &str) -> ExecutableAgentSnapshot {
 #[test]
 fn resolve_returns_plan_when_fingerprints_match() {
     let runtime = Runtime::new();
-    install(&runtime, "catalog-a");
 
     let resolved = runtime.resolve(&snapshot("catalog-a")).expect("resolves");
     assert_eq!(resolved.snapshot_id.0, "snapshot-1");
@@ -71,22 +51,18 @@ fn resolve_returns_plan_when_fingerprints_match() {
 #[test]
 fn resolve_fails_closed_on_fingerprint_mismatch() {
     let runtime = Runtime::new();
-    install(&runtime, "catalog-a");
+    let mut snap = snapshot("catalog-a");
+    snap.fingerprint = CatalogFingerprint(String::new());
 
-    assert_eq!(
-        runtime.resolve(&snapshot("catalog-b")),
-        Err(Error::FingerprintMismatch)
-    );
+    assert_eq!(runtime.resolve(&snap), Err(Error::FingerprintMismatch));
 }
 
 #[test]
 fn resolve_fails_closed_when_only_the_spec_catalog_fingerprint_drifts() {
-    // The gate is a compound OR: EITHER the snapshot identity fingerprint OR the
-    // resolved-spec's own catalog fingerprint mismatching fails closed (G4). Here
-    // the snapshot fingerprint matches the active catalog, but the spec's embedded
-    // catalog fingerprint has drifted — the second, independent branch must reject.
+    // The configuration plane distributes one immutable value. If its embedded
+    // resolved-spec identity drifts from the envelope identity, execution rejects
+    // it independently of any catalog installed on this runtime node.
     let runtime = Runtime::new();
-    install(&runtime, "catalog-a");
 
     let mut snap = snapshot("catalog-a");
     snap.resolved_spec.catalog_fingerprint = CatalogFingerprint("catalog-b".to_string());
@@ -95,18 +71,14 @@ fn resolve_fails_closed_when_only_the_spec_catalog_fingerprint_drifts() {
 }
 
 #[test]
-fn resolve_fails_closed_without_a_catalog() {
+fn resolve_is_independent_of_an_installed_catalog() {
     let runtime = Runtime::new();
-    assert_eq!(
-        runtime.resolve(&snapshot("catalog-a")),
-        Err(Error::NoActiveCatalog)
-    );
+    assert!(runtime.resolve(&snapshot("catalog-a")).is_ok());
 }
 
 #[test]
 fn inline_and_by_id_inputs_converge_to_the_same_validated_plan() {
     let runtime = Runtime::new();
-    install(&runtime, "catalog-a");
     let id = runtime.register_snapshot(snapshot("catalog-a"));
 
     let inline = runtime
@@ -125,7 +97,6 @@ fn inline_and_by_id_inputs_converge_to_the_same_validated_plan() {
 #[test]
 fn by_id_lookup_and_catalog_listing_work() {
     let runtime = Runtime::new();
-    install(&runtime, "catalog-a");
     let id = runtime.register_snapshot(snapshot("catalog-a"));
 
     assert!(runtime.get_snapshot(&id).expect("ok").is_some());
