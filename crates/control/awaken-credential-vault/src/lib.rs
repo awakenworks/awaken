@@ -67,6 +67,35 @@ pub enum CredentialKind {
     Oauth,
 }
 
+/// Server-owned OAuth token helper. The API carries this allowlisted id, never
+/// an operator-supplied command line; the credential bounded context owns how
+/// it becomes a token source for model, MCP, and A2A consumers alike.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum OAuthHelper {
+    /// Mint a Google access token from the active gcloud account.
+    Gcloud,
+}
+
+impl OAuthHelper {
+    /// Fixed argv for the helper. This preserves the existing persisted
+    /// `oauth_command` representation while authoring stays safe and stable.
+    #[must_use]
+    pub fn command(self) -> Vec<String> {
+        match self {
+            Self::Gcloud => vec!["gcloud".into(), "auth".into(), "print-access-token".into()],
+        }
+    }
+
+    /// Recover the public helper id from a stored legacy argv. Unknown commands
+    /// remain internal and are never projected as an operator-selectable helper.
+    #[must_use]
+    pub fn from_command(command: &[String]) -> Option<Self> {
+        (command == Self::Gcloud.command()).then_some(Self::Gcloud)
+    }
+}
+
 /// Lifecycle of a source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -790,6 +819,21 @@ mod tests {
             assert_eq!(serde_json::to_string(&kind).unwrap(), wire);
             assert_eq!(serde_json::from_str::<CredentialKind>(wire).unwrap(), kind);
         }
+    }
+
+    #[test]
+    fn oauth_helper_is_allowlisted_and_maps_to_fixed_argv() {
+        let helper: OAuthHelper = serde_json::from_str(r#""gcloud""#).unwrap();
+        assert_eq!(helper, OAuthHelper::Gcloud);
+        assert_eq!(
+            helper.command(),
+            vec!["gcloud", "auth", "print-access-token"]
+        );
+        assert_eq!(
+            OAuthHelper::from_command(&helper.command()),
+            Some(OAuthHelper::Gcloud)
+        );
+        assert!(serde_json::from_str::<OAuthHelper>(r#""operator_command""#).is_err());
     }
 
     #[test]

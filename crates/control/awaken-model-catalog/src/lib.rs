@@ -71,6 +71,9 @@ pub enum ApiDialect {
     OpenAiChat,
     /// The Gemini wire.
     Gemini,
+    /// Gemini on Vertex AI: native Gemini payloads with OAuth Bearer auth and
+    /// a project/location endpoint.
+    VertexGemini,
 }
 
 impl ApiDialect {
@@ -81,6 +84,7 @@ impl ApiDialect {
             Self::AnthropicMessages => "anthropic",
             Self::OpenAiChat => "openai",
             Self::Gemini => "gemini",
+            Self::VertexGemini => "vertex",
         }
     }
 }
@@ -460,6 +464,7 @@ mod tests {
         assert_eq!(ApiDialect::AnthropicMessages.adapter_kind(), "anthropic");
         assert_eq!(ApiDialect::OpenAiChat.adapter_kind(), "openai");
         assert_eq!(ApiDialect::Gemini.adapter_kind(), "gemini");
+        assert_eq!(ApiDialect::VertexGemini.adapter_kind(), "vertex");
     }
 
     #[test]
@@ -469,6 +474,7 @@ mod tests {
             (ApiDialect::AnthropicMessages, "\"anthropic_messages\""),
             (ApiDialect::OpenAiChat, "\"open_ai_chat\""),
             (ApiDialect::Gemini, "\"gemini\""),
+            (ApiDialect::VertexGemini, "\"vertex_gemini\""),
         ] {
             assert_eq!(serde_json::to_string(&dialect).unwrap(), wire);
             assert_eq!(serde_json::from_str::<ApiDialect>(wire).unwrap(), dialect);

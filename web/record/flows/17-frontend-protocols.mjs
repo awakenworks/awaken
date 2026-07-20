@@ -1,6 +1,6 @@
 // Frontend protocol proof: AI SDK and AG-UI drive the same published Agent and
 // durable thread, then each adapter exposes the shared committed history.
-import { configureKimi } from "../support/models.mjs";
+import { LIVE_MODEL_ID, configureLiveModel } from "../support/models.mjs";
 
 const AGENT_ID = "frontend-protocol-agent";
 const THREAD_ID = `protocol-thread-${Date.now()}`;
@@ -15,10 +15,10 @@ export const story = {
 };
 
 export async function run({ page, goto, intro, beat, clearCaption, runtimeCheckpoint, aha, expect, wait }) {
-  await configureKimi(page);
+  await configureLiveModel(page);
   await page.request.put(`http://127.0.0.1:38080/v1/config/agents/${AGENT_ID}`, {
     data: {
-      id: AGENT_ID, name: "Frontend protocol agent", model: { id: "kimi-for-coding" },
+      id: AGENT_ID, name: "Frontend protocol agent", model: { id: LIVE_MODEL_ID },
       system: "Reply with PROTOCOL READY and a short phrase naming the user's request.",
       tools: [], mcp_servers: [], skills: [], plugins: [], plugin_config: {},
       context_policy: { kind: "keep_all" }, max_steps: 4,

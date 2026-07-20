@@ -23,7 +23,7 @@ use awaken_credential_vault::repo::{CredentialRepo, enter_credential};
 use awaken_credential_vault::{
     AvailabilityLedger, AvailabilityState, CredentialBinding, CredentialCreateParams,
     CredentialError, CredentialKind, CredentialPool, CredentialPoolId, CredentialSource,
-    CredentialSourceId, CredentialStatus, SecretStore,
+    CredentialSourceId, CredentialStatus, OAuthHelper, SecretStore,
 };
 use awaken_model_catalog::repo::{CatalogRepo, RepoError};
 use awaken_model_catalog::{
@@ -1040,7 +1040,7 @@ async fn archive_credential(
     scope: Option<Extension<ResourceWorkspace>>,
     Path(id): Path<String>,
     headers: HeaderMap,
-) -> Result<Json<CredentialSource>, Problem> {
+) -> Result<Json<CredentialSourceView>, Problem> {
     let rid = req_id(&headers);
     let mut source =
         credential_in_scope(&state, &CredentialSourceId(id), scope.as_ref(), &rid).await?;
@@ -1051,7 +1051,7 @@ async fn archive_credential(
         .put(source.clone())
         .await
         .map_err(|e| cred_problem(&e, &rid))?;
-    Ok(Json(source))
+    Ok(Json(source.into()))
 }
 
 /// Live-validate a credential against a model's resolved provider endpoint.
@@ -1135,6 +1135,47 @@ pub struct EnterCredentialRequest {
     /// host variable at materialization), so it defaults to empty.
     #[serde(default)]
     secret: String,
+    /// A server-owned OAuth refresh helper. This is an allowlisted identifier,
+    /// never an operator-supplied command line.
+    #[serde(default)]
+    oauth_helper: Option<OAuthHelper>,
+}
+
+/// Secret-free credential projection. Internal token-source argv and vault refs
+/// never cross the admin boundary; consumers bind this stable source id.
+#[derive(serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct CredentialSourceView {
+    pub id: CredentialSourceId,
+    pub workspace_id: String,
+    pub kind: CredentialKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub env_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oauth_helper: Option<OAuthHelper>,
+    pub status: CredentialStatus,
+    pub version: i64,
+}
+
+impl From<CredentialSource> for CredentialSourceView {
+    fn from(source: CredentialSource) -> Self {
+        let oauth_helper = source
+            .oauth_command
+            .as_deref()
+            .and_then(OAuthHelper::from_command);
+        Self {
+            id: source.id,
+            workspace_id: source.workspace_id,
+            kind: source.kind,
+            provider_id: source.provider_id,
+            env_key: source.env_key,
+            oauth_helper,
+            status: source.status,
+            version: source.version,
+        }
+    }
 }
 
 async fn post_credential(
@@ -1142,19 +1183,35 @@ async fn post_credential(
     scope: Option<Extension<ResourceWorkspace>>,
     headers: HeaderMap,
     Json(body): Json<EnterCredentialRequest>,
-) -> Result<(StatusCode, Json<awaken_credential_vault::CredentialSource>), Problem> {
+) -> Result<(StatusCode, Json<CredentialSourceView>), Problem> {
+    let oauth_command = match (body.kind, body.oauth_helper) {
+        (CredentialKind::Oauth, Some(helper)) => Some(helper.command()),
+        (CredentialKind::Oauth, None) => {
+            return Err(cred_problem(
+                &CredentialError::OAuth("oauth credentials require oauth_helper".into()),
+                &req_id(&headers),
+            ));
+        }
+        (_, Some(_)) => {
+            return Err(cred_problem(
+                &CredentialError::OAuth("oauth_helper is only valid for oauth credentials".into()),
+                &req_id(&headers),
+            ));
+        }
+        (_, None) => None,
+    };
     let params = CredentialCreateParams {
         workspace_id: scope.map_or(body.workspace_id, |Extension(scope)| scope.0),
         kind: body.kind,
         provider_id: body.provider_id,
         env_key: body.env_key,
         secret: Some(RedactedString::new(body.secret)),
-        oauth_command: None,
+        oauth_command,
     };
     let source = enter_credential(params, &*state.secrets, &*state.credentials)
         .await
         .map_err(|e| cred_problem(&e, &req_id(&headers)))?;
-    Ok((StatusCode::CREATED, Json(source)))
+    Ok((StatusCode::CREATED, Json(source.into())))
 }
 
 async fn get_credential(
@@ -1162,7 +1219,7 @@ async fn get_credential(
     scope: Option<Extension<ResourceWorkspace>>,
     Path(id): Path<String>,
     headers: HeaderMap,
-) -> Result<Json<awaken_credential_vault::CredentialSource>, Problem> {
+) -> Result<Json<CredentialSourceView>, Problem> {
     credential_in_scope(
         &state,
         &CredentialSourceId(id),
@@ -1170,7 +1227,7 @@ async fn get_credential(
         &req_id(&headers),
     )
     .await
-    .map(Json)
+    .map(|source| Json(source.into()))
 }
 
 #[derive(serde::Deserialize)]
@@ -1183,14 +1240,14 @@ async fn list_credentials(
     scope: Option<Extension<ResourceWorkspace>>,
     Query(query): Query<ListCredentialsQuery>,
     headers: HeaderMap,
-) -> Result<Json<Vec<awaken_credential_vault::CredentialSource>>, Problem> {
+) -> Result<Json<Vec<CredentialSourceView>>, Problem> {
     let workspace = scope.map_or(query.workspace_id, |Extension(scope)| scope.0);
-    state
+    let sources = state
         .credentials
         .list(&workspace)
         .await
-        .map(Json)
-        .map_err(|e| cred_problem(&e, &req_id(&headers)))
+        .map_err(|e| cred_problem(&e, &req_id(&headers)))?;
+    Ok(Json(sources.into_iter().map(Into::into).collect()))
 }
 
 #[cfg(test)]

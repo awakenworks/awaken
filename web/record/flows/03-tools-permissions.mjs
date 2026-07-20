@@ -2,10 +2,10 @@
 // do and how it's allowed to do it: pick tools from the host catalog, rename/redescribe
 // one for the model (tool presentation), then gate calls with a default decision + an
 // ordered deny rule. Pure configurability — no code, enforced at runtime.
-import { configureKimi } from "../support/models.mjs";
+import { LIVE_MODEL_ID, configureLiveModel } from "../support/models.mjs";
 
 const AGENT_ID = "file-ops-agent";
-const MODEL_ID = "kimi-for-coding";
+const MODEL_ID = LIVE_MODEL_ID;
 const SYSTEM = "You are a tool-verification agent. When asked to run a shell command, call bash exactly once with that command.";
 
 export const story = {
@@ -18,7 +18,7 @@ export const story = {
 };
 
 export async function run({ page, goto, say, clearCaption, intro, checkpoint, runtimeCheckpoint, aha, expect, click, type, wait, cursorTo, tap }) {
-  await configureKimi(page);
+  await configureLiveModel(page);
   await page.request.delete(`http://127.0.0.1:38080/v1/config/agents/${AGENT_ID}`).catch(() => {});
 
   await goto("/w/default/agents/new");

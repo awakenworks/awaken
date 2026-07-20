@@ -328,6 +328,7 @@ fn genai_adapter(adapter_kind: &str) -> Option<awaken_provider_genai::AdapterKin
     Some(match adapter_kind {
         "anthropic" => AdapterKind::Anthropic,
         "gemini" => AdapterKind::Gemini,
+        "vertex" => AdapterKind::Vertex,
         "openai" => AdapterKind::OpenAI,
         _ => return None,
     })
@@ -368,6 +369,7 @@ mod executor_seam_tests {
     fn genai_adapter_maps_the_supported_wires_and_rejects_the_rest() {
         assert_eq!(genai_adapter("anthropic"), Some(AdapterKind::Anthropic));
         assert_eq!(genai_adapter("gemini"), Some(AdapterKind::Gemini));
+        assert_eq!(genai_adapter("vertex"), Some(AdapterKind::Vertex));
         assert_eq!(genai_adapter("openai"), Some(AdapterKind::OpenAI));
         // Fail-closed: an unserved wire, the empty string, and a case variant all miss.
         assert_eq!(genai_adapter("cohere"), None);
@@ -417,6 +419,10 @@ mod executor_seam_tests {
         );
         assert!(
             executor_from_resolved(&inference("gemini", Some("https://gw/"), Some("k"))).is_ok()
+        );
+        assert!(
+            executor_from_resolved(&inference("vertex", Some("https://gw/"), Some("oauth")))
+                .is_ok()
         );
     }
 }
