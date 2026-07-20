@@ -2,9 +2,9 @@
 //! authz completion): `POST/GET /v1/config/iam/tokens` +
 //! `DELETE /v1/config/iam/tokens/{id}` behind the management guard.
 //!
-//! Trust-model pins: the bootstrap admin's hidden-Org role binding lets it mint
-//! tokens for child workspaces other than its own (the scope graph decides, not
-//! header equality); a workspace-bound admin mints only for its own workspace;
+//! Trust-model pins: the bootstrap admin is bound to the installation's hidden
+//! Org and may mint only for registered child workspaces (an arbitrary workspace
+//! id cannot create a tenant edge); a workspace-bound admin mints only for its own workspace;
 //! minted tokens obey the route→action rules for their role and stay fenced to
 //! their workspace; list responses are secret-free (no argon2 hash, no
 //! cleartext); non-admin roles cannot mint; unknown roles are 422 problem+json;
@@ -111,21 +111,30 @@ async fn mint_http(
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_org_bootstrap_binding_mints_cross_workspace_tokens() {
+async fn the_org_bootstrap_binding_rejects_an_unregistered_workspace() {
     let dir = tempfile::tempdir().unwrap();
-    let (app, iam) = build_secured_management_router(dir.path(), &KEY).await;
-    iam.register_workspace(OTHER_WORKSPACE);
+    let (app, _iam) = build_secured_management_router(dir.path(), &KEY).await;
     let bootstrap = admin_token(dir.path());
 
-    // The bootstrap credential's own workspace is wrkspc_default, yet it mints
-    // for wrkspc_two: only the hidden-Org admin binding can authorize apikey.write
-    // at that TARGET workspace.
-    let (s, minted) = call(
+    // The bootstrap is Org-bound, but wrkspc_two is not registered below that
+    // Org. A request body must never create a new tenant edge implicitly.
+    let (s, denied) = call(
         &app,
         "POST",
         "/v1/config/iam/tokens",
         Some(&bootstrap),
         Some(mint_body(OTHER_WORKSPACE, "workspace_admin")),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{denied}");
+
+    // The platform-provisioned workspace is registered and remains mintable.
+    let (s, minted) = call(
+        &app,
+        "POST",
+        "/v1/config/iam/tokens",
+        Some(&bootstrap),
+        Some(mint_body(BOOTSTRAP_WORKSPACE, "workspace_admin")),
     )
     .await;
     assert_eq!(s, StatusCode::CREATED, "{minted}");
@@ -134,14 +143,14 @@ async fn the_org_bootstrap_binding_mints_cross_workspace_tokens() {
     // real Anthropic provider keys (`sk-ant-…`, now legacy-verify only).
     assert!(cleartext.starts_with("sk-awaken-"), "{cleartext}");
     let view = &minted["api_token"];
-    assert_eq!(view["workspace_id"], json!(OTHER_WORKSPACE));
+    assert_eq!(view["workspace_id"], json!(BOOTSTRAP_WORKSPACE));
     assert_eq!(view["role"], json!("workspace_admin"));
     assert!(view["id"].as_str().unwrap().starts_with("tok_"));
     assert!(view.get("secret_hash").is_none(), "view is hash-free");
     assert!(view["revoked_at"].is_null() || view.get("revoked_at").is_none());
 
-    // The minted token works within its role's route→action rules, in ITS
-    // workspace: workspace_admin holds workspace.* + apikey.* at wrkspc_two.
+    // The minted token works within its role's route→action rules in its
+    // workspace.
     let t = Some(cleartext);
     let (s, _) = call(&app, "GET", "/v1/config/catalog", t, None).await;
     assert_eq!(s, StatusCode::OK);
@@ -151,7 +160,7 @@ async fn the_org_bootstrap_binding_mints_cross_workspace_tokens() {
         "/v1/config/credentials",
         t,
         Some(json!({
-            "workspace_id": OTHER_WORKSPACE, "kind": "vault", "provider_id": "anthropic",
+            "workspace_id": BOOTSTRAP_WORKSPACE, "kind": "vault", "provider_id": "anthropic",
             "env_key": "ANTHROPIC_API_KEY",
             "secret": "sk-tokens-two" // awaken-allow: secret
         })),
@@ -159,11 +168,11 @@ async fn the_org_bootstrap_binding_mints_cross_workspace_tokens() {
     .await;
     assert_eq!(s, StatusCode::CREATED, "{cred}");
 
-    // …and 403s cross-workspace: the fence + its wrkspc_two-only binding.
+    // …and 403s cross-workspace through the request fence.
     let (s, err) = call(
         &app,
         "GET",
-        &format!("/v1/config/credentials?workspace_id={BOOTSTRAP_WORKSPACE}"),
+        &format!("/v1/config/credentials?workspace_id={OTHER_WORKSPACE}"),
         t,
         None,
     )
@@ -178,15 +187,15 @@ async fn a_workspace_bound_admin_mints_only_for_its_own_workspace() {
     let (app, iam) = build_secured_management_router(dir.path(), &KEY).await;
     iam.register_workspace(OTHER_WORKSPACE);
     let bootstrap = admin_token(dir.path());
-    let (scoped, _) = mint_http(&app, &bootstrap, OTHER_WORKSPACE, "workspace_admin").await;
+    let (scoped, _) = mint_http(&app, &bootstrap, BOOTSTRAP_WORKSPACE, "workspace_admin").await;
 
-    // Its own workspace: allowed (binding at wrkspc_two covers wrkspc_two).
+    // Its own workspace: allowed.
     let (s, minted) = call(
         &app,
         "POST",
         "/v1/config/iam/tokens",
         Some(&scoped),
-        Some(mint_body(OTHER_WORKSPACE, "workspace_user")),
+        Some(mint_body(BOOTSTRAP_WORKSPACE, "workspace_user")),
     )
     .await;
     assert_eq!(s, StatusCode::CREATED, "{minted}");
@@ -197,7 +206,7 @@ async fn a_workspace_bound_admin_mints_only_for_its_own_workspace() {
         "POST",
         "/v1/config/iam/tokens",
         Some(&scoped),
-        Some(mint_body(BOOTSTRAP_WORKSPACE, "workspace_user")),
+        Some(mint_body(OTHER_WORKSPACE, "workspace_user")),
     )
     .await;
     assert_eq!(s, StatusCode::FORBIDDEN, "{err}");
@@ -207,7 +216,7 @@ async fn a_workspace_bound_admin_mints_only_for_its_own_workspace() {
     let (s, _) = call(
         &app,
         "GET",
-        &format!("/v1/config/iam/tokens?workspace_id={BOOTSTRAP_WORKSPACE}"),
+        &format!("/v1/config/iam/tokens?workspace_id={OTHER_WORKSPACE}"),
         Some(&scoped),
         None,
     )
