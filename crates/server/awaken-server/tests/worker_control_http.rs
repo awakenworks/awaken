@@ -153,6 +153,7 @@ fn dispatch_with_capability(run: &str, capability: &str) -> RunDispatch {
         ThreadId(format!("thread-{run}")),
         ExecutableAgentSnapshot {
             id: ExecutableAgentSnapshotId("snapshot".to_string()),
+            metadata: Default::default(),
             root_agent_id: AgentId("agent".to_string()),
             resolved_spec: ResolvedSpec {
                 model_candidates: Vec::new(),

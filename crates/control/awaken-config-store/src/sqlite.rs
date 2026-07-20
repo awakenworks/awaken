@@ -10,9 +10,9 @@ use awaken_tenancy::ScopeId;
 use crate::config::AgentConfig;
 use crate::schema::config_bundle;
 use crate::store::{
-    AuditedConfigWrite, ConfigRegistry, ConfigStoreError, ConfigWrite, DEFAULT_SCOPE,
-    ManagementAuditEntry, ManagementAuditRecord, ManagementEffect, ScopedConfigRegistry,
-    StoredPublication, VersionedAgentConfig,
+    AgentConfigRevision, AuditedConfigWrite, ConfigRegistry, ConfigStoreError, ConfigWrite,
+    DEFAULT_SCOPE, ManagementAuditEntry, ManagementAuditRecord, ManagementEffect,
+    ScopedConfigRegistry, StoredPublication,
 };
 
 /// The config component's table namespace (ADR-0029/ADR-0031). Built in.
@@ -443,7 +443,7 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         .await
     }
 
-    async fn put_config_if_generation_scoped(
+    async fn put_config_if_revision_scoped(
         &self,
         scope: &ScopeId,
         config: &AgentConfig,
@@ -467,10 +467,10 @@ impl ScopedConfigRegistry for SqliteConfigStore {
                 .map_err(reject)?;
             if changed == 1 {
                 return Ok(ConfigWrite::Applied {
-                    generation: expected_generation.saturating_add(1).max(1),
+                    revision: expected_generation.saturating_add(1).max(1),
                 });
             }
-            let current_generation = conn
+            let current_revision = conn
                 .query_row(
                     &format!("SELECT generation FROM {p}_agent WHERE id = ?1 AND scope_id = ?2"),
                     params![id, scope],
@@ -478,7 +478,7 @@ impl ScopedConfigRegistry for SqliteConfigStore {
                 )
                 .optional()
                 .map_err(reject)?;
-            Ok(ConfigWrite::Conflict { current_generation })
+            Ok(ConfigWrite::Conflict { current_revision })
         })
         .await
     }
@@ -505,11 +505,11 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         .await
     }
 
-    async fn get_config_versioned_scoped(
+    async fn get_config_revision_scoped(
         &self,
         scope: &ScopeId,
         id: &str,
-    ) -> Result<Option<VersionedAgentConfig>, ConfigStoreError> {
+    ) -> Result<Option<AgentConfigRevision>, ConfigStoreError> {
         let id = id.to_string();
         let scope = scope.0.clone();
         self.with_conn(move |conn, p| {
@@ -523,10 +523,10 @@ impl ScopedConfigRegistry for SqliteConfigStore {
                 )
                 .optional()
                 .map_err(reject)?;
-            row.map(|(data, generation)| {
-                Ok(VersionedAgentConfig {
+            row.map(|(data, revision)| {
+                Ok(AgentConfigRevision {
                     config: serde_json::from_str(&data).map_err(reject)?,
-                    generation,
+                    revision,
                 })
             })
             .transpose()
@@ -582,7 +582,7 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         .await
     }
 
-    async fn put_publication_if_config_generation_scoped(
+    async fn put_publication_if_config_revision_scoped(
         &self,
         scope: &ScopeId,
         publication: &StoredPublication,
@@ -595,7 +595,7 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         let scope = scope.0.clone();
         self.with_conn(move |conn, p| {
             let tx = conn.transaction().map_err(reject)?;
-            let current_generation = tx
+            let current_revision = tx
                 .query_row(
                     &format!("SELECT generation FROM {p}_agent WHERE id = ?1 AND scope_id = ?2"),
                     params![agent_id, scope],
@@ -603,8 +603,8 @@ impl ScopedConfigRegistry for SqliteConfigStore {
                 )
                 .optional()
                 .map_err(reject)?;
-            if current_generation != Some(expected_generation) {
-                return Ok(ConfigWrite::Conflict { current_generation });
+            if current_revision != Some(expected_generation) {
+                return Ok(ConfigWrite::Conflict { current_revision });
             }
             tx.execute(
                 &format!(
@@ -616,7 +616,7 @@ impl ScopedConfigRegistry for SqliteConfigStore {
             .map_err(reject)?;
             tx.commit().map_err(reject)?;
             Ok(ConfigWrite::Applied {
-                generation: expected_generation,
+                revision: expected_generation,
             })
         })
         .await
@@ -683,12 +683,12 @@ impl ConfigRegistry for SqliteConfigStore {
             .await
     }
 
-    async fn put_config_if_generation(
+    async fn put_config_if_revision(
         &self,
         config: &AgentConfig,
         expected_generation: u64,
     ) -> Result<ConfigWrite, ConfigStoreError> {
-        self.put_config_if_generation_scoped(
+        self.put_config_if_revision_scoped(
             &ScopeId::from(DEFAULT_SCOPE),
             config,
             expected_generation,
@@ -701,11 +701,11 @@ impl ConfigRegistry for SqliteConfigStore {
             .await
     }
 
-    async fn get_config_versioned(
+    async fn get_config_revision(
         &self,
         id: &str,
-    ) -> Result<Option<VersionedAgentConfig>, ConfigStoreError> {
-        self.get_config_versioned_scoped(&ScopeId::from(DEFAULT_SCOPE), id)
+    ) -> Result<Option<AgentConfigRevision>, ConfigStoreError> {
+        self.get_config_revision_scoped(&ScopeId::from(DEFAULT_SCOPE), id)
             .await
     }
 
@@ -722,12 +722,12 @@ impl ConfigRegistry for SqliteConfigStore {
             .await
     }
 
-    async fn put_publication_if_config_generation(
+    async fn put_publication_if_config_revision(
         &self,
         publication: &StoredPublication,
         expected_generation: u64,
     ) -> Result<ConfigWrite, ConfigStoreError> {
-        self.put_publication_if_config_generation_scoped(
+        self.put_publication_if_config_revision_scoped(
             &ScopeId::from(DEFAULT_SCOPE),
             publication,
             expected_generation,
@@ -794,11 +794,11 @@ mod scope_tests {
             AuditedConfigWrite::Applied
         );
         let generation = store
-            .get_config_versioned_scoped(&scope, "a")
+            .get_config_revision_scoped(&scope, "a")
             .await
             .unwrap()
             .unwrap()
-            .generation;
+            .revision;
 
         let mut conflicting_retry = original.clone();
         conflicting_retry.instructions = "must not overwrite on replay".into();
@@ -810,11 +810,11 @@ mod scope_tests {
             AuditedConfigWrite::Replayed
         );
         let after = store
-            .get_config_versioned_scoped(&scope, "a")
+            .get_config_revision_scoped(&scope, "a")
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(after.generation, generation);
+        assert_eq!(after.revision, generation);
         assert_eq!(after.config.instructions, original.instructions);
 
         let conflicting_audit = ManagementAuditRecord {

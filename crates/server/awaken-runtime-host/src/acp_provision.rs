@@ -215,6 +215,7 @@ mod tests {
             thread_id: ThreadId("th".into()),
             snapshot: ExecutableAgentSnapshot {
                 id: ExecutableAgentSnapshotId("s".into()),
+                metadata: Default::default(),
                 root_agent_id: AgentId("a".into()),
                 resolved_spec: ResolvedSpec {
                     model_candidates: Vec::new(),

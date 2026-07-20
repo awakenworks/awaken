@@ -1,6 +1,12 @@
 //! Provenance for one atomic agent-configuration resolution.
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+/// Stable SHA-256 content identity for one serializable resolver input.
+pub fn content_fingerprint<T: Serialize + ?Sized>(value: &T) -> Result<String, serde_json::Error> {
+    serde_json::to_vec(value).map(|bytes| format!("{:x}", Sha256::digest(bytes)))
+}
 
 /// The identity form used to pin one resolver input.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -90,6 +96,18 @@ mod tests {
                 kind: "agent_config".into(),
                 id: "a1".into(),
             }
+        );
+    }
+
+    #[test]
+    fn content_fingerprint_is_stable_and_content_sensitive() {
+        assert_eq!(
+            content_fingerprint(&serde_json::json!({"a": 1})).unwrap(),
+            content_fingerprint(&serde_json::json!({"a": 1})).unwrap()
+        );
+        assert_ne!(
+            content_fingerprint(&serde_json::json!({"a": 1})).unwrap(),
+            content_fingerprint(&serde_json::json!({"a": 2})).unwrap()
         );
     }
 }

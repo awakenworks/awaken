@@ -65,6 +65,7 @@ pub use awaken_agent_contract::agent::state::Store;
 // re-exported so an extension forwards it without a direct `tokio-util` edge.
 pub use resolution::{
     ResolutionManifest, ResolutionManifestError, ResolvedInputRef, ResolvedInputVersion,
+    content_fingerprint,
 };
 pub use resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
 pub use resolver::{AgentSnapshotResolver, RunResolver};

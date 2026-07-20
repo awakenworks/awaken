@@ -459,6 +459,7 @@ mod tests {
             ThreadId("thread".into()),
             ExecutableAgentSnapshot {
                 id: ExecutableAgentSnapshotId("snapshot".into()),
+                metadata: Default::default(),
                 root_agent_id: AgentId("agent".into()),
                 resolved_spec: ResolvedSpec {
                     model_candidates: vec![ModelBinding::new("openai", fallback, "genai")],

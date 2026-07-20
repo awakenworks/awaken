@@ -64,6 +64,7 @@ fn activation(fingerprint: &str) -> RunActivation {
         thread_id: ThreadId("thread-1".to_string()),
         snapshot: ExecutableAgentSnapshot {
             id: ExecutableAgentSnapshotId("snapshot-1".to_string()),
+            metadata: Default::default(),
             root_agent_id: AgentId("agent-1".to_string()),
             resolved_spec: ResolvedSpec {
                 model_candidates: Vec::new(),

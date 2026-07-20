@@ -140,6 +140,7 @@ async fn replay(case: &Case) -> (String, bool, Vec<String>) {
         thread_id: ThreadId(format!("eval-{}", case.id)),
         snapshot: ExecutableAgentSnapshot {
             id: ExecutableAgentSnapshotId("eval".to_string()),
+            metadata: Default::default(),
             root_agent_id: AgentId("eval".to_string()),
             resolved_spec: ResolvedSpec {
                 catalog_fingerprint: fingerprint.clone(),

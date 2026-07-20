@@ -58,6 +58,7 @@ fn snapshot() -> ExecutableAgentSnapshot {
     let fp = CatalogFingerprint(FP.to_string());
     ExecutableAgentSnapshot {
         id: ExecutableAgentSnapshotId("a".to_string()),
+        metadata: Default::default(),
         root_agent_id: AgentId("a".to_string()),
         resolved_spec: ResolvedSpec {
             model_candidates: Vec::new(),

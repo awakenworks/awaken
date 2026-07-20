@@ -540,6 +540,7 @@ fn dispatch(ns: &str, run: &str, thread: &str) -> RunDispatch {
         thread_id(ns, thread),
         ExecutableAgentSnapshot {
             id: ExecutableAgentSnapshotId(format!("{ns}-snapshot")),
+            metadata: Default::default(),
             root_agent_id: AgentId(format!("{ns}-agent")),
             resolved_spec: ResolvedSpec {
                 model_candidates: Vec::new(),

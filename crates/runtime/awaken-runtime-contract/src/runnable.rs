@@ -18,7 +18,9 @@ use crate::catalog::RuntimeCatalogInstall;
 use crate::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor, ToolPresentation,
 };
-use crate::snapshot::{AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId};
+use crate::snapshot::{
+    AgentId, AgentSnapshotMetadata, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
+};
 
 /// A loop-step ceiling used when the builder is not told otherwise.
 const DEFAULT_MAX_STEPS: usize = 16;
@@ -85,6 +87,7 @@ pub struct RunnableConfigBuilder {
     context_policy: ContextPolicy,
     tool_presentation: ToolPresentation,
     fingerprint: Option<String>,
+    metadata: AgentSnapshotMetadata,
 }
 
 impl RunnableConfigBuilder {
@@ -103,6 +106,7 @@ impl RunnableConfigBuilder {
             context_policy: ContextPolicy::default(),
             tool_presentation: ToolPresentation::default(),
             fingerprint: None,
+            metadata: AgentSnapshotMetadata::default(),
         }
     }
 
@@ -214,13 +218,31 @@ impl RunnableConfigBuilder {
         self
     }
 
+    /// Pin configuration-plane provenance into the executable snapshot. Direct
+    /// callers may omit it; published snapshots always set it.
+    #[must_use]
+    pub fn metadata(mut self, metadata: AgentSnapshotMetadata) -> Self {
+        self.metadata = metadata;
+        self
+    }
+
     /// Assemble the [`RunnableConfig`], stamping the fingerprint into the snapshot
     /// and the install so they agree.
     pub fn build(self) -> RunnableConfig {
         let fingerprint = self.fingerprint.unwrap_or_else(|| self.id.clone());
         let fp = CatalogFingerprint(fingerprint.clone());
+        let metadata = if self.metadata.is_legacy_default() {
+            AgentSnapshotMetadata::default()
+        } else {
+            AgentSnapshotMetadata {
+                publication_version: crate::snapshot::AgentPublicationVersion(fingerprint.clone()),
+                fingerprint: crate::snapshot::AgentSnapshotFingerprint(fingerprint.clone()),
+                ..self.metadata
+            }
+        };
         let snapshot = ExecutableAgentSnapshot {
             id: ExecutableAgentSnapshotId(self.id.clone()),
+            metadata,
             root_agent_id: AgentId(self.id.clone()),
             resolved_spec: ResolvedSpec {
                 catalog_fingerprint: fp.clone(),

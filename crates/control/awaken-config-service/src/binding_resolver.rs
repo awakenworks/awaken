@@ -34,7 +34,7 @@ pub trait ModelResolver: Send + Sync {
     fn resolve_auto(&self) -> Result<ResolvedModel, String>;
 
     /// The published context window (max tokens) of a resolved model, when the catalog
-    /// carries it — the source `resolve_for_compile` derives an agent's compaction
+    /// carries it — the source `resolve_agent_config` derives an agent's compaction
     /// window from. Defaults to `None` (a resolver with no catalog attributes), so the
     /// compaction window stays whatever the agent authored.
     fn context_window(&self, _model_id: &str) -> Option<u32> {
@@ -42,7 +42,7 @@ pub trait ModelResolver: Send + Sync {
     }
 
     /// The published output-token ceiling of a resolved model, when the catalog carries it —
-    /// the headroom `resolve_for_compile` reserves when deriving the compaction window. `None`
+    /// the headroom `resolve_agent_config` reserves when deriving the compaction window. `None`
     /// (no attribute) simply omits the headroom (window derives from `context_window` alone).
     fn max_output_tokens(&self, _model_id: &str) -> Option<u32> {
         None

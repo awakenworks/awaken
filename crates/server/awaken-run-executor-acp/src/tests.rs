@@ -100,6 +100,7 @@ pub(crate) fn activation() -> RunActivation {
         thread_id: ThreadId("thread-1".into()),
         snapshot: ExecutableAgentSnapshot {
             id: ExecutableAgentSnapshotId("snap".into()),
+            metadata: Default::default(),
             root_agent_id: AgentId("agent".into()),
             resolved_spec: ResolvedSpec {
                 model_candidates: Vec::new(),

@@ -65,6 +65,7 @@ async fn seed_catalog(base_url: &str, model_id: &str) -> InMemoryCatalogRepo {
 fn snapshot_for(model_id: &str) -> ExecutableAgentSnapshot {
     ExecutableAgentSnapshot {
         id: ExecutableAgentSnapshotId("snap".into()),
+        metadata: Default::default(),
         root_agent_id: AgentId("agent".into()),
         resolved_spec: ResolvedSpec {
             model_candidates: Vec::new(),

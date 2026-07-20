@@ -149,6 +149,7 @@ mod tests {
             ThreadId("thread".into()),
             ExecutableAgentSnapshot {
                 id: ExecutableAgentSnapshotId("snapshot".into()),
+                metadata: Default::default(),
                 root_agent_id: AgentId("agent".into()),
                 resolved_spec: ResolvedSpec {
                     catalog_fingerprint: CatalogFingerprint("catalog".into()),

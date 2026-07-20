@@ -99,6 +99,7 @@ fn activation(cli: &str, prompt: &str) -> RunActivation {
         thread_id: ThreadId("thread-live".into()),
         snapshot: ExecutableAgentSnapshot {
             id: ExecutableAgentSnapshotId("snap".into()),
+            metadata: Default::default(),
             root_agent_id: AgentId("agent".into()),
             resolved_spec: ResolvedSpec {
                 model_candidates: Vec::new(),
