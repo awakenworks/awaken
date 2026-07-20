@@ -5,8 +5,8 @@
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_protocol_managed::{
-    ManagedState, OutcomeReport, RunError, SessionInit, SessionRuntime, StepOutcome,
-    ToolPermissionDecision, router,
+    AgentConfigSource, AgentConfigView, ManagedState, OutcomeReport, RunError, SessionInit,
+    SessionResource, SessionRuntime, StepOutcome, ToolPermissionDecision, router,
 };
 use axum::Router;
 use axum::body::Body;
@@ -18,6 +18,26 @@ use tower::ServiceExt;
 /// A runtime that accepts every `prepare_session` — the session record exists, so
 /// the resource routes can be exercised. Turn methods are unused here.
 struct AcceptingFake;
+
+struct AgentWithResources;
+
+impl AgentConfigSource for AgentWithResources {
+    fn agent_view(&self, agent_id: &str) -> Option<AgentConfigView> {
+        (agent_id == "a").then(|| AgentConfigView {
+            model: None,
+            system: None,
+            tool_ids: Vec::new(),
+            resources: vec![SessionResource {
+                kind: "skill".into(),
+                id: "skill_release".into(),
+                mount_path: "/mnt/skills/release".into(),
+                instructions: None,
+                auth_token: None,
+                git_ref: None,
+            }],
+        })
+    }
+}
 
 #[async_trait::async_trait]
 impl SessionRuntime for AcceptingFake {
@@ -139,6 +159,20 @@ async fn create_time_resources_are_backfilled_and_addressable() {
     .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(got["type"], "file");
+}
+
+#[tokio::test]
+async fn published_agent_resources_are_visible_as_effective_session_inputs() {
+    let state = ManagedState::new(AcceptingFake)
+        .with_config_source(std::sync::Arc::new(AgentWithResources));
+    let app = router(std::sync::Arc::new(state));
+
+    let (status, session) = call(&app, "POST", "/v1/sessions", Some(json!({ "agent": "a" }))).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(session["resources"][0]["type"], "skill");
+    assert_eq!(session["resources"][0]["resource_id"], "skill_release");
+    assert_eq!(session["resources"][0]["mount_path"], "/mnt/skills/release");
 }
 
 #[tokio::test]

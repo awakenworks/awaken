@@ -12,6 +12,10 @@ Every flow must follow the same story contract:
    Never swallow a checkpoint timeout.
 3. `aha(text)` — end on one concise contrast or payoff that works as a shareable clip.
 
+Each flow also exports one `story` object: `promise`, visible `effect`, exact `aha`,
+and the intended `loyalty`, `satisfaction`, and `advocacy` outcome. The harness rejects
+multiple Aha moments and enforces a 172-second flow / 180-second final-video ceiling.
+
 Run the fast structural contract before recording:
 
 ```sh
@@ -34,6 +38,22 @@ Recommended release order (see `VIDEO_STRATEGY.md` for the user-value map):
    completion constraints configured together.
 5. `09-protocol-composition` — Managed Agents sessions compose ACP, Vault, and
    direct inline MCP without changing the Agent.
+6. `10-skill-optimized-agent` and `11-resource-provenance` — prove that a concise
+   request can inherit a Skill and that every delivered Memory/file/Skill remains
+   inspectable in the Session.
+7. `12-deployment-control` through `14-session-control` — standing Deployment,
+   direct Managed Agents API ingress, and an enforced Session archive boundary.
+8. `15-a2a-discovery` and `16-access-boundary` — remote Agent Card discovery and
+   scoped-token issue/use/revoke proof.
+
+Release gates are intentionally strict:
+
+- `01`, `02`, and `10` require a working `KIMI_KEY` and assert real model output.
+- `15` requires `A2A_DELEGATE_ID` for a registered, reachable remote delegate.
+- `16` requires embedded IAM plus `AWAKEN_RECORD_ADMIN_TOKEN`; the token is injected
+  into browser storage and is never rendered in captions or logs.
+- Dashboard, Eval, Datasets, and Audit remain outside the product series while their
+  UI routes are gated. A diagnostic failure artifact is not a release video.
 
 The current repository's `awaken` binary starts the aggregated API/control/runtime
 server. It does not embed the Vite console assets, so “run one binary and open the UI”

@@ -2,6 +2,7 @@
 // it can compose runtime behavior. Ask for a rule ("read before you write"), inspect the
 // authored machine, then deliberately violate it in a live session. The recording only
 // passes when the runtime visibly blocks the write with the configured reason.
+import { configureKimi } from "../support/models.mjs";
 
 const ASK =
   "Draft an agent id 'safe-writer' with the read and write tools. Add a state_machine " +
@@ -10,7 +11,17 @@ const ASK =
   "and otherwise DENIES before execution with the reason " +
   "'Read {path} before writing it.' Keep tool ids lowercase.";
 
-export async function run({ page, goto, say, clearCaption, intro, checkpoint, aha, expect, click, type, wait }) {
+export const story = {
+  promise: "Promote read-before-write from a fragile prompt instruction to an executable per-path invariant.",
+  effect: "The real model attempts an unread write and the State Machine denies it before the tool executes.",
+  aha: "The prompt asked for an unsafe write. The model tried. Awaken's runtime said no.",
+  loyalty: "Reliable enforcement under prompt pressure builds long-term trust in governed Agent automation.",
+  satisfaction: "The visible error and configured reason make safety behavior understandable rather than mysterious.",
+  advocacy: "A direct prompt-versus-runtime challenge creates the series' strongest standalone demonstration.",
+};
+
+export async function run({ page, goto, say, clearCaption, intro, checkpoint, runtimeCheckpoint, aha, expect, click, type, wait }) {
+  await configureKimi(page);
   await page.request.delete("http://127.0.0.1:38080/v1/config/agents/safe-writer").catch(() => {});
 
   await goto("/w/default/agents");
@@ -27,7 +38,7 @@ export async function run({ page, goto, say, clearCaption, intro, checkpoint, ah
   await say("Request accepted immediately. The live activity indicator now follows every committed event.", 3800);
 
   const openBtn = page.getByRole("button", { name: /Open in editor|在编辑器打开/ });
-  await checkpoint("AI authored a valid lowercase read-before-write deny machine", async () => {
+  await runtimeCheckpoint("AI authored a valid lowercase read-before-write deny machine", async () => {
     await expect(openBtn.first()).toBeVisible({ timeout: 90000 });
     const response = await page.request.get("http://127.0.0.1:38080/v1/config/agents/safe-writer");
     expect(response.ok()).toBeTruthy();
@@ -86,12 +97,12 @@ export async function run({ page, goto, say, clearCaption, intro, checkpoint, ah
   });
 
   const writeCard = page.locator("details").filter({ has: page.locator("code").filter({ hasText: /^write$/ }) }).first();
-  await checkpoint("the State Machine blocks the unread write at runtime", async () => {
+  await runtimeCheckpoint("the State Machine blocks the unread write at runtime", async () => {
     await expect(writeCard.getByText("error", { exact: true })).toBeVisible({ timeout: 60_000 });
     await writeCard.locator("summary").click();
     await expect(writeCard.getByText(/blocked|Read .* before writing/i)).toBeVisible();
   });
   await wait(1200);
-  await aha("The prompt asked for an unsafe write. The model tried. Awaken's runtime said no.", 5200);
+  await aha(story.aha, 5200);
   await clearCaption();
 }

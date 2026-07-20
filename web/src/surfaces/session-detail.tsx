@@ -1,4 +1,4 @@
-// Session detail: header actions (rename/archive/pause/resume/interrupt) + an
+// Session detail: header actions (rename/archive/interrupt) + an
 // agent/properties aside around the shared <Transcript>. The transcript owns the
 // live event log; header actions post inbound events and invalidate the same
 // events cache key so the transcript refreshes.
@@ -11,7 +11,7 @@ import TraceView from "../components/session/TraceView";
 import SessionFiles from "../components/session/SessionFiles";
 import { Button, Card, Pill, Segmented } from "../components/ui";
 import { api, ws } from "../lib/api/client";
-import type { InboundEvent, Session } from "../lib/api/types";
+import type { InboundEvent, SendEventsResponse, Session } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
 
 /** The agent's model can arrive as a bare id or a `{ id }` object — coerce to text. */
@@ -29,6 +29,7 @@ export default function SessionDetailSurface() {
   const base = ws(`/v1/sessions/${sid}`);
   const eventsKey = ["session-events", wsId, sid];
   const [view, setView] = useState<"chat" | "trace" | "files">("chat");
+  const [controlResult, setControlResult] = useState<string | null>(null);
 
   const session = useQuery({
     queryKey: ["session", wsId, sid],
@@ -37,11 +38,14 @@ export default function SessionDetailSurface() {
   });
 
   const control = useMutation({
-    mutationFn: (evs: InboundEvent[]) => api.post(`${base}/events`, { events: evs }),
-    onSuccess: () => {
+    mutationFn: (evs: InboundEvent[]) => api.post<SendEventsResponse>(`${base}/events`, { events: evs }),
+    onSuccess: (result) => {
+      const receipt = result.data.at(-1);
+      setControlResult(receipt ? `${receipt.type} accepted · ${receipt.id}` : null);
       void qc.invalidateQueries({ queryKey: eventsKey });
       void session.refetch();
     },
+    onError: (error) => setControlResult(error instanceof Error ? error.message : "control request failed"),
   });
   const rename = useMutation({
     mutationFn: (title: string) => api.post<Session>(base, { title }),
@@ -86,17 +90,13 @@ export default function SessionDetailSurface() {
               ⌫ {app.t("archive", "归档")}
             </Button>
           )}
-          <Button variant="ghost" onClick={() => control.mutate([{ type: "user.pause" }])}>
-            ⏸ pause
-          </Button>
-          <Button variant="ghost" onClick={() => control.mutate([{ type: "user.resume" }])}>
-            ▶ resume
-          </Button>
           <Button variant="danger" onClick={() => control.mutate([{ type: "user.interrupt" }])}>
             ⏹ interrupt
           </Button>
         </span>
       </div>
+
+      {controlResult && <div className={`banner ${control.isError ? "err" : "info"}`}>{controlResult}</div>}
 
       <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
         <div style={{ flex: 1.8, minWidth: 0 }}>

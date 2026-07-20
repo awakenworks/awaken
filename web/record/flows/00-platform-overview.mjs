@@ -4,6 +4,15 @@
 const AGENT = "platform-overview-agent";
 const MODEL = "overview-model";
 
+export const story = {
+  promise: "Follow one portable Agent from model supply through governed execution instead of touring unrelated pages.",
+  effect: "The same Agent configuration visibly reaches a Managed session with explicit ACP runtime and sandbox boundaries.",
+  aha: "One portable Agent configuration; many model, tool, protocol, and sandbox realizations—each visibly proven.",
+  loyalty: "A coherent end-to-end mental model makes the platform predictable and worth returning to.",
+  satisfaction: "Viewers understand where every major capability fits without sitting through a feature inventory.",
+  advocacy: "The one-Agent-many-runtimes contrast is concise enough to share as the series trailer.",
+};
+
 export async function run({ page, goto, intro, beat, clearCaption, checkpoint, aha, expect, click, wait }) {
   const store = await (await page.request.post("http://127.0.0.1:38080/v1/memory_stores", {
     data: { name: `Overview memory ${Date.now()}` },
@@ -16,6 +25,9 @@ export async function run({ page, goto, intro, beat, clearCaption, checkpoint, a
   });
   await page.request.post("http://127.0.0.1:38080/v1/config/offerings", {
     data: { model_id: MODEL, provider_id: "overview", protocol_endpoint_id: "overview-anthropic", dialect: "anthropic_messages", upstream_model: "demo-upstream" },
+  });
+  await page.request.post("http://127.0.0.1:38080/v1/config/credentials", {
+    data: { workspace_id: "wrkspc_default", kind: "vault", provider_id: "overview", secret: "overview-video-only" }, // awaken-allow: secret (synthetic fixture)
   });
   await page.request.put(`http://127.0.0.1:38080/v1/config/agents/${AGENT}`, {
     data: {
@@ -41,9 +53,16 @@ export async function run({ page, goto, intro, beat, clearCaption, checkpoint, a
   const environment = await (await page.request.post("http://127.0.0.1:38080/v1/environments", {
     data: { name: "Claude Code · locked", config: { type: "cloud", runtime: "acp:claude", sandbox: { isolation: "namespace", network: { mode: "none" }, limits: {} } } },
   })).json();
-  await page.request.post("http://127.0.0.1:38080/v1/sessions", {
-    data: { agent: "default", title: "Overview proof session" },
-  });
+  const published = await page.request.post(`http://127.0.0.1:38080/v1/config/agents/${AGENT}/publish`);
+  expect(published.ok()).toBeTruthy();
+  const managedSession = await (await page.request.post("http://127.0.0.1:38080/v1/sessions", {
+    data: {
+      agent: AGENT,
+      environment_id: environment.id,
+      title: "One Agent · many realizations",
+      metadata: { "awaken.runtime": "acp:claude" },
+    },
+  })).json();
 
   await goto("/w/default/overview");
   await intro(
@@ -72,6 +91,9 @@ export async function run({ page, goto, intro, beat, clearCaption, checkpoint, a
   await goto("/w/default/environments");
   await beat("Execution stays independent: this environment combines Claude Code over ACP with a no-egress sandbox.", page.locator("tr", { hasText: environment.id }), 3000);
 
+  await goto(`/w/default/sessions/${managedSession.id}`);
+  await beat("The story closes in a Managed session: the same Agent now carries explicit ACP runtime provenance.", page.getByText("acp:claude", { exact: true }), 3000);
+
   await checkpoint("the visible sweep is backed by models, MCP, Skill, Memory, State Machine, ACP, and sandbox config", async () => {
     const capsResponse = await page.request.get("http://127.0.0.1:38080/v1/capabilities");
     const configResponse = await page.request.get(`http://127.0.0.1:38080/v1/config/agents/${AGENT}`);
@@ -90,6 +112,9 @@ export async function run({ page, goto, intro, beat, clearCaption, checkpoint, a
     expect(resources.resources[0].resource_id).toBe(store.id);
     expect(environment.config.runtime).toBe("acp:claude");
     expect(environment.config.sandbox.network.mode).toBe("none");
+    expect(managedSession.agent.id).toBe(AGENT);
+    expect(managedSession.environment_id).toBe(environment.id);
+    expect(managedSession.metadata["awaken.runtime"]).toBe("acp:claude");
   });
 
   await clearCaption();

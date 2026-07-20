@@ -380,6 +380,7 @@ mod tests {
                 model: Some("kimi-k2".to_string()),
                 system: Some("be helpful".to_string()),
                 tool_ids: vec!["fs_read".to_string()],
+                resources: Vec::new(),
             })
         }
     }

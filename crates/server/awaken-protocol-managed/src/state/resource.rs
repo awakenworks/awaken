@@ -164,7 +164,9 @@ pub(crate) fn resource_dto(session_id: &str, n: usize, res: &SessionResource) ->
                 obj.insert("checkout".into(), json!({ "type": "branch", "name": r }));
             }
         }
-        _ => {}
+        _ => {
+            obj.insert("resource_id".into(), json!(res.id));
+        }
     }
     serde_json::Value::Object(obj)
 }

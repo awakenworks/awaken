@@ -1,9 +1,20 @@
 // Memory effect, not just binding UI: one real-model session writes a random fact,
 // the store is harvested, and a fresh session recalls it with no shared chat history.
+import { configureKimi } from "../support/models.mjs";
 
 const AGENT = "release-notes-writer";
 
-export async function run({ page, goto, say, clearCaption, intro, checkpoint, aha, expect, click, type, wait, beat }) {
+export const story = {
+  promise: "Teach an Agent one fact and prove a completely fresh session can recall it without shared chat history.",
+  effect: "Session one writes a random code to an explicit Memory mount and session two reads the same code back.",
+  aha: "The second session knows what the first one learned—because Memory is a mounted resource, not hidden chat history.",
+  loyalty: "Durable, inspectable continuity makes the Agent more useful over time and rewards continued use.",
+  satisfaction: "A random-code proof removes ambiguity about whether Memory binding has a real runtime effect.",
+  advocacy: "Fresh-session recall is an instantly understandable demonstration viewers can repeat for colleagues.",
+};
+
+export async function run({ page, goto, say, clearCaption, intro, runtimeCheckpoint, aha, expect, click, type, wait, beat }) {
+  await configureKimi(page);
   const secret = `AHA-${Date.now()}`;
   const store = await (await page.request.post("http://127.0.0.1:38080/v1/memory_stores", {
     data: { name: `release-memory-${Date.now()}` },
@@ -48,7 +59,7 @@ export async function run({ page, goto, say, clearCaption, intro, checkpoint, ah
   await expect(page.locator(".agent-working")).toBeVisible();
   await say("Immediate working feedback keeps the conversation alive while the real model and tools execute.", 3400);
 
-  await checkpoint("session one writes the random code into the bound durable store", async () => {
+  await runtimeCheckpoint("session one writes the random code into the bound durable store", async () => {
     await expect(page.locator(".agent-working")).not.toBeVisible({ timeout: 60000 });
     await expect(page.getByText("⬡ agent").last()).toBeVisible();
     await page.request.get(`http://127.0.0.1:38080/v1/files?scope_id=${first.id}`);
@@ -65,14 +76,14 @@ export async function run({ page, goto, say, clearCaption, intro, checkpoint, ah
   await type(secondComposer, "Read your persistent memory and answer with only the exact release code.", { delay: 12 });
   await secondComposer.press("Enter");
 
-  await checkpoint("a fresh Agent session recalls the exact code from Memory", async () => {
+  await runtimeCheckpoint("a fresh Agent session recalls the exact code from Memory", async () => {
     await expect(page.getByText(secret, { exact: false })).toBeVisible({ timeout: 60000 });
     await expect(page.locator(".agent-working")).not.toBeVisible({ timeout: 10000 });
   });
   await click(page.getByRole("button", { name: "Trace", exact: true }));
   await say("Trace keeps the evidence inspectable after the payoff: model, tools, and lifecycle remain observable.", 3600);
   await clearCaption();
-  await aha("The second session knows what the first one learned—because Memory is a mounted resource, not hidden chat history.");
+  await aha(story.aha);
   await wait(800);
   await clearCaption();
 }

@@ -71,6 +71,10 @@ impl ManagedState {
             }
         };
         let agent_id = req.agent.id().to_string();
+        let config_view = self
+            .config_source
+            .as_ref()
+            .and_then(|source| source.agent_view(&agent_id));
         // Resolve the session's effective model. Precedence: the official
         // `agent_with_overrides.model` (a per-session replace) wins; then the legacy
         // `metadata.awaken.model` selection; then the referenced agent's authoritative
@@ -84,13 +88,10 @@ impl ManagedState {
                     "agent_model_required: a session override cannot clear `model`",
                 )));
             }
-            ModelOverride::Absent => req.awaken_model().map(ModelConfig::new).or_else(|| {
-                self.config_source
-                    .as_ref()
-                    .and_then(|source| source.agent_view(&agent_id))
-                    .and_then(|view| view.model)
-                    .map(ModelConfig::new)
-            }),
+            ModelOverride::Absent => req
+                .awaken_model()
+                .map(ModelConfig::new)
+                .or_else(|| config_view.as_ref()?.model.clone().map(ModelConfig::new)),
         };
         // Echo the agent version the client pinned (or overrode over), defaulting to 1.
         let agent_version = req.agent.version().unwrap_or(1);
@@ -127,7 +128,23 @@ impl ManagedState {
             .iter()
             .filter_map(parse_session_resource)
             .collect();
-        let resource_dtos: Vec<serde_json::Value> = resources
+        // The Session view describes the effective mounted inputs. Explicit
+        // Session resources win by mount path; the runtime host applies the same
+        // precedence when it adds the published Agent's bindings.
+        let explicit_paths: std::collections::HashSet<&str> = resources
+            .iter()
+            .map(|resource| resource.mount_path.as_str())
+            .collect();
+        let mut effective_resources = resources.clone();
+        if let Some(view) = &config_view {
+            effective_resources.extend(
+                view.resources
+                    .iter()
+                    .filter(|resource| !explicit_paths.contains(resource.mount_path.as_str()))
+                    .cloned(),
+            );
+        }
+        let resource_dtos: Vec<serde_json::Value> = effective_resources
             .iter()
             .enumerate()
             .map(|(n, r)| resource_dto(&id, n, r))

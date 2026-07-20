@@ -21,12 +21,13 @@ const checks = [
     assert.ok(intro >= 0 && intro < firstOperation, `${name}: explain intent/function before UI operations`);
   })],
   ["executable claim", () => eachFlow((name, source) => {
-    assert.match(source, /await checkpoint\(/, `${name}: add an observable checkpoint`);
+    assert.match(source, /await (?:checkpoint|runtimeCheckpoint)\(/, `${name}: add an observable checkpoint`);
     assert.match(source, /expect\(|waitForFunction\(/, `${name}: checkpoint must assert UI/API truth`);
   })],
   ["shareable payoff", () => eachFlow((name, source) => {
     assert.equal(matches(source, /await aha\(/g), 1, `${name}: land exactly one focused AHA`);
-    assert.ok(source.lastIndexOf("await aha(") > source.lastIndexOf("await checkpoint("), `${name}: AHA must follow proof`);
+    const proof = Math.max(source.lastIndexOf("await checkpoint("), source.lastIndexOf("await runtimeCheckpoint("));
+    assert.ok(source.lastIndexOf("await aha(") > proof, `${name}: AHA must follow proof`);
   })],
   ["no swallowed interaction", () => eachFlow((name, source) => {
     assert.doesNotMatch(source, /(?:click|fill|selectOption|waitFor)[^;\n]*\.catch\(/, `${name}: visible interaction failure is being swallowed`);
@@ -87,7 +88,11 @@ const checks = [
   }],
   ["feature breadth", () => {
     const corpus = [...flows.values()].join("\n");
-    for (const claim of ["model", "agent", "permission", "memory", "State Machine", "trace", "Managed Agents", "ACP", "MCP", "sandbox"]) {
+    for (const claim of [
+      "model", "agent", "permission", "memory", "State Machine", "trace",
+      "Managed Agents", "ACP", "MCP", "sandbox", "Skill", "Deployment",
+      "archive", "A2A", "access",
+    ]) {
       assert.ok(corpus.toLowerCase().includes(claim.toLowerCase()), `series: missing ${claim}`);
     }
   }],
@@ -155,7 +160,23 @@ const checks = [
       "07-runtime-sandbox.mjs",
       "08-agent-control-plane.mjs",
       "09-protocol-composition.mjs",
+      "10-skill-optimized-agent.mjs",
+      "11-resource-provenance.mjs",
+      "12-deployment-control.mjs",
+      "13-managed-api-ingress.mjs",
+      "14-session-control.mjs",
+      "15-a2a-discovery.mjs",
+      "16-access-boundary.mjs",
     ]);
+  }],
+  ["customer relationship objective", () => eachFlow((name, source) => {
+    for (const field of ["loyalty", "satisfaction", "advocacy"]) {
+      assert.match(source, new RegExp(`${field}:\\s*["']`), `${name}: explain how this story strengthens ${field}`);
+    }
+  })],
+  ["sub-three-minute close", () => {
+    assert.match(harness, /MAX_VIDEO_MS = 180_000/);
+    assert.match(harness, /MAX_FLOW_MS = 172_000/);
   }],
 ];
 

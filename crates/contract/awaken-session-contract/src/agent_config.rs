@@ -8,6 +8,9 @@ pub struct AgentConfigView {
     pub model: Option<String>,
     pub system: Option<String>,
     pub tool_ids: Vec<String>,
+    /// Resources bound to the published Agent. The runtime mounts these at Session
+    /// preparation; protocol projections expose the same effective inputs.
+    pub resources: Vec<crate::SessionResource>,
 }
 
 /// A source of config-plane agent projections. A **port**: the host implements it
