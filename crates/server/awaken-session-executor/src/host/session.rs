@@ -194,6 +194,20 @@ impl SharedHost {
         agent: Option<&str>,
         adopted: Option<LocalSandbox>,
     ) -> Result<Arc<SessionCtx>, HostError> {
+        self.ctx_for_snapshot_with_sandbox(thread, agent, None, adopted)
+            .await
+    }
+
+    /// Open a session from the executable snapshot carried by a claimed dispatch.
+    /// The snapshot is the publication output and therefore authoritative for the
+    /// worker; the config service is only a local/session-create compatibility path.
+    pub(crate) async fn ctx_for_snapshot_with_sandbox(
+        &self,
+        thread: &str,
+        agent: Option<&str>,
+        published_snapshot: Option<awaken_runtime_contract::ExecutableAgentSnapshot>,
+        adopted: Option<LocalSandbox>,
+    ) -> Result<Arc<SessionCtx>, HostError> {
         let mut sessions = self.sessions.lock().await;
         if let Some(ctx) = sessions.get(thread) {
             if let Some(adopted) = &adopted
@@ -257,14 +271,16 @@ impl SharedHost {
             .cloned()
             .chain(admin_ids.iter().cloned())
             .collect();
-        // A published agent runs with its own installed config (slice A); an
-        // unknown/unpublished agent falls back to the server's built-in default.
-        // Fetched here because its `plugin_config["permission"]` shapes the gate.
-        let installed = self
-            .config_service
-            .as_ref()
-            .zip(agent)
-            .and_then(|(svc, agent)| svc.installed(agent));
+        // A remote worker consumes the exact snapshot distributed in the claim;
+        // it must not reopen the config registry and reconstruct current state.
+        // Local session creation has no claimed snapshot yet, so it uses the
+        // installed publication as the compatibility path.
+        let installed = published_snapshot.or_else(|| {
+            self.config_service
+                .as_ref()
+                .zip(agent)
+                .and_then(|(svc, agent)| svc.installed(agent))
+        });
         // The workspace skill dir is negotiated by the agent/hand definition: its
         // `plugin_config.skills_dir` (ADR-0036) overrides the default `skills` subdir,
         // so a hand that authors skills elsewhere is discovered where it says — not a
