@@ -605,6 +605,26 @@ mod tests {
     use awaken_runtime_contract::resolved::ModelBinding;
     use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 
+    fn exact_access(credential: &str, provider: &str, route: &str) -> InferenceAccess {
+        InferenceAccess {
+            scheme: "credential-source/v1".into(),
+            reference: credential.into(),
+            provider_ref: Some(provider.into()),
+            route_ref: Some(route.into()),
+            scope_id: None,
+            credential_access: Some(awaken_runtime_contract::CredentialAccess {
+                credential: awaken_runtime_contract::CredentialRef {
+                    id: credential.into(),
+                    revision: 0,
+                },
+                injection: awaken_runtime_contract::CredentialInjectionKind::Reference,
+                usage: awaken_runtime_contract::CredentialUsage::ProviderAdapter,
+            }),
+            endpoint: None,
+            candidates: Vec::new(),
+        }
+    }
+
     /// A model that replies with the leading system instruction it was given, so a
     /// test can prove the sub-run resolved that agent's own config.
     struct InstructionEchoModel;
@@ -722,11 +742,11 @@ mod tests {
         let expected = InferenceAccess::candidate_set([
             (
                 "primary".to_string(),
-                InferenceAccess::exact_credential("cred-a", "provider-a@1", "route-a@1"),
+                exact_access("cred-a", "provider-a@1", "route-a@1"),
             ),
             (
                 "fallback".to_string(),
-                InferenceAccess::exact_credential("cred-b", "provider-b@2", "route-b@3"),
+                exact_access("cred-b", "provider-b@2", "route-b@3"),
             ),
         ])
         .expect("candidate access");
