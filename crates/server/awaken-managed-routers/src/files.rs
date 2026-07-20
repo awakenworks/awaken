@@ -13,7 +13,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::json;
 
-use awaken_session_executor::{ResourceWorkspace, SharedHost};
+use awaken_session_executor::SharedHost;
+use awaken_tenancy::WorkspaceScope as ResourceWorkspace;
 
 /// Mount the Files API over the host's blob store.
 pub fn files_router(host: Arc<SharedHost>) -> Router {
