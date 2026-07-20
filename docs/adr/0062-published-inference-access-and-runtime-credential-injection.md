@@ -62,8 +62,10 @@ The concrete adapters are intentionally separate:
   installed host executor. It cannot enumerate or select configuration.
 
 An externally hosted or secretless Worker may supply another implementation of
-the materialization port. That is an adapter choice, not an `ExecutorProvider`
-domain abstraction and not a local/gateway branch.
+the materialization port. That is an adapter choice, not an inference-executor
+selection domain abstraction and not a local/gateway branch. The independently
+named `ToolExecutorProvider` remains the placement port for remote tool execution;
+it does not participate in model access or credential handling.
 
 ### Dynamic view
 
@@ -133,8 +135,8 @@ replaced by composition of one `InferenceAccess` value. The unused
 types are deleted: execution receives one selected `CredentialInjectionKind`,
 not a fallback list it could reinterpret.
 
-No `InferencePlan`, local/gateway mode, or runtime `ExecutorProvider` is part of
-the resulting domain language.
+No `InferencePlan`, local/gateway mode, or runtime inference-executor provider is
+part of the resulting domain language.
 
 ## Verification
 

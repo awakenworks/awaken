@@ -32,6 +32,7 @@ const scenarios: Scenario[] = [
   { id: 'pg_history', file: 'e2e/durable_pg_commit_e2e.mjs', postgres: true },
   { id: 'pg_wake', file: 'e2e/durable_pg_wake_e2e.mjs', postgres: true },
   { id: 'credential_reference_worker', file: 'e2e/credential_reference_worker_e2e.ts' },
+  { id: 'credential_materialization_worker', file: 'e2e/credential_materialization_worker_e2e.ts' },
   { id: 'child_recovery', file: 'e2e/durable_child_sandbox_recovery_e2e.ts' },
   { id: 'durable_cancel', file: 'e2e/durable_worker_cancel_e2e.mjs' },
   { id: 'dispatch_metrics', file: 'e2e/dispatch_metrics_export_e2e.mjs' },
@@ -71,6 +72,7 @@ const obligations: Obligation[] = [
   { id: 'D4-04', stage: '4 credential injection', behavior: 'materialized executor drives the model result', scenario: 'credential_reference_worker' },
   { id: 'D4-05', stage: '4 credential injection', behavior: 'worker runs with provider key variables removed', scenario: 'credential_reference_worker' },
   { id: 'D4-06', stage: '4 credential injection', behavior: 'reference-routed result commits and settles exactly once', scenario: 'credential_reference_worker' },
+  { id: 'D4-07', stage: '4 credential injection', behavior: 'production worker opens only credential materialization stores and calls the pinned endpoint', scenario: 'credential_materialization_worker' },
 
   { id: 'D5-01', stage: '5 durable child lifecycle', behavior: 'child has a first-class stable run identity', scenario: 'child_recovery' },
   { id: 'D5-02', stage: '5 durable child lifecycle', behavior: 'hard process crash occurs while child inference is in flight', scenario: 'child_recovery' },
