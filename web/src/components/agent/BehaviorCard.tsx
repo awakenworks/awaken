@@ -41,6 +41,7 @@ export default function BehaviorCard({
   config,
   onToggle,
   onConfig,
+  changed = false,
 }: {
   id: string;
   schema?: JsonSchema;
@@ -48,6 +49,8 @@ export default function BehaviorCard({
   config: Record<string, unknown>;
   onToggle: (on: boolean) => void;
   onConfig: (next: unknown) => void;
+  /** The assistant changed this behavior since the operator last authored it. */
+  changed?: boolean;
 }) {
   const app = useApp();
   const meta = BEHAVIORS[id];
@@ -76,10 +79,13 @@ export default function BehaviorCard({
     </>
   );
   return (
-    <Card className="behavior-card">
+    <Card className={`behavior-card${changed ? " agent-change-highlight" : ""}`}>
       <label className="behavior-head">
         <span>
-          <div className="behavior-title">{title}</div>
+          <div className="behavior-title">
+            {title}
+            {changed && <span className="agent-change-label">✦ {app.t("Agent updated", "Agent 已更新")}</span>}
+          </div>
           <div className="behavior-desc">{desc}</div>
         </span>
         <Switch aria-label={title} checked={enabled} onChange={(e) => onToggle(e.target.checked)} />
