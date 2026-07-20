@@ -73,7 +73,7 @@ impl Record {
 // The agent-config port + its neutral view now live in `awaken-session-contract`
 // (a contract/ leaf), re-exported here so existing `awaken_protocol_managed::…` paths
 // keep resolving until consumers flip to the contract directly.
-pub use awaken_session_contract::{AgentConfigSource, AgentConfigView};
+pub use awaken_session_contract::{AgentConfigSource, AgentConfigView, AgentMcpServerView};
 
 /// The agent-registry state.
 #[derive(Default)]
@@ -178,8 +178,16 @@ fn project_config_view(id: &str, view: &AgentConfigView) -> Agent {
         model: ModelConfig::new(view.model.clone().unwrap_or_default()),
         system: view.system.clone(),
         metadata: BTreeMap::new(),
-        mcp_servers: Vec::new(),
-        skills: Vec::new(),
+        mcp_servers: view
+            .mcp_servers
+            .iter()
+            .map(|server| json!({ "type": "url", "name": server.name, "url": server.url }))
+            .collect(),
+        skills: view
+            .skill_ids
+            .iter()
+            .map(|id| json!({ "id": id }))
+            .collect(),
         tools: tools_wire(&view.tool_ids),
         multiagent: None,
         version: 1,
@@ -380,6 +388,11 @@ mod tests {
                 model: Some("kimi-k2".to_string()),
                 system: Some("be helpful".to_string()),
                 tool_ids: vec!["fs_read".to_string()],
+                mcp_servers: vec![awaken_session_contract::AgentMcpServerView {
+                    name: "docs".to_string(),
+                    url: "https://mcp.example.test".to_string(),
+                }],
+                skill_ids: vec!["skill_docs".to_string()],
                 resources: Vec::new(),
             })
         }
@@ -410,6 +423,8 @@ mod tests {
         assert_eq!(body["model"]["id"], "kimi-k2");
         assert_eq!(body["system"], "be helpful");
         assert_eq!(body["tools"][0]["name"], "fs_read");
+        assert_eq!(body["mcp_servers"][0]["name"], "docs");
+        assert_eq!(body["skills"][0]["id"], "skill_docs");
 
         // An id in neither the registry nor the config plane is still 404.
         let (status, _) = get(&app, "/v1/agents/ghost").await;

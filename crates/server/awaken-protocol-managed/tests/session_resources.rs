@@ -27,6 +27,8 @@ impl AgentConfigSource for AgentWithResources {
             model: None,
             system: None,
             tool_ids: Vec::new(),
+            mcp_servers: Vec::new(),
+            skill_ids: Vec::new(),
             resources: vec![SessionResource {
                 kind: "skill".into(),
                 id: "skill_release".into(),
@@ -35,6 +37,24 @@ impl AgentConfigSource for AgentWithResources {
                 auth_token: None,
                 git_ref: None,
             }],
+        })
+    }
+}
+
+struct AgentWithIntegrations;
+
+impl AgentConfigSource for AgentWithIntegrations {
+    fn agent_view(&self, agent_id: &str) -> Option<AgentConfigView> {
+        (agent_id == "integrated").then(|| AgentConfigView {
+            model: None,
+            system: None,
+            tool_ids: Vec::new(),
+            mcp_servers: vec![awaken_protocol_managed::AgentMcpServerView {
+                name: "docs".into(),
+                url: "https://mcp.example.test".into(),
+            }],
+            skill_ids: vec!["skill_release".into()],
+            resources: Vec::new(),
         })
     }
 }
@@ -104,6 +124,23 @@ async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (St
         serde_json::from_slice(&bytes).unwrap_or(Value::Null)
     };
     (status, value)
+}
+
+#[tokio::test]
+async fn session_inherits_published_agent_integrations_and_echoes_the_effective_set() {
+    let state = ManagedState::new(AcceptingFake)
+        .with_config_source(std::sync::Arc::new(AgentWithIntegrations));
+    let app = router(std::sync::Arc::new(state));
+    let (status, session) = call(
+        &app,
+        "POST",
+        "/v1/sessions",
+        Some(json!({ "agent": "integrated" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(session["agent"]["mcp_servers"][0]["name"], "docs");
+    assert_eq!(session["agent"]["skills"][0]["id"], "skill_release");
 }
 
 async fn app_with_session() -> (Router, String) {

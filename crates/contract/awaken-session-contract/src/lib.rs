@@ -21,7 +21,7 @@ mod session;
 mod session_repo;
 pub mod work_queue;
 
-pub use agent_config::{AgentConfigSource, AgentConfigView};
+pub use agent_config::{AgentConfigSource, AgentConfigView, AgentMcpServerView};
 pub use lifecycle::{SessionLifecycleFact, SessionLifecycleSink};
 pub use mcp_binding::{McpRefreshBinding, TokenEndpointAuthBinding};
 pub use mcp_probe::{McpProbe, McpProbeStatus};

@@ -355,9 +355,46 @@ impl SharedHost {
             .skills
             .has_store()
             .then(|| self.skills.cache_snapshot_in(&workspace));
+        // A newly published Agent receives exactly its selected Skills. Older
+        // publications without the normalized binding section retain the legacy
+        // global catalog behavior, which makes the migration backward compatible.
+        let selected_skills = installed.as_ref().and_then(|config| {
+            awaken_runtime_contract::agent_bindings::AgentBindings::from_config(
+                &config.snapshot().resolved_spec.plugin_config,
+            )
+            .map(|bindings| {
+                bindings
+                    .skill_ids
+                    .into_iter()
+                    .collect::<std::collections::BTreeSet<_>>()
+            })
+        });
+        let filtered_specs: Vec<SkillSpec> = match &selected_skills {
+            Some(selected) => self
+                .skills
+                .specs()
+                .iter()
+                .filter(|skill| selected.contains(&skill.id))
+                .cloned()
+                .collect(),
+            None => self.skills.specs().to_vec(),
+        };
+        let filtered_delivered = match (delivered, &selected_skills) {
+            (Some(skills), Some(selected)) => Some(
+                skills
+                    .into_iter()
+                    .filter(|(stem, _)| {
+                        selected.contains(stem)
+                            || selected.contains(&awaken_skill_store::catalog_id(stem))
+                    })
+                    .collect(),
+            ),
+            (skills, None) => skills,
+            (None, Some(_)) => None,
+        };
         if let Some(wiring) = crate::skills::wire_skills(
-            self.skills.specs(),
-            delivered,
+            &filtered_specs,
+            filtered_delivered,
             env.clone(),
             self.llm.clone(),
             &self.model_ref,
