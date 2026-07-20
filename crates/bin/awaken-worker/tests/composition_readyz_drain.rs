@@ -13,8 +13,7 @@
 //! e2e: the upstream implements only worker lifecycle and an empty claim response, so
 //! no real server, durable queue, or model is involved.
 //!
-//! This posture exercises the `gateway_only` branch (`AWAKEN_WORKER_GATEWAY_ONLY=1`,
-//! secretless: no vault/seal key), `ensure_dispatch_pool` over the injected
+//! This exercises the single worker composition, `ensure_dispatch_pool` over the injected
 //! `worker_dispatch_store`, the `/readyz` `/livez` `/metrics` surface, and the drain
 //! transition (`POST /admin/drain` flips `/readyz` 200 → 503). Determinism: we POLL
 //! `/readyz` until it flips — never a fixed "wait for ready" sleep.
@@ -80,7 +79,7 @@ fn poll_until(addr: &str, method: &str, path: &str, want: u16) -> bool {
 }
 
 #[test]
-fn run_gateway_only_brings_readyz_up_then_drain_flips_it_down() {
+fn run_brings_readyz_up_then_drain_flips_it_down() {
     let admin_addr = format!("127.0.0.1:{}", free_port());
     let upstream = FakeWorkerUpstream::start();
 
@@ -88,7 +87,6 @@ fn run_gateway_only_brings_readyz_up_then_drain_flips_it_down() {
         Command::new(env!("CARGO_BIN_EXE_awaken-worker"))
             .env("AWAKEN_UPSTREAM_URL", upstream.url())
             .env("AWAKEN_INGRESS", "durable") // the pool's enable gate
-            .env("AWAKEN_WORKER_GATEWAY_ONLY", "1") // secretless: no vault/seal key
             .env("AWAKEN_WORKER_ADMIN_LISTEN", &admin_addr)
             .env_remove("AWAKEN_MGMT_DIR") // in-memory config plane, no durable path
             .env_remove("AWAKEN_ACP_CLI") // native only, no ACP backend
@@ -101,7 +99,7 @@ fn run_gateway_only_brings_readyz_up_then_drain_flips_it_down() {
     // so once the admin surface binds, readiness reports ACCEPTING. Polled, not slept.
     assert!(
         poll_until(&admin_addr, "GET", "/readyz", 200),
-        "run() brings the dispatch pool up → /readyz 200 (accepting) in the gateway-only posture"
+        "run() brings the dispatch pool up → /readyz 200 (accepting)"
     );
 
     // Liveness is up and /metrics renders while serving.
