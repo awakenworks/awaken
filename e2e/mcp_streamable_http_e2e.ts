@@ -120,7 +120,7 @@ async function main(): Promise<void> {
     });
     assert.equal(unacceptable.status, 406, 'unsupported POST Accept is rejected');
     const getWithoutSse = await fetch(BASE, { headers: headers({ accept: 'application/json' }) });
-    assert.equal(getWithoutSse.status, 405, 'GET without text/event-stream is rejected');
+    assert.equal(getWithoutSse.status, 406, 'GET without text/event-stream is rejected');
 
     const initialized = await rpc({
       jsonrpc: '2.0',
@@ -161,8 +161,8 @@ async function main(): Promise<void> {
       { jsonrpc: '2.0', id: 2, method: 'ping', params: {} },
       { 'mcp-session-id': session!, 'mcp-protocol-version': '1900-01-01' },
     );
-    assert.equal(unsupported.status, 200);
-    assert.equal((await unsupported.json() as any).error?.code, -32602);
+    assert.equal(unsupported.status, 400);
+    assert.equal(await unsupported.text(), 'unsupported MCP protocol version: 1900-01-01');
 
     const progressResponse = await rpc(
       {
@@ -176,7 +176,7 @@ async function main(): Promise<void> {
         },
       },
       {
-        accept: 'text/event-stream',
+        accept: 'application/json, text/event-stream',
         'mcp-session-id': session!,
         'mcp-protocol-version': VERSION,
       },

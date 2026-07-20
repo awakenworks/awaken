@@ -24,6 +24,7 @@ const BASE = `http://127.0.0.1:${PORT}`;
 const THREAD = 'pg-claimed-guard-ts';
 const OWNER_A = 'pg-worker-a';
 const OWNER_B = 'pg-worker-b';
+const identities = new Map<string, unknown>();
 
 function sql(statement: string): string {
   const command = POSTGRES_CONTAINER ? 'docker' : 'psql';
@@ -54,10 +55,13 @@ function quoted(value: string): string {
 async function post(pathname: string, body: unknown, worker?: string) {
   const headers: Record<string, string> = { 'content-type': 'application/json' };
   if (worker) headers['x-awaken-worker-id'] = worker;
+  const payload = worker && pathname !== '/v1/worker/register'
+    ? { ...(body as Record<string, unknown>), identity: identities.get(worker) }
+    : body;
   const response = await fetch(`${BASE}${pathname}`, {
     method: 'POST',
     headers,
-    body: JSON.stringify(body),
+    body: JSON.stringify(payload),
   });
   const text = await response.text();
   let json: any = null;
@@ -67,6 +71,41 @@ async function post(pathname: string, body: unknown, worker?: string) {
     // Preserve the raw response for assertions below.
   }
   return { status: response.status, json, text };
+}
+
+async function registerReadyWorker(worker: string): Promise<void> {
+  const registration = await post('/v1/worker/register', {
+    registration: {
+      worker_id: worker,
+      incarnation_id: `${worker}-${process.pid}`,
+      manifest: {
+        manifest_version: 1,
+        build_digest: 'postgres-claimed-commit-guard-e2e',
+        capabilities: ['host-executor/v1', 'native-runtime'],
+        zone: null,
+        architecture: process.arch,
+        sandbox: {
+          isolation: 'workdir', tool_transparent: false, path_fidelity: false,
+          enforced_readonly: false, network_isolation: false,
+          secret_egress_substitution: false, resource_limits: false, custom_rootfs: false,
+        },
+        sandbox_backends: [],
+        dispatch_contract: { min: 1, max: 1 },
+        runtime_protocol: { min: 1, max: 1 },
+        checkpoint_formats: ['stream-v1'],
+        capacity: { max_concurrent: 1, resources: {} },
+      },
+    },
+  }, worker);
+  assert.equal(registration.status, 200, registration.text);
+  const identity = registration.json?.worker?.snapshot?.identity;
+  assert.ok(identity, `registration returns an identity for ${worker}`);
+  identities.set(worker, identity);
+  const heartbeat = await post('/v1/worker/heartbeat', {
+    heartbeat: { sequence: 1, ready: true, in_flight: 0 },
+  }, worker);
+  assert.equal(heartbeat.status, 200, heartbeat.text);
+  assert.equal(heartbeat.json?.mutation, 'applied');
 }
 
 function terminalCommit(runId: string) {
@@ -124,6 +163,8 @@ async function main(): Promise<void> {
   }).server;
   try {
     await waitForPort(PORT);
+    await registerReadyWorker(OWNER_A);
+    await registerReadyWorker(OWNER_B);
     const submitted = await post(`/v1/durable/threads/${THREAD}/submit_background`, {
       text: 'prove the commit epoch guard',
     });
@@ -154,12 +195,19 @@ async function main(): Promise<void> {
     const committing = post(
       '/v1/worker/commit-claimed',
       {
-        claim: { run_id: runId, owner: OWNER_A, epoch: first.lease.epoch },
+        claim: { run_id: runId, owner: first.lease.owner, epoch: first.lease.epoch },
         commit: terminalCommit(runId),
       },
       OWNER_A,
     );
     await waitUntilCommitIsBlocked();
+
+    // Remove A from placement while its already-authorized commit is in flight.
+    // B is now the only eligible worker, so the null claim below is evidence of
+    // the database epoch guard (not the placement policy preferring A).
+    const draining = await post('/v1/worker/drain', {}, OWNER_A);
+    assert.equal(draining.status, 200, draining.text);
+    assert.equal(draining.json?.mutation, 'applied');
 
     const blockedReclaim = await post('/v1/worker/dispatch/claim', {}, OWNER_B);
     assert.equal(blockedReclaim.status, 200, blockedReclaim.text);
