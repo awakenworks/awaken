@@ -21,8 +21,6 @@ use awaken_provisioning_contract::SandboxProvider;
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
-use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
@@ -163,26 +161,11 @@ impl RawTool for SandboxEcho {
 }
 
 fn brain() -> Runtime {
-    let runtime = Runtime::new()
+    Runtime::new()
         .with_llm(Arc::new(ToolThenText {
             calls: AtomicUsize::new(0),
         }))
-        .with_tool(Arc::new(BrainSideTrap));
-    let fingerprint = CatalogFingerprint("catalog-a".to_string());
-    runtime
-        .install_catalog(RuntimeCatalogInstall {
-            publication_id: "pub-1".to_string(),
-            fingerprint: fingerprint.clone(),
-            source_revisions: vec!["rev-1".to_string()],
-            capabilities: RuntimeCapabilityCatalog {
-                catalog_fingerprint: fingerprint,
-                runtime_version: "test".to_string(),
-                tools: Vec::new(),
-                plugins: Vec::new(),
-            },
-        })
-        .expect("catalog installs");
-    runtime
+        .with_tool(Arc::new(BrainSideTrap))
 }
 
 fn activation() -> RunActivation {

@@ -12,8 +12,6 @@ use awaken_agent_contract::event::{AgentEvent, Delta};
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::{MemoryCommitCoordinator, MemoryStreamSink};
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
-use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
@@ -97,23 +95,6 @@ impl ToolGateHook for ConstGate {
     }
 }
 
-fn install(runtime: &Runtime) {
-    let fingerprint = CatalogFingerprint("catalog-a".to_string());
-    runtime
-        .install_catalog(RuntimeCatalogInstall {
-            publication_id: "pub-1".to_string(),
-            fingerprint: fingerprint.clone(),
-            source_revisions: vec!["rev-1".to_string()],
-            capabilities: RuntimeCapabilityCatalog {
-                catalog_fingerprint: fingerprint,
-                runtime_version: "test".to_string(),
-                tools: Vec::new(),
-                plugins: Vec::new(),
-            },
-        })
-        .expect("catalog installs");
-}
-
 fn activation() -> RunActivation {
     let fingerprint = CatalogFingerprint("catalog-a".to_string());
     RunActivation {
@@ -168,7 +149,6 @@ async fn allowed_tool_call_executes_and_feeds_result_back() {
         .with_llm(Arc::new(ToolThenText::new()))
         .with_tool(Arc::new(EchoTool { ran: ran.clone() }))
         .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
-    install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
@@ -196,7 +176,6 @@ async fn denied_tool_call_never_executes_even_though_visible() {
         .with_gate(Arc::new(ConstGate(GateOutcome::Block {
             reason: "not allowed".to_string(),
         })));
-    install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
@@ -227,7 +206,6 @@ async fn ask_decision_puts_the_run_in_awaiting() {
         .with_gate(Arc::new(ConstGate(GateOutcome::RequireConfirmation {
             correlation_id: "ticket-1".to_string(),
         })));
-    install(&runtime);
 
     let outcome = runtime
         .execute(activation(), RuntimeRunContext::new())
@@ -295,7 +273,6 @@ async fn a_wired_tool_executor_replaces_the_in_process_path() {
             ran: local_ran.clone(),
         }))
         .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
-    install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new()
@@ -331,7 +308,6 @@ async fn unknown_tool_yields_a_model_visible_error_result() {
     let runtime = Runtime::new()
         .with_llm(Arc::new(CallsTool("ghost")))
         .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
-    install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
@@ -355,7 +331,6 @@ async fn without_a_gate_an_authorized_tool_runs() {
     let runtime = Runtime::new()
         .with_llm(Arc::new(ToolThenText::new()))
         .with_tool(Arc::new(EchoTool { ran: ran.clone() }));
-    install(&runtime);
 
     let outcome = runtime
         .execute(activation(), RuntimeRunContext::new())
@@ -391,7 +366,6 @@ async fn invalid_arguments_yield_a_model_visible_error_result() {
         .with_llm(Arc::new(CallsTool("echo")))
         .with_tool(Arc::new(ValidatingEcho))
         .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
-    install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
@@ -431,7 +405,6 @@ async fn an_execution_error_yields_a_model_visible_error_result_and_continues() 
         .with_llm(Arc::new(CallsTool("echo")))
         .with_tool(Arc::new(FailingExecTool))
         .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
-    install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
@@ -471,7 +444,6 @@ async fn a_panicking_tool_is_isolated_to_a_model_visible_error_and_the_run_conti
         .with_llm(Arc::new(CallsTool("echo")))
         .with_tool(Arc::new(PanickingTool))
         .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
-    install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
@@ -514,7 +486,6 @@ impl LlmExecutor for CaptureTools {
 async fn real_tool_schema_is_projected_to_the_model() {
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let runtime = Runtime::new().with_llm(Arc::new(CaptureTools { seen: seen.clone() }));
-    install(&runtime);
 
     runtime
         .execute(activation(), RuntimeRunContext::new())
@@ -537,7 +508,6 @@ async fn gate_set_result_skips_execution_and_stages_supplied_result() {
         .with_gate(Arc::new(ConstGate(GateOutcome::SetResult(
             awaken_runtime_contract::tool::ToolOutput::ok("call-1", "injected"),
         ))));
-    install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
@@ -586,7 +556,6 @@ async fn a_loop_that_never_ends_naturally_terminates_on_the_step_ceiling() {
         .with_llm(Arc::new(AlwaysToolCall))
         .with_tool(Arc::new(EchoTool { ran: ran.clone() }))
         .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
-    install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
@@ -619,7 +588,6 @@ async fn the_configured_step_ceiling_is_honored() {
         .with_llm(Arc::new(AlwaysToolCall))
         .with_tool(Arc::new(EchoTool { ran: ran.clone() }))
         .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
-    install(&runtime);
 
     let context = RuntimeRunContext::new();
     // The loop never ends naturally; it must stop at exactly the configured
@@ -673,7 +641,6 @@ async fn an_assistant_turn_interleaves_text_and_a_tool_call() {
         }))
         .with_tool(Arc::new(EchoTool { ran: ran.clone() }))
         .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
-    install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
@@ -720,7 +687,6 @@ async fn a_tool_call_streams_to_the_live_sink() {
         }))
         .with_tool(Arc::new(EchoTool { ran: ran.clone() }))
         .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
-    install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let sink = Arc::new(MemoryStreamSink::new());

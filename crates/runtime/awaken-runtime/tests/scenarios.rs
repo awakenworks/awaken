@@ -21,8 +21,6 @@ use awaken_agent_contract::event::{AgentEvent, Fact};
 use awaken_runtime::memory::{MemoryCommitCoordinator, MemoryStreamSink, replay_latest_state};
 use awaken_runtime::{DirectRunIngress, RunIngress, Runtime};
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
-use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::execution::{Error, RunExecutor};
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 use awaken_runtime_contract::resolved::{
@@ -51,22 +49,7 @@ impl LlmExecutor for TextLlm {
 }
 
 fn runtime() -> Arc<Runtime> {
-    let runtime = Arc::new(Runtime::new().with_llm(Arc::new(TextLlm)));
-    let fingerprint = CatalogFingerprint("catalog-a".to_string());
-    runtime
-        .install_catalog(RuntimeCatalogInstall {
-            publication_id: "pub-1".to_string(),
-            fingerprint: fingerprint.clone(),
-            source_revisions: vec!["rev-1".to_string()],
-            capabilities: RuntimeCapabilityCatalog {
-                catalog_fingerprint: fingerprint,
-                runtime_version: "test".to_string(),
-                tools: Vec::new(),
-                plugins: Vec::new(),
-            },
-        })
-        .expect("installs");
-    runtime
+    Arc::new(Runtime::new().with_llm(Arc::new(TextLlm)))
 }
 
 fn activation() -> RunActivation {

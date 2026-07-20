@@ -11,8 +11,6 @@ use awaken_agent_contract::event::{AgentEvent, Delta, Fact};
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::{MemoryCommitCoordinator, MemoryStreamSink, replay_latest_state};
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
-use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::execution::{Error, RunExecutor};
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 use awaken_runtime_contract::resolved::{
@@ -38,23 +36,6 @@ impl LlmExecutor for TextLlm {
             stop_reason: None,
         })
     }
-}
-
-fn install(runtime: &Runtime, fingerprint: &str) {
-    let fingerprint = CatalogFingerprint(fingerprint.to_string());
-    runtime
-        .install_catalog(RuntimeCatalogInstall {
-            publication_id: "pub-1".to_string(),
-            fingerprint: fingerprint.clone(),
-            source_revisions: vec!["rev-1".to_string()],
-            capabilities: RuntimeCapabilityCatalog {
-                catalog_fingerprint: fingerprint,
-                runtime_version: "test".to_string(),
-                tools: Vec::new(),
-                plugins: Vec::new(),
-            },
-        })
-        .expect("catalog installs");
 }
 
 fn activation(fingerprint: &str) -> RunActivation {
@@ -98,7 +79,6 @@ fn activation(fingerprint: &str) -> RunActivation {
 #[tokio::test]
 async fn one_model_step_commits_facts_and_streams_progress() {
     let runtime = Runtime::new().with_llm(Arc::new(TextLlm("hi there")));
-    install(&runtime, "catalog-a");
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let sink = Arc::new(MemoryStreamSink::new());
@@ -168,7 +148,6 @@ async fn execution_does_not_require_an_installed_catalog() {
 #[tokio::test]
 async fn execution_requires_a_model_provider() {
     let runtime = Runtime::new();
-    install(&runtime, "catalog-a");
     let result = runtime
         .execute(activation("catalog-a"), RuntimeRunContext::new())
         .await;
@@ -178,7 +157,6 @@ async fn execution_requires_a_model_provider() {
 #[tokio::test]
 async fn run_without_commit_coordinator_still_completes() {
     let runtime = Runtime::new().with_llm(Arc::new(TextLlm("ok")));
-    install(&runtime, "catalog-a");
     let outcome = runtime
         .execute(activation("catalog-a"), RuntimeRunContext::new())
         .await

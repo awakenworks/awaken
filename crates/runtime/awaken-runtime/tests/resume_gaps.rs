@@ -14,8 +14,6 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
-use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
@@ -170,23 +168,6 @@ fn snapshot(plugin_ids: Vec<String>) -> ExecutableAgentSnapshot {
     }
 }
 
-fn install(runtime: &Runtime) {
-    let fingerprint = CatalogFingerprint(FINGERPRINT.to_string());
-    runtime
-        .install_catalog(RuntimeCatalogInstall {
-            publication_id: "pub-1".to_string(),
-            fingerprint: fingerprint.clone(),
-            source_revisions: vec!["rev-1".to_string()],
-            capabilities: RuntimeCapabilityCatalog {
-                catalog_fingerprint: fingerprint,
-                runtime_version: "test".to_string(),
-                tools: Vec::new(),
-                plugins: Vec::new(),
-            },
-        })
-        .expect("installs");
-}
-
 fn activation(plugin_ids: Vec<String>) -> RunActivation {
     RunActivation {
         run_id: RunId("run-1".to_string()),
@@ -248,13 +229,11 @@ async fn resume_against_an_unregistered_snapshot_fails_closed() {
         }))
         .with_tool(Arc::new(EchoTool))
         .with_gate(Arc::new(SuspendGate));
-    install(&awaiting);
     awaiting.register_snapshot(snapshot(Vec::new()));
     let commit = begin_awaiting_run(&awaiting, Vec::new()).await;
 
     // A fresh runtime that never registered the snapshot.
     let bare = Runtime::new();
-    install(&bare);
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let err = bare
         .resume(resume_command(), commit.as_ref(), context)
@@ -284,7 +263,6 @@ async fn resume_with_an_out_of_bound_plugin_fails_capability_bound() {
         .with_tool(Arc::new(EchoTool))
         .with_gate(Arc::new(SuspendGate))
         .with_plugin(Arc::new(NoopPlugin));
-    install(&awaiting);
     awaiting.register_snapshot(snapshot(vec!["p".to_string()]));
     let commit = begin_awaiting_run(&awaiting, vec!["p".to_string()]).await;
 
@@ -294,7 +272,6 @@ async fn resume_with_an_out_of_bound_plugin_fails_capability_bound() {
             calls: AtomicUsize::new(0),
         }))
         .with_plugin(Arc::new(RoguePlugin));
-    install(&rogue);
     rogue.register_snapshot(snapshot(vec!["p".to_string()]));
 
     let context = RuntimeRunContext::new().with_commit(commit.clone());

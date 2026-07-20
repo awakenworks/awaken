@@ -13,8 +13,6 @@ use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
-use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::live_inbox::LiveInbox;
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
@@ -88,20 +86,6 @@ fn snapshot() -> ExecutableAgentSnapshot {
 
 fn runtime() -> Runtime {
     let runtime = Runtime::new().with_llm(Arc::new(EchoUserLlm));
-    let fp = CatalogFingerprint(FP.to_string());
-    runtime
-        .install_catalog(RuntimeCatalogInstall {
-            publication_id: "pub".to_string(),
-            fingerprint: fp.clone(),
-            source_revisions: vec!["r".to_string()],
-            capabilities: RuntimeCapabilityCatalog {
-                catalog_fingerprint: fp,
-                runtime_version: "t".to_string(),
-                tools: Vec::new(),
-                plugins: Vec::new(),
-            },
-        })
-        .expect("install");
     runtime.register_snapshot(snapshot());
     runtime
 }

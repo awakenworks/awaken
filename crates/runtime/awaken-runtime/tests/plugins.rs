@@ -15,10 +15,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::{MemoryCommitCoordinator, replay_state};
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::capability::{
-    PluginCapability, RuntimeCapabilityCatalog, RuntimeCapabilitySource,
-};
-use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
+use awaken_runtime_contract::capability::RuntimeCapabilitySource;
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
@@ -258,23 +255,6 @@ impl Plugin for RecordingGatePlugin {
     }
 }
 
-fn install(runtime: &Runtime) {
-    let fingerprint = CatalogFingerprint("catalog-a".to_string());
-    runtime
-        .install_catalog(RuntimeCatalogInstall {
-            publication_id: "pub-1".to_string(),
-            fingerprint: fingerprint.clone(),
-            source_revisions: vec!["rev-1".to_string()],
-            capabilities: RuntimeCapabilityCatalog {
-                catalog_fingerprint: fingerprint,
-                runtime_version: "test".to_string(),
-                tools: Vec::new(),
-                plugins: Vec::new(),
-            },
-        })
-        .expect("installs");
-}
-
 fn activation(plugin_ids: Vec<String>) -> RunActivation {
     let fingerprint = CatalogFingerprint("catalog-a".to_string());
     RunActivation {
@@ -329,7 +309,6 @@ async fn a_host_deny_masks_the_plugin_gate_chain() {
         .with_plugin(Arc::new(RecordingGatePlugin {
             consulted: consulted.clone(),
         }));
-    install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
@@ -372,7 +351,6 @@ async fn a_plugin_tool_gate_narrows_an_absent_host_allow() {
         }))
         .with_tool(Arc::new(CountingEcho { ran: ran.clone() }))
         .with_plugin(Arc::new(NarrowGatePlugin));
-    install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
@@ -405,7 +383,6 @@ async fn active_plugin_hook_stages_state_through_the_commit_path() {
         .with_plugin(Arc::new(MarkPlugin {
             resolves: resolves.clone(),
         }));
-    install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
@@ -431,7 +408,6 @@ async fn inactive_plugin_contributes_nothing() {
         .with_plugin(Arc::new(MarkPlugin {
             resolves: resolves.clone(),
         }));
-    install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
@@ -452,27 +428,6 @@ fn runtime_capabilities_project_the_plugin_declared_bound() {
         .with_plugin(Arc::new(MarkPlugin {
             resolves: Arc::new(AtomicUsize::new(0)),
         }));
-    let fingerprint = CatalogFingerprint("catalog-a".to_string());
-    // The advertised catalog carries the plugin id with an unset (deny-all) bound.
-    runtime
-        .install_catalog(RuntimeCatalogInstall {
-            publication_id: "pub-1".to_string(),
-            fingerprint: fingerprint.clone(),
-            source_revisions: vec!["rev-1".to_string()],
-            capabilities: RuntimeCapabilityCatalog {
-                catalog_fingerprint: fingerprint,
-                runtime_version: "test".to_string(),
-                tools: Vec::new(),
-                plugins: vec![PluginCapability {
-                    id: "mark".to_string(),
-                    schema_keys: Vec::new(),
-                    config_schema: None,
-                    bound: Default::default(),
-                }],
-            },
-        })
-        .expect("installs");
-
     // The served catalog projects the plugin's authoritative manifest bound (G8),
     // so an operator overlay sees the real ceiling, not the deny-all placeholder.
     let served = runtime.runtime_capabilities();
@@ -490,7 +445,6 @@ async fn out_of_bound_plugin_fails_the_run_closed() {
     let runtime = Runtime::new()
         .with_llm(Arc::new(TextLlm))
         .with_plugin(Arc::new(OutOfBoundPlugin));
-    install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());

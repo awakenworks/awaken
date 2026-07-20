@@ -16,8 +16,6 @@ use awaken_agent_contract::audit::kind::Kind as EventKind;
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
-use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
@@ -91,23 +89,6 @@ impl RawTool for ProbeTool {
     }
 }
 
-fn install(runtime: &Runtime) {
-    let fingerprint = CatalogFingerprint("catalog-a".to_string());
-    runtime
-        .install_catalog(RuntimeCatalogInstall {
-            publication_id: "pub-1".to_string(),
-            fingerprint: fingerprint.clone(),
-            source_revisions: vec!["rev-1".to_string()],
-            capabilities: RuntimeCapabilityCatalog {
-                catalog_fingerprint: fingerprint,
-                runtime_version: "test".to_string(),
-                tools: Vec::new(),
-                plugins: Vec::new(),
-            },
-        })
-        .expect("installs");
-}
-
 fn activation() -> RunActivation {
     let fingerprint = CatalogFingerprint("catalog-a".to_string());
     RunActivation {
@@ -157,7 +138,7 @@ fn runtime_with(
     observations: &Observations,
     staged: Vec<StateCommand>,
 ) -> Runtime {
-    let runtime = Runtime::new()
+    Runtime::new()
         .with_llm(Arc::new(ToolStepsThenEnd {
             tool_steps,
             calls: AtomicUsize::new(0),
@@ -166,9 +147,7 @@ fn runtime_with(
             commit: commit.clone(),
             observations: observations.clone(),
             staged,
-        }));
-    install(&runtime);
-    runtime
+        }))
 }
 
 #[tokio::test]

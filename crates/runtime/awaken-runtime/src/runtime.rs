@@ -6,9 +6,6 @@ use awaken_agent_contract::agent::delegation::{ChildRunCancellation, DelegationI
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_runtime_contract::capability::RuntimeCapabilitySource;
-use awaken_runtime_contract::catalog::{
-    InstalledCatalog, RuntimeCatalogInstall, RuntimeCatalogInstaller,
-};
 use awaken_runtime_contract::control::{Error as ControlError, LiveCommand, LiveRunControl};
 use awaken_runtime_contract::delegation::{DelegationExecutionError, RunDelegationService};
 use awaken_runtime_contract::llm::LlmExecutor;
@@ -43,13 +40,12 @@ impl Default for FailureCeiling {
     }
 }
 
-/// The runtime core. It installs catalogs, resolves snapshots, and executes
-/// runs through injected ports. The model provider, executable tools, and the
+/// The runtime core resolves snapshots and executes runs through injected ports.
+/// The model provider, executable tools, and the
 /// permission gate are all ports, so the core never names a model SDK or a
 /// concrete tool id (G2).
 #[derive(Default)]
 pub struct Runtime {
-    active_catalog: Mutex<Option<RuntimeCatalogInstall>>,
     /// Executable snapshots resolvable by id. In a hosted deployment a config
     /// surface implements `AgentSnapshotResolver`; in-process this registry is
     /// the by-id path so inline and by-id inputs converge (G28).
@@ -431,66 +427,48 @@ impl Runtime {
     }
 }
 
-impl RuntimeCatalogInstaller for Runtime {
-    fn install_catalog(
-        &self,
-        install: RuntimeCatalogInstall,
-    ) -> Result<InstalledCatalog, awaken_runtime_contract::catalog::Error> {
-        // Fail-closed before any state change: validate the install is internally
-        // consistent. An empty top-level fingerprint or a mismatch between the
-        // install fingerprint and the capabilities catalog fingerprint means the
-        // install was assembled incorrectly; reject before the atomic swap (G4/G23).
-        if install.fingerprint.0.trim().is_empty() {
-            return Err(awaken_runtime_contract::catalog::Error::Rejected(
-                "catalog fingerprint is empty".to_string(),
-            ));
-        }
-        if install.fingerprint != install.capabilities.catalog_fingerprint {
-            return Err(awaken_runtime_contract::catalog::Error::Rejected(
-                "fingerprint mismatch: install fingerprint does not match \
-                 capabilities catalog fingerprint"
-                    .to_string(),
-            ));
-        }
-
-        let fingerprint = install.fingerprint.clone();
-        *self.active_catalog.lock() = Some(install);
-
-        Ok(InstalledCatalog { fingerprint })
-    }
-}
-
 impl RuntimeCapabilitySource for Runtime {
     fn runtime_capabilities(
         &self,
     ) -> awaken_runtime_contract::capability::RuntimeCapabilityCatalog {
-        let mut catalog = self
-            .active_catalog
-            .lock()
-            .as_ref()
-            .map(|install| install.capabilities.clone())
-            .unwrap_or_else(
-                || awaken_runtime_contract::capability::RuntimeCapabilityCatalog {
-                    catalog_fingerprint: CatalogFingerprint(String::new()),
-                    runtime_version: env!("CARGO_PKG_VERSION").to_string(),
-                    tools: Vec::new(),
-                    plugins: Vec::new(),
-                },
-            );
-        // Project each registered plugin's authoritative `CapabilityBound` onto the
-        // served catalog so an operator overlay can allow/deny by the declared
-        // ceiling without a dry-run resolve (ADR-0055). Sourced from the plugin's
-        // own manifest, so it cannot drift from what `enforce_bound` checks.
-        for plugin_cap in &mut catalog.plugins {
-            if let Some(plugin) = self
-                .plugins
-                .iter()
-                .find(|plugin| plugin.manifest().id == plugin_cap.id)
-            {
-                plugin_cap.bound = plugin.manifest().bound;
-            }
+        use awaken_runtime_contract::capability::{
+            PluginCapability, RuntimeCapabilityCatalog, ToolCapability,
+        };
+
+        let mut tools: Vec<_> = self
+            .tools
+            .keys()
+            .cloned()
+            .map(|id| ToolCapability { id })
+            .collect();
+        tools.sort_by(|left, right| left.id.cmp(&right.id));
+        let mut plugins: Vec<_> = self
+            .plugins
+            .iter()
+            .map(|plugin| {
+                let manifest = plugin.manifest();
+                PluginCapability {
+                    id: manifest.id,
+                    schema_keys: manifest.config_sections,
+                    config_schema: None,
+                    bound: manifest.bound,
+                }
+            })
+            .collect();
+        plugins.sort_by(|left, right| left.id.cmp(&right.id));
+        let runtime_version = env!("CARGO_PKG_VERSION").to_string();
+        let fingerprint = awaken_runtime_contract::content_fingerprint(&(
+            runtime_version.as_str(),
+            &tools,
+            &plugins,
+        ))
+        .expect("runtime capability values are serializable");
+        RuntimeCapabilityCatalog {
+            catalog_fingerprint: CatalogFingerprint(fingerprint),
+            runtime_version,
+            tools,
+            plugins,
         }
-        catalog
     }
 }
 
@@ -530,55 +508,5 @@ impl LiveRunControl for Runtime {
                 }
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod snapshot_resolution_tests {
-    use super::*;
-    use awaken_runtime_contract::resolved::{
-        CatalogFingerprint, ModelBinding, ResolvedSpec, ToolDescriptor,
-    };
-    use awaken_runtime_contract::resolver::RunResolver;
-    use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshotId};
-
-    fn snapshot(fp: &str) -> ExecutableAgentSnapshot {
-        let fingerprint = CatalogFingerprint(fp.to_string());
-        ExecutableAgentSnapshot {
-            id: ExecutableAgentSnapshotId("assistant".to_string()),
-            metadata: Default::default(),
-            root_agent_id: AgentId("assistant".to_string()),
-            resolved_spec: ResolvedSpec {
-                catalog_fingerprint: fingerprint.clone(),
-                instructions: String::new(),
-                max_steps: 4,
-                delegation_limits: Default::default(),
-                model_binding: ModelBinding::new("demo", "stub", "stub"),
-                model_candidates: Vec::new(),
-                tool_descriptors: vec![ToolDescriptor {
-                    id: "search".to_string(),
-                    description: String::new(),
-                    parameters: serde_json::json!({}),
-                    content_hash: "h".to_string(),
-                    recovery_policy: Default::default(),
-                }],
-                plugin_ids: Vec::new(),
-                plugin_config: Default::default(),
-                context_policy: Default::default(),
-                tool_presentation: Default::default(),
-            },
-            fingerprint,
-        }
-    }
-
-    #[test]
-    fn resolution_is_identical_with_or_without_an_installed_catalog() {
-        let runtime = Runtime::new();
-        let published = snapshot("fp-published");
-        assert!(runtime.resolve(&published).is_ok());
-        runtime
-            .install_catalog(RuntimeCatalogInstall::from_snapshot(&snapshot("another")))
-            .unwrap();
-        assert!(runtime.resolve(&published).is_ok());
     }
 }
