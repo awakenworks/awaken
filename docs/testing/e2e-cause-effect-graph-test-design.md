@@ -55,7 +55,7 @@
 | D21 | Worker 上游 & 秘密 | `AWAKEN_UPSTREAM_URL`/`AWAKEN_WORKER_SERVE_URL`;`AWAKEN_WORKER_GATEWAY_ONLY` | 本地凭证 · gateway-only(secretless) | 本地凭证 |
 | D22 | memoryd 实现 | `AWAKEN_MEMORY_MODE`(+`_STORE_ID`/`MOUNT_PATH`) | fuse · copy | copy |
 
-> 生产模型源(provider/endpoint/credential)**只走 DB 目录 + vault**(`/v1/config/*`+`/v1/vaults/*`→`ConfigExecutorProvider`),**禁作 env 轴**(项目铁律)。e2e 用 `AWAKEN_MODEL_MODE`(scenario-host 专用)选桩/上游路由,不是生产选择器。
+> 生产模型源(provider/endpoint/credential)在**配置发布时**由 DB 目录 + vault (`/v1/config/*`+`/v1/vaults/*`→`CatalogInferenceAccessPublisher`)解析一次并写入快照；执行期只由 `CredentialInferenceMaterializer` 注入已固定的凭证访问，**禁作 env 选择轴**。e2e 用 `AWAKEN_MODEL_MODE`(scenario-host 专用)选桩/上游路由,不是生产选择器。
 
 ---
 

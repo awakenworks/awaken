@@ -12,7 +12,7 @@
 //! ([`CredentialInferenceMaterializer`](awaken_server::inference_materializer::CredentialInferenceMaterializer)),
 //! which consumes the snapshot-pinned endpoint and credential reference and
 //! injects the credential from the shared vault — see
-//! [`awaken_control::open_shared_config_stores_from_env`]). Only a run whose model is not yet
+//! [`awaken_control::open_inference_materialization_stores_from_env`]). Only a run whose model is not yet
 //! published falls back to the auxiliary
 //! [`NoModelConfiguredExecutor`](awaken_server::no_model::NoModelConfiguredExecutor)
 //! — the production placeholder, never a mock echo model.
@@ -66,7 +66,7 @@ impl WorkerLifecycle {
 /// Requires `AWAKEN_INGRESS=durable` (the pool's enable gate); the injected remote
 /// store routes the drain over HTTP instead of a local queue.
 pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let stores = awaken_control::open_shared_config_stores_from_env().await;
+    let stores = awaken_control::open_inference_materialization_stores_from_env().await;
     let provider = CredentialInferenceMaterializer::new(stores.credentials, stores.secrets);
     run_configured(
         WorkerUpstream::new(upstream),
@@ -126,14 +126,6 @@ async fn run_configured(
     if let Some(provider) = provider {
         host = host.with_inference_materializer(provider);
     }
-
-    // Warm-load the published config catalog from the shared control plane, so a run
-    // claimed by this database-less worker opens its session bound to its OWN agent's
-    // published config — its own catalog. The run then resolves against a matching
-    // fingerprint instead of stranding on a host-default rebuild (the cross-node
-    // catalog-parity fix). Reads the same config store the authoring plane writes; an
-    // empty service when no config store is configured.
-    host = host.with_config_service(awaken_control::warm_config_service_from_env().await);
 
     // Serve `acp:*` runs this worker claims on the config-selected CLI, realized in the
     // worker's configured sandbox tier — the SAME env wiring the server root uses, so
