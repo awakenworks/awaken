@@ -836,6 +836,14 @@ async fn management_router_over(
         )),
         Arc::new(awaken_admin_assistant::TracingAuditSink),
     );
+    // The MCP server export is explicit and capability-token gated. Clone the
+    // management executables before the host takes ownership, pairing each with
+    // its authoritative descriptor rather than reconstructing a schema here.
+    let mcp_export = awaken_server::mcp_export::router(
+        awaken_admin_assistant::admin_tool_descriptors(),
+        admin_execs.clone(),
+        std::env::var("AWAKEN_MCP_BEARER_TOKEN").ok(),
+    );
 
     // The authoring / authz plane (admin + vault + webhooks + user profiles +
     // deployments + environments + config plane + capabilities), guard applied over
@@ -925,7 +933,11 @@ async fn management_router_over(
     // surface so a `/v1/workspaces/{ws}/…` request is captured, rewritten to its flat
     // `/v1/…` form, and its `{ws}` stamped as the edge scope before it re-enters
     // routing. Flat requests fall through unchanged.
-    let flat = awaken_server::mount_with_managed(host, managed_state).merge(mgmt);
+    let mut flat = awaken_server::mount_with_managed(host, managed_state).merge(mgmt);
+    // Serving tools to an external MCP client is disabled until an operator sets a
+    // dedicated bearer. This avoids turning the management toolset into an open
+    // mutation surface while still making the `awaken` binary the complete adapter.
+    flat = flat.merge(mcp_export);
     // After a successful catalog-mutating write, re-publish the reserved-scope assistant
     // so its `Auto` model binding picks up the model the operator just added. The layer
     // sits on the flat surface INSIDE the workspace path rewrite (which rewrites a

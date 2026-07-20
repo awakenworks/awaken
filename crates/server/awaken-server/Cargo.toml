@@ -23,6 +23,7 @@ awaken-protocol-managed = { workspace = true }
 awaken-protocol-ai-sdk = { workspace = true }
 awaken-protocol-ag-ui = { workspace = true }
 awaken-protocol-a2a = { workspace = true }
+awaken-protocol-mcp = { workspace = true }
 awaken-protocol-transport = { workspace = true }
 awaken-config-store = { workspace = true }
 # Durable memory persistence (resources plane): the memory-extraction mode roots its

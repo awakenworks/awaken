@@ -21,6 +21,7 @@
 pub mod admin;
 pub mod dynamic_placement;
 pub mod inference_materializer;
+pub mod mcp_export;
 pub mod model_resolver;
 pub mod no_model;
 pub mod placement;
