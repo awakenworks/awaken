@@ -156,9 +156,27 @@ def _sm_has_transitions(sm):
         any(isinstance(m, dict) and m.get("transitions") for m in (sm.get("machines") or [])))
 
 def _sm_has_reminder(sm):
-    # A reminder is any emit/message string anywhere in the state machine config.
-    blob = json.dumps(sm) if sm else ""
-    return any(k in blob for k in ("message", "emit", "reminder"))
+    # Explicit transition emits and `on_violation: {action: warn, reason: ...}` are
+    # both real reminder mechanisms. The latter is compiled by the State Machine into
+    # a suffix-system warning after the violating tool result.
+    def visit(value):
+        if isinstance(value, dict):
+            violation = value.get("on_violation")
+            if (isinstance(violation, dict)
+                    and violation.get("action") == "warn"
+                    and isinstance(violation.get("reason"), str)
+                    and violation["reason"].strip()):
+                return True
+            if "emit" in value and value.get("emit") not in (None, "", {}, []):
+                return True
+            if any(isinstance(value.get(key), str) and value[key].strip()
+                   for key in ("message", "reminder")):
+                return True
+            return any(visit(child) for child in value.values())
+        if isinstance(value, list):
+            return any(visit(child) for child in value)
+        return False
+    return visit(sm)
 
 def _compact_instructions(cc):
     if not isinstance(cc, dict): return None
@@ -234,6 +252,13 @@ def self_test():
     assert [failure.split(" rate", 1)[0] for failure in gate_failures(failing, thresholds)] == [
         "criteria", "fully-correct", "persisted"
     ]
+    assert _sm_has_reminder({"machines": [{"transitions": [{
+        "on_violation": {"action": "warn", "reason": "Read before write"}
+    }]}]})
+    assert _sm_has_reminder({"transitions": [{"emit": {"content": "Remember"}}]})
+    assert not _sm_has_reminder({"transitions": [{
+        "on_violation": {"action": "deny", "reason": "Blocked"}
+    }]})
     print("OK - assistant eval gate thresholds fail closed")
     return 0
 
