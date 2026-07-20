@@ -697,11 +697,6 @@ async fn management_router_over(
         _ => {}
     }
     spawn_credential_creation_reconciliation(secrets.clone(), credentials.clone());
-    // Clones for inference access resolution/materialization (M2): it resolves a session's
-    // model to a real executor from the live catalog + the workspace's credential.
-    let exec_catalog = catalog.clone();
-    let exec_credentials = credentials.clone();
-    let exec_secrets = secrets.clone();
     // ONE resource-binding store shared by the admin router (which authors an agent's
     // resources) and the config service (which reads them into resource prompts +
     // mounts at compile) — so a binding authored through the API reaches the compiled
@@ -720,6 +715,14 @@ async fn management_router_over(
 
     // The server's default model for the window before a publish.
     let (model, model_ref) = (fallback_model, fallback_model_ref);
+    let inference_services = Arc::new(
+        awaken_server::inference_materializer::ConfiguredInferenceMaterializer::new(
+            catalog.clone(),
+            credentials.clone(),
+            secrets.clone(),
+        )
+        .with_fallback_executor(model_ref.clone(), model.clone()),
+    );
     let global = advertised_tools(&HashSet::new(), &HashSet::new(), &[]);
     let tool_catalog: Arc<dyn ToolCatalogSource> = Arc::new(ScopedToolCatalog::new(
         global.clone(),
@@ -735,6 +738,7 @@ async fn management_router_over(
             .with_model_resolver(Arc::new(
                 awaken_server::model_resolver::CatalogModelResolver::from_repo(catalog.clone()),
             ))
+            .with_inference_access_publisher(inference_services.clone())
             .with_resources(resource_store.clone()),
     );
     // Warm-load the installed catalog from the durable config store BEFORE the plane
@@ -851,14 +855,6 @@ async fn management_router_over(
     // memory-store identity registry the capability inventory reads, so a skill or memory
     // store the host serves is exactly what the assistant enumerates, and identity
     // survives a restart.
-    let inference_services =
-        awaken_server::inference_materializer::ConfiguredInferenceMaterializer::new(
-            exec_catalog,
-            exec_credentials,
-            exec_secrets,
-            platform_workspace.clone(),
-        )
-        .with_fallback_executor(model_ref.clone(), model.clone());
     let host_builder = SharedHost::new(model, model_ref)
         .with_local_workspace(platform_workspace.clone())
         .with_config_service(config_service.clone())
@@ -867,7 +863,7 @@ async fn management_router_over(
         .with_memory_registry(memory_registry)
         // Resolve a session's model to a real executor from the config plane (M2):
         // an unconfigured/unresolvable model falls back to the scenario model above.
-        .with_inference_services(Arc::new(inference_services));
+        .with_inference_materializer(inference_services);
     // Production ACP wiring (`acp:*` threads): `AWAKEN_ACP_CLI` / `AWAKEN_ACP_ARGV`
     // realized in `AWAKEN_SANDBOX_TIER`. The one shared helper both the server and
     // worker roots call, so they never drift (ADR-0057).

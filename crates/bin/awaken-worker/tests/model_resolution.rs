@@ -25,8 +25,8 @@ use awaken_model_catalog::{
     ApiDialect, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
 };
 use awaken_runtime_contract::{ExecutableAgentSnapshot, ModelBinding, RunActivation};
+use awaken_server::InferenceExecutorMaterializer;
 use awaken_server::inference_materializer::ConfiguredInferenceMaterializer;
-use awaken_server::{InferenceAccessResolver, InferenceExecutorMaterializer};
 
 /// Author a catalog with one anthropic offering for `model`, plus (optionally) a
 /// workspace credential `(provider, active)`, then build the ConfiguredInferenceMaterializer
@@ -92,7 +92,7 @@ async fn provider(
             creds.put(row).await.unwrap();
         }
     }
-    ConfiguredInferenceMaterializer::new(catalog, creds, secrets, "ws")
+    ConfiguredInferenceMaterializer::new(catalog, creds, secrets)
 }
 
 fn activation(model_ref: &str) -> RunActivation {
@@ -114,7 +114,13 @@ fn activation(model_ref: &str) -> RunActivation {
 async fn worker_resolves_a_configured_model_to_a_real_executor() {
     let p = provider("claude-x", Some(("anthropic", true))).await;
     let activation = activation("claude-x");
-    let access = p.resolve_access(&activation).expect("access is pinned");
+    let access = p
+        .resolve_for_scope(
+            "ws",
+            std::slice::from_ref(&activation.snapshot.resolved_spec.model_binding),
+        )
+        .await
+        .expect("access is pinned");
     assert!(p.materialize(&activation, &access).is_some());
 }
 
@@ -123,7 +129,15 @@ async fn worker_resolves_a_configured_model_to_a_real_executor() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn worker_falls_back_when_the_model_is_not_published() {
     let p = provider("claude-x", Some(("anthropic", true))).await;
-    assert!(p.resolve_access(&activation("no-such-model")).is_err());
+    let activation = activation("no-such-model");
+    assert!(
+        p.resolve_for_scope(
+            "ws",
+            std::slice::from_ref(&activation.snapshot.resolved_spec.model_binding),
+        )
+        .await
+        .is_err()
+    );
 }
 
 /// A published model with no compatible workspace credential also falls back — the
@@ -131,5 +145,13 @@ async fn worker_falls_back_when_the_model_is_not_published() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn worker_falls_back_without_a_compatible_credential() {
     let p = provider("claude-x", None).await;
-    assert!(p.resolve_access(&activation("claude-x")).is_err());
+    let activation = activation("claude-x");
+    assert!(
+        p.resolve_for_scope(
+            "ws",
+            std::slice::from_ref(&activation.snapshot.resolved_spec.model_binding),
+        )
+        .await
+        .is_err()
+    );
 }

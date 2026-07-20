@@ -7,7 +7,6 @@
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime_contract::activation::RunActivation;
-pub use awaken_runtime_contract::{InferenceAccess, InferenceAccessCandidate};
 pub use awaken_tenancy::ExecutionScopeRef;
 pub use awaken_worker_contract::PlacementRequirements;
 use serde::{Deserialize, Serialize};
@@ -35,10 +34,6 @@ pub struct RunDispatch {
     /// thread id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_scope: Option<ExecutionScopeRef>,
-    /// Opaque, non-secret capability reference used to resolve the run's model on
-    /// a remote worker. It follows the durable dispatch through recovery.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model_access: Option<InferenceAccess>,
     /// Hard worker requirements pinned at admission. Older durable rows omit this
     /// field and deserialize through the contract's explicit legacy posture;
     /// strict remote callers attach `PlacementRequirements::remote_required()`.
@@ -56,7 +51,6 @@ impl RunDispatch {
             session_thread_id: None,
             traceparent: None,
             execution_scope: None,
-            model_access: None,
             placement: PlacementRequirements::default(),
         }
     }
@@ -78,13 +72,6 @@ impl RunDispatch {
     #[must_use]
     pub fn with_execution_scope(mut self, scope: ExecutionScopeRef) -> Self {
         self.execution_scope = Some(scope);
-        self
-    }
-
-    /// Attach a renewable, non-secret model-access reference.
-    #[must_use]
-    pub fn with_model_access(mut self, access: InferenceAccess) -> Self {
-        self.model_access = Some(access);
         self
     }
 
@@ -179,7 +166,6 @@ mod tests {
         let back: RunDispatch = serde_json::from_str(&json).expect("legacy row loads");
         assert!(back.traceparent.is_none());
         assert!(back.execution_scope.is_none());
-        assert!(back.model_access.is_none());
         assert!(back.placement.is_legacy_default());
     }
 
@@ -228,7 +214,6 @@ mod tests {
         // The envelope's own newer field defaults.
         assert!(back.traceparent.is_none());
         assert!(back.execution_scope.is_none());
-        assert!(back.model_access.is_none());
         assert!(back.placement.is_legacy_default());
         // The activation's newer field defaults, and the run resolves to its pinned
         // binding — exactly how a run admitted before per-turn overrides behaves.
@@ -283,13 +268,17 @@ mod tests {
         let verified = authority
             .verify_execution_scope(&claimed)
             .expect("scope belongs to authority");
-        let request = RunDispatch::new(activation())
-            .with_execution_scope(verified.into_ref())
-            .with_model_access(InferenceAccess::new("credential-reference/v1", "grant-17"));
+        let mut activation = activation();
+        activation.snapshot.metadata.inference_access = Some(
+            awaken_runtime_contract::InferenceAccess::new("credential-reference/v1", "grant-17"),
+        );
+        let request = RunDispatch::new(activation).with_execution_scope(verified.into_ref());
         let wire = serde_json::to_value(&request).expect("serializes");
         assert_eq!(wire["execution_scope"], "workspace-a");
-        assert_eq!(wire["model_access"]["scheme"], "credential-reference/v1");
-        assert_eq!(wire["model_access"]["reference"], "grant-17");
+        assert_eq!(
+            wire["activation"]["snapshot"]["metadata"]["inference_access"]["scheme"],
+            "credential-reference/v1"
+        );
         assert!(!wire.to_string().contains("provider-key"));
         let restored: RunDispatch = serde_json::from_value(wire).expect("deserializes");
         assert_eq!(restored, request);
@@ -297,14 +286,22 @@ mod tests {
 
     #[test]
     fn candidate_access_is_ordered_pinned_and_model_scoped() {
-        let access = InferenceAccess::candidate_set([
+        let access = awaken_runtime_contract::InferenceAccess::candidate_set([
             (
                 "primary".to_string(),
-                InferenceAccess::exact_credential("cred-a", "provider-a@1", "route-a@2"),
+                awaken_runtime_contract::InferenceAccess::exact_credential(
+                    "cred-a",
+                    "provider-a@1",
+                    "route-a@2",
+                ),
             ),
             (
                 "fallback".to_string(),
-                InferenceAccess::exact_credential("cred-b", "provider-b@4", "route-b@3"),
+                awaken_runtime_contract::InferenceAccess::exact_credential(
+                    "cred-b",
+                    "provider-b@4",
+                    "route-b@3",
+                ),
             ),
         ])
         .unwrap();
@@ -324,14 +321,14 @@ mod tests {
         let wire = serde_json::to_string(&access).unwrap();
         assert!(!wire.contains("secret"));
         assert_eq!(
-            serde_json::from_str::<InferenceAccess>(&wire).unwrap(),
+            serde_json::from_str::<awaken_runtime_contract::InferenceAccess>(&wire).unwrap(),
             access
         );
     }
 
     #[test]
     fn host_executor_access_is_exact_and_non_secret() {
-        let access = InferenceAccess::host_executor("embedded-model");
+        let access = awaken_runtime_contract::InferenceAccess::host_executor("embedded-model");
         assert!(access.is_host_executor_for("embedded-model"));
         assert!(!access.is_host_executor_for("another-model"));
         assert!(access.provider_ref.is_none());

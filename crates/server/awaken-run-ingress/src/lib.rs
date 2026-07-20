@@ -39,12 +39,13 @@ pub use capability::RunIngressCapabilities;
 // The database-less worker's HTTP dispatch client (drives claim/settle over the wire
 // to a cell server's dispatch_transport_router), extracted from awaken-runtime-host.
 pub use awaken_run_ingress_contract::{
-    AssignmentRejection, ExecutionScopeRef, InferenceAccess, InferenceAccessCandidate,
-    LeastLoadedPolicy, PlacementContext, PlacementError, PlacementPolicy, PlacementRequirements,
-    RankedWorker, RegisteredWorker, RegistryError, RegistryMutation, RunDispatch, WorkerAssignment,
-    WorkerDirectory, WorkerHeartbeat, WorkerIdentity, WorkerManifest, WorkerRecoveryMode,
-    WorkerRegistration, WorkerSnapshot, WorkerState, can_assign, can_claim, place_assignment,
+    AssignmentRejection, ExecutionScopeRef, LeastLoadedPolicy, PlacementContext, PlacementError,
+    PlacementPolicy, PlacementRequirements, RankedWorker, RegisteredWorker, RegistryError,
+    RegistryMutation, RunDispatch, WorkerAssignment, WorkerDirectory, WorkerHeartbeat,
+    WorkerIdentity, WorkerManifest, WorkerRecoveryMode, WorkerRegistration, WorkerSnapshot,
+    WorkerState, can_assign, can_claim, place_assignment,
 };
+pub use awaken_runtime_contract::{InferenceAccess, InferenceAccessCandidate};
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use commit_fence::{ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit};
 pub use dispatch::{

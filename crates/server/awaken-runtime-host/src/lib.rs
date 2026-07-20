@@ -142,14 +142,14 @@ pub use crate::durable_ops::durable_ops_router;
 pub use awaken_env_store::{PostgresEnvRegistry, SqliteEnvRegistry};
 // The durable session-repository backends now live in `awaken-session-store` (a
 // stores/ leaf); re-exported so composition roots keep their import paths.
-pub use awaken_run_ingress::{HttpDispatchQueue, InferenceAccess, worker_dispatch_store};
+pub use awaken_run_ingress::{HttpDispatchQueue, worker_dispatch_store};
 pub use awaken_session_store::{PostgresManagedSessionRepository, SqliteManagedSessionRepository};
 // The durable WorkQueue backends now live in `awaken-work-store` (a stores/ leaf);
 // re-exported so composition roots keep using `awaken_runtime_host::{Sqlite,Postgres}WorkQueue`.
 pub use awaken_work_store::{PostgresWorkQueue, SqliteWorkQueue};
 // The model-route seam (R1/R2/R5): a composition root supplies its own
 // `InferenceExecutorMaterializer` to map a session's model ref to a labeled executor.
-pub use crate::inference_routing::{InferenceAccessResolver, InferenceExecutorMaterializer};
+pub use crate::inference_routing::InferenceExecutorMaterializer;
 // The managed-vault OAuth seams (ADR-0043): the transport-level refresher, its
 // prepared configuration, and the live MCP credential probe.
 pub use crate::mcp::{ExtMcpProbe, PreparedMcpRefresh, VaultRefresher};

@@ -28,12 +28,12 @@ pub use awaken_managed_routers::{default_models, files_router, models_router};
 // The A2A remote-delegate adapter + its transport constructor: the composition root
 // builds the adapter here and injects it behind the host's neutral RemoteAgent interface.
 use awaken_run_executor_a2a::{A2aRemoteAgent, HttpTransport};
+use awaken_runtime_contract::InferenceAccess;
 pub use awaken_runtime_host::{
-    ConfigService, ExtMcpProbe, HostResume, InferenceAccess, InferenceAccessResolver,
-    InferenceExecutorMaterializer, ManagedHost, PreparedMcpRefresh, ProtocolHost, SharedHost,
-    SkillContext, SkillSpec, ThreadEvent, ThreadEventHub, VaultRefresher, advertised_tools,
-    capabilities_router, config_router, content_fingerprint, durable_ops_router,
-    memory_stores_router, parse_skill_md, skills_router,
+    ConfigService, ExtMcpProbe, HostResume, InferenceExecutorMaterializer, ManagedHost,
+    PreparedMcpRefresh, ProtocolHost, SharedHost, SkillContext, SkillSpec, ThreadEvent,
+    ThreadEventHub, VaultRefresher, advertised_tools, capabilities_router, config_router,
+    content_fingerprint, durable_ops_router, memory_stores_router, parse_skill_md, skills_router,
 };
 
 use awaken_server::placement;
@@ -42,14 +42,6 @@ use awaken_server::placement;
 /// surface.
 use awaken_server::{ResolvedExecutorError, executor_from_resolved, mount, mount_with_managed};
 struct RouteProvider;
-
-impl InferenceAccessResolver for RouteProvider {
-    fn resolve_access(&self, activation: &RunActivation) -> Result<InferenceAccess, String> {
-        Ok(InferenceAccess::host_executor(
-            activation.effective_model_ref(),
-        ))
-    }
-}
 
 impl InferenceExecutorMaterializer for RouteProvider {
     fn materialize(
@@ -80,7 +72,8 @@ impl InferenceExecutorMaterializer for RouteProvider {
 pub fn build_model_route_router() -> Router {
     let (default_model, _) = scenario_model(Arc::new(LabelModel("default")), "default");
     mount(Arc::new(
-        SharedHost::new(default_model, "default").with_inference_services(Arc::new(RouteProvider)),
+        SharedHost::new(default_model, "default")
+            .with_inference_materializer(Arc::new(RouteProvider)),
     ))
 }
 

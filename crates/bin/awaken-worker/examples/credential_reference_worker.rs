@@ -5,11 +5,11 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use awaken_runtime_contract::InferenceAccess;
 use awaken_runtime_contract::RunActivation;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult,
 };
-use awaken_runtime_host::InferenceAccess;
 use awaken_server::InferenceExecutorMaterializer;
 
 struct GrantExecutor {

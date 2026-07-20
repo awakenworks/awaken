@@ -22,8 +22,8 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_run_ingress::{
-    AnyDispatchStore, ClaimedRunCommit, Clock, DispatchWorker, InferenceAccess, PendingInput,
-    RunDispatch, SystemClock,
+    AnyDispatchStore, ClaimedRunCommit, Clock, DispatchWorker, PendingInput, RunDispatch,
+    SystemClock,
 };
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime::{DirectRunIngress, RunInput, RunService};
@@ -84,28 +84,15 @@ pub(crate) struct RunScheduler {
     pub(crate) reader: Arc<dyn ThreadReader>,
     pub(crate) owner: String,
     pub(crate) claimed_commit: Option<Arc<dyn ClaimedRunCommit>>,
-    pub(crate) model_access: Option<Arc<ModelAccessResolver>>,
 }
-
-type ModelAccessResolver =
-    dyn Fn(&RunActivation) -> Result<Option<InferenceAccess>, String> + Send + Sync;
 
 fn child_dispatch_request(
     activation: RunActivation,
     parent_thread_id: ThreadId,
-    model_access: Option<&Arc<ModelAccessResolver>>,
 ) -> Result<RunDispatch, AgentRunError> {
-    let access = model_access
-        .map(|resolve| resolve(&activation))
-        .transpose()
-        .map_err(AgentRunError::Configuration)?
-        .flatten();
-    let mut request = RunDispatch::new(activation)
+    let request = RunDispatch::new(activation)
         .for_session(parent_thread_id)
         .with_traceparent(awaken_observability::current_traceparent());
-    if let Some(access) = access {
-        request = request.with_model_access(access);
-    }
     Ok(request)
 }
 
@@ -325,11 +312,7 @@ pub(crate) async fn run_configured_agent_until_boundary(
                 match reader.run_state(&child_run_id) {
                     Some(state @ (RunState::Awaiting | RunState::Ended(_))) => state,
                     _ => {
-                        let request = child_dispatch_request(
-                            activation,
-                            parent_thread_id.clone(),
-                            scheduler.model_access.as_ref(),
-                        )?;
+                        let request = child_dispatch_request(activation, parent_thread_id.clone())?;
                         match worker.start_run(request, now_ms).await.map_err(|error| {
                             AgentRunError::Runtime(
                                 awaken_runtime_contract::execution::Error::Execution(
@@ -615,6 +598,7 @@ mod tests {
     use awaken_agent_contract::agent::awaiting::ResumeTicket;
     use awaken_agent_contract::agent::content::ContentBlock;
     use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+    use awaken_runtime_contract::InferenceAccess;
     use awaken_runtime_contract::llm::{
         AssistantOutput, ChatRequest, ChatResponse, Result as LlmResult,
     };
@@ -733,14 +717,8 @@ mod tests {
     }
 
     #[test]
-    fn child_dispatch_persists_admission_pinned_model_access() {
-        let config = agent("child", "child");
-        let runtime = awaken_runtime::Runtime::new();
-        let (_, activation) = runtime.prepare(
-            &config,
-            "child-thread".to_string(),
-            RunInput::from(vec![user("go")]),
-        );
+    fn child_dispatch_reuses_publication_pinned_inference_access() {
+        let mut config = agent("child", "child");
         let expected = InferenceAccess::candidate_set([
             (
                 "primary".to_string(),
@@ -752,19 +730,21 @@ mod tests {
             ),
         ])
         .expect("candidate access");
-        let resolver: Arc<ModelAccessResolver> = {
-            let expected = expected.clone();
-            Arc::new(move |_| Ok(Some(expected.clone())))
-        };
+        config.metadata.inference_access = Some(expected.clone());
+        let runtime = awaken_runtime::Runtime::new();
+        let (_, activation) = runtime.prepare(
+            &config,
+            "child-thread".to_string(),
+            RunInput::from(vec![user("go")]),
+        );
 
-        let request = child_dispatch_request(
-            activation,
-            ThreadId("parent-thread".to_string()),
-            Some(&resolver),
-        )
-        .expect("build child dispatch");
+        let request = child_dispatch_request(activation, ThreadId("parent-thread".to_string()))
+            .expect("build child dispatch");
 
-        assert_eq!(request.model_access, Some(expected));
+        assert_eq!(
+            request.activation.snapshot.metadata.inference_access,
+            Some(expected)
+        );
         assert_eq!(request.session_thread_id.unwrap().0, "parent-thread");
     }
 
@@ -1016,7 +996,6 @@ mod tests {
             reader: commit.clone(),
             owner: "replacement-worker".to_string(),
             claimed_commit: None,
-            model_access: None,
         };
         let context = || {
             RuntimeRunContext::new()
@@ -1072,7 +1051,6 @@ mod tests {
             reader: commit.clone(),
             owner: "replacement-worker-2".to_string(),
             claimed_commit: None,
-            model_access: None,
         };
 
         let recovered_boundary = run_agent_until_boundary(
@@ -1135,7 +1113,6 @@ mod tests {
                 reader: commit.clone(),
                 owner: "replacement-worker-3".to_string(),
                 claimed_commit: None,
-                model_access: None,
             }),
             AgentRunSandbox::Shared(&sandbox),
             ChildRunRequest {

@@ -43,11 +43,10 @@ use axum::Router;
 // re-exports a composition root (and the integration tests) drive directly.
 pub use awaken_managed_routers::{default_models, files_router, models_router};
 pub use awaken_runtime_host::{
-    ConfigService, ExtMcpProbe, HostResume, InferenceAccessResolver, InferenceExecutorMaterializer,
-    ManagedHost, PreparedMcpRefresh, ProtocolHost, SharedHost, SkillContext, SkillSpec,
-    ThreadEvent, ThreadEventHub, VaultRefresher, advertised_tools, capabilities_router,
-    config_router, content_fingerprint, durable_ops_router, memory_stores_router, parse_skill_md,
-    skills_router,
+    ConfigService, ExtMcpProbe, HostResume, InferenceExecutorMaterializer, ManagedHost,
+    PreparedMcpRefresh, ProtocolHost, SharedHost, SkillContext, SkillSpec, ThreadEvent,
+    ThreadEventHub, VaultRefresher, advertised_tools, capabilities_router, config_router,
+    content_fingerprint, durable_ops_router, memory_stores_router, parse_skill_md, skills_router,
 };
 pub use worker_registry::{
     init_postgres as init_postgres_worker_registry, inject as init_worker_registry,
@@ -281,7 +280,7 @@ pub fn data_subject_plane() -> (
 #[derive(Debug, thiserror::Error)]
 pub enum ResolvedExecutorError {
     #[error("resolved inference has no base_url for adapter `{0}`")]
-    MissingBaseUrl(&'static str),
+    MissingBaseUrl(String),
     #[error("resolved inference carries no credential (unauthenticated run refused)")]
     MissingCredential,
     #[error("no provider executor in this build serves adapter `{0}`")]
@@ -299,29 +298,36 @@ pub enum ResolvedExecutorError {
 pub fn executor_from_resolved(
     inference: &ResolvedInference,
 ) -> Result<Arc<dyn LlmExecutor>, ResolvedExecutorError> {
+    executor_from_materialized_access(
+        inference.adapter_kind,
+        inference.base_url.as_deref(),
+        inference.credential.as_ref(),
+    )
+}
+
+/// Construct a provider executor from publication-pinned endpoint facts and
+/// request-time credential material. This is the runtime half of resolution: it
+/// does not consult a catalog, select a route, or select a credential.
+pub fn executor_from_materialized_access(
+    adapter_kind: &str,
+    base_url: Option<&str>,
+    credential: Option<&awaken_agent_contract::RedactedString>,
+) -> Result<Arc<dyn LlmExecutor>, ResolvedExecutorError> {
     // One path for every API-key provider: map the catalog's adapter-kind to a genai
     // adapter and hand it the resolved credential + (optional) gateway base URL. The
     // key comes from the resolved credential, never inlined by the Managed wire. A new
     // provider is one line in `genai_adapter` + catalog config — no new branch here.
-    let adapter = genai_adapter(inference.adapter_kind).ok_or_else(|| {
-        ResolvedExecutorError::UnsupportedAdapter(inference.adapter_kind.to_string())
-    })?;
+    let adapter = genai_adapter(adapter_kind)
+        .ok_or_else(|| ResolvedExecutorError::UnsupportedAdapter(adapter_kind.to_string()))?;
     // Fail closed on an incomplete resolution: the management plane always resolves the
     // execution triple's endpoint, so a `None` base URL means the inference never bound
     // an endpoint — refuse rather than silently fall back to the genai default endpoint.
-    let base_url = inference
-        .base_url
-        .clone()
-        .ok_or(ResolvedExecutorError::MissingBaseUrl(
-            inference.adapter_kind,
-        ))?;
-    let credential = inference
-        .credential
-        .as_ref()
-        .ok_or(ResolvedExecutorError::MissingCredential)?;
+    let base_url =
+        base_url.ok_or_else(|| ResolvedExecutorError::MissingBaseUrl(adapter_kind.to_string()))?;
+    let credential = credential.ok_or(ResolvedExecutorError::MissingCredential)?;
     Ok(Arc::new(GenaiExecutor::from_resolved(
         adapter,
-        Some(base_url),
+        Some(base_url.to_string()),
         credential.expose_secret(),
     )))
 }
@@ -407,7 +413,7 @@ mod executor_seam_tests {
             other => panic!("expected MissingBaseUrl, got {other:?}"),
         }
         // The variant renders its intended message.
-        let err = ResolvedExecutorError::MissingBaseUrl("anthropic");
+        let err = ResolvedExecutorError::MissingBaseUrl("anthropic".into());
         assert_eq!(
             err.to_string(),
             "resolved inference has no base_url for adapter `anthropic`"

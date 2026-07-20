@@ -328,17 +328,33 @@ async fn reclaim_preserves_the_dispatch_pinned_model_candidate_set() {
         ),
     ])
     .expect("candidate set");
-    store
-        .enqueue(RunDispatch::new(activation("binding-retry")).with_model_access(expected.clone()))
-        .await
-        .unwrap();
+    let mut activation = activation("binding-retry");
+    activation.snapshot.metadata.inference_access = Some(expected.clone());
+    store.enqueue(RunDispatch::new(activation)).await.unwrap();
 
     let first = store.claim("worker-a", 10, 0).await.unwrap().unwrap();
-    assert_eq!(first.request.model_access.as_ref(), Some(&expected));
+    assert_eq!(
+        first
+            .request
+            .activation
+            .snapshot
+            .metadata
+            .inference_access
+            .as_ref(),
+        Some(&expected)
+    );
     let recovered = store.claim("worker-b", 10, 11).await.unwrap().unwrap();
 
     assert!(recovered.recovered);
-    assert_eq!(recovered.request.model_access, Some(expected));
+    assert_eq!(
+        recovered
+            .request
+            .activation
+            .snapshot
+            .metadata
+            .inference_access,
+        Some(expected)
+    );
     assert_eq!(recovered.request.run_id(), first.request.run_id());
 }
 

@@ -12,24 +12,23 @@
 //! non-secret provider/endpoint/credential ids, and execution fails closed if
 //! any of those facts changed or the credential was disabled.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_config_resolver::{can_consume, resolve_inference};
+use awaken_config_resolver::{InferenceAccessPublisher, can_consume};
 use awaken_credential_vault::repo::CredentialRepo;
-use awaken_credential_vault::{CredentialBinding, CredentialSource, CredentialStatus, SecretStore};
+use awaken_credential_vault::{
+    CredentialSource, CredentialSourceId, CredentialStatus, SecretStore,
+};
 use awaken_model_catalog::ProviderCatalog;
 use awaken_model_catalog::repo::CatalogRepo;
-use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::llm::{
     ChatRequest, ChatResponse, DeltaSink, Error as LlmError, LlmExecutor,
 };
-use awaken_runtime_host::{
-    InferenceAccess, InferenceAccessResolver, InferenceExecutorMaterializer,
-};
+use awaken_runtime_contract::{InferenceAccess, InferenceEndpoint, ModelBinding};
+use awaken_runtime_host::InferenceExecutorMaterializer;
 
-use crate::executor_from_resolved;
+use crate::executor_from_materialized_access;
 
 /// Resolves `model_ref → executor` from the live config plane.
 #[derive(Clone)]
@@ -37,8 +36,6 @@ pub struct ConfiguredInferenceMaterializer {
     catalog: Arc<dyn CatalogRepo>,
     credentials: Arc<dyn CredentialRepo>,
     secrets: Arc<dyn SecretStore>,
-    /// Single-tenant default (Option A): the workspace whose credentials back runs.
-    workspace_id: String,
     fallback: Option<HostFallback>,
 }
 
@@ -48,18 +45,44 @@ struct HostFallback {
     executor: Arc<dyn LlmExecutor>,
 }
 
+struct PinnedModelExecutor {
+    inner: Arc<dyn LlmExecutor>,
+    upstream_model: String,
+}
+
+#[async_trait]
+impl LlmExecutor for PinnedModelExecutor {
+    async fn infer(&self, mut request: ChatRequest) -> Result<ChatResponse, LlmError> {
+        request
+            .model_binding
+            .model_ref
+            .clone_from(&self.upstream_model);
+        self.inner.infer(request).await
+    }
+
+    async fn infer_streaming(
+        &self,
+        mut request: ChatRequest,
+        sink: &dyn DeltaSink,
+    ) -> Result<ChatResponse, LlmError> {
+        request
+            .model_binding
+            .model_ref
+            .clone_from(&self.upstream_model);
+        self.inner.infer_streaming(request, sink).await
+    }
+}
+
 impl ConfiguredInferenceMaterializer {
     pub fn new(
         catalog: Arc<dyn CatalogRepo>,
         credentials: Arc<dyn CredentialRepo>,
         secrets: Arc<dyn SecretStore>,
-        workspace_id: impl Into<String>,
     ) -> Self {
         Self {
             catalog,
             credentials,
             secrets,
-            workspace_id: workspace_id.into(),
             fallback: None,
         }
     }
@@ -78,6 +101,16 @@ impl ConfiguredInferenceMaterializer {
             executor,
         });
         self
+    }
+
+    /// Configuration-side resolution entrypoint for compositions and tests. The
+    /// runtime materialization port deliberately exposes no equivalent selection.
+    pub async fn resolve_for_scope(
+        &self,
+        scope: &str,
+        models: &[ModelBinding],
+    ) -> Result<InferenceAccess, String> {
+        self.pin_models_access(scope, models).await
     }
 
     fn fallback_access(&self, model_ref: &str) -> Option<InferenceAccess> {
@@ -103,6 +136,7 @@ impl ConfiguredInferenceMaterializer {
     fn pin_access_from(
         catalog: &ProviderCatalog,
         sources: &[CredentialSource],
+        scope: &str,
         model_ref: &str,
     ) -> Result<InferenceAccess, String> {
         let offering = catalog
@@ -125,31 +159,38 @@ impl ConfiguredInferenceMaterializer {
                     && can_consume(&offering.provider_id.0, source)
             })
             .ok_or_else(|| format!("no active credential can consume model {model_ref}"))?;
-        Ok(InferenceAccess::exact_credential(
+        let version = u64::try_from(chosen.version)
+            .map_err(|_| format!("credential {} has a negative version", chosen.id.0))?;
+        let base_url = endpoint
+            .base_url
+            .clone()
+            .ok_or_else(|| format!("endpoint {} has no base URL", endpoint.id.0))?;
+        Ok(InferenceAccess::resolved_credential(
             chosen.id.0.clone(),
+            version,
+            scope,
             format!("{}@{}", offering.provider_id.0, provider.version),
             format!("{}@{}", offering.protocol_endpoint_id.0, endpoint.version),
+            InferenceEndpoint {
+                adapter_kind: endpoint.dialect.adapter_kind().to_string(),
+                base_url,
+                upstream_model: offering
+                    .upstream_model
+                    .clone()
+                    .unwrap_or_else(|| offering.model_id.clone()),
+            },
         ))
     }
 
-    async fn pin_activation_access(
+    async fn pin_models_access(
         &self,
-        activation: &RunActivation,
+        scope: &str,
+        models: &[ModelBinding],
     ) -> Result<InferenceAccess, String> {
-        let model_refs = match activation
-            .model_ref_override
-            .as_deref()
-            .filter(|model_ref| !model_ref.is_empty())
-        {
-            Some(model_ref) => vec![model_ref.to_string()],
-            None => activation
-                .snapshot
-                .resolved_spec
-                .candidate_bindings()
-                .into_iter()
-                .map(|binding| binding.model_ref.clone())
-                .collect(),
-        };
+        let model_refs = models
+            .iter()
+            .map(|binding| binding.model_ref.clone())
+            .collect::<Vec<_>>();
         // One catalog and credential-inventory snapshot pins the entire set. A
         // concurrent route update cannot produce a mixed-generation candidate
         // bundle assembled from separate reads.
@@ -166,7 +207,7 @@ impl ConfiguredInferenceMaterializer {
         });
         let sources = if needs_credentials {
             self.credentials
-                .list(&self.workspace_id)
+                .list(scope)
                 .await
                 .map_err(|error| error.to_string())?
         } else {
@@ -180,7 +221,7 @@ impl ConfiguredInferenceMaterializer {
                 .iter()
                 .any(|offering| offering.model_id == model_ref)
             {
-                Self::pin_access_from(&catalog, &sources, &model_ref)
+                Self::pin_access_from(&catalog, &sources, scope, &model_ref)
             } else {
                 self.fallback_access(&model_ref)
                     .ok_or_else(|| format!("model offering {model_ref} is not published"))
@@ -195,59 +236,47 @@ impl ConfiguredInferenceMaterializer {
         })
     }
 
-    async fn resolve(
+    async fn materialize_pinned(
         &self,
         model_ref: &str,
-        access: Option<&InferenceAccess>,
+        access: &InferenceAccess,
     ) -> Option<Arc<dyn LlmExecutor>> {
-        let catalog = self.catalog.snapshot().await.ok()?;
-        // The offering names the provider whose credential must authenticate the model.
-        let offering = catalog.offerings.iter().find(|o| o.model_id == model_ref)?;
-        let provider_id = offering.provider_id.0.clone();
-        let provider_version = catalog.providers.get(&provider_id)?.version;
-        let endpoint_version = catalog
-            .endpoints
-            .get(offering.protocol_endpoint_id.as_str())?
-            .version;
-        let pinned_provider = format!("{provider_id}@{provider_version}");
-        let pinned_route = format!("{}@{endpoint_version}", offering.protocol_endpoint_id.0);
-        // Per-provider default derive: the workspace's first Active credential that
-        // `can_consume` this provider (the "one default per provider" rule).
-        let sources = self.credentials.list(&self.workspace_id).await.ok()?;
-        let chosen = match access {
-            Some(access)
-                if access.scheme == "credential-source/v1"
-                    && access.provider_ref.as_deref() == Some(pinned_provider.as_str())
-                    && access.route_ref.as_deref() == Some(pinned_route.as_str()) =>
-            {
-                sources.iter().find(|source| {
-                    source.id.0 == access.reference
-                        && source.status == CredentialStatus::Active
-                        && can_consume(&provider_id, source)
-                })?
-            }
-            Some(_) => return None,
-            None => sources.iter().find(|source| {
-                source.status == CredentialStatus::Active && can_consume(&provider_id, source)
-            })?,
-        };
-        let binding = CredentialBinding::Exact {
-            credential_source_id: chosen.id.clone(),
-        };
-        let lookup: HashMap<String, CredentialSource> = sources
-            .iter()
-            .map(|s| (s.id.0.clone(), s.clone()))
-            .collect();
-        let inference = resolve_inference(
-            &catalog,
-            model_ref,
-            &binding,
-            &lookup,
-            self.secrets.as_ref(),
+        if access.scheme != "credential-source/v1" {
+            return None;
+        }
+        let provider = access.provider_ref.as_deref()?.split_once('@')?.0;
+        let scope = access.scope_id.as_deref()?;
+        let expected_version = access.credential_version?;
+        let source = self
+            .credentials
+            .get(&CredentialSourceId(access.reference.clone()))
+            .await
+            .ok()?;
+        if source.workspace_id != scope
+            || source.status != CredentialStatus::Active
+            || u64::try_from(source.version).ok()? != expected_version
+            || !can_consume(provider, &source)
+        {
+            return None;
+        }
+        let secret = awaken_credential_vault::materialize(&source, self.secrets.as_ref())
+            .await
+            .ok()?;
+        let endpoint = access.endpoint.as_ref()?;
+        if endpoint.upstream_model.is_empty() {
+            return None;
+        }
+        let _ = model_ref;
+        let executor = executor_from_materialized_access(
+            &endpoint.adapter_kind,
+            Some(&endpoint.base_url),
+            Some(&secret),
         )
-        .await
         .ok()?;
-        executor_from_resolved(&inference).ok()
+        Some(Arc::new(PinnedModelExecutor {
+            inner: executor,
+            upstream_model: endpoint.upstream_model.clone(),
+        }))
     }
 
     async fn materialize(
@@ -258,7 +287,7 @@ impl ConfiguredInferenceMaterializer {
         if let Some(executor) = self.fallback_executor(model_ref, access) {
             Some(executor)
         } else {
-            self.resolve(model_ref, Some(access)).await
+            self.materialize_pinned(model_ref, access).await
         }
     }
 }
@@ -303,29 +332,33 @@ impl LlmExecutor for PinnedCandidateExecutor {
     }
 }
 
-impl InferenceAccessResolver for ConfiguredInferenceMaterializer {
-    fn resolve_access(&self, activation: &RunActivation) -> Result<InferenceAccess, String> {
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(self.pin_activation_access(activation))
-        })
+impl InferenceAccessPublisher for ConfiguredInferenceMaterializer {
+    fn resolve_access<'a>(
+        &'a self,
+        scope: &'a str,
+        models: &'a [ModelBinding],
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<InferenceAccess, String>> + Send + 'a>,
+    > {
+        Box::pin(async move { self.resolve_for_scope(scope, models).await })
     }
 }
 
 impl InferenceExecutorMaterializer for ConfiguredInferenceMaterializer {
     fn materialize(
         &self,
-        activation: &RunActivation,
-        model_access: &InferenceAccess,
+        activation: &awaken_runtime_contract::RunActivation,
+        access: &InferenceAccess,
     ) -> Option<Arc<dyn LlmExecutor>> {
-        if !model_access.candidates.is_empty() {
+        if !access.candidates.is_empty() {
             return Some(Arc::new(PinnedCandidateExecutor {
                 provider: self.clone(),
-                access: model_access.clone(),
+                access: access.clone(),
             }));
         }
         let model_ref = activation.effective_model_ref();
         tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(self.materialize(model_ref, model_access))
+            tokio::runtime::Handle::current().block_on(self.materialize(model_ref, access))
         })
     }
 }
@@ -342,6 +375,7 @@ mod tests {
     use awaken_model_catalog::{
         ApiDialect, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
     };
+    use awaken_runtime_contract::RunActivation;
     use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
     use awaken_runtime_contract::snapshot::{
         AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
@@ -411,7 +445,7 @@ mod tests {
                 creds.put(row).await.unwrap();
             }
         }
-        ConfiguredInferenceMaterializer::new(catalog, creds, secrets, "ws")
+        ConfiguredInferenceMaterializer::new(catalog, creds, secrets)
     }
 
     fn activation_with_fallback(primary: &str, fallback: &str) -> RunActivation {
@@ -441,13 +475,30 @@ mod tests {
         )
     }
 
+    async fn pin_activation(
+        provider: &ConfiguredInferenceMaterializer,
+        activation: &RunActivation,
+    ) -> Result<InferenceAccess, String> {
+        let models = if let Some(model_ref) = activation.model_ref_override.as_ref() {
+            vec![ModelBinding::new("override", model_ref, "genai")]
+        } else {
+            activation
+                .snapshot
+                .resolved_spec
+                .candidate_bindings()
+                .into_iter()
+                .cloned()
+                .collect()
+        };
+        provider.resolve_for_scope("ws", &models).await
+    }
+
     #[tokio::test]
     async fn resolves_a_configured_model_to_an_executor() {
         let p = provider("claude-x", Some(("anthropic", true))).await;
-        assert!(
-            p.resolve("claude-x", None).await.is_some(),
-            "a configured model with an active, compatible credential resolves to an executor"
-        );
+        let activation = activation_with_fallback("claude-x", "unused");
+        let access = pin_activation(&p, &activation).await.unwrap();
+        assert!(p.materialize_pinned("claude-x", &access).await.is_some());
     }
 
     #[tokio::test]
@@ -459,7 +510,7 @@ mod tests {
         let activation = activation_with_fallback("configured", "other")
             .with_model_ref_override(Some("embedded".to_string()));
 
-        let pinned = p.pin_activation_access(&activation).await.unwrap();
+        let pinned = pin_activation(&p, &activation).await.unwrap();
         assert_eq!(pinned.candidates.len(), 1);
         let exact = pinned.for_model("embedded").unwrap();
         assert!(exact.is_host_executor_for("embedded"));
@@ -472,8 +523,9 @@ mod tests {
     async fn an_unconfigured_model_falls_back_to_the_host_default() {
         let p = provider("claude-x", Some(("anthropic", true))).await;
         assert!(
-            p.resolve("no-such-model", None).await.is_none(),
-            "no matching offering → None (the host default runs it)"
+            pin_activation(&p, &activation_with_fallback("no-such-model", "unused"))
+                .await
+                .is_err()
         );
     }
 
@@ -481,8 +533,9 @@ mod tests {
     async fn no_credential_falls_back_to_the_host_default() {
         let p = provider("claude-x", None).await;
         assert!(
-            p.resolve("claude-x", None).await.is_none(),
-            "an offering with no workspace credential → None"
+            pin_activation(&p, &activation_with_fallback("claude-x", "unused"))
+                .await
+                .is_err()
         );
     }
 
@@ -490,8 +543,9 @@ mod tests {
     async fn a_non_active_credential_falls_back() {
         let p = provider("claude-x", Some(("anthropic", false))).await;
         assert!(
-            p.resolve("claude-x", None).await.is_none(),
-            "only an Active credential is derived; a disabled one is skipped"
+            pin_activation(&p, &activation_with_fallback("claude-x", "unused"))
+                .await
+                .is_err()
         );
     }
 
@@ -499,8 +553,9 @@ mod tests {
     async fn a_credential_for_another_provider_falls_back() {
         let p = provider("claude-x", Some(("openai", true))).await;
         assert!(
-            p.resolve("claude-x", None).await.is_none(),
-            "the credential must `can_consume` the offering's provider"
+            pin_activation(&p, &activation_with_fallback("claude-x", "unused"))
+                .await
+                .is_err()
         );
     }
 
@@ -508,7 +563,7 @@ mod tests {
     async fn pinned_credential_never_switches_to_a_new_default() {
         let p = provider("claude-x", Some(("anthropic", true))).await;
         let activation = activation_with_fallback("claude-x", "unused");
-        let pinned = InferenceAccessResolver::resolve_access(&p, &activation).unwrap();
+        let pinned = pin_activation(&p, &activation).await.unwrap();
         assert_eq!(pinned.scheme, "credential-source/v1");
         assert_eq!(pinned.provider_ref.as_deref(), Some("anthropic@1"));
         assert_eq!(pinned.route_ref.as_deref(), Some("ep1@1"));
@@ -528,23 +583,54 @@ mod tests {
         .await
         .unwrap();
         assert_ne!(pinned.reference, second.id.0);
-        assert!(p.resolve("claude-x", Some(&pinned)).await.is_some());
+        assert!(p.materialize_pinned("claude-x", &pinned).await.is_some());
 
         let pinned_id = awaken_credential_vault::CredentialSourceId(pinned.reference.clone());
         let mut old = p.credentials.get(&pinned_id).await.unwrap();
         old.status = CredentialStatus::Disabled;
         p.credentials.put(old).await.unwrap();
         assert!(
-            p.resolve("claude-x", Some(&pinned)).await.is_none(),
+            p.materialize_pinned("claude-x", &pinned).await.is_none(),
             "revoking the pinned credential fails closed instead of selecting the new default"
         );
     }
 
+    #[tokio::test]
+    async fn publication_selects_credentials_only_from_the_supplied_scope() {
+        let p = provider("claude-x", Some(("anthropic", true))).await;
+        let other = enter_credential(
+            CredentialCreateParams {
+                workspace_id: "workspace-b".into(),
+                kind: CredentialKind::Vault,
+                provider_id: Some("anthropic".into()),
+                env_key: Some("ANTHROPIC_API_KEY_B".into()),
+                secret: Some(RedactedString::new("sk-test-b")),
+                oauth_command: None,
+            },
+            p.secrets.as_ref(),
+            p.credentials.as_ref(),
+        )
+        .await
+        .unwrap();
+        let model = ModelBinding::new("anthropic", "claude-x", "genai");
+        let access = p.resolve_for_scope("workspace-b", &[model]).await.unwrap();
+        assert_eq!(access.reference, other.id.0);
+        assert_eq!(access.scope_id.as_deref(), Some("workspace-b"));
+        assert!(p.materialize_pinned("claude-x", &access).await.is_some());
+
+        let mut forged = access;
+        forged.scope_id = Some("ws".into());
+        assert!(
+            p.materialize_pinned("claude-x", &forged).await.is_none(),
+            "execution rejects a credential whose persisted owner differs from the snapshot scope"
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn pinned_route_does_not_follow_a_catalog_update() {
+    async fn pinned_route_is_independent_of_a_later_catalog_update() {
         let p = provider("claude-x", Some(("anthropic", true))).await;
         let activation = activation_with_fallback("claude-x", "unused");
-        let pinned = InferenceAccessResolver::resolve_access(&p, &activation).unwrap();
+        let pinned = pin_activation(&p, &activation).await.unwrap();
         p.catalog
             .put_endpoint(ProtocolEndpoint {
                 id: ProtocolEndpointId::new("ep1"),
@@ -558,8 +644,8 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            p.resolve("claude-x", Some(&pinned)).await.is_none(),
-            "an admitted run cannot silently move to the updated route"
+            p.materialize_pinned("claude-x", &pinned).await.is_some(),
+            "execution uses the publication-pinned endpoint without consulting the updated catalog"
         );
     }
 
@@ -612,8 +698,7 @@ mod tests {
         .await
         .unwrap();
 
-        let pinned = p
-            .pin_activation_access(&activation_with_fallback("claude-x", "gpt-x"))
+        let pinned = pin_activation(&p, &activation_with_fallback("claude-x", "gpt-x"))
             .await
             .unwrap();
         assert_eq!(
@@ -638,9 +723,9 @@ mod tests {
         let mut primary_row = p.credentials.get(&primary_id).await.unwrap();
         primary_row.status = CredentialStatus::Disabled;
         p.credentials.put(primary_row).await.unwrap();
-        assert!(p.resolve("claude-x", Some(&primary)).await.is_none());
+        assert!(p.materialize_pinned("claude-x", &primary).await.is_none());
         assert!(
-            p.resolve("gpt-x", Some(&pinned.for_model("gpt-x").unwrap()))
+            p.materialize_pinned("gpt-x", &pinned.for_model("gpt-x").unwrap())
                 .await
                 .is_some(),
             "the already-pinned fallback remains materializable"

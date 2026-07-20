@@ -65,7 +65,7 @@ const obligations: Obligation[] = [
   { id: 'D3-04', stage: '3 worker identity/scope', behavior: 'opaque verified execution scope survives dispatch', scenario: 'worker_transport' },
   { id: 'D3-05', stage: '3 worker identity/scope', behavior: 'real worker reuses one identity for claim/commit/settle', scenario: 'credential_reference_worker' },
 
-  { id: 'D4-01', stage: '4 credential injection', behavior: 'model_access survives durable enqueue and claim unchanged', scenario: 'worker_transport' },
+  { id: 'D4-01', stage: '4 credential injection', behavior: 'snapshot inference_access survives durable enqueue and claim unchanged', scenario: 'worker_transport' },
   { id: 'D4-02', stage: '4 credential injection', behavior: 'claimed dispatch contains no provider key', scenario: 'worker_transport' },
   { id: 'D4-03', stage: '4 credential injection', behavior: 'real awaken-worker forwards the pinned reference to the inference materializer', scenario: 'credential_reference_worker' },
   { id: 'D4-04', stage: '4 credential injection', behavior: 'materialized executor drives the model result', scenario: 'credential_reference_worker' },

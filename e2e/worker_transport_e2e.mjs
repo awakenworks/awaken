@@ -133,7 +133,13 @@ async function main() {
     granted.activation.thread_id = `${claimed.request.activation.thread_id}-grant`;
     granted.session_thread_id = granted.activation.thread_id;
     granted.execution_scope = 'scope-ts-17';
-    granted.model_access = { scheme: 'credential-reference/v1', reference: 'grant-ts-17' };
+    granted.activation.snapshot.metadata = {
+      source: { agent_id: '', revision: 0 },
+      publication_version: '',
+      resolution: { inputs: [] },
+      fingerprint: '',
+      inference_access: { scheme: 'credential-reference/v1', reference: 'grant-ts-17' },
+    };
     const enqueuedGrant = await postJson('/v1/worker/dispatch/enqueue', { request: granted });
     assert.equal(enqueuedGrant.status, 200, `grant-bearing dispatch enqueued: ${enqueuedGrant.text}`);
 
@@ -151,9 +157,9 @@ async function main() {
     assert.equal(grantClaim.status, 200, `grant dispatch claimed: ${grantClaim.text}`);
     const grant = grantClaim.json?.claimed;
     assert.deepEqual(
-      grant?.request?.model_access,
+      grant?.request?.activation?.snapshot?.metadata?.inference_access,
       { scheme: 'credential-reference/v1', reference: 'grant-ts-17' },
-      'model_access survives enqueue → durable store → authenticated claim unchanged',
+      'snapshot inference_access survives enqueue → durable store → authenticated claim unchanged',
     );
     assert.equal(
       grant?.request?.execution_scope,
@@ -161,7 +167,7 @@ async function main() {
       'verified execution scope survives the durable worker boundary as an opaque coordinate',
     );
     assert.ok(!JSON.stringify(grant).includes('provider-key'), 'claim contains no provider credential');
-    pass('secretless model_access grant survives durable dispatch without a provider key');
+    pass('secretless snapshot access survives durable dispatch without a provider key');
 
     // A different authenticated worker cannot commit the claim. The owner-bound
     // request is rejected before thread facts are applied.

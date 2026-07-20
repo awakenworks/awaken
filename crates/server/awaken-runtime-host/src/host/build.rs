@@ -466,19 +466,6 @@ impl SharedHost {
         self
     }
 
-    /// Install both the admission resolver and runtime materializer for an
-    /// all-in-one composition while keeping their ports independently reusable.
-    pub fn with_inference_services<T>(mut self, services: Arc<T>) -> Self
-    where
-        T: crate::inference_routing::InferenceAccessResolver
-            + crate::inference_routing::InferenceExecutorMaterializer
-            + 'static,
-    {
-        self.inference_routing.set_access_resolver(services.clone());
-        self.inference_routing.set_materializer(services);
-        self
-    }
-
     /// Bind `model_ref` to `thread` (R2/R5), staged before its first turn.
     pub fn register_thread_model(&self, thread: &str, model_ref: impl Into<String>) {
         self.inference_routing.register(thread, model_ref);
@@ -588,13 +575,6 @@ impl SharedHost {
                         commit = commit.with_worker_identity(identity.clone());
                     }
                     Arc::new(commit) as Arc<dyn awaken_run_ingress::ClaimedRunCommit>
-                }),
-                model_access: self.inference_routing.access_resolver().map(|resolver| {
-                    Arc::new(
-                        move |activation: &awaken_runtime_contract::activation::RunActivation| {
-                            resolver.resolve_access(activation).map(Some)
-                        },
-                    ) as Arc<_>
                 }),
             })
         } else {

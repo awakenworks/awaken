@@ -110,7 +110,7 @@ async fn a_worker_routes_inference_through_the_resolved_model_executor() {
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let resolver: awaken_run_ingress::InferenceMaterializerFn =
-        Arc::new(|_model_ref, _access| Some(Arc::new(Labeled) as Arc<dyn LlmExecutor>));
+        Arc::new(|_activation| Some(Arc::new(Labeled) as Arc<dyn LlmExecutor>));
     let ingress = DurableRunIngress::with_owner_and_resolver(
         text_runtime(), // its bound model would reply "done"
         store.clone(),
@@ -135,7 +135,7 @@ async fn a_worker_routes_inference_through_the_resolved_model_executor() {
 }
 
 #[tokio::test]
-async fn a_secretless_worker_passes_the_durable_model_access_grant_to_its_resolver() {
+async fn a_secretless_worker_reads_the_snapshot_pinned_access() {
     use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 
     struct Gateway;
@@ -155,11 +155,11 @@ async fn a_secretless_worker_passes_the_durable_model_access_grant_to_its_resolv
 
     let seen = Arc::new(Mutex::new(None));
     let capture = seen.clone();
-    let resolver: awaken_run_ingress::InferenceMaterializerFn =
-        Arc::new(move |_model_ref, access| {
-            *capture.lock().expect("grant capture mutex") = access.cloned();
-            Some(Arc::new(Gateway) as Arc<dyn LlmExecutor>)
-        });
+    let resolver: awaken_run_ingress::InferenceMaterializerFn = Arc::new(move |activation| {
+        *capture.lock().expect("grant capture mutex") =
+            activation.snapshot.metadata.inference_access.clone();
+        Some(Arc::new(Gateway) as Arc<dyn LlmExecutor>)
+    });
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = DurableRunIngress::with_owner_and_resolver(
@@ -171,7 +171,9 @@ async fn a_secretless_worker_passes_the_durable_model_access_grant_to_its_resolv
         Some(resolver),
     );
     let access = InferenceAccess::new("credential-reference/v1", "grant-17");
-    let request = RunDispatch::new(activation("run-gateway")).with_model_access(access.clone());
+    let mut activation = activation("run-gateway");
+    activation.snapshot.metadata.inference_access = Some(access.clone());
+    let request = RunDispatch::new(activation);
     let (_, state) = ingress
         .worker()
         .start_run(request, 0)
@@ -219,12 +221,10 @@ async fn a_per_run_model_override_routes_the_worker_to_the_overridden_model() {
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let resolver: awaken_run_ingress::InferenceMaterializerFn =
-        Arc::new(
-            |activation, _access| match activation.effective_model_ref() {
-                "alt" => Some(Arc::new(Fixed("ALT")) as Arc<dyn LlmExecutor>),
-                _ => Some(Arc::new(Fixed("BOUND")) as Arc<dyn LlmExecutor>),
-            },
-        );
+        Arc::new(|activation| match activation.effective_model_ref() {
+            "alt" => Some(Arc::new(Fixed("ALT")) as Arc<dyn LlmExecutor>),
+            _ => Some(Arc::new(Fixed("BOUND")) as Arc<dyn LlmExecutor>),
+        });
     let ingress = DurableRunIngress::with_owner_and_resolver(
         text_runtime(),
         store.clone(),

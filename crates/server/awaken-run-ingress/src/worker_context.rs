@@ -10,7 +10,6 @@ use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
-use awaken_run_ingress_contract::InferenceAccess;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::live_inbox::LiveInbox;
 use awaken_runtime_contract::llm::LlmExecutor;
@@ -21,9 +20,8 @@ use tokio_util::sync::CancellationToken;
 /// Materializes the activation's admission-pinned inference access. A worker
 /// receives the complete activation and opaque access value; it neither selects a
 /// model nor distinguishes deployment topology.
-pub type InferenceMaterializerFn = Arc<
-    dyn Fn(&RunActivation, Option<&InferenceAccess>) -> Option<Arc<dyn LlmExecutor>> + Send + Sync,
->;
+pub type InferenceMaterializerFn =
+    Arc<dyn Fn(&RunActivation) -> Option<Arc<dyn LlmExecutor>> + Send + Sync>;
 
 // The serializable durable-run instruction moved to the dispatch contract
 // (ADR-0039 2.1); re-exported so `awaken_run_ingress_contract::RunDispatch` is stable.
@@ -78,12 +76,11 @@ impl WorkerContext {
     pub(crate) fn materialize_inference(
         &self,
         activation: &RunActivation,
-        model_access: Option<&InferenceAccess>,
     ) -> awaken_runtime_contract::execution::Result<Option<Arc<dyn LlmExecutor>>> {
         let Some(resolve) = &self.inference_materializer else {
             return Ok(None);
         };
-        resolve(activation, model_access).map(Some).ok_or_else(|| {
+        resolve(activation).map(Some).ok_or_else(|| {
             awaken_runtime_contract::execution::Error::Resolution(format!(
                 "inference materializer rejected pinned model {}",
                 activation.effective_model_ref()
@@ -193,9 +190,9 @@ mod resolve_seam_tests {
     fn returns_the_injected_providers_executor() {
         let labeled: Arc<dyn LlmExecutor> = Arc::new(Labeled("resolved"));
         let l = labeled.clone();
-        let c = ctx().with_inference_materializer(Arc::new(move |_ref, _access| Some(l.clone())));
+        let c = ctx().with_inference_materializer(Arc::new(move |_activation| Some(l.clone())));
         assert!(Arc::ptr_eq(
-            &c.materialize_inference(&activation("any-model"), None)
+            &c.materialize_inference(&activation("any-model"))
                 .unwrap()
                 .unwrap(),
             &labeled
@@ -207,7 +204,7 @@ mod resolve_seam_tests {
         // No provider injected → None → the run uses the runtime's bound default.
         assert!(
             ctx()
-                .materialize_inference(&activation("any-model"), None)
+                .materialize_inference(&activation("any-model"))
                 .unwrap()
                 .is_none()
         );
@@ -215,9 +212,9 @@ mod resolve_seam_tests {
 
     #[test]
     fn is_none_when_the_resolver_declines_the_ref() {
-        let c = ctx().with_inference_materializer(Arc::new(|_ref, _access| None));
+        let c = ctx().with_inference_materializer(Arc::new(|_activation| None));
         assert!(
-            c.materialize_inference(&activation("unknown-model"), None)
+            c.materialize_inference(&activation("unknown-model"))
                 .is_err()
         );
     }

@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use awaken_run_ingress::InferenceAccess;
+use awaken_runtime_contract::InferenceAccess;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::llm::LlmExecutor;
 
@@ -30,14 +30,9 @@ pub trait InferenceExecutorMaterializer: Send + Sync {
 /// Resolves and pins the secret-free access descriptor before admission. This
 /// configuration role is independent of runtime materialization; a remote worker
 /// needs only [`InferenceExecutorMaterializer`].
-pub trait InferenceAccessResolver: Send + Sync {
-    fn resolve_access(&self, activation: &RunActivation) -> Result<InferenceAccess, String>;
-}
-
 /// The host's per-thread model binding: which model ref each thread runs, and how
 /// a ref becomes an executor.
 pub(crate) struct InferenceRouting {
-    access_resolver: Option<Arc<dyn InferenceAccessResolver>>,
     materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,
     /// Per-thread bound model ref, staged at session prepare (mirrors `thread_mcp`).
     /// Absent → the host default model ref.
@@ -47,14 +42,9 @@ pub(crate) struct InferenceRouting {
 impl InferenceRouting {
     pub(crate) fn new() -> Self {
         Self {
-            access_resolver: None,
             materializer: None,
             thread_model: Mutex::new(HashMap::new()),
         }
-    }
-
-    pub(crate) fn set_access_resolver(&mut self, resolver: Arc<dyn InferenceAccessResolver>) {
-        self.access_resolver = Some(resolver);
     }
 
     pub(crate) fn set_materializer(
@@ -62,10 +52,6 @@ impl InferenceRouting {
         materializer: Arc<dyn InferenceExecutorMaterializer>,
     ) {
         self.materializer = Some(materializer);
-    }
-
-    pub(crate) fn access_resolver(&self) -> Option<Arc<dyn InferenceAccessResolver>> {
-        self.access_resolver.clone()
     }
 
     pub(crate) fn materializer(&self) -> Option<Arc<dyn InferenceExecutorMaterializer>> {
@@ -102,28 +88,21 @@ impl InferenceRouting {
             .cloned()
     }
 
-    pub(crate) fn pin_access(
-        &self,
-        activation: &RunActivation,
-    ) -> Result<Option<InferenceAccess>, String> {
-        match &self.access_resolver {
-            Some(resolver) => resolver.resolve_access(activation).map(Some),
-            None => Ok(None),
-        }
-    }
-
     pub(crate) fn executor_for_activation(
         &self,
         activation: &RunActivation,
     ) -> Result<Option<Arc<dyn LlmExecutor>>, String> {
-        let Some(resolver) = &self.access_resolver else {
-            return Ok(None);
-        };
         let Some(materializer) = &self.materializer else {
             return Ok(None);
         };
-        let access = resolver.resolve_access(activation)?;
-        Ok(materializer.materialize(activation, &access))
+        let legacy_access = InferenceAccess::host_executor(activation.effective_model_ref());
+        let access = activation
+            .snapshot
+            .metadata
+            .inference_access
+            .as_ref()
+            .unwrap_or(&legacy_access);
+        Ok(materializer.materialize(activation, access))
     }
 }
 
@@ -181,14 +160,6 @@ mod tests {
     }
 
     struct MapProvider(HashMap<String, Arc<dyn LlmExecutor>>);
-    impl InferenceAccessResolver for MapProvider {
-        fn resolve_access(&self, activation: &RunActivation) -> Result<InferenceAccess, String> {
-            Ok(InferenceAccess::host_executor(
-                activation.effective_model_ref(),
-            ))
-        }
-    }
-
     impl InferenceExecutorMaterializer for MapProvider {
         fn materialize(
             &self,
@@ -210,7 +181,6 @@ mod tests {
         map.insert("fast-model".into(), fast.clone());
         let mut binding = InferenceRouting::new();
         let provider = Arc::new(MapProvider(map));
-        binding.set_access_resolver(provider.clone());
         binding.set_materializer(provider);
 
         // A resolvable ref → the provider's executor (resolved per run, from the ref).
@@ -247,7 +217,6 @@ mod tests {
             Arc::new(LabeledModel("b")) as Arc<dyn LlmExecutor>,
         );
         let provider = Arc::new(MapProvider(map));
-        binding.set_access_resolver(provider.clone());
         binding.set_materializer(provider);
 
         binding.register("t", "model-a");
@@ -274,27 +243,17 @@ mod tests {
         struct ReferenceMaterializer {
             seen: Arc<Mutex<Option<InferenceAccess>>>,
             executor: Arc<dyn LlmExecutor>,
-            grant: InferenceAccess,
         }
 
         impl InferenceExecutorMaterializer for ReferenceMaterializer {
             fn materialize(
                 &self,
                 activation: &RunActivation,
-                model_access: &InferenceAccess,
+                access: &InferenceAccess,
             ) -> Option<Arc<dyn LlmExecutor>> {
                 assert_eq!(activation.effective_model_ref(), "gateway-model");
-                *self.seen.lock().expect("grant capture mutex") = Some(model_access.clone());
+                *self.seen.lock().expect("grant capture mutex") = Some(access.clone());
                 Some(self.executor.clone())
-            }
-        }
-
-        impl InferenceAccessResolver for ReferenceMaterializer {
-            fn resolve_access(
-                &self,
-                _activation: &RunActivation,
-            ) -> Result<InferenceAccess, String> {
-                Ok(self.grant.clone())
             }
         }
 
@@ -305,13 +264,13 @@ mod tests {
         let materializer = Arc::new(ReferenceMaterializer {
             seen: seen.clone(),
             executor: executor.clone(),
-            grant: grant.clone(),
         });
-        binding.set_access_resolver(materializer.clone());
         binding.set_materializer(materializer);
 
+        let mut activation = activation("gateway-model");
+        activation.snapshot.metadata.inference_access = Some(grant.clone());
         let resolved = binding
-            .executor_for_activation(&activation("gateway-model"))
+            .executor_for_activation(&activation)
             .unwrap()
             .expect("reference materializer resolves the run");
         assert!(Arc::ptr_eq(&resolved, &executor));

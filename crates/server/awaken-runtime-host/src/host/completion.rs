@@ -2,7 +2,8 @@
 //! and the [`CompletionRegistry`] event-wakeup machinery.
 
 use super::*;
-use awaken_run_ingress::{InferenceAccess, PlacementRequirements};
+use awaken_run_ingress::PlacementRequirements;
+use awaken_runtime_contract::InferenceAccess;
 
 fn remote_worker_placement(access: Option<&InferenceAccess>) -> PlacementRequirements {
     let mut placement = PlacementRequirements::remote_required();
@@ -31,17 +32,13 @@ impl SharedHost {
         &self,
         activation: RunActivation,
     ) -> Result<RunDispatch, HostError> {
-        let access = self
-            .inference_routing
-            .pin_access(&activation)
-            .map_err(HostError::bad_request)?;
+        let placement = self.deployment.disable_local_pool.then(|| {
+            remote_worker_placement(activation.snapshot.metadata.inference_access.as_ref())
+        });
         let mut request = RunDispatch::new(activation)
             .with_traceparent(awaken_observability::current_traceparent());
-        if self.deployment.disable_local_pool {
-            request = request.with_placement(remote_worker_placement(access.as_ref()));
-        }
-        if let Some(access) = access {
-            request = request.with_model_access(access);
+        if let Some(placement) = placement {
+            request = request.with_placement(placement);
         }
         Ok(request)
     }

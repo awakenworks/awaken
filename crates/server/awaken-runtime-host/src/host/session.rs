@@ -160,8 +160,17 @@ impl SharedHost {
     ) -> Option<awaken_run_ingress::InferenceMaterializerFn> {
         self.inference_routing.materializer().map(|materializer| {
             let resolve: awaken_run_ingress::InferenceMaterializerFn =
-                Arc::new(move |activation, model_access| {
-                    materializer.materialize(activation, model_access?)
+                Arc::new(move |activation| {
+                    let legacy_access = awaken_runtime_contract::InferenceAccess::host_executor(
+                        activation.effective_model_ref(),
+                    );
+                    let access = activation
+                        .snapshot
+                        .metadata
+                        .inference_access
+                        .as_ref()
+                        .unwrap_or(&legacy_access);
+                    materializer.materialize(activation, access)
                 });
             resolve
         })
