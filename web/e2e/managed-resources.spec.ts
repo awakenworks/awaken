@@ -148,8 +148,8 @@ test("Tool presentation: alias a tool in the editor and persist it", async ({ pa
 
   await page.goto(`/w/default/agents/${agent}`);
   await page.getByRole("tab", { name: "Tools" }).click();
-  await page.getByRole("button", { name: /override a tool/ }).click();
-  // The override row: target <select> (defaults to "read"), then an "alias" input.
+  await page.getByRole("button", { name: /override a selected tool/ }).click();
+  // The override row: canonical target input defaults to "read", followed by alias.
   await page.getByPlaceholder("rename").fill("open_file");
   await page.getByPlaceholder("override description").fill("Read a file.");
   await page.getByRole("button", { name: "Save", exact: true }).click();

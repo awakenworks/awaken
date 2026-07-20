@@ -51,7 +51,7 @@ export function labelForPath(path: string): string {
   return LABELS[path] ?? LABELS[path.split(".")[0]] ?? path;
 }
 
-export type EditorSection = "overview" | "behavior" | "tools" | "resources";
+export type EditorSection = "overview" | "behavior" | "tools" | "integrations" | "resources";
 
 /** Which editor section a config path lives under — so a validation issue (or a diff row)
  * routes the user to the right place. */
@@ -59,5 +59,6 @@ export function sectionForPath(path: string): EditorSection {
   const top = path.split(".")[0];
   if (top === "tools" || top === "tool_overrides") return "tools";
   if (top === "plugins" || top === "plugin_config" || top === "context_policy") return "behavior";
+  if (["mcp_servers", "skills", "multiagent", "metadata"].includes(top)) return "integrations";
   return "overview"; // model / system / max_steps / name / description / whole-config
 }

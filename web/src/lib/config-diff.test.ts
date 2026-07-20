@@ -55,6 +55,11 @@ describe("sectionForPath", () => {
     expect(sectionForPath("plugin_config.compact.threshold")).toBe("behavior");
     expect(sectionForPath("context_policy")).toBe("behavior");
   });
+  it("routes managed Agent integrations to Integrations", () => {
+    for (const path of ["mcp_servers", "skills", "multiagent", "metadata.owner"]) {
+      expect(sectionForPath(path)).toBe("integrations");
+    }
+  });
   it("routes model/system/whole-config to Overview", () => {
     expect(sectionForPath("model")).toBe("overview");
     expect(sectionForPath("system")).toBe("overview");

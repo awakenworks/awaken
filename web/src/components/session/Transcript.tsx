@@ -137,11 +137,13 @@ export default function Transcript({
   contextPrefix,
 }: TranscriptProps) {
   const app = useApp();
-  const { log, results, pendingIds, running, freshCount, applyPending, send, sendError, loadError } =
+  const { log, results, pendingIds, running, freshCount, applyPending, send, sendPending, sendError, loadError } =
     useSessionLog(base, queryKey, live, composer);
   const [draft, setDraft] = useState("");
+  const [pendingMessage, setPendingMessage] = useState<string | null>(null);
   const [model, setModel] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
   // Latency: stamp on send, resolve when the next agent.message lands in the log.
   const sentAt = useRef<number | null>(null);
   const agentMsgCount = log.filter((e) => e.type === "agent.message").length;
@@ -153,6 +155,21 @@ export default function Transcript({
     }
     prevMsgCount.current = agentMsgCount;
   }, [agentMsgCount, onLatency]);
+
+  // Echo the operator's first message immediately. The events POST may remain open
+  // for the whole run, and the first committed/SSE frame can arrive later; neither
+  // should make a freshly submitted chat look unresponsive.
+  useEffect(() => {
+    if (!pendingMessage) return;
+    const committed = log.some((event) =>
+      event.type === "user.message" &&
+      textOf("content" in event ? (event.content as ContentBlock[]) : undefined).endsWith(pendingMessage));
+    if (committed) setPendingMessage(null);
+  }, [log, pendingMessage]);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ block: "nearest" });
+  }, [log.length, pendingMessage, running, sendPending]);
 
   const confirm = (ev: SessionEvent, allow: boolean, note: string) => {
     const inbound: InboundEvent =
@@ -173,12 +190,16 @@ export default function Transcript({
   };
 
   const submit = () => {
-    if (!draft.trim()) return;
+    if (!draft.trim() || sendPending) return;
     const useModel = fixedModel || model;
+    // Preserve the operator's exact multiline text (indentation and trailing newline
+    // can be meaningful in code/prompts); trimming is only the emptiness check above.
+    const userText = draft;
     sentAt.current = Date.now();
     // A short context tag is prepended to steer the model (e.g. "refine agent X"); it
     // reads as context in the echoed user bubble.
-    const text = contextPrefix ? `${contextPrefix}\n${draft.trim()}` : draft.trim();
+    const text = contextPrefix ? `${contextPrefix}\n${userText}` : userText;
+    setPendingMessage(userText);
     send([
       {
         type: "user.message",
@@ -187,6 +208,7 @@ export default function Transcript({
       },
     ]);
     setDraft("");
+    if (composerRef.current) composerRef.current.style.height = "auto";
   };
 
   return (
@@ -282,22 +304,40 @@ export default function Transcript({
             );
         }
       })}
-      {running && (
-        <div className="row mut" style={{ fontSize: 12 }}>
-          <span className="dot pulse" style={{ background: "var(--agent)" }} />…
+      {pendingMessage && !log.some((event) => event.type === "user.message" && textOf("content" in event ? (event.content as ContentBlock[]) : undefined).endsWith(pendingMessage)) && (
+        <Card className="transcript-pending-message" style={{ padding: "8px 12px", maxWidth: "88%", alignSelf: "flex-end", background: "var(--soft)" }}>
+          <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{pendingMessage}</div>
+          <span className={sendError ? "err" : "mut"} style={{ fontSize: 10.5 }}>
+            {sendError ? app.t("send failed — message retained", "发送失败——消息已保留") : app.t("sending…", "发送中…")}
+          </span>
+        </Card>
+      )}
+      {(running || sendPending) && (
+        <div className="agent-working row" role="status" aria-live="polite">
+          <span className="dot pulse" style={{ background: "var(--agent)" }} />
+          <span>{app.t("Agent is working…", "Agent 正在处理…")}</span>
         </div>
       )}
       <div ref={bottomRef} />
       {composer && (
-        <div className="row" style={{ marginTop: 6 }}>
-          <input
-            className="input"
-            style={{ flex: 1, height: 38 }}
+        <div className="transcript-composer">
+          <textarea
+            ref={composerRef}
+            className="input transcript-composer__input"
+            rows={1}
+            aria-label={app.t("Message to agent", "给 Agent 的消息")}
             placeholder={placeholder ?? app.t("Message…", "输入消息…")}
             value={draft}
-            onChange={(e) => setDraft(e.target.value)}
+            onChange={(e) => {
+              setDraft(e.target.value);
+              e.currentTarget.style.height = "auto";
+              e.currentTarget.style.height = `${Math.min(e.currentTarget.scrollHeight, 180)}px`;
+            }}
             onKeyDown={(e) => {
-              if (e.key === "Enter") submit();
+              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                submit();
+              }
             }}
           />
           {modelOverride && (
@@ -309,6 +349,15 @@ export default function Transcript({
               onChange={(e) => setModel(e.target.value)}
             />
           )}
+          <Button variant="primary" disabled={!draft.trim() || sendPending} onClick={submit}>
+            {sendPending ? app.t("Sending…", "发送中…") : app.t("Send", "发送")}
+          </Button>
+          <div className="transcript-composer__hint">
+            {app.t(
+              "Enter to send · Shift+Enter for a new line · State the goal; tools and skills handle the details.",
+              "Enter 发送 · Shift+Enter 换行 · 只需说明目标，细节交给工具和 Skill。",
+            )}
+          </div>
         </div>
       )}
       {sendError && <div className="err">{sendError.message}</div>}

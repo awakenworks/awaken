@@ -911,6 +911,7 @@ fn managed_from_agent_config(cfg: &AgentConfig, published: bool) -> Value {
         "plugin_config": cfg.plugin_config,
         "context_policy": cfg.context_policy,
         "tool_overrides": cfg.tool_overrides,
+        "compaction": cfg.compaction,
         "published": published,
     })
 }
@@ -1849,6 +1850,21 @@ mod resource_prompt_tests {
         let err = super::agent_config_from_managed("a".into(), &json!({ "tool_overrides": 123 }))
             .unwrap_err();
         assert!(!err.is_empty());
+    }
+
+    #[test]
+    fn managed_agent_view_round_trips_compaction_for_lossless_editing() {
+        let config = super::agent_config_from_managed(
+            "a".into(),
+            &json!({
+                "system": "compact carefully",
+                "compaction": { "window": 32000, "keep_recent": 12 }
+            }),
+        )
+        .unwrap();
+        let projected = super::managed_from_agent_config(&config, false);
+        assert_eq!(projected["compaction"]["window"], json!(32000));
+        assert_eq!(projected["compaction"]["keep_recent"], json!(12));
     }
 
     // ---- publish handler (F23) ----
