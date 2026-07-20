@@ -1390,6 +1390,10 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-protocol-ai-sdk",
         "awaken-protocol-ag-ui",
         "awaken-protocol-a2a",
+        # Explicit MCP egress adapter, mounted by the data plane only when a
+        # dedicated bearer is configured. Same protocol-adapter direction as
+        # AI SDK / AG-UI / A2A; it never reaches into the control plane.
+        "awaken-protocol-mcp",
         "awaken-protocol-transport",
         "awaken-provider-genai",
         "awaken-memory-store",
