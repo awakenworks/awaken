@@ -2,10 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    CredentialAccess, CredentialInjectionKind, CredentialInjectionPolicy, CredentialRef,
-    CredentialUsage,
-};
+use crate::{CredentialAccess, CredentialInjectionKind, CredentialRef, CredentialUsage};
 
 /// Provider-facing endpoint facts frozen by configuration publication.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,8 +72,7 @@ impl InferenceAccess {
                     id: credential_ref,
                     revision: 0,
                 },
-                injection: CredentialInjectionPolicy::new(CredentialInjectionKind::Reference, [])
-                    .expect("a single injection mechanism is valid"),
+                injection: CredentialInjectionKind::Reference,
                 usage: CredentialUsage::ProviderAdapter,
             }),
             endpoint: None,
@@ -108,8 +104,7 @@ impl InferenceAccess {
                     id: credential_ref,
                     revision: credential_version,
                 },
-                injection: CredentialInjectionPolicy::new(CredentialInjectionKind::Reference, [])
-                    .expect("a single injection mechanism is valid"),
+                injection: CredentialInjectionKind::Reference,
                 usage: CredentialUsage::ProviderAdapter,
             }),
             endpoint: Some(endpoint),

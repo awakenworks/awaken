@@ -273,10 +273,7 @@ impl CredentialInferenceMaterializer {
         let provider = access.provider_ref.as_deref()?.split_once('@')?.0;
         let scope = access.scope_id.as_deref()?;
         let credential = access.credential_access.as_ref()?;
-        if credential.validate().is_err()
-            || !credential
-                .injection
-                .allows(CredentialInjectionKind::Reference)
+        if credential.injection != CredentialInjectionKind::Reference
             || credential.usage != CredentialUsage::ProviderAdapter
             || credential.credential.id != access.reference
         {
@@ -724,12 +721,7 @@ mod tests {
             .resolve_for_scope("ws", &[ModelBinding::new("anthropic", "claude-x", "genai")])
             .await
             .unwrap();
-        access.credential_access.as_mut().unwrap().injection =
-            awaken_runtime_contract::CredentialInjectionPolicy::new(
-                CredentialInjectionKind::Direct,
-                [],
-            )
-            .unwrap();
+        access.credential_access.as_mut().unwrap().injection = CredentialInjectionKind::Direct;
 
         assert!(
             p.materializer
