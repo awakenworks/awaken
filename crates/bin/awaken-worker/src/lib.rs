@@ -67,41 +67,19 @@ impl WorkerLifecycle {
 /// Requires `AWAKEN_INGRESS=durable` (the pool's enable gate); the injected remote
 /// store routes the drain over HTTP instead of a local queue.
 pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error>> {
-    // Gateway-only mode (`AWAKEN_WORKER_GATEWAY_ONLY=1`): a genuinely SECRETLESS
-    // worker. It opens no credential vault and needs no seal key — every run's model
-    // must resolve without a local secret (a cloud-managed gateway offering); a model
-    // needing local credentials has no executor and falls back to the
-    // NoModelConfiguredExecutor guidance. Otherwise (the default) the worker also
-    // resolves locally-credentialed models from the shared control plane, which
-    // requires the vault + seal key.
-    let gateway_only = std::env::var("AWAKEN_WORKER_GATEWAY_ONLY").as_deref() == Ok("1");
-    if gateway_only {
-        run_configured(
-            WorkerUpstream::new(upstream),
-            None,
-            &[],
-            "secretless (gateway-only; awaiting an injected gateway provider)",
-        )
-        .await
-    } else {
-        // The shared control-plane stores this worker resolves locally-credentialed models from
-        // — opened the same way the Serve composition opens them (durable under
-        // AWAKEN_MGMT_DIR, else in-memory; needs the seal key to unseal credentials).
-        let stores = awaken_control::open_shared_config_stores_from_env().await;
-        let config_exec_provider = ConfigExecutorProvider::new(
-            stores.catalog,
-            stores.credentials,
-            stores.secrets,
-            awaken_control::BOOTSTRAP_WORKSPACE,
-        );
-        run_configured(
-            WorkerUpstream::new(upstream),
-            Some(Arc::new(config_exec_provider)),
-            &["credential-source/v1"],
-            "per-run model resolution from the config plane",
-        )
-        .await
-    }
+    let stores = awaken_control::open_shared_config_stores_from_env().await;
+    let provider = ConfigExecutorProvider::new(
+        stores.catalog,
+        stores.credentials,
+        stores.secrets,
+        awaken_control::BOOTSTRAP_WORKSPACE,
+    );
+    run_configured(
+        WorkerUpstream::new(upstream),
+        Some(Arc::new(provider)),
+        &["credential-source/v1"],
+    )
+    .await
 }
 
 /// Run a genuinely secretless worker with a deployment-provided executor
@@ -113,13 +91,7 @@ pub async fn run_with_executor_provider(
     upstream: &str,
     provider: Arc<dyn ExecutorProvider>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    run_configured(
-        WorkerUpstream::new(upstream),
-        Some(provider),
-        &[],
-        "secretless (injected gateway executor provider; no vault/seal key)",
-    )
-    .await
+    run_configured(WorkerUpstream::new(upstream), Some(provider), &[]).await
 }
 
 /// Secretless worker composition with one shared authenticated transport. The
@@ -129,20 +101,13 @@ pub async fn run_with_executor_provider_and_upstream(
     upstream: WorkerUpstream,
     provider: Arc<dyn ExecutorProvider>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    run_configured(
-        upstream,
-        Some(provider),
-        &[],
-        "secretless (injected gateway provider and authenticated upstream)",
-    )
-    .await
+    run_configured(upstream, Some(provider), &[]).await
 }
 
 async fn run_configured(
     upstream: WorkerUpstream,
     provider: Option<Arc<dyn ExecutorProvider>>,
     built_in_capabilities: &[&str],
-    posture: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let upstream_url = upstream.base_url().to_string();
     let control = WorkerControlClient::new(upstream.clone());
@@ -210,7 +175,7 @@ async fn run_configured(
     }
     host.ensure_dispatch_pool();
     let heartbeat = spawn_heartbeat(lifecycle.clone(), 2);
-    eprintln!("awaken-worker draining from {upstream_url} ({posture})");
+    eprintln!("awaken-worker draining from {upstream_url}");
 
     // The cloud-native admin surface on a SEPARATE port from any data path: an
     // orchestrator gates routing on `/readyz` and calls `POST /admin/drain` in a
