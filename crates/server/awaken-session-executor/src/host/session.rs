@@ -289,15 +289,7 @@ impl SharedHost {
         // Resolving per run — not once at session build — means a per-turn model
         // switch needs no session rebuild, and a database-less worker runs the
         // configured model without a session-level registry.
-        // No published catalog for this agent on this node (a database-less worker,
-        // or an unpublished/built-in agent): the session installs a locally-rebuilt
-        // catalog below whose fingerprint cannot match a run published elsewhere.
-        // Let the runtime trust the content-addressed snapshot each claimed run
-        // carries, so a durable run resolves instead of stranding on the mismatch.
-        // A node WITH the agent's published catalog (`installed` is `Some`) keeps
-        // enforcing the fail-closed descent-from-active gate (G4).
-        let mut runtime = build_runtime(self.llm.clone(), &env)
-            .trusting_dispatched_snapshots(installed.is_none());
+        let mut runtime = build_runtime(self.llm.clone(), &env);
         if apply_base_gate {
             runtime = runtime.with_gate(base_gate.clone());
         }
@@ -442,13 +434,9 @@ impl SharedHost {
             relay,
             thread,
         );
-        // Install this session's catalog on its runtime NOW, so any node can resolve a
-        // run it drives — not only the node that submitted it. The in-process path
-        // installs via `prepare` on submit, but a durable run is driven by whichever
-        // pool node CLAIMS it (ADR-0019), and that node calls `execute` directly (no
-        // `prepare`); without a locally-installed catalog, `resolve` fails closed with
-        // `NoActiveCatalog` and the claimed run strands. Idempotent — a later `prepare`
-        // on the submitting node re-installs the same catalog harmlessly.
+        // Install the session catalog for capability reporting on whichever pool
+        // node claims a durable run (ADR-0019). Snapshot validation itself is
+        // topology-independent; a later `prepare` may repeat this idempotently.
         runtime
             .install_catalog(config.install().clone())
             .map_err(|e| HostError::internal(format!("install session catalog: {e}")))?;

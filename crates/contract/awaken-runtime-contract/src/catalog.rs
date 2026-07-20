@@ -14,12 +14,9 @@ impl RuntimeCatalogInstall {
     ///
     /// A snapshot is content-addressed and self-describing: its `fingerprint` is
     /// the publication's content address and its `resolved_spec` already lists the
-    /// resolved tools and plugins. A node with no config store of its own (a
-    /// database-less worker) cannot warm-install the published catalog, so it has
-    /// nothing to make [`active_fingerprint`](crate) equal the dispatched
-    /// snapshot's — and the fail-closed resolution gate strands the run. This
-    /// projects the snapshot into a consistent install carrying that same
-    /// fingerprint, so such a node resolves against the snapshot it was handed.
+    /// resolved tools and plugins. This projection is retained for capability
+    /// reporting by nodes that do not have the configuration store locally;
+    /// snapshot validation and execution do not depend on installing it.
     ///
     /// The capability catalog is advisory (advertisement/rendering only — the
     /// runtime executes off `resolved_spec`, not off these), so tools project to
