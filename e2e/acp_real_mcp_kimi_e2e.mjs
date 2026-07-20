@@ -130,13 +130,6 @@ async function main() {
       );
       const calledAdd = fixture.calls.some((c) => c.method === 'tools/call');
       pass(`dynamic MCP injection reached the real claude adapter + KIMI (host + CLI both connected: ${initializes} initialize, β-authenticated, tools/call=${calledAdd})`);
-      if (calledAdd) {
-        assert.ok(
-          texts.some((t) => t.includes('5')),
-          `KIMI used the MCP tool and answered 5, got ${JSON.stringify(texts)}`,
-        );
-        pass('KIMI dynamically called mcp__calc__add and reported the result (5)');
-      }
 
       // (2) Config-home isolation: the adapter used an isolated per-thread home under the
       // storage dir, and the (throwaway) HOME's ~/.claude was never created.
@@ -150,6 +143,16 @@ async function main() {
         && fs.readdirSync(hostClaude).some((n) => n !== '.npm');
       assert.ok(!clobbered, 'the ACP run never wrote the host default ~/.claude config');
       pass('ACP execution used an isolated config home; the host default ~/.claude was untouched');
+
+      // Keep transport/config assertions independent from provider semantics so a
+      // remote quota failure still diagnoses the completed portions of the chain.
+      // The overall gate succeeds only when the real model actually uses the tool.
+      assert.ok(calledAdd, `KIMI must call mcp__calc__add, got ${JSON.stringify(fixture.calls.map((c) => c.method))}`);
+      assert.ok(
+        texts.some((t) => t.includes('5')),
+        `KIMI used the MCP tool and answered 5, got ${JSON.stringify(texts)}`,
+      );
+      pass('KIMI dynamically called mcp__calc__add and reported the result (5)');
     });
 
     console.log('E2E PASS: real claude --acp + KIMI + dynamic vault-bound MCP, config-home isolated.');
