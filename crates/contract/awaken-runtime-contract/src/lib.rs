@@ -31,10 +31,7 @@ pub use activation::RunActivation;
 pub use boundary::{BoundaryOutcome, evaluate_boundary};
 pub use capture::{CaptureDecision, ContentCapture, ContentKind, ContentRedactor, NoopRedactor};
 pub use control::LiveRunControl;
-pub use credential::{
-    CredentialAccess, CredentialInjectionKind, CredentialInjectionPolicy, CredentialPolicyError,
-    CredentialRef, CredentialUsage, InjectedCredential,
-};
+pub use credential::{CredentialAccess, CredentialInjectionKind, CredentialRef, CredentialUsage};
 pub use data_subject::{
     CaptureSink, ContentEraser, DataSubjectId, DataSubjectResolver, ErasureError, ErasureReceipt,
     NullResolver, Purpose,
