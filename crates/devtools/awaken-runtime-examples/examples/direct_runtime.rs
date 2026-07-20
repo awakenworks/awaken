@@ -1,6 +1,6 @@
 //! Run the runtime end to end with a **hand-built config** — no config store.
 //!
-//! Build a `RunnableConfig` directly with the builder, wire the runtime's ports
+//! Build an `ExecutableAgentSnapshot` directly with the builder, wire the runtime's ports
 //! (model, tool, permission gate), and run one turn. No fingerprint is written by
 //! hand — the builder stamps a consistent one (a compiler would stamp sha256).
 //! Example #2 (`hello_agent`) compiles the same kind of config from a config store;
@@ -18,9 +18,9 @@ use awaken_runtime_examples::prelude::*;
 
 #[tokio::main]
 async fn main() {
-    // 1. Build the agent config directly. No fingerprint, no snapshot/install
-    //    juggling — the builder assembles them under one stamped fingerprint.
-    let config = RunnableConfig::builder("assistant")
+    // 1. Build the executable snapshot directly. The builder stamps one
+    //    fingerprint into its envelope and resolved payload.
+    let config = ExecutableAgentSnapshot::builder("assistant")
         .instructions("You are a concise assistant.")
         .model(ModelBinding::new("demo", "stub", "stub"))
         .tool(ToolDescriptor::pinned(

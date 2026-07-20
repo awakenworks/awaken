@@ -4,7 +4,7 @@
 //! offline smoke test. It wires:
 //!
 //! - the built-in **hand tools** (read/write/edit/glob/grep/bash) as both the
-//!   model-visible [`ToolDescriptor`]s the [`RunnableConfig`] carries and the
+//!   model-visible [`ToolDescriptor`]s the [`ExecutableAgentSnapshot`] carries and the
 //!   executable [`RawTool`]s the runtime registers (ids match by construction);
 //! - a Claude-Code-style **permission policy** (ADR-0030): read/glob/grep are
 //!   allowed, write/edit/bash are asked, so the caller approves mutations;
@@ -36,8 +36,8 @@ use awaken_runtime_contract::execution::Error;
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
 use awaken_runtime_contract::resume::ResumeResult;
-use awaken_runtime_contract::runnable::RunnableConfig;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
+use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 
 pub mod scripted;
 pub use scripted::ScriptedCoder;
@@ -59,9 +59,9 @@ pub fn coding_tool_descriptors() -> Vec<ToolDescriptor> {
         .collect()
 }
 
-/// A coding agent's runnable config for `model_ref` (the model the binding selects).
-pub fn coding_config(model_ref: &str) -> RunnableConfig {
-    RunnableConfig::builder("coder")
+/// A coding agent's executable snapshot for `model_ref`.
+pub fn coding_config(model_ref: &str) -> ExecutableAgentSnapshot {
+    ExecutableAgentSnapshot::builder("coder")
         .instructions(SYSTEM_PROMPT)
         .model(ModelBinding::new("default", model_ref, "default"))
         .tools(coding_tool_descriptors())
@@ -109,13 +109,13 @@ pub enum Approval {
 /// install/register, id generation, and the await→resume loop.
 pub struct CodingSession {
     runtime: Runtime,
-    config: RunnableConfig,
+    config: ExecutableAgentSnapshot,
     commit: Arc<MemoryCommitCoordinator>,
     thread_id: ThreadId,
 }
 
 impl CodingSession {
-    pub fn new(runtime: Runtime, config: RunnableConfig) -> Self {
+    pub fn new(runtime: Runtime, config: ExecutableAgentSnapshot) -> Self {
         Self {
             runtime,
             config,
@@ -188,7 +188,7 @@ mod tests {
 
     #[test]
     fn coding_config_carries_the_model_ref_tools_and_step_ceiling() {
-        let spec = coding_config("some-model").snapshot().resolved_spec.clone();
+        let spec = coding_config("some-model").resolved_spec.clone();
         // The binding selects the passed model ref.
         assert_eq!(spec.model_binding.model_ref, "some-model");
         // The config carries the coding descriptors (ids match the executable tools).

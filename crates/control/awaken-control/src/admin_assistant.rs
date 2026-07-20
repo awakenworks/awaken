@@ -587,7 +587,7 @@ mod tests {
         let installed = service
             .installed(ADMIN_ASSISTANT_AGENT_ID)
             .expect("installed");
-        let spec = &installed.snapshot().resolved_spec;
+        let spec = &installed.resolved_spec;
         assert_eq!(spec.model_binding.model_ref, "m-1");
         // It carries the five admin tool descriptors (nameable because it published in
         // the reserved scope).
@@ -753,7 +753,6 @@ mod tests {
         let first_model = service
             .installed(ADMIN_ASSISTANT_AGENT_ID)
             .unwrap()
-            .snapshot()
             .resolved_spec
             .model_binding
             .model_ref
@@ -761,7 +760,6 @@ mod tests {
         let first_tools = service
             .installed(ADMIN_ASSISTANT_AGENT_ID)
             .unwrap()
-            .snapshot()
             .resolved_spec
             .tool_descriptors
             .len();
@@ -770,7 +768,7 @@ mod tests {
             .await
             .expect("re-seed is idempotent");
         let handle = service.installed(ADMIN_ASSISTANT_AGENT_ID).unwrap();
-        let second = handle.snapshot();
+        let second = handle;
         assert_eq!(second.resolved_spec.model_binding.model_ref, first_model);
         assert_eq!(second.resolved_spec.tool_descriptors.len(), first_tools);
     }

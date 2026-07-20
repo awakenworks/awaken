@@ -1257,22 +1257,19 @@ async fn an_agents_bound_resource_mounts_with_the_store_but_not_on_a_db_less_wor
 }
 
 #[tokio::test]
-async fn ctx_for_exposes_session_capabilities_on_any_claiming_node() {
-    use awaken_runtime_contract::capability::RuntimeCapabilitySource;
+async fn ctx_for_carries_one_self_consistent_snapshot_on_any_claiming_node() {
+    use awaken_runtime_contract::resolver::RunResolver;
 
-    // A durable run is driven by whichever pool node claims it (ADR-0019). The
-    // session runtime must expose the same capability fingerprint immediately;
-    // snapshot resolution no longer depends on this node-local catalog state.
+    // A durable run is driven by whichever pool node claims it (ADR-0019). Its
+    // session config is already the complete execution authority and resolves
+    // without manufacturing a second node-local catalog object.
     let host = SharedHost::new(Arc::new(OkModel), "stub");
     let ctx = host
         .ctx_for("t-catalog", None)
         .await
         .expect("session builds");
-    let caps = ctx.runtime.runtime_capabilities();
-    assert!(
-        !caps.catalog_fingerprint.0.trim().is_empty(),
-        "ctx_for must install a catalog on the session runtime (fingerprint was empty)"
-    );
+    let resolved = ctx.runtime.resolve(&ctx.config).expect("snapshot resolves");
+    assert_eq!(resolved.snapshot_id, ctx.config.id);
 }
 
 #[tokio::test]
