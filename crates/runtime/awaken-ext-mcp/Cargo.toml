@@ -16,7 +16,6 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["io-util", "sync", "rt", "macros", "time", "process"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 futures = "0.3"
-mcp = { package = "model-context-protocol", version = "0.2", default-features = false, features = ["client"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util", "net", "time"] }

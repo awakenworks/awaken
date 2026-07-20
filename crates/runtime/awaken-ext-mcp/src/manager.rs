@@ -93,9 +93,9 @@ mod tests {
     use super::*;
     use crate::transport::McpToolTransport;
     use async_trait::async_trait;
+    use awaken_mcp_wire::McpTransportError;
+    use awaken_mcp_wire::{CallToolResult, McpToolDefinition, ToolContent};
     use awaken_runtime_contract::plugin::Plugin;
-    use mcp::transport::McpTransportError;
-    use mcp::{CallToolResult, McpToolDefinition, ToolContent};
     use serde_json::Value;
     use std::sync::Arc;
     use tokio::sync::broadcast;

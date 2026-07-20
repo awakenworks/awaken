@@ -1,6 +1,6 @@
 //! Error types for the MCP extension crate.
 
-use mcp::transport::McpTransportError;
+use awaken_mcp_wire::McpTransportError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum McpError {

@@ -19,7 +19,7 @@ import { withServer, pass } from './harness.mjs';
 const PORT = Number(process.env.E2E_PORT ?? 38606);
 
 let rpcId = 0;
-async function rpc(base, method, params) {
+async function rpc(base, method, params, { allowError = false } = {}) {
   const res = await fetch(`${base}/v1/a2a`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -27,6 +27,7 @@ async function rpc(base, method, params) {
   });
   assert.equal(res.status, 200, `${method} transport ok (${res.status})`);
   const body = await res.json();
+  if (allowError) return body;
   assert.ok(!body.error, `${method} not a JSON-RPC error: ${JSON.stringify(body.error)}`);
   return body.result;
 }
@@ -66,19 +67,22 @@ async function main() {
     const c2 = `a2a-deny-${randomBytes(4).toString('hex')}`;
     t = await sendMsg(base, c2, 'record this other note');
     assert.equal(stateOf(t), 'input-required', 'second context awaits too');
+    const awaitingTaskId = t.id;
+    assert.ok(awaitingTaskId, 'the awaiting A2A task has a server-issued id');
 
     // The only protocol-native rejection: tasks/cancel denies the awaiting tool.
-    const cancelled = await rpc(base, 'tasks/cancel', { id: `task-${c2}` });
+    const cancelled = await rpc(base, 'tasks/cancel', { id: awaitingTaskId });
     assert.equal(stateOf(cancelled), 'canceled', `tasks/cancel denies + cancels (got ${stateOf(cancelled)})`);
     pass('A2A: tasks/cancel is the ONLY in-band deny -> Task.state=canceled');
 
     // Cancelling a context with nothing awaiting is not a false-cancel.
     const idle = `a2a-idle-${randomBytes(4).toString('hex')}`;
-    await sendMsg(base, idle, 'hi'); // completes immediately? probe awaits, so drive it to completion:
-    await sendMsg(base, idle, 'approve'); // now terminal
-    const notAwaiting = await rpc(base, 'tasks/cancel', { id: `task-${idle}` });
-    assert.notEqual(stateOf(notAwaiting), 'canceled', `cancel with nothing awaiting is not a false-cancel (got ${stateOf(notAwaiting)})`);
-    pass('A2A: cancel with nothing awaiting returns current state, not a false canceled');
+    await sendMsg(base, idle, 'hi'); // probe awaits, so drive it to completion:
+    const completed = await sendMsg(base, idle, 'approve');
+    assert.ok(completed.id, 'the completed A2A task has a server-issued id');
+    const notAwaiting = await rpc(base, 'tasks/cancel', { id: completed.id }, { allowError: true });
+    assert.equal(notAwaiting.error?.code, -32002, 'a terminal task is explicitly not cancelable');
+    pass('A2A: cancel with nothing awaiting fails closed as task-not-cancelable');
   });
 
   console.log('E2E PASS: A2A HITL asymmetry (text=allow, only tasks/cancel=deny).');

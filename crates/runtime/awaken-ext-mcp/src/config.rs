@@ -1,7 +1,6 @@
 //! MCP server connection configuration types.
 //!
-//! Re-exports [`McpServerConnectionConfig`] from the `mcp` crate, the
-//! anti-corruption boundary for the wire protocol. Later phases add helpers for
-//! building stdio and HTTP configurations.
+//! Re-exports the shared wire configuration so callers do not depend on a
+//! third-party MCP client SDK.
 
-pub use mcp::transport::{McpServerConnectionConfig, TransportTypeId};
+pub use awaken_mcp_wire::{McpServerConnectionConfig, TransportTypeId};

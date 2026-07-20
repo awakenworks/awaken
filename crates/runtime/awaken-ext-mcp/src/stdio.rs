@@ -15,8 +15,10 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use mcp::transport::McpTransportError;
-use mcp::{CallToolParams, CallToolResult, InitializeParams, ListToolsResult, McpToolDefinition};
+use awaken_mcp_wire::McpTransportError;
+use awaken_mcp_wire::{
+    CallToolParams, CallToolResult, InitializeParams, ListToolsResult, McpToolDefinition,
+};
 use serde_json::Value;
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, broadcast, mpsc};

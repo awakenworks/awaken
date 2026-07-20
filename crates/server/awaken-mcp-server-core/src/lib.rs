@@ -21,4 +21,4 @@ pub use server::{
     tools_list_changed_notification,
 };
 
-pub use mcp::{CallToolResult, McpToolDefinition, ToolContent};
+pub use awaken_mcp_wire::{CallToolResult, McpToolDefinition, ToolContent};

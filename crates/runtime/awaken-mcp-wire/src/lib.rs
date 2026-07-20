@@ -16,9 +16,17 @@
 pub mod jsonrpc;
 pub mod progress;
 pub mod sse;
+mod types;
 
 pub use jsonrpc::{
     JsonRpcNotifier, JsonRpcPeer, ServerNotification, ServerRequestError, ServerRequestHandler,
 };
 pub use progress::{McpProgressUpdate, normalize_progress};
 pub use sse::SseParser;
+pub use types::{
+    Annotations, CallToolParams, CallToolResult, ClientInfo, Icon, IconTheme,
+    InitializeCapabilities, InitializeParams, InitializeResult, ListToolsParams, ListToolsResult,
+    MCP_PROTOCOL_VERSION, McpServerConnectionConfig, McpToolDefinition, McpTransportError,
+    RestartPolicy, Role, ServerCapabilities, ServerInfo, ServerToolCapabilities, TaskMetadata,
+    TaskSupport, ToolAnnotations, ToolContent, ToolExecution, TransportTypeId,
+};
