@@ -15,7 +15,9 @@
 // Run: (from e2e/)  npm install && node awaken_cli_e2e.mjs
 
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import net from 'node:net';
+import os from 'node:os';
 import readline from 'node:readline';
 import { spawn, execSync } from 'node:child_process';
 import path from 'node:path';
@@ -121,16 +123,20 @@ async function ready(base, timeoutMs = 60_000) {
 async function main() {
   const upstream = await startFakeAnthropic(FAKE_KEY);
   const bin = awakenBin();
-  // In-memory management stores (no AWAKEN_MGMT_DIR): the console config lives for the
-  // process lifetime, which is all this resolve→run proof needs.
-  const h = startAwaken(bin, PORT, { AWAKEN_LOCAL_WORKSPACE_ID: WORKSPACE });
+  const mgmtDir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-cli-e2e-'));
+  const serverEnv = {
+    AWAKEN_LOCAL_WORKSPACE_ID: WORKSPACE,
+    AWAKEN_MGMT_DIR: mgmtDir,
+    AWAKEN_MGMT_SEAL_KEY: '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff',
+  };
+  let h = startAwaken(bin, PORT, serverEnv);
   try {
     await waitForPort(PORT);
     await ready(h.baseUrl);
     console.log('ok: aggregated `awaken` command booted in the default Serve role (management plane)');
 
     // ---- author the model in the database-backed console ---------------------
-    const base = h.baseUrl;
+    let base = h.baseUrl;
     let r = await req(base, 'PUT', '/v1/config/providers/anthropic', {
       id: 'anthropic', slug: 'anthropic', display_name: 'Anthropic', version: 1,
     });
@@ -172,6 +178,24 @@ async function main() {
       compaction: { keep_recent: 2 },
     });
     assert.equal(r.status, 200, `agent config: ${JSON.stringify(r.json)}`);
+
+    // Resource bindings are resolved by the configuration plane exactly once.
+    // A negative resource revision fails publication; replacing it with a valid
+    // revision contributes the prompt and typed input pin to the snapshot.
+    const resources = (version) => ({
+      agent_id: AGENT,
+      version,
+      resources: [{
+        kind: 'outputs', mount_path: '/workspace/outputs', access: 'read_write',
+        instructions: 'Keep final artifacts here.',
+      }],
+    });
+    r = await req(base, 'PUT', `/v1/config/agents/${AGENT}/resources`, resources(-1));
+    assert.equal(r.status, 200, `negative resource revision staged: ${JSON.stringify(r.json)}`);
+    r = await req(base, 'POST', `/v1/config/agents/${AGENT}/publish`, undefined);
+    assert.equal(r.status, 409, `negative resource revision rejects publication: ${JSON.stringify(r.json)}`);
+    r = await req(base, 'PUT', `/v1/config/agents/${AGENT}/resources`, resources(1));
+    assert.equal(r.status, 200, `valid resource revision staged: ${JSON.stringify(r.json)}`);
     r = await req(base, 'POST', `/v1/config/agents/${AGENT}/publish`, undefined);
     assert.equal(r.status, 200, `publish: ${JSON.stringify(r.json)}`);
     assert.equal(r.json.installed, true, 'published agent installed into the live catalog');
@@ -195,7 +219,7 @@ async function main() {
     assert.equal(r.status, 200, `post-publication endpoint mutation: ${JSON.stringify(r.json)}`);
 
     // ---- run a session on the DB-configured model ----------------------------
-    const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
+    let client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
     const session = await client.beta.sessions.create({
       agent: AGENT, environment_id: 'env_local', betas: BETAS,
     });
@@ -215,6 +239,26 @@ async function main() {
     );
     assert.ok(upstream.requests.length >= 1, 'the fake upstream received the configured-model call');
     console.log('ok: session used the snapshot-pinned endpoint despite a later catalog mutation');
+
+    // A fresh composition warm-installs the durable publication. It must retain
+    // the original snapshot pin rather than resolving the mutated catalog again.
+    await h.stop();
+    h = startAwaken(bin, PORT, serverEnv);
+    await waitForPort(PORT);
+    base = h.baseUrl;
+    await ready(base);
+    client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
+    const warm = await client.beta.sessions.create({
+      agent: AGENT, environment_id: 'env_local', betas: BETAS,
+    });
+    await client.beta.sessions.events.send(warm.id, {
+      events: [{ type: 'user.message', content: [{ type: 'text', text: 'warm install' }] }],
+      betas: BETAS,
+    });
+    const warmEvents = [];
+    for await (const ev of client.beta.sessions.events.list(warm.id, { betas: BETAS })) warmEvents.push(ev);
+    assert.ok(warmEvents.some((event) => event.type === 'agent.message'), 'warm-installed snapshot executes');
+    console.log('ok: durable publication warm-installed after restart without re-resolution');
 
     const callsBeforeRevocation = upstream.requests.length;
     r = await req(base, 'POST', `/v1/config/credentials/${credentialId}/archive`, undefined);
@@ -268,6 +312,65 @@ async function main() {
       mcp_server_ids: ['owned-mcp'], version: 1,
     };
     assert.equal((await req(base, 'PUT', scoped(WS_A, 'agents/owned-agent/mcp'), agentMcp)).status, 200);
+
+    // Exercise the owning side of every scoped operational route as well as
+    // cross-aggregate binding checks. A foreign credential/pool/server must not
+    // become usable merely because the new aggregate id itself is unclaimed.
+    assert.equal((await req(base, 'GET', scoped(WS_A, `credentials/${ownedId}/availability`))).status, 200);
+    assert.equal((await req(base, 'POST', scoped(WS_A, `credentials/${ownedId}/cooldown`), {
+      kind: 'transient', retry_after_secs: null,
+    })).status, 200);
+    assert.equal((await req(base, 'POST', scoped(WS_A, `credentials/${ownedId}/cooldown`), {
+      kind: 'quota', retry_after_secs: 60,
+    })).status, 200);
+    assert.equal((await req(base, 'POST', scoped(WS_A, `credentials/${ownedId}/cooldown`), {
+      kind: 'available', retry_after_secs: null,
+    })).status, 200);
+    assert.equal((await req(base, 'POST', scoped(WS_A, `credentials/${ownedId}/cooldown`), {
+      kind: 'exhausted', retry_after_secs: null,
+    })).status, 200);
+    assert.equal((await req(base, 'POST', scoped(WS_A, `credentials/${ownedId}/cooldown`), {
+      kind: 'clear', retry_after_secs: null,
+    })).status, 200);
+    assert.equal((await req(base, 'POST', scoped(WS_A, 'inference-profiles/owned-profile/resolve'), {
+      workspace_id: 'forged-body-owner',
+    })).status, 200);
+    assert.equal((await req(base, 'POST', scoped(WS_A, 'inference-profiles/owned-profile/resolve-candidates'), {
+      workspace_id: 'forged-body-owner',
+    })).status, 200);
+    assert.equal((await req(base, 'GET', scoped(WS_A, `credentials/${ownedId}`))).status, 200);
+    const credentials = await req(base, 'GET', scoped(WS_A, 'credentials?workspace_id=forged-body-owner'));
+    assert.equal(credentials.status, 200);
+    assert.ok(credentials.json.some((entry) => entry.id === ownedId));
+    assert.equal((await req(base, 'POST', scoped(WS_A, `credentials/${ownedId}/validate`), {
+      workspace_id: 'forged-body-owner', model_id: MODEL,
+    })).status, 200);
+    assert.equal((await req(base, 'GET', scoped(WS_A, 'mcp-servers/owned-mcp'))).status, 200);
+    const owningMcp = await req(base, 'GET', scoped(WS_A, 'mcp-servers'));
+    assert.equal(owningMcp.status, 200);
+    assert.ok(owningMcp.json.some((entry) => entry.id === 'owned-mcp'));
+    assert.equal((await req(base, 'GET', scoped(WS_A, 'agents/owned-agent/mcp'))).status, 200);
+    const resolvedMcp = await req(base, 'POST', scoped(WS_A, 'agents/owned-agent/mcp/resolve'), {
+      workspace_id: 'forged-body-owner',
+    });
+    assert.equal(resolvedMcp.status, 200, JSON.stringify(resolvedMcp.json));
+    assert.deepEqual(resolvedMcp.json, [{
+      name: 'owned', url: 'https://mcp.example.invalid/', credential_present: true,
+    }]);
+
+    const foreignExactMcp = {
+      ...mcp, id: 'foreign-exact-mcp', workspace_id: WS_B,
+    };
+    assert.equal((await req(base, 'PUT', scoped(WS_B, 'mcp-servers/foreign-exact-mcp'), foreignExactMcp)).status, 404);
+    const foreignPoolMcp = {
+      ...mcp, id: 'foreign-pool-mcp', workspace_id: WS_B,
+      credential_binding: { type: 'one_of_credential_pool', credential_pool_id: 'owned-pool' },
+    };
+    assert.equal((await req(base, 'PUT', scoped(WS_B, 'mcp-servers/foreign-pool-mcp'), foreignPoolMcp)).status, 404);
+    assert.equal((await req(base, 'PUT', scoped(WS_B, 'agents/foreign-agent/mcp'), {
+      workspace_id: WS_B, agent_id: 'foreign-agent', mcp_server_ids: ['owned-mcp'], version: 1,
+    })).status, 404);
+
     for (const uri of [
       scoped(WS_B, `credentials/${ownedId}`),
       scoped(WS_B, 'credential-pools/owned-pool'),
@@ -280,6 +383,12 @@ async function main() {
     assert.equal((await req(base, 'PUT', scoped(WS_B, 'inference-profiles/owned-profile'), profile)).status, 404);
     assert.equal((await req(base, 'PUT', scoped(WS_B, 'mcp-servers/owned-mcp'), mcp)).status, 404);
     assert.equal((await req(base, 'PUT', scoped(WS_B, 'agents/owned-agent/mcp'), agentMcp)).status, 404);
+    assert.equal((await req(base, 'POST', scoped(WS_B, 'inference-profiles/owned-profile/resolve-candidates'), {
+      workspace_id: WS_A,
+    })).status, 404);
+    assert.equal((await req(base, 'POST', scoped(WS_B, 'agents/owned-agent/mcp/resolve'), {
+      workspace_id: WS_A,
+    })).status, 404);
     const listedMcp = await req(base, 'GET', scoped(WS_B, 'mcp-servers'));
     assert.equal(listedMcp.status, 200);
     assert.ok(!listedMcp.json.some((entry) => entry.id === 'owned-mcp'));
@@ -295,6 +404,7 @@ async function main() {
   } finally {
     await h.stop();
     upstream.close();
+    fs.rmSync(mgmtDir, { recursive: true, force: true });
   }
   console.log('\nawaken_cli_e2e: PASS');
 }

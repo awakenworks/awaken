@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import collections
 import pathlib
 import re
 import subprocess
@@ -68,6 +69,7 @@ def main() -> None:
     parser.add_argument("--base", default="origin/1.0.0-dev")
     parser.add_argument("--minimum", type=float, default=0.95)
     parser.add_argument("--show-missing", type=int, default=80)
+    parser.add_argument("--show-files", type=int, default=30)
     args = parser.parse_args()
     if not 0.0 < args.minimum < 1.0:
         parser.error("--minimum must be between zero and one")
@@ -91,6 +93,20 @@ def main() -> None:
         f"changed E2E line coverage: {len(covered)}/{len(executable)} = {ratio:.2%} "
         f"(required > {args.minimum:.0%}, base {args.base})"
     )
+    by_file: dict[str, list[int]] = collections.defaultdict(lambda: [0, 0])
+    for path, _line, count in executable:
+        by_file[path][1] += 1
+        if count > 0:
+            by_file[path][0] += 1
+    ranked = sorted(
+        by_file.items(),
+        key=lambda item: (item[1][1] - item[1][0], item[1][1]),
+        reverse=True,
+    )
+    for path, (file_covered, file_total) in ranked[: args.show_files]:
+        print(
+            f"  file {file_covered}/{file_total} = {file_covered / file_total:.2%} {path}"
+        )
     for path, line in missing[: args.show_missing]:
         print(f"  uncovered {path}:{line}")
     if len(missing) > args.show_missing:

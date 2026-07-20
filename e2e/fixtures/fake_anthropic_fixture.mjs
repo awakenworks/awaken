@@ -15,6 +15,10 @@
 
 import http from 'node:http';
 
+const FIXTURE_PORT_FIRST = 30_000;
+const FIXTURE_PORT_COUNT = 2_000;
+let fixturePortCursor = (process.pid * 37) % FIXTURE_PORT_COUNT;
+
 // Distinctive per-inference token usage the fake reports (Anthropic wire field names,
 // incl. the prompt-cache breakdown that genai maps to cache_read/cache_creation), so a
 // usage e2e can assert exact accumulated counts. Each model call reports these; an
@@ -346,24 +350,41 @@ export function startFakeAnthropic(apiKey, opts = {}) {
       emitJson(res, { id, model, reply });
     });
   });
-  return new Promise((resolve) => {
-    server.listen(0, '127.0.0.1', () => {
-      const { port } = server.address();
-      resolve({
-        url: `http://127.0.0.1:${port}`,
-        requests: state.requests,
-        get unauthorized() {
-          return state.unauthorized;
-        },
-        get attempts() {
-          return state.attempts;
-        },
-        get received() {
-          return state.received;
-        },
-        close: () => server.close(),
+  return new Promise((resolve, reject) => {
+    let attempts = 0;
+    const listen = () => {
+      if (attempts >= FIXTURE_PORT_COUNT) {
+        reject(new Error('no free fake-upstream port in the fixture range'));
+        return;
+      }
+      const port = FIXTURE_PORT_FIRST + fixturePortCursor;
+      fixturePortCursor = (fixturePortCursor + 1) % FIXTURE_PORT_COUNT;
+      attempts += 1;
+      const onError = (error) => {
+        if (error?.code === 'EADDRINUSE') listen();
+        else reject(error);
+      };
+      server.once('error', onError);
+      server.listen(port, '127.0.0.1', () => {
+        server.off('error', onError);
+        const { port } = server.address();
+        resolve({
+          url: `http://127.0.0.1:${port}`,
+          requests: state.requests,
+          get unauthorized() {
+            return state.unauthorized;
+          },
+          get attempts() {
+            return state.attempts;
+          },
+          get received() {
+            return state.received;
+          },
+          close: () => server.close(),
+        });
       });
-    });
+    };
+    listen();
   });
 }
 

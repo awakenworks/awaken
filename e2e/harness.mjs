@@ -10,6 +10,13 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 
+// The historical 38xxx defaults overlap Linux's ephemeral client-port range.
+// Assign each Node scenario a small, non-ephemeral block before the importing
+// module reads E2E_PORT. Explicit caller/stage assignments remain authoritative.
+const processPortBase = 20_000 + (process.pid % 100) * 100;
+process.env.E2E_PORT ??= String(processPortBase);
+process.env.E2E_WORKER_PORT ??= String(processPortBase + 50);
+
 export const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 // Build the server once, up front, and resolve its binary path. We spawn the
