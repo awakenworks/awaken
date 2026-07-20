@@ -10,6 +10,12 @@ import { useLocation } from "react-router";
 import { AssistantPanel } from "../../surfaces/assistant";
 import { titleForPath } from "../../lib/navigation/paths";
 import { useApp } from "../../lib/app-state";
+import {
+  AGENT_DRAFT_CHANGED_EVENT,
+  ASSISTANT_REPAIR_EVENT,
+  ASSISTANT_SETTLED_EVENT,
+  type AssistantRepairDetail,
+} from "../../lib/assistant-events";
 
 const OPEN_KEY = "awaken.console.assistantOpen";
 
@@ -31,6 +37,11 @@ export default function AssistantFab() {
       return false;
     }
   });
+  const [repair, setRepair] = useState<AssistantRepairDetail | null>(null);
+  const close = () => {
+    setOpen(false);
+    setRepair(null);
+  };
   useEffect(() => {
     try {
       localStorage.setItem(OPEN_KEY, open ? "1" : "0");
@@ -38,11 +49,21 @@ export default function AssistantFab() {
       /* best effort */
     }
   }, [open]);
+  useEffect(() => {
+    const onRepair = (event: Event) => {
+      const detail = (event as CustomEvent<AssistantRepairDetail>).detail;
+      if (!detail?.id || !detail.requestId || !detail.message) return;
+      setRepair(detail);
+      setOpen(true);
+    };
+    window.addEventListener(ASSISTANT_REPAIR_EVENT, onRepair);
+    return () => window.removeEventListener(ASSISTANT_REPAIR_EVENT, onRepair);
+  }, []);
   // Escape closes (non-modal: focus is never trapped, so the console stays usable).
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
+      if (e.key === "Escape") close();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -50,7 +71,8 @@ export default function AssistantFab() {
 
   // The assistant is a workspace tool; hide the FAB on the workspace picker / root.
   if (!location.pathname.startsWith("/w/")) return null;
-  const { wsId, targetAgentId } = routeContext(location.pathname);
+  const { wsId, targetAgentId: routeTargetAgentId } = routeContext(location.pathname);
+  const targetAgentId = repair?.id ?? routeTargetAgentId;
   // The current page's name, so a how-to question defaults to explaining this surface.
   const surfaceHint = targetAgentId ? undefined : titleForPath(location.pathname).title || undefined;
 
@@ -64,7 +86,7 @@ export default function AssistantFab() {
               <strong>{app.t("Assistant", "助手")}</strong>
               {targetAgentId && <span className="mut" style={{ fontSize: 12 }}>· {targetAgentId}</span>}
             </span>
-            <button className="assistant-fab-x" onClick={() => setOpen(false)} aria-label={app.t("Close", "关闭")}>
+            <button className="assistant-fab-x" onClick={close} aria-label={app.t("Close", "关闭")}>
               ✕
             </button>
           </header>
@@ -76,6 +98,13 @@ export default function AssistantFab() {
               wsId={wsId}
               targetAgentId={targetAgentId}
               surfaceHint={surfaceHint}
+              autoMessage={repair ? { id: repair.requestId, text: repair.message } : undefined}
+              onAgentChanged={(changedId, paths) => {
+                window.dispatchEvent(new CustomEvent(AGENT_DRAFT_CHANGED_EVENT, { detail: { id: changedId, paths } }));
+              }}
+              onRunSettled={() => {
+                window.dispatchEvent(new CustomEvent(ASSISTANT_SETTLED_EVENT, { detail: { id: targetAgentId } }));
+              }}
             />
           </div>
         </section>
@@ -83,7 +112,10 @@ export default function AssistantFab() {
       <button
         className="assistant-fab"
         data-open={open}
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => {
+          if (open) close();
+          else setOpen(true);
+        }}
         title={app.t("Draft or refine an agent with AI", "用 AI 起草或修改 agent")}
         aria-label={app.t("Admin Assistant", "控制台助手")}
       >

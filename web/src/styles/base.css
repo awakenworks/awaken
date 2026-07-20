@@ -838,6 +838,31 @@ textarea.input {
   box-shadow: inset 0 0 0 1px var(--line);
   background: var(--surface);
 }
+.agent-section-changed {
+  box-shadow: inset 3px 0 0 var(--agent), inset 0 0 0 1px var(--line);
+}
+.agent-change-highlight {
+  position: relative;
+  border-radius: var(--r-md);
+  padding: 8px;
+  margin: -8px;
+  background: color-mix(in srgb, var(--agent) 9%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--agent) 36%, transparent);
+  animation: agent-change-in 0.35s ease-out;
+}
+.agent-change-wrap { margin: 0; }
+.agent-change-label,
+.agent-change-dot {
+  color: var(--agent);
+  font-size: 10.5px;
+  font-weight: 700;
+  margin-left: 6px;
+}
+.agent-change-dot { font-size: 12px; }
+@keyframes agent-change-in {
+  from { background: color-mix(in srgb, var(--agent) 24%, transparent); }
+  to { background: color-mix(in srgb, var(--agent) 9%, transparent); }
+}
 .behavior-head {
   display: flex;
   justify-content: space-between;

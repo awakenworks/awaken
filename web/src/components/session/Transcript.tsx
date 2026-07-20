@@ -122,6 +122,13 @@ export interface TranscriptProps {
   /** Prepended (invisibly to the reader) to each sent message — used to inject
    * task context, e.g. "refine agent X via admin_patch_agent". */
   contextPrefix?: string;
+  /** Send a parent-authored message once. Used by editor workflows that hand a
+   * validation failure to the Admin Assistant without asking the operator to copy it. */
+  autoMessage?: { id: string; text: string };
+  /** Reports completed tools without exposing the session-log hook to consumers. */
+  onToolComplete?: (tool: SessionEvent, result: SessionEvent) => void;
+  /** Fires after a locally started request returns to idle. */
+  onRunSettled?: () => void;
 }
 
 export default function Transcript({
@@ -135,6 +142,9 @@ export default function Transcript({
   onLatency,
   fixedModel,
   contextPrefix,
+  autoMessage,
+  onToolComplete,
+  onRunSettled,
 }: TranscriptProps) {
   const app = useApp();
   const { log, results, pendingIds, running, freshCount, applyPending, send, sendPending, sendError, loadError } =
@@ -144,6 +154,9 @@ export default function Transcript({
   const [model, setModel] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  const handledTools = useRef(new Set<string>());
+  const handledAutoMessage = useRef<string | null>(null);
+  const hadLocalActivity = useRef(false);
   // Latency: stamp on send, resolve when the next agent.message lands in the log.
   const sentAt = useRef<number | null>(null);
   const agentMsgCount = log.filter((e) => e.type === "agent.message").length;
@@ -171,6 +184,47 @@ export default function Transcript({
     bottomRef.current?.scrollIntoView({ block: "nearest" });
   }, [log.length, pendingMessage, running, sendPending]);
 
+  useEffect(() => {
+    if (!onToolComplete) return;
+    for (const event of log) {
+      if (event.type !== "agent.tool_use" && event.type !== "agent.custom_tool_use") continue;
+      const result = results.get(event.id);
+      if (!result || handledTools.current.has(event.id)) continue;
+      handledTools.current.add(event.id);
+      onToolComplete(event, result);
+    }
+  }, [log, onToolComplete, results]);
+
+  const sendText = (userText: string, useModel = fixedModel || model) => {
+    sentAt.current = Date.now();
+    const text = contextPrefix ? `${contextPrefix}\n${userText}` : userText;
+    setPendingMessage(userText);
+    hadLocalActivity.current = true;
+    send([
+      {
+        type: "user.message",
+        content: [{ type: "text", text }],
+        ...(useModel ? { model: useModel } : {}),
+      },
+    ]);
+  };
+
+  useEffect(() => {
+    if (!autoMessage || handledAutoMessage.current === autoMessage.id || sendPending || running) return;
+    handledAutoMessage.current = autoMessage.id;
+    sendText(autoMessage.text);
+  // `sendText` intentionally uses the current session/context. An auto-message id is
+  // the idempotency boundary; changing render-local callback identities must not resend.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoMessage?.id, running, sendPending]);
+
+  useEffect(() => {
+    if (running || sendPending) return;
+    if (!hadLocalActivity.current) return;
+    hadLocalActivity.current = false;
+    onRunSettled?.();
+  }, [onRunSettled, running, sendPending]);
+
   const confirm = (ev: SessionEvent, allow: boolean, note: string) => {
     const inbound: InboundEvent =
       ev.type === "agent.custom_tool_use"
@@ -191,22 +245,10 @@ export default function Transcript({
 
   const submit = () => {
     if (!draft.trim() || sendPending) return;
-    const useModel = fixedModel || model;
     // Preserve the operator's exact multiline text (indentation and trailing newline
     // can be meaningful in code/prompts); trimming is only the emptiness check above.
     const userText = draft;
-    sentAt.current = Date.now();
-    // A short context tag is prepended to steer the model (e.g. "refine agent X"); it
-    // reads as context in the echoed user bubble.
-    const text = contextPrefix ? `${contextPrefix}\n${userText}` : userText;
-    setPendingMessage(userText);
-    send([
-      {
-        type: "user.message",
-        content: [{ type: "text", text }],
-        ...(useModel ? { model: useModel } : {}),
-      },
-    ]);
+    sendText(userText);
     setDraft("");
     if (composerRef.current) composerRef.current.style.height = "auto";
   };

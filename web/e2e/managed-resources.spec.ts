@@ -48,11 +48,16 @@ test("Models: publish a model's context window and see it in the catalog", async
   await expect(row).toContainText("200k");
 });
 
-test("Skills: the surface reads the delivered-skill catalog", async ({ page }) => {
+test("Skills: the surface reads the delivered-skill catalog", async ({ page, request }) => {
   await page.goto("/w/default/skills");
-  // Skills come from a durable skill store (SKILL.md), not the console — with none
-  // wired the list is empty but live, proving the surface↔endpoint read works.
-  await expect(page.getByText(/No skills delivered yet|尚无已交付技能/)).toBeVisible();
+  // The backend may be reused locally and already contain a delivered Skill. Assert
+  // the UI mirrors the live catalog in either state instead of assuming isolation.
+  const catalog = await (await request.get("/v1/skills")).json();
+  if (catalog.data.length === 0) {
+    await expect(page.getByText(/No skills delivered yet|尚无已交付技能/)).toBeVisible();
+  } else {
+    await expect(page.locator("tr", { hasText: catalog.data[0].id }).first()).toBeVisible();
+  }
 });
 
 test("Agent Resources: bind a memory store to an agent and persist it", async ({ page, request }) => {

@@ -120,10 +120,16 @@ export function AssistantPanel({
   wsId,
   targetAgentId,
   surfaceHint,
+  autoMessage,
+  onAgentChanged,
+  onRunSettled,
 }: {
   wsId: string;
   targetAgentId?: string;
   surfaceHint?: string;
+  autoMessage?: { id: string; text: string };
+  onAgentChanged?: (id: string, paths: string[]) => void;
+  onRunSettled?: () => void;
 }) {
   const app = useApp();
   const gate = useGate(`/v1/agents/${ASSISTANT_ID}`);
@@ -175,6 +181,33 @@ export function AssistantPanel({
               queryKey={["assistant-events", sid]}
               placeholder={placeholder}
               contextPrefix={contextPrefix}
+              autoMessage={autoMessage}
+              onRunSettled={onRunSettled}
+              onToolComplete={(tool, result) => {
+                if (tool.type !== "agent.tool_use" || !("name" in tool) || !DRAFT_TOOLS.includes(String(tool.name))) return;
+                if ("is_error" in result && result.is_error === true) return;
+                const input = "input" in tool
+                  ? tool.input as { id?: unknown; patch?: Record<string, unknown> }
+                  : undefined;
+                if (typeof input?.id === "string") {
+                  const authored = input.patch ?? (input as Record<string, unknown>);
+                  const aliases: Record<string, string> = {
+                    instructions: "system",
+                    tool_ids: "tools",
+                    plugin_config: "plugin_config",
+                    resources: "resources",
+                  };
+                  const paths = Object.keys(authored)
+                    .filter((key) => key !== "id")
+                    .flatMap((key) => {
+                      if (key === "plugin_config" && authored[key] && typeof authored[key] === "object") {
+                        return Object.keys(authored[key] as Record<string, unknown>).map((plugin) => `plugin_config.${plugin}`);
+                      }
+                      return [aliases[key] ?? key];
+                    });
+                  onAgentChanged?.(input.id, paths);
+                }
+              }}
             />
             <DraftedAgents base={ws(`/v1/sessions/${sid}`)} wsId={wsId} />
           </>
