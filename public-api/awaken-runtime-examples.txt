@@ -5,6 +5,7 @@ pub use awaken_runtime_examples::prelude::CatalogFingerprint
 pub use awaken_runtime_examples::prelude::ContentBlock
 pub use awaken_runtime_examples::prelude::EndCause
 pub use awaken_runtime_examples::prelude::ExecutableAgentSnapshot
+pub use awaken_runtime_examples::prelude::ExecutableAgentSnapshotBuilder
 pub use awaken_runtime_examples::prelude::ExecutableAgentSnapshotId
 pub use awaken_runtime_examples::prelude::MemoryCommitCoordinator
 pub use awaken_runtime_examples::prelude::Message
@@ -22,12 +23,7 @@ pub use awaken_runtime_examples::prelude::RunExecutor
 pub use awaken_runtime_examples::prelude::RunId
 pub use awaken_runtime_examples::prelude::RunInput
 pub use awaken_runtime_examples::prelude::RunState
-pub use awaken_runtime_examples::prelude::RunnableConfig
-pub use awaken_runtime_examples::prelude::RunnableConfigBuilder
 pub use awaken_runtime_examples::prelude::Runtime
-pub use awaken_runtime_examples::prelude::RuntimeCapabilityCatalog
-pub use awaken_runtime_examples::prelude::RuntimeCatalogInstall
-pub use awaken_runtime_examples::prelude::RuntimeCatalogInstaller
 pub use awaken_runtime_examples::prelude::RuntimeRunContext
 pub use awaken_runtime_examples::prelude::ThreadId
 pub use awaken_runtime_examples::prelude::ToolCallPattern

@@ -4,11 +4,19 @@
 use awaken_config_store::{
     AgentConfig, AuditedConfigWrite, ConfigRegistry, ManagementAuditRecord, ManagementEffect,
     PostgresConfigStore, PublicationState, ScopeId, ScopedConfigRegistry, StoredPublication,
-    compile,
+    compile_resolved,
 };
 use awaken_runtime_contract::resolved::ToolDescriptor;
+use awaken_runtime_contract::snapshot::AgentSnapshotMetadata;
 use sqlx::Executor;
 use sqlx::postgres::{PgPool, PgPoolOptions};
+
+fn compile(
+    config: &AgentConfig,
+    tools: &[ToolDescriptor],
+) -> Result<awaken_config_store::ExecutableAgentSnapshot, awaken_config_store::CompileError> {
+    compile_resolved(config, tools, &[], AgentSnapshotMetadata::default())
+}
 
 fn database_url() -> String {
     std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {

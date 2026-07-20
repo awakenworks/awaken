@@ -26,7 +26,7 @@ pub use sse::SseParser;
 pub use types::{
     Annotations, CallToolParams, CallToolResult, ClientInfo, Icon, IconTheme,
     InitializeCapabilities, InitializeParams, InitializeResult, ListToolsParams, ListToolsResult,
-    MCP_PROTOCOL_VERSION, McpServerConnectionConfig, McpToolDefinition, McpTransportError,
-    RestartPolicy, Role, ServerCapabilities, ServerInfo, ServerToolCapabilities, TaskMetadata,
-    TaskSupport, ToolAnnotations, ToolContent, ToolExecution, TransportTypeId,
+    MCP_PROTOCOL_VERSION, McpToolDefinition, McpTransportError, Role, ServerCapabilities,
+    ServerInfo, ServerToolCapabilities, TaskMetadata, TaskSupport, ToolAnnotations, ToolContent,
+    ToolExecution,
 };

@@ -155,6 +155,7 @@ async function main() {
       env_key: 'ANTHROPIC_API_KEY', secret: FAKE_KEY,
     });
     assert.equal(r.status, 201, `credential: ${JSON.stringify(r.json)}`);
+    const credentialId = r.json.id;
     console.log('ok: authored provider/endpoint/offering + credential in the console DB');
 
     // ---- publish an agent bound to that model --------------------------------
@@ -176,6 +177,23 @@ async function main() {
     assert.equal(r.json.installed, true, 'published agent installed into the live catalog');
     console.log(`ok: published agent bound to the DB-configured model '${MODEL}'`);
 
+    r = await req(base, 'PUT', '/v1/config/agents/unpublished-model-agent', {
+      name: 'unpublished-model-agent',
+      model: { id: 'model-with-no-offering' },
+      system: 'This publication must fail closed.',
+    });
+    assert.equal(r.status, 200, `unpublished model draft: ${JSON.stringify(r.json)}`);
+    r = await req(base, 'POST', '/v1/config/agents/unpublished-model-agent/publish', undefined);
+    assert.equal(r.status, 409, `unpublished model must not install: ${JSON.stringify(r.json)}`);
+
+    // Mutating the catalog after publication cannot redirect the installed
+    // snapshot: execution must still call the endpoint pinned above.
+    r = await req(base, 'PUT', '/v1/config/endpoints/ep1', {
+      id: 'ep1', provider_id: 'anthropic', dialect: 'anthropic_messages',
+      base_url: 'http://127.0.0.1:1/v1/', timeout_secs: 300, display_name: 'mutated', version: 2,
+    });
+    assert.equal(r.status, 200, `post-publication endpoint mutation: ${JSON.stringify(r.json)}`);
+
     // ---- run a session on the DB-configured model ----------------------------
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
     const session = await client.beta.sessions.create({
@@ -196,7 +214,84 @@ async function main() {
       `the session ran the DB-configured model over the wire: ${JSON.stringify(text)}`,
     );
     assert.ok(upstream.requests.length >= 1, 'the fake upstream received the configured-model call');
-    console.log('ok: session ran the database-configured model + credential over the wire');
+    console.log('ok: session used the snapshot-pinned endpoint despite a later catalog mutation');
+
+    const callsBeforeRevocation = upstream.requests.length;
+    r = await req(base, 'POST', `/v1/config/credentials/${credentialId}/archive`, undefined);
+    assert.equal(r.status, 200, `archive credential: ${JSON.stringify(r.json)}`);
+    const rejected = await client.beta.sessions.create({
+      agent: AGENT, environment_id: 'env_local', betas: BETAS,
+    });
+    await client.beta.sessions.events.send(rejected.id, {
+      events: [{ type: 'user.message', content: [{ type: 'text', text: 'must fail closed' }] }],
+      betas: BETAS,
+    });
+    const rejectedEvents = [];
+    for await (const ev of client.beta.sessions.events.list(rejected.id, { betas: BETAS })) rejectedEvents.push(ev);
+    assert.ok(rejectedEvents.some((event) => event.type === 'session.error'), 'revoked pin produces session.error');
+    assert.ok(!rejectedEvents.some((event) => event.type === 'agent.message'), 'revoked pin produces no model reply');
+    assert.equal(upstream.requests.length, callsBeforeRevocation, 'revoked pin never reaches any endpoint');
+    console.log('ok: archived/version-changed credential rejected the already-published pin fail-closed');
+
+    // Defense in depth without IAM: workspace-path addressing supplies the
+    // trusted platform scope directly, and each resource aggregate enforces its
+    // own persisted owner. This proves the resource service does not depend on a
+    // PEP-side process-local owner index.
+    const WS_A = 'workspace-resource-a';
+    const WS_B = 'workspace-resource-b';
+    const scoped = (workspace, tail) => `/v1/workspaces/${workspace}/config/${tail}`;
+    const ownedCredential = await req(base, 'POST', scoped(WS_A, 'credentials'), {
+      workspace_id: 'forged-body-owner', kind: 'vault', provider_id: 'anthropic',
+      env_key: null, secret: 'sk-resource-owner-e2e', // awaken-allow: secret
+    });
+    assert.equal(ownedCredential.status, 201, JSON.stringify(ownedCredential.json));
+    assert.equal(ownedCredential.json.workspace_id, WS_A, 'path scope overrides body workspace');
+    const ownedId = ownedCredential.json.id;
+    const pool = {
+      id: 'owned-pool', workspace_id: 'forged-body-owner',
+      members: [{ credential_source_id: ownedId, ordinal: 0, enabled: true, selection_weight: 0 }],
+    };
+    assert.equal((await req(base, 'PUT', scoped(WS_A, 'credential-pools/owned-pool'), pool)).status, 200);
+    const profile = {
+      workspace_id: 'forged-body-owner', model_id: MODEL,
+      credential_binding: { type: 'exact', credential_source_id: ownedId }, disabled_endpoint_ids: [],
+    };
+    assert.equal((await req(base, 'PUT', scoped(WS_A, 'inference-profiles/owned-profile'), profile)).status, 200);
+    const mcp = {
+      id: 'owned-mcp', workspace_id: 'forged-body-owner', display_name: 'owned',
+      url: 'https://mcp.example.invalid/',
+      credential_binding: { type: 'exact', credential_source_id: ownedId }, version: 1,
+    };
+    assert.equal((await req(base, 'PUT', scoped(WS_A, 'mcp-servers/owned-mcp'), mcp)).status, 200);
+    const agentMcp = {
+      workspace_id: 'forged-body-owner', agent_id: 'owned-agent',
+      mcp_server_ids: ['owned-mcp'], version: 1,
+    };
+    assert.equal((await req(base, 'PUT', scoped(WS_A, 'agents/owned-agent/mcp'), agentMcp)).status, 200);
+    for (const uri of [
+      scoped(WS_B, `credentials/${ownedId}`),
+      scoped(WS_B, 'credential-pools/owned-pool'),
+      scoped(WS_B, 'credential-pools/owned-pool/eligible'),
+      scoped(WS_B, 'inference-profiles/owned-profile'),
+      scoped(WS_B, 'mcp-servers/owned-mcp'),
+      scoped(WS_B, 'agents/owned-agent/mcp'),
+    ]) assert.equal((await req(base, 'GET', uri)).status, 404, `${uri} hides foreign ownership`);
+    assert.equal((await req(base, 'PUT', scoped(WS_B, 'credential-pools/owned-pool'), pool)).status, 404);
+    assert.equal((await req(base, 'PUT', scoped(WS_B, 'inference-profiles/owned-profile'), profile)).status, 404);
+    assert.equal((await req(base, 'PUT', scoped(WS_B, 'mcp-servers/owned-mcp'), mcp)).status, 404);
+    assert.equal((await req(base, 'PUT', scoped(WS_B, 'agents/owned-agent/mcp'), agentMcp)).status, 404);
+    const listedMcp = await req(base, 'GET', scoped(WS_B, 'mcp-servers'));
+    assert.equal(listedMcp.status, 200);
+    assert.ok(!listedMcp.json.some((entry) => entry.id === 'owned-mcp'));
+
+    const upload = new FormData();
+    upload.set('file', new Blob(['workspace-owned-file']), 'owned.txt');
+    const uploaded = await fetch(`${base}/v1/workspaces/${WS_A}/files`, { method: 'POST', body: upload });
+    assert.equal(uploaded.status, 200);
+    const fileId = (await uploaded.json()).id;
+    assert.equal((await fetch(`${base}/v1/workspaces/${WS_A}/files/${fileId}`)).status, 200);
+    assert.equal((await fetch(`${base}/v1/workspaces/${WS_B}/files/${fileId}`)).status, 404);
+    console.log('ok: config resources and files enforce intrinsic workspace ownership without IAM');
   } finally {
     await h.stop();
     upstream.close();

@@ -5,6 +5,11 @@ pub awaken_ext_skills::SkillContext::Inline
 pub enum awaken_ext_skills::SkillProvenance
 pub awaken_ext_skills::SkillProvenance::AgentCreated
 pub awaken_ext_skills::SkillProvenance::Delivered
+pub struct awaken_ext_skills::ActiveSkillTools
+impl awaken_ext_skills::ActiveSkillTools
+pub fn awaken_ext_skills::ActiveSkillTools::allows(&self, &str) -> bool
+pub fn awaken_ext_skills::ActiveSkillTools::narrow(&self, &[alloc::string::String])
+pub fn awaken_ext_skills::ActiveSkillTools::new() -> Self
 pub struct awaken_ext_skills::CompositeSkillRegistry
 impl awaken_ext_skills::CompositeSkillRegistry
 pub fn awaken_ext_skills::CompositeSkillRegistry::new(alloc::vec::Vec<alloc::sync::Arc<dyn awaken_ext_skills::SkillRegistry>>) -> Self
@@ -40,6 +45,11 @@ impl awaken_ext_skills::RecordingGate
 pub fn awaken_ext_skills::RecordingGate::new(alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolGateHook>, awaken_ext_skills::PathActivations) -> Self
 impl awaken_runtime_contract::permission::ToolGateHook for awaken_ext_skills::RecordingGate
 pub fn awaken_ext_skills::RecordingGate::gate<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall, &'life2 awaken_agent_contract::agent::state::Store) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::GateOutcome> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub struct awaken_ext_skills::SkillAllowedToolsGate
+impl awaken_ext_skills::SkillAllowedToolsGate
+pub fn awaken_ext_skills::SkillAllowedToolsGate::new(alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolGateHook>, awaken_ext_skills::ActiveSkillTools) -> Self
+impl awaken_runtime_contract::permission::ToolGateHook for awaken_ext_skills::SkillAllowedToolsGate
+pub fn awaken_ext_skills::SkillAllowedToolsGate::gate<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall, &'life2 awaken_agent_contract::agent::state::Store) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::GateOutcome> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub struct awaken_ext_skills::SkillFile
 pub awaken_ext_skills::SkillFile::content: alloc::string::String
 pub awaken_ext_skills::SkillFile::dir: core::option::Option<alloc::string::String>
@@ -75,6 +85,7 @@ pub struct awaken_ext_skills::SkillTool
 impl awaken_ext_skills::SkillTool
 pub fn awaken_ext_skills::SkillTool::descriptor(&self) -> awaken_runtime_contract::resolved::ToolDescriptor
 pub fn awaken_ext_skills::SkillTool::new(alloc::sync::Arc<dyn awaken_ext_skills::SkillRegistry>) -> Self
+pub fn awaken_ext_skills::SkillTool::with_active_tools(self, awaken_ext_skills::ActiveSkillTools) -> Self
 pub fn awaken_ext_skills::SkillTool::with_agent_tool(self, alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>) -> Self
 pub fn awaken_ext_skills::SkillTool::with_session_id(self, impl core::convert::Into<alloc::string::String>) -> Self
 impl awaken_runtime_contract::tool::RawTool for awaken_ext_skills::SkillTool
