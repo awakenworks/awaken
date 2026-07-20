@@ -124,7 +124,7 @@ mod role_tests {
 
 // The database-less **worker** role moved to the production `awaken-worker` crate
 // (Stage C): it resolves EACH drained run's model from the DB-configured catalog +
-// vault via `ConfiguredInferenceMaterializer`, with `NoModelConfiguredExecutor` only as the
+// vault via `CredentialInferenceMaterializer`, with `NoModelConfiguredExecutor` only as the
 // fallback. The `awaken` binary's Worker role delegates to `awaken_worker::run`. The
 // test-only echo-draining worker (for the worker-pool e2e) lives in
 // `awaken-scenario-host::run_echo_worker`.

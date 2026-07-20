@@ -5,7 +5,7 @@
 //! In production that default must NOT be a mock (an echo/tool scenario model
 //! belongs in tests only) — it returns a clear, actionable message instead, so a
 //! session that runs before a model is configured gets guidance rather than a
-//! surprising echo. Once a model is published, `ConfiguredInferenceMaterializer` resolves
+//! surprising echo. Once a model is published, `CredentialInferenceMaterializer` materializes
 //! the real provider per session and this fallback is never reached for that agent.
 
 use awaken_runtime_contract::llm::{

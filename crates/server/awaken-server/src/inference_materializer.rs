@@ -30,10 +30,21 @@ use awaken_runtime_host::InferenceExecutorMaterializer;
 
 use crate::executor_from_materialized_access;
 
-/// Resolves `model_ref → executor` from the live config plane.
+/// Configuration-plane adapter that pins model routes and credential references
+/// into an immutable executable snapshot. It has no secret-store or executor
+/// dependency and is never needed by a worker.
 #[derive(Clone)]
-pub struct ConfiguredInferenceMaterializer {
+pub struct CatalogInferenceAccessPublisher {
     catalog: Arc<dyn CatalogRepo>,
+    credentials: Arc<dyn CredentialRepo>,
+    fallback_model_ref: Option<String>,
+}
+
+/// Runtime adapter that materializes only the access already pinned in an
+/// executable snapshot. It cannot enumerate the model catalog or select a
+/// different credential.
+#[derive(Clone)]
+pub struct CredentialInferenceMaterializer {
     credentials: Arc<dyn CredentialRepo>,
     secrets: Arc<dyn SecretStore>,
     fallback: Option<HostFallback>,
@@ -73,33 +84,21 @@ impl LlmExecutor for PinnedModelExecutor {
     }
 }
 
-impl ConfiguredInferenceMaterializer {
-    pub fn new(
-        catalog: Arc<dyn CatalogRepo>,
-        credentials: Arc<dyn CredentialRepo>,
-        secrets: Arc<dyn SecretStore>,
-    ) -> Self {
+impl CatalogInferenceAccessPublisher {
+    pub fn new(catalog: Arc<dyn CatalogRepo>, credentials: Arc<dyn CredentialRepo>) -> Self {
         Self {
             catalog,
             credentials,
-            secrets,
-            fallback: None,
+            fallback_model_ref: None,
         }
     }
 
-    /// Install the host's existing explicit fallback as a dispatch-pinnable
-    /// executor. This shares the same `Arc` used by `SharedHost`; it is not a
-    /// second resolver or an implicit global-model lookup.
+    /// Declare the host-provided model that publication may pin without a
+    /// catalog offering. Runtime installation of its executor is a separate
+    /// composition-root concern.
     #[must_use]
-    pub fn with_fallback_executor(
-        mut self,
-        model_ref: impl Into<String>,
-        executor: Arc<dyn LlmExecutor>,
-    ) -> Self {
-        self.fallback = Some(HostFallback {
-            model_ref: model_ref.into(),
-            executor,
-        });
+    pub fn with_fallback_model(mut self, model_ref: impl Into<String>) -> Self {
+        self.fallback_model_ref = Some(model_ref.into());
         self
     }
 
@@ -114,23 +113,10 @@ impl ConfiguredInferenceMaterializer {
     }
 
     fn fallback_access(&self, model_ref: &str) -> Option<InferenceAccess> {
-        self.fallback
+        self.fallback_model_ref
             .as_ref()
-            .filter(|fallback| fallback.model_ref == model_ref)
+            .filter(|fallback| fallback.as_str() == model_ref)
             .map(|_| InferenceAccess::host_executor(model_ref))
-    }
-
-    fn fallback_executor(
-        &self,
-        model_ref: &str,
-        access: &InferenceAccess,
-    ) -> Option<Arc<dyn LlmExecutor>> {
-        self.fallback
-            .as_ref()
-            .filter(|fallback| {
-                fallback.model_ref == model_ref && access.is_host_executor_for(model_ref)
-            })
-            .map(|fallback| fallback.executor.clone())
     }
 
     fn pin_access_from(
@@ -235,6 +221,44 @@ impl ConfiguredInferenceMaterializer {
             last_error.unwrap_or_else(|| "run has no materializable model candidate".to_string())
         })
     }
+}
+
+impl CredentialInferenceMaterializer {
+    pub fn new(credentials: Arc<dyn CredentialRepo>, secrets: Arc<dyn SecretStore>) -> Self {
+        Self {
+            credentials,
+            secrets,
+            fallback: None,
+        }
+    }
+
+    /// Install the host's existing explicit fallback for an exactly matching
+    /// host-executor snapshot reference.
+    #[must_use]
+    pub fn with_fallback_executor(
+        mut self,
+        model_ref: impl Into<String>,
+        executor: Arc<dyn LlmExecutor>,
+    ) -> Self {
+        self.fallback = Some(HostFallback {
+            model_ref: model_ref.into(),
+            executor,
+        });
+        self
+    }
+
+    fn fallback_executor(
+        &self,
+        model_ref: &str,
+        access: &InferenceAccess,
+    ) -> Option<Arc<dyn LlmExecutor>> {
+        self.fallback
+            .as_ref()
+            .filter(|fallback| {
+                fallback.model_ref == model_ref && access.is_host_executor_for(model_ref)
+            })
+            .map(|fallback| fallback.executor.clone())
+    }
 
     async fn materialize_pinned(
         &self,
@@ -293,7 +317,7 @@ impl ConfiguredInferenceMaterializer {
 }
 
 struct PinnedCandidateExecutor {
-    provider: ConfiguredInferenceMaterializer,
+    provider: CredentialInferenceMaterializer,
     access: InferenceAccess,
 }
 
@@ -332,7 +356,7 @@ impl LlmExecutor for PinnedCandidateExecutor {
     }
 }
 
-impl InferenceAccessPublisher for ConfiguredInferenceMaterializer {
+impl InferenceAccessPublisher for CatalogInferenceAccessPublisher {
     fn resolve_access<'a>(
         &'a self,
         scope: &'a str,
@@ -344,7 +368,7 @@ impl InferenceAccessPublisher for ConfiguredInferenceMaterializer {
     }
 }
 
-impl InferenceExecutorMaterializer for ConfiguredInferenceMaterializer {
+impl InferenceExecutorMaterializer for CredentialInferenceMaterializer {
     fn materialize(
         &self,
         activation: &awaken_runtime_contract::RunActivation,
@@ -385,10 +409,15 @@ mod tests {
     /// workspace credential `(provider, active)`. The secret is a fake — resolution
     /// and executor construction never call the network, so every branch is
     /// reachable offline.
-    async fn provider(
-        model: &str,
-        credential: Option<(&str, bool)>,
-    ) -> ConfiguredInferenceMaterializer {
+    struct TestServices {
+        publisher: CatalogInferenceAccessPublisher,
+        materializer: CredentialInferenceMaterializer,
+        catalog: Arc<InMemoryCatalogRepo>,
+        credentials: Arc<InMemoryCredentialRepo>,
+        secrets: Arc<InMemorySecretStore>,
+    }
+
+    async fn provider(model: &str, credential: Option<(&str, bool)>) -> TestServices {
         let catalog = Arc::new(InMemoryCatalogRepo::new());
         catalog
             .put_provider(Provider {
@@ -445,7 +474,13 @@ mod tests {
                 creds.put(row).await.unwrap();
             }
         }
-        ConfiguredInferenceMaterializer::new(catalog, creds, secrets)
+        TestServices {
+            publisher: CatalogInferenceAccessPublisher::new(catalog.clone(), creds.clone()),
+            materializer: CredentialInferenceMaterializer::new(creds.clone(), secrets.clone()),
+            catalog,
+            credentials: creds,
+            secrets,
+        }
     }
 
     fn activation_with_fallback(primary: &str, fallback: &str) -> RunActivation {
@@ -476,7 +511,7 @@ mod tests {
     }
 
     async fn pin_activation(
-        provider: &ConfiguredInferenceMaterializer,
+        provider: &CatalogInferenceAccessPublisher,
         activation: &RunActivation,
     ) -> Result<InferenceAccess, String> {
         let models = if let Some(model_ref) = activation.model_ref_override.as_ref() {
@@ -497,35 +532,49 @@ mod tests {
     async fn resolves_a_configured_model_to_an_executor() {
         let p = provider("claude-x", Some(("anthropic", true))).await;
         let activation = activation_with_fallback("claude-x", "unused");
-        let access = pin_activation(&p, &activation).await.unwrap();
-        assert!(p.materialize_pinned("claude-x", &access).await.is_some());
+        let access = pin_activation(&p.publisher, &activation).await.unwrap();
+        assert!(
+            p.materializer
+                .materialize_pinned("claude-x", &access)
+                .await
+                .is_some()
+        );
     }
 
     #[tokio::test]
     async fn explicitly_installed_host_fallback_is_pinned_and_exact() {
         let fallback: Arc<dyn LlmExecutor> = Arc::new(crate::no_model::NoModelConfiguredExecutor);
-        let p = provider("configured", None)
-            .await
+        let mut p = provider("configured", None).await;
+        p.publisher = p.publisher.with_fallback_model("embedded");
+        p.materializer = p
+            .materializer
             .with_fallback_executor("embedded", fallback.clone());
         let activation = activation_with_fallback("configured", "other")
             .with_model_ref_override(Some("embedded".to_string()));
 
-        let pinned = pin_activation(&p, &activation).await.unwrap();
+        let pinned = pin_activation(&p.publisher, &activation).await.unwrap();
         assert_eq!(pinned.candidates.len(), 1);
         let exact = pinned.for_model("embedded").unwrap();
         assert!(exact.is_host_executor_for("embedded"));
-        let materialized = p.materialize("embedded", &exact).await.unwrap();
+        let materialized = p
+            .materializer
+            .materialize("embedded", &exact)
+            .await
+            .unwrap();
         assert!(Arc::ptr_eq(&materialized, &fallback));
-        assert!(p.materialize("other", &exact).await.is_none());
+        assert!(p.materializer.materialize("other", &exact).await.is_none());
     }
 
     #[tokio::test]
     async fn an_unconfigured_model_falls_back_to_the_host_default() {
         let p = provider("claude-x", Some(("anthropic", true))).await;
         assert!(
-            pin_activation(&p, &activation_with_fallback("no-such-model", "unused"))
-                .await
-                .is_err()
+            pin_activation(
+                &p.publisher,
+                &activation_with_fallback("no-such-model", "unused")
+            )
+            .await
+            .is_err()
         );
     }
 
@@ -533,9 +582,12 @@ mod tests {
     async fn no_credential_falls_back_to_the_host_default() {
         let p = provider("claude-x", None).await;
         assert!(
-            pin_activation(&p, &activation_with_fallback("claude-x", "unused"))
-                .await
-                .is_err()
+            pin_activation(
+                &p.publisher,
+                &activation_with_fallback("claude-x", "unused")
+            )
+            .await
+            .is_err()
         );
     }
 
@@ -543,9 +595,12 @@ mod tests {
     async fn a_non_active_credential_falls_back() {
         let p = provider("claude-x", Some(("anthropic", false))).await;
         assert!(
-            pin_activation(&p, &activation_with_fallback("claude-x", "unused"))
-                .await
-                .is_err()
+            pin_activation(
+                &p.publisher,
+                &activation_with_fallback("claude-x", "unused")
+            )
+            .await
+            .is_err()
         );
     }
 
@@ -553,9 +608,12 @@ mod tests {
     async fn a_credential_for_another_provider_falls_back() {
         let p = provider("claude-x", Some(("openai", true))).await;
         assert!(
-            pin_activation(&p, &activation_with_fallback("claude-x", "unused"))
-                .await
-                .is_err()
+            pin_activation(
+                &p.publisher,
+                &activation_with_fallback("claude-x", "unused")
+            )
+            .await
+            .is_err()
         );
     }
 
@@ -563,7 +621,7 @@ mod tests {
     async fn pinned_credential_never_switches_to_a_new_default() {
         let p = provider("claude-x", Some(("anthropic", true))).await;
         let activation = activation_with_fallback("claude-x", "unused");
-        let pinned = pin_activation(&p, &activation).await.unwrap();
+        let pinned = pin_activation(&p.publisher, &activation).await.unwrap();
         assert_eq!(pinned.scheme, "credential-source/v1");
         assert_eq!(pinned.provider_ref.as_deref(), Some("anthropic@1"));
         assert_eq!(pinned.route_ref.as_deref(), Some("ep1@1"));
@@ -583,14 +641,22 @@ mod tests {
         .await
         .unwrap();
         assert_ne!(pinned.reference, second.id.0);
-        assert!(p.materialize_pinned("claude-x", &pinned).await.is_some());
+        assert!(
+            p.materializer
+                .materialize_pinned("claude-x", &pinned)
+                .await
+                .is_some()
+        );
 
         let pinned_id = awaken_credential_vault::CredentialSourceId(pinned.reference.clone());
         let mut old = p.credentials.get(&pinned_id).await.unwrap();
         old.status = CredentialStatus::Disabled;
         p.credentials.put(old).await.unwrap();
         assert!(
-            p.materialize_pinned("claude-x", &pinned).await.is_none(),
+            p.materializer
+                .materialize_pinned("claude-x", &pinned)
+                .await
+                .is_none(),
             "revoking the pinned credential fails closed instead of selecting the new default"
         );
     }
@@ -613,15 +679,27 @@ mod tests {
         .await
         .unwrap();
         let model = ModelBinding::new("anthropic", "claude-x", "genai");
-        let access = p.resolve_for_scope("workspace-b", &[model]).await.unwrap();
+        let access = p
+            .publisher
+            .resolve_for_scope("workspace-b", &[model])
+            .await
+            .unwrap();
         assert_eq!(access.reference, other.id.0);
         assert_eq!(access.scope_id.as_deref(), Some("workspace-b"));
-        assert!(p.materialize_pinned("claude-x", &access).await.is_some());
+        assert!(
+            p.materializer
+                .materialize_pinned("claude-x", &access)
+                .await
+                .is_some()
+        );
 
         let mut forged = access;
         forged.scope_id = Some("ws".into());
         assert!(
-            p.materialize_pinned("claude-x", &forged).await.is_none(),
+            p.materializer
+                .materialize_pinned("claude-x", &forged)
+                .await
+                .is_none(),
             "execution rejects a credential whose persisted owner differs from the snapshot scope"
         );
     }
@@ -630,7 +708,7 @@ mod tests {
     async fn pinned_route_is_independent_of_a_later_catalog_update() {
         let p = provider("claude-x", Some(("anthropic", true))).await;
         let activation = activation_with_fallback("claude-x", "unused");
-        let pinned = pin_activation(&p, &activation).await.unwrap();
+        let pinned = pin_activation(&p.publisher, &activation).await.unwrap();
         p.catalog
             .put_endpoint(ProtocolEndpoint {
                 id: ProtocolEndpointId::new("ep1"),
@@ -644,7 +722,10 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            p.materialize_pinned("claude-x", &pinned).await.is_some(),
+            p.materializer
+                .materialize_pinned("claude-x", &pinned)
+                .await
+                .is_some(),
             "execution uses the publication-pinned endpoint without consulting the updated catalog"
         );
     }
@@ -698,7 +779,7 @@ mod tests {
         .await
         .unwrap();
 
-        let pinned = pin_activation(&p, &activation_with_fallback("claude-x", "gpt-x"))
+        let pinned = pin_activation(&p.publisher, &activation_with_fallback("claude-x", "gpt-x"))
             .await
             .unwrap();
         assert_eq!(
@@ -723,16 +804,22 @@ mod tests {
         let mut primary_row = p.credentials.get(&primary_id).await.unwrap();
         primary_row.status = CredentialStatus::Disabled;
         p.credentials.put(primary_row).await.unwrap();
-        assert!(p.materialize_pinned("claude-x", &primary).await.is_none());
         assert!(
-            p.materialize_pinned("gpt-x", &pinned.for_model("gpt-x").unwrap())
+            p.materializer
+                .materialize_pinned("claude-x", &primary)
+                .await
+                .is_none()
+        );
+        assert!(
+            p.materializer
+                .materialize_pinned("gpt-x", &pinned.for_model("gpt-x").unwrap())
                 .await
                 .is_some(),
             "the already-pinned fallback remains materializable"
         );
         assert!(pinned.for_model("new-global-default").is_none());
         let router = PinnedCandidateExecutor {
-            provider: p,
+            provider: p.materializer,
             access: pinned,
         };
         assert!(router.executor_for("claude-x").await.is_err());

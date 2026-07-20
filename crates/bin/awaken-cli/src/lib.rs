@@ -715,9 +715,15 @@ async fn management_router_over(
 
     // The server's default model for the window before a publish.
     let (model, model_ref) = (fallback_model, fallback_model_ref);
-    let inference_services = Arc::new(
-        awaken_server::inference_materializer::ConfiguredInferenceMaterializer::new(
+    let inference_access_publisher = Arc::new(
+        awaken_server::inference_materializer::CatalogInferenceAccessPublisher::new(
             catalog.clone(),
+            credentials.clone(),
+        )
+        .with_fallback_model(model_ref.clone()),
+    );
+    let inference_materializer = Arc::new(
+        awaken_server::inference_materializer::CredentialInferenceMaterializer::new(
             credentials.clone(),
             secrets.clone(),
         )
@@ -738,7 +744,7 @@ async fn management_router_over(
             .with_model_resolver(Arc::new(
                 awaken_server::model_resolver::CatalogModelResolver::from_repo(catalog.clone()),
             ))
-            .with_inference_access_publisher(inference_services.clone())
+            .with_inference_access_publisher(inference_access_publisher)
             .with_resources(resource_store.clone()),
     );
     // Warm-load the installed catalog from the durable config store BEFORE the plane
@@ -863,7 +869,7 @@ async fn management_router_over(
         .with_memory_registry(memory_registry)
         // Resolve a session's model to a real executor from the config plane (M2):
         // an unconfigured/unresolvable model falls back to the scenario model above.
-        .with_inference_materializer(inference_services);
+        .with_inference_materializer(inference_materializer);
     // Production ACP wiring (`acp:*` threads): `AWAKEN_ACP_CLI` / `AWAKEN_ACP_ARGV`
     // realized in `AWAKEN_SANDBOX_TIER`. The one shared helper both the server and
     // worker roots call, so they never drift (ADR-0057).

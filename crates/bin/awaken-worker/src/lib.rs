@@ -9,10 +9,9 @@
 //! `RunActivation` carrying its own `ExecutableAgentSnapshot`, whose
 //! `resolved_spec.model_binding.model_ref` is the run's model identity. The host's
 //! run loop resolves that ref through the injected [`InferenceExecutorMaterializer`]
-//! ([`ConfiguredInferenceMaterializer`](awaken_server::inference_materializer::ConfiguredInferenceMaterializer)),
-//! which maps `model_ref → offering(provider) → the workspace's Active credential →
-//! resolve_inference → a real genai executor` over the SAME shared control-plane
-//! stores the console authored (Option A, shared-DB — see
+//! ([`CredentialInferenceMaterializer`](awaken_server::inference_materializer::CredentialInferenceMaterializer)),
+//! which consumes the snapshot-pinned endpoint and credential reference and
+//! injects the credential from the shared vault — see
 //! [`awaken_control::open_shared_config_stores_from_env`]). Only a run whose model is not yet
 //! published falls back to the auxiliary
 //! [`NoModelConfiguredExecutor`](awaken_server::no_model::NoModelConfiguredExecutor)
@@ -24,7 +23,7 @@ mod admin;
 
 use awaken_runtime_host::WorkerControlClient;
 use awaken_runtime_host::WorkerUpstream;
-use awaken_server::inference_materializer::ConfiguredInferenceMaterializer;
+use awaken_server::inference_materializer::CredentialInferenceMaterializer;
 use awaken_server::no_model::NoModelConfiguredExecutor;
 use awaken_server::{InferenceExecutorMaterializer, SharedHost};
 use awaken_worker_contract::{
@@ -54,11 +53,11 @@ impl WorkerLifecycle {
 /// 1. Route the dispatch pool's claim/settle over HTTP to `upstream`
 ///    (`worker_dispatch_store`), so the worker drains the server's queue instead of a
 ///    local one.
-/// 2. Open the shared control-plane stores (catalog + credential vault + secret store)
+/// 2. Open the shared credential vault + secret store
 ///    the same way the Serve composition does — durable under `AWAKEN_MGMT_DIR`
 ///    (Option A shared-DB) or in-memory.
-/// 3. Build a [`ConfiguredInferenceMaterializer`] over those stores, so each drained run's
-///    `model_ref` resolves to the real DB-configured provider.
+/// 3. Build a [`CredentialInferenceMaterializer`] over those stores, so each drained
+///    run consumes only its snapshot-pinned inference access.
 /// 4. Assemble a [`SharedHost`] whose default executor is the production
 ///    `NoModelConfiguredExecutor` fallback and whose per-run resolution is the
 ///    config-plane provider, pushing committed facts to `upstream`.
@@ -68,8 +67,7 @@ impl WorkerLifecycle {
 /// store routes the drain over HTTP instead of a local queue.
 pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error>> {
     let stores = awaken_control::open_shared_config_stores_from_env().await;
-    let provider =
-        ConfiguredInferenceMaterializer::new(stores.catalog, stores.credentials, stores.secrets);
+    let provider = CredentialInferenceMaterializer::new(stores.credentials, stores.secrets);
     run_configured(
         WorkerUpstream::new(upstream),
         Some(Arc::new(provider)),

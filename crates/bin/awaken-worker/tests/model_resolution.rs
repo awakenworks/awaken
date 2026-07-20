@@ -1,11 +1,11 @@
 //! The production worker resolves a REAL (DB-configured) model per run — no mock.
 //!
 //! This proves the seam the worker's `run()` wires: a
-//! [`ConfiguredInferenceMaterializer`](awaken_server::inference_materializer::ConfiguredInferenceMaterializer)
-//! built over the shared catalog + credential vault turns a run's `model_ref` into a
-//! real (genai) executor when the model is published, and returns `None` (so the host
-//! falls back to `NoModelConfiguredExecutor`) otherwise. It is the same provider the
-//! worker installs via `SharedHost::with_inference_materializer`, exercised directly
+//! [`CatalogInferenceAccessPublisher`](awaken_server::inference_materializer::CatalogInferenceAccessPublisher)
+//! pins authored configuration, then the worker-only
+//! [`CredentialInferenceMaterializer`](awaken_server::inference_materializer::CredentialInferenceMaterializer)
+//! turns that pinned access into a real executor. The latter is what the worker
+//! installs via `SharedHost::with_inference_materializer`, exercised directly
 //! through the sync `InferenceExecutorMaterializer::executor_for` port the run loop calls per run.
 //!
 //! The secret is a fake — resolution and executor construction never touch the
@@ -26,16 +26,19 @@ use awaken_model_catalog::{
 };
 use awaken_runtime_contract::{ExecutableAgentSnapshot, ModelBinding, RunActivation};
 use awaken_server::InferenceExecutorMaterializer;
-use awaken_server::inference_materializer::ConfiguredInferenceMaterializer;
+use awaken_server::inference_materializer::{
+    CatalogInferenceAccessPublisher, CredentialInferenceMaterializer,
+};
 
 /// Author a catalog with one anthropic offering for `model`, plus (optionally) a
-/// workspace credential `(provider, active)`, then build the ConfiguredInferenceMaterializer
-/// exactly as the worker's `run()` does — over the shared stores, keyed by a default
-/// workspace.
-async fn provider(
-    model: &str,
-    credential: Option<(&str, bool)>,
-) -> ConfiguredInferenceMaterializer {
+/// workspace credential `(provider, active)`, then build the publication and
+/// worker runtime adapters over their disjoint dependency sets.
+struct TestServices {
+    publisher: CatalogInferenceAccessPublisher,
+    materializer: CredentialInferenceMaterializer,
+}
+
+async fn provider(model: &str, credential: Option<(&str, bool)>) -> TestServices {
     let catalog = Arc::new(InMemoryCatalogRepo::new());
     catalog
         .put_provider(Provider {
@@ -92,7 +95,10 @@ async fn provider(
             creds.put(row).await.unwrap();
         }
     }
-    ConfiguredInferenceMaterializer::new(catalog, creds, secrets)
+    TestServices {
+        publisher: CatalogInferenceAccessPublisher::new(catalog, creds.clone()),
+        materializer: CredentialInferenceMaterializer::new(creds, secrets),
+    }
 }
 
 fn activation(model_ref: &str) -> RunActivation {
@@ -115,13 +121,14 @@ async fn worker_resolves_a_configured_model_to_a_real_executor() {
     let p = provider("claude-x", Some(("anthropic", true))).await;
     let activation = activation("claude-x");
     let access = p
+        .publisher
         .resolve_for_scope(
             "ws",
             std::slice::from_ref(&activation.snapshot.resolved_spec.model_binding),
         )
         .await
         .expect("access is pinned");
-    assert!(p.materialize(&activation, &access).is_some());
+    assert!(p.materializer.materialize(&activation, &access).is_some());
 }
 
 /// An unpublished `model_ref` returns `None`, so the host falls back to
@@ -131,12 +138,13 @@ async fn worker_falls_back_when_the_model_is_not_published() {
     let p = provider("claude-x", Some(("anthropic", true))).await;
     let activation = activation("no-such-model");
     assert!(
-        p.resolve_for_scope(
-            "ws",
-            std::slice::from_ref(&activation.snapshot.resolved_spec.model_binding),
-        )
-        .await
-        .is_err()
+        p.publisher
+            .resolve_for_scope(
+                "ws",
+                std::slice::from_ref(&activation.snapshot.resolved_spec.model_binding),
+            )
+            .await
+            .is_err()
     );
 }
 
@@ -147,11 +155,12 @@ async fn worker_falls_back_without_a_compatible_credential() {
     let p = provider("claude-x", None).await;
     let activation = activation("claude-x");
     assert!(
-        p.resolve_for_scope(
-            "ws",
-            std::slice::from_ref(&activation.snapshot.resolved_spec.model_binding),
-        )
-        .await
-        .is_err()
+        p.publisher
+            .resolve_for_scope(
+                "ws",
+                std::slice::from_ref(&activation.snapshot.resolved_spec.model_binding),
+            )
+            .await
+            .is_err()
     );
 }
