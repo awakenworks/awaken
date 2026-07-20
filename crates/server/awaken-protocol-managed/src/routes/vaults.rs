@@ -41,12 +41,12 @@ use awaken_managed_bridge::{
     WireEnvVarCreate, WireMcpOauthCreate, WireStaticBearerCreate, env_var_to_create_params,
     mcp_oauth_to_create_params, static_bearer_to_create_params,
 };
-use axum::extract::{Path, Query, State};
+use axum::extract::{Extension, Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 
-use crate::routes::ManagedJson;
+use crate::routes::{ManagedJson, WorkspaceScope};
 use crate::types::vault::{
     Credential, CredentialAuth, CredentialCreateParams, CredentialNetworking, CredentialUpdateAuth,
     CredentialUpdateParams, CredentialValidation, CredentialValidationStatus, DeletedCredential,
@@ -495,9 +495,18 @@ async fn update_vault(
 
 async fn create_credential(
     State(state): State<Arc<VaultState>>,
+    scope: Option<Extension<WorkspaceScope>>,
     Path(vault_id): Path<String>,
     ManagedJson(params): ManagedJson<CredentialCreateParams>,
 ) -> Result<(StatusCode, Json<Credential>), WireError> {
+    // The vault id is a wire-side container id, not an authorization scope. The
+    // platform-resolved workspace stamped at the composition edge owns the durable
+    // credential row. Standalone embeddings that omit that edge use the documented
+    // local/default workspace; tenancy is never derived from a resource id.
+    let resource_workspace = scope.map_or_else(
+        || crate::state::DEFAULT_SCOPE.to_string(),
+        |Extension(scope)| scope.0,
+    );
     // Enforce the vault exists and the per-vault constraints up front. The 20-cap
     // spans all credential types; the duplicate-name check only applies among
     // env-var credentials (static_bearer / mcp_oauth have no secret_name to
@@ -540,7 +549,7 @@ async fn create_credential(
             display_name,
         } => {
             let create = env_var_to_create_params(
-                vault_id.clone(),
+                resource_workspace.clone(),
                 None,
                 WireEnvVarCreate {
                     secret_name: secret_name.clone(),
@@ -563,7 +572,7 @@ async fn create_credential(
             display_name,
         } => {
             let create = static_bearer_to_create_params(
-                vault_id.clone(),
+                resource_workspace.clone(),
                 WireStaticBearerCreate {
                     mcp_server_url: mcp_server_url.clone(),
                     token,
@@ -619,7 +628,7 @@ async fn create_credential(
                 None => (None, None, None),
             };
             let bridged = mcp_oauth_to_create_params(
-                vault_id.clone(),
+                resource_workspace,
                 WireMcpOauthCreate {
                     mcp_server_url: mcp_server_url.clone(),
                     access_token,

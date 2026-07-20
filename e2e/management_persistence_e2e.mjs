@@ -89,7 +89,8 @@ async function main() {
     assert.equal(wireCred.auth.type, 'mcp_oauth');
     assert.ok(!JSON.stringify(wireCred).includes(CALC_TOKEN), 'wire credential is secret-free');
 
-    // The domain row the SDK entry created (workspace = the wire vault id).
+    // The domain row the SDK entry created. The wire vault id is only a container
+    // id; the durable row is owned by the platform-resolved local workspace.
     r = await req(base, 'GET', `/v1/config/credentials?workspace_id=${vault.id}`);
     assert.equal(r.status, 200);
     assert.equal(r.json.length, 1, JSON.stringify(r.json));
