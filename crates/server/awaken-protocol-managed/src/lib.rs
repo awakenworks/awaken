@@ -50,7 +50,10 @@ pub use env_registry::{EnvItem, EnvRegistry, EnvUpdate, InMemoryEnvRegistry};
 pub use routes::agents_registry::{
     AgentConfigSource, AgentConfigView, AgentMcpServerView, AgentRegistryState, agents_router,
 };
-pub use routes::deployments::{DeploymentState, deployments_router};
+pub use routes::deployments::{
+    DeploymentLaunch, DeploymentLaunchOutcome, DeploymentSessionLauncher, DeploymentState,
+    deployments_router,
+};
 pub use routes::environments::{EnvironmentState, environments_router};
 pub use routes::user_profiles::{UserProfileState, user_profiles_router};
 pub use routes::vaults::{
