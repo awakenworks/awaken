@@ -1031,13 +1031,15 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # Shared MCP wire layer: the direction-neutral JSON-RPC peer, SSE parser,
     # and progress vocabulary spoken by both the MCP client (awaken-ext-mcp) and
     # the MCP server (awaken-protocol-mcp). A leaf like awaken-credential: it
-    # names the `mcp` SDK for wire types only, never a runtime or store type.
+    # owns the small serde DTO set used on the wire, never a runtime, store, or
+    # third-party MCP client SDK type.
     "awaken-mcp-wire": {
         "async-trait",
+        "serde",
         "serde_json",
+        "thiserror",
         "tokio",
         "tokio-util",
-        "mcp",
     },
     # Runtime-neutral MCP server mechanics: lifecycle/version negotiation,
     # list/call dispatch, SDK mapping, notifications/progress/cancellation, and

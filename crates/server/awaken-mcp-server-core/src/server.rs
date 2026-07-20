@@ -5,8 +5,10 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use awaken_mcp_wire::jsonrpc::ServerRequestError;
-use mcp::transport::{InitializeResult, ServerCapabilities, ServerInfo, ServerToolCapabilities};
-use mcp::{CallToolParams, CallToolResult, ListToolsParams, ListToolsResult, McpToolDefinition};
+use awaken_mcp_wire::{
+    CallToolParams, CallToolResult, ListToolsParams, ListToolsResult, McpToolDefinition,
+};
+use awaken_mcp_wire::{InitializeResult, ServerCapabilities, ServerInfo, ServerToolCapabilities};
 use serde_json::{Value, json};
 use tokio::sync::Notify;
 

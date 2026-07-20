@@ -119,7 +119,7 @@ pub fn build_memory_resource_router() -> Router {
         Arc::new(crate::models::MemoryResourceModel),
         "memory-resource",
     );
-    let host = SharedHost::new(model, model_ref);
+    let host = with_scenario_memory_registry(SharedHost::new(model, model_ref));
     mount(Arc::new(host))
 }
 
@@ -155,10 +155,35 @@ pub fn build_full_chain_router() -> Router {
     std::fs::create_dir_all(&mem_dir).expect("create memory dir");
     let greet = SkillSpec::new("greet", "Greet", "say hello", "GREETING-FROM-SKILL");
     let (model, model_ref) = scenario_model(Arc::new(EchoModel), "full-chain");
-    let host = SharedHost::new(model, model_ref)
+    let host = with_scenario_memory_registry(SharedHost::new(model, model_ref))
         .with_memory(mem_dir)
         .with_skills(vec![greet]);
     mount(Arc::new(host))
+}
+
+/// Give resource-focused scenario compositions the same durable identity repository
+/// that the production management composition injects. The blob bytes alone are not
+/// enough to recover tenant ownership after a restart: the memory-store definition is
+/// the aggregate that records its owning workspace. Without a durable registry the
+/// ownership PEP correctly fails closed, making an otherwise durable blob unreachable.
+fn with_scenario_memory_registry(host: SharedHost) -> SharedHost {
+    let root = std::env::var("AWAKEN_MGMT_DIR")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            std::env::var("AWAKEN_STORAGE_DIR")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+        });
+    let Some(root) = root else {
+        return host;
+    };
+    let root = std::path::PathBuf::from(root);
+    std::fs::create_dir_all(&root).expect("create scenario resource registry directory");
+    let registry =
+        awaken_admin_config_api::SqliteAdminStore::open(&root.join("admin.db").to_string_lossy())
+            .expect("open durable scenario memory-store registry");
+    host.with_memory_registry(Arc::new(registry))
 }
 
 /// A router with context compaction (the compaction e2e): a low threshold folds
@@ -559,8 +584,7 @@ pub async fn build_acp_container_router() -> Router {
     // The deterministic in-container agent: busybox `nc` listens on the container's
     // agent port (8080, the tier's fixed internal port) and, per connection, reads the
     // prompt line and replies with a fixed marker over the newline wire. Keep the
-    // socket alive briefly after the terminal frame: BusyBox `nc -k -e` can otherwise
-    // reset the connection while the host is still draining that frame.
+    // socket alive briefly after the terminal frame so the host can drain it.
     let script = "read _p; \
         printf '%s\\n' '{\"type\":\"message\",\"text\":\"CONTAINER-AGENT-OK\"}'; \
         printf '%s\\n' '{\"type\":\"turn_end\",\"reason\":\"natural_end\"}'; \
@@ -618,7 +642,9 @@ pub fn build_resolved_router(
 
 /// Build the server router backed by the kernel with the given model.
 pub fn build_router(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> Router {
-    mount(Arc::new(SharedHost::new(llm, model_ref)))
+    mount(Arc::new(with_scenario_memory_registry(SharedHost::new(
+        llm, model_ref,
+    ))))
 }
 
 /// A plain host over the real wire for the model-pool failover e2e (#1). The

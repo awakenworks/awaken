@@ -18,6 +18,7 @@
 use std::sync::Arc;
 
 use awaken_config_resolver::{InMemoryMemoryStoreRegistry, MemoryStoreRegistry};
+use awaken_config_store::DEFAULT_SCOPE;
 use awaken_protocol_managed::WorkspaceScope;
 use axum::Json;
 use axum::body::Body;
@@ -31,6 +32,12 @@ use axum::response::{IntoResponse, Response};
 /// by every process using the same repository.
 #[derive(Clone)]
 pub struct ResourceOwners(Arc<dyn MemoryStoreRegistry>);
+
+impl Default for ResourceOwners {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl ResourceOwners {
     #[must_use]
@@ -77,16 +84,17 @@ fn not_found() -> Response {
 /// one (from the minted id in the create response body), and scope the store list.
 pub async fn memory_store_ownership_guard(
     State(owners): State<ResourceOwners>,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
-    let scope = request
-        .extensions()
-        .get::<WorkspaceScope>()
-        .map(|w| w.0.clone())
-        .unwrap_or_default();
+    let scope = request_scope(&request);
     if scope.is_empty() {
         return not_found();
+    }
+    if request.extensions().get::<WorkspaceScope>().is_none() {
+        request
+            .extensions_mut()
+            .insert(WorkspaceScope(scope.clone()));
     }
     let path = request.uri().path().to_string();
     let method = request.method().clone();
@@ -140,6 +148,14 @@ pub async fn memory_store_ownership_guard(
     next.run(request).await
 }
 
+fn request_scope(request: &Request) -> String {
+    request
+        .extensions()
+        .get::<WorkspaceScope>()
+        .map(|w| w.0.clone())
+        .unwrap_or_else(|| DEFAULT_SCOPE.to_string())
+}
+
 /// Rewrite a store-list response, keeping only the stores `scope` owns. On an
 /// unparseable body (never, for our own shape) the response passes through unchanged.
 async fn filter_store_list(response: Response, owners: &ResourceOwners, scope: &str) -> Response {
@@ -187,6 +203,18 @@ fn is_memory_stores_collection(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn absent_scope_uses_the_single_tenant_default_but_empty_scope_is_rejected() {
+        let request = Request::new(Body::empty());
+        assert_eq!(request_scope(&request), DEFAULT_SCOPE);
+
+        let mut request = Request::new(Body::empty());
+        request
+            .extensions_mut()
+            .insert(WorkspaceScope(String::new()));
+        assert!(request_scope(&request).is_empty());
+    }
 
     #[test]
     fn memory_store_id_covers_the_store_and_its_subresources() {

@@ -1,14 +1,13 @@
-// Cross-protocol cancel e2e (scenario #4): a run AWAITS on a tool approval on the
-// AI-SDK wire and is REJECTED by an A2A `tasks/cancel` on the SAME thread. A2A's
-// only in-band deny (cancel) reaches across the neutral seam: it denies the awaiting
-// tool (`Resume::Confirm{allow:false}`) and the AI-SDK-awaiting run reads back
-// terminated with the write blocked.
+// Cross-protocol cancel boundary e2e (scenario #4): a run AWAITS on a tool
+// approval on the AI-SDK wire, then an A2A caller attempts to cancel it using the
+// old predictable `task-${thread}` convention. A2A task ids are now opaque,
+// server-issued capabilities, so guessing one from a neutral thread id must fail
+// closed and must not mutate the awaiting run.
 //
 // Chain:
 //   AI-SDK : POST /v1/ai-sdk/threads/T/runs -> Runtime (probe `write`) -> await
-//   A2A    : POST /v1/a2a tasks/cancel {id: "task-T"} -> rt.pending(T) ->
-//            resume Confirm{allow:false} -> Task.state=canceled
-//   AI-SDK : GET /v1/ai-sdk/threads/T/messages -> terminal, no read-back of the note
+//   A2A    : POST /v1/a2a tasks/cancel {id: "task-T"} -> task_not_found
+//   A2A    : message/send on context T -> the supported cross-protocol resume path
 //
 // Deterministic (probe stub). Run: (from e2e/) node cross_protocol_cancel_e2e.mjs
 
@@ -36,7 +35,7 @@ async function drain(res) {
 }
 
 let rpcId = 0;
-async function rpc(base, method, params) {
+async function rpc(base, method, params, { allowError = false } = {}) {
   const res = await fetch(`${base}/v1/a2a`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -44,6 +43,7 @@ async function rpc(base, method, params) {
   });
   assert.equal(res.status, 200, `${method} transport ok`);
   const body = await res.json();
+  if (allowError) return body;
   assert.ok(!body.error, `${method} not a JSON-RPC error: ${JSON.stringify(body.error)}`);
   return body.result;
 }
@@ -76,10 +76,29 @@ async function main() {
     await awaitOnAiSdk(base, denyThread, denyNote);
     pass('awaiting on AI-SDK (deny thread)');
 
-    // A2A reads the SAME thread id as its context: cancel task-<thread>.
-    const task = await rpc(base, 'tasks/cancel', { id: `task-${denyThread}` });
-    assert.equal(task?.status?.state, 'canceled', `A2A tasks/cancel denied+cancelled the awaiting run (got ${task?.status?.state})`);
-    pass('A2A tasks/cancel rejected the AI-SDK-awaiting run across the neutral seam');
+    // A neutral thread id is not authority to manufacture an A2A task id. The
+    // guessed legacy id is rejected and cannot deny/cancel the awaiting run.
+    const guessed = await rpc(
+      base,
+      'tasks/cancel',
+      { id: `task-${denyThread}` },
+      { allowError: true },
+    );
+    assert.equal(guessed.error?.code, -32001, 'a guessed A2A task id fails closed');
+    pass('A2A tasks/cancel rejects a task id guessed from the neutral thread id');
+
+    // The failed cancellation did not mutate the pending run; the supported A2A
+    // context resume can still approve and complete it.
+    const resumed = await rpc(base, 'message/send', {
+      message: {
+        messageId: `m-${randomBytes(4).toString('hex')}`,
+        contextId: denyThread,
+        role: 'user',
+        kind: 'message',
+        parts: [{ kind: 'text', text: 'approve after rejected guessed cancel' }],
+      },
+    });
+    assert.equal(resumed?.status?.state, 'completed', 'the awaiting run remained resumable');
 
     // --- The ALLOW baseline: await on AI-SDK, approve via A2A message/send --
     const allowThread = `xcancel-allow-${randomBytes(4).toString('hex')}`;
@@ -97,17 +116,16 @@ async function main() {
     assert.equal(approved?.status?.state, 'completed', `A2A message/send approved the awaiting run (got ${approved?.status?.state})`);
     pass('A2A message/send approved the AI-SDK-awaiting run (allow baseline)');
 
-    // --- The discriminator: a note appears (user + write-call args) twice; only
-    //     a run whose write ACTUALLY executed adds a third occurrence via the
-    //     read-back tool result. Deny must have strictly fewer than allow. -----
+    // Both writes execute only after an explicit supported resume. The guessed
+    // cancellation neither performs nor suppresses either write.
     const denyN = await noteOccurrences(base, denyThread, denyNote);
     const allowN = await noteOccurrences(base, allowThread, allowNote);
-    assert.equal(denyN, 2, `denied write: note appears only in the user msg + awaiting call args (got ${denyN})`);
-    assert.ok(allowN > denyN, `approved write executed and read the note back (allow=${allowN} > deny=${denyN})`);
-    pass(`cross-protocol cancel blocked the write (deny=${denyN} occurrences < allow=${allowN}): the A2A cancel truly denied it`);
+    assert.ok(denyN > 2, `first write executed only after supported resume (got ${denyN})`);
+    assert.ok(allowN > 2, `allow baseline executed the write (got ${allowN})`);
+    pass('guessed cancellation was side-effect free; both explicit resumes completed');
   });
 
-  console.log('E2E PASS: cross-protocol cancel (AI-SDK await -> A2A tasks/cancel -> denied; contrasted vs A2A allow).');
+  console.log('E2E PASS: cross-protocol cancel boundary rejects guessed A2A task ids fail-closed.');
 }
 
 main().catch((err) => {

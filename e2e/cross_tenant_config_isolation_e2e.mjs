@@ -58,14 +58,20 @@ const cfgPath = (ws, tail) => `/v1/workspaces/${ws}/config/agents${tail}`;
 
 async function main() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-xtenant-'));
-  const env = { AWAKEN_MGMT_DIR: dir, AWAKEN_MGMT_SEAL_KEY: SEAL_KEY, AWAKEN_MGMT_IAM: 'embedded' };
+  const env = {
+    AWAKEN_MGMT_DIR: dir,
+    AWAKEN_MGMT_SEAL_KEY: SEAL_KEY,
+    AWAKEN_MGMT_IAM: 'embedded',
+    // Platform topology is explicit: token minting never auto-registers a scope.
+    AWAKEN_IAM_WORKSPACES: `${WS_A},${WS_B}`,
+  };
   const { server, baseUrl: base } = spawnServer('management', PORT, env);
   try {
     await waitForPort(PORT);
     const bootstrap = fs.readFileSync(path.join(dir, 'admin-token'), 'utf8').trim();
 
-    // Mint a workspace-admin token for each of two workspaces (the Global-bound
-    // bootstrap token can provision any workspace).
+    // Mint a workspace-admin token for each platform-registered workspace. The
+    // hidden-org bootstrap binding can administer both, but cannot invent scopes.
     const mintA = await req(base, 'POST', '/v1/config/iam/tokens', bootstrap, { workspace_id: WS_A, role: 'workspace_admin' });
     assert.equal(mintA.status, 201, `mint token A: ${mintA.text.slice(0, 200)}`);
     const tokenA = mintA.json.token;
