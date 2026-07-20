@@ -48,7 +48,7 @@ pub mod work_queue;
 
 pub use env_registry::{EnvItem, EnvRegistry, EnvUpdate, InMemoryEnvRegistry};
 pub use routes::agents_registry::{
-    AgentConfigSource, AgentConfigView, AgentRegistryState, agents_router,
+    AgentConfigSource, AgentConfigView, AgentMcpServerView, AgentRegistryState, agents_router,
 };
 pub use routes::deployments::{DeploymentState, deployments_router};
 pub use routes::environments::{EnvironmentState, environments_router};

@@ -1,6 +1,7 @@
 //! Runtime-facing contract: activation data, snapshot execution, and narrow ports.
 
 pub mod activation;
+pub mod agent_bindings;
 pub mod boundary;
 pub mod capability;
 pub mod capture;

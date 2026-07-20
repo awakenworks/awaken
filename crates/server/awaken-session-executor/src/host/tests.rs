@@ -687,6 +687,7 @@ async fn prepare_session_overlays_the_environment_sandbox_onto_the_spec() {
 
     // The session carries the raw `config.sandbox` blob (the host parses it).
     let init = SessionInit {
+        workspace_id: "ws".into(),
         agent_id: "a".into(),
         mcp_servers: Vec::new(),
         resources: Vec::new(),
@@ -719,6 +720,7 @@ async fn prepare_session_overlays_the_environment_sandbox_onto_the_spec() {
 
     // A session with no override keeps the host default (Workdir, no limits).
     let bare = SessionInit {
+        workspace_id: "ws".into(),
         agent_id: "a".into(),
         mcp_servers: Vec::new(),
         resources: Vec::new(),

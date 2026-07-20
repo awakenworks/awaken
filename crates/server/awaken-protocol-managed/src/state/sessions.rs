@@ -2,6 +2,8 @@
 //! update, delete, and archive.
 
 use super::*;
+use crate::types::McpServer;
+use serde_json::json;
 
 fn lifecycle_fact(
     id: String,
@@ -95,8 +97,25 @@ impl ManagedState {
         };
         // Echo the agent version the client pinned (or overrode over), defaulting to 1.
         let agent_version = req.agent.version().unwrap_or(1);
-        let bindings = req
-            .mcp_servers
+        // Session-inline bindings override the Agent defaults by name or URL. The
+        // effective set is used for preparation, persistence, and wire projection,
+        // so the UI shows what the runtime will actually connect.
+        let mut effective_mcp_servers = req.mcp_servers.clone();
+        if let Some(view) = &config_view {
+            for server in &view.mcp_servers {
+                if effective_mcp_servers
+                    .iter()
+                    .any(|current| current.name == server.name || current.url == server.url)
+                {
+                    continue;
+                }
+                effective_mcp_servers.push(McpServer {
+                    name: server.name.clone(),
+                    url: server.url.clone(),
+                });
+            }
+        }
+        let bindings = effective_mcp_servers
             .iter()
             .map(|server| {
                 let credential_source_id = self
@@ -222,12 +241,19 @@ impl ManagedState {
                 system: None,
                 tools: project::agent_tools(&caps),
                 // Echo the accepted servers in the SDK's `{name, type:"url", url}` shape.
-                mcp_servers: req
-                    .mcp_servers
+                mcp_servers: effective_mcp_servers
                     .iter()
                     .map(|s| serde_json::to_value(s).expect("mcp server wire serializes"))
                     .collect(),
-                skills: project::agent_skills(&caps),
+                skills: config_view.as_ref().map_or_else(
+                    || project::agent_skills(&caps),
+                    |view| {
+                        view.skill_ids
+                            .iter()
+                            .map(|id| json!({ "id": id }))
+                            .collect()
+                    },
+                ),
                 multiagent: project::agent_multiagent(&caps),
             },
             environment_id: environment_id.clone(),
