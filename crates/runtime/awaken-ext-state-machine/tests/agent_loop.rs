@@ -543,7 +543,6 @@ async fn lifecycle_reminder_is_request_only_and_visible_on_the_next_step() {
         .with_llm(llm.clone())
         .with_tool(Arc::new(OkTool("Write")))
         .with_plugin(Arc::new(plugin));
-    install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
@@ -587,7 +586,6 @@ async fn lifecycle_reminder_is_removed_after_the_request_consumes_it() {
         .with_llm(llm.clone())
         .with_tool(Arc::new(OkTool("Write")))
         .with_plugin(Arc::new(plugin));
-    install(&runtime);
 
     let state = runtime
         .execute(

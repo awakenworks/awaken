@@ -12,6 +12,11 @@ use std::sync::Arc;
 use awaken_run_executor_acp::{AcpCli, ConfigHome, LaunchResolver, OpenError, ResolvedModel};
 use awaken_runtime_contract::activation::RunActivation;
 
+/// Explicit operator-selected native auth file. The composition root projects its
+/// bytes through a Secret mount; its presence also means model API-key env is not
+/// required because the CLI authenticates from its own OAuth credential file.
+pub const ACP_CREDENTIAL_FILE_ENV: &str = "AWAKEN_ACP_CREDENTIAL_FILE";
+
 /// Reads a var from the environment source; injectable so tests need no global env.
 type EnvSource = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
@@ -58,6 +63,10 @@ impl EnvLaunchResolver {
             (self.env)("AWAKEN_ACP_LEASE_TOKEN"),
         ) {
             (Some(gateway), Some(lease)) => (gateway, lease),
+            _ if (self.env)(ACP_CREDENTIAL_FILE_ENV).is_some() => (
+                (self.env)(d.base_url).unwrap_or_default(),
+                (self.env)(d.key).unwrap_or_default(),
+            ),
             _ => {
                 let base_url = (self.env)(d.base_url).ok_or_else(|| {
                     OpenError(format!("{} not set in the environment", d.base_url))
@@ -173,6 +182,15 @@ mod tests {
         let model = r.resolve_model("m").unwrap();
         assert_eq!(model.base_url, "https://gw.internal");
         assert_eq!(model.api_key, "lease-xyz");
+    }
+
+    #[test]
+    fn native_cli_credential_file_needs_no_api_key_env() {
+        let r = resolver_with(&[(ACP_CREDENTIAL_FILE_ENV, "/credentials/auth.json")], None);
+        let model = r.resolve_model("gpt-5-codex").unwrap();
+        assert_eq!(model.model, "gpt-5-codex");
+        assert!(model.base_url.is_empty());
+        assert!(model.api_key.is_empty());
     }
 
     #[test]

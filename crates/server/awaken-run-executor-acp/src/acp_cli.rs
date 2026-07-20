@@ -7,16 +7,22 @@
 
 use crate::AcpLaunch;
 
-/// How the resolved model coordinates land in a CLI's environment. Every shipped
-/// ACP CLI delivers the model via env keys; only *which* keys differ, so this is a
-/// data row, not a behavior — a struct, not an enum. (A future CLI that takes the
-/// model as an argv flag would grow this into a sum then, not before.)
+/// How resolved model coordinates reach a CLI. Endpoints and secrets use env keys;
+/// model selection may additionally use the CLI's generic config override (Codex
+/// consumes `-c model=...`). Both remain catalog data rather than adapter branches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ModelDelivery {
     /// Env key for the endpoint base URL (e.g. `ANTHROPIC_BASE_URL`).
     pub base_url: &'static str,
     /// Env key for the model name (e.g. `ANTHROPIC_MODEL`).
     pub model: &'static str,
+    /// Optional Codex-style config key for CLIs that do not consume their model
+    /// selection from the ordinary model environment variable.
+    pub model_config_key: Option<&'static str>,
+    /// Optional JSON environment variable carrying the config object. When paired
+    /// with `model_config_key`, the projection merges the resolved model into the
+    /// row's static JSON config. `None` retains the legacy `-c key=value` delivery.
+    pub model_config_env: Option<&'static str>,
     /// Env key for the API key (a secret — the host materializes it; never stored).
     pub key: &'static str,
     /// Extra model-name env keys the CLI reads as tier aliases, all set to the same
@@ -72,12 +78,21 @@ pub enum McpInterface {
 #[derive(Debug, Clone, Copy)]
 pub struct AcpCli {
     pub id: &'static str,
+    /// Host/local argv. This may use `npx` for on-demand developer installation.
     pub command: &'static str,
     pub args: &'static [&'static str],
+    /// Equivalent argv for a worker image where the adapter is preinstalled. Keeping
+    /// this in the catalog row avoids both runtime package downloads and adapter
+    /// branches in the container mechanism.
+    pub container_argv: &'static [&'static str],
     pub model_delivery: ModelDelivery,
     pub mcp_interface: McpInterface,
     /// Env key naming the CLI's isolated config directory (e.g. `CLAUDE_CONFIG_DIR`).
     pub config_home_env: &'static str,
+    /// Native credential file relative to the config home. The host may project an
+    /// opaque credential-broker reference to this path as a durable writable Secret;
+    /// the CLI owns its JSON format and token refresh behavior.
+    pub credential_file: Option<&'static str>,
     /// The memory file the CLI reads from its config home (e.g. `CLAUDE.md`).
     pub memory_entrypoint: &'static str,
     /// Paths under the config home that survive across sessions (auth, config).
@@ -148,19 +163,49 @@ impl AcpCli {
             env.insert(k.clone(), v.clone());
         }
         let d = &self.model_delivery;
-        env.insert(d.base_url.to_string(), model.base_url.clone());
-        env.insert(d.model.to_string(), model.model.clone());
-        for alias in d.aliases {
-            env.insert((*alias).to_string(), model.model.clone());
+        if !model.base_url.is_empty() {
+            env.insert(d.base_url.to_string(), model.base_url.clone());
+        }
+        if !model.model.is_empty() {
+            env.insert(d.model.to_string(), model.model.clone());
+            for alias in d.aliases {
+                env.insert((*alias).to_string(), model.model.clone());
+            }
         }
         if let (Some(key), Some(window)) = (self.context_window_env, context_window) {
             env.insert(key.to_string(), window.to_string());
         }
         // The secret goes last so no passthrough key can shadow it.
-        env.insert(d.key.to_string(), model.api_key.clone());
+        if !model.api_key.is_empty() {
+            env.insert(d.key.to_string(), model.api_key.clone());
+        }
 
         let mut argv = vec![self.command.to_string()];
         argv.extend(self.args.iter().map(|s| (*s).to_string()));
+        if let Some(key) = d.model_config_key
+            && !model.model.is_empty()
+        {
+            if let Some(config_env) = d.model_config_env {
+                let mut config = env
+                    .get(config_env)
+                    .and_then(|value| {
+                        serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(value)
+                            .ok()
+                    })
+                    .unwrap_or_default();
+                config.insert(
+                    key.to_string(),
+                    serde_json::Value::String(model.model.clone()),
+                );
+                env.insert(
+                    config_env.to_string(),
+                    serde_json::Value::Object(config).to_string(),
+                );
+            } else {
+                argv.push("-c".to_string());
+                argv.push(format!("{key}={:?}", model.model));
+            }
+        }
         AcpLaunch {
             argv,
             env: env.into_iter().collect(),
@@ -298,9 +343,12 @@ const CLAUDE: AcpCli = AcpCli {
     id: "claude",
     command: "npx",
     args: &["-y", "@agentclientprotocol/claude-agent-acp@0.44"],
+    container_argv: &["claude-agent-acp"],
     model_delivery: ModelDelivery {
         base_url: "ANTHROPIC_BASE_URL",
         model: "ANTHROPIC_MODEL",
+        model_config_key: None,
+        model_config_env: None,
         key: "ANTHROPIC_API_KEY",
         aliases: &[
             "ANTHROPIC_SONNET_MODEL",
@@ -310,6 +358,7 @@ const CLAUDE: AcpCli = AcpCli {
     },
     mcp_interface: McpInterface::AcpSession,
     config_home_env: "CLAUDE_CONFIG_DIR",
+    credential_file: Some(".credentials.json"),
     memory_entrypoint: "CLAUDE.md",
     retained_paths: &[".credentials.json", "settings.json"],
     // Claude Code stores conversations under `projects/<cwd-slug>/`, keyed by cwd.
@@ -321,24 +370,21 @@ const CLAUDE: AcpCli = AcpCli {
     env: &[],
 };
 
-// Codex is likewise fronted by an adapter package (`@zed-industries/codex-acp`),
-// not a native `codex acp` subcommand. The extra `-c` flags disable Codex's own
-// approval prompts and set it to workspace-write — our layer owns the gate and the
-// jail, so the CLI must not block on its own confirmations.
+// Codex is likewise fronted by the official adapter package
+// (`@agentclientprotocol/codex-acp`),
+// not a native `codex acp` subcommand. `CODEX_CONFIG` disables Codex's own approval
+// prompts and sets it to workspace-write — our layer owns the gate and the jail, so
+// the CLI must not block on its own confirmations.
 const CODEX: AcpCli = AcpCli {
     id: "codex",
     command: "npx",
-    args: &[
-        "-y",
-        "@zed-industries/codex-acp@0.4",
-        "-c",
-        "approval_policy=\"never\"",
-        "-c",
-        "sandbox_mode=\"workspace-write\"",
-    ],
+    args: &["-y", "@agentclientprotocol/codex-acp@1.1"],
+    container_argv: &["codex-acp"],
     model_delivery: ModelDelivery {
         base_url: "OPENAI_BASE_URL",
         model: "OPENAI_MODEL",
+        model_config_key: Some("model"),
+        model_config_env: Some("CODEX_CONFIG"),
         key: "OPENAI_API_KEY",
         aliases: &[],
     },
@@ -346,6 +392,7 @@ const CODEX: AcpCli = AcpCli {
         path: "config.toml",
     },
     config_home_env: "CODEX_HOME",
+    credential_file: Some("auth.json"),
     memory_entrypoint: "AGENTS.md",
     retained_paths: &["auth.json", "config.toml"],
     // Codex writes rollout files under `sessions/`, keyed by an internal id.
@@ -354,7 +401,10 @@ const CODEX: AcpCli = AcpCli {
         keyed_by: SessionKey::InternalId,
     },
     context_window_env: None,
-    env: &[],
+    env: &[(
+        "CODEX_CONFIG",
+        r#"{"approval_policy":"never","sandbox_mode":"workspace-write"}"#,
+    )],
 };
 
 // Gemini CLI speaks ACP natively via `--experimental-acp` (no npm wrapper), so it
@@ -363,14 +413,18 @@ const GEMINI: AcpCli = AcpCli {
     id: "gemini",
     command: "gemini",
     args: &["--experimental-acp"],
+    container_argv: &["gemini", "--experimental-acp"],
     model_delivery: ModelDelivery {
         base_url: "GOOGLE_GEMINI_BASE_URL",
         model: "GEMINI_MODEL",
+        model_config_key: None,
+        model_config_env: None,
         key: "GEMINI_API_KEY",
         aliases: &[],
     },
     mcp_interface: McpInterface::AcpSession,
     config_home_env: "GEMINI_DIR",
+    credential_file: None,
     memory_entrypoint: "GEMINI.md",
     retained_paths: &[],
     // Gemini keeps chat state under `tmp/<hash>/`, keyed by an internal id
@@ -392,14 +446,18 @@ const OPENCODE: AcpCli = AcpCli {
     id: "opencode",
     command: "opencode",
     args: &["acp"],
+    container_argv: &["opencode", "acp"],
     model_delivery: ModelDelivery {
         base_url: "OPENAI_BASE_URL",
         model: "OPENAI_MODEL",
+        model_config_key: None,
+        model_config_env: None,
         key: "OPENAI_API_KEY",
         aliases: &[],
     },
     mcp_interface: McpInterface::AcpSession,
     config_home_env: "OPENCODE_CONFIG_DIR",
+    credential_file: Some("auth.json"),
     memory_entrypoint: "AGENTS.md",
     retained_paths: &["auth.json"],
     // opencode keeps conversation state in a local store, keyed by an internal id
@@ -517,6 +575,26 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn native_credential_launch_does_not_inject_empty_provider_credentials() {
+        let cli = acp_cli("codex").unwrap();
+        let launch = cli.project(
+            &ResolvedModel {
+                base_url: String::new(),
+                model: "gpt-5-codex".into(),
+                api_key: String::new(),
+            },
+            None,
+            &[],
+        );
+        assert!(env_of(&launch, "OPENAI_BASE_URL").is_none());
+        assert!(env_of(&launch, "OPENAI_API_KEY").is_none());
+        assert_eq!(
+            env_of(&launch, "OPENAI_MODEL").as_deref(),
+            Some("gpt-5-codex")
+        );
     }
 
     #[test]
@@ -863,13 +941,24 @@ mod tests {
     }
 
     #[test]
-    fn codex_launches_via_pinned_npx_adapter_with_non_interactive_flags() {
+    fn codex_launches_via_the_pinned_official_adapter() {
         let cli = acp_cli("codex").unwrap();
         assert_eq!(cli.command, "npx");
-        assert!(cli.args.contains(&"@zed-industries/codex-acp@0.4"));
-        // Our layer owns approval + jail, so the CLI must not block on its own.
-        assert!(cli.args.contains(&"approval_policy=\"never\""));
+        assert!(cli.args.contains(&"@agentclientprotocol/codex-acp@1.1"));
         assert!(is_dynamic_install(cli));
+    }
+
+    #[test]
+    fn codex_projects_model_and_noninteractive_policy_through_codex_config() {
+        let cli = acp_cli("codex").unwrap();
+        let model = resolved();
+        let launch = cli.project(&model, None, &[]);
+        let config: serde_json::Value =
+            serde_json::from_str(&env_of(&launch, "CODEX_CONFIG").unwrap()).unwrap();
+        assert_eq!(config["model"], model.model);
+        assert_eq!(config["approval_policy"], "never");
+        assert_eq!(config["sandbox_mode"], "workspace-write");
+        assert!(!launch.argv.iter().any(|arg| arg == "-c"));
     }
 
     #[test]
