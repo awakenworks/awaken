@@ -840,6 +840,7 @@ async fn management_router_over(
     // The authoring / authz plane (admin + vault + webhooks + user profiles +
     // deployments + environments + config plane + capabilities), guard applied over
     // admin + vault only. Returns the webhook sink the data plane feeds.
+    let deployment_state = Arc::new(awaken_protocol_managed::DeploymentState::new());
     let (mgmt, webhook_sink) = awaken_control::control_router(awaken_control::ControlRouterInput {
         catalog,
         credentials: credentials.clone(),
@@ -852,6 +853,7 @@ async fn management_router_over(
         probe: Arc::new(GenaiProbe),
         vault_state: vault_state.clone(),
         env_state: env_state.clone(),
+        deployment_state: deployment_state.clone(),
         plane,
         config_service: config_service.clone(),
         global_tools: global,
@@ -904,6 +906,21 @@ async fn management_router_over(
         .with_session_repo(sessions)
         .with_lifecycle_sink(webhook_sink),
     );
+    deployment_state.bind_launcher(managed_state.clone());
+    // Drive cron Deployments in production. The state mints due runs and launches
+    // them through the exact same Session port as the manual `/run` action.
+    let scheduled_deployments = deployment_state.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+        loop {
+            interval.tick().await;
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_millis() as u64)
+                .unwrap_or_default();
+            scheduled_deployments.tick_and_launch(now_ms).await;
+        }
+    });
     // Workspace path addressing (ADR-0048 D3 / ADR-0051): wrap the fully-merged flat
     // surface so a `/v1/workspaces/{ws}/…` request is captured, rewritten to its flat
     // `/v1/…` form, and its `{ws}` stamped as the edge scope before it re-enters

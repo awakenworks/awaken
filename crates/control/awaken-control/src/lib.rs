@@ -181,6 +181,9 @@ pub struct ControlRouterInput {
     pub vault_state: Arc<VaultState>,
     /// The environment state, shared with the data-plane managed state.
     pub env_state: Arc<EnvironmentState>,
+    /// Deployment state shared with the composition root, which binds its Session
+    /// launcher after the data plane has been assembled.
+    pub deployment_state: Arc<DeploymentState>,
     /// The config authoring plane (scope edge over the config service).
     pub plane: ConfigPlane,
     /// The scope-free config service (also wired into the host), for the `/v1/agents` projection.
@@ -214,6 +217,7 @@ pub fn control_router(input: ControlRouterInput) -> (Router, Arc<WebhookLifecycl
         probe,
         vault_state,
         env_state,
+        deployment_state,
         plane,
         config_service,
         global_tools,
@@ -253,7 +257,7 @@ pub fn control_router(input: ControlRouterInput) -> (Router, Arc<WebhookLifecycl
     // The user-profiles front door (`/v1/user_profiles`) over its own in-mem store.
     let user_profiles = user_profiles_router(Arc::new(UserProfileState::new()));
     // Deployments + deployment runs (`/v1/deployments`, `/v1/deployment_runs`).
-    let deployments = deployments_router(Arc::new(DeploymentState::new()));
+    let deployments = deployments_router(deployment_state);
     // Environments + work queue (`/v1/environments`, single-worker open cap). Shared
     // with the session state so `POST /v1/sessions` resolves an environment's
     // networking policy (egress on/off) at creation.

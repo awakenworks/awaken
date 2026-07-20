@@ -12,17 +12,17 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Extension, Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::Value;
 
-use crate::routes::ManagedJson;
+use crate::routes::{ManagedJson, WorkspaceScope};
 use crate::types::agent::AgentReference;
 use crate::types::deployment::{
     Deployment, DeploymentCreateParams, DeploymentRun, DeploymentUpdateParams, PausedReason,
-    TriggerContext,
+    RunError, TriggerContext,
 };
 use crate::types::{ErrorResponse, Page, PageQuery, paginate};
 
@@ -30,6 +30,7 @@ const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
 
 #[derive(Clone)]
 struct DeploymentRecord {
+    workspace_id: String,
     agent: AgentReference,
     environment_id: String,
     name: String,
@@ -92,6 +93,19 @@ impl DeploymentRecord {
         let expr = self.schedule.as_ref()?.get("expression")?.as_str()?;
         crate::cron::Cron::parse(expr).ok()
     }
+
+    fn launch(&self, deployment_id: &str) -> DeploymentLaunch {
+        DeploymentLaunch {
+            deployment_id: deployment_id.to_string(),
+            workspace_id: self.workspace_id.clone(),
+            agent: self.agent.clone(),
+            environment_id: self.environment_id.clone(),
+            metadata: self.metadata.clone(),
+            initial_events: self.initial_events.clone(),
+            resources: self.resources.clone(),
+            vault_ids: self.vault_ids.clone(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -99,6 +113,8 @@ struct RunRecord {
     deployment_id: String,
     agent: AgentReference,
     trigger: TriggerContext,
+    session_id: Option<String>,
+    error: Option<RunError>,
 }
 
 impl RunRecord {
@@ -109,8 +125,8 @@ impl RunRecord {
             agent: self.agent.clone(),
             created_at: OBJECT_AT.to_string(),
             deployment_id: self.deployment_id.clone(),
-            error: None,
-            session_id: None,
+            error: self.error.clone(),
+            session_id: self.session_id.clone(),
             trigger_context: self.trigger.clone(),
         }
     }
@@ -123,12 +139,89 @@ pub struct DeploymentState {
     runs: Mutex<BTreeMap<String, RunRecord>>,
     dep_seq: AtomicU64,
     run_seq: AtomicU64,
+    launcher: Mutex<Option<Arc<dyn DeploymentSessionLauncher>>>,
+}
+
+/// Input passed from the deployment application service to the Session boundary.
+#[derive(Debug, Clone)]
+pub struct DeploymentLaunch {
+    pub deployment_id: String,
+    pub workspace_id: String,
+    pub agent: AgentReference,
+    pub environment_id: String,
+    pub metadata: BTreeMap<String, String>,
+    pub initial_events: Vec<Value>,
+    pub resources: Vec<Value>,
+    pub vault_ids: Vec<String>,
+}
+
+/// A launch always reports whether a Session was created; an initial event may
+/// still fail after creation, in which case both `session_id` and `error` are set.
+#[derive(Debug, Clone, Default)]
+pub struct DeploymentLaunchOutcome {
+    pub session_id: Option<String>,
+    pub error: Option<String>,
+}
+
+#[async_trait::async_trait]
+pub trait DeploymentSessionLauncher: Send + Sync {
+    async fn launch(&self, request: DeploymentLaunch) -> DeploymentLaunchOutcome;
 }
 
 impl DeploymentState {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Bind the Session application service after both control and data planes
+    /// have been assembled. The state is shared by the already-mounted router.
+    pub fn bind_launcher(&self, launcher: Arc<dyn DeploymentSessionLauncher>) {
+        *self.launcher.lock().unwrap() = Some(launcher);
+    }
+
+    async fn launch_run(&self, run_id: &str, launch: DeploymentLaunch) -> DeploymentRun {
+        let launcher = self.launcher.lock().unwrap().clone();
+        let outcome = match launcher {
+            Some(launcher) => launcher.launch(launch).await,
+            None => DeploymentLaunchOutcome {
+                session_id: None,
+                error: Some("deployment Session launcher is not bound".to_string()),
+            },
+        };
+        let mut runs = self.runs.lock().unwrap();
+        let record = runs
+            .get_mut(run_id)
+            .expect("deployment run was inserted before launch");
+        record.session_id = outcome.session_id;
+        record.error = outcome.error.map(|message| RunError {
+            kind: "api_error".to_string(),
+            message,
+        });
+        record.project(run_id)
+    }
+
+    /// Fire due schedule occurrences and launch each through the same Session port
+    /// as a manual run. Returns the completed run projections for observability.
+    pub async fn tick_and_launch(&self, now_ms: u64) -> Vec<DeploymentRun> {
+        let run_ids = self.tick(now_ms);
+        let launches: Vec<(String, DeploymentLaunch)> = {
+            let runs = self.runs.lock().unwrap();
+            let deployments = self.deployments.lock().unwrap();
+            run_ids
+                .into_iter()
+                .filter_map(|run_id| {
+                    let deployment_id = runs.get(&run_id)?.deployment_id.clone();
+                    let launch = deployments.get(&deployment_id)?.launch(&deployment_id);
+                    Some((run_id, launch))
+                })
+                .collect()
+        };
+        let mut completed = Vec::with_capacity(launches.len());
+        for (run_id, launch) in launches {
+            completed.push(self.launch_run(&run_id, launch).await);
+        }
+        completed
     }
 
     /// Advance every active schedule to `now_ms`, minting a `deployment_run` (with a
@@ -165,6 +258,8 @@ impl DeploymentState {
                         trigger: TriggerContext::Schedule {
                             scheduled_at: scheduled_at.clone(),
                         },
+                        session_id: None,
+                        error: None,
                     },
                 );
                 record.last_run_at = Some(scheduled_at);
@@ -245,10 +340,14 @@ fn validate_schedule(schedule: &Option<Value>) -> Result<(), WireError> {
 
 async fn create_deployment(
     State(state): State<Arc<DeploymentState>>,
+    scope: Option<Extension<WorkspaceScope>>,
     ManagedJson(params): ManagedJson<DeploymentCreateParams>,
 ) -> Result<Json<Deployment>, WireError> {
     validate_schedule(&params.schedule)?;
     let record = DeploymentRecord {
+        workspace_id: scope
+            .map(|Extension(scope)| scope.0)
+            .unwrap_or_else(|| crate::state::DEFAULT_SCOPE.to_string()),
         agent: AgentReference::from_input(&params.agent),
         environment_id: params.environment_id,
         name: params.name,
@@ -368,21 +467,22 @@ async fn run_deployment(
     State(state): State<Arc<DeploymentState>>,
     Path(id): Path<String>,
 ) -> Result<Json<DeploymentRun>, WireError> {
-    let agent = {
+    let launch = {
         let store = state.deployments.lock().unwrap();
         let record = store.get(&id).ok_or_else(|| not_found("deployment"))?;
-        record.agent.clone()
+        record.launch(&id)
     };
     let n = state.run_seq.fetch_add(1, Ordering::SeqCst);
     let run_id = format!("deprun_{n:016}");
     let record = RunRecord {
         deployment_id: id,
-        agent,
+        agent: launch.agent.clone(),
         trigger: TriggerContext::Manual,
+        session_id: None,
+        error: None,
     };
-    let projected = record.project(&run_id);
-    state.runs.lock().unwrap().insert(run_id, record);
-    Ok(Json(projected))
+    state.runs.lock().unwrap().insert(run_id.clone(), record);
+    Ok(Json(state.launch_run(&run_id, launch).await))
 }
 
 async fn retrieve_run(
@@ -411,6 +511,73 @@ async fn list_runs(
     Json(paginate(data, &page, |r| r.id.as_str()))
 }
 
+#[async_trait::async_trait]
+impl DeploymentSessionLauncher for crate::ManagedState {
+    async fn launch(&self, request: DeploymentLaunch) -> DeploymentLaunchOutcome {
+        // Validate every initial event before creating the Session, so malformed
+        // deployment input cannot leave an orphan.
+        let events: crate::types::SendEventsRequest =
+            match serde_json::from_value(serde_json::json!({ "events": request.initial_events })) {
+                Ok(events) => events,
+                Err(error) => {
+                    return DeploymentLaunchOutcome {
+                        session_id: None,
+                        error: Some(format!("invalid deployment initial_events: {error}")),
+                    };
+                }
+            };
+        let mut metadata = request.metadata;
+        metadata.insert(
+            "awaken.deployment_id".to_string(),
+            request.deployment_id.clone(),
+        );
+        let create: crate::types::SessionCreateParams =
+            match serde_json::from_value(serde_json::json!({
+                "agent": { "id": request.agent.id, "version": request.agent.version },
+                "environment_id": request.environment_id,
+                "metadata": metadata,
+                "resources": request.resources,
+                "vault_ids": request.vault_ids,
+            })) {
+                Ok(create) => create,
+                Err(error) => {
+                    return DeploymentLaunchOutcome {
+                        session_id: None,
+                        error: Some(format!("invalid deployment Session config: {error}")),
+                    };
+                }
+            };
+        let session = match self
+            .create_session(create, Some(request.workspace_id))
+            .await
+        {
+            Ok(session) => session,
+            Err(error) => {
+                return DeploymentLaunchOutcome {
+                    session_id: None,
+                    error: Some(error.to_string()),
+                };
+            }
+        };
+        if events.events.is_empty() {
+            return DeploymentLaunchOutcome {
+                session_id: Some(session.id),
+                error: None,
+            };
+        }
+        match self.send_events(&session.id, events).await {
+            Ok(_) => DeploymentLaunchOutcome {
+                session_id: Some(session.id),
+                error: None,
+            },
+            Err(error) => DeploymentLaunchOutcome {
+                session_id: Some(session.id),
+                error: Some(error.to_string()),
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -424,6 +591,7 @@ mod tests {
 
     fn deployment(schedule: Option<Value>) -> DeploymentRecord {
         DeploymentRecord {
+            workspace_id: "default".into(),
             agent: AgentReference::new("coder", 1),
             environment_id: "env_a".into(),
             name: "nightly".into(),
@@ -489,6 +657,35 @@ mod tests {
             state.tick(MON_0900 + 120 * 60_000).is_empty(),
             "a paused deployment does not fire"
         );
+    }
+
+    #[tokio::test]
+    async fn scheduled_occurrence_launches_a_real_session_through_the_port() {
+        struct Launcher;
+        #[async_trait::async_trait]
+        impl DeploymentSessionLauncher for Launcher {
+            async fn launch(&self, request: DeploymentLaunch) -> DeploymentLaunchOutcome {
+                DeploymentLaunchOutcome {
+                    session_id: Some(format!("sesn_{}", request.deployment_id)),
+                    error: None,
+                }
+            }
+        }
+
+        let state = DeploymentState::new();
+        state.bind_launcher(Arc::new(Launcher));
+        state.deployments.lock().unwrap().insert(
+            "deploy_schedule".into(),
+            deployment(Some(cron_schedule("*/15 * * * *"))),
+        );
+        assert!(state.tick_and_launch(MON_0900).await.is_empty());
+        let completed = state.tick_and_launch(MON_0900 + 16 * 60_000).await;
+        assert_eq!(completed.len(), 1);
+        assert_eq!(
+            completed[0].session_id.as_deref(),
+            Some("sesn_deploy_schedule")
+        );
+        assert!(completed[0].error.is_none());
     }
 
     #[test]

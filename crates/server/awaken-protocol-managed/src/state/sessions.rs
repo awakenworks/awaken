@@ -223,6 +223,7 @@ impl ManagedState {
             project::validate_custom_tool(tool)
                 .map_err(|msg| StateError::Run(RunError::bad_request(msg)))?;
         }
+        let deployment_id = req.metadata.get("awaken.deployment_id").cloned();
         let session = Session {
             id: id.clone(),
             kind: "session",
@@ -269,7 +270,7 @@ impl ManagedState {
             stats: SessionStats::default(),
             usage: Usage::default(),
             vault_ids: req.vault_ids.clone(),
-            deployment_id: None,
+            deployment_id,
         };
         // Persist the session's config (secret-free) so a restart or a peer process
         // rehydrates its real agent/model/title/metadata/MCP, not a placeholder.
@@ -384,6 +385,7 @@ impl ManagedState {
                     None,
                 ),
             };
+        let deployment_id = metadata.get("awaken.deployment_id").cloned();
         Session {
             id: id.to_string(),
             kind: "session",
@@ -417,7 +419,7 @@ impl ManagedState {
             stats: SessionStats::default(),
             usage: Usage::default(),
             vault_ids: Vec::new(),
-            deployment_id: None,
+            deployment_id,
         }
     }
 
