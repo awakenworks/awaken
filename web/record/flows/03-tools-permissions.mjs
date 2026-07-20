@@ -2,25 +2,24 @@
 // do and how it's allowed to do it: pick tools from the host catalog, rename/redescribe
 // one for the model (tool presentation), then gate calls with a default decision + an
 // ordered deny rule. Pure configurability — no code, enforced at runtime.
+import { configureKimi } from "../support/models.mjs";
 
 const AGENT_ID = "file-ops-agent";
-const MODEL_ID = "policy-demo-model";
-const SYSTEM = "You are a careful file-operations assistant. Prefer read-only actions.";
+const MODEL_ID = "kimi-for-coding";
+const SYSTEM = "You are a tool-verification agent. When asked to run a shell command, call bash exactly once with that command.";
 
-export async function run({ page, goto, say, clearCaption, intro, checkpoint, aha, expect, click, type, wait, cursorTo, tap }) {
+export const story = {
+  promise: "Give an Agent useful native and MCP tools while proving a destructive shell request cannot execute.",
+  effect: "The published permission rule visibly denies the model's matching bash call before execution.",
+  aha: "The model can discover the tool and still cannot cross the runtime permission boundary.",
+  loyalty: "Visible, reusable policy creates confidence to expand Agent capability without surrendering control.",
+  satisfaction: "Users see the exact tool identity, presentation, and denial reason instead of debugging hidden policy.",
+  advocacy: "A model attempting an action and the runtime stopping it is a crisp trust proof teams will share.",
+};
+
+export async function run({ page, goto, say, clearCaption, intro, checkpoint, runtimeCheckpoint, aha, expect, click, type, wait, cursorTo, tap }) {
+  await configureKimi(page);
   await page.request.delete(`http://127.0.0.1:38080/v1/config/agents/${AGENT_ID}`).catch(() => {});
-  await page.request.put("http://127.0.0.1:38080/v1/config/providers/policy-demo", {
-    data: { id: "policy-demo", slug: "policy-demo", display_name: "Policy demo", version: 1 },
-  });
-  await page.request.put("http://127.0.0.1:38080/v1/config/endpoints/policy-demo-ep", {
-    data: { id: "policy-demo-ep", provider_id: "policy-demo", dialect: "anthropic_messages", base_url: "https://api.example.test/v1", timeout_secs: 60, display_name: "Policy demo", version: 1 },
-  });
-  await page.request.post("http://127.0.0.1:38080/v1/config/offerings", {
-    data: { model_id: MODEL_ID, provider_id: "policy-demo", protocol_endpoint_id: "policy-demo-ep", dialect: "anthropic_messages", upstream_model: "demo" },
-  });
-  await page.request.post("http://127.0.0.1:38080/v1/config/credentials", {
-    data: { workspace_id: "wrkspc_default", kind: "vault", provider_id: "policy-demo", secret: "video-demo-only" }, // awaken-allow: secret (synthetic recording fixture)
-  });
 
   await goto("/w/default/agents/new");
   await intro(
@@ -103,6 +102,18 @@ export async function run({ page, goto, say, clearCaption, intro, checkpoint, ah
   await wait(900);
   await click(page.locator(".modal").getByRole("button", { name: /Publish/ }));
   await wait(1200);
-  await aha("The same tool can be useful to the model, understandable by humans, and still denied at execution time.");
+  await say("Now ask the live model to cross the exact boundary we just published.", 3400);
+  await click(page.getByRole("button", { name: /Try it|试运行/ }));
+  await click(page.getByRole("button", { name: /Start session|开始会话/ }));
+  const ask = page.getByPlaceholder(/Ask the agent|问问这个 agent/);
+  await type(ask, "Use bash to run exactly: rm /tmp/awaken-video-denied", { delay: 12 });
+  await ask.press("Enter");
+  const bashCard = page.locator("details").filter({ has: page.locator("code").filter({ hasText: /^bash$/ }) }).first();
+  await runtimeCheckpoint("the runtime denies the matching bash call before execution", async () => {
+    await expect(bashCard.getByText("error", { exact: true })).toBeVisible({ timeout: 60_000 });
+    await bashCard.locator("summary").click();
+    await expect(bashCard).toContainText(/denied by policy|denied|拒绝/i);
+  });
+  await aha(story.aha);
   await clearCaption();
 }

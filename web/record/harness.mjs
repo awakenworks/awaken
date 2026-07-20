@@ -29,6 +29,9 @@ const rawDir = resolve(outDir, `.raw-${slug}`);
 rmSync(rawDir, { recursive: true, force: true });
 const recordStartedAt = Date.now();
 const captions = [];
+const MAX_VIDEO_MS = 180_000;
+const MAX_FLOW_MS = 172_000; // reserve time for the branded close and final mux-safe settle
+let activeStory;
 
 try {
   const response = await fetch(`${BACKEND}/v1/config/catalog`, { signal: AbortSignal.timeout(4000) });
@@ -173,6 +176,22 @@ async function checkpoint(name, assertion) {
   }
 }
 
+/** A runtime claim must fail as soon as the product reports a terminal run error. */
+async function runtimeCheckpoint(name, assertion) {
+  return checkpoint(name, async () => {
+    const terminalFailure = page.locator(".banner.warn").filter({
+      hasText: /Run failed|运行失败|retries_exhausted/,
+    }).first();
+    await Promise.race([
+      assertion(),
+      terminalFailure.waitFor({ state: "visible", timeout: 0 }).then(async () => {
+        const detail = (await terminalFailure.innerText()).replace(/\s+/g, " ").trim();
+        throw new Error(`runtime failed before the claimed effect: ${detail}`);
+      }),
+    ]);
+  });
+}
+
 async function showProof(text, tone, holdMs = 0) {
   await installChrome().catch(() => {});
   await page.evaluate(({ text, tone }) => {
@@ -189,6 +208,9 @@ async function showProof(text, tone, holdMs = 0) {
 
 /** The shareable payoff. Every flow must visibly land one concise product truth. */
 async function aha(text, holdMs = 4200) {
+  if (activeStory?.aha && text !== activeStory.aha) {
+    throw new Error(`AHA does not match story contract: expected "${activeStory.aha}"`);
+  }
   ahaCount += 1;
   await say(`AHA · ${text}`, holdMs);
 }
@@ -254,6 +276,7 @@ const api = {
   beat,
   intro,
   checkpoint,
+  runtimeCheckpoint,
   aha,
   expect,
   click,
@@ -265,8 +288,12 @@ const api = {
 };
 
 async function goto(path) {
-  await page.goto(`${CONSOLE}${path}`, { waitUntil: "networkidle" });
+  // Session pages keep an SSE connection open; `networkidle` would manufacture a
+  // 30-second static pause even though the UI is ready. Couple progress to visible
+  // product content instead of transport silence.
+  await page.goto(`${CONSOLE}${path}`, { waitUntil: "domcontentloaded" });
   await installChrome();
+  await page.locator("main").waitFor({ state: "visible", timeout: 10_000 });
   await wait(500);
 }
 api.goto = goto;
@@ -274,13 +301,26 @@ api.goto = goto;
 let failed = false;
 try {
   const mod = await import(pathToFileURL(resolve(here, "flows", `${slug}.mjs`)).href);
+  activeStory = validateStory(mod.story);
   await installChrome();
-  await mod.run(api);
+  let flowTimer;
+  try {
+    await Promise.race([
+      mod.run(api),
+      new Promise((_, reject) => {
+        flowTimer = setTimeout(() => reject(new Error("story exceeded its 172s execution budget")), MAX_FLOW_MS);
+      }),
+    ]);
+  } finally {
+    clearTimeout(flowTimer);
+  }
   if (introCount === 0) throw new Error("story contract failed: flow has no intent/capability intro");
   if (checkpointCount === 0) throw new Error("test contract failed: flow has no passing checkpoint");
-  if (ahaCount === 0) throw new Error("story contract failed: flow has no AHA payoff");
+  if (ahaCount !== 1) throw new Error(`story contract failed: expected exactly one AHA, got ${ahaCount}`);
   await say("awaken · configure, prove, and run agents — fully in the browser.", 3000);
   await clearCaption();
+  const elapsed = Date.now() - recordStartedAt;
+  if (elapsed > MAX_VIDEO_MS) throw new Error(`video is ${elapsed}ms; every story must close within 180000ms`);
 } catch (e) {
   failed = true;
   console.error(`[record] flow ${slug} failed:`, e.message);
@@ -293,6 +333,11 @@ try {
     const src = await video.path();
     const artifact = failed ? `${slug}.failed` : slug;
     writeCaptionArtifacts(artifact, captions);
+    writeFileSync(resolve(outDir, `${artifact}.story.json`), `${JSON.stringify({
+      ...activeStory,
+      duration_ms: Date.now() - recordStartedAt,
+      passed: !failed,
+    }, null, 2)}\n`);
     const webm = resolve(outDir, `${artifact}.webm`);
     if (existsSync(src)) renameSync(src, webm);
     rmSync(rawDir, { recursive: true, force: true });
@@ -310,6 +355,17 @@ try {
       console.log(`[record] kept ${slug}.webm (ffmpeg failed: ${e.message})`);
     }
   }
+}
+
+function validateStory(story) {
+  const fields = ["promise", "effect", "aha", "loyalty", "satisfaction", "advocacy"];
+  if (!story || typeof story !== "object") throw new Error("flow must export one story contract");
+  for (const field of fields) {
+    if (typeof story[field] !== "string" || story[field].trim().length < 20) {
+      throw new Error(`story.${field} must explain a concrete customer outcome`);
+    }
+  }
+  return story;
 }
 process.exit(failed ? 1 : 0);
 

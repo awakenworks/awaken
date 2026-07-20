@@ -6,7 +6,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Button, Card, Pill, SelectField, TextAreaField, TextField } from "../components/ui";
 import { api } from "../lib/api/client";
-import type { AgentConfigList, Deployment, Environment, Page } from "../lib/api/types";
+import type { AgentConfigList, Deployment, DeploymentRun, Environment, Page } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
 
 function CreateModal({ onClose }: { onClose: () => void }) {
@@ -109,14 +109,19 @@ export default function DeploymentsSurface() {
   const app = useApp();
   const qc = useQueryClient();
   const [creating, setCreating] = useState(false);
+  const [lastRun, setLastRun] = useState<DeploymentRun | null>(null);
   const deployments = useQuery({
     queryKey: ["deployments"],
     queryFn: () => api.get<Page<Deployment>>("/v1/deployments"),
     refetchInterval: 30_000,
   });
   const act = useMutation({
-    mutationFn: ({ id, action }: { id: string; action: string }) => api.post(`/v1/deployments/${id}/${action}`),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ["deployments"] }),
+    mutationFn: ({ id, action }: { id: string; action: string }) =>
+      api.post<Deployment | DeploymentRun>(`/v1/deployments/${id}/${action}`),
+    onSuccess: (result, variables) => {
+      if (variables.action === "run") setLastRun(result as DeploymentRun);
+      void qc.invalidateQueries({ queryKey: ["deployments"] });
+    },
   });
   const rows = deployments.data?.data ?? [];
 
@@ -134,6 +139,15 @@ export default function DeploymentsSurface() {
         </Button>
       </div>
       {deployments.error instanceof Error && <div className="err">{deployments.error.message}</div>}
+      {lastRun && (
+        <div className="banner info">
+          <span>✓</span>
+          <span>
+            {app.t("Deployment run created", "Deployment run 已创建")} · <code>{lastRun.id}</code>
+            {lastRun.session_id ? <> · session <code>{lastRun.session_id}</code></> : null}
+          </span>
+        </div>
+      )}
       <Card style={{ padding: 0 }}>
         <table className="table">
           <thead>

@@ -3,12 +3,23 @@
 // tool-description override — live via KIMI. The draft is a real unpublished agent, so
 // Open-in-editor lands on the editor to review and Publish. The whole authoring loop,
 // closed in the console.
+import { configureKimi } from "../support/models.mjs";
 
 const ASK =
   "Draft an agent id 'pr-reviewer' that reviews pull requests. Give it the read and grep " +
   "tools, and rename grep to 'search_code' for the model with a helpful description.";
 
-export async function run({ page, goto, say, clearCaption, intro, checkpoint, aha, expect, click, type, wait }) {
+export const story = {
+  promise: "Describe a pull-request reviewer in plain language and receive a reviewable platform-valid Draft.",
+  effect: "The Assistant selects advertised tools, authors an override, validates the Draft, and leaves Publish to the user.",
+  aha: "AI drafts against the real platform; a human reviews the exact config and decides what becomes runnable.",
+  loyalty: "Assisted authoring lowers the cost of creating the next Agent while preserving operator ownership.",
+  satisfaction: "Users state the intent once and inspect a complete result instead of manually filling every field.",
+  advocacy: "The human-control-over-AI contrast answers a common trust objection in a memorable clip.",
+};
+
+export async function run({ page, goto, say, clearCaption, intro, runtimeCheckpoint, aha, expect, click, type, wait }) {
+  await configureKimi(page);
   // Fresh start (idempotent): drop any prior draft so the walkthrough always authors anew.
   await page.request.delete("http://127.0.0.1:38080/v1/config/agents/pr-reviewer").catch(() => {});
 
@@ -29,7 +40,7 @@ export async function run({ page, goto, say, clearCaption, intro, checkpoint, ah
   // Wait for the assistant to draft (its tool calls persist a real unpublished agent,
   // which surfaces as an Open-in-editor chip below the chat).
   const openBtn = page.getByRole("button", { name: /Open in editor|在编辑器打开/ });
-  await checkpoint("the assistant persists a draft that can be opened in the editor", async () => {
+  await runtimeCheckpoint("the assistant persists a draft that can be opened in the editor", async () => {
     await expect(openBtn.first()).toBeVisible({ timeout: 90000 });
     const response = await page.request.get("http://127.0.0.1:38080/v1/config/agents/pr-reviewer");
     expect(response.ok()).toBeTruthy();
@@ -55,6 +66,6 @@ export async function run({ page, goto, say, clearCaption, intro, checkpoint, ah
   await say("You review the exact diff, then publish. AI drafts; you decide.", 4000);
   await click(page.locator(".modal").getByRole("button", { name: /Publish/ }));
   await wait(1500);
-  await aha("AI drafts against the real platform; a human reviews the exact config and decides what becomes runnable.");
+  await aha(story.aha);
   await clearCaption();
 }

@@ -13,9 +13,21 @@ test("every recording is a story-shaped executable test", () => {
   for (const name of flows) {
     const source = readFileSync(resolve(flowsDir, name), "utf8");
     assert.match(source, /await intro\(/, `${name}: explain intent and capability before operating`);
-    assert.match(source, /await checkpoint\(/, `${name}: assert at least one product claim`);
+    assert.match(source, /await (?:checkpoint|runtimeCheckpoint)\(/, `${name}: assert at least one product claim`);
     assert.match(source, /await aha\(/, `${name}: land a visible, shareable payoff`);
+    assert.match(source, /export const story\s*=\s*{/, `${name}: declare one customer story`);
+    for (const field of ["promise", "effect", "aha", "loyalty", "satisfaction", "advocacy"]) {
+      assert.match(source, new RegExp(`${field}:\\s*["']`), `${name}: story.${field} is required`);
+    }
   }
+});
+
+test("every recording has a hard sub-three-minute budget", () => {
+  const harness = readFileSync(resolve(here, "harness.mjs"), "utf8");
+  assert.match(harness, /MAX_VIDEO_MS = 180_000/);
+  assert.match(harness, /MAX_FLOW_MS = 172_000/);
+  assert.match(harness, /expected exactly one AHA/);
+  assert.match(harness, /runtime failed before the claimed effect/);
 });
 
 test("the state-machine recording proves runtime enforcement, not just configuration", () => {
@@ -51,4 +63,49 @@ test("MCP and Memory videos prove runtime-relevant effects", () => {
   assert.ok([...memory.matchAll(/\/v1\/sessions/g)].length >= 2);
   assert.match(memory, /persisted\.content/);
   assert.match(memory, /getByText\(secret/);
+});
+
+test("live-model videos assert agent output, never the user's prompt or page copy", () => {
+  const model = readFileSync(resolve(flowsDir, "01-connect-model.mjs"), "utf8");
+  const agent = readFileSync(resolve(flowsDir, "02-build-agent.mjs"), "utf8");
+  for (const source of [model, agent]) {
+    assert.match(source, /locator\("\.card"\)\.filter\(\{ hasText: "⬡ agent" \}\)/);
+    assert.doesNotMatch(source, /document\.body\.innerText/);
+  }
+  assert.match(model, /expect\(agentReply\)\.toContainText\("MODEL READY"/);
+  assert.match(agent, /expect\(agentReply\)\.toContainText\(\/Features\|Fixes\|Breaking changes\/i/);
+});
+
+test("the complete series covers every release-ready platform capability", () => {
+  assert.deepEqual(flows, [
+    "00-platform-overview.mjs",
+    "01-connect-model.mjs",
+    "02-build-agent.mjs",
+    "03-tools-permissions.mjs",
+    "04-resources-transparency.mjs",
+    "05-ai-authoring.mjs",
+    "06-ai-state-machine.mjs",
+    "07-runtime-sandbox.mjs",
+    "08-agent-control-plane.mjs",
+    "09-protocol-composition.mjs",
+    "10-skill-optimized-agent.mjs",
+    "11-resource-provenance.mjs",
+    "12-deployment-control.mjs",
+    "13-managed-api-ingress.mjs",
+    "14-session-control.mjs",
+    "15-a2a-discovery.mjs",
+    "16-access-boundary.mjs",
+  ]);
+  const corpus = flows.map((name) => readFileSync(resolve(flowsDir, name), "utf8")).join("\n");
+  for (const claim of ["Skill", "resource", "Deployment", "/v1/sessions", "archive", "A2A", "revoke"]) {
+    assert.ok(corpus.includes(claim), `series: missing supplemental proof for ${claim}`);
+  }
+});
+
+test("dependency-gated stories fail honestly before making a product claim", () => {
+  const a2a = readFileSync(resolve(flowsDir, "15-a2a-discovery.mjs"), "utf8");
+  const access = readFileSync(resolve(flowsDir, "16-access-boundary.mjs"), "utf8");
+  assert.match(a2a, /A2A_DELEGATE_ID/);
+  assert.match(access, /AWAKEN_RECORD_ADMIN_TOKEN/);
+  assert.match(access, /embedded-IAM host/);
 });
