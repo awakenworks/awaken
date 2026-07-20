@@ -293,6 +293,7 @@ mod tests {
 
     fn profile(model: &str) -> InferenceProfile {
         InferenceProfile {
+            workspace_id: "ws".into(),
             model_id: model.to_string(),
             model_fallbacks: Vec::new(),
             credential_binding: CredentialBinding::None,
@@ -302,6 +303,7 @@ mod tests {
 
     fn server(id: &str) -> McpServerDef {
         McpServerDef {
+            workspace_id: "ws".into(),
             id: McpServerId(id.to_string()),
             display_name: id.to_string(),
             url: format!("http://{id}.example/"),
