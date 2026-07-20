@@ -207,6 +207,18 @@ impl ResourceStore for PostgresAdminStore {
     fn get_agent_resource(&self, agent_id: &str) -> Option<AgentResourceConfig> {
         PostgresAdminStore::get_agent_resource(self, agent_id)
     }
+    fn put_agent_resource_in(&self, workspace: &str, config: AgentResourceConfig) {
+        let key = format!("{workspace}\u{1f}{}", config.agent_id);
+        self.put_json("agent_resource", "agent_id", &key, &config);
+    }
+    fn get_agent_resource_in(
+        &self,
+        workspace: &str,
+        agent_id: &str,
+    ) -> Option<AgentResourceConfig> {
+        let key = format!("{workspace}\u{1f}{agent_id}");
+        self.get_json("agent_resource", "agent_id", &key)
+    }
 }
 
 impl WebhookStore for PostgresAdminStore {

@@ -40,6 +40,7 @@ mod memory_stores;
 mod model_route;
 mod provisioning;
 mod redact;
+mod resource_ownership;
 mod run_exec;
 mod sandbox_source;
 mod skill_catalog;
@@ -85,6 +86,10 @@ pub use crate::dispatch_backend::{
 };
 pub use crate::host::{HostResume, SharedHost};
 pub use crate::worker_control_client::WorkerControlClient;
+/// Trusted resource ownership coordinate passed from a wire/composition edge.
+/// Resource adapters consume it without depending on tenancy or IAM layers.
+#[derive(Debug, Clone)]
+pub struct ResourceWorkspace(pub String);
 // The sandboxed ACP channel source (bwrap-confined agent launch) and the shared
 // per-thread egress handle a composition root wires it with.
 pub use crate::data_subject_api::{consent_router, erasure_router, install_capture_sink};
@@ -329,6 +334,7 @@ impl ManagedHost {
     /// path. A `file`/`memory_store` whose backing store is missing fails closed.
     async fn stage_one_resource(
         &self,
+        workspace: &str,
         res: &awaken_protocol_managed::SessionResource,
     ) -> Result<crate::provisioning::StagedResources, RunError> {
         use awaken_sandbox_local::{Mount, ResourceMount};
@@ -356,6 +362,12 @@ impl ManagedHost {
         // Resolve seed content by family: a file from the content-addressed blob store,
         // a memory_store from its mutable id-keyed store (tracked for write-back).
         let content = match res.kind.as_str() {
+            "file" if !self.host.owns_file(workspace, &res.id) => {
+                return Err(RunError::bad_request(format!(
+                    "file resource `{}` not found in this workspace",
+                    res.id
+                )));
+            }
             "file" => match self.host.file_store().get(&res.id).await {
                 Ok(Some(bytes)) => String::from_utf8_lossy(&bytes).into_owned(),
                 _ => {
@@ -366,7 +378,7 @@ impl ManagedHost {
                 }
             },
             _ => {
-                let Some(bytes) = self.host.memory_get(&res.id).await else {
+                let Some(bytes) = self.host.memory_get_in(workspace, &res.id).await else {
                     return Err(RunError::bad_request(format!(
                         "memory_store resource `{}` does not exist",
                         res.id
@@ -707,7 +719,8 @@ impl SessionRuntime for ManagedHost {
         // (fail closed on a missing backing store) and evict so the next turn rebuilds WITH it.
         self.host.harvest_thread_memory(thread).await;
         self.host.harvest_thread_skills(thread).await;
-        let one = self.stage_one_resource(&resource).await?;
+        let workspace = self.host.thread_workspace(thread);
+        let one = self.stage_one_resource(&workspace, &resource).await?;
         self.host.merge_thread_resources(thread, one);
         self.host.sessions.lock().await.remove(thread);
         Ok(())
@@ -757,6 +770,9 @@ impl SessionRuntime for ManagedHost {
         thread: &str,
         init: awaken_protocol_managed::SessionInit,
     ) -> Result<(), RunError> {
+        self.host
+            .register_thread_workspace(thread, &init.workspace_id);
+        self.host.skills.reload_cache_in(&init.workspace_id).await;
         // R2: bind the session's requested model to the thread (independent of MCP),
         // consumed at the thread's first turn to resolve its executor + model name.
         if let Some(model) = &init.model {
@@ -780,7 +796,7 @@ impl SessionRuntime for ManagedHost {
         // Wire session resources carry their own prompt (no compile-time fragment
         // exists for an ad-hoc session mount), so we keep `one.prompts`.
         for res in &init.resources {
-            let one = self.stage_one_resource(res).await?;
+            let one = self.stage_one_resource(&init.workspace_id, res).await?;
             all.mounts.extend(one.mounts);
             all.prompts.extend(one.prompts);
             all.memory_mounts.extend(one.memory_mounts);
@@ -793,7 +809,7 @@ impl SessionRuntime for ManagedHost {
         // config injects the prompt, this injects the mount. Skip a mount path the
         // wire set already claimed (an explicit per-session override wins).
         if let Some(store) = &self.resources
-            && let Some(cfg) = store.get_agent_resource(&init.agent_id)
+            && let Some(cfg) = store.get_agent_resource_in(&init.workspace_id, &init.agent_id)
         {
             let taken: std::collections::HashSet<String> = init
                 .resources
@@ -805,7 +821,7 @@ impl SessionRuntime for ManagedHost {
                     continue;
                 }
                 let res = binding_as_session_resource(b);
-                let one = self.stage_one_resource(&res).await?;
+                let one = self.stage_one_resource(&init.workspace_id, &res).await?;
                 all.mounts.extend(one.mounts);
                 all.memory_mounts.extend(one.memory_mounts);
                 all.repos.extend(one.repos);
@@ -966,6 +982,17 @@ impl SessionRuntime for ManagedHost {
     /// skills, and delegate roster. (MCP servers and file resources are not advertised
     /// — the local host wires no MCP capability and has no Files-API resource yet.)
     fn capabilities(&self) -> AgentCapabilities {
+        self.capabilities_for_workspace(self.host.local_workspace())
+    }
+
+    fn capabilities_for(&self, thread: &str) -> AgentCapabilities {
+        let workspace = self.host.thread_workspace(thread);
+        self.capabilities_for_workspace(&workspace)
+    }
+}
+
+impl ManagedHost {
+    fn capabilities_for_workspace(&self, workspace: &str) -> AgentCapabilities {
         AgentCapabilities {
             builtin_tools: self
                 .host
@@ -983,7 +1010,7 @@ impl SessionRuntime for ManagedHost {
                     input_schema: d.parameters,
                 })
                 .collect(),
-            skills: self.host.skills.ids(),
+            skills: self.host.skills.ids_in(workspace),
             delegates: self.host.delegate_ids(),
         }
     }

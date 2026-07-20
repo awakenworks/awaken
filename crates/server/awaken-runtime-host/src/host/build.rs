@@ -5,6 +5,24 @@ use super::*;
 use awaken_runtime_contract::delegation::{RemoteAgent, RunDelegationService};
 
 impl SharedHost {
+    /// Resolve or provision the stable local workspace coordinate owned by this
+    /// installation. Composition roots call this once and pass the value to every
+    /// resource adapter they assemble.
+    pub fn provision_local_workspace() -> String {
+        let deployment = crate::deployment_config::DeploymentConfig::from_env();
+        let fallback = std::env::var("AWAKEN_MGMT_DIR")
+            .ok()
+            .filter(|dir| !dir.trim().is_empty())
+            .map(PathBuf::from);
+        resolve_local_workspace(deployment.storage_dir.as_deref().or(fallback.as_deref()))
+    }
+
+    /// Explicit-root variant for embedders/tests that do not configure through
+    /// process environment.
+    pub fn provision_local_workspace_at(root: &std::path::Path) -> String {
+        resolve_local_workspace(Some(root))
+    }
+
     /// A host over `llm`. Configure it with the chainable `with_*` builders
     /// (client tools, delegates, a judge grader, a durable store).
     pub fn new(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> Self {
@@ -14,6 +32,7 @@ impl SharedHost {
         // unset → ephemeral.
         let deployment = crate::deployment_config::DeploymentConfig::from_env();
         let store_dir = deployment.storage_dir.clone();
+        let local_workspace = resolve_local_workspace(store_dir.as_deref());
         let sandbox_root = store_dir
             .as_ref()
             .map(|dir| dir.join("sandboxes"))
@@ -30,7 +49,9 @@ impl SharedHost {
             provider: LocalProvider::new(sandbox_root),
             grader: Arc::new(KeywordGrader),
             client_tools: HashSet::new(),
-            skills: crate::skill_catalog::SkillCatalog::new(),
+            local_workspace: local_workspace.clone(),
+            thread_workspaces: std::sync::Mutex::new(HashMap::new()),
+            skills: crate::skill_catalog::SkillCatalog::new(local_workspace),
             delegates: crate::delegate::Delegates::new(),
             // Subagents share the parent's sandbox by default (`默认共用`).
             agent_run_reuse_sandbox: true,
@@ -39,7 +60,7 @@ impl SharedHost {
             sessions: tokio::sync::Mutex::new(HashMap::new()),
             hub: Arc::new(ThreadEventHub::new()),
             // `with_store_dir` still overrides this environment-derived default.
-            store_dir,
+            store_dir: store_dir.clone(),
             // A shared root (e.g. a networked mount) enables cross-machine ACP
             // session recovery; unset means single-machine (stable config home).
             session_blob_root: std::env::var("AWAKEN_ACP_SESSION_BLOBS")
@@ -56,7 +77,18 @@ impl SharedHost {
             mcp_relay: tokio::sync::OnceCell::new(),
             thread_resources: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
             thread_egress: crate::sandbox_source::ThreadEgress::new(),
-            file_store: Arc::new(InMemoryFileStore::new()),
+            file_store: match store_dir.as_ref() {
+                Some(dir) => Arc::new(
+                    awaken_file_store::sqlite::SqliteFileStore::open(
+                        &dir.join("files.db").to_string_lossy(),
+                    )
+                    .expect("open durable file store"),
+                ),
+                None => Arc::new(awaken_file_store::InMemoryFileStore::new()),
+            },
+            resource_ownership: crate::resource_ownership::ResourceOwnership::open(
+                store_dir.as_deref(),
+            ),
             memory_stores,
             // Default to an ephemeral in-memory identity registry; the composition root
             // overrides it with the durable admin backend via `with_memory_registry`.
@@ -71,6 +103,51 @@ impl SharedHost {
             // deployment opts into β with `with_trusted_acp_mcp`.
             mcp_trusted_inline: false,
         }
+    }
+
+    /// Platform-managed local workspace used when no authenticated/path scope
+    /// exists. Composition roots may override it with a provisioned coordinate.
+    #[must_use]
+    pub fn with_local_workspace(mut self, workspace: impl Into<String>) -> Self {
+        let workspace = workspace.into();
+        assert!(
+            !workspace.trim().is_empty(),
+            "local workspace must not be empty"
+        );
+        self.local_workspace = workspace.clone();
+        self.skills.set_local_workspace(workspace);
+        self
+    }
+
+    /// The platform-managed local workspace coordinate.
+    pub fn local_workspace(&self) -> &str {
+        &self.local_workspace
+    }
+
+    pub(crate) fn register_thread_workspace(&self, thread: &str, workspace: &str) {
+        self.thread_workspaces
+            .lock()
+            .expect("thread workspaces")
+            .insert(thread.to_string(), workspace.to_string());
+    }
+
+    pub(crate) fn thread_workspace(&self, thread: &str) -> String {
+        self.thread_workspaces
+            .lock()
+            .expect("thread workspaces")
+            .get(thread)
+            .cloned()
+            .unwrap_or_else(|| self.local_workspace.clone())
+    }
+
+    /// Workspace for a prepared thread; unlike `thread_workspace`, unknown ids
+    /// do not inherit local ownership and therefore cannot enumerate artifacts.
+    pub fn registered_thread_workspace(&self, thread: &str) -> Option<String> {
+        self.thread_workspaces
+            .lock()
+            .expect("thread workspaces")
+            .get(thread)
+            .cloned()
     }
 
     /// Whether this process owns a co-located dispatch pool. Composition roots use
@@ -601,4 +678,42 @@ impl SharedHost {
     pub fn pool_in_flight(&self) -> u32 {
         self.dispatch_pool.get().map_or(0, |pool| pool.in_flight())
     }
+}
+
+fn resolve_local_workspace(store_dir: Option<&std::path::Path>) -> String {
+    if let Ok(configured) = std::env::var("AWAKEN_LOCAL_WORKSPACE_ID")
+        && !configured.trim().is_empty()
+    {
+        return configured;
+    }
+    let path = store_dir.map(|dir| dir.join("platform-workspace-id"));
+    if let Some(path) = &path
+        && let Ok(existing) = std::fs::read_to_string(path)
+        && !existing.trim().is_empty()
+    {
+        return existing.trim().to_string();
+    }
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let generated = format!("workspace_local_{:x}_{nonce:x}", std::process::id());
+    if let Some(path) = path {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create platform workspace directory");
+        }
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        std::io::Write::write_all(
+            &mut options.open(path).expect("create platform workspace id"),
+            generated.as_bytes(),
+        )
+        .expect("persist platform workspace id");
+    }
+    generated
 }

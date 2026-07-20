@@ -21,6 +21,22 @@ pub mod control_stores;
 pub mod resource_owner;
 pub mod worker_stores;
 
+async fn stamp_admin_resource_workspace(
+    mut request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    if let Some(scope) = request
+        .extensions()
+        .get::<awaken_tenancy::WorkspaceScope>()
+        .cloned()
+    {
+        request
+            .extensions_mut()
+            .insert(awaken_admin_config_api::ResourceWorkspace(scope.0));
+    }
+    next.run(request).await
+}
+
 #[cfg(test)]
 mod audit_tests;
 
@@ -34,8 +50,9 @@ pub use crate::admin_assistant::{
 // Embedded management-plane IAM (ADR-0042/0043 P1): the authorizer, its boot
 // fn, the mint spec (tests / operator embeddings), and the bootstrap constants.
 pub use crate::authz::{
-    ADMIN_TOKEN_FILE, BOOTSTRAP_PRINCIPAL, BOOTSTRAP_WORKSPACE, ManagementAuthz, TokenSpec,
-    embedded_iam,
+    ADMIN_TOKEN_FILE, BOOTSTRAP_PRINCIPAL, BOOTSTRAP_WORKSPACE, ManagementAuthz,
+    ManagementIdentityMode, RemoteManagementAuthz, TokenSpec, embedded_iam,
+    embedded_iam_for_workspace,
 };
 pub use crate::control_stores::{ControlStoreConfig, StoreBackend};
 pub use crate::resource_owner::{ResourceOwners, resource_ownership_guard};
@@ -193,6 +210,8 @@ pub struct ControlRouterInput {
     pub org_id: Option<String>,
     /// The embedded IAM guard, when enabled (`AWAKEN_MGMT_IAM=embedded`).
     pub iam: Option<Arc<ManagementAuthz>>,
+    /// Awaken Cloud identity adapter. Mutually exclusive with `iam`.
+    pub remote_iam: Option<Arc<RemoteManagementAuthz>>,
 }
 
 /// Build the authoring / authz management router over the shared handles, and
@@ -219,6 +238,7 @@ pub fn control_router(input: ControlRouterInput) -> (Router, Arc<WebhookLifecycl
         global_tools,
         org_id,
         iam,
+        remote_iam,
     } = input;
 
     // ONE MCP store across the admin router and the ManagedHost, and ONE
@@ -247,7 +267,9 @@ pub fn control_router(input: ControlRouterInput) -> (Router, Arc<WebhookLifecycl
     // sink (fed the same store + secrets) fans committed session facts out-of-band.
     let (webhook_sink, webhook_crud) =
         assemble_with_session_repo(webhook_store, secrets.clone(), org_id, sessions);
-    let admin = admin.merge(webhook_crud);
+    let admin = admin
+        .merge(webhook_crud)
+        .layer(axum::middleware::from_fn(stamp_admin_resource_workspace));
     // Tenant ownership for the id-addressed config resources (ADR-0051): MCP server
     // defs, inference profiles, and webhook subscriptions are fenced by the authoring
     // scope. The shared catalog is intentionally uncovered (org/deployment-level
@@ -308,6 +330,15 @@ pub fn control_router(input: ControlRouterInput) -> (Router, Arc<WebhookLifecycl
         mgmt = mgmt.layer(axum::middleware::from_fn_with_state(
             iam,
             crate::authz::management_guard,
+        ));
+    } else if let Some(remote_iam) = remote_iam {
+        mgmt = mgmt.layer(axum::middleware::from_fn_with_state(
+            audit_plane,
+            durable_management_audit,
+        ));
+        mgmt = mgmt.layer(axum::middleware::from_fn_with_state(
+            remote_iam,
+            crate::authz::cloud_management_guard,
         ));
     } else {
         mgmt = mgmt.layer(axum::middleware::from_fn_with_state(

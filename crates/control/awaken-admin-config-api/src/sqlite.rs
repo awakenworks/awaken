@@ -129,6 +129,18 @@ impl ResourceStore for SqliteAdminStore {
     fn get_agent_resource(&self, agent_id: &str) -> Option<AgentResourceConfig> {
         SqliteAdminStore::get_agent_resource(self, agent_id)
     }
+    fn put_agent_resource_in(&self, workspace: &str, config: AgentResourceConfig) {
+        let key = format!("{workspace}\u{1f}{}", config.agent_id);
+        self.put_row("agent_resource", "agent_id", &key, &config);
+    }
+    fn get_agent_resource_in(
+        &self,
+        workspace: &str,
+        agent_id: &str,
+    ) -> Option<AgentResourceConfig> {
+        let key = format!("{workspace}\u{1f}{agent_id}");
+        self.get_row("agent_resource", "agent_id", &key)
+    }
 }
 
 impl InferenceProfileStore for SqliteAdminStore {
@@ -343,6 +355,7 @@ mod tests {
     fn mem_def(id: &str, archived: bool) -> MemoryStoreDef {
         MemoryStoreDef {
             id: id.to_string(),
+            workspace_id: "ws_test".to_string(),
             name: format!("{id} name"),
             description: "desc".into(),
             metadata: std::collections::BTreeMap::from([("k".to_string(), "v".to_string())]),

@@ -6,14 +6,14 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Multipart, Path, Query, State};
+use axum::extract::{Extension, Multipart, Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::json;
 
-use awaken_runtime_host::SharedHost;
+use awaken_runtime_host::{ResourceWorkspace, SharedHost};
 
 /// Mount the Files API over the host's blob store.
 pub fn files_router(host: Arc<SharedHost>) -> Router {
@@ -24,15 +24,26 @@ pub fn files_router(host: Arc<SharedHost>) -> Router {
         .with_state(host)
 }
 
+fn request_workspace(host: &SharedHost, scope: Option<Extension<ResourceWorkspace>>) -> String {
+    scope.map_or_else(
+        || host.local_workspace().to_string(),
+        |Extension(scope)| scope.0,
+    )
+}
+
 /// `GET /v1/files?scope_id=<session>` — the session's output artifacts (ADR-0038):
 /// files the agent wrote under `outputs/`, harvested into the blob store. Without a
 /// `scope_id` the list is empty (this server scopes files to a session, not globally).
 async fn list_files(
     State(host): State<Arc<SharedHost>>,
+    scope: Option<Extension<ResourceWorkspace>>,
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
+    let workspace = request_workspace(&host, scope);
     let data: Vec<_> = match q.get("scope_id").cloned() {
-        Some(session) => {
+        Some(session)
+            if host.registered_thread_workspace(&session).as_deref() == Some(&workspace) =>
+        {
             // The session's reverse channel: harvest any read-write memory mounts back
             // into their stores (ADR-0038 MemoryStore write-back) before listing the
             // output artifacts, so a poll here also persists the session's memory edits.
@@ -56,7 +67,7 @@ async fn list_files(
                 })
                 .collect()
         }
-        None => Vec::new(),
+        Some(_) | None => Vec::new(),
     };
     Json(json!({ "data": data, "has_more": false }))
 }
@@ -65,8 +76,10 @@ async fn list_files(
 /// return their content id as `FileMetadata`. Idempotent (equal bytes → same id).
 async fn upload_file(
     State(host): State<Arc<SharedHost>>,
+    scope: Option<Extension<ResourceWorkspace>>,
     mut multipart: Multipart,
 ) -> impl IntoResponse {
+    let workspace = request_workspace(&host, scope);
     let mut filename = "upload".to_string();
     let mut bytes: Option<Vec<u8>> = None;
     while let Ok(Some(field)) = multipart.next_field().await {
@@ -87,9 +100,11 @@ async fn upload_file(
     };
     let size = bytes.len();
     match host.file_store().put(&bytes).await {
-        Ok(id) => (
-            StatusCode::OK,
-            Json(json!({
+        Ok(id) => {
+            host.grant_file(&workspace, &id);
+            (
+                StatusCode::OK,
+                Json(json!({
                 "id": id,
                 "type": "file",
                 "filename": filename,
@@ -97,9 +112,10 @@ async fn upload_file(
                 "size_bytes": size,
                 "created_at": "1970-01-01T00:00:00Z",
                 "downloadable": true,
-            })),
-        )
-            .into_response(),
+                })),
+            )
+                .into_response()
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": e.to_string() })),
@@ -111,8 +127,17 @@ async fn upload_file(
 /// `GET /v1/files/{id}` — metadata (presence + size).
 async fn get_file(
     State(host): State<Arc<SharedHost>>,
+    scope: Option<Extension<ResourceWorkspace>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    let workspace = request_workspace(&host, scope);
+    if !host.owns_file(&workspace, &id) {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "file not found" })),
+        )
+            .into_response();
+    }
     match host.file_store().get(&id).await {
         Ok(Some(bytes)) => (
             StatusCode::OK,
@@ -144,8 +169,24 @@ async fn get_file(
 /// the same id afresh.
 async fn delete_file(
     State(host): State<Arc<SharedHost>>,
+    scope: Option<Extension<ResourceWorkspace>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    let workspace = request_workspace(&host, scope);
+    if !host.revoke_file(&workspace, &id) {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "file not found" })),
+        )
+            .into_response();
+    }
+    if host.file_has_any_owner(&id) {
+        return (
+            StatusCode::OK,
+            Json(json!({ "id": id, "type": "file_deleted" })),
+        )
+            .into_response();
+    }
     match host.file_store().delete(&id).await {
         Ok(true) => (
             StatusCode::OK,
@@ -168,8 +209,13 @@ async fn delete_file(
 /// `GET /v1/files/{id}/content` — the raw bytes (what `files.download` reads).
 async fn download_file(
     State(host): State<Arc<SharedHost>>,
+    scope: Option<Extension<ResourceWorkspace>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    let workspace = request_workspace(&host, scope);
+    if !host.owns_file(&workspace, &id) {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
     match host.file_store().get(&id).await {
         Ok(Some(bytes)) => (StatusCode::OK, bytes).into_response(),
         Ok(None) => (StatusCode::NOT_FOUND, "not found").into_response(),

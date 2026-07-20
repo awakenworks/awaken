@@ -37,6 +37,30 @@ pub fn with_workspace_path_addressing(flat: Router) -> Router {
         .fallback_service(flat)
 }
 
+/// Stamp the platform-provisioned local workspace on flat requests. Explicit
+/// path/key tenancy wins; this middleware only fills a missing trusted scope.
+/// The value is generated and persisted by the composition root, never compiled.
+pub fn with_platform_workspace(flat: Router, workspace: String) -> Router {
+    flat.layer(axum::middleware::from_fn_with_state(
+        workspace,
+        stamp_platform_workspace,
+    ))
+}
+
+async fn stamp_platform_workspace(
+    State(workspace): State<String>,
+    mut request: Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if request.extensions().get::<WorkspaceScope>().is_none() {
+        request.extensions_mut().insert(WorkspaceScope(workspace));
+    }
+    // `RequestTenancy` is an explicit selector (workspace path/API key). A flat
+    // local workspace is ownership context, not caller-selected tenancy; authn
+    // middleware may replace it with the credential's authoritative workspace.
+    next.run(request).await
+}
+
 /// Rewrite `/v1/workspaces/{ws}/{rest}` → `/v1/{rest}`, stamp the scope, and
 /// forward into the flat router.
 async fn dispatch(
@@ -121,5 +145,18 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         // No workspace stamped for a flat request.
         assert_eq!(body, "/v1/agents|-");
+    }
+
+    #[tokio::test]
+    async fn platform_workspace_scopes_flat_but_never_overrides_path_scope() {
+        let flat = with_platform_workspace(echo_router(), "ws_local_generated".into());
+        let app = with_workspace_path_addressing(flat);
+        let (status, body) = get_path(&app, "/v1/agents").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, "/v1/agents|ws_local_generated");
+
+        let (status, body) = get_path(&app, "/v1/workspaces/ws_cloud/agents").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, "/v1/agents|ws_cloud");
     }
 }

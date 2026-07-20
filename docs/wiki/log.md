@@ -1,5 +1,9 @@
 # Wiki Update Log
 
+## 2026-07-20
+
+- **Update**: Indexed ADR-0061 for selectable local identity, centralized authorization scope policy, and platform-managed resource ownership.
+
 ## 2026-06-27
 
 - **Update**: Added explicit model-provider/model/model-pool/agent config graph guidance, including spec responsibilities, model binding selection, and model-pool fallback ownership.

@@ -15,9 +15,9 @@
 //! in the authoring plane (`awaken-control`); the two guards are independent (each
 //! owns its own [`ResourceOwners`] instance).
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
+use awaken_config_resolver::{InMemoryMemoryStoreRegistry, MemoryStoreRegistry};
 use awaken_protocol_managed::WorkspaceScope;
 use axum::Json;
 use axum::body::Body;
@@ -26,34 +26,39 @@ use axum::http::{Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 
-/// The seeded scope an unscoped (single-tenant / flat) request resolves to, kept
-/// in step with the managed session default so a bare deployment is self-consistent.
-const DEFAULT_SCOPE: &str = "default";
-
-/// The id→owner-scope index for memory stores, shared across requests. Cloneable
-/// (an `Arc`), so it is both middleware state and, in tests, inspectable.
-#[derive(Clone, Default)]
-pub struct ResourceOwners(Arc<Mutex<HashMap<String, String>>>);
+/// Durable ownership adapter over the memory-store identity registry. Ownership
+/// is aggregate state, not middleware cache, so it survives restarts and is shared
+/// by every process using the same repository.
+#[derive(Clone)]
+pub struct ResourceOwners(Arc<dyn MemoryStoreRegistry>);
 
 impl ResourceOwners {
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        Self(Arc::new(InMemoryMemoryStoreRegistry::new()))
+    }
+
+    #[must_use]
+    pub fn over(registry: Arc<dyn MemoryStoreRegistry>) -> Self {
+        Self(registry)
     }
 
     fn owner(&self, key: &str) -> Option<String> {
+        let id = key.strip_prefix("memstore:")?;
         self.0
-            .lock()
-            .expect("resource owners poisoned")
-            .get(key)
-            .cloned()
+            .get_memory_store(id)
+            .map(|def| def.workspace_id)
+            .filter(|workspace| !workspace.is_empty())
     }
 
     fn record(&self, key: String, scope: String) {
-        self.0
-            .lock()
-            .expect("resource owners poisoned")
-            .insert(key, scope);
+        let Some(id) = key.strip_prefix("memstore:") else {
+            return;
+        };
+        if let Some(mut def) = self.0.get_memory_store(id) {
+            def.workspace_id = scope;
+            self.0.put_memory_store(def);
+        }
     }
 }
 
@@ -79,7 +84,10 @@ pub async fn memory_store_ownership_guard(
         .extensions()
         .get::<WorkspaceScope>()
         .map(|w| w.0.clone())
-        .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
+        .unwrap_or_default();
+    if scope.is_empty() {
+        return not_found();
+    }
     let path = request.uri().path().to_string();
     let method = request.method().clone();
 
@@ -87,9 +95,7 @@ pub async fn memory_store_ownership_guard(
     // known owner other than this scope.
     if let Some(id) = memory_store_id(&path) {
         let key = format!("memstore:{id}");
-        if let Some(owner) = owners.owner(&key)
-            && owner != scope
-        {
+        if owners.owner(&key).as_deref() != Some(&scope) {
             return not_found();
         }
         return next.run(request).await;
@@ -215,14 +221,23 @@ mod tests {
 
     #[test]
     fn owner_records_and_fences_by_scope() {
-        let owners = ResourceOwners::new();
+        let registry = Arc::new(InMemoryMemoryStoreRegistry::new());
+        registry.put_memory_store(awaken_config_resolver::MemoryStoreDef {
+            id: "memstore_1".into(),
+            workspace_id: String::new(),
+            name: String::new(),
+            description: String::new(),
+            metadata: Default::default(),
+            archived: false,
+        });
+        let owners = ResourceOwners::over(registry);
         owners.record("memstore:memstore_1".into(), "tenant-a".into());
         assert_eq!(
             owners.owner("memstore:memstore_1").as_deref(),
             Some("tenant-a")
         );
-        // A different scope is a mismatch (the middleware turns this into a 404); an
-        // unrecorded store has no owner (stays open).
+        // A different scope is a mismatch (the middleware turns this into a 404);
+        // an unrecorded/legacy store has no owner and is denied.
         assert!(owners.owner("memstore:memstore_1") != Some("tenant-b".to_string()));
         assert_eq!(owners.owner("memstore:unknown"), None);
     }

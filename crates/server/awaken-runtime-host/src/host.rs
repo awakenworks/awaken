@@ -25,7 +25,7 @@ use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_ext_goal::{AgentToolGrader, GoalPlugin, GoalSpec, Grader, KeywordGrader};
 use awaken_ext_skills::{SkillRegistry, SkillSpec};
-use awaken_file_store::{FileStore, InMemoryFileStore};
+use awaken_file_store::FileStore;
 use awaken_run_ingress::{
     AnyDispatchStore, CompletionSink, DEFAULT_LEASE_MS, DispatchPool, DispatchQueue,
     DispatchServiceConfig, DurableRunIngress, RunDispatch, SubmitOptions, SystemClock,
@@ -114,6 +114,11 @@ pub(crate) use worker_resolver::HostWorkerResolver;
 
 /// The protocol-neutral, thread-keyed session substrate shared by every adapter.
 pub struct SharedHost {
+    /// Platform-managed workspace for flat, no-login local requests. It is
+    /// generated (and persisted with durable storage), never compiled in.
+    pub(crate) local_workspace: String,
+    /// Trusted workspace recorded for each prepared thread/session.
+    pub(crate) thread_workspaces: std::sync::Mutex<HashMap<String, String>>,
     /// The host DEFAULT executor: used by auxiliary sub-agents (judge, compactor,
     /// memory) and as the fallback when no [`ExecutorProvider`] resolves a thread's
     /// model. The main run resolves its executor per thread via `resolve_executor`.
@@ -202,6 +207,8 @@ pub struct SharedHost {
     /// Content-addressed blob store backing the Files API, file-resource mounts, and
     /// collected artifacts. In-memory by default (one server process).
     pub(crate) file_store: Arc<dyn FileStore>,
+    /// Durable workspace ownership projection for content-addressed resources.
+    pub(crate) resource_ownership: crate::resource_ownership::ResourceOwnership,
     /// The memory resource plane's *content* backends (ADR-0038/0053): the id-keyed
     /// read-write blob store + the path-addressed CAS `/memories` store, both governed
     /// by one storage-dir durability rule and grouped behind one type that owns that

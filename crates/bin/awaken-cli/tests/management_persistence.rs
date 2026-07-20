@@ -81,9 +81,11 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
         );
         let audit_store = SqliteConfigStore::open(dir.path().join("config.db").to_str().unwrap())
             .expect("open durable audit store");
+        let platform_workspace = std::fs::read_to_string(dir.path().join("platform-workspace-id"))
+            .expect("platform workspace persisted");
         let audit_entry = audit_store
             .get_management_audit_scoped(
-                &ScopeId::from("default"),
+                &ScopeId::from(platform_workspace.trim()),
                 "http:PUT:/v1/config/providers/audit-probe",
                 "audit-request-1",
             )

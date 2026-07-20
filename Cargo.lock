@@ -327,6 +327,7 @@ dependencies = [
  "awaken-control",
  "awaken-credential-vault",
  "awaken-ext-mcp",
+ "awaken-iam-client",
  "awaken-iam-contract",
  "awaken-iam-core",
  "awaken-model-catalog",
@@ -678,6 +679,7 @@ dependencies = [
  "awaken-iam-core",
  "reqwest 0.12.28",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
 ]
 

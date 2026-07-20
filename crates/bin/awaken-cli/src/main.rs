@@ -123,7 +123,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let addr = std::env::var("AWAKEN_HTTP_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    let iam = std::env::var("AWAKEN_MGMT_IAM").as_deref() == Ok("embedded");
+    let identity = std::env::var("AWAKEN_IDENTITY_MODE")
+        .or_else(|_| std::env::var("AWAKEN_MGMT_IAM"))
+        .ok()
+        .and_then(|value| awaken_cli::ManagementIdentityMode::parse(&value))
+        .unwrap_or(awaken_cli::ManagementIdentityMode::NoLogin);
     let durable = std::env::var("AWAKEN_MGMT_DIR").is_ok();
     eprintln!(
         "awaken serving on http://{addr} (management plane; models resolved from the \
@@ -133,10 +137,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             "in-memory (set AWAKEN_MGMT_DIR to persist)"
         },
-        if iam {
-            "embedded IAM"
-        } else {
-            "open (key-resolved tenancy)"
+        match identity {
+            awaken_cli::ManagementIdentityMode::NoLogin => "no login",
+            awaken_cli::ManagementIdentityMode::AwakenCloud => "Awaken Cloud account",
+            awaken_cli::ManagementIdentityMode::SelfManaged => "self-managed IAM",
         },
     );
     axum::serve(listener, app)

@@ -92,6 +92,7 @@ awaken-iam-contract = { git = "https://github.com/awakenworks/awaken-iam", rev =
 awaken-iam-server = { git = "https://github.com/awakenworks/awaken-iam", rev = "9aa91e1b1c2533acc00cc151aa3fdccc89f0f97f" }
 awaken-iam-core = { git = "https://github.com/awakenworks/awaken-iam", rev = "9aa91e1b1c2533acc00cc151aa3fdccc89f0f97f" }
 awaken-iam-preset = { git = "https://github.com/awakenworks/awaken-iam", rev = "9aa91e1b1c2533acc00cc151aa3fdccc89f0f97f" }
+awaken-iam-client = { git = "https://github.com/awakenworks/awaken-iam", rev = "9aa91e1b1c2533acc00cc151aa3fdccc89f0f97f" }
 # The assembly layer (ADR-0048): one IamGate (authn+authz PDP) + auth_layer PEP,
 # three modes (Open/Local/Remote). Local mode is the zero-config single-machine
 # embed (in-memory SQLite, seeded roles, ephemeral bootstrap admin token).

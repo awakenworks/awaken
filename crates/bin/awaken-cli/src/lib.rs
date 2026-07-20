@@ -33,8 +33,8 @@ pub use crate::brain_admin::{
 // Embedded management-plane IAM (ADR-0042/0043 P1) + the mint spec and bootstrap
 // constants a test / operator embedding drives — re-exported from the authoring plane.
 pub use awaken_control::{
-    ADMIN_TOKEN_FILE, BOOTSTRAP_PRINCIPAL, BOOTSTRAP_WORKSPACE, ManagementAuthz, TokenSpec,
-    embedded_iam,
+    ADMIN_TOKEN_FILE, BOOTSTRAP_PRINCIPAL, BOOTSTRAP_WORKSPACE, ManagementAuthz,
+    ManagementIdentityMode, RemoteManagementAuthz, TokenSpec, embedded_iam,
 };
 
 /// The live credential probe backing the admin router, backed by provider-genai
@@ -64,6 +64,8 @@ impl awaken_admin_config_api::CredentialProbe for GenaiProbe {
 /// The store set the management plane runs over — one instance of each port,
 /// shared by the authoring router, the vault front door, and session prepare.
 struct ManagementStores {
+    /// Durable installation root used to persist the platform Workspace id.
+    workspace_root: Option<std::path::PathBuf>,
     catalog: Arc<dyn awaken_model_catalog::repo::CatalogRepo>,
     credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
     secrets: Arc<dyn awaken_credential_vault::SecretStore>,
@@ -132,6 +134,7 @@ fn spawn_credential_creation_reconciliation(
 /// Ephemeral management stores: everything in process memory (dev / e2e default).
 fn in_memory_management_stores() -> ManagementStores {
     ManagementStores {
+        workspace_root: None,
         catalog: Arc::new(awaken_model_catalog::repo::InMemoryCatalogRepo::new()),
         credentials: Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new()),
         secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
@@ -169,6 +172,7 @@ fn durable_management_stores(dir: &std::path::Path, key: &[u8; 32]) -> Managemen
             .expect("open admin.db under AWAKEN_MGMT_DIR"),
     );
     ManagementStores {
+        workspace_root: Some(dir.to_path_buf()),
         catalog: Arc::new(catalog),
         credentials: Arc::new(credentials),
         // The only durable secret path is sealed: `nonce ‖ ciphertext` under the
@@ -385,6 +389,7 @@ async fn open_management_stores(
     };
 
     ManagementStores {
+        workspace_root: None,
         catalog,
         credentials,
         secrets,
@@ -446,23 +451,44 @@ pub async fn build_management_router_with_fallback(
     fallback_model: Arc<dyn LlmExecutor>,
     fallback_model_ref: String,
 ) -> Router {
-    let iam = match std::env::var("AWAKEN_MGMT_IAM") {
-        Ok(mode) if mode == "embedded" => {
+    let legacy_mode = std::env::var("AWAKEN_MGMT_IAM").ok();
+    let identity_mode = std::env::var("AWAKEN_IDENTITY_MODE")
+        .ok()
+        .as_deref()
+        .and_then(ManagementIdentityMode::parse)
+        .or_else(|| {
+            legacy_mode
+                .as_deref()
+                .and_then(ManagementIdentityMode::parse)
+        })
+        .unwrap_or(ManagementIdentityMode::NoLogin);
+    let (iam, remote_iam) = match identity_mode {
+        ManagementIdentityMode::SelfManaged => {
             let dir = std::env::var("AWAKEN_MGMT_DIR").unwrap_or_else(|_| {
                 panic!(
-                    "AWAKEN_MGMT_IAM=embedded requires AWAKEN_MGMT_DIR: the embedded \
+                    "self-managed IAM requires AWAKEN_MGMT_DIR: the embedded \
                      IAM persists its API tokens and role bindings under \
                      <AWAKEN_MGMT_DIR>/iam.sqlite; an in-memory token directory would \
                      mint a fresh bootstrap admin token on every restart."
                 )
             });
-            Some(embedded_iam(std::path::Path::new(&dir)))
+            let workspace = SharedHost::provision_local_workspace_at(std::path::Path::new(&dir));
+            (
+                Some(awaken_control::embedded_iam_for_workspace(
+                    std::path::Path::new(&dir),
+                    &workspace,
+                )),
+                None,
+            )
         }
-        Ok(other) => panic!(
-            "unsupported AWAKEN_MGMT_IAM value `{other}`: only `embedded` (or unset for \
-             the open management plane) is supported"
+        ManagementIdentityMode::AwakenCloud => (
+            None,
+            Some(
+                awaken_cloud_authz_from_env()
+                    .unwrap_or_else(|error| panic!("Awaken Cloud identity: {error}")),
+            ),
         ),
-        Err(_) => None,
+        ManagementIdentityMode::NoLogin => (None, None),
     };
     match std::env::var("AWAKEN_MGMT_DIR") {
         Ok(dir) => {
@@ -473,6 +499,7 @@ pub async fn build_management_router_with_fallback(
             management_router_over(
                 open_management_stores(cfg, &key).await,
                 iam,
+                remote_iam,
                 fallback_model,
                 fallback_model_ref,
                 None,
@@ -483,6 +510,7 @@ pub async fn build_management_router_with_fallback(
             management_router_over(
                 in_memory_management_stores(),
                 iam,
+                remote_iam,
                 fallback_model,
                 fallback_model_ref,
                 None,
@@ -490,6 +518,27 @@ pub async fn build_management_router_with_fallback(
             .await
         }
     }
+}
+
+fn awaken_cloud_authz_from_env() -> Result<Arc<RemoteManagementAuthz>, String> {
+    let base_url = std::env::var("AWAKEN_CLOUD_IAM_URL")
+        .unwrap_or_else(|_| "https://accounts.awakenworks.com".to_string());
+    let user_token = std::env::var("AWAKEN_CLOUD_ACCESS_TOKEN")
+        .ok()
+        .or_else(|| {
+            awaken_iam_client::CredentialCache::open()
+                .load(&base_url)
+                .map(|entry| entry.token.expose().to_owned())
+        })
+        .ok_or_else(|| "Awaken Cloud login credential is missing or expired".to_string())?;
+    RemoteManagementAuthz::connect(
+        base_url,
+        std::env::var("AWAKEN_CLOUD_IAM_AUDIENCE").unwrap_or_else(|_| "awaken-runtime".to_string()),
+        std::env::var("AWAKEN_CLOUD_IAM_ISSUER")
+            .unwrap_or_else(|_| "https://accounts.awakenworks.com".to_string()),
+        user_token,
+        std::env::var("AWAKEN_CLOUD_IAM_SERVICE_TOKEN").ok(),
+    )
 }
 
 /// [`build_management_router_with_model`] plus a last-mile hook on the assembled host
@@ -504,6 +553,7 @@ pub async fn build_management_router_with_host_customizer(
 ) -> Router {
     management_router_over(
         in_memory_management_stores(),
+        None,
         None,
         model,
         model_ref.into(),
@@ -523,6 +573,7 @@ pub async fn build_management_router_with_model(
     management_router_over(
         in_memory_management_stores(),
         None,
+        None,
         model,
         model_ref.into(),
         None,
@@ -538,6 +589,7 @@ pub async fn build_management_router_with_model(
 pub async fn build_durable_management_router(dir: &std::path::Path, key: &[u8; 32]) -> Router {
     management_router_over(
         durable_management_stores(dir, key),
+        None,
         None,
         Arc::new(awaken_server::no_model::NoModelConfiguredExecutor),
         awaken_server::no_model::UNCONFIGURED_MODEL_REF.to_string(),
@@ -558,6 +610,7 @@ pub async fn build_secured_management_router(
     let router = management_router_over(
         durable_management_stores(dir, key),
         Some(iam.clone()),
+        None,
         Arc::new(awaken_server::no_model::NoModelConfiguredExecutor),
         awaken_server::no_model::UNCONFIGURED_MODEL_REF.to_string(),
         None,
@@ -574,6 +627,7 @@ pub async fn build_secured_management_router(
 async fn management_router_over(
     stores: ManagementStores,
     iam: Option<Arc<ManagementAuthz>>,
+    remote_iam: Option<Arc<RemoteManagementAuthz>>,
     // The host default model for the window before an operator publishes one. In
     // production this is the provider-free `NoModelConfiguredExecutor` (guidance,
     // never a mock); a test may inject a deterministic model.
@@ -587,6 +641,7 @@ async fn management_router_over(
     customize_host: Option<Box<dyn FnOnce(SharedHost) -> SharedHost + Send>>,
 ) -> Router {
     let ManagementStores {
+        workspace_root,
         catalog,
         credentials,
         secrets,
@@ -599,6 +654,13 @@ async fn management_router_over(
         config,
         environments,
     } = stores;
+    // Resolve the installation's Workspace exactly once, then inject the same
+    // coordinate into every adapter assembled below. Durable roots persist it;
+    // ephemeral roots receive a process-local generated coordinate.
+    let platform_workspace = workspace_root.as_deref().map_or_else(
+        SharedHost::provision_local_workspace,
+        SharedHost::provision_local_workspace_at,
+    );
     // Finish or compensate any credential creation interrupted by a prior hard
     // process crash before exposing the management/data planes.
     if let Err(error) = awaken_credential_vault::repo::recover_credential_creations(
@@ -669,7 +731,7 @@ async fn management_router_over(
     let warmed = config_service
         .warm_install(
             config.as_ref(),
-            &awaken_tenancy::ScopeId::from(awaken_config_store::DEFAULT_SCOPE),
+            &awaken_tenancy::ScopeId::from(platform_workspace.as_str()),
         )
         .await;
     if warmed > 0 {
@@ -710,6 +772,7 @@ async fn management_router_over(
     let resource_inventory = Arc::new(awaken_control::HostResourceInventory::new(
         memory_registry.clone(),
         skill_store.clone(),
+        platform_workspace.clone(),
     ));
     // The management tool executables (ADR-0052 D3/D4): the capability reader reads the
     // shared catalog + advertised tools; the validator runs the publish-time compile
@@ -735,13 +798,13 @@ async fn management_router_over(
         )),
         Arc::new(awaken_control::ConfigServiceDraftValidator::new(
             plane.clone(),
-            awaken_config_store::DEFAULT_SCOPE,
+            platform_workspace.clone(),
         )),
         // Persist/read drafts as unpublished config agents through the same plane the
         // editor's Save uses, in the tenant/default scope (ADR-0052).
         Arc::new(awaken_control::ConfigServiceDraftStore::new(
             plane.clone(),
-            awaken_config_store::DEFAULT_SCOPE,
+            platform_workspace.clone(),
             resource_store.clone(),
         )),
         Arc::new(awaken_admin_assistant::TracingAuditSink),
@@ -767,6 +830,7 @@ async fn management_router_over(
         global_tools: global,
         org_id: std::env::var("AWAKEN_ORG_ID").ok(),
         iam,
+        remote_iam,
     });
 
     // The data plane: the host runs the server model, resolves a session's agent to
@@ -779,10 +843,11 @@ async fn management_router_over(
         exec_catalog,
         exec_credentials,
         exec_secrets,
-        awaken_control::BOOTSTRAP_WORKSPACE,
+        platform_workspace.clone(),
     )
     .with_fallback_executor(model_ref.clone(), model.clone());
     let host_builder = SharedHost::new(model, model_ref)
+        .with_local_workspace(platform_workspace.clone())
         .with_config_service(config_service.clone())
         .with_admin_tools(admin_execs)
         .with_skill_store_backend(skill_store)
@@ -854,6 +919,7 @@ async fn management_router_over(
         },
     );
     let flat = flat.layer(reconcile_on_catalog_write);
+    let flat = awaken_server::workspace_path::with_platform_workspace(flat, platform_workspace);
     awaken_server::workspace_path::with_workspace_path_addressing(flat)
 }
 

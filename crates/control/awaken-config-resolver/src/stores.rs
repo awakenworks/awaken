@@ -25,6 +25,10 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MemoryStoreDef {
     pub id: String,
+    /// Owning platform workspace. Empty only for legacy rows written before
+    /// ownership became durable; scoped APIs treat those rows as unowned.
+    #[serde(default)]
+    pub workspace_id: String,
     pub name: String,
     #[serde(default)]
     pub description: String,
@@ -278,11 +282,25 @@ impl WebhookStore for InMemoryWebhookStore {
 pub trait ResourceStore: Send + Sync {
     fn put_agent_resource(&self, config: AgentResourceConfig);
     fn get_agent_resource(&self, agent_id: &str) -> Option<AgentResourceConfig>;
+
+    /// Workspace-scoped variants used by every platform edge. Legacy adapters
+    /// inherit the old behavior, while durable/platform stores override these
+    /// with a composite key so equal agent ids cannot collide across tenants.
+    fn put_agent_resource_in(&self, _workspace: &str, config: AgentResourceConfig) {
+        self.put_agent_resource(config);
+    }
+    fn get_agent_resource_in(
+        &self,
+        _workspace: &str,
+        agent_id: &str,
+    ) -> Option<AgentResourceConfig> {
+        self.get_agent_resource(agent_id)
+    }
 }
 
 /// The default in-memory [`ResourceStore`], keyed by agent id.
 #[derive(Default)]
-pub struct InMemoryResourceStore(std::sync::Mutex<HashMap<String, AgentResourceConfig>>);
+pub struct InMemoryResourceStore(std::sync::Mutex<HashMap<(String, String), AgentResourceConfig>>);
 
 impl InMemoryResourceStore {
     #[must_use]
@@ -296,13 +314,30 @@ impl ResourceStore for InMemoryResourceStore {
         self.0
             .lock()
             .expect("agent resource configs")
-            .insert(config.agent_id.clone(), config);
+            .insert((String::new(), config.agent_id.clone()), config);
     }
     fn get_agent_resource(&self, agent_id: &str) -> Option<AgentResourceConfig> {
         self.0
             .lock()
             .expect("agent resource configs")
-            .get(agent_id)
+            .get(&(String::new(), agent_id.to_string()))
+            .cloned()
+    }
+    fn put_agent_resource_in(&self, workspace: &str, config: AgentResourceConfig) {
+        self.0
+            .lock()
+            .expect("agent resource configs")
+            .insert((workspace.to_string(), config.agent_id.clone()), config);
+    }
+    fn get_agent_resource_in(
+        &self,
+        workspace: &str,
+        agent_id: &str,
+    ) -> Option<AgentResourceConfig> {
+        self.0
+            .lock()
+            .expect("agent resource configs")
+            .get(&(workspace.to_string(), agent_id.to_string()))
             .cloned()
     }
 }
@@ -314,6 +349,7 @@ mod tests {
     fn def(id: &str, archived: bool) -> MemoryStoreDef {
         MemoryStoreDef {
             id: id.to_string(),
+            workspace_id: "ws_test".to_string(),
             name: format!("{id} name"),
             description: String::new(),
             metadata: std::collections::BTreeMap::new(),

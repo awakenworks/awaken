@@ -573,6 +573,7 @@ async fn attach_resource_stages_the_mount_and_evicts_the_cached_sandbox() {
         .put(b"hello-attached")
         .await
         .expect("put blob");
+    host.grant_file(host.local_workspace(), &file_id);
     host.run(None, "t-attach", user("hi"))
         .await
         .expect("first turn");
@@ -637,6 +638,7 @@ async fn prepare_session_stages_egress_into_the_sandbox_spec() {
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let managed = crate::ManagedHost::new(host.clone());
     let init = |deny: bool| SessionInit {
+        workspace_id: host.local_workspace().into(),
         agent_id: "a".into(),
         mcp_servers: Vec::new(),
         resources: Vec::new(),
@@ -690,27 +692,31 @@ async fn prepare_session_mounts_the_agents_bound_memory_store() {
     host.memory_stores
         .blob()
         .put(
-            crate::provisioning::HOST_MEMORY_WORKSPACE,
+            host.local_workspace(),
             &store_id,
             b"the secret code is BANANA-42",
         )
         .await
         .expect("seed memory bytes");
     let bindings: Arc<dyn ResourceStore> = Arc::new(InMemoryResourceStore::new());
-    bindings.put_agent_resource(AgentResourceConfig {
-        agent_id: "a".into(),
-        resources: vec![ResourceBinding {
-            kind: ResourceKind::MemoryStore,
-            resource_id: store_id.clone(),
-            mount_path: "/mnt/memory".into(),
-            access: ResourceAccess::ReadWrite,
-            instructions: None,
-        }],
-        version: 1,
-    });
+    bindings.put_agent_resource_in(
+        host.local_workspace(),
+        AgentResourceConfig {
+            agent_id: "a".into(),
+            resources: vec![ResourceBinding {
+                kind: ResourceKind::MemoryStore,
+                resource_id: store_id.clone(),
+                mount_path: "/mnt/memory".into(),
+                access: ResourceAccess::ReadWrite,
+                instructions: None,
+            }],
+            version: 1,
+        },
+    );
     let managed = crate::ManagedHost::new(host.clone()).with_resources(bindings);
 
     let bare = |agent: &str| SessionInit {
+        workspace_id: host.local_workspace().into(),
         agent_id: agent.into(),
         mcp_servers: Vec::new(),
         resources: Vec::new(),
@@ -762,33 +768,38 @@ async fn prepare_session_mounts_bound_file_and_stages_bound_repo() {
         .put(b"port is 8080")
         .await
         .expect("put blob");
+    host.grant_file(host.local_workspace(), &file_id);
     let bindings: Arc<dyn ResourceStore> = Arc::new(InMemoryResourceStore::new());
-    bindings.put_agent_resource(AgentResourceConfig {
-        agent_id: "a".into(),
-        resources: vec![
-            ResourceBinding {
-                kind: ResourceKind::File,
-                resource_id: file_id.clone(),
-                mount_path: "/mnt/files/notes.txt".into(),
-                access: ResourceAccess::ReadOnly,
-                instructions: None,
-            },
-            ResourceBinding {
-                kind: ResourceKind::GithubRepository,
-                resource_id: "https://github.com/awaken/example.git".into(),
-                mount_path: "/mnt/repo".into(),
-                access: ResourceAccess::ReadOnly,
-                instructions: None,
-            },
-        ],
-        version: 1,
-    });
+    bindings.put_agent_resource_in(
+        host.local_workspace(),
+        AgentResourceConfig {
+            agent_id: "a".into(),
+            resources: vec![
+                ResourceBinding {
+                    kind: ResourceKind::File,
+                    resource_id: file_id.clone(),
+                    mount_path: "/mnt/files/notes.txt".into(),
+                    access: ResourceAccess::ReadOnly,
+                    instructions: None,
+                },
+                ResourceBinding {
+                    kind: ResourceKind::GithubRepository,
+                    resource_id: "https://github.com/awaken/example.git".into(),
+                    mount_path: "/mnt/repo".into(),
+                    access: ResourceAccess::ReadOnly,
+                    instructions: None,
+                },
+            ],
+            version: 1,
+        },
+    );
     let managed = crate::ManagedHost::new(host.clone()).with_resources(bindings);
 
     managed
         .prepare_session(
             "t-multi",
             SessionInit {
+                workspace_id: host.local_workspace().into(),
                 agent_id: "a".into(),
                 mcp_servers: Vec::new(),
                 resources: Vec::new(),
@@ -835,6 +846,7 @@ async fn a_github_repository_resource_injects_a_scoped_github_mcp_server() {
         .prepare_session(
             "t-gh",
             SessionInit {
+                workspace_id: host.local_workspace().into(),
                 agent_id: "a".into(),
                 mcp_servers: Vec::new(),
                 resources: vec![SessionResource {
@@ -911,6 +923,7 @@ async fn rotating_a_github_repository_token_re_keys_the_clone_and_mcp_bearer() {
         .prepare_session(
             "t-rot",
             SessionInit {
+                workspace_id: host.local_workspace().into(),
                 agent_id: "a".into(),
                 mcp_servers: Vec::new(),
                 resources: vec![gh_res("ghp_old")],
@@ -967,8 +980,9 @@ async fn rotating_a_github_repository_token_re_keys_the_clone_and_mcp_bearer() {
 /// A bare session for `agent` with no wire resources — the common "just run the agent"
 /// path where only its bound resources apply.
 #[cfg(test)]
-fn bare_session(agent: &str) -> awaken_protocol_managed::SessionInit {
+fn bare_session(agent: &str, workspace: &str) -> awaken_protocol_managed::SessionInit {
     awaken_protocol_managed::SessionInit {
+        workspace_id: workspace.into(),
         agent_id: agent.into(),
         mcp_servers: Vec::new(),
         resources: Vec::new(),
@@ -994,11 +1008,7 @@ async fn told_equals_mounted_the_prompt_path_and_access_match_the_realized_mount
     let store_id = host.create_memory_store().await;
     host.memory_stores
         .blob()
-        .put(
-            crate::provisioning::HOST_MEMORY_WORKSPACE,
-            &store_id,
-            b"seed",
-        )
+        .put(host.local_workspace(), &store_id, b"seed")
         .await
         .expect("seed memory bytes");
 
@@ -1014,10 +1024,10 @@ async fn told_equals_mounted_the_prompt_path_and_access_match_the_realized_mount
         version: 1,
     };
     let bindings: Arc<dyn ResourceStore> = Arc::new(InMemoryResourceStore::new());
-    bindings.put_agent_resource(cfg.clone());
+    bindings.put_agent_resource_in(host.local_workspace(), cfg.clone());
     let managed = crate::ManagedHost::new(host.clone()).with_resources(bindings);
     managed
-        .prepare_session("t-g1", bare_session("a"))
+        .prepare_session("t-g1", bare_session("a", host.local_workspace()))
         .await
         .unwrap();
 
@@ -1063,38 +1073,33 @@ async fn a_wire_resource_overrides_the_agent_binding_at_the_same_path() {
     let s2 = host.create_memory_store().await; // wire override
     host.memory_stores
         .blob()
-        .put(
-            crate::provisioning::HOST_MEMORY_WORKSPACE,
-            &s1,
-            b"AGENT-BYTES",
-        )
+        .put(host.local_workspace(), &s1, b"AGENT-BYTES")
         .await
         .unwrap();
     host.memory_stores
         .blob()
-        .put(
-            crate::provisioning::HOST_MEMORY_WORKSPACE,
-            &s2,
-            b"WIRE-BYTES",
-        )
+        .put(host.local_workspace(), &s2, b"WIRE-BYTES")
         .await
         .unwrap();
 
     let bindings: Arc<dyn ResourceStore> = Arc::new(InMemoryResourceStore::new());
-    bindings.put_agent_resource(AgentResourceConfig {
-        agent_id: "a".into(),
-        resources: vec![ResourceBinding {
-            kind: ResourceKind::MemoryStore,
-            resource_id: s1.clone(),
-            mount_path: "/mnt/memory".into(),
-            access: ResourceAccess::ReadWrite,
-            instructions: None,
-        }],
-        version: 1,
-    });
+    bindings.put_agent_resource_in(
+        host.local_workspace(),
+        AgentResourceConfig {
+            agent_id: "a".into(),
+            resources: vec![ResourceBinding {
+                kind: ResourceKind::MemoryStore,
+                resource_id: s1.clone(),
+                mount_path: "/mnt/memory".into(),
+                access: ResourceAccess::ReadWrite,
+                instructions: None,
+            }],
+            version: 1,
+        },
+    );
     let managed = crate::ManagedHost::new(host.clone()).with_resources(bindings);
 
-    let mut init = bare_session("a");
+    let mut init = bare_session("a", host.local_workspace());
     init.resources = vec![SessionResource {
         kind: "memory_store".into(),
         id: s2.clone(),
@@ -1144,20 +1149,25 @@ async fn a_bound_resource_with_a_missing_backing_store_fails_the_session_closed(
     use awaken_protocol_managed::SessionRuntime;
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let bindings: Arc<dyn ResourceStore> = Arc::new(InMemoryResourceStore::new());
-    bindings.put_agent_resource(AgentResourceConfig {
-        agent_id: "a".into(),
-        resources: vec![ResourceBinding {
-            kind: ResourceKind::MemoryStore,
-            resource_id: "never-seeded-store".into(), // no backing bytes exist
-            mount_path: "/mnt/memory".into(),
-            access: ResourceAccess::ReadWrite,
-            instructions: None,
-        }],
-        version: 1,
-    });
+    bindings.put_agent_resource_in(
+        host.local_workspace(),
+        AgentResourceConfig {
+            agent_id: "a".into(),
+            resources: vec![ResourceBinding {
+                kind: ResourceKind::MemoryStore,
+                resource_id: "never-seeded-store".into(), // no backing bytes exist
+                mount_path: "/mnt/memory".into(),
+                access: ResourceAccess::ReadWrite,
+                instructions: None,
+            }],
+            version: 1,
+        },
+    );
     let managed = crate::ManagedHost::new(host.clone()).with_resources(bindings);
 
-    let result = managed.prepare_session("t-g4", bare_session("a")).await;
+    let result = managed
+        .prepare_session("t-g4", bare_session("a", host.local_workspace()))
+        .await;
     assert!(
         result.is_err(),
         "a binding to a missing backing store must fail closed, not mount empty"
@@ -1187,25 +1197,24 @@ async fn an_agents_bound_resource_mounts_with_the_store_but_not_on_a_db_less_wor
         let store_id = host.create_memory_store().await;
         host.memory_stores
             .blob()
-            .put(
-                crate::provisioning::HOST_MEMORY_WORKSPACE,
-                &store_id,
-                b"CARRIED-BYTES",
-            )
+            .put(host.local_workspace(), &store_id, b"CARRIED-BYTES")
             .await
             .expect("seed");
         let bindings: Arc<dyn ResourceStore> = Arc::new(InMemoryResourceStore::new());
-        bindings.put_agent_resource(AgentResourceConfig {
-            agent_id: "a".into(),
-            resources: vec![ResourceBinding {
-                kind: ResourceKind::MemoryStore,
-                resource_id: store_id,
-                mount_path: "/mnt/memory".into(),
-                access: ResourceAccess::ReadWrite,
-                instructions: None,
-            }],
-            version: 1,
-        });
+        bindings.put_agent_resource_in(
+            host.local_workspace(),
+            AgentResourceConfig {
+                agent_id: "a".into(),
+                resources: vec![ResourceBinding {
+                    kind: ResourceKind::MemoryStore,
+                    resource_id: store_id,
+                    mount_path: "/mnt/memory".into(),
+                    access: ResourceAccess::ReadWrite,
+                    instructions: None,
+                }],
+                version: 1,
+            },
+        );
         bindings
     }
 
@@ -1214,7 +1223,7 @@ async fn an_agents_bound_resource_mounts_with_the_store_but_not_on_a_db_less_wor
     let bindings = bind(&with_store).await;
     let managed_with = crate::ManagedHost::new(with_store.clone()).with_resources(bindings);
     managed_with
-        .prepare_session("t-g5-with", bare_session("a"))
+        .prepare_session("t-g5-with", bare_session("a", with_store.local_workspace()))
         .await
         .unwrap();
     let with_dump = serde_json::to_string(&with_store.sandbox_spec("t-g5-with").mounts).unwrap();
@@ -1233,7 +1242,7 @@ async fn an_agents_bound_resource_mounts_with_the_store_but_not_on_a_db_less_wor
     bind(&db_less).await; // seed the store's *bytes*, but do NOT wire the binding store
     let managed_worker = crate::ManagedHost::new(db_less.clone()); // no .with_resources(...)
     managed_worker
-        .prepare_session("t-g5-worker", bare_session("a"))
+        .prepare_session("t-g5-worker", bare_session("a", db_less.local_workspace()))
         .await
         .unwrap();
     let worker_dump = serde_json::to_string(&db_less.sandbox_spec("t-g5-worker").mounts).unwrap();

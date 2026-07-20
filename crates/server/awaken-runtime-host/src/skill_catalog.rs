@@ -12,11 +12,10 @@ use std::sync::{Arc, Mutex};
 use awaken_ext_skills::SkillSpec;
 use awaken_skill_store::SkillStore;
 
-use crate::provisioning::HOST_SKILL_WORKSPACE;
-
 /// Skills offered on every thread, plus the durable delivered-catalog and its
 /// synchronous read cache. See the module docs for the coherence invariant.
 pub(crate) struct SkillCatalog {
+    local_workspace: String,
     /// Skills offered on every thread (ADR-0036). The whole set is fronted by the
     /// single `Skill` tool; the model activates one by id to load its instructions.
     specs: Vec<SkillSpec>,
@@ -31,18 +30,23 @@ pub(crate) struct SkillCatalog {
     /// `SkillSource` scan — refreshed from the async `store` on a write and at each
     /// session's setup (`reload_cache`). This is how a network-DB (async) catalog
     /// serves the host's sync read paths.
-    cache: Mutex<Vec<(String, String)>>,
+    cache: Mutex<std::collections::BTreeMap<String, Vec<(String, String)>>>,
 }
 
 impl SkillCatalog {
     /// An empty catalog: no static skills, no durable store. The builder wires the
     /// configured set and (optionally) a store.
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(local_workspace: String) -> Self {
         Self {
+            local_workspace,
             specs: Vec::new(),
             store: None,
-            cache: Mutex::new(Vec::new()),
+            cache: Mutex::new(std::collections::BTreeMap::new()),
         }
+    }
+
+    pub(crate) fn set_local_workspace(&mut self, workspace: String) {
+        self.local_workspace = workspace;
     }
 
     /// Builder: append the configured static skills.
@@ -68,24 +72,39 @@ impl SkillCatalog {
     /// Store (or overwrite) a delivered skill's `SKILL.md` `content` under `id` in the
     /// durable catalog, returning the safe id it is addressable by. `None` when this
     /// host has no durable skill store wired (nothing to persist into).
+    #[cfg(test)]
     pub(crate) async fn store_put(&self, id: &str, content: &str) -> Option<String> {
+        self.store_put_in(&self.local_workspace, id, content).await
+    }
+
+    pub(crate) async fn store_put_in(
+        &self,
+        workspace: &str,
+        id: &str,
+        content: &str,
+    ) -> Option<String> {
         let store = self.store.as_ref()?;
         let out = store
-            .put(HOST_SKILL_WORKSPACE, id, content)
+            .put(workspace, id, content)
             .await
             .expect("persist durable skill");
         // Keep the sync-read cache current for advertisement + scan.
-        self.reload_cache().await;
+        self.reload_cache_in(workspace).await;
         Some(out)
     }
 
     /// The ids currently in the durable skill catalog (read straight from the store,
     /// so the CRUD `list` reflects any peer node's writes). Empty when no store is
     /// wired.
+    #[cfg(test)]
     pub(crate) async fn store_list(&self) -> Vec<String> {
+        self.store_list_in(&self.local_workspace).await
+    }
+
+    pub(crate) async fn store_list_in(&self, workspace: &str) -> Vec<String> {
         match self.store.as_ref() {
             Some(store) => store
-                .list(HOST_SKILL_WORKSPACE)
+                .list(workspace)
                 .await
                 .unwrap_or_default()
                 .into_iter()
@@ -95,51 +114,61 @@ impl SkillCatalog {
         }
     }
 
-    /// Delete one delivered skill and refresh every synchronous projection. Tagged
-    /// catalog ids are resolved through the cache to the durable stem; raw legacy
-    /// ids are accepted directly. `None` means no durable store is configured.
-    pub(crate) async fn store_delete(&self, id: &str) -> Option<bool> {
+    pub(crate) async fn store_delete_in(&self, workspace: &str, id: &str) -> Option<bool> {
         let store = self.store.as_ref()?;
         let durable_id = self
-            .cache_snapshot()
+            .cache_snapshot_in(workspace)
             .into_iter()
             .find(|(stem, _)| awaken_skill_store::catalog_id(stem) == id || stem == id)
             .map_or_else(|| id.to_string(), |(stem, _)| stem);
         let removed = store
-            .delete(HOST_SKILL_WORKSPACE, &durable_id)
+            .delete(workspace, &durable_id)
             .await
             .expect("delete durable skill");
-        self.reload_cache().await;
+        self.reload_cache_in(workspace).await;
         Some(removed)
     }
 
     /// Refresh the in-memory delivered-catalog snapshot from the async store. Called
     /// on a write and at each session's setup so the sync read paths (advertisement,
     /// run-loop scan) see the current catalog.
-    pub(crate) async fn reload_cache(&self) {
+    pub(crate) async fn reload_cache_in(&self, workspace: &str) {
         if let Some(store) = self.store.as_ref() {
-            let snapshot = store.list(HOST_SKILL_WORKSPACE).await.unwrap_or_default();
-            *self.cache.lock().expect("skill cache poisoned") = snapshot;
+            let snapshot = store.list(workspace).await.unwrap_or_default();
+            self.cache
+                .lock()
+                .expect("skill cache poisoned")
+                .insert(workspace.to_string(), snapshot);
         }
     }
 
     /// A clone of the cached delivered catalog `(id, content)` — the synchronous read
     /// the host's `SkillSource` bridge scans (the run-loop scan cannot await).
-    pub(crate) fn cache_snapshot(&self) -> Vec<(String, String)> {
-        self.cache.lock().expect("skill cache poisoned").clone()
+    pub(crate) fn cache_snapshot_in(&self, workspace: &str) -> Vec<(String, String)> {
+        self.cache
+            .lock()
+            .expect("skill cache poisoned")
+            .get(workspace)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// The skill ids offered on every thread (advertised as the agent's `skills`):
     /// the static configured set plus any durable `/v1/skills` catalog, de-duplicated
     /// with the static set winning, so the advertisement matches what `list_skills`
     /// resolves.
+    #[cfg(test)]
     pub(crate) fn ids(&self) -> Vec<String> {
+        self.ids_in(&self.local_workspace)
+    }
+
+    pub(crate) fn ids_in(&self, workspace: &str) -> Vec<String> {
         let mut ids: Vec<String> = self.specs.iter().map(|s| s.id.clone()).collect();
         // The durable catalog is read from the sync cache (refreshed on write and at
         // session setup); a network-DB store cannot be awaited from this sync path.
         // A durable skill is advertised by its tagged catalog id (not its name) so the
         // official worker can download it — `/v1/skills` resolves the same id.
-        for (stem, _) in self.cache_snapshot() {
+        for (stem, _) in self.cache_snapshot_in(workspace) {
             let id = awaken_skill_store::catalog_id(&stem);
             if !ids.contains(&id) {
                 ids.push(id);
@@ -153,8 +182,13 @@ impl SkillCatalog {
     /// courtesy, the raw durable stem. Lets the `/v1/skills` read paths serve any
     /// advertised id even for skills that never went through the SDK create route
     /// (harvested / legacy-delivered), where the in-memory registry has no entry.
+    #[cfg(test)]
     pub(crate) fn by_catalog_id(&self, id: &str) -> Option<(String, String)> {
-        self.cache_snapshot()
+        self.by_catalog_id_in(&self.local_workspace, id)
+    }
+
+    pub(crate) fn by_catalog_id_in(&self, workspace: &str, id: &str) -> Option<(String, String)> {
+        self.cache_snapshot_in(workspace)
             .into_iter()
             .find(|(stem, _)| awaken_skill_store::catalog_id(stem) == id || stem == id)
     }

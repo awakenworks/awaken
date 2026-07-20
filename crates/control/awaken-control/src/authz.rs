@@ -112,14 +112,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use awaken_iam_contract::{
     ActionKey, ApiToken, ApiTokenId, AuthorizationDecision, AuthorizationRequest, PrincipalRef,
-    ScopeRef, Timestamp, WorkspaceId,
+    ProjectId, ScopeRef, Timestamp, WorkspaceId,
 };
 use awaken_iam_core::{
     ApiTokenDirectory, ApiTokenMinter, Effect, EntropySource, Grant, GrantId, GrantSubject,
     IamError, IssuedApiToken, OsEntropy, RoleBinding, RoleId,
 };
 use awaken_iam_core::{ApiTokenRepo, RoleBindingRepo};
-use awaken_iam_host::{AuthReject, IamClient, IamGate, LocalIamState};
+use awaken_iam_host::{AuthReject, HostConfig, IamClient, IamGate, LocalIamState, connect_remote};
 use awaken_iam_preset::{named_role_catalog, seed_named_roles};
 use awaken_iam_server::{AuthzApi, SqlStore, SqliteBackend, sqlite_migrated_store};
 use awaken_protocol_managed::types::ErrorResponse;
@@ -181,6 +181,77 @@ pub struct ManagementAuthz {
     /// iam-server's repository adapter over `<dir>/iam.sqlite` (tokens,
     /// bindings, role defs — its schema, its migration ledger).
     store: SqlStore<SqliteBackend>,
+}
+
+/// Remote awaken-iam relying-party adapter for a locally running management
+/// plane. The cached user token authenticates local single-user requests and,
+/// unless a separate service credential is configured, the remote PDP call.
+pub struct RemoteManagementAuthz {
+    gate: IamGate,
+    user_token: String,
+}
+
+/// User-selectable identity posture for the local product.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagementIdentityMode {
+    /// Single-user local operation without login.
+    NoLogin,
+    /// Awaken Cloud account, reused by the local process.
+    AwakenCloud,
+    /// Separately configured embedded/self-managed IAM.
+    SelfManaged,
+}
+
+impl ManagementIdentityMode {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "none" | "no-login" => Some(Self::NoLogin),
+            "cloud" | "awaken-cloud" => Some(Self::AwakenCloud),
+            "embedded" | "local" | "self-managed" => Some(Self::SelfManaged),
+            _ => None,
+        }
+    }
+}
+
+impl RemoteManagementAuthz {
+    /// Connect to the authoritative IAM service and fetch its JWKS. Startup is
+    /// fail-closed when no cloud credential or trust anchor is available.
+    pub fn connect(
+        base_url: String,
+        audience: String,
+        issuer: String,
+        user_token: String,
+        service_token: Option<String>,
+    ) -> Result<Arc<Self>, String> {
+        let mut config = HostConfig::remote(base_url)
+            .with_audience(audience)
+            .with_issuer(issuer);
+        config.service_token = Some(service_token.unwrap_or_else(|| user_token.clone()));
+        let handle = connect_remote(&config).map_err(|error| error.to_string())?;
+        Ok(Arc::new(Self {
+            gate: handle.gate,
+            user_token,
+        }))
+    }
+
+    fn authenticate(&self, presented: Option<String>) -> Result<PrincipalRef, AuthReject> {
+        let token = presented.as_deref().unwrap_or(&self.user_token);
+        self.gate
+            .authenticate_detailed(token, &Timestamp(now_rfc3339()), now_unix())
+            .map(|(principal, _)| principal)
+    }
+
+    fn authorize(
+        &self,
+        principal: PrincipalRef,
+        action: &str,
+        scope: ScopeRef,
+    ) -> AuthorizationDecision {
+        IamClient::authorize(
+            &self.gate,
+            AuthorizationRequest::direct(principal, ActionKey(action.to_string()), scope),
+        )
+    }
 }
 
 /// A mint request for a workspace-scoped service token (operator embeddings
@@ -360,15 +431,9 @@ impl ManagementAuthz {
         &self,
         principal: PrincipalRef,
         action: &str,
-        workspace: WorkspaceId,
+        scope: ScopeRef,
     ) -> AuthorizationDecision {
-        let request = AuthorizationRequest::direct(
-            principal,
-            ActionKey(action.to_string()),
-            ScopeRef::Workspace {
-                workspace_id: workspace,
-            },
-        );
+        let request = AuthorizationRequest::direct(principal, ActionKey(action.to_string()), scope);
         self.gate.authorize(request)
     }
 }
@@ -382,6 +447,13 @@ impl ManagementAuthz {
 /// management server that silently came up open would be worse than one that
 /// refuses to start.
 pub fn embedded_iam(dir: &Path) -> Arc<ManagementAuthz> {
+    embedded_iam_for_workspace(dir, BOOTSTRAP_WORKSPACE)
+}
+
+/// Open embedded IAM for the platform-provisioned local Workspace. Production
+/// composition roots use this entry point so IAM bootstrap authority and
+/// resource ownership share one durable coordinate rather than a compiled id.
+pub fn embedded_iam_for_workspace(dir: &Path, workspace_id: &str) -> Arc<ManagementAuthz> {
     std::fs::create_dir_all(dir).expect("create AWAKEN_MGMT_DIR for embedded IAM");
     let db_path = dir.join("iam.sqlite");
     import_legacy_layout(&db_path);
@@ -466,7 +538,7 @@ pub fn embedded_iam(dir: &Path) -> Arc<ManagementAuthz> {
     let authz = Arc::new(ManagementAuthz { state, gate, store });
 
     if hydrated_tokens == 0 {
-        bootstrap_admin_token(&authz, dir);
+        bootstrap_admin_token(&authz, dir, workspace_id);
     }
     authz
 }
@@ -566,12 +638,12 @@ fn import_legacy_layout(db_path: &Path) {
 /// First-boot bootstrap: mint the one `admin`-role token the operator starts
 /// from, log its cleartext once to stderr, and write it to `<dir>/admin-token`
 /// (mode 0600). Single-machine hand-off by design (P1); rotate it early.
-fn bootstrap_admin_token(authz: &ManagementAuthz, dir: &Path) {
+fn bootstrap_admin_token(authz: &ManagementAuthz, dir: &Path, workspace_id: &str) {
     let secret = authz
         .mint_service_token(TokenSpec {
             token_id: "tok_mgmt_bootstrap".to_string(),
             service_id: BOOTSTRAP_PRINCIPAL.to_string(),
-            workspace_id: BOOTSTRAP_WORKSPACE.to_string(),
+            workspace_id: workspace_id.to_string(),
             role: "admin".to_string(),
             created_at: None,
             expires_at: None,
@@ -581,7 +653,7 @@ fn bootstrap_admin_token(authz: &ManagementAuthz, dir: &Path) {
     write_owner_only(&path, &secret).expect("write the bootstrap admin-token file");
     eprintln!(
         "awaken-server: EMBEDDED IAM BOOTSTRAP — minted the admin API token \
-         for principal `{BOOTSTRAP_PRINCIPAL}` in workspace `{BOOTSTRAP_WORKSPACE}`.\n\
+         for principal `{BOOTSTRAP_PRINCIPAL}` in workspace `{workspace_id}`.\n\
          It is printed ONCE and written to {} (mode 0600).\n\
          ROTATE IT: anyone holding this token has full management authority.\n\
          {secret}",
@@ -609,7 +681,10 @@ fn write_owner_only(path: &Path, contents: &str) -> std::io::Result<()> {
 enum RouteAuthz {
     /// The default: fence any named `workspace_id` against the token's
     /// workspace, then authorize this action at the token's workspace scope.
-    Scoped(&'static str),
+    Scoped {
+        action: &'static str,
+        scope: ScopeClass,
+    },
     /// The `/v1/config/iam/tokens*` family: the guard authenticates and stamps
     /// the principal on the request; the handler authorizes `apikey.*` at the
     /// TARGET workspace (body/query for mint/list, the token's own workspace
@@ -617,6 +692,14 @@ enum RouteAuthz {
     /// cross-workspace reach. Fail-closed both ways: the handler 401s without
     /// the stamp, and these routes are only mounted when the guard is on.
     TokenAdmin,
+}
+
+/// Resource classes whose target scope is centrally defined by the IAM resource
+/// model. Route handlers never choose a scope ad hoc.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScopeClass {
+    Workspace,
+    Project,
 }
 
 /// The authenticated principal the guard stamps on a [`RouteAuthz::TokenAdmin`]
@@ -655,8 +738,8 @@ pub async fn management_guard(
         Err(AuthReject::Invalid) => return unauthorized("invalid API token"),
     };
 
-    let action = match route {
-        RouteAuthz::Scoped(action) => action,
+    let (action, scope_class) = match route {
+        RouteAuthz::Scoped { action, scope } => (action, scope),
         RouteAuthz::TokenAdmin => {
             // Delegated authorization: no equality fence here — the handler
             // evaluates apikey.* at the TARGET workspace, and the scope graph
@@ -717,7 +800,11 @@ pub async fn management_guard(
     req.extensions_mut()
         .insert(awaken_tenancy::WorkspaceScope(workspace.0.clone()));
 
-    match authz.authorize(principal, action, workspace) {
+    let Some(target_scope) = target_scope(scope_class, &workspace.0, req.uri().path()) else {
+        return forbidden("the route has no resolvable authorization target");
+    };
+
+    match authz.authorize(principal, action, target_scope) {
         AuthorizationDecision::Allow => next.run(req).await,
         // P1 has no approval flow to discharge the obligation, so an
         // approval-gated action is refused with its own message (documented).
@@ -727,6 +814,72 @@ pub async fn management_guard(
         AuthorizationDecision::Deny => {
             forbidden("the API token's role does not authorize this action")
         }
+    }
+}
+
+/// Management PEP for Awaken Cloud identity. The request's explicit bearer
+/// overrides the cached single-user login. Scope comes only from trusted edge
+/// resolution; a missing scope is denied instead of falling back to a compiled
+/// workspace constant.
+pub async fn cloud_management_guard(
+    State(authz): State<Arc<RemoteManagementAuthz>>,
+    mut req: Request,
+    next: Next,
+) -> Response {
+    let Some(route) = action_for(req.method(), req.uri().path()) else {
+        return forbidden("no management action is mapped for this route");
+    };
+    let RouteAuthz::Scoped {
+        action,
+        scope: scope_class,
+    } = route
+    else {
+        return forbidden("API-token administration belongs to self-managed IAM");
+    };
+
+    let principal = match authz.authenticate(bearer_token(req.headers())) {
+        Ok(principal) => principal,
+        Err(AuthReject::Expired) => return unauthorized("cloud access token is expired"),
+        Err(AuthReject::Revoked) => return unauthorized("cloud access token is revoked"),
+        Err(AuthReject::Invalid) => return unauthorized("invalid cloud access token"),
+    };
+    let workspace = req
+        .extensions()
+        .get::<awaken_authz_enforce::RequestTenancy>()
+        .map(|scope| scope.workspace_id.clone())
+        .or_else(|| {
+            req.extensions()
+                .get::<awaken_tenancy::WorkspaceScope>()
+                .map(|scope| scope.0.clone())
+        });
+    let Some(workspace) = workspace else {
+        return forbidden("no trusted workspace context was resolved");
+    };
+
+    let Some(target_scope) = target_scope(scope_class, &workspace, req.uri().path()) else {
+        return forbidden("the route has no resolvable authorization target");
+    };
+    let authz_for_pdp = authz.clone();
+    let principal_for_pdp = principal.clone();
+    let decision = match tokio::task::spawn_blocking(move || {
+        authz_for_pdp.authorize(principal_for_pdp, action, target_scope)
+    })
+    .await
+    {
+        Ok(decision) => decision,
+        Err(_) => return forbidden("cloud IAM authorization transport failed"),
+    };
+    match decision {
+        AuthorizationDecision::Allow => {
+            req.extensions_mut().insert(principal);
+            req.extensions_mut()
+                .insert(awaken_tenancy::WorkspaceScope(workspace));
+            next.run(req).await
+        }
+        AuthorizationDecision::RequireApproval => {
+            forbidden("this action requires approval and was not executed")
+        }
+        AuthorizationDecision::Deny => forbidden("cloud IAM denied this action"),
     }
 }
 
@@ -771,7 +924,18 @@ fn query_workspace_id(query: Option<&str>) -> Option<String> {
 /// authorization in the handler).
 fn action_for(method: &Method, path: &str) -> Option<RouteAuthz> {
     let read = *method == Method::GET;
-    let scoped = |action| Some(RouteAuthz::Scoped(action));
+    let scoped = |action| {
+        Some(RouteAuthz::Scoped {
+            action,
+            scope: ScopeClass::Workspace,
+        })
+    };
+    let project = |action| {
+        Some(RouteAuthz::Scoped {
+            action,
+            scope: ScopeClass::Project,
+        })
+    };
     let segments: Vec<&str> = path.trim_start_matches('/').split('/').collect();
     match segments.as_slice() {
         // -- catalog (providers / endpoints / offerings / snapshot) --
@@ -826,12 +990,12 @@ fn action_for(method: &Method, path: &str) -> Option<RouteAuthz> {
         }),
         // -- projects (consumption-side addressing + per-project agent bindings) --
         ["v1", "config", "projects"] if read => scoped(WORKSPACE_READ),
-        ["v1", "config", "projects", _] => scoped(if read {
+        ["v1", "config", "projects", _] => project(if read {
             WORKSPACE_READ
         } else {
             WORKSPACE_WRITE
         }),
-        ["v1", "config", "projects", _, "agents", _, "mcp"] => scoped(if read {
+        ["v1", "config", "projects", _, "agents", _, "mcp"] => project(if read {
             WORKSPACE_READ
         } else {
             WORKSPACE_WRITE
@@ -924,6 +1088,29 @@ fn action_for(method: &Method, path: &str) -> Option<RouteAuthz> {
             "ack" | "heartbeat" | "stop",
         ] if !read => scoped(WORKSPACE_WRITE),
         _ => None,
+    }
+}
+
+/// Resolve the concrete IAM target from one centrally classified resource
+/// family. Project ids are coordinates from the matched route, never trusted
+/// body fields; the workspace was already established by the edge PEP.
+fn target_scope(class: ScopeClass, workspace: &str, path: &str) -> Option<ScopeRef> {
+    match class {
+        ScopeClass::Workspace => Some(ScopeRef::Workspace {
+            workspace_id: WorkspaceId(workspace.to_string()),
+        }),
+        ScopeClass::Project => {
+            let segments: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+            let project_id = segments
+                .windows(2)
+                .find(|pair| pair[0] == "projects")
+                .map(|pair| pair[1])
+                .filter(|id| !id.is_empty())?;
+            Some(ScopeRef::Project {
+                workspace_id: WorkspaceId(workspace.to_string()),
+                project_id: ProjectId(project_id.to_string()),
+            })
+        }
     }
 }
 
@@ -1091,7 +1278,13 @@ fn authorize_at_target(
     action: &str,
     workspace_id: &str,
 ) -> Option<Response> {
-    match authz.authorize(principal, action, WorkspaceId(workspace_id.to_string())) {
+    match authz.authorize(
+        principal,
+        action,
+        ScopeRef::Workspace {
+            workspace_id: WorkspaceId(workspace_id.to_string()),
+        },
+    ) {
         AuthorizationDecision::Allow => None,
         AuthorizationDecision::RequireApproval => Some(forbidden(
             "this action requires approval, which the embedded P1 plane cannot grant",
@@ -1286,6 +1479,13 @@ fn now_rfc3339() -> String {
         (rem / 60) % 60,
         rem % 60
     )
+}
+
+fn now_unix() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// Days since 1970-01-01 → (year, month, day). Howard Hinnant's public-domain
