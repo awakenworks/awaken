@@ -171,6 +171,7 @@ const checks = [
       "16-access-boundary.mjs",
       "17-frontend-protocols.mjs",
       "18-mcp-server-export.mjs",
+      "19-codex-acp-agent.mjs",
     ]);
   }],
   ["customer relationship objective", () => eachFlow((name, source) => {

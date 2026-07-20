@@ -416,6 +416,10 @@ impl AcpRunExecutor {
         // The run's token usage, accumulated across turns and committed as thread
         // state at the terminal state (matching the native engine's `__usage`).
         let mut run_usage = TokenUsage::default();
+        // A freshly launched CLI can occasionally lose its transport during the ACP
+        // handshake. One relaunch is safe only before `session/new` returned an id:
+        // the user prompt has not been sent and no agent fact can have happened.
+        let mut handshake_retry_used = false;
 
         loop {
             let mut appender = CollectingAppender::default();
@@ -445,7 +449,7 @@ impl AcpRunExecutor {
             config.session_id = acp_session_id.take();
             config.session_mode = self.session_mode.clone();
             config.session_cwd = session.workspace_cwd.clone();
-            let outcome = Supervisor::supervise_with_config(
+            let mut outcome = Supervisor::supervise_with_config(
                 session.channel.as_mut(),
                 process.as_ref(),
                 &prompt,
@@ -458,6 +462,20 @@ impl AcpRunExecutor {
                 launch_sink,
             )
             .await;
+            // ACP adapters are per-turn processes. A natural/refused/error frame ends
+            // the turn but commonly leaves the adapter waiting for another request;
+            // reap it explicitly so the next boundary really relaunches it and provider
+            // teardown hooks (including refreshed OAuth-file write-back) complete.
+            let already_reaped = matches!(
+                outcome,
+                Ok(TerminationReason::Cancelled | TerminationReason::TimedOut)
+            );
+            if !already_reaped
+                && let Err(reap) = Supervisor::reap(process.as_ref(), self.policy.reap_grace).await
+                && outcome.is_ok()
+            {
+                outcome = Err(reap);
+            }
             // The turn is over — stop the cancellation→interrupt forwarder so it does
             // not outlive this turn's injection channel.
             if let Some(handle) = interrupt_forwarder {
@@ -470,6 +488,33 @@ impl AcpRunExecutor {
 
             let reason = match outcome {
                 Ok(reason) => reason,
+                Err(err)
+                    if !handshake_retry_used
+                        && retryable_handshake_failure(
+                            session.codec,
+                            config.session_id.as_deref(),
+                            appender.messages.is_empty(),
+                            &err,
+                        ) =>
+                {
+                    handshake_retry_used = true;
+                    notify(
+                        launch_sink,
+                        AcpLaunchEvent::with_detail(
+                            AcpLaunchStage::Launching,
+                            "ACP handshake interrupted; relaunching once",
+                        ),
+                    );
+                    session = match self.source.open(&activation).await {
+                        Ok(session) => session,
+                        Err(open) => {
+                            let failure =
+                                classify_error(Stage::Initialize, &RawAcpError::message(open.0));
+                            return finish_failure(&context, &activation, &failure).await;
+                        }
+                    };
+                    continue;
+                }
                 // A driver error mid-turn: classify it (oversight taxonomy), surface
                 // its prompt, commit everything so far + the error turn, and end. No
                 // retry/reschedule — that is a host concern above us.
@@ -560,6 +605,21 @@ impl AcpRunExecutor {
             }
         }
     }
+}
+
+/// A transport retry is side-effect safe only while the official ACP handshake has
+/// not produced a session id and no projected fact exists. Newline fixtures send the
+/// user prompt immediately, so they are deliberately never retried here.
+fn retryable_handshake_failure(
+    codec: Codec,
+    session_id: Option<&str>,
+    messages_empty: bool,
+    error: &AcpError,
+) -> bool {
+    codec == Codec::Acp
+        && session_id.is_none()
+        && messages_empty
+        && matches!(error, AcpError::Io(_) | AcpError::Truncated)
 }
 
 /// Classify a bridge/supervisor [`AcpError`] into a neutral [`AcpFailure`]. A
@@ -700,6 +760,10 @@ impl PermissionResolver for NeutralPermissionResolver {
 struct CollectingAppender {
     last: u64,
     messages: Vec<Message>,
+    /// Index of the assistant message receiving the current contiguous ACP text
+    /// stream. ACP reports token chunks as separate updates; durable history stores
+    /// one logical assistant message until a tool boundary interrupts the stream.
+    open_text_message: Option<usize>,
     /// The turn's token usage, accumulated from any `Usage` events (kept out of the
     /// committed messages — it lands as thread state, matching the native engine).
     usage: TokenUsage,
@@ -722,25 +786,38 @@ impl RunFactAppender for CollectingAppender {
         }
         self.last = seq;
         match event {
-            AgentEvent::Message { text } => self.messages.push(Message::text(
-                MessageId(format!("acp-{seq}")),
-                Role::Assistant,
-                text.clone(),
-            )),
-            AgentEvent::ToolCall { id, name, input } => self.messages.push(Message {
-                id: MessageId(format!("acp-{seq}")),
-                role: Role::Assistant,
-                content: vec![ContentBlock::tool_use(
-                    tool_use_id(id, seq),
-                    name.clone(),
-                    input.clone(),
-                )],
-            }),
+            AgentEvent::Message { text } => match self.open_text_message {
+                Some(index) => match self.messages[index].content.last_mut() {
+                    Some(ContentBlock::Text { text: buffered }) => buffered.push_str(text),
+                    _ => unreachable!("open ACP text message must end in a text block"),
+                },
+                None => {
+                    self.messages.push(Message::text(
+                        MessageId(format!("acp-{seq}")),
+                        Role::Assistant,
+                        text.clone(),
+                    ));
+                    self.open_text_message = Some(self.messages.len() - 1);
+                }
+            },
+            AgentEvent::ToolCall { id, name, input } => {
+                self.open_text_message = None;
+                self.messages.push(Message {
+                    id: MessageId(format!("acp-{seq}")),
+                    role: Role::Assistant,
+                    content: vec![ContentBlock::tool_use(
+                        tool_use_id(id, seq),
+                        name.clone(),
+                        input.clone(),
+                    )],
+                });
+            }
             AgentEvent::ToolResult {
                 id,
                 content,
                 is_error,
             } => {
+                self.open_text_message = None;
                 // The neutral `ToolResult` has no error flag, so a failed call's
                 // error surfaces in the result text (marked) rather than being lost.
                 let body = if *is_error {
@@ -770,7 +847,7 @@ impl RunFactAppender for CollectingAppender {
                     cache_creation_tokens: *cache_creation_tokens,
                 });
             }
-            AgentEvent::TurnEnd { .. } => {}
+            AgentEvent::TurnEnd { .. } => self.open_text_message = None,
         }
         Ok(())
     }

@@ -360,7 +360,7 @@ impl SharedHost {
         // global catalog behavior, which makes the migration backward compatible.
         let selected_skills = installed.as_ref().and_then(|config| {
             awaken_runtime_contract::agent_bindings::AgentBindings::from_config(
-                &config.snapshot().resolved_spec.plugin_config,
+                &config.resolved_spec.plugin_config,
             )
             .map(|bindings| {
                 bindings

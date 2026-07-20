@@ -43,6 +43,36 @@ impl ProcessHandle for FakeProcess {
     }
 }
 
+#[test]
+fn only_pre_session_acp_transport_failures_are_retryable() {
+    let reset = AcpError::Io("connection reset".into());
+    assert!(retryable_handshake_failure(Codec::Acp, None, true, &reset));
+    assert!(!retryable_handshake_failure(
+        Codec::Acp,
+        Some("session-created"),
+        true,
+        &reset,
+    ));
+    assert!(!retryable_handshake_failure(
+        Codec::Newline,
+        None,
+        true,
+        &reset,
+    ));
+    assert!(!retryable_handshake_failure(
+        Codec::Acp,
+        None,
+        false,
+        &reset,
+    ));
+    assert!(!retryable_handshake_failure(
+        Codec::Acp,
+        None,
+        true,
+        &AcpError::Frame("bad frame".into()),
+    ));
+}
+
 /// A source that scripts a duplex agent: reads the prompt line, emits `frames`.
 struct ScriptedSource {
     frames: Vec<String>,
@@ -230,12 +260,38 @@ async fn drives_a_turn_commits_messages_and_returns_natural_end() {
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     let commits = coord.commits.lock().unwrap();
     assert_eq!(commits.len(), 1);
-    assert_eq!(commits[0].messages.len(), 2);
-    assert_eq!(commits[0].messages[0].text_content(), "working");
+    assert_eq!(commits[0].messages.len(), 1);
+    assert_eq!(commits[0].messages[0].text_content(), "workingdone");
     assert_eq!(
         commits[0].run_state(),
         RunState::Ended(EndCause::NaturalEnd)
     );
+}
+
+#[tokio::test]
+async fn contiguous_acp_text_chunks_commit_as_one_message_but_tools_break_the_stream() {
+    let e = exec(vec![
+        r#"{"type":"message","text":"before "}"#.into(),
+        r#"{"type":"message","text":"tool"}"#.into(),
+        r#"{"type":"tool_call","id":"c1","name":"read","input":{"path":"a.txt"}}"#.into(),
+        r#"{"type":"tool_result","id":"c1","content":"body","is_error":false}"#.into(),
+        r#"{"type":"message","text":"after "}"#.into(),
+        r#"{"type":"message","text":"tool"}"#.into(),
+        r#"{"type":"turn_end","reason":"natural_end"}"#.into(),
+    ]);
+    let coord = Arc::new(RecordingCoordinator::default());
+    e.execute(
+        activation(),
+        RuntimeRunContext::new().with_commit(coord.clone()),
+    )
+    .await
+    .unwrap();
+
+    let commits = coord.commits.lock().unwrap();
+    let messages = &commits[0].messages;
+    assert_eq!(messages.len(), 4, "text, call, result, then text");
+    assert_eq!(messages[0].text_content(), "before tool");
+    assert_eq!(messages[3].text_content(), "after tool");
 }
 
 #[tokio::test]

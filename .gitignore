@@ -16,6 +16,8 @@ coverage/
 
 # k3d topology e2e: host-built binary copied into the image build context
 deploy/k3d/awaken-server-local
+# ACP production image: host-built bridge staged temporarily by build.sh
+deploy/images/sandbox/.awaken-sandbox.bin
 
 # Local Claude Code worktrees/scratch (never tracked)
 .claude/

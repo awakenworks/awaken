@@ -24,15 +24,21 @@ impl SharedHost {
         &self,
         ctx: &Arc<SessionCtx>,
         thread: &str,
-        activation: RunActivation,
+        mut activation: RunActivation,
         supersede: bool,
         sink: Option<Arc<dyn StreamSink>>,
     ) -> Result<RunState, HostError> {
         // R3/R4: an ACP-selected thread runs on the external CLI (relaunched per
         // turn — R7), committing through the same coordinator as the native path.
         if let Some(acp) = &self.acp
-            && acp.is_acp(thread)
+            && let Some(adapter) = acp.adapter_for(thread)
+            && awaken_runtime_contract::resolved::Backend::from_ref(&adapter).is_acp()
         {
+            // The Session runtime is an execution-boundary choice, independent of the
+            // published Agent's model offering. Stamp that effective choice onto the
+            // activation handed to the executor so routing and launch projection observe
+            // one value (the published model binding may otherwise contain `default`/empty).
+            activation.snapshot.resolved_spec.model_binding.backend_ref = adapter;
             // The ACP executor runs inline under this session ctx, so it can drain
             // the same live inbox the offer side reaches (ADR-0054 P4): wire it so
             // steer/redirect works for external-CLI runs, then close it on return.

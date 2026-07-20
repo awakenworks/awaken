@@ -10,12 +10,11 @@
 //! lease/TTL, so a container whose owning worker crashed (or a warm-pool instance never
 //! claimed) lingers forever. This reaper closes exactly that gap.
 //!
-//! The decision is a pure value test over the two signals the runtime discovers
-//! ([`ManagedContainer`]): the agent (the container's main process) has **exited** — its
-//! work is done, brain gone or finished — or the container has outlived a **max age**
-//! cap (a hung agent, a leaked warm instance). A young, still-running container is a
-//! live session and is never touched. The runtime supplies the clock (`age_secs`), so
-//! [`should_reap`] stays a pure function, exhaustively testable without a daemon.
+//! The decision is a pure value test over the signals the runtime discovers
+//! ([`ManagedContainer`]): containers protected by this runtime instance are never
+//! touched; among prior-owner containers, an exited agent is garbage and a running
+//! one is collected only after the max-age cap. This ownership fence prevents the
+//! crash reaper from racing normal channel drain and credential write-back.
 //!
 //! [`SandboxManager`]: https://docs.rs/awaken-sandbox-manager
 
@@ -34,13 +33,15 @@ pub enum ReapReason {
     AgedOut,
 }
 
-/// The pure reap decision for one managed container. Reap when the agent has exited
-/// (finished work) OR it has outlived `max_age_secs` while still running (abandoned).
-/// A still-running container within the age cap is a live session — never reaped.
+/// The pure reap decision for one managed container. A current-runtime container is
+/// protected. Otherwise reap when the agent has exited (finished work) OR it has
+/// outlived `max_age_secs` while still running (abandoned).
 /// Priority is `Exited` over `AgedOut`: an exited container is unambiguously garbage.
 #[must_use]
 pub fn should_reap(mc: &ManagedContainer, max_age_secs: u64) -> Option<ReapReason> {
-    if !mc.running {
+    if mc.owned_by_current_runtime {
+        None
+    } else if !mc.running {
         Some(ReapReason::Exited)
     } else if mc.age_secs > max_age_secs {
         Some(ReapReason::AgedOut)
@@ -141,6 +142,7 @@ mod tests {
     fn mc(id: &str, running: bool, age_secs: u64) -> ManagedContainer {
         ManagedContainer {
             id: id.into(),
+            owned_by_current_runtime: false,
             running,
             age_secs,
         }
@@ -175,6 +177,13 @@ mod tests {
             should_reap(&mc("x", true, 101), 100),
             Some(ReapReason::AgedOut)
         );
+    }
+
+    #[test]
+    fn current_runtime_owner_is_never_reaped_by_cross_restart_gc() {
+        let mut finished = mc("current-finished", false, 10_000);
+        finished.owned_by_current_runtime = true;
+        assert_eq!(should_reap(&finished, 100), None);
     }
 
     /// A fake runtime: `list_managed` returns a canned set; `remove` records ids (and

@@ -13,10 +13,12 @@ set -euo pipefail
 CLUSTER="${AWAKEN_K8S_CLUSTER:-awaken-k8s-e2e}"
 FIXTURE_IMAGE="awaken-bb:1"
 NODE="k3d-${CLUSTER}-server-0"
+KUBECONFIG_FILE="$(mktemp)"
 
 log() { printf '\n=== %s ===\n' "$*"; }
 
 cleanup() {
+  rm -f "$KUBECONFIG_FILE"
   if [ "${AWAKEN_K8S_KEEP:-0}" != "1" ]; then
     log "deleting cluster ${CLUSTER}"
     k3d cluster delete "${CLUSTER}" >/dev/null 2>&1 || true
@@ -28,8 +30,21 @@ log "creating k3d cluster ${CLUSTER}"
 if ! k3d cluster list 2>/dev/null | grep -q "^${CLUSTER}\b"; then
   k3d cluster create "${CLUSTER}" --wait --timeout 150s
 fi
-export KUBECONFIG="$(k3d kubeconfig write "${CLUSTER}")"
-kubectl wait --for=condition=Ready "node/${NODE}" --timeout=120s
+k3d kubeconfig merge "${CLUSTER}" --output "$KUBECONFIG_FILE" --overwrite >/dev/null
+export KUBECONFIG="$KUBECONFIG_FILE"
+# The Docker container name is stable, but the Kubernetes Node object registers
+# asynchronously and its name is an implementation detail. Wait until at least one
+# Node exists, then wait for the actual object rather than assuming both names match.
+node_registered=0
+for _ in $(seq 1 60); do
+  if kubectl get nodes -o name 2>/dev/null | grep -q '^node/'; then
+    node_registered=1
+    break
+  fi
+  sleep 2
+done
+[ "$node_registered" = 1 ] || { echo "k3d node never registered" >&2; exit 1; }
+kubectl wait --for=condition=Ready nodes --all --timeout=120s
 
 # Load the pause image + a flattened busybox as the fixture. The node has no registry
 # egress here, and a multi-arch `docker save` can miss a blob for containerd — flatten

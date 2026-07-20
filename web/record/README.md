@@ -55,6 +55,8 @@ Recommended release order (see `VIDEO_STRATEGY.md` for the user-value map):
    direct Managed Agents API ingress, and an enforced Session archive boundary.
 8. `15-a2a-discovery` and `16-access-boundary` — remote Agent Card discovery and
    scoped-token issue/use/revoke proof.
+9. `17`–`19` — frontend protocol continuity, MCP server export, and a real Codex
+   ACP Agent run whose complete reply returns to the Managed Session transcript.
 
 Release gates are intentionally strict:
 
@@ -63,6 +65,14 @@ Release gates are intentionally strict:
 - `15` requires `A2A_DELEGATE_ID` for a registered, reachable remote delegate.
 - `16` requires embedded IAM plus `AWAKEN_RECORD_ADMIN_TOKEN`; the token is injected
   into browser storage and is never rendered in captions or logs.
+- `19` requires `AWAKEN_RECORD_CODEX_ACP=1`, `AWAKEN_RECORD_CODEX_ACP_CONTAINER=1`,
+  `AWAKEN_ACP_CREDENTIAL_FILE` pointing to an operator-selected mode-`0600` Codex
+  `auth.json`, and a backend built with `container-docker` and started with
+  `AWAKEN_SANDBOX_TIER=docker`. Networks that require a forward proxy also set
+  `AWAKEN_CONTAINER_EGRESS_PROXY`. The runtime checkpoint observes a newly-created
+  non-root `awaken.sandbox` container, a writable native credential mount, no API-key
+  environment, and one committed live reply; a local or synthetic ACP process is not
+  release evidence.
 - Dashboard, Eval, Datasets, and Audit remain outside the product series while their
   UI routes are gated. A diagnostic failure artifact is not a release video.
 

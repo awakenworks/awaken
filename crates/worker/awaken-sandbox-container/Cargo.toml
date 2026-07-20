@@ -18,12 +18,12 @@ blake3 = "1"
 # awaken-scoped-migration) establishes the container-tier AgentChannel. Optional so
 # the default build stays dependency-light and daemon-free.
 awaken-connection = { git = "https://github.com/awakenworks/awaken-foundation", rev = "dfa512edd2e5b7e34ad0b05db01b973845f0f9e9", optional = true }
-tokio = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["sync"] }
 # Real Docker backend (Docker Engine API via the SDK, not the CLI). Optional.
 bollard = { version = "0.18", optional = true }
 futures-util = { version = "0.3", optional = true }
 # Real Kubernetes backend (kube-apiserver via the SDK, not kubectl). Optional.
-kube = { version = "1", default-features = false, features = ["client", "rustls-tls"], optional = true }
+kube = { version = "1", default-features = false, features = ["client", "rustls-tls", "ws"], optional = true }
 k8s-openapi = { version = "0.25", features = ["v1_30"], optional = true }
 # kube's rustls client needs a process-level CryptoProvider selected explicitly.
 rustls = { version = "0.23", default-features = false, features = ["ring"], optional = true }
@@ -31,7 +31,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring"], opti
 [features]
 # Real remote transport (TCP dial + reverse-dial pairing) producing an AgentChannel.
 # Enable to build/test the network path; default off.
-connection = ["dep:awaken-connection", "dep:tokio", "tokio/net", "tokio/io-util", "tokio/rt", "tokio/time"]
+connection = ["dep:awaken-connection", "tokio/net", "tokio/io-util", "tokio/rt", "tokio/time"]
 # Real Docker ContainerRuntime (bollard). Dials the published agent port via the
 # `connection` transport. Compile-verified; running needs a Docker daemon.
 docker = ["dep:bollard", "dep:futures-util", "connection"]

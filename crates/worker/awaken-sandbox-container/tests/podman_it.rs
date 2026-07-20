@@ -5,9 +5,10 @@
 //! Run with: `cargo test -p awaken-sandbox-container --features podman --test podman_it`
 #![cfg(feature = "podman")]
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
 use awaken_provisioning_contract::SandboxProvider;
 use awaken_sandbox_container::podman::PodmanRuntime;
@@ -16,6 +17,20 @@ use awaken_sandbox_container::{
 };
 
 const AGENT_PORT: u16 = 8080;
+
+struct CredentialBroker(Mutex<Vec<u8>>);
+
+#[async_trait]
+impl pc::SecretBroker for CredentialBroker {
+    async fn materialize(&self, _reference: &str) -> Result<Vec<u8>, pc::SandboxError> {
+        Ok(self.0.lock().unwrap().clone())
+    }
+
+    async fn write_back(&self, _reference: &str, bytes: Vec<u8>) -> Result<(), pc::SandboxError> {
+        *self.0.lock().unwrap() = bytes;
+        Ok(())
+    }
+}
 
 fn plan(cmd: &[&str], rootfs: RootfsPlan) -> ContainerPlan {
     ContainerPlan {
@@ -147,4 +162,47 @@ async fn podman_reports_the_agent_exit_code() {
     let status = rt.wait(&id).await.expect("wait for exit");
     assert_eq!(status.code, Some(7), "podman wait surfaces the exit code");
     let _ = rt.remove(&id).await;
+}
+
+#[tokio::test]
+async fn podman_rotates_and_persists_a_native_credential_file() {
+    let Some(rt) = runtime().await else { return };
+    let initial = br#"{"claudeAiOauth":{"accessToken":"old","refreshToken":"old"}}"#;
+    let refreshed = br#"{"claudeAiOauth":{"accessToken":"new","refreshToken":"rotated"}}"#;
+    let broker = Arc::new(CredentialBroker(Mutex::new(initial.to_vec())));
+    let provider = ContainerProvider::new(Arc::new(rt), "docker.io/library/busybox:latest")
+        .with_secret_broker(broker.clone());
+    let spec = pc::SandboxSpec {
+        scope: "pod-native-credential".into(),
+        isolation: pc::IsolationClass::Container,
+        mounts: vec![pc::MountRequirement {
+            mount_id: "claude-auth".into(),
+            source: pc::MountSource::Secret {
+                reference: "credential://acp/native/claude".into(),
+                content_hash: None,
+            },
+            mount_path: "/acp-config/.credentials.json".into(),
+            access: pc::MountAccess::ReadWrite,
+            lifetime: pc::MountLifetime::Durable,
+            required: true,
+        }],
+        env: Vec::new(),
+        network: pc::NetworkPolicy::Unrestricted,
+        outputs_path: "/mnt/session/outputs".into(),
+        limits: Default::default(),
+        lease_ttl_secs: None,
+        extra: Some(serde_json::json!({
+            "command": ["sh", "-c", format!("test \"$(cat /acp-config/.credentials.json)\" = '{}' && printf '%s' '{}' > /acp-config/.credentials.json", String::from_utf8_lossy(initial), String::from_utf8_lossy(refreshed))]
+        })),
+    };
+    let sandbox = provider.create(&spec).await.unwrap();
+    let process = sandbox.spawn(pc::Command::new(["true"])).await.unwrap();
+    for _ in 0..100 {
+        if process.poll().await.unwrap().is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(broker.0.lock().unwrap().as_slice(), refreshed);
+    sandbox.dispose().await.unwrap();
 }

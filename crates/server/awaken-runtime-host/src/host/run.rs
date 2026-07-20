@@ -225,7 +225,7 @@ impl SharedHost {
         let Some(mem) = &self.memory else {
             return;
         };
-        let snapshot = ctx.config.snapshot();
+        let snapshot = &ctx.config;
         if !snapshot
             .resolved_spec
             .plugin_ids

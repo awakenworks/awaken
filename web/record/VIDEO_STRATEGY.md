@@ -53,6 +53,7 @@ before asking the viewer to learn the architecture.
 | 16 · Access boundary | Can integration access be scoped and revoked? | Client token issue, protected read, revoke | The same credential moves visibly from allowed to denied |
 | 17 · Frontend protocols | Can AI SDK and AG-UI share one Agent? | Protocol guide, AI SDK stream, AG-UI stream, shared history | Two framework protocols commit to one durable thread |
 | 18 · MCP server export | Can existing MCP clients control Awaken? | `/v1/mcp`, bearer handshake, explicit tool catalog | Awaken is both an MCP consumer and a protected MCP server |
+| 19 · Codex ACP Agent | Can Codex become a managed, isolated execution engine? | Agent, `acp:codex` environment, Docker sandbox, live Session, transcript | One portable Agent runs on real containerized Codex and returns to governed history |
 
 ## Customer relationship and sharing objective by story
 
@@ -77,6 +78,7 @@ before asking the viewer to learn the architecture.
 | 16 · Access boundary | A scoped token works, is revoked, then fails closed | Reliable revocation supports durable enterprise use | One-time copy plus denial test removes ambiguity | Allowed-to-denied is a concise governance proof |
 | 17 · Frontend protocols | AI SDK and AG-UI both expose the same committed history | Framework changes do not strand Agents | Built-in paths and shared history shorten integration diagnosis | Cross-framework continuity is directly reproducible |
 | 18 · MCP server export | Authenticated discovery returns only explicit management tools | Standard clients preserve integration investment | Opt-in enablement and a dedicated bearer are unambiguous | Bidirectional MCP is a memorable platform proof |
+| 19 · Codex ACP Agent | A live Codex reply lands as one coherent Managed message | Replaceable engines protect accumulated Agent investment | Visible startup and a complete answer eliminate adapter ambiguity | “Same Agent, real Codex engine” is a compact portability proof |
 
 Loyalty comes from accumulated value and predictable control; satisfaction comes from
 short time-to-proof and actionable failures; advocacy comes from a visually obvious
@@ -95,7 +97,7 @@ prove a result; a gated or empty page is not a product payoff.
 
 - Start: 00–02 — promise, Gemini connection, and the first useful published Agent.
 - Control: 03–08 — tools, Memory, AI editing, State Machine, sandbox/ACP, and behavior.
-- Integrate: 09–10, 13, 15, 17–18 — MCP both ways, Managed Agents, A2A, AI SDK, AG-UI, Skills.
+- Integrate: 09–10, 13, 15, 17–19 — MCP both ways, Managed Agents, A2A, AI SDK, AG-UI, Skills, and a real Codex ACP engine.
 - Operate: 11–12, 14 — provenance, recurring Deployment Sessions, and lifecycle enforcement.
 - Govern: 16 — issue, scope, and revoke access.
 
@@ -109,7 +111,7 @@ constraint, not a copywriting omission.
 | Class | Videos | Publication rule |
 |---|---|---|
 | Deterministic platform proof | 00, 03–09, 11, 13–14 | UI/API checkpoints must pass against the release build |
-| Real-model proof | 01, 02, 10, 12, 17 | Requires a live Vertex Gemini response via gcloud OAuth; quota/auth diagnostics never ship as marketing footage |
+| Real-model proof | 01, 02, 10, 12, 17, 19 | Requires a live provider response; 19 additionally requires a real authenticated Codex ACP adapter inside an observed Docker container |
 | Integration scenario | 15 | Requires a registered and reachable remote A2A delegate |
 | Security scenario | 16, 18 | Requires embedded IAM or the dedicated MCP export bearer |
 | Product-gated | Dashboard, Eval, Datasets, Audit | No video until backend capability and a visible effect exist |

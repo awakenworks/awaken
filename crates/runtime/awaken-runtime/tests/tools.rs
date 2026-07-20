@@ -190,7 +190,6 @@ async fn executor_receives_run_and_step_scoped_operation_identity() {
     let runtime = Runtime::new()
         .with_llm(Arc::new(ToolThenText::new()))
         .with_tool(Arc::new(OperationProbe { seen: seen.clone() }));
-    install(&runtime);
 
     runtime
         .execute(activation(), RuntimeRunContext::new())

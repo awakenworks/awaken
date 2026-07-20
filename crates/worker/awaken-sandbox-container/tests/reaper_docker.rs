@@ -49,17 +49,17 @@ async fn reaper_sweeps_a_finished_awaken_container_and_keeps_a_live_one() {
         .args(["pull", "-q", "busybox:latest"])
         .status();
 
-    let runtime = Arc::new(DockerRuntime::connect_local(8080).expect("docker client"));
+    let owner_runtime = Arc::new(DockerRuntime::connect_local(8080).expect("docker client"));
     let pid = std::process::id();
     let live_id = format!("reaper-live-{pid}");
     let done_id = format!("reaper-done-{pid}");
 
     // A live agent: sleeps, staying Running. A finished agent: `true` exits at once.
-    let live = runtime
+    let live = owner_runtime
         .create(&live_id, &plan(vec!["sleep".into(), "300".into()]))
         .await
         .expect("create live");
-    let done = runtime
+    let done = owner_runtime
         .create(&done_id, &plan(vec!["true".into()]))
         .await
         .expect("create done");
@@ -67,7 +67,7 @@ async fn reaper_sweeps_a_finished_awaken_container_and_keeps_a_live_one() {
     // Let the `true` container exit (and confirm the label discovery sees both).
     let mut managed = Vec::new();
     for _ in 0..40 {
-        managed = runtime.list_managed().await.expect("list_managed");
+        managed = owner_runtime.list_managed().await.expect("list_managed");
         let done_exited = managed.iter().any(|m| m.id == done && !m.running);
         let live_running = managed.iter().any(|m| m.id == live && m.running);
         if done_exited && live_running {
@@ -90,12 +90,25 @@ async fn reaper_sweeps_a_finished_awaken_container_and_keeps_a_live_one() {
         "the finished agent is discovered as exited"
     );
     assert!(live_mc.running, "the live agent is discovered as running");
-    // The pure decision agrees (a generous age cap, so only `exited` fires here).
-    assert_eq!(should_reap(done_mc, 3600), Some(ReapReason::Exited));
+    // The creating runtime retains ownership: its reaper cannot race the normal
+    // channel-drain/process/write-back lifecycle, even after the process exits.
+    assert!(done_mc.owned_by_current_runtime);
+    assert_eq!(should_reap(done_mc, 3600), None);
     assert_eq!(should_reap(live_mc, 3600), None);
 
-    // Sweep: the finished container is reaped, the live one is kept.
-    let reaper = SandboxReaper::new(runtime.clone(), 3600);
+    // A new runtime instance models a restarted worker. It sees the old owner's
+    // containers as stale; the finished one is reaped while the young live one stays.
+    let restarted_runtime = Arc::new(DockerRuntime::connect_local(8080).expect("docker client"));
+    let stale = restarted_runtime
+        .list_managed()
+        .await
+        .expect("list managed after restart");
+    assert!(
+        stale
+            .iter()
+            .all(|container| !container.owned_by_current_runtime)
+    );
+    let reaper = SandboxReaper::new(restarted_runtime.clone(), 3600);
     let reaped = reaper.sweep().await;
     assert!(
         reaped
@@ -109,7 +122,10 @@ async fn reaper_sweeps_a_finished_awaken_container_and_keeps_a_live_one() {
     );
 
     // The reaped container is gone; the live one still exists.
-    let after = runtime.list_managed().await.expect("list_managed after");
+    let after = restarted_runtime
+        .list_managed()
+        .await
+        .expect("list_managed after");
     assert!(
         !after.iter().any(|m| m.id == done),
         "reaped container removed"
@@ -117,6 +133,6 @@ async fn reaper_sweeps_a_finished_awaken_container_and_keeps_a_live_one() {
     assert!(after.iter().any(|m| m.id == live), "live container remains");
 
     // Cleanup.
-    let _ = runtime.remove(&live).await;
+    let _ = owner_runtime.remove(&live).await;
     let _ = done; // already removed by the sweep
 }

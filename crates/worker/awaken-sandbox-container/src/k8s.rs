@@ -17,11 +17,12 @@ use awaken_agent_channel::{AgentChannel, AgentTransport};
 use awaken_provisioning_contract as pc;
 use k8s_openapi::api::core::v1::{
     Capabilities, ConfigMap, ConfigMapVolumeSource, Container, EmptyDirVolumeSource, EnvVar, Pod,
-    PodSpec, ResourceRequirements, SecurityContext, Volume, VolumeMount,
+    PodSecurityContext, PodSpec, ResourceRequirements, Secret, SecretVolumeSource, SecurityContext,
+    Volume, VolumeMount,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
-use kube::api::{DeleteParams, ListParams, PostParams};
+use kube::api::{AttachParams, DeleteParams, ListParams, PostParams};
 use kube::{Api, Client};
 use std::collections::BTreeMap;
 
@@ -47,9 +48,28 @@ fn content_binds(plan: &ContainerPlan) -> Vec<&BindPlan> {
         .collect()
 }
 
+fn credential_binds(plan: &ContainerPlan) -> Vec<&BindPlan> {
+    plan.binds
+        .iter()
+        .filter(|bind| bind.secret_content.is_some())
+        .collect()
+}
+
 /// Deterministic ConfigMap name for the i-th inline-content mount of Pod `awaken-{id}`.
 fn configmap_name(id: &str, i: usize) -> String {
     format!("awaken-{id}-cfg-{i}")
+}
+
+fn credential_secret_name(id: &str, i: usize) -> String {
+    format!("awaken-{id}-credential-{i}")
+}
+
+fn credential_key(bind: &BindPlan) -> &str {
+    bind.credential_file_path
+        .as_deref()
+        .and_then(|path| path.rsplit('/').next())
+        .filter(|name| !name.is_empty())
+        .unwrap_or(CONFIGMAP_KEY)
 }
 
 /// Label the Pod's ConfigMaps carry so `remove` can reap them by selector — value is the
@@ -102,6 +122,32 @@ fn build_configmap(
         data,
         binary_data,
         immutable: Some(true),
+    }
+}
+
+fn build_credential_secret(
+    id: &str,
+    i: usize,
+    key: &str,
+    bytes: &[u8],
+    owner: &Option<OwnerReference>,
+) -> Secret {
+    let mut labels = BTreeMap::new();
+    labels.insert("app".to_string(), "awaken-sandbox".to_string());
+    labels.insert("awaken-cfg-owner".to_string(), cfg_owner_label(id));
+    Secret {
+        metadata: ObjectMeta {
+            name: Some(credential_secret_name(id, i)),
+            labels: Some(labels),
+            owner_references: owner.clone().map(|o| vec![o]),
+            ..Default::default()
+        },
+        immutable: Some(true),
+        data: Some(BTreeMap::from([(
+            key.to_string(),
+            k8s_openapi::ByteString(bytes.to_vec()),
+        )])),
+        ..Default::default()
     }
 }
 
@@ -252,6 +298,23 @@ impl K8sRuntime {
         Api::namespaced(self.client.clone(), &self.namespace)
     }
 
+    fn secrets(&self) -> Api<Secret> {
+        Api::namespaced(self.client.clone(), &self.namespace)
+    }
+
+    async fn cleanup_projected_content(&self, container_id: &str) {
+        let selector = format!("awaken-cfg-owner={container_id}");
+        let params = ListParams::default().labels(&selector);
+        let _ = self
+            .configmaps()
+            .delete_collection(&DeleteParams::default(), &params)
+            .await;
+        let _ = self
+            .secrets()
+            .delete_collection(&DeleteParams::default(), &params)
+            .await;
+    }
+
     /// Probe the apiserver (for tests / health checks): `Ok` iff it responds.
     pub async fn ping(&self) -> Result<(), RuntimeError> {
         self.pods()
@@ -310,6 +373,7 @@ fn build_pod(
         let mut volumes: Vec<Volume> = Vec::new();
         let mut agent_mounts: Vec<VolumeMount> = Vec::new();
         let mut sidecars: Vec<Container> = Vec::new();
+        let mut init_containers: Vec<Container> = Vec::new();
         for (i, mm) in plan.memory_mounts.iter().enumerate() {
             let vol = format!("mem-{i}");
             volumes.push(Volume {
@@ -391,6 +455,59 @@ fn build_pod(
             });
         }
 
+        // A Kubernetes Secret volume is immutable/read-only. Seed each native OAuth
+        // credential into a pod-scoped writable emptyDir in an init container, then
+        // mount that config directory at the CLI's native home. The worker harvests it via the
+        // exec subresource before terminating the agent and writes it back to the broker.
+        for (i, bind) in credential_binds(plan).iter().enumerate() {
+            let seed_vol = format!("credential-seed-{i}");
+            let writable_vol = format!("credential-rw-{i}");
+            volumes.push(Volume {
+                name: seed_vol.clone(),
+                secret: Some(SecretVolumeSource {
+                    secret_name: Some(credential_secret_name(id, i)),
+                    default_mode: Some(0o400),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            });
+            volumes.push(Volume {
+                name: writable_vol.clone(),
+                empty_dir: Some(EmptyDirVolumeSource::default()),
+                ..Default::default()
+            });
+            init_containers.push(Container {
+                name: format!("credential-init-{i}"),
+                image: Some(plan.image.clone()),
+                command: Some(vec![
+                    "/bin/sh".into(),
+                    "-c".into(),
+                    "cp -a /seed/. /writable/ && chmod 600 /writable/*".into(),
+                ]),
+                volume_mounts: Some(vec![
+                    VolumeMount {
+                        name: seed_vol,
+                        mount_path: "/seed".into(),
+                        read_only: Some(true),
+                        ..Default::default()
+                    },
+                    VolumeMount {
+                        name: writable_vol.clone(),
+                        mount_path: "/writable".into(),
+                        ..Default::default()
+                    },
+                ]),
+                security_context: Some(hardened_security_context()),
+                ..Default::default()
+            });
+            agent_mounts.push(VolumeMount {
+                name: writable_vol,
+                mount_path: bind.mount_path.clone(),
+                read_only: Some(false),
+                ..Default::default()
+            });
+        }
+
         let mut containers = vec![Container {
             name: "agent".into(),
             image: Some(plan.image.clone()),
@@ -426,8 +543,13 @@ fn build_pod(
                 ..Default::default()
             },
             spec: Some(PodSpec {
+                init_containers: (!init_containers.is_empty()).then_some(init_containers),
                 containers,
                 volumes: (!volumes.is_empty()).then_some(volumes),
+                security_context: Some(PodSecurityContext {
+                    fs_group: Some(10001),
+                    ..Default::default()
+                }),
                 // a finished agent Pod is reaped, not looped.
                 restart_policy: Some("Never".into()),
                 // The untrusted agent must NOT reach the kube API (no SA token): its
@@ -490,6 +612,10 @@ fn hardened_security_context() -> SecurityContext {
 
 #[async_trait]
 impl ContainerRuntime for K8sRuntime {
+    fn supports_secret_writeback(&self) -> bool {
+        true
+    }
+
     async fn create(&self, id: &str, plan: &ContainerPlan) -> Result<String, RuntimeError> {
         // Fail closed on a limit k8s cannot enforce at the Pod-spec level (pids), rather
         // than silently placing the spec and dropping the cap — the tier advertises
@@ -514,6 +640,23 @@ impl ContainerRuntime for K8sRuntime {
                 &self.owner,
             );
             cms.create(&PostParams::default(), &cm)
+                .await
+                .map_err(backend)?;
+        }
+        let secrets = self.secrets();
+        for (i, bind) in credential_binds(plan).iter().enumerate() {
+            let secret = build_credential_secret(
+                id,
+                i,
+                credential_key(bind),
+                bind.secret_content
+                    .as_ref()
+                    .expect("credential bind has secret bytes")
+                    .expose(),
+                &self.owner,
+            );
+            secrets
+                .create(&PostParams::default(), &secret)
                 .await
                 .map_err(backend)?;
         }
@@ -544,8 +687,39 @@ impl ContainerRuntime for K8sRuntime {
         }
     }
 
+    async fn read_live_file(
+        &self,
+        container_id: &str,
+        path: &str,
+    ) -> Result<Option<Vec<u8>>, RuntimeError> {
+        use tokio::io::AsyncReadExt;
+        let mut attached = self
+            .pods()
+            .exec(
+                container_id,
+                vec!["cat", "--", path],
+                &AttachParams::default().container("agent").stderr(false),
+            )
+            .await
+            .map_err(backend)?;
+        let mut stdout = attached
+            .stdout()
+            .ok_or_else(|| backend("k8s credential harvest has no stdout"))?;
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes).await.map_err(backend)?;
+        drop(stdout);
+        attached.join().await.map_err(backend)?;
+        Ok(Some(bytes))
+    }
+
     async fn inspect(&self, container_id: &str) -> Result<ContainerState, RuntimeError> {
-        let pod = self.pods().get(container_id).await.map_err(backend)?;
+        let pod = match self.pods().get(container_id).await {
+            Ok(pod) => pod,
+            Err(kube::Error::Api(response)) if response.code == 404 => {
+                return Ok(ContainerState::Gone);
+            }
+            Err(error) => return Err(backend(error)),
+        };
         let phase = pod.status.and_then(|s| s.phase).unwrap_or_default();
         Ok(if phase == "Running" || phase == "Pending" {
             ContainerState::Running
@@ -593,8 +767,9 @@ impl ContainerRuntime for K8sRuntime {
         self.pods()
             .delete(container_id, &params)
             .await
-            .map(|_| ())
-            .map_err(backend)
+            .map_err(backend)?;
+        self.cleanup_projected_content(container_id).await;
+        Ok(())
     }
 
     async fn artifacts(&self, _container_id: &str) -> Result<Vec<pc::Artifact>, RuntimeError> {
@@ -622,14 +797,7 @@ impl ContainerRuntime for K8sRuntime {
         // Reap the Pod's inline-content ConfigMaps too. Owner GC covers the owned case;
         // this best-effort sweep (label = the Pod name) covers the ownerless dev/e2e case
         // so inline-content maps don't leak. It precedes the Pod delete and never fails it.
-        let selector = format!("awaken-cfg-owner={container_id}");
-        let _ = self
-            .configmaps()
-            .delete_collection(
-                &DeleteParams::default(),
-                &ListParams::default().labels(&selector),
-            )
-            .await;
+        self.cleanup_projected_content(container_id).await;
         self.pods()
             .delete(container_id, &DeleteParams::default())
             .await
@@ -805,6 +973,9 @@ mod tests {
                 read_only: true,
                 content: Some("[mcp_servers.gh]\nx\n".into()),
                 content_bytes: None,
+                secret_content: None,
+                secret_writeback: false,
+                credential_file_path: None,
             },
             // A ref-backed bind (no content) must NOT become a ConfigMap volume.
             crate::BindPlan {
@@ -813,6 +984,9 @@ mod tests {
                 read_only: true,
                 content: None,
                 content_bytes: None,
+                secret_content: None,
+                secret_writeback: false,
+                credential_file_path: None,
             },
         ];
         let spec = build_pod("run-9", &plan, &None, "m", None, false)
@@ -842,6 +1016,68 @@ mod tests {
         assert_eq!(m.mount_path, "/acp-config/config.toml");
         assert_eq!(m.sub_path.as_deref(), Some("content"));
         assert_eq!(m.read_only, Some(true));
+    }
+
+    #[test]
+    fn native_credential_is_seeded_from_a_secret_into_a_writable_file() {
+        let credential = br#"{"tokens":{"refresh_token":"never-log-me"}}"#.to_vec(); // awaken-allow: secret -- synthetic test fixture
+        let mut plan = plan_with_memory(Vec::new());
+        plan.binds = vec![crate::BindPlan {
+            source_ref: "credential://acp/native/codex".into(),
+            mount_path: "/acp-config".into(),
+            read_only: false,
+            content: None,
+            content_bytes: None,
+            secret_content: Some(crate::SecretBytes::new(credential.clone())),
+            secret_writeback: true,
+            credential_file_path: Some("/acp-config/auth.json".into()),
+        }];
+
+        let pod = build_pod("oauth", &plan, &None, "memoryd", None, false);
+        let spec = pod.spec.unwrap();
+        let init = spec
+            .init_containers
+            .as_ref()
+            .and_then(|containers| containers.first())
+            .expect("credential init container");
+        assert_eq!(init.name, "credential-init-0");
+        assert!(
+            init.command
+                .as_ref()
+                .is_some_and(|command| command.iter().any(|part| part.contains("chmod 600")))
+        );
+        let agent = spec
+            .containers
+            .iter()
+            .find(|container| container.name == "agent")
+            .unwrap();
+        let auth = agent
+            .volume_mounts
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|mount| mount.mount_path == "/acp-config")
+            .unwrap();
+        assert_eq!(auth.read_only, Some(false));
+        assert_eq!(auth.sub_path, None);
+        assert!(
+            spec.volumes
+                .as_ref()
+                .unwrap()
+                .iter()
+                .any(|v| v.secret.is_some())
+        );
+
+        let secret = build_credential_secret("oauth", 0, "auth.json", &credential, &None);
+        assert_eq!(
+            secret
+                .data
+                .as_ref()
+                .and_then(|data| data.get("auth.json"))
+                .map(|bytes| bytes.0.as_slice()),
+            Some(credential.as_slice())
+        );
+        assert!(!format!("{plan:?}").contains("never-log-me"));
     }
 
     #[test]

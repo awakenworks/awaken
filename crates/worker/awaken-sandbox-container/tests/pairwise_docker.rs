@@ -13,15 +13,32 @@
 //! Run with: `cargo test -p awaken-sandbox-container --features docker --test pairwise_docker`
 #![cfg(feature = "docker")]
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
 use awaken_provisioning_contract::SandboxProvider;
 use awaken_sandbox_container::docker::DockerRuntime;
 use awaken_sandbox_container::{ContainerProvider, ContainerRuntime, EgressProxy};
 
 const AGENT_PORT: u16 = 8080;
+
+struct CredentialBroker {
+    bytes: Mutex<Vec<u8>>,
+}
+
+#[async_trait]
+impl pc::SecretBroker for CredentialBroker {
+    async fn materialize(&self, _reference: &str) -> Result<Vec<u8>, pc::SandboxError> {
+        Ok(self.bytes.lock().unwrap().clone())
+    }
+
+    async fn write_back(&self, _reference: &str, bytes: Vec<u8>) -> Result<(), pc::SandboxError> {
+        *self.bytes.lock().unwrap() = bytes;
+        Ok(())
+    }
+}
 
 async fn setup() -> Option<(ContainerProvider<DockerRuntime>, Arc<DockerRuntime>)> {
     let rt = Arc::new(DockerRuntime::connect_local(AGENT_PORT).ok()?);
@@ -187,6 +204,47 @@ async fn inline_content_is_materialized_and_readable_in_a_real_container() {
         Some(0),
         "inline content must be materialized to a host file and readable in the container"
     );
+}
+
+#[tokio::test]
+async fn a_real_container_rotates_and_persists_a_native_credential_file() {
+    let Some((_, rt)) = setup().await else {
+        return;
+    };
+    let initial = br#"{"tokens":{"access_token":"old","refresh_token":"old-refresh"}}"#; // awaken-allow: secret -- synthetic test fixture
+    let refreshed = br#"{"tokens":{"access_token":"new","refresh_token":"rotated"}}"#; // awaken-allow: secret -- synthetic test fixture
+    let broker = Arc::new(CredentialBroker {
+        bytes: Mutex::new(initial.to_vec()),
+    });
+    let provider =
+        ContainerProvider::new(rt.clone(), "busybox:latest").with_secret_broker(broker.clone());
+    let spec = pc::SandboxSpec {
+        scope: "pw-native-credential".into(),
+        isolation: pc::IsolationClass::Container,
+        mounts: vec![pc::MountRequirement {
+            mount_id: "codex-auth".into(),
+            source: pc::MountSource::Secret {
+                reference: "credential://acp/native/codex".into(),
+                content_hash: None,
+            },
+            mount_path: "/acp-config/auth.json".into(),
+            access: pc::MountAccess::ReadWrite,
+            lifetime: pc::MountLifetime::Durable,
+            required: true,
+        }],
+        env: Vec::new(),
+        network: pc::NetworkPolicy::None,
+        outputs_path: "/mnt/session/outputs".into(),
+        limits: Default::default(),
+        lease_ttl_secs: None,
+        extra: Some(serde_json::json!({
+            "command": ["sh", "-c", format!("test -f /acp-config/auth.json || exit 11; test \"$(cat /acp-config/auth.json)\" = '{}' || exit 12; printf '%s' '{}' > /acp-config/auth.json || exit 13", String::from_utf8_lossy(initial), String::from_utf8_lossy(refreshed))]
+        })),
+    };
+
+    let exit = run_to_exit(&provider, &rt, "pw-native-credential", &spec).await;
+    assert_eq!(exit, Some(0));
+    assert_eq!(broker.bytes.lock().unwrap().as_slice(), refreshed);
 }
 
 #[tokio::test]

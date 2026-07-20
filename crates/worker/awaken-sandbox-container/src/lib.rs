@@ -64,6 +64,34 @@ pub struct BindPlan {
     /// not valid UTF-8. docker/podman bind the staged host file (byte-safe); k8s projects it
     /// as a ConfigMap `binaryData` entry (its text `data` counterpart is `content`).
     pub content_bytes: Option<Vec<u8>>,
+    /// Broker-materialized secret bytes for a remote runtime. Debug is redacted so
+    /// logging a ContainerPlan cannot expose an OAuth credential.
+    pub secret_content: Option<SecretBytes>,
+    /// A durable writable Secret whose final bytes must be committed to its broker.
+    pub secret_writeback: bool,
+    /// Exact credential file path inside a directory bind. Docker/Podman mount the
+    /// writable config directory; Kubernetes reads this file via exec for writeback.
+    pub credential_file_path: Option<String>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct SecretBytes(Vec<u8>);
+
+impl SecretBytes {
+    fn new(bytes: Vec<u8>) -> Self {
+        Self(bytes)
+    }
+
+    #[cfg(feature = "k8s")]
+    pub(crate) fn expose(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for SecretBytes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<redacted secret bytes>")
+    }
 }
 
 /// A memory-store mount realized as a **memoryd sidecar** sharing an `emptyDir` with
@@ -171,6 +199,19 @@ mod cgroup_caps_tests {
     }
 
     #[test]
+    fn unrestricted_egress_uses_an_operator_proxy_when_configured() {
+        let proxy = EgressProxy {
+            url: "http://host-gateway:8888".into(),
+        };
+        let r = egress_plan(&pc::NetworkPolicy::Unrestricted, Some(&proxy)).unwrap();
+        assert_eq!(r.network, NetworkMode::Open);
+        assert!(
+            r.proxy_env
+                .contains(&("HTTPS_PROXY".into(), proxy.url.clone()))
+        );
+    }
+
+    #[test]
     fn no_egress_needs_no_proxy() {
         let r = egress_plan(&pc::NetworkPolicy::None, None).unwrap();
         assert_eq!(r.network, NetworkMode::None);
@@ -275,6 +316,9 @@ mod cgroup_caps_tests {
                 read_only: true,
                 content: None,
                 content_bytes: None,
+                secret_content: None,
+                secret_writeback: false,
+                credential_file_path: None,
             }],
             outputs_volume: "/mnt/session/outputs".into(),
             network: NetworkMode::None,
@@ -423,8 +467,7 @@ fn network_of(policy: &pc::NetworkPolicy) -> NetworkMode {
 /// The sandbox paths that must stay writable under a **read-only rootfs**: the
 /// outputs volume the agent writes artifacts to, and a scratch `/tmp`. Declared
 /// resource mounts are realized separately (as binds/volumes). Pure, so every
-/// adapter renders the same writable set atop the same hardening. Deduplicated in
-/// case `outputs_volume` is itself `/tmp`.
+/// adapter renders the same writable set atop the same hardening.
 #[must_use]
 pub fn writable_dirs(plan: &ContainerPlan) -> Vec<String> {
     let mut dirs = vec![plan.outputs_volume.clone()];
@@ -592,7 +635,7 @@ pub struct EgressProxy {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EgressRealization {
     pub network: NetworkMode,
-    /// `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` pairs — empty for `Open`/`None`.
+    /// `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` pairs — empty when direct or denied.
     pub proxy_env: Vec<(String, String)>,
 }
 
@@ -616,7 +659,7 @@ pub fn egress_plan(
     match policy {
         pc::NetworkPolicy::Unrestricted => Ok(EgressRealization {
             network: NetworkMode::Open,
-            proxy_env: Vec::new(),
+            proxy_env: proxy.map(proxy_env).unwrap_or_default(),
         }),
         pc::NetworkPolicy::None => Ok(EgressRealization {
             network: NetworkMode::None,
@@ -626,15 +669,19 @@ pub fn egress_plan(
             let proxy = proxy.ok_or(EgressError::ProxyRequired)?;
             Ok(EgressRealization {
                 network: NetworkMode::Allowlist(hosts.clone()),
-                proxy_env: vec![
-                    ("HTTPS_PROXY".to_string(), proxy.url.clone()),
-                    ("HTTP_PROXY".to_string(), proxy.url.clone()),
-                    // Keep loopback (the agent's own sidecars) direct.
-                    ("NO_PROXY".to_string(), "localhost,127.0.0.1".to_string()),
-                ],
+                proxy_env: proxy_env(proxy),
             })
         }
     }
+}
+
+fn proxy_env(proxy: &EgressProxy) -> Vec<(String, String)> {
+    vec![
+        ("HTTPS_PROXY".to_string(), proxy.url.clone()),
+        ("HTTP_PROXY".to_string(), proxy.url.clone()),
+        // Keep loopback (the agent's own sidecars) direct.
+        ("NO_PROXY".to_string(), "localhost,127.0.0.1".to_string()),
+    ]
 }
 
 /// A host staging directory holding the bytes of inline mounts (codex `config.toml`,
@@ -648,10 +695,29 @@ pub fn egress_plan(
 #[derive(Debug)]
 struct StagingGuard(std::path::PathBuf);
 
+impl StagingGuard {
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
 impl Drop for StagingGuard {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
+}
+
+#[derive(Debug)]
+struct SecretWriteback {
+    reference: String,
+    staged_path: std::path::PathBuf,
+    mount_path: String,
+}
+
+#[derive(Debug, Default)]
+struct StagedMounts {
+    guard: Option<StagingGuard>,
+    secret_writebacks: Vec<SecretWriteback>,
 }
 
 /// The per-run host staging dir (created once, lazily), kept alive by the returned guard.
@@ -660,17 +726,44 @@ fn staging_dir(
     scope: &str,
 ) -> Result<std::path::PathBuf, pc::SandboxError> {
     if let Some(g) = guard {
-        return Ok(g.0.clone());
+        return Ok(g.path().to_path_buf());
     }
-    let d = std::env::temp_dir().join(format!(
+    // `create_dir` is atomic. The runtime-instance id plus a bounded collision suffix
+    // avoids predictable-path/symlink attacks without adding a filesystem utility
+    // dependency to this low-level crate.
+    let prefix = format!(
         "awaken-acp-stage-{}-{}",
         stage_name(scope),
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&d)
-        .map_err(|e| err(RuntimeError::Backend(format!("stage dir: {e}"))))?;
-    *guard = Some(StagingGuard(d.clone()));
-    Ok(d)
+        runtime_owner_id()
+    );
+    let mut created = None;
+    for attempt in 0..16 {
+        let candidate = std::env::temp_dir().join(format!("{prefix}-{attempt}"));
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        match builder.create(&candidate) {
+            Ok(()) => {
+                created = Some(candidate);
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(err(RuntimeError::Backend(format!("stage dir: {error}"))));
+            }
+        }
+    }
+    let d = created.ok_or_else(|| {
+        err(RuntimeError::Backend(
+            "could not allocate a unique staging directory".into(),
+        ))
+    })?;
+    let path = d.clone();
+    *guard = Some(StagingGuard(d));
+    Ok(path)
 }
 
 /// Flatten a sandbox-absolute mount path to a single staging filename.
@@ -725,29 +818,35 @@ async fn resolve_blob(
     source: &pc::MountSource,
     seed: &std::collections::HashMap<String, Vec<u8>>,
     store: &Option<Arc<dyn pc::BlobSource>>,
-) -> Option<Vec<u8>> {
+    secret_broker: &Option<Arc<dyn pc::SecretBroker>>,
+) -> Result<Option<Vec<u8>>, pc::SandboxError> {
     let id = match source {
         pc::MountSource::File { file_id, .. } => file_id.as_str(),
         pc::MountSource::Resource { resource_id, .. } => resource_id.as_str(),
-        pc::MountSource::Secret { reference, .. } => reference.as_str(),
-        _ => return None,
+        pc::MountSource::Secret { reference, .. } => {
+            if let Some(broker) = secret_broker {
+                return broker.materialize(reference).await.map(Some);
+            }
+            reference.as_str()
+        }
+        _ => return Ok(None),
     };
     if let Some(bytes) = seed.get(id) {
-        return Some(bytes.clone());
+        return Ok(Some(bytes.clone()));
     }
     if let Some(store) = store
         && let Some(bytes) = store.get(id).await
     {
-        return Some(bytes);
+        return Ok(Some(bytes));
     }
-    None
+    Ok(None)
 }
 
 /// Resolve + materialize every mount's bytes for the container. Self-contained content
 /// (`Inline` / `Other{content}`, captured on the bind at plan time) ships as-is;
 /// `File` / `Resource` / `Secret` resolve their bytes by id through [`resolve_blob`] and
 /// are hash-verified; a `CacheVolume` binds its caller-owned host path in place. Resolved
-/// bytes are written to a host staging file (bound read-only by docker/podman) and, when
+/// bytes are written to a private host staging file (bound by docker/podman) and, when
 /// UTF-8, recorded as the bind's `content` so the k8s tier projects them as a ConfigMap
 /// (binary File bytes bind on docker/podman only — ConfigMap `binaryData` is a follow-up).
 /// A required mount that resolves to nothing fails closed. Returns the staging guard (kept
@@ -757,7 +856,8 @@ async fn resolve_and_stage(
     binds: &mut [BindPlan],
     seed: &std::collections::HashMap<String, Vec<u8>>,
     store: &Option<Arc<dyn pc::BlobSource>>,
-) -> Result<Option<StagingGuard>, pc::SandboxError> {
+    secret_broker: &Option<Arc<dyn pc::SecretBroker>>,
+) -> Result<StagedMounts, pc::SandboxError> {
     use std::collections::HashMap;
     let by_path: HashMap<&str, &pc::MountRequirement> = spec
         .mounts
@@ -765,6 +865,7 @@ async fn resolve_and_stage(
         .map(|m| (m.mount_path.as_str(), m))
         .collect();
     let mut guard: Option<StagingGuard> = None;
+    let mut secret_writebacks = Vec::new();
     for bind in binds.iter_mut() {
         // 1. Obtain the bytes this bind realizes, or skip a bind that needs no staging.
         let had_content = bind.content.is_some();
@@ -784,7 +885,7 @@ async fn resolve_and_stage(
                 pc::MountSource::File { .. }
                 | pc::MountSource::Resource { .. }
                 | pc::MountSource::Secret { .. } => {
-                    match resolve_blob(&mount.source, seed, store).await {
+                    match resolve_blob(&mount.source, seed, store, secret_broker).await? {
                         Some(bytes) => {
                             verify_hash(&mount.source, &bytes)?;
                             bytes
@@ -804,23 +905,94 @@ async fn resolve_and_stage(
                 _ => continue,
             }
         };
-        // 2. Stage the bytes to a host file the docker/podman tier binds read-only.
+        // 2. Stage the bytes to a host file the docker/podman tier binds. A native
+        // credential gets a whole writable config-directory bind: CLIs keep transient
+        // state beside auth.json, and Docker cannot write a nested file bind beneath a
+        // tmpfs parent. Only the credential file is harvested below.
         let dir = staging_dir(&mut guard, &spec.scope)?;
-        let host_file = dir.join(stage_name(&bind.mount_path));
+        let original_mount_path = bind.mount_path.clone();
+        let mount = by_path.get(original_mount_path.as_str()).copied();
+        let directory_bind = mount.is_some_and(pc::MountRequirement::is_secret_writeback);
+        let (host_file, host_config_dir, config_mount_path) = if directory_bind {
+            let (parent, filename) = original_mount_path.rsplit_once('/').ok_or_else(|| {
+                err(RuntimeError::Backend(format!(
+                    "credential mount needs an absolute file path: {original_mount_path}"
+                )))
+            })?;
+            if parent.is_empty() || filename.is_empty() {
+                return Err(err(RuntimeError::Backend(format!(
+                    "credential mount needs a non-root parent and filename: {original_mount_path}"
+                ))));
+            }
+            let config_dir = dir.join(format!("credential-{}", stage_name(&original_mount_path)));
+            std::fs::create_dir(&config_dir)
+                .map_err(|e| err(RuntimeError::Backend(format!("stage credential dir: {e}"))))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                // The random outer directory is 0700; this inner directory may be writable
+                // by the image-defined UID without exposing its contents to host users.
+                std::fs::set_permissions(&config_dir, std::fs::Permissions::from_mode(0o777))
+                    .map_err(|e| {
+                        err(RuntimeError::Backend(format!("secure credential dir: {e}")))
+                    })?;
+            }
+            (
+                config_dir.join(filename),
+                Some(config_dir),
+                Some(parent.to_string()),
+            )
+        } else {
+            (dir.join(stage_name(&original_mount_path)), None, None)
+        };
         std::fs::write(&host_file, &bytes)
             .map_err(|e| err(RuntimeError::Backend(format!("stage mount content: {e}"))))?;
-        bind.source_ref = host_file.to_string_lossy().into_owned();
+        #[cfg(unix)]
+        if mount.is_some_and(|m| matches!(&m.source, pc::MountSource::Secret { .. })) {
+            use std::os::unix::fs::PermissionsExt;
+            // Docker/Podman images deliberately run as non-root with an image-defined UID.
+            // The private 0700 parent prevents host users from reaching this file; 0666 lets
+            // that sandboxed UID both read the native OAuth cache and persist token refreshes.
+            std::fs::set_permissions(&host_file, std::fs::Permissions::from_mode(0o666))
+                .map_err(|e| err(RuntimeError::Backend(format!("secure staged secret: {e}"))))?;
+        }
+        bind.source_ref = host_config_dir
+            .as_ref()
+            .unwrap_or(&host_file)
+            .to_string_lossy()
+            .into_owned();
+        if let Some(config_mount_path) = config_mount_path {
+            bind.mount_path = config_mount_path;
+            bind.credential_file_path = Some(original_mount_path.clone());
+        }
+        if let Some(mount) = mount
+            && mount.is_secret_writeback()
+            && let pc::MountSource::Secret { reference, .. } = &mount.source
+        {
+            secret_writebacks.push(SecretWriteback {
+                reference: reference.clone(),
+                staged_path: host_file.clone(),
+                mount_path: mount.mount_path.clone(),
+            });
+        }
         // 3. For the k8s tier: record the bytes so `build_pod` projects a ConfigMap — UTF-8
         // as `content` (ConfigMap `data`), otherwise as `content_bytes` (ConfigMap
         // `binaryData`). Inline/Other already carry `content`; a resolved File/Resource fills one.
-        if !had_content {
+        let is_secret =
+            mount.is_some_and(|mount| matches!(&mount.source, pc::MountSource::Secret { .. }));
+        if is_secret {
+            bind.secret_content = Some(SecretBytes::new(bytes));
+        } else if !had_content {
             match String::from_utf8(bytes) {
                 Ok(text) => bind.content = Some(text),
                 Err(e) => bind.content_bytes = Some(e.into_bytes()),
             }
         }
     }
-    Ok(guard)
+    Ok(StagedMounts {
+        guard,
+        secret_writebacks,
+    })
 }
 
 fn binds_of(spec: &pc::SandboxSpec) -> Vec<BindPlan> {
@@ -836,6 +1008,9 @@ fn binds_of(spec: &pc::SandboxSpec) -> Vec<BindPlan> {
             // Binary single-file content is only known after a File/Resource resolves in
             // `resolve_and_stage`; the plan starts with none.
             content_bytes: None,
+            secret_content: None,
+            secret_writeback: m.is_secret_writeback(),
+            credential_file_path: None,
         })
         .collect()
 }
@@ -1012,6 +1187,22 @@ pub enum ContainerState {
 /// type beyond the value objects it must move.
 #[async_trait]
 pub trait ContainerRuntime: Send + Sync {
+    /// Whether a host-staged writable Secret remains readable after the process exits,
+    /// allowing the provider to commit a CLI-refreshed credential back to its broker.
+    /// Docker/Podman do; the Kubernetes ConfigMap projection does not.
+    fn supports_secret_writeback(&self) -> bool {
+        true
+    }
+    /// Read a file while the container is still alive. Remote runtimes use this to
+    /// harvest a writable credential before termination; bind runtimes return `None`
+    /// and the provider reads their secured host staging file.
+    async fn read_live_file(
+        &self,
+        _container_id: &str,
+        _path: &str,
+    ) -> Result<Option<Vec<u8>>, RuntimeError> {
+        Ok(None)
+    }
     /// Create + start the container/pod running `plan.command` as its main process.
     async fn create(&self, id: &str, plan: &ContainerPlan) -> Result<String, RuntimeError>;
     /// Open a duplex channel to the running agent — bollard container attach for
@@ -1035,8 +1226,7 @@ pub trait ContainerRuntime: Send + Sync {
     async fn touch_lease(&self, container_id: &str) -> Result<(), RuntimeError>;
     async fn remove(&self, container_id: &str) -> Result<(), RuntimeError>;
     /// Discover the awaken-managed containers this runtime currently holds, with the
-    /// two signals the cross-restart reaper judges by ([`crate::reaper`]): whether the
-    /// agent (the container's main process) is still running, and the container's age.
+    /// ownership, liveness, and age signals judged by [`crate::reaper`].
     /// The default returns none — a runtime with **native GC** (k8s `ownerReferences`)
     /// needs no custom reaper, so it opts out here; the docker/podman adapters (no
     /// native TTL) implement it so leaked containers of a *crashed* worker are swept.
@@ -1049,14 +1239,32 @@ pub trait ContainerRuntime: Send + Sync {
 /// ([`crate::reaper`]) can discover the ones a crashed worker left behind (docker/podman
 /// filter on it; k8s uses it alongside native `ownerReferences` GC).
 pub(crate) const REAPER_LABEL: &str = "awaken.sandbox";
+/// Identifies the worker-runtime instance that owns a container. A reaper only
+/// collects containers owned by a different (therefore restarted/crashed) instance;
+/// the current instance's normal process lifecycle owns its teardown and write-back.
+#[cfg(any(feature = "docker", feature = "podman"))]
+pub(crate) const REAPER_OWNER_LABEL: &str = "awaken.sandbox.owner";
 
-/// One awaken-managed container the reaper can judge: its id plus the two liveness
-/// signals it decides on. `age_secs` is computed by the runtime against its own clock,
+pub(crate) fn runtime_owner_id() -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let sequence = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{}-{epoch}-{sequence}", std::process::id())
+}
+
+/// One awaken-managed container the reaper can judge. `age_secs` is computed by the runtime against its own clock,
 /// so the reaper's decision ([`crate::reaper::should_reap`]) stays a pure value test.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManagedContainer {
     /// The runtime's container id (what [`ContainerRuntime::remove`] takes).
     pub id: String,
+    /// True when this exact runtime instance created the container. Its in-process
+    /// lifecycle still needs the container for channel drain and credential write-back,
+    /// so the cross-restart reaper must never compete with it.
+    pub owned_by_current_runtime: bool,
     /// Whether the agent process (the container's main command) is still running. A
     /// stopped container is finished work — its agent exited (brain done or gone).
     pub running: bool,
@@ -1085,6 +1293,9 @@ pub struct ContainerProvider<R: ContainerRuntime> {
     /// links no durable store (A-G17); the composition root injects an adapter over the
     /// resources-tier content store, so a `File`/`Resource` id resolves to real bytes.
     file_store: Option<Arc<dyn pc::BlobSource>>,
+    /// Bidirectional broker used only for `MountSource::Secret`; durable writable
+    /// mounts are committed through it after the agent process exits.
+    secret_broker: Option<Arc<dyn pc::SecretBroker>>,
 }
 
 impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
@@ -1095,6 +1306,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             egress_proxy: None,
             blobs: std::collections::HashMap::new(),
             file_store: None,
+            secret_broker: None,
         }
     }
 
@@ -1123,6 +1335,12 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         self
     }
 
+    #[must_use]
+    pub fn with_secret_broker(mut self, broker: Arc<dyn pc::SecretBroker>) -> Self {
+        self.secret_broker = Some(broker);
+        self
+    }
+
     /// Realize a container running the process-as-container agent and return the
     /// concrete [`ContainerSandbox`], so a caller can open its ACP channel via
     /// [`AgentTransport`] — the container counterpart of
@@ -1134,6 +1352,17 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         // Fail closed against our capabilities before touching the runtime.
         pc::prepare_environment(spec, &container_capabilities())
             .map_err(|e| err(RuntimeError::Backend(e.to_string())))?;
+        if spec
+            .mounts
+            .iter()
+            .any(pc::MountRequirement::is_secret_writeback)
+            && !self.runtime.supports_secret_writeback()
+        {
+            return Err(err(RuntimeError::Backend(
+                "this container runtime cannot persist a writable credential-file mount"
+                    .to_string(),
+            )));
+        }
 
         // Process-as-container: the agent command is provisioned at create, not
         // exec'd into an idle container later.
@@ -1149,8 +1378,14 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         // the seed then the injected BlobSource, hash-verified. Bytes are staged to a host
         // dir (bound by docker/podman) and recorded as `content` (projected by the k8s
         // ConfigMap path) — kept alive by the sandbox for the container's lifetime.
-        let staging =
-            resolve_and_stage(spec, &mut plan.binds, &self.blobs, &self.file_store).await?;
+        let staging = resolve_and_stage(
+            spec,
+            &mut plan.binds,
+            &self.blobs,
+            &self.file_store,
+            &self.secret_broker,
+        )
+        .await?;
         // Realize egress: an Allowlist policy is routed through the brokered proxy
         // (its env is injected here); without a proxy an allowlist fails closed.
         let egress = egress_plan(&spec.network, self.egress_proxy.as_ref())
@@ -1183,7 +1418,13 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             container_id,
             outputs_path: spec.outputs_path.clone(),
             realized,
-            _staging: staging,
+            lifecycle: Arc::new(ContainerLifecycle {
+                staging: std::sync::Mutex::new(staging.guard),
+                secret_writebacks: staging.secret_writebacks,
+                secret_broker: self.secret_broker.clone(),
+                writeback_done: tokio::sync::Mutex::new(false),
+                remove_done: tokio::sync::Mutex::new(false),
+            }),
         })
     }
 
@@ -1204,6 +1445,8 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         let process: Box<dyn pc::ProcessHandle> = Box::new(ContainerProcess {
             runtime: self.runtime.clone(),
             container_id: sandbox.container_id.clone(),
+            lifecycle: sandbox.lifecycle.clone(),
+            remove_on_exit: true,
         });
         Ok(AgentContainerSession {
             channel,
@@ -1287,7 +1530,7 @@ impl<R: ContainerRuntime + 'static> pc::SandboxProvider for ContainerProvider<R>
             container_id,
             outputs_path,
             realized: Vec::new(),
-            _staging: None,
+            lifecycle: Arc::new(ContainerLifecycle::completed()),
         }))
     }
 }
@@ -1305,7 +1548,74 @@ pub struct ContainerSandbox<R: ContainerRuntime> {
     /// Host staging dir for materialized inline-mount content, held for the container's
     /// lifetime and removed on drop (after the container is gone). `None` when the run
     /// staged nothing.
-    _staging: Option<StagingGuard>,
+    lifecycle: Arc<ContainerLifecycle>,
+}
+
+struct ContainerLifecycle {
+    staging: std::sync::Mutex<Option<StagingGuard>>,
+    secret_writebacks: Vec<SecretWriteback>,
+    secret_broker: Option<Arc<dyn pc::SecretBroker>>,
+    writeback_done: tokio::sync::Mutex<bool>,
+    remove_done: tokio::sync::Mutex<bool>,
+}
+
+impl ContainerLifecycle {
+    fn completed() -> Self {
+        Self {
+            staging: std::sync::Mutex::new(None),
+            secret_writebacks: Vec::new(),
+            secret_broker: None,
+            writeback_done: tokio::sync::Mutex::new(true),
+            remove_done: tokio::sync::Mutex::new(true),
+        }
+    }
+
+    async fn write_back_secrets<R: ContainerRuntime>(
+        &self,
+        runtime: &R,
+        container_id: &str,
+    ) -> Result<(), pc::SandboxError> {
+        let mut done = self.writeback_done.lock().await;
+        if *done {
+            return Ok(());
+        }
+        if !self.secret_writebacks.is_empty() {
+            let broker = self.secret_broker.as_ref().ok_or_else(|| {
+                pc::SandboxError::new("durable writable Secret has no credential broker")
+            })?;
+            for item in &self.secret_writebacks {
+                let bytes = match runtime
+                    .read_live_file(container_id, &item.mount_path)
+                    .await
+                    .map_err(err)?
+                {
+                    Some(bytes) => bytes,
+                    None => std::fs::read(&item.staged_path).map_err(|e| {
+                        pc::SandboxError::new(format!("read refreshed credential file: {e}"))
+                    })?,
+                };
+                broker.write_back(&item.reference, bytes).await?;
+            }
+        }
+        *done = true;
+        // Releasing the guard removes the host staging namespace after persistence.
+        self.staging.lock().expect("staging mutex poisoned").take();
+        Ok(())
+    }
+
+    /// ACP containers are one-process-per-run. Once their channel has drained and
+    /// credential write-back is complete, remove them through the normal lifecycle;
+    /// the cross-restart reaper is only a crash-recovery safety net.
+    async fn remove_once<R: ContainerRuntime>(&self, runtime: &R, container_id: &str) {
+        let mut done = self.remove_done.lock().await;
+        if !*done {
+            // Cleanup must not turn an already-committed agent response into a failed
+            // run. A transient remove failure remains recoverable by the next worker's
+            // cross-restart reaper.
+            let _ = runtime.remove(container_id).await;
+            *done = true;
+        }
+    }
 }
 
 /// A handle over the container's main process (the agent). On this tier the process
@@ -1313,6 +1623,8 @@ pub struct ContainerSandbox<R: ContainerRuntime> {
 struct ContainerProcess<R: ContainerRuntime> {
     runtime: Arc<R>,
     container_id: String,
+    lifecycle: Arc<ContainerLifecycle>,
+    remove_on_exit: bool,
 }
 
 #[async_trait]
@@ -1321,12 +1633,37 @@ impl<R: ContainerRuntime + 'static> pc::ProcessHandle for ContainerProcess<R> {
         &self.container_id
     }
     async fn wait(&self) -> Result<pc::ExitStatus, pc::SandboxError> {
-        self.runtime.wait(&self.container_id).await.map_err(err)
+        let status = self.runtime.wait(&self.container_id).await.map_err(err)?;
+        self.lifecycle
+            .write_back_secrets(self.runtime.as_ref(), &self.container_id)
+            .await?;
+        if self.remove_on_exit {
+            self.lifecycle
+                .remove_once(self.runtime.as_ref(), &self.container_id)
+                .await;
+        }
+        Ok(status)
     }
     async fn poll(&self) -> Result<Option<pc::ExitStatus>, pc::SandboxError> {
-        self.runtime.poll(&self.container_id).await.map_err(err)
+        let status = self.runtime.poll(&self.container_id).await.map_err(err)?;
+        if status.is_some() {
+            self.lifecycle
+                .write_back_secrets(self.runtime.as_ref(), &self.container_id)
+                .await?;
+            if self.remove_on_exit {
+                self.lifecycle
+                    .remove_once(self.runtime.as_ref(), &self.container_id)
+                    .await;
+            }
+        }
+        Ok(status)
     }
     async fn signal(&self, signal: pc::Signal) -> Result<(), pc::SandboxError> {
+        // A remote pod becomes unreadable after deletion, so durable credentials are
+        // harvested while the agent is still alive. The operation is idempotent.
+        self.lifecycle
+            .write_back_secrets(self.runtime.as_ref(), &self.container_id)
+            .await?;
         self.runtime
             .signal(&self.container_id, signal)
             .await
@@ -1371,6 +1708,8 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
         Ok(Box::new(ContainerProcess {
             runtime: self.runtime.clone(),
             container_id: self.container_id.clone(),
+            lifecycle: self.lifecycle.clone(),
+            remove_on_exit: false,
         }))
     }
 
@@ -1411,6 +1750,8 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
         Ok(Box::new(ContainerProcess {
             runtime: self.runtime.clone(),
             container_id: self.container_id.clone(),
+            lifecycle: self.lifecycle.clone(),
+            remove_on_exit: false,
         }))
     }
 

@@ -18,8 +18,8 @@ use tokio::process::Command as OsCommand;
 
 use crate::net::TcpAgentTransport;
 use crate::{
-    ContainerPlan, ContainerRuntime, ContainerState, ManagedContainer, REAPER_LABEL, RuntimeError,
-    podman_run_argv,
+    ContainerPlan, ContainerRuntime, ContainerState, ManagedContainer, REAPER_LABEL,
+    REAPER_OWNER_LABEL, RuntimeError, podman_run_argv,
 };
 
 fn backend(e: impl std::fmt::Display) -> RuntimeError {
@@ -73,6 +73,7 @@ pub struct PodmanRuntime {
     bin: String,
     agent_port: u16,
     exec: Arc<dyn CommandExec>,
+    owner_id: String,
 }
 
 impl PodmanRuntime {
@@ -84,6 +85,7 @@ impl PodmanRuntime {
             bin,
             agent_port,
             exec: Arc::new(OsCommandExec),
+            owner_id: crate::runtime_owner_id(),
         }
     }
 
@@ -94,6 +96,7 @@ impl PodmanRuntime {
             bin: "podman".into(),
             agent_port,
             exec,
+            owner_id: crate::runtime_owner_id(),
         }
     }
 
@@ -152,7 +155,12 @@ impl ContainerRuntime for PodmanRuntime {
         if let Some(i) = args.iter().position(|a| a == &name) {
             args.splice(
                 i + 1..i + 1,
-                ["-p".to_string(), format!("127.0.0.1::{}", self.agent_port)],
+                [
+                    "--label".to_string(),
+                    format!("{REAPER_OWNER_LABEL}={}", self.owner_id),
+                    "-p".to_string(),
+                    format!("127.0.0.1::{}", self.agent_port),
+                ],
             );
         }
         self.run(&args).await?;
@@ -324,6 +332,12 @@ impl ContainerRuntime for PodmanRuntime {
                     .unwrap_or(0);
                 Some(ManagedContainer {
                     id,
+                    owned_by_current_runtime: r
+                        .get("Labels")
+                        .and_then(serde_json::Value::as_object)
+                        .and_then(|labels| labels.get(REAPER_OWNER_LABEL))
+                        .and_then(serde_json::Value::as_str)
+                        == Some(self.owner_id.as_str()),
                     running,
                     age_secs,
                 })
@@ -435,11 +449,14 @@ mod tests {
         let calls = fake.calls.lock().unwrap();
         // First call is the idempotent `rm -f awaken-s1`.
         assert_eq!(calls[0], vec!["rm", "-f", "awaken-s1"]);
-        // The `run` argv publishes the agent port right after `--name awaken-s1`.
+        // The `run` argv stamps this worker instance's ownership and publishes the
+        // agent port right after `--name awaken-s1`.
         let run = &calls[1];
         let name_at = run.iter().position(|a| a == "awaken-s1").unwrap();
-        assert_eq!(run[name_at + 1], "-p");
-        assert_eq!(run[name_at + 2], "127.0.0.1::7777");
+        assert_eq!(run[name_at + 1], "--label");
+        assert!(run[name_at + 2].starts_with(&format!("{REAPER_OWNER_LABEL}=")));
+        assert_eq!(run[name_at + 3], "-p");
+        assert_eq!(run[name_at + 4], "127.0.0.1::7777");
     }
 
     #[tokio::test]

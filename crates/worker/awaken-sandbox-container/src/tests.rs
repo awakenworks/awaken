@@ -180,6 +180,9 @@ fn mount_ref_covers_every_source_kind() {
         read_only: false,
         content: None,
         content_bytes: None,
+        secret_content: None,
+        secret_writeback: false,
+        credential_file_path: None,
     };
     assert_eq!(
         s(pc::MountSource::MemoryStore {
@@ -282,6 +285,9 @@ struct FakeState {
     artifacts: Vec<pc::Artifact>,
     blobs: HashMap<String, Vec<u8>>,
     fail_create: bool,
+    refreshed_credential: Option<Vec<u8>>,
+    live_credential: Option<Vec<u8>>,
+    credential_source: Option<std::path::PathBuf>,
 }
 
 #[derive(Default)]
@@ -303,11 +309,45 @@ impl FakeRuntime {
         }
         self
     }
+
+    fn refreshing_credential(self, bytes: &[u8]) -> Self {
+        self.st.lock().unwrap().refreshed_credential = Some(bytes.to_vec());
+        self
+    }
+
+    fn with_live_credential(self, bytes: &[u8]) -> Self {
+        self.st.lock().unwrap().live_credential = Some(bytes.to_vec());
+        self
+    }
 }
 
 #[async_trait]
 impl ContainerRuntime for FakeRuntime {
+    async fn read_live_file(
+        &self,
+        _container_id: &str,
+        _path: &str,
+    ) -> Result<Option<Vec<u8>>, RuntimeError> {
+        Ok(self.st.lock().unwrap().live_credential.clone())
+    }
+
     async fn create(&self, id: &str, plan: &ContainerPlan) -> Result<String, RuntimeError> {
+        let refreshed_credential = self.st.lock().unwrap().refreshed_credential.clone();
+        if let Some(bytes) = refreshed_credential {
+            for bind in &plan.binds {
+                if !bind.read_only && bind.credential_file_path.is_some() {
+                    let filename = bind
+                        .credential_file_path
+                        .as_deref()
+                        .and_then(|path| path.rsplit('/').next())
+                        .expect("credential file name");
+                    let source = std::path::PathBuf::from(&bind.source_ref).join(filename);
+                    self.st.lock().unwrap().credential_source = Some(source.clone());
+                    std::fs::write(&source, &bytes)
+                        .map_err(|e| RuntimeError::Backend(e.to_string()))?;
+                }
+            }
+        }
         let mut st = self.st.lock().unwrap();
         if st.fail_create {
             return Err(RuntimeError::Backend("image pull failed".into()));
@@ -389,6 +429,25 @@ impl ContainerRuntime for FakeRuntime {
             .unwrap()
             .alive
             .insert(container_id.into(), false);
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct RecordingSecretBroker {
+    current: Mutex<Vec<u8>>,
+    writes: Mutex<Vec<Vec<u8>>>,
+}
+
+#[async_trait]
+impl pc::SecretBroker for RecordingSecretBroker {
+    async fn materialize(&self, _reference: &str) -> Result<Vec<u8>, pc::SandboxError> {
+        Ok(self.current.lock().unwrap().clone())
+    }
+
+    async fn write_back(&self, _reference: &str, bytes: Vec<u8>) -> Result<(), pc::SandboxError> {
+        *self.current.lock().unwrap() = bytes.clone();
+        self.writes.lock().unwrap().push(bytes);
         Ok(())
     }
 }
@@ -509,7 +568,7 @@ async fn open_channel_is_the_agent_transport_capability() {
         container_id: "cid-x".into(),
         outputs_path: "/mnt/session/outputs".into(),
         realized: Vec::new(),
-        _staging: None,
+        lifecycle: Arc::new(ContainerLifecycle::completed()),
     };
     rt.st.lock().unwrap().alive.insert("cid-x".into(), true);
     // Drive it through the neutral AgentTransport port.
@@ -664,6 +723,109 @@ async fn open_agent_creates_the_container_and_returns_its_channel_and_process() 
     );
 }
 
+#[tokio::test]
+async fn durable_writable_secret_is_materialized_and_written_back_after_process_exit() {
+    let refreshed = br#"{"tokens":{"access_token":"new","refresh_token":"rotated"}}"#;
+    let rt = Arc::new(FakeRuntime::default().refreshing_credential(refreshed));
+    let broker = Arc::new(RecordingSecretBroker::default());
+    *broker.current.lock().unwrap() = br#"{"tokens":{"access_token":"old"}}"#.to_vec();
+    let provider =
+        ContainerProvider::new(rt.clone(), "agent:latest").with_secret_broker(broker.clone());
+    let spec = pc::SandboxSpec {
+        scope: "credential-refresh".into(),
+        isolation: pc::IsolationClass::Container,
+        mounts: vec![pc::MountRequirement {
+            mount_id: "native-auth".into(),
+            source: pc::MountSource::Secret {
+                reference: "credential://acp/native/codex".into(),
+                content_hash: None,
+            },
+            mount_path: "/acp-config/auth.json".into(),
+            access: pc::MountAccess::ReadWrite,
+            lifetime: pc::MountLifetime::Durable,
+            required: true,
+        }],
+        env: Vec::new(),
+        network: pc::NetworkPolicy::Unrestricted,
+        outputs_path: "/mnt/session/outputs".into(),
+        limits: Default::default(),
+        lease_ttl_secs: None,
+        extra: Some(serde_json::json!({"command": ["agent"]})),
+    };
+
+    let session = provider.open_agent(&spec).await.unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let source = rt
+            .st
+            .lock()
+            .unwrap()
+            .credential_source
+            .clone()
+            .expect("credential staging source");
+        assert_eq!(
+            std::fs::metadata(source.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o777
+        );
+        assert_eq!(
+            std::fs::metadata(source.parent().unwrap().parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::metadata(source).unwrap().permissions().mode() & 0o777,
+            0o666
+        );
+    }
+    session.process.wait().await.unwrap();
+    assert_eq!(
+        broker.writes.lock().unwrap().as_slice(),
+        &[refreshed.to_vec()]
+    );
+    // Idempotent poll/wait cannot reseal the same refresh twice.
+    session.process.poll().await.unwrap();
+    assert_eq!(broker.writes.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn remote_runtime_harvests_live_credential_before_signal() {
+    let refreshed = br#"{"claudeAiOauth":{"accessToken":"new","refreshToken":"rotated"}}"#;
+    let rt = Arc::new(FakeRuntime::default().with_live_credential(refreshed));
+    let broker = Arc::new(RecordingSecretBroker::default());
+    *broker.current.lock().unwrap() = br#"{"claudeAiOauth":{"accessToken":"old"}}"#.to_vec();
+    let provider =
+        ContainerProvider::new(rt.clone(), "agent:latest").with_secret_broker(broker.clone());
+    let mut spec = spec("remote-credential-refresh");
+    spec.network = pc::NetworkPolicy::Unrestricted;
+    spec.mounts = vec![pc::MountRequirement {
+        mount_id: "native-auth".into(),
+        source: pc::MountSource::Secret {
+            reference: "credential://acp/native/claude".into(),
+            content_hash: None,
+        },
+        mount_path: "/acp-config/.credentials.json".into(),
+        access: pc::MountAccess::ReadWrite,
+        lifetime: pc::MountLifetime::Durable,
+        required: true,
+    }];
+
+    let session = provider.open_agent(&spec).await.unwrap();
+    session.process.signal(pc::Signal::Term).await.unwrap();
+    assert_eq!(
+        broker.writes.lock().unwrap().as_slice(),
+        &[refreshed.to_vec()]
+    );
+    assert_eq!(rt.st.lock().unwrap().signals.len(), 1);
+}
+
 // ── BlobSource resolution (File/Resource/Secret by id) ───────────────────────────
 
 /// A minimal single-entry [`pc::BlobSource`] so the store path is exercised without a
@@ -712,10 +874,10 @@ async fn resolve_and_stage_realizes_a_file_from_the_seed() {
     let mut seed = HashMap::new();
     seed.insert("blob-1".to_string(), b"resolved-file-bytes".to_vec());
 
-    let guard = resolve_and_stage(&spec, &mut plan.binds, &seed, &None)
+    let guard = resolve_and_stage(&spec, &mut plan.binds, &seed, &None, &None)
         .await
         .expect("resolve");
-    assert!(guard.is_some(), "bytes were staged");
+    assert!(guard.guard.is_some(), "bytes were staged");
     let bind = &plan.binds[0];
     // `content` is filled so the k8s ConfigMap path projects the resolved File...
     assert_eq!(bind.content.as_deref(), Some("resolved-file-bytes"));
@@ -746,7 +908,7 @@ async fn resolve_and_stage_resolves_a_resource_from_the_injected_store() {
         b"from-the-store".to_vec(),
     )));
 
-    resolve_and_stage(&spec, &mut plan.binds, &HashMap::new(), &store)
+    resolve_and_stage(&spec, &mut plan.binds, &HashMap::new(), &store, &None)
         .await
         .expect("resolve from store");
     assert_eq!(plan.binds[0].content.as_deref(), Some("from-the-store"));
@@ -763,7 +925,7 @@ async fn resolve_and_stage_fails_closed_on_a_required_unresolved_mount() {
         true,
     );
     let mut plan = container_plan(&spec, "img", &["x".to_string()]);
-    let e = resolve_and_stage(&spec, &mut plan.binds, &HashMap::new(), &None)
+    let e = resolve_and_stage(&spec, &mut plan.binds, &HashMap::new(), &None, &None)
         .await
         .expect_err("a required mount with no bytes must fail closed");
     assert!(e.to_string().contains("did not resolve"), "{e}");
@@ -782,7 +944,7 @@ async fn resolve_and_stage_rejects_a_content_hash_mismatch() {
     let mut plan = container_plan(&spec, "img", &["x".to_string()]);
     let mut seed = HashMap::new();
     seed.insert("blob-1".to_string(), b"whatever".to_vec());
-    let e = resolve_and_stage(&spec, &mut plan.binds, &seed, &None)
+    let e = resolve_and_stage(&spec, &mut plan.binds, &seed, &None, &None)
         .await
         .expect_err("a hash mismatch must fail closed");
     assert!(e.to_string().contains("hash mismatch"), "{e}");
@@ -803,7 +965,7 @@ async fn resolve_and_stage_verifies_a_matching_content_hash() {
     let mut plan = container_plan(&spec, "img", &["x".to_string()]);
     let mut seed = HashMap::new();
     seed.insert("blob-1".to_string(), bytes);
-    resolve_and_stage(&spec, &mut plan.binds, &seed, &None)
+    resolve_and_stage(&spec, &mut plan.binds, &seed, &None, &None)
         .await
         .expect("a matching pin resolves");
     assert_eq!(plan.binds[0].content.as_deref(), Some("pinned-bytes"));
