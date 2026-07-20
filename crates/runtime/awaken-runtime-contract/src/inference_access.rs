@@ -2,6 +2,11 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::{
+    CredentialAccess, CredentialInjectionKind, CredentialInjectionPolicy, CredentialRef,
+    CredentialUsage,
+};
+
 /// Provider-facing endpoint facts frozen by configuration publication.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InferenceEndpoint {
@@ -13,18 +18,7 @@ pub struct InferenceEndpoint {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InferenceAccessCandidate {
     pub model_ref: String,
-    pub scheme: String,
-    pub reference: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider_ref: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub route_ref: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scope_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub credential_version: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub endpoint: Option<InferenceEndpoint>,
+    pub access: InferenceAccess,
 }
 
 /// Immutable, non-secret instructions for obtaining inference credentials.
@@ -41,7 +35,7 @@ pub struct InferenceAccess {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub credential_version: Option<u64>,
+    pub credential_access: Option<CredentialAccess>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<InferenceEndpoint>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -57,7 +51,7 @@ impl InferenceAccess {
             provider_ref: None,
             route_ref: None,
             scope_id: None,
-            credential_version: None,
+            credential_access: None,
             endpoint: None,
             candidates: Vec::new(),
         }
@@ -69,13 +63,22 @@ impl InferenceAccess {
         provider_ref: impl Into<String>,
         route_ref: impl Into<String>,
     ) -> Self {
+        let credential_ref = credential_ref.into();
         Self {
             scheme: "credential-source/v1".to_string(),
-            reference: credential_ref.into(),
+            reference: credential_ref.clone(),
             provider_ref: Some(provider_ref.into()),
             route_ref: Some(route_ref.into()),
             scope_id: None,
-            credential_version: None,
+            credential_access: Some(CredentialAccess {
+                credential: CredentialRef {
+                    id: credential_ref,
+                    revision: 0,
+                },
+                injection: CredentialInjectionPolicy::new(CredentialInjectionKind::Reference, [])
+                    .expect("a single injection mechanism is valid"),
+                usage: CredentialUsage::ProviderAdapter,
+            }),
             endpoint: None,
             candidates: Vec::new(),
         }
@@ -93,13 +96,22 @@ impl InferenceAccess {
         route_ref: impl Into<String>,
         endpoint: InferenceEndpoint,
     ) -> Self {
+        let credential_ref = credential_ref.into();
         Self {
             scheme: "credential-source/v1".to_string(),
-            reference: credential_ref.into(),
+            reference: credential_ref.clone(),
             provider_ref: Some(provider_ref.into()),
             route_ref: Some(route_ref.into()),
             scope_id: Some(scope_id.into()),
-            credential_version: Some(credential_version),
+            credential_access: Some(CredentialAccess {
+                credential: CredentialRef {
+                    id: credential_ref,
+                    revision: credential_version,
+                },
+                injection: CredentialInjectionPolicy::new(CredentialInjectionKind::Reference, [])
+                    .expect("a single injection mechanism is valid"),
+                usage: CredentialUsage::ProviderAdapter,
+            }),
             endpoint: Some(endpoint),
             candidates: Vec::new(),
         }
@@ -113,7 +125,7 @@ impl InferenceAccess {
             provider_ref: None,
             route_ref: None,
             scope_id: None,
-            credential_version: None,
+            credential_access: None,
             endpoint: None,
             candidates: Vec::new(),
         }
@@ -126,7 +138,7 @@ impl InferenceAccess {
             && self.provider_ref.is_none()
             && self.route_ref.is_none()
             && self.scope_id.is_none()
-            && self.credential_version.is_none()
+            && self.credential_access.is_none()
             && self.endpoint.is_none()
             && self.candidates.is_empty()
     }
@@ -137,26 +149,20 @@ impl InferenceAccess {
     ) -> Option<Self> {
         let candidates = candidates
             .into_iter()
-            .map(|(model_ref, access)| InferenceAccessCandidate {
-                model_ref,
-                scheme: access.scheme,
-                reference: access.reference,
-                provider_ref: access.provider_ref,
-                route_ref: access.route_ref,
-                scope_id: access.scope_id,
-                credential_version: access.credential_version,
-                endpoint: access.endpoint,
+            .map(|(model_ref, mut access)| {
+                access.candidates.clear();
+                InferenceAccessCandidate { model_ref, access }
             })
             .collect::<Vec<_>>();
         let first = candidates.first()?;
         Some(Self {
-            scheme: first.scheme.clone(),
-            reference: first.reference.clone(),
-            provider_ref: first.provider_ref.clone(),
-            route_ref: first.route_ref.clone(),
-            scope_id: first.scope_id.clone(),
-            credential_version: first.credential_version,
-            endpoint: first.endpoint.clone(),
+            scheme: first.access.scheme.clone(),
+            reference: first.access.reference.clone(),
+            provider_ref: first.access.provider_ref.clone(),
+            route_ref: first.access.route_ref.clone(),
+            scope_id: first.access.scope_id.clone(),
+            credential_access: first.access.credential_access.clone(),
+            endpoint: first.access.endpoint.clone(),
             candidates,
         })
     }
@@ -170,15 +176,6 @@ impl InferenceAccess {
             .candidates
             .iter()
             .find(|candidate| candidate.model_ref == model_ref)?;
-        Some(Self {
-            scheme: candidate.scheme.clone(),
-            reference: candidate.reference.clone(),
-            provider_ref: candidate.provider_ref.clone(),
-            route_ref: candidate.route_ref.clone(),
-            scope_id: candidate.scope_id.clone(),
-            credential_version: candidate.credential_version,
-            endpoint: candidate.endpoint.clone(),
-            candidates: Vec::new(),
-        })
+        Some(candidate.access.clone())
     }
 }

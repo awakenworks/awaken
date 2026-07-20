@@ -25,7 +25,9 @@ use awaken_model_catalog::repo::CatalogRepo;
 use awaken_runtime_contract::llm::{
     ChatRequest, ChatResponse, DeltaSink, Error as LlmError, LlmExecutor,
 };
-use awaken_runtime_contract::{InferenceAccess, InferenceEndpoint, ModelBinding};
+use awaken_runtime_contract::{
+    CredentialInjectionKind, CredentialUsage, InferenceAccess, InferenceEndpoint, ModelBinding,
+};
 use awaken_runtime_host::InferenceExecutorMaterializer;
 
 use crate::executor_from_materialized_access;
@@ -270,7 +272,17 @@ impl CredentialInferenceMaterializer {
         }
         let provider = access.provider_ref.as_deref()?.split_once('@')?.0;
         let scope = access.scope_id.as_deref()?;
-        let expected_version = access.credential_version?;
+        let credential = access.credential_access.as_ref()?;
+        if credential.validate().is_err()
+            || !credential
+                .injection
+                .allows(CredentialInjectionKind::Reference)
+            || credential.usage != CredentialUsage::ProviderAdapter
+            || credential.credential.id != access.reference
+        {
+            return None;
+        }
+        let expected_version = credential.credential.revision;
         let source = self
             .credentials
             .get(&CredentialSourceId(access.reference.clone()))
@@ -704,6 +716,30 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn runtime_never_weakens_the_published_injection_policy() {
+        let p = provider("claude-x", Some(("anthropic", true))).await;
+        let mut access = p
+            .publisher
+            .resolve_for_scope("ws", &[ModelBinding::new("anthropic", "claude-x", "genai")])
+            .await
+            .unwrap();
+        access.credential_access.as_mut().unwrap().injection =
+            awaken_runtime_contract::CredentialInjectionPolicy::new(
+                CredentialInjectionKind::Direct,
+                [],
+            )
+            .unwrap();
+
+        assert!(
+            p.materializer
+                .materialize_pinned("claude-x", &access)
+                .await
+                .is_none(),
+            "a reference-only materializer cannot downgrade a direct-only publication policy"
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn pinned_route_is_independent_of_a_later_catalog_update() {
         let p = provider("claude-x", Some(("anthropic", true))).await;
@@ -791,11 +827,11 @@ mod tests {
             vec!["claude-x", "gpt-x"]
         );
         assert_eq!(
-            pinned.candidates[1].provider_ref.as_deref(),
+            pinned.candidates[1].access.provider_ref.as_deref(),
             Some("openai@3")
         );
         assert_eq!(
-            pinned.candidates[1].route_ref.as_deref(),
+            pinned.candidates[1].access.route_ref.as_deref(),
             Some("ep-openai@7")
         );
 

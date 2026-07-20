@@ -330,12 +330,16 @@ async fn get_catalog(
 
 async fn put_pool(
     State(state): State<AdminState>,
+    scope: Option<Extension<ResourceWorkspace>>,
     Path(id): Path<String>,
     headers: HeaderMap,
     Json(mut pool): Json<CredentialPool>,
 ) -> Result<Json<CredentialPool>, Problem> {
     // The path id is authoritative.
     pool.id = CredentialPoolId(id);
+    if let Some(Extension(scope)) = scope {
+        pool.workspace_id = scope.0;
+    }
     state
         .credentials
         .put_pool(pool.clone())
@@ -346,15 +350,22 @@ async fn put_pool(
 
 async fn get_pool(
     State(state): State<AdminState>,
+    scope: Option<Extension<ResourceWorkspace>>,
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<CredentialPool>, Problem> {
-    state
+    let pool = state
         .credentials
         .get_pool(&CredentialPoolId(id))
         .await
-        .map(Json)
-        .map_err(|e| cred_problem(&e, &req_id(&headers)))
+        .map_err(|e| cred_problem(&e, &req_id(&headers)))?;
+    if scope.is_some_and(|Extension(scope)| pool.workspace_id != scope.0) {
+        return Err(cred_problem(
+            &CredentialError::PoolNotFound(pool.id.0.clone()),
+            &req_id(&headers),
+        ));
+    }
+    Ok(Json(pool))
 }
 
 /// A resolver lookup backed by a workspace snapshot: the credential sources **and**
@@ -426,6 +437,7 @@ pub struct ResolvedInferenceView {
 /// credential wiring before creating an agent.
 async fn resolve_route(
     State(state): State<AdminState>,
+    scope: Option<Extension<ResourceWorkspace>>,
     headers: HeaderMap,
     Json(request): Json<ResolveRequest>,
 ) -> Result<Json<ResolvedInferenceView>, Problem> {
@@ -435,7 +447,8 @@ async fn resolve_route(
         .snapshot()
         .await
         .map_err(|e| repo_problem(&e, &rid))?;
-    let lookup = workspace_lookup(&state, &request.workspace_id, &rid).await?;
+    let workspace = scope.map_or(request.workspace_id, |Extension(scope)| scope.0);
+    let lookup = workspace_lookup(&state, &workspace, &rid).await?;
     let resolved = resolve_inference(
         &catalog,
         &request.model_id,
@@ -512,6 +525,26 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+async fn credential_in_scope(
+    state: &AdminState,
+    id: &CredentialSourceId,
+    scope: Option<&Extension<ResourceWorkspace>>,
+    rid: &str,
+) -> Result<CredentialSource, Problem> {
+    let source = state
+        .credentials
+        .get(id)
+        .await
+        .map_err(|error| cred_problem(&error, rid))?;
+    if scope.is_some_and(|Extension(scope)| source.workspace_id != scope.0) {
+        return Err(cred_problem(
+            &CredentialError::SourceNotFound(id.0.clone()),
+            rid,
+        ));
+    }
+    Ok(source)
+}
+
 /// A cooldown signal an operator (or an external rate-limit integration) records
 /// against a credential source. `kind` maps to a failure
 /// [`Disposition`](awaken_runtime_contract::resilience::Disposition): `quota` cools
@@ -528,10 +561,15 @@ pub struct CooldownRequest {
 
 async fn cooldown_credential(
     State(state): State<AdminState>,
+    scope: Option<Extension<ResourceWorkspace>>,
     Path(id): Path<String>,
+    headers: HeaderMap,
     Json(request): Json<CooldownRequest>,
-) -> Json<AvailabilityState> {
+) -> Result<Json<AvailabilityState>, Problem> {
     let source = CredentialSourceId(id);
+    if scope.is_some() {
+        credential_in_scope(&state, &source, scope.as_ref(), &req_id(&headers)).await?;
+    }
     let now = now_ms();
     match request.kind.as_str() {
         "quota" => {
@@ -554,15 +592,21 @@ async fn cooldown_credential(
             let _ = cooldown_deadline(disposition, now);
         }
     }
-    Json(state.availability.state(&source, now))
+    Ok(Json(state.availability.state(&source, now)))
 }
 
 /// The current availability of a credential source (cooldown auto-resumes by time).
 async fn get_availability(
     State(state): State<AdminState>,
+    scope: Option<Extension<ResourceWorkspace>>,
     Path(id): Path<String>,
-) -> Json<AvailabilityState> {
-    Json(state.availability.state(&CredentialSourceId(id), now_ms()))
+    headers: HeaderMap,
+) -> Result<Json<AvailabilityState>, Problem> {
+    let source = CredentialSourceId(id);
+    if scope.is_some() {
+        credential_in_scope(&state, &source, scope.as_ref(), &req_id(&headers)).await?;
+    }
+    Ok(Json(state.availability.state(&source, now_ms())))
 }
 
 /// Which members of a pool are selectable right now — `selection_order` with cooled
@@ -576,6 +620,7 @@ pub struct PoolEligibleView {
 
 async fn get_pool_eligible(
     State(state): State<AdminState>,
+    scope: Option<Extension<ResourceWorkspace>>,
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<PoolEligibleView>, Problem> {
@@ -585,6 +630,12 @@ async fn get_pool_eligible(
         .get_pool(&CredentialPoolId(id))
         .await
         .map_err(|e| cred_problem(&e, &rid))?;
+    if scope.is_some_and(|Extension(scope)| pool.workspace_id != scope.0) {
+        return Err(cred_problem(
+            &CredentialError::PoolNotFound(pool.id.0.clone()),
+            &rid,
+        ));
+    }
     let now = now_ms();
     let eligible: Vec<String> = pool
         .eligible_order(&state.availability, now)
@@ -961,15 +1012,13 @@ fn agent_mcp_missing(agent_id: &str, rid: &str) -> Problem {
 /// materialization, so a leaked/rotated key can be pulled without deleting the row.
 async fn archive_credential(
     State(state): State<AdminState>,
+    scope: Option<Extension<ResourceWorkspace>>,
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<CredentialSource>, Problem> {
     let rid = req_id(&headers);
-    let mut source = state
-        .credentials
-        .get(&CredentialSourceId(id))
-        .await
-        .map_err(|e| cred_problem(&e, &rid))?;
+    let mut source =
+        credential_in_scope(&state, &CredentialSourceId(id), scope.as_ref(), &rid).await?;
     source.status = CredentialStatus::Disabled;
     source.version += 1;
     state
@@ -1001,6 +1050,7 @@ pub struct CredentialValidation {
 /// `unknown` when no probe is wired or the adapter is one the probe can't reach.
 async fn validate_credential(
     State(state): State<AdminState>,
+    scope: Option<Extension<ResourceWorkspace>>,
     Path(id): Path<String>,
     headers: HeaderMap,
     Json(request): Json<ValidateCredentialRequest>,
@@ -1011,7 +1061,8 @@ async fn validate_credential(
         .snapshot()
         .await
         .map_err(|e| repo_problem(&e, &rid))?;
-    let lookup = workspace_lookup(&state, &request.workspace_id, &rid).await?;
+    let workspace = scope.map_or(request.workspace_id, |Extension(scope)| scope.0);
+    let lookup = workspace_lookup(&state, &workspace, &rid).await?;
     let resolved = resolve_inference(
         &catalog,
         &request.model_id,
@@ -1063,11 +1114,12 @@ pub struct EnterCredentialRequest {
 
 async fn post_credential(
     State(state): State<AdminState>,
+    scope: Option<Extension<ResourceWorkspace>>,
     headers: HeaderMap,
     Json(body): Json<EnterCredentialRequest>,
 ) -> Result<(StatusCode, Json<awaken_credential_vault::CredentialSource>), Problem> {
     let params = CredentialCreateParams {
-        workspace_id: body.workspace_id,
+        workspace_id: scope.map_or(body.workspace_id, |Extension(scope)| scope.0),
         kind: body.kind,
         provider_id: body.provider_id,
         env_key: body.env_key,
@@ -1082,15 +1134,18 @@ async fn post_credential(
 
 async fn get_credential(
     State(state): State<AdminState>,
+    scope: Option<Extension<ResourceWorkspace>>,
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<awaken_credential_vault::CredentialSource>, Problem> {
-    state
-        .credentials
-        .get(&CredentialSourceId(id))
-        .await
-        .map(Json)
-        .map_err(|e| cred_problem(&e, &req_id(&headers)))
+    credential_in_scope(
+        &state,
+        &CredentialSourceId(id),
+        scope.as_ref(),
+        &req_id(&headers),
+    )
+    .await
+    .map(Json)
 }
 
 #[derive(serde::Deserialize)]
@@ -1100,12 +1155,14 @@ struct ListCredentialsQuery {
 
 async fn list_credentials(
     State(state): State<AdminState>,
+    scope: Option<Extension<ResourceWorkspace>>,
     Query(query): Query<ListCredentialsQuery>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<awaken_credential_vault::CredentialSource>>, Problem> {
+    let workspace = scope.map_or(query.workspace_id, |Extension(scope)| scope.0);
     state
         .credentials
-        .list(&query.workspace_id)
+        .list(&workspace)
         .await
         .map(Json)
         .map_err(|e| cred_problem(&e, &req_id(&headers)))
