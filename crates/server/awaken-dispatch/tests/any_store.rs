@@ -27,6 +27,26 @@ fn any_in_memory() -> AnyDispatchStore {
     AnyDispatchStore::open_sqlite_in_memory().expect("open in-memory sqlite backend")
 }
 
+fn exact_access(credential: &str, provider: &str, route: &str) -> InferenceAccess {
+    InferenceAccess {
+        scheme: "credential-source/v1".into(),
+        reference: credential.into(),
+        provider_ref: Some(provider.into()),
+        route_ref: Some(route.into()),
+        scope_id: None,
+        credential_access: Some(awaken_runtime_contract::CredentialAccess {
+            credential: awaken_runtime_contract::CredentialRef {
+                id: credential.into(),
+                revision: 0,
+            },
+            injection: awaken_runtime_contract::CredentialInjectionKind::Reference,
+            usage: awaken_runtime_contract::CredentialUsage::ProviderAdapter,
+        }),
+        endpoint: None,
+        candidates: Vec::new(),
+    }
+}
+
 #[tokio::test]
 async fn compatible_claim_skips_ineligible_work_and_pins_the_incarnation() {
     let store = any_in_memory();
@@ -320,11 +340,11 @@ async fn reclaim_preserves_the_dispatch_pinned_model_candidate_set() {
     let expected = InferenceAccess::candidate_set([
         (
             "primary".to_string(),
-            InferenceAccess::exact_credential("cred-a", "provider-a@1", "route-a@2"),
+            exact_access("cred-a", "provider-a@1", "route-a@2"),
         ),
         (
             "fallback".to_string(),
-            InferenceAccess::exact_credential("cred-b", "provider-b@3", "route-b@4"),
+            exact_access("cred-b", "provider-b@3", "route-b@4"),
         ),
     ])
     .expect("candidate set");

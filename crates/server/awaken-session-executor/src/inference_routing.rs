@@ -117,6 +117,19 @@ mod tests {
         AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
     };
 
+    fn opaque_access(scheme: &str, reference: &str) -> InferenceAccess {
+        InferenceAccess {
+            scheme: scheme.into(),
+            reference: reference.into(),
+            provider_ref: None,
+            route_ref: None,
+            scope_id: None,
+            credential_access: None,
+            endpoint: None,
+            candidates: Vec::new(),
+        }
+    }
+
     fn activation(model_ref: &str) -> RunActivation {
         RunActivation::new(
             RunId("run".into()),
@@ -259,7 +272,7 @@ mod tests {
 
         let seen = Arc::new(Mutex::new(None));
         let executor: Arc<dyn LlmExecutor> = Arc::new(LabeledModel("gateway"));
-        let grant = InferenceAccess::new("credential-reference/v1", "grant-42");
+        let grant = opaque_access("credential-reference/v1", "grant-42");
         let mut binding = InferenceRouting::new();
         let materializer = Arc::new(ReferenceMaterializer {
             seen: seen.clone(),

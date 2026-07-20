@@ -11,7 +11,6 @@ use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::capability::RuntimeCapabilitySource;
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 use awaken_runtime_contract::resolved::{
@@ -36,16 +35,6 @@ impl LlmExecutor for TextLlm {
             stop_reason: None,
         })
     }
-}
-
-#[test]
-fn capability_source_projects_an_empty_runtime() {
-    let runtime = Runtime::new();
-    let caps = runtime.runtime_capabilities();
-    assert!(caps.tools.is_empty());
-    assert!(caps.plugins.is_empty());
-    assert!(!caps.catalog_fingerprint.0.is_empty());
-    assert!(!caps.runtime_version.is_empty());
 }
 
 #[test]

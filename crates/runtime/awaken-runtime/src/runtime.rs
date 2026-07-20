@@ -5,14 +5,12 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::delegation::{ChildRunCancellation, DelegationId};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
-use awaken_runtime_contract::capability::RuntimeCapabilitySource;
 use awaken_runtime_contract::control::{Error as ControlError, LiveCommand, LiveRunControl};
 use awaken_runtime_contract::delegation::{DelegationExecutionError, RunDelegationService};
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::pause::PauseSignal;
 use awaken_runtime_contract::permission::ToolGateHook;
 use awaken_runtime_contract::plugin::{MergeError, Plugin, ResolvedExecutionEnv};
-use awaken_runtime_contract::resolved::CatalogFingerprint;
 use awaken_runtime_contract::snapshot::{ExecutableAgentSnapshot, ExecutableAgentSnapshotId};
 use awaken_runtime_contract::tool::RawTool;
 use parking_lot::Mutex;
@@ -424,51 +422,6 @@ impl Runtime {
 
     pub(crate) fn snapshot_ids(&self) -> Vec<ExecutableAgentSnapshotId> {
         self.snapshots.lock().keys().cloned().collect()
-    }
-}
-
-impl RuntimeCapabilitySource for Runtime {
-    fn runtime_capabilities(
-        &self,
-    ) -> awaken_runtime_contract::capability::RuntimeCapabilityCatalog {
-        use awaken_runtime_contract::capability::{
-            PluginCapability, RuntimeCapabilityCatalog, ToolCapability,
-        };
-
-        let mut tools: Vec<_> = self
-            .tools
-            .keys()
-            .cloned()
-            .map(|id| ToolCapability { id })
-            .collect();
-        tools.sort_by(|left, right| left.id.cmp(&right.id));
-        let mut plugins: Vec<_> = self
-            .plugins
-            .iter()
-            .map(|plugin| {
-                let manifest = plugin.manifest();
-                PluginCapability {
-                    id: manifest.id,
-                    schema_keys: manifest.config_sections,
-                    config_schema: None,
-                    bound: manifest.bound,
-                }
-            })
-            .collect();
-        plugins.sort_by(|left, right| left.id.cmp(&right.id));
-        let runtime_version = env!("CARGO_PKG_VERSION").to_string();
-        let fingerprint = awaken_runtime_contract::content_fingerprint(&(
-            runtime_version.as_str(),
-            &tools,
-            &plugins,
-        ))
-        .expect("runtime capability values are serializable");
-        RuntimeCapabilityCatalog {
-            catalog_fingerprint: CatalogFingerprint(fingerprint),
-            runtime_version,
-            tools,
-            plugins,
-        }
     }
 }
 
