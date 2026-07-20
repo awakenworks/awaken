@@ -1749,7 +1749,7 @@ fn merge_thread_usage(
     name = "execute_tool",
     skip_all,
     fields(
-        otel.name = tracing::field::Empty,
+        otel.name = format_args!("execute_tool {}", call.tool_id),
         otel.kind = "internal",
         gen_ai.operation.name = "execute_tool",
         gen_ai.tool.name = %call.tool_id,
@@ -1765,10 +1765,6 @@ async fn execute_tool(
     context: &RuntimeRunContext,
 ) -> ToolOutput {
     let span = tracing::Span::current();
-    span.record(
-        "otel.name",
-        format!("execute_tool {}", call.tool_id).as_str(),
-    );
     // ADR-0044 D1: the kernel calls a `ToolExecutor`; where the call runs is the
     // executor's concern. Absent a wired executor, the degenerate in-process
     // `LocalToolExecutor` reproduces the historical behavior exactly.

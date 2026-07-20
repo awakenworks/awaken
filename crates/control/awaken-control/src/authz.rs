@@ -206,6 +206,9 @@ pub struct ManagementAuthz {
     /// iam-server's repository adapter over `<dir>/iam.sqlite` (tokens,
     /// bindings, role defs — its schema, its migration ledger).
     store: SqlStore<SqliteBackend>,
+    /// Hidden/platform Org that owns every workspace administered by this
+    /// embedded single-machine IAM instance.
+    org_id: OrgId,
 }
 
 /// Remote awaken-iam relying-party adapter for a locally running management
@@ -461,6 +464,21 @@ impl ManagementAuthz {
         let request = AuthorizationRequest::direct(principal, qualify_action(action), scope);
         self.gate.authorize(request)
     }
+
+    /// Register a platform-owned workspace under this installation's hidden Org.
+    /// This is PAP/PIP administration, not request authorization: composition
+    /// roots call it only after the platform has created or resolved the workspace.
+    /// Registering the hierarchy grants nothing by itself; the PDP still evaluates
+    /// the caller's bindings and remains default-deny.
+    pub fn register_workspace(&self, workspace_id: &str) {
+        self.state
+            .lock()
+            .unwrap()
+            .authz
+            .policy_mut()
+            .scope_graph_mut()
+            .assign_workspace(WorkspaceId(workspace_id.to_owned()), self.org_id.clone());
+    }
 }
 
 /// Open (or create) the embedded IAM state under `dir`: migrate
@@ -638,6 +656,12 @@ pub fn embedded_iam_for_tenant(
     let mut hydrated_tokens = 0usize;
     let mut seen_principals: Vec<PrincipalRef> = Vec::new();
     for binding in RoleBindingRepo::list(&store).expect("list role bindings") {
+        if let ScopeRef::Workspace { workspace_id } = &binding.scope {
+            engine
+                .policy_mut()
+                .scope_graph_mut()
+                .assign_workspace(workspace_id.clone(), OrgId(org_id.to_owned()));
+        }
         if !seen_principals.contains(&binding.principal) {
             seen_principals.push(binding.principal.clone());
             for token in ApiTokenRepo::list_for_principal(&store, &binding.principal)
@@ -662,7 +686,12 @@ pub fn embedded_iam_for_tenant(
         directory,
     }));
     let gate = IamGate::from_local_state(Arc::clone(&state));
-    let authz = Arc::new(ManagementAuthz { state, gate, store });
+    let authz = Arc::new(ManagementAuthz {
+        state,
+        gate,
+        store,
+        org_id: OrgId(org_id.to_owned()),
+    });
 
     if hydrated_tokens == 0 {
         bootstrap_admin_token(&authz, dir, workspace_id);

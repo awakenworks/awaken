@@ -14,10 +14,10 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use awaken_mcp_wire::McpToolDefinition;
 use awaken_runtime_contract::plugin::{
     CapabilityBound, Contributions, DynamicTool, IdBound, Plugin, PluginManifest,
 };
-use mcp::McpToolDefinition;
 use tokio::sync::broadcast;
 
 use crate::error::McpError;
@@ -216,8 +216,8 @@ impl Plugin for McpPlugin {
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use mcp::transport::McpTransportError;
-    use mcp::{CallToolResult, ToolContent};
+    use awaken_mcp_wire::McpTransportError;
+    use awaken_mcp_wire::{CallToolResult, ToolContent};
     use serde_json::Value;
     use std::sync::atomic::{AtomicUsize, Ordering};
 

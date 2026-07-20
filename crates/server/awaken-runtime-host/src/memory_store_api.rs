@@ -261,38 +261,6 @@ impl VersionRepository {
     }
 }
 
-#[cfg(test)]
-mod version_repository_tests {
-    use super::*;
-
-    #[test]
-    fn version_history_and_redaction_survive_reopen() {
-        let dir = tempfile::tempdir().unwrap();
-        let repository = VersionRepository::open_at(dir.path());
-        repository.append(
-            "memstore_1",
-            MemoryVersion {
-                id: String::new(),
-                memory_id: "memory_1".into(),
-                operation: "created".into(),
-                content: Some("secret".into()),
-                path: "/note".into(),
-                redacted_at: None,
-            },
-        );
-        let version_id = repository.list("memstore_1")[0].id.clone();
-        repository.redact("memstore_1", &version_id).unwrap();
-        drop(repository);
-
-        let reopened = VersionRepository::open_at(dir.path());
-        let versions = reopened.list("memstore_1");
-        assert_eq!(versions.len(), 1);
-        assert_eq!(versions[0].id, version_id);
-        assert_eq!(versions[0].content, None);
-        assert!(versions[0].redacted_at.is_some());
-    }
-}
-
 /// Mount the memory-store API over the host's mutable memory stores. Identity is read
 /// and written through the host's [`MemoryStoreRegistry`](awaken_config_resolver::MemoryStoreRegistry)
 /// (the durable admin backend when the composition root wired one, else ephemeral).
@@ -803,4 +771,36 @@ async fn redact_version(
         return (StatusCode::OK, Json(version.project(&id))).into_response();
     }
     not_found("memory_version")
+}
+
+#[cfg(test)]
+mod version_repository_tests {
+    use super::*;
+
+    #[test]
+    fn version_history_and_redaction_survive_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let repository = VersionRepository::open_at(dir.path());
+        repository.append(
+            "memstore_1",
+            MemoryVersion {
+                id: String::new(),
+                memory_id: "memory_1".into(),
+                operation: "created".into(),
+                content: Some("secret".into()),
+                path: "/note".into(),
+                redacted_at: None,
+            },
+        );
+        let version_id = repository.list("memstore_1")[0].id.clone();
+        repository.redact("memstore_1", &version_id).unwrap();
+        drop(repository);
+
+        let reopened = VersionRepository::open_at(dir.path());
+        let versions = reopened.list("memstore_1");
+        assert_eq!(versions.len(), 1);
+        assert_eq!(versions[0].id, version_id);
+        assert_eq!(versions[0].content, None);
+        assert!(versions[0].redacted_at.is_some());
+    }
 }

@@ -28,9 +28,11 @@ use std::sync::{Mutex, RwLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use awaken_mcp_wire::McpTransportError;
+use awaken_mcp_wire::{
+    CallToolParams, CallToolResult, InitializeParams, ListToolsResult, McpToolDefinition,
+};
 use futures::StreamExt;
-use mcp::transport::McpTransportError;
-use mcp::{CallToolParams, CallToolResult, InitializeParams, ListToolsResult, McpToolDefinition};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio::sync::broadcast;

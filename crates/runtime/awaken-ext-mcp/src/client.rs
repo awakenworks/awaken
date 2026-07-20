@@ -57,8 +57,8 @@ pub async fn connect_tools(
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use mcp::transport::McpTransportError;
-    use mcp::{CallToolResult, McpToolDefinition, ToolContent};
+    use awaken_mcp_wire::McpTransportError;
+    use awaken_mcp_wire::{CallToolResult, McpToolDefinition, ToolContent};
     use serde_json::Value;
 
     struct FakeTransport {

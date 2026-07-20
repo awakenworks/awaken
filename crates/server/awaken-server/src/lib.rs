@@ -200,6 +200,7 @@ pub fn mount_with_managed(host: Arc<SharedHost>, managed_state: Arc<ManagedState
     );
     let erasure = awaken_runtime_host::erasure_router(resolver);
     let consent = awaken_runtime_host::consent_router(ds_repo);
+    let local_workspace = host.local_workspace().to_string();
     managed
         .merge(ai_sdk)
         .merge(ag_ui)
@@ -212,6 +213,27 @@ pub fn mount_with_managed(host: Arc<SharedHost>, managed_state: Arc<ManagedState
         .merge(models)
         .merge(erasure)
         .merge(consent)
+        // A scope-less request is the local/single-tenant mode. Resolve that mode
+        // once at the composition edge so sessions and every resource adapter see
+        // the same platform-provisioned workspace. Authenticated/cloud edges stamp
+        // `WorkspaceScope` before this layer and therefore keep their resolved scope.
+        .layer(axum::middleware::from_fn(
+            move |mut request: axum::extract::Request, next: axum::middleware::Next| {
+                let local_workspace = local_workspace.clone();
+                async move {
+                    if request
+                        .extensions()
+                        .get::<awaken_protocol_managed::WorkspaceScope>()
+                        .is_none()
+                    {
+                        request
+                            .extensions_mut()
+                            .insert(awaken_protocol_managed::WorkspaceScope(local_workspace));
+                    }
+                    next.run(request).await
+                }
+            },
+        ))
 }
 
 /// The open data-subject plane (ADR-0050): the captured-content store (used as

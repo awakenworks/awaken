@@ -473,14 +473,25 @@ pub async fn build_management_router_with_fallback(
                 )
             });
             let workspace = SharedHost::provision_local_workspace_at(std::path::Path::new(&dir));
-            (
-                Some(awaken_control::embedded_iam_for_tenant(
-                    std::path::Path::new(&dir),
-                    &local_org_id(),
-                    &workspace,
-                )),
-                None,
-            )
+            let iam = awaken_control::embedded_iam_for_tenant(
+                std::path::Path::new(&dir),
+                &local_org_id(),
+                &workspace,
+            );
+            // Workspace membership is platform topology (PIP), not an implicit side
+            // effect of token minting. A self-managed composition may explicitly
+            // declare additional workspaces; registering them grants no permissions,
+            // it only makes them valid policy scopes under the hidden local org.
+            if let Ok(configured) = std::env::var("AWAKEN_IAM_WORKSPACES") {
+                for workspace_id in configured
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|workspace_id| !workspace_id.is_empty())
+                {
+                    iam.register_workspace(workspace_id);
+                }
+            }
+            (Some(iam), None)
         }
         ManagementIdentityMode::AwakenCloud => (
             None,

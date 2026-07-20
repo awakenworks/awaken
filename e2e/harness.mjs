@@ -79,7 +79,7 @@ export async function withServer(mode, port, fn) {
     if (exitedEarly) throw new Error('server exited before it listened');
     return await fn(`http://${addr}`);
   } finally {
-    server.kill('SIGINT');
+    await stopServer(server);
   }
 }
 
@@ -161,7 +161,7 @@ export async function withRealServer(behavior, port, fn, opts = {}) {
     if (exitedEarly) throw new Error('server exited before it listened');
     return await fn(`http://${addr}`, upstream, capture ? { text: () => capture.buf } : null);
   } finally {
-    server.kill('SIGINT');
+    await stopServer(server);
     upstream.close();
   }
 }

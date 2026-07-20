@@ -85,11 +85,17 @@ async function main() {
     await drainSse(r2);
     pass('turn 2 committed via AI-SDK on the same id');
 
-    // --- A2A tasks/get sees both turns ------------------------------------
-    const got = await rpc(base, 'tasks/get', { id: `task-${ctx}` });
+    const ai2 = await messages(base, 'ai-sdk', ctx);
+    const agui2 = await messages(base, 'ag-ui', ctx);
+    assert.ok(ai2.raw.includes(BETA), 'AI-SDK turn remains visible through AI-SDK history');
+    assert.ok(agui2.raw.includes(BETA), 'AI-SDK turn is visible through AG-UI history');
+
+    // --- A2A task lookup uses its opaque server-issued id -----------------
+    assert.ok(task?.id, 'A2A returned a server-issued task id');
+    const got = await rpc(base, 'tasks/get', { id: task.id });
     const hist = JSON.stringify(got);
     assert.ok(hist.includes(ALPHA), 'A2A tasks/get still carries turn 1');
-    assert.ok(hist.includes(BETA), `A2A tasks/get carries the AI-SDK-committed turn 2: ${hist.slice(0, 400)}`);
+    assert.ok(!hist.includes(BETA), 'the A2A task projection remains the immutable A2A turn snapshot');
     pass('three-wire continuity: A2A <-> AI-SDK <-> AG-UI over one SharedHost thread');
   });
 

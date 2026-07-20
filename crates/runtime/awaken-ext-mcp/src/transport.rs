@@ -9,8 +9,8 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
-use mcp::transport::McpTransportError;
-use mcp::{CallToolResult, McpToolDefinition};
+use awaken_mcp_wire::McpTransportError;
+use awaken_mcp_wire::{CallToolResult, McpToolDefinition};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
@@ -94,7 +94,7 @@ pub trait McpToolTransport: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mcp::{CallToolResult, ToolContent};
+    use awaken_mcp_wire::{CallToolResult, ToolContent};
 
     /// A tools-only transport: it implements only the two mandatory methods, so the
     /// prompt/resource/progress/liveness surfaces exercise the trait defaults.

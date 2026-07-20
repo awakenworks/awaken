@@ -20,7 +20,6 @@ import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38609);
 const SEAL_KEY = 'ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100';
-const OWN = 'wrkspc_default'; // the bootstrap admin token's workspace
 const EVIL = 'wrkspc_evil'; // a workspace the token has no authority over
 
 async function req(base, method, uri, token, body) {
@@ -55,10 +54,12 @@ async function main() {
   try {
     await waitForPort(PORT);
     const token = fs.readFileSync(path.join(dir, 'admin-token'), 'utf8').trim();
+    const own = fs.readFileSync(path.join(dir, 'platform-workspace-id'), 'utf8').trim();
     assert.ok(token.startsWith('sk-awaken-'), 'bootstrap admin token present');
+    assert.ok(own.startsWith('workspace_local_'), 'platform-owned local workspace present');
 
     // ---- Query-string fence -----------------------------------------------
-    const okQuery = await req(base, 'GET', `/v1/config/credentials?workspace_id=${OWN}`, token);
+    const okQuery = await req(base, 'GET', `/v1/config/credentials?workspace_id=${own}`, token);
     assert.ok(okQuery.status !== 401 && okQuery.status !== 403, `own-workspace query passes the fence (got ${okQuery.status})`);
     pass('query workspace_id == token workspace -> passes the fence');
 
@@ -78,7 +79,7 @@ async function main() {
     // A matching body workspace passes the fence (whatever the handler then does,
     // it is NOT a 403 from the guard).
     const okBody = await req(base, 'POST', '/v1/config/credentials', token, {
-      workspace_id: OWN,
+      workspace_id: own,
       kind: 'vault',
       provider_id: 'anthropic',
       env_key: 'ANTHROPIC_API_KEY',
@@ -88,7 +89,7 @@ async function main() {
     pass('body workspace_id fence: mismatch -> 403, match -> passes');
 
     // ---- Path-addressing fence --------------------------------------------
-    const okPath = await req(base, 'GET', `/v1/workspaces/${OWN}/config/catalog`, token);
+    const okPath = await req(base, 'GET', `/v1/workspaces/${own}/config/catalog`, token);
     assert.ok(okPath.status !== 401 && okPath.status !== 403, `own-workspace path passes the fence (got ${okPath.status})`);
     const evilPath = await req(base, 'GET', `/v1/workspaces/${EVIL}/config/catalog`, token);
     assertForbidden(evilPath, 'path fence');

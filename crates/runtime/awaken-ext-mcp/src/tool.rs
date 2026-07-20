@@ -11,9 +11,9 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use awaken_mcp_wire::{McpToolDefinition, ToolContent};
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
-use mcp::{McpToolDefinition, ToolContent};
 use serde_json::Value;
 
 use crate::error::McpError;
@@ -119,8 +119,8 @@ fn normalize_schema(schema: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mcp::CallToolResult;
-    use mcp::transport::McpTransportError;
+    use awaken_mcp_wire::CallToolResult;
+    use awaken_mcp_wire::McpTransportError;
 
     /// A transport whose single `call_tool` outcome is fixed, so each of the
     /// three result states can be driven deterministically.

@@ -2,8 +2,8 @@
 //! authz completion): `POST/GET /v1/config/iam/tokens` +
 //! `DELETE /v1/config/iam/tokens/{id}` behind the management guard.
 //!
-//! Trust-model pins: the bootstrap admin's GLOBAL role binding lets it mint
-//! tokens for workspaces other than its own (the scope graph decides, not
+//! Trust-model pins: the bootstrap admin's hidden-Org role binding lets it mint
+//! tokens for child workspaces other than its own (the scope graph decides, not
 //! header equality); a workspace-bound admin mints only for its own workspace;
 //! minted tokens obey the route→action rules for their role and stay fenced to
 //! their workspace; list responses are secret-free (no argon2 hash, no
@@ -111,13 +111,14 @@ async fn mint_http(
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_global_bootstrap_binding_mints_cross_workspace_tokens() {
+async fn the_org_bootstrap_binding_mints_cross_workspace_tokens() {
     let dir = tempfile::tempdir().unwrap();
-    let (app, _iam) = build_secured_management_router(dir.path(), &KEY).await;
+    let (app, iam) = build_secured_management_router(dir.path(), &KEY).await;
+    iam.register_workspace(OTHER_WORKSPACE);
     let bootstrap = admin_token(dir.path());
 
     // The bootstrap credential's own workspace is wrkspc_default, yet it mints
-    // for wrkspc_two: only the Global admin binding can authorize apikey.write
+    // for wrkspc_two: only the hidden-Org admin binding can authorize apikey.write
     // at that TARGET workspace.
     let (s, minted) = call(
         &app,
@@ -174,7 +175,8 @@ async fn the_global_bootstrap_binding_mints_cross_workspace_tokens() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_workspace_bound_admin_mints_only_for_its_own_workspace() {
     let dir = tempfile::tempdir().unwrap();
-    let (app, _iam) = build_secured_management_router(dir.path(), &KEY).await;
+    let (app, iam) = build_secured_management_router(dir.path(), &KEY).await;
+    iam.register_workspace(OTHER_WORKSPACE);
     let bootstrap = admin_token(dir.path());
     let (scoped, _) = mint_http(&app, &bootstrap, OTHER_WORKSPACE, "workspace_admin").await;
 
@@ -189,7 +191,7 @@ async fn a_workspace_bound_admin_mints_only_for_its_own_workspace() {
     .await;
     assert_eq!(s, StatusCode::CREATED, "{minted}");
 
-    // Another workspace: the scope graph refuses — no Global binding here.
+    // Another workspace: the scope graph refuses — no Org binding here.
     let (s, err) = call(
         &app,
         "POST",

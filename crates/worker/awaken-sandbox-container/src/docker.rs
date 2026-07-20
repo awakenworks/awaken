@@ -363,6 +363,11 @@ impl ContainerRuntime for DockerRuntime {
         // with a short backoff: the FIRST turn on a COLD container must not race the
         // bind (a warm/reused container connects on the first attempt). Bounded (~6s)
         // so a genuinely dead agent still fails closed.
+        // Docker may publish the host port before the container process has bound its
+        // listener. During that window a TCP connect succeeds through docker-proxy but
+        // the first read is reset, which a dial-only retry cannot observe. Give a cold
+        // process one bounded settle interval before accepting a channel as ready.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         let mut last: Option<RuntimeError> = None;
         for _ in 0..40 {
             match self.agent_addr(container_id).await {

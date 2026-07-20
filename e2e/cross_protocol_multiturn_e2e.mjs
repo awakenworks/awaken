@@ -64,7 +64,7 @@ async function turn(base, wire, t, marker, i) {
       }),
     );
   } else {
-    await rpc(base, 'message/send', {
+    return rpc(base, 'message/send', {
       message: { messageId: `u${i}`, contextId: t, role: 'user', kind: 'message', parts: [{ kind: 'text', text: marker }] },
     });
   }
@@ -86,19 +86,22 @@ async function main() {
     const thread = `xmulti-${randomBytes(4).toString('hex')}`;
     const wires = ['ai-sdk', 'ag-ui', 'a2a'];
     const markers = [];
+    let latestA2aTaskId;
 
     for (let i = 0; i < TURNS; i++) {
       const wire = wires[i % wires.length];
       const marker = `T${i}-${randomBytes(3).toString('hex')}`;
       markers.push(marker);
-      await turn(base, wire, thread, marker, i);
+      const task = await turn(base, wire, thread, marker, i);
+      if (wire === 'a2a') latestA2aTaskId = task?.id;
       pass(`turn ${i} via ${wire} (${marker})`);
     }
 
     // Final transcript, read back through all three wires, all markers ordered.
     const ai = await (await fetch(`${base}/v1/ai-sdk/threads/${thread}/messages`)).json();
     const agui = await (await fetch(`${base}/v1/ag-ui/threads/${thread}/messages`)).json();
-    const a2a = await rpc(base, 'tasks/get', { id: `task-${thread}` });
+    assert.ok(latestA2aTaskId, 'A2A returned an opaque server-issued task id');
+    const a2a = await rpc(base, 'tasks/get', { id: latestA2aTaskId });
 
     assertOrdered(JSON.stringify(ai.items), markers, 'ai-sdk history');
     assertOrdered(JSON.stringify(agui.items), markers, 'ag-ui history');
