@@ -168,6 +168,17 @@ async function main() {
     const getA = await req(base, 'GET', cfgPath(WS_A, `/${AGENT_ID}`), tokenA);
     assert.equal(getA.status, 200, 'WS-A reads back its own agent');
     assert.equal(getA.json.max_steps, ALPHA_STEPS, 'WS-A sees its own max_steps=7');
+    const generation = getA.json.generation;
+    const conditional = await req(base, 'PUT', cfgPath(WS_A, `/${AGENT_ID}`), tokenA, {
+      ...draft(ALPHA_STEPS), generation,
+    });
+    assert.equal(conditional.status, 200, `current generation applies: ${conditional.text.slice(0, 200)}`);
+    assert.ok(conditional.json.generation > generation, 'a conditional write advances the generation');
+    const stale = await req(base, 'PUT', cfgPath(WS_A, `/${AGENT_ID}`), tokenA, {
+      ...draft(ALPHA_STEPS), generation,
+    });
+    assert.equal(stale.status, 409, 'a stale generation fails closed');
+    assert.equal(stale.json.current_revision, conditional.json.generation);
     pass('WS-A authored + read its agent config in its own scope (max_steps=7)');
 
     // Fence: WS-A's token may not even ADDRESS another workspace's path -> 403.

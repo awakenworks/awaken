@@ -18,9 +18,7 @@ mod sqlite;
 
 pub use awaken_runtime_contract::{ExecutableAgentSnapshot, ExecutableAgentSnapshotBuilder};
 pub use awaken_tenancy::ScopeId;
-pub use compile::{
-    CompileError, compile, compile_resolved, compile_with_resource_prompts, compose_instructions,
-};
+pub use compile::{CompileError, compile_resolved, compose_instructions};
 pub use config::{AgentConfig, CompactionStrategy, ModelSelection, ToolOverride};
 pub use postgres::{PostgresConfigStore, StoreError as PostgresStoreError};
 pub use schema::config_bundle;

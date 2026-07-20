@@ -55,43 +55,6 @@ impl CompileError {
     }
 }
 
-/// Compile an agent config against an available tool catalog into a
-/// content-addressed [`ExecutableAgentSnapshot`] the runtime can run. Each `tool_id` must
-/// resolve (unknown references are rejected, fail-closed). The fingerprint is the
-/// sha256 of the canonical config, so the same config always compiles to the same
-/// executable snapshot.
-///
-/// This is a thin wrapper over [`ExecutableAgentSnapshot::builder`]: it resolves tool ids to
-/// descriptors and stamps the content hash; the builder does the assembly, so the
-/// compiled path and the direct path share one assembly (no duplication).
-pub fn compile(
-    config: &AgentConfig,
-    tools: &[ToolDescriptor],
-) -> Result<ExecutableAgentSnapshot, CompileError> {
-    compile_with_resource_prompts(config, tools, &[])
-}
-
-/// Compile with per-binding **resource prompts** appended to the agent's system
-/// prompt (ADR-0038 A3a): the config→runtime boundary is where a bound resource's
-/// description — the outputs path, a memory store's instructions, a repo's branch, a
-/// skill's purpose — is injected into the agent's effective instructions, not at
-/// runtime per turn. Passing `&[]` is exactly [`compile`] (fingerprint included), so
-/// bare compilation is byte-identical to before resources existed. Each fragment
-/// also enters the content-address fingerprint, so a different prompt set compiles to
-/// a different snapshot (no stale cache hit on changed instructions).
-pub fn compile_with_resource_prompts(
-    config: &AgentConfig,
-    tools: &[ToolDescriptor],
-    resource_prompts: &[String],
-) -> Result<ExecutableAgentSnapshot, CompileError> {
-    compile_resolved(
-        config,
-        tools,
-        resource_prompts,
-        AgentSnapshotMetadata::default(),
-    )
-}
-
 /// Assemble the one immutable publication produced by configuration resolution.
 /// `metadata` records every input the configuration plane read; runtime code never
 /// calls this function and therefore cannot re-resolve or broaden those inputs.
@@ -352,6 +315,26 @@ mod tests {
     use awaken_runtime_contract::tool::{ToolRecoveryMode, ToolRecoveryPolicy};
 
     use crate::config::ModelSelection;
+
+    fn compile(
+        config: &AgentConfig,
+        tools: &[ToolDescriptor],
+    ) -> Result<ExecutableAgentSnapshot, CompileError> {
+        compile_resolved(config, tools, &[], AgentSnapshotMetadata::default())
+    }
+
+    fn compile_with_resource_prompts(
+        config: &AgentConfig,
+        tools: &[ToolDescriptor],
+        resource_prompts: &[String],
+    ) -> Result<ExecutableAgentSnapshot, CompileError> {
+        compile_resolved(
+            config,
+            tools,
+            resource_prompts,
+            AgentSnapshotMetadata::default(),
+        )
+    }
 
     fn config(tools: &[&str]) -> AgentConfig {
         AgentConfig {

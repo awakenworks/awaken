@@ -1,0 +1,181 @@
+pub mod awaken_worker_contract
+pub enum awaken_worker_contract::AssignmentRejection
+pub awaken_worker_contract::AssignmentRejection::Ineligible
+pub awaken_worker_contract::AssignmentRejection::ReplacementForbidden
+pub awaken_worker_contract::AssignmentRejection::SandboxContinuityUnavailable
+pub enum awaken_worker_contract::ExecutionLocation
+pub awaken_worker_contract::ExecutionLocation::LocalOnly
+pub awaken_worker_contract::ExecutionLocation::RemotePreferred
+pub awaken_worker_contract::ExecutionLocation::RemoteRequired
+pub enum awaken_worker_contract::FingerprintError
+pub awaken_worker_contract::FingerprintError::Serialize(serde_json::error::Error)
+pub enum awaken_worker_contract::Incompatibility
+pub awaken_worker_contract::Incompatibility::Architecture
+pub awaken_worker_contract::Incompatibility::Architecture::actual: alloc::string::String
+pub awaken_worker_contract::Incompatibility::Architecture::required: alloc::string::String
+pub awaken_worker_contract::Incompatibility::CheckpointFormat(alloc::string::String)
+pub awaken_worker_contract::Incompatibility::DispatchVersion(u32)
+pub awaken_worker_contract::Incompatibility::LocalOnly
+pub awaken_worker_contract::Incompatibility::MissingCapability(alloc::string::String)
+pub awaken_worker_contract::Incompatibility::RuntimeVersion(u32)
+pub awaken_worker_contract::Incompatibility::SandboxBackend(alloc::string::String)
+pub awaken_worker_contract::Incompatibility::SandboxCapabilities
+pub awaken_worker_contract::Incompatibility::ToolTransparency
+pub awaken_worker_contract::Incompatibility::ZeroCapacity
+pub awaken_worker_contract::Incompatibility::Zone
+pub awaken_worker_contract::Incompatibility::Zone::actual: core::option::Option<alloc::string::String>
+pub awaken_worker_contract::Incompatibility::Zone::required: alloc::string::String
+pub enum awaken_worker_contract::PlacementError
+pub awaken_worker_contract::PlacementError::DuplicateResult(alloc::string::String)
+pub awaken_worker_contract::PlacementError::IneligibleResult(alloc::string::String)
+pub awaken_worker_contract::PlacementError::NoEligibleWorker
+pub awaken_worker_contract::PlacementError::Policy(alloc::string::String)
+pub enum awaken_worker_contract::RegistryError
+pub awaken_worker_contract::RegistryError::InvalidIdentity
+pub awaken_worker_contract::RegistryError::ManifestChanged
+pub awaken_worker_contract::RegistryError::Persistence(alloc::string::String)
+pub awaken_worker_contract::RegistryError::SlotOccupied
+pub awaken_worker_contract::RegistryError::SlotOccupied::generation: u64
+pub awaken_worker_contract::RegistryError::SlotOccupied::worker_id: alloc::string::String
+pub enum awaken_worker_contract::RegistryMutation
+pub awaken_worker_contract::RegistryMutation::Applied
+pub awaken_worker_contract::RegistryMutation::InvalidTransition
+pub awaken_worker_contract::RegistryMutation::NotFound
+pub awaken_worker_contract::RegistryMutation::StaleIncarnation
+pub awaken_worker_contract::RegistryMutation::StaleSequence
+pub enum awaken_worker_contract::WorkerRecoveryMode
+pub awaken_worker_contract::WorkerRecoveryMode::NeverReplace
+pub awaken_worker_contract::WorkerRecoveryMode::RebuildFromCommittedTruth
+pub awaken_worker_contract::WorkerRecoveryMode::RequireSandboxContinuity
+pub enum awaken_worker_contract::WorkerState
+pub awaken_worker_contract::WorkerState::Dead
+pub awaken_worker_contract::WorkerState::Draining
+pub awaken_worker_contract::WorkerState::Quiesced
+pub awaken_worker_contract::WorkerState::Ready
+pub awaken_worker_contract::WorkerState::Starting
+impl awaken_worker_contract::WorkerState
+pub const fn awaken_worker_contract::WorkerState::accepts_work(self) -> bool
+pub struct awaken_worker_contract::LeastLoadedPolicy
+impl awaken_worker_contract::PlacementPolicy for awaken_worker_contract::LeastLoadedPolicy
+pub fn awaken_worker_contract::LeastLoadedPolicy::id(&self) -> &str
+pub fn awaken_worker_contract::LeastLoadedPolicy::rank(&self, &awaken_worker_contract::PlacementContext, &[awaken_worker_contract::WorkerSnapshot]) -> core::result::Result<alloc::vec::Vec<awaken_worker_contract::RankedWorker>, awaken_worker_contract::PlacementError>
+pub struct awaken_worker_contract::PlacementContext
+pub awaken_worker_contract::PlacementContext::attributes: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+pub awaken_worker_contract::PlacementContext::previous_worker: core::option::Option<awaken_worker_contract::WorkerIdentity>
+pub awaken_worker_contract::PlacementContext::recovered: bool
+pub awaken_worker_contract::PlacementContext::requirements: awaken_worker_contract::PlacementRequirements
+pub awaken_worker_contract::PlacementContext::run_id: alloc::string::String
+pub awaken_worker_contract::PlacementContext::workspace_id: alloc::string::String
+pub struct awaken_worker_contract::PlacementRequirements
+pub awaken_worker_contract::PlacementRequirements::architecture: core::option::Option<alloc::string::String>
+pub awaken_worker_contract::PlacementRequirements::checkpoint_format: core::option::Option<alloc::string::String>
+pub awaken_worker_contract::PlacementRequirements::contract_version: u32
+pub awaken_worker_contract::PlacementRequirements::dispatch_contract_version: u32
+pub awaken_worker_contract::PlacementRequirements::isolation: awaken_provisioning_contract::sandbox::IsolationClass
+pub awaken_worker_contract::PlacementRequirements::location: awaken_worker_contract::ExecutionLocation
+pub awaken_worker_contract::PlacementRequirements::recovery: awaken_worker_contract::WorkerRecoveryMode
+pub awaken_worker_contract::PlacementRequirements::require_network_isolation: bool
+pub awaken_worker_contract::PlacementRequirements::require_resource_limits: bool
+pub awaken_worker_contract::PlacementRequirements::require_tool_transparent: bool
+pub awaken_worker_contract::PlacementRequirements::required_capabilities: alloc::collections::btree::set::BTreeSet<alloc::string::String>
+pub awaken_worker_contract::PlacementRequirements::required_zone: core::option::Option<alloc::string::String>
+pub awaken_worker_contract::PlacementRequirements::runtime_protocol_version: u32
+pub awaken_worker_contract::PlacementRequirements::sandbox_backend: core::option::Option<alloc::string::String>
+impl awaken_worker_contract::PlacementRequirements
+pub fn awaken_worker_contract::PlacementRequirements::is_legacy_default(&self) -> bool
+pub fn awaken_worker_contract::PlacementRequirements::remote_required() -> Self
+impl core::default::Default for awaken_worker_contract::PlacementRequirements
+pub fn awaken_worker_contract::PlacementRequirements::default() -> Self
+pub struct awaken_worker_contract::RankedWorker
+pub awaken_worker_contract::RankedWorker::identity: awaken_worker_contract::WorkerIdentity
+pub awaken_worker_contract::RankedWorker::reason: alloc::string::String
+pub awaken_worker_contract::RankedWorker::score: i64
+pub struct awaken_worker_contract::RegisteredWorker
+pub awaken_worker_contract::RegisteredWorker::drain_deadline_ms: core::option::Option<u64>
+pub awaken_worker_contract::RegisteredWorker::heartbeat_at_ms: u64
+pub awaken_worker_contract::RegisteredWorker::heartbeat_sequence: u64
+pub awaken_worker_contract::RegisteredWorker::registered_at_ms: u64
+pub awaken_worker_contract::RegisteredWorker::snapshot: awaken_worker_contract::WorkerSnapshot
+pub struct awaken_worker_contract::VersionRange
+pub awaken_worker_contract::VersionRange::max: u32
+pub awaken_worker_contract::VersionRange::min: u32
+impl awaken_worker_contract::VersionRange
+pub const awaken_worker_contract::VersionRange::ANY: Self
+pub const fn awaken_worker_contract::VersionRange::contains(self, u32) -> bool
+pub const fn awaken_worker_contract::VersionRange::exact(u32) -> Self
+pub const fn awaken_worker_contract::VersionRange::is_valid(self) -> bool
+impl core::default::Default for awaken_worker_contract::VersionRange
+pub fn awaken_worker_contract::VersionRange::default() -> Self
+pub struct awaken_worker_contract::WorkerAssignment
+pub awaken_worker_contract::WorkerAssignment::capability_fingerprint: alloc::string::String
+pub awaken_worker_contract::WorkerAssignment::identity: awaken_worker_contract::WorkerIdentity
+impl core::convert::From<&awaken_worker_contract::WorkerSnapshot> for awaken_worker_contract::WorkerAssignment
+pub fn awaken_worker_contract::WorkerAssignment::from(&awaken_worker_contract::WorkerSnapshot) -> Self
+pub struct awaken_worker_contract::WorkerCapacity
+pub awaken_worker_contract::WorkerCapacity::max_concurrent: u32
+pub awaken_worker_contract::WorkerCapacity::resources: awaken_provisioning_contract::vocab::ResourceLimits
+impl core::default::Default for awaken_worker_contract::WorkerCapacity
+pub fn awaken_worker_contract::WorkerCapacity::default() -> Self
+pub struct awaken_worker_contract::WorkerHeartbeat
+pub awaken_worker_contract::WorkerHeartbeat::in_flight: u32
+pub awaken_worker_contract::WorkerHeartbeat::ready: bool
+pub awaken_worker_contract::WorkerHeartbeat::sequence: u64
+pub struct awaken_worker_contract::WorkerIdentity
+pub awaken_worker_contract::WorkerIdentity::generation: u64
+pub awaken_worker_contract::WorkerIdentity::incarnation_id: alloc::string::String
+pub awaken_worker_contract::WorkerIdentity::worker_id: alloc::string::String
+impl awaken_worker_contract::WorkerIdentity
+pub fn awaken_worker_contract::WorkerIdentity::lease_owner(&self) -> alloc::string::String
+pub fn awaken_worker_contract::WorkerIdentity::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, u64) -> Self
+pub struct awaken_worker_contract::WorkerManifest
+pub awaken_worker_contract::WorkerManifest::architecture: alloc::string::String
+pub awaken_worker_contract::WorkerManifest::build_digest: alloc::string::String
+pub awaken_worker_contract::WorkerManifest::capabilities: alloc::collections::btree::set::BTreeSet<alloc::string::String>
+pub awaken_worker_contract::WorkerManifest::capacity: awaken_worker_contract::WorkerCapacity
+pub awaken_worker_contract::WorkerManifest::checkpoint_formats: alloc::collections::btree::set::BTreeSet<alloc::string::String>
+pub awaken_worker_contract::WorkerManifest::dispatch_contract: awaken_worker_contract::VersionRange
+pub awaken_worker_contract::WorkerManifest::manifest_version: u32
+pub awaken_worker_contract::WorkerManifest::runtime_protocol: awaken_worker_contract::VersionRange
+pub awaken_worker_contract::WorkerManifest::sandbox: awaken_provisioning_contract::sandbox::SandboxCapabilities
+pub awaken_worker_contract::WorkerManifest::sandbox_backends: alloc::collections::btree::set::BTreeSet<alloc::string::String>
+pub awaken_worker_contract::WorkerManifest::zone: core::option::Option<alloc::string::String>
+impl awaken_worker_contract::WorkerManifest
+pub fn awaken_worker_contract::WorkerManifest::fingerprint(&self) -> core::result::Result<alloc::string::String, awaken_worker_contract::FingerprintError>
+impl core::default::Default for awaken_worker_contract::WorkerManifest
+pub fn awaken_worker_contract::WorkerManifest::default() -> Self
+pub struct awaken_worker_contract::WorkerRegistration
+pub awaken_worker_contract::WorkerRegistration::incarnation_id: alloc::string::String
+pub awaken_worker_contract::WorkerRegistration::manifest: awaken_worker_contract::WorkerManifest
+pub awaken_worker_contract::WorkerRegistration::worker_id: alloc::string::String
+pub struct awaken_worker_contract::WorkerSnapshot
+pub awaken_worker_contract::WorkerSnapshot::capability_fingerprint: alloc::string::String
+pub awaken_worker_contract::WorkerSnapshot::expires_at_ms: u64
+pub awaken_worker_contract::WorkerSnapshot::identity: awaken_worker_contract::WorkerIdentity
+pub awaken_worker_contract::WorkerSnapshot::in_flight: u32
+pub awaken_worker_contract::WorkerSnapshot::manifest: awaken_worker_contract::WorkerManifest
+pub awaken_worker_contract::WorkerSnapshot::state: awaken_worker_contract::WorkerState
+impl awaken_worker_contract::WorkerSnapshot
+pub fn awaken_worker_contract::WorkerSnapshot::accepts(&self, &awaken_worker_contract::PlacementRequirements, u64) -> bool
+impl core::convert::From<&awaken_worker_contract::WorkerSnapshot> for awaken_worker_contract::WorkerAssignment
+pub fn awaken_worker_contract::WorkerAssignment::from(&awaken_worker_contract::WorkerSnapshot) -> Self
+pub const awaken_worker_contract::CURRENT_CONTRACT_VERSION: u32
+pub trait awaken_worker_contract::PlacementPolicy: core::marker::Send + core::marker::Sync
+pub fn awaken_worker_contract::PlacementPolicy::id(&self) -> &str
+pub fn awaken_worker_contract::PlacementPolicy::rank(&self, &awaken_worker_contract::PlacementContext, &[awaken_worker_contract::WorkerSnapshot]) -> core::result::Result<alloc::vec::Vec<awaken_worker_contract::RankedWorker>, awaken_worker_contract::PlacementError>
+impl awaken_worker_contract::PlacementPolicy for awaken_worker_contract::LeastLoadedPolicy
+pub fn awaken_worker_contract::LeastLoadedPolicy::id(&self) -> &str
+pub fn awaken_worker_contract::LeastLoadedPolicy::rank(&self, &awaken_worker_contract::PlacementContext, &[awaken_worker_contract::WorkerSnapshot]) -> core::result::Result<alloc::vec::Vec<awaken_worker_contract::RankedWorker>, awaken_worker_contract::PlacementError>
+pub trait awaken_worker_contract::WorkerDirectory: core::marker::Send + core::marker::Sync
+pub fn awaken_worker_contract::WorkerDirectory::begin_drain<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_worker_contract::WorkerIdentity, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_worker_contract::RegistryMutation, awaken_worker_contract::RegistryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_worker_contract::WorkerDirectory::current<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_worker_contract::RegisteredWorker>, awaken_worker_contract::RegistryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_worker_contract::WorkerDirectory::deregister<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_worker_contract::WorkerIdentity) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_worker_contract::RegistryMutation, awaken_worker_contract::RegistryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_worker_contract::WorkerDirectory::expire<'life0, 'async_trait>(&'life0 self, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_worker_contract::WorkerIdentity>, awaken_worker_contract::RegistryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_worker_contract::WorkerDirectory::heartbeat<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_worker_contract::WorkerIdentity, awaken_worker_contract::WorkerHeartbeat, u64, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_worker_contract::RegistryMutation, awaken_worker_contract::RegistryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_worker_contract::WorkerDirectory::list<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_worker_contract::RegisteredWorker>, awaken_worker_contract::RegistryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_worker_contract::WorkerDirectory::mark_quiesced<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_worker_contract::WorkerIdentity) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_worker_contract::RegistryMutation, awaken_worker_contract::RegistryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_worker_contract::WorkerDirectory::register<'life0, 'async_trait>(&'life0 self, awaken_worker_contract::WorkerRegistration, u64, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_worker_contract::RegisteredWorker, awaken_worker_contract::RegistryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub const fn awaken_worker_contract::assignment_recovery_rejection(bool, awaken_worker_contract::WorkerRecoveryMode, bool) -> core::option::Option<awaken_worker_contract::AssignmentRejection>
+pub fn awaken_worker_contract::can_assign(&awaken_worker_contract::WorkerSnapshot, &awaken_worker_contract::PlacementRequirements, core::option::Option<&awaken_worker_contract::WorkerAssignment>, bool, u64) -> core::result::Result<(), awaken_worker_contract::AssignmentRejection>
+pub fn awaken_worker_contract::can_claim(&awaken_worker_contract::WorkerManifest, &awaken_worker_contract::PlacementRequirements) -> core::result::Result<(), awaken_worker_contract::Incompatibility>
+pub fn awaken_worker_contract::place(&dyn awaken_worker_contract::PlacementPolicy, &awaken_worker_contract::PlacementContext, &[awaken_worker_contract::WorkerSnapshot], u64) -> core::result::Result<awaken_worker_contract::RankedWorker, awaken_worker_contract::PlacementError>
+pub fn awaken_worker_contract::place_assignment(&dyn awaken_worker_contract::PlacementPolicy, &awaken_worker_contract::PlacementContext, &[awaken_worker_contract::WorkerSnapshot], core::option::Option<&awaken_worker_contract::WorkerAssignment>, bool, u64) -> core::result::Result<awaken_worker_contract::RankedWorker, awaken_worker_contract::PlacementError>

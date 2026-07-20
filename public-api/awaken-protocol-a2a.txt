@@ -53,6 +53,7 @@ pub mod awaken_protocol_a2a::request
 pub struct awaken_protocol_a2a::request::Processed
 pub awaken_protocol_a2a::request::Processed::agent_id: core::option::Option<alloc::string::String>
 pub awaken_protocol_a2a::request::Processed::message: awaken_agent_contract::agent::message::Message
+pub awaken_protocol_a2a::request::Processed::task_id: alloc::string::String
 pub awaken_protocol_a2a::request::Processed::text: alloc::string::String
 pub awaken_protocol_a2a::request::Processed::thread_id: alloc::string::String
 pub fn awaken_protocol_a2a::request::process(awaken_protocol_a2a::types::SendMessageRequest, core::option::Option<alloc::string::String>) -> awaken_protocol_a2a::request::Processed
@@ -92,11 +93,15 @@ pub awaken_protocol_a2a::types::TaskState::Canceled
 pub awaken_protocol_a2a::types::TaskState::Completed
 pub awaken_protocol_a2a::types::TaskState::Failed
 pub awaken_protocol_a2a::types::TaskState::InputRequired
+pub awaken_protocol_a2a::types::TaskState::Rejected
+pub awaken_protocol_a2a::types::TaskState::Submitted
+pub awaken_protocol_a2a::types::TaskState::Unknown
 pub awaken_protocol_a2a::types::TaskState::Working
 pub struct awaken_protocol_a2a::types::AgentCapabilities
 pub awaken_protocol_a2a::types::AgentCapabilities::push_notifications: bool
 pub awaken_protocol_a2a::types::AgentCapabilities::streaming: bool
 pub struct awaken_protocol_a2a::types::AgentCard
+pub awaken_protocol_a2a::types::AgentCard::additional_interfaces: alloc::vec::Vec<awaken_protocol_a2a::types::AgentInterface>
 pub awaken_protocol_a2a::types::AgentCard::capabilities: awaken_protocol_a2a::types::AgentCapabilities
 pub awaken_protocol_a2a::types::AgentCard::default_input_modes: alloc::vec::Vec<alloc::string::String>
 pub awaken_protocol_a2a::types::AgentCard::default_output_modes: alloc::vec::Vec<alloc::string::String>
@@ -110,15 +115,24 @@ pub awaken_protocol_a2a::types::AgentCard::skills: alloc::vec::Vec<awaken_protoc
 pub awaken_protocol_a2a::types::AgentCard::supports_authenticated_extended_card: core::option::Option<bool>
 pub awaken_protocol_a2a::types::AgentCard::url: core::option::Option<alloc::string::String>
 pub awaken_protocol_a2a::types::AgentCard::version: alloc::string::String
+pub struct awaken_protocol_a2a::types::AgentInterface
+pub awaken_protocol_a2a::types::AgentInterface::transport: alloc::string::String
+pub awaken_protocol_a2a::types::AgentInterface::url: alloc::string::String
 pub struct awaken_protocol_a2a::types::AgentSkill
 pub awaken_protocol_a2a::types::AgentSkill::id: alloc::string::String
 pub awaken_protocol_a2a::types::AgentSkill::name: alloc::string::String
 pub awaken_protocol_a2a::types::AgentSkill::tags: alloc::vec::Vec<alloc::string::String>
 pub struct awaken_protocol_a2a::types::Artifact
+pub awaken_protocol_a2a::types::Artifact::artifact_id: alloc::string::String
 pub awaken_protocol_a2a::types::Artifact::name: core::option::Option<alloc::string::String>
 pub awaken_protocol_a2a::types::Artifact::parts: alloc::vec::Vec<awaken_protocol_a2a::types::Part>
 impl awaken_protocol_a2a::types::Artifact
 pub fn awaken_protocol_a2a::types::Artifact::text(&self) -> alloc::string::String
+pub struct awaken_protocol_a2a::types::AuthenticationInfo
+pub awaken_protocol_a2a::types::AuthenticationInfo::credentials: core::option::Option<alloc::string::String>
+pub awaken_protocol_a2a::types::AuthenticationInfo::schemes: alloc::vec::Vec<alloc::string::String>
+impl<'de> serde_core::de::Deserialize<'de> for awaken_protocol_a2a::types::AuthenticationInfo
+pub fn awaken_protocol_a2a::types::AuthenticationInfo::deserialize<D>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
 pub struct awaken_protocol_a2a::types::AuthorizationCodeFlow
 pub awaken_protocol_a2a::types::AuthorizationCodeFlow::authorization_url: alloc::string::String
 pub awaken_protocol_a2a::types::AuthorizationCodeFlow::refresh_url: core::option::Option<alloc::string::String>
@@ -138,11 +152,15 @@ pub fn awaken_protocol_a2a::types::ErrorResponse::new(i32, impl core::convert::I
 pub struct awaken_protocol_a2a::types::FilePart
 pub awaken_protocol_a2a::types::FilePart::bytes: core::option::Option<alloc::string::String>
 pub awaken_protocol_a2a::types::FilePart::mime_type: core::option::Option<alloc::string::String>
+pub awaken_protocol_a2a::types::FilePart::name: core::option::Option<alloc::string::String>
 pub awaken_protocol_a2a::types::FilePart::uri: core::option::Option<alloc::string::String>
 pub struct awaken_protocol_a2a::types::ImplicitFlow
 pub awaken_protocol_a2a::types::ImplicitFlow::authorization_url: alloc::string::String
 pub awaken_protocol_a2a::types::ImplicitFlow::refresh_url: core::option::Option<alloc::string::String>
 pub awaken_protocol_a2a::types::ImplicitFlow::scopes: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+pub struct awaken_protocol_a2a::types::ListPushNotificationConfigsResponse
+pub awaken_protocol_a2a::types::ListPushNotificationConfigsResponse::configs: alloc::vec::Vec<awaken_protocol_a2a::types::TaskPushNotificationConfig>
+pub awaken_protocol_a2a::types::ListPushNotificationConfigsResponse::next_page_token: alloc::string::String
 pub struct awaken_protocol_a2a::types::Message
 pub awaken_protocol_a2a::types::Message::context_id: core::option::Option<alloc::string::String>
 pub awaken_protocol_a2a::types::Message::kind: core::option::Option<alloc::string::String>
@@ -161,13 +179,23 @@ pub awaken_protocol_a2a::types::OAuthFlows::password: core::option::Option<awake
 pub struct awaken_protocol_a2a::types::Part
 pub awaken_protocol_a2a::types::Part::file: core::option::Option<awaken_protocol_a2a::types::FilePart>
 pub awaken_protocol_a2a::types::Part::kind: core::option::Option<alloc::string::String>
+pub awaken_protocol_a2a::types::Part::metadata: core::option::Option<serde_json::value::Value>
 pub awaken_protocol_a2a::types::Part::text: core::option::Option<alloc::string::String>
 impl awaken_protocol_a2a::types::Part
 pub fn awaken_protocol_a2a::types::Part::text(impl core::convert::Into<alloc::string::String>) -> Self
+impl<'de> serde_core::de::Deserialize<'de> for awaken_protocol_a2a::types::Part
+pub fn awaken_protocol_a2a::types::Part::deserialize<D>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
 pub struct awaken_protocol_a2a::types::PasswordFlow
 pub awaken_protocol_a2a::types::PasswordFlow::refresh_url: core::option::Option<alloc::string::String>
 pub awaken_protocol_a2a::types::PasswordFlow::scopes: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub awaken_protocol_a2a::types::PasswordFlow::token_url: alloc::string::String
+pub struct awaken_protocol_a2a::types::PushNotificationConfig
+pub awaken_protocol_a2a::types::PushNotificationConfig::authentication: core::option::Option<awaken_protocol_a2a::types::AuthenticationInfo>
+pub awaken_protocol_a2a::types::PushNotificationConfig::id: core::option::Option<alloc::string::String>
+pub awaken_protocol_a2a::types::PushNotificationConfig::token: core::option::Option<alloc::string::String>
+pub awaken_protocol_a2a::types::PushNotificationConfig::url: alloc::string::String
+impl awaken_protocol_a2a::types::PushNotificationConfig
+pub fn awaken_protocol_a2a::types::PushNotificationConfig::redacted(&self) -> Self
 pub struct awaken_protocol_a2a::types::SendMessage
 pub awaken_protocol_a2a::types::SendMessage::context_id: core::option::Option<alloc::string::String>
 pub awaken_protocol_a2a::types::SendMessage::message_id: core::option::Option<alloc::string::String>
@@ -176,11 +204,25 @@ pub awaken_protocol_a2a::types::SendMessage::role: awaken_protocol_a2a::types::M
 pub awaken_protocol_a2a::types::SendMessage::task_id: core::option::Option<alloc::string::String>
 impl awaken_protocol_a2a::types::SendMessage
 pub fn awaken_protocol_a2a::types::SendMessage::text(&self) -> alloc::string::String
+pub struct awaken_protocol_a2a::types::SendMessageConfiguration
+pub awaken_protocol_a2a::types::SendMessageConfiguration::accepted_output_modes: alloc::vec::Vec<alloc::string::String>
+pub awaken_protocol_a2a::types::SendMessageConfiguration::blocking: core::option::Option<bool>
+pub awaken_protocol_a2a::types::SendMessageConfiguration::history_length: core::option::Option<u32>
+pub awaken_protocol_a2a::types::SendMessageConfiguration::return_immediately: core::option::Option<bool>
+pub awaken_protocol_a2a::types::SendMessageConfiguration::task_push_notification_config: core::option::Option<awaken_protocol_a2a::types::PushNotificationConfig>
 pub struct awaken_protocol_a2a::types::SendMessageRequest
 pub awaken_protocol_a2a::types::SendMessageRequest::agent_id: core::option::Option<alloc::string::String>
+pub awaken_protocol_a2a::types::SendMessageRequest::configuration: core::option::Option<awaken_protocol_a2a::types::SendMessageConfiguration>
 pub awaken_protocol_a2a::types::SendMessageRequest::message: awaken_protocol_a2a::types::SendMessage
 pub struct awaken_protocol_a2a::types::SendMessageResponse
 pub awaken_protocol_a2a::types::SendMessageResponse::task: awaken_protocol_a2a::types::Task
+pub struct awaken_protocol_a2a::types::StreamResponse
+pub awaken_protocol_a2a::types::StreamResponse::artifact_update: core::option::Option<awaken_protocol_a2a::types::TaskArtifactUpdateEvent>
+pub awaken_protocol_a2a::types::StreamResponse::message: core::option::Option<awaken_protocol_a2a::types::Message>
+pub awaken_protocol_a2a::types::StreamResponse::status_update: core::option::Option<awaken_protocol_a2a::types::TaskStatusUpdateEvent>
+pub awaken_protocol_a2a::types::StreamResponse::task: core::option::Option<awaken_protocol_a2a::types::Task>
+impl awaken_protocol_a2a::types::StreamResponse
+pub fn awaken_protocol_a2a::types::StreamResponse::event_value(&self) -> serde_json::value::Value
 pub struct awaken_protocol_a2a::types::Task
 pub awaken_protocol_a2a::types::Task::artifacts: alloc::vec::Vec<awaken_protocol_a2a::types::Artifact>
 pub awaken_protocol_a2a::types::Task::context_id: alloc::string::String
@@ -188,9 +230,28 @@ pub awaken_protocol_a2a::types::Task::history: alloc::vec::Vec<awaken_protocol_a
 pub awaken_protocol_a2a::types::Task::id: alloc::string::String
 pub awaken_protocol_a2a::types::Task::kind: core::option::Option<alloc::string::String>
 pub awaken_protocol_a2a::types::Task::status: awaken_protocol_a2a::types::TaskStatus
+pub struct awaken_protocol_a2a::types::TaskArtifactUpdateEvent
+pub awaken_protocol_a2a::types::TaskArtifactUpdateEvent::append: core::option::Option<bool>
+pub awaken_protocol_a2a::types::TaskArtifactUpdateEvent::artifact: awaken_protocol_a2a::types::Artifact
+pub awaken_protocol_a2a::types::TaskArtifactUpdateEvent::context_id: alloc::string::String
+pub awaken_protocol_a2a::types::TaskArtifactUpdateEvent::kind: alloc::string::String
+pub awaken_protocol_a2a::types::TaskArtifactUpdateEvent::last_chunk: core::option::Option<bool>
+pub awaken_protocol_a2a::types::TaskArtifactUpdateEvent::metadata: core::option::Option<serde_json::value::Value>
+pub awaken_protocol_a2a::types::TaskArtifactUpdateEvent::task_id: alloc::string::String
+pub struct awaken_protocol_a2a::types::TaskPushNotificationConfig
+pub awaken_protocol_a2a::types::TaskPushNotificationConfig::push_notification_config: awaken_protocol_a2a::types::PushNotificationConfig
+pub awaken_protocol_a2a::types::TaskPushNotificationConfig::task_id: alloc::string::String
 pub struct awaken_protocol_a2a::types::TaskStatus
 pub awaken_protocol_a2a::types::TaskStatus::message: core::option::Option<awaken_protocol_a2a::types::Message>
 pub awaken_protocol_a2a::types::TaskStatus::state: awaken_protocol_a2a::types::TaskState
+pub awaken_protocol_a2a::types::TaskStatus::timestamp: core::option::Option<alloc::string::String>
+pub struct awaken_protocol_a2a::types::TaskStatusUpdateEvent
+pub awaken_protocol_a2a::types::TaskStatusUpdateEvent::context_id: alloc::string::String
+pub awaken_protocol_a2a::types::TaskStatusUpdateEvent::final_: bool
+pub awaken_protocol_a2a::types::TaskStatusUpdateEvent::kind: alloc::string::String
+pub awaken_protocol_a2a::types::TaskStatusUpdateEvent::metadata: core::option::Option<serde_json::value::Value>
+pub awaken_protocol_a2a::types::TaskStatusUpdateEvent::status: awaken_protocol_a2a::types::TaskStatus
+pub awaken_protocol_a2a::types::TaskStatusUpdateEvent::task_id: alloc::string::String
 pub enum awaken_protocol_a2a::ApiKeyLocation
 pub awaken_protocol_a2a::ApiKeyLocation::Cookie
 pub awaken_protocol_a2a::ApiKeyLocation::Header
@@ -229,8 +290,12 @@ pub awaken_protocol_a2a::TaskState::Canceled
 pub awaken_protocol_a2a::TaskState::Completed
 pub awaken_protocol_a2a::TaskState::Failed
 pub awaken_protocol_a2a::TaskState::InputRequired
+pub awaken_protocol_a2a::TaskState::Rejected
+pub awaken_protocol_a2a::TaskState::Submitted
+pub awaken_protocol_a2a::TaskState::Unknown
 pub awaken_protocol_a2a::TaskState::Working
 pub struct awaken_protocol_a2a::AgentCard
+pub awaken_protocol_a2a::AgentCard::additional_interfaces: alloc::vec::Vec<awaken_protocol_a2a::types::AgentInterface>
 pub awaken_protocol_a2a::AgentCard::capabilities: awaken_protocol_a2a::types::AgentCapabilities
 pub awaken_protocol_a2a::AgentCard::default_input_modes: alloc::vec::Vec<alloc::string::String>
 pub awaken_protocol_a2a::AgentCard::default_output_modes: alloc::vec::Vec<alloc::string::String>
@@ -244,11 +309,20 @@ pub awaken_protocol_a2a::AgentCard::skills: alloc::vec::Vec<awaken_protocol_a2a:
 pub awaken_protocol_a2a::AgentCard::supports_authenticated_extended_card: core::option::Option<bool>
 pub awaken_protocol_a2a::AgentCard::url: core::option::Option<alloc::string::String>
 pub awaken_protocol_a2a::AgentCard::version: alloc::string::String
+pub struct awaken_protocol_a2a::AgentInterface
+pub awaken_protocol_a2a::AgentInterface::transport: alloc::string::String
+pub awaken_protocol_a2a::AgentInterface::url: alloc::string::String
 pub struct awaken_protocol_a2a::Artifact
+pub awaken_protocol_a2a::Artifact::artifact_id: alloc::string::String
 pub awaken_protocol_a2a::Artifact::name: core::option::Option<alloc::string::String>
 pub awaken_protocol_a2a::Artifact::parts: alloc::vec::Vec<awaken_protocol_a2a::types::Part>
 impl awaken_protocol_a2a::types::Artifact
 pub fn awaken_protocol_a2a::types::Artifact::text(&self) -> alloc::string::String
+pub struct awaken_protocol_a2a::AuthenticationInfo
+pub awaken_protocol_a2a::AuthenticationInfo::credentials: core::option::Option<alloc::string::String>
+pub awaken_protocol_a2a::AuthenticationInfo::schemes: alloc::vec::Vec<alloc::string::String>
+impl<'de> serde_core::de::Deserialize<'de> for awaken_protocol_a2a::types::AuthenticationInfo
+pub fn awaken_protocol_a2a::types::AuthenticationInfo::deserialize<D>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
 pub struct awaken_protocol_a2a::AuthorizationCodeFlow
 pub awaken_protocol_a2a::AuthorizationCodeFlow::authorization_url: alloc::string::String
 pub awaken_protocol_a2a::AuthorizationCodeFlow::refresh_url: core::option::Option<alloc::string::String>
@@ -272,6 +346,9 @@ pub struct awaken_protocol_a2a::ImplicitFlow
 pub awaken_protocol_a2a::ImplicitFlow::authorization_url: alloc::string::String
 pub awaken_protocol_a2a::ImplicitFlow::refresh_url: core::option::Option<alloc::string::String>
 pub awaken_protocol_a2a::ImplicitFlow::scopes: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+pub struct awaken_protocol_a2a::ListPushNotificationConfigsResponse
+pub awaken_protocol_a2a::ListPushNotificationConfigsResponse::configs: alloc::vec::Vec<awaken_protocol_a2a::types::TaskPushNotificationConfig>
+pub awaken_protocol_a2a::ListPushNotificationConfigsResponse::next_page_token: alloc::string::String
 pub struct awaken_protocol_a2a::OAuthFlows
 pub awaken_protocol_a2a::OAuthFlows::authorization_code: core::option::Option<awaken_protocol_a2a::types::AuthorizationCodeFlow>
 pub awaken_protocol_a2a::OAuthFlows::client_credentials: core::option::Option<awaken_protocol_a2a::types::ClientCredentialsFlow>
@@ -281,17 +358,38 @@ pub struct awaken_protocol_a2a::PasswordFlow
 pub awaken_protocol_a2a::PasswordFlow::refresh_url: core::option::Option<alloc::string::String>
 pub awaken_protocol_a2a::PasswordFlow::scopes: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub awaken_protocol_a2a::PasswordFlow::token_url: alloc::string::String
+pub struct awaken_protocol_a2a::PushNotificationConfig
+pub awaken_protocol_a2a::PushNotificationConfig::authentication: core::option::Option<awaken_protocol_a2a::types::AuthenticationInfo>
+pub awaken_protocol_a2a::PushNotificationConfig::id: core::option::Option<alloc::string::String>
+pub awaken_protocol_a2a::PushNotificationConfig::token: core::option::Option<alloc::string::String>
+pub awaken_protocol_a2a::PushNotificationConfig::url: alloc::string::String
+impl awaken_protocol_a2a::types::PushNotificationConfig
+pub fn awaken_protocol_a2a::types::PushNotificationConfig::redacted(&self) -> Self
 pub struct awaken_protocol_a2a::Response
 pub awaken_protocol_a2a::Response::body: alloc::vec::Vec<u8>
 pub awaken_protocol_a2a::Response::status: u16
 pub awaken_protocol_a2a::Response::www_authenticate: core::option::Option<alloc::string::String>
 impl awaken_protocol_a2a::client::Response
 pub fn awaken_protocol_a2a::client::Response::new(u16, alloc::vec::Vec<u8>) -> Self
+pub struct awaken_protocol_a2a::SendMessageConfiguration
+pub awaken_protocol_a2a::SendMessageConfiguration::accepted_output_modes: alloc::vec::Vec<alloc::string::String>
+pub awaken_protocol_a2a::SendMessageConfiguration::blocking: core::option::Option<bool>
+pub awaken_protocol_a2a::SendMessageConfiguration::history_length: core::option::Option<u32>
+pub awaken_protocol_a2a::SendMessageConfiguration::return_immediately: core::option::Option<bool>
+pub awaken_protocol_a2a::SendMessageConfiguration::task_push_notification_config: core::option::Option<awaken_protocol_a2a::types::PushNotificationConfig>
 pub struct awaken_protocol_a2a::SendMessageRequest
 pub awaken_protocol_a2a::SendMessageRequest::agent_id: core::option::Option<alloc::string::String>
+pub awaken_protocol_a2a::SendMessageRequest::configuration: core::option::Option<awaken_protocol_a2a::types::SendMessageConfiguration>
 pub awaken_protocol_a2a::SendMessageRequest::message: awaken_protocol_a2a::types::SendMessage
 pub struct awaken_protocol_a2a::SendMessageResponse
 pub awaken_protocol_a2a::SendMessageResponse::task: awaken_protocol_a2a::types::Task
+pub struct awaken_protocol_a2a::StreamResponse
+pub awaken_protocol_a2a::StreamResponse::artifact_update: core::option::Option<awaken_protocol_a2a::types::TaskArtifactUpdateEvent>
+pub awaken_protocol_a2a::StreamResponse::message: core::option::Option<awaken_protocol_a2a::types::Message>
+pub awaken_protocol_a2a::StreamResponse::status_update: core::option::Option<awaken_protocol_a2a::types::TaskStatusUpdateEvent>
+pub awaken_protocol_a2a::StreamResponse::task: core::option::Option<awaken_protocol_a2a::types::Task>
+impl awaken_protocol_a2a::types::StreamResponse
+pub fn awaken_protocol_a2a::types::StreamResponse::event_value(&self) -> serde_json::value::Value
 pub struct awaken_protocol_a2a::Task
 pub awaken_protocol_a2a::Task::artifacts: alloc::vec::Vec<awaken_protocol_a2a::types::Artifact>
 pub awaken_protocol_a2a::Task::context_id: alloc::string::String
@@ -299,6 +397,24 @@ pub awaken_protocol_a2a::Task::history: alloc::vec::Vec<awaken_protocol_a2a::typ
 pub awaken_protocol_a2a::Task::id: alloc::string::String
 pub awaken_protocol_a2a::Task::kind: core::option::Option<alloc::string::String>
 pub awaken_protocol_a2a::Task::status: awaken_protocol_a2a::types::TaskStatus
+pub struct awaken_protocol_a2a::TaskArtifactUpdateEvent
+pub awaken_protocol_a2a::TaskArtifactUpdateEvent::append: core::option::Option<bool>
+pub awaken_protocol_a2a::TaskArtifactUpdateEvent::artifact: awaken_protocol_a2a::types::Artifact
+pub awaken_protocol_a2a::TaskArtifactUpdateEvent::context_id: alloc::string::String
+pub awaken_protocol_a2a::TaskArtifactUpdateEvent::kind: alloc::string::String
+pub awaken_protocol_a2a::TaskArtifactUpdateEvent::last_chunk: core::option::Option<bool>
+pub awaken_protocol_a2a::TaskArtifactUpdateEvent::metadata: core::option::Option<serde_json::value::Value>
+pub awaken_protocol_a2a::TaskArtifactUpdateEvent::task_id: alloc::string::String
+pub struct awaken_protocol_a2a::TaskPushNotificationConfig
+pub awaken_protocol_a2a::TaskPushNotificationConfig::push_notification_config: awaken_protocol_a2a::types::PushNotificationConfig
+pub awaken_protocol_a2a::TaskPushNotificationConfig::task_id: alloc::string::String
+pub struct awaken_protocol_a2a::TaskStatusUpdateEvent
+pub awaken_protocol_a2a::TaskStatusUpdateEvent::context_id: alloc::string::String
+pub awaken_protocol_a2a::TaskStatusUpdateEvent::final_: bool
+pub awaken_protocol_a2a::TaskStatusUpdateEvent::kind: alloc::string::String
+pub awaken_protocol_a2a::TaskStatusUpdateEvent::metadata: core::option::Option<serde_json::value::Value>
+pub awaken_protocol_a2a::TaskStatusUpdateEvent::status: awaken_protocol_a2a::types::TaskStatus
+pub awaken_protocol_a2a::TaskStatusUpdateEvent::task_id: alloc::string::String
 pub trait awaken_protocol_a2a::Transport: core::marker::Send + core::marker::Sync
 pub fn awaken_protocol_a2a::Transport::request<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, core::option::Option<alloc::vec::Vec<u8>>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_a2a::client::Response, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 impl awaken_protocol_a2a::client::Transport for awaken_protocol_a2a::client::HttpTransport

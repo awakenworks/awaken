@@ -14,9 +14,17 @@
 
 use std::collections::BTreeMap;
 
-use awaken_config_store::{AgentConfig, ModelSelection, compile};
+use awaken_config_store::{AgentConfig, ModelSelection, compile_resolved};
 use awaken_runtime_contract::resolved::ToolDescriptor;
+use awaken_runtime_contract::snapshot::AgentSnapshotMetadata;
 use serde_json::{Value, json};
+
+fn compile(
+    config: &AgentConfig,
+    tools: &[ToolDescriptor],
+) -> Result<awaken_config_store::ExecutableAgentSnapshot, awaken_config_store::CompileError> {
+    compile_resolved(config, tools, &[], AgentSnapshotMetadata::default())
+}
 
 /// A representative config authored the way today's plane authors one. `backend`
 /// selects the kind through the historic `backend_ref` string (`"genai"` native,

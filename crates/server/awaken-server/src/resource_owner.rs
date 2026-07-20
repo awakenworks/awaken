@@ -17,7 +17,7 @@
 
 use std::sync::Arc;
 
-use awaken_config_resolver::{InMemoryMemoryStoreRegistry, MemoryStoreRegistry};
+use awaken_config_resolver::MemoryStoreRegistry;
 use awaken_config_store::DEFAULT_SCOPE;
 use awaken_protocol_managed::WorkspaceScope;
 use axum::Json;
@@ -33,18 +33,7 @@ use axum::response::{IntoResponse, Response};
 #[derive(Clone)]
 pub struct ResourceOwners(Arc<dyn MemoryStoreRegistry>);
 
-impl Default for ResourceOwners {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl ResourceOwners {
-    #[must_use]
-    pub fn new() -> Self {
-        Self(Arc::new(InMemoryMemoryStoreRegistry::new()))
-    }
-
     #[must_use]
     pub fn over(registry: Arc<dyn MemoryStoreRegistry>) -> Self {
         Self(registry)
@@ -203,6 +192,7 @@ fn is_memory_stores_collection(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_config_resolver::InMemoryMemoryStoreRegistry;
 
     #[test]
     fn absent_scope_uses_the_single_tenant_default_but_empty_scope_is_rejected() {
