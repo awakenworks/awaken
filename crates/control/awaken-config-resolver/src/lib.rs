@@ -20,6 +20,24 @@ use awaken_credential_vault::{
 };
 use awaken_model_catalog::{ApiDialect, ProviderCatalog};
 
+/// Configuration-plane port that freezes inference access for one scope and one
+/// ordered model set. Implementations may read catalogs and credential inventories;
+/// runtime and admission code may not repeat that selection.
+pub trait InferenceAccessPublisher: Send + Sync {
+    fn resolve_access<'a>(
+        &'a self,
+        scope: &'a str,
+        models: &'a [awaken_runtime_contract::ModelBinding],
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<awaken_runtime_contract::InferenceAccess, String>,
+                > + Send
+                + 'a,
+        >,
+    >;
+}
+
 /// Read ports for the authored aggregates (`McpStore`, `InferenceProfileStore`,
 /// `ResourceStore`) + in-memory reference impls. They live on the read side so
 /// the runtime host reads config without depending on the authoring HTTP crate

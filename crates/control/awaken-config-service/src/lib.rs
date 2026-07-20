@@ -14,6 +14,7 @@ mod binding_resolver;
 mod capabilities;
 mod compaction;
 mod config_plane;
+mod publication;
 mod tool_catalog;
 
 pub use binding_resolver::{
@@ -21,9 +22,8 @@ pub use binding_resolver::{
     needs_resolution,
 };
 pub use capabilities::capabilities_router;
-pub use config_plane::{
-    ConfigPlane, ConfigService, ConfigServiceAgentSource, PublishError, config_router,
-};
+pub use config_plane::{ConfigPlane, ConfigService, ConfigServiceAgentSource, config_router};
+pub use publication::{PublishError, ValidationIssue};
 pub use tool_catalog::{
     RESERVED_ADMIN_SCOPE, ScopedToolCatalog, StaticToolCatalog, ToolCatalogSource,
 };

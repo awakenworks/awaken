@@ -224,13 +224,13 @@ async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
     let run = RunId("run-1".into());
 
     // Enqueue a run over the wire; the server-side store records it.
+    let mut activation = activation("run-1");
+    activation.snapshot.metadata.inference_access = Some(InferenceAccess::new(
+        "credential-reference/v1",
+        "grant-http",
+    ));
     queue
-        .enqueue(
-            RunDispatch::new(activation("run-1")).with_model_access(InferenceAccess::new(
-                "credential-reference/v1",
-                "grant-http",
-            )),
-        )
+        .enqueue(RunDispatch::new(activation))
         .await
         .expect("enqueue over transport");
     assert_eq!(
@@ -249,7 +249,12 @@ async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
         .expect("a runnable dispatch");
     assert_eq!(claimed.request.run_id(), &run);
     assert_eq!(
-        claimed.request.model_access,
+        claimed
+            .request
+            .activation
+            .snapshot
+            .metadata
+            .inference_access,
         Some(InferenceAccess::new(
             "credential-reference/v1",
             "grant-http"

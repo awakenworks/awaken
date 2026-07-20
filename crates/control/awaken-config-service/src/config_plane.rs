@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use awaken_config_resolver::ResourceStore;
+use awaken_config_resolver::{InferenceAccessPublisher, ResourceStore};
 use awaken_config_store::{
     AgentConfig, AgentConfigRevision, AuditedConfigWrite, ConfigRegistry, ConfigWrite,
     DEFAULT_SCOPE, ExecutableAgentSnapshot, ManagementAuditEntry, ManagementAuditRecord,
@@ -29,34 +29,8 @@ use serde_json::{Value, json};
 
 use crate::binding_resolver::ModelResolver;
 use crate::compaction::apply_compaction;
+use crate::publication::{PublishError, ResolvedAgentConfig, ValidationIssue, snapshot_metadata};
 use crate::tool_catalog::ToolCatalogSource;
-
-/// A publish failure, split so the edge can map it to an HTTP status (ADR-0052 D5:
-/// an unresolvable auto binding is a 409, not a generic 400).
-#[derive(Debug, thiserror::Error)]
-pub enum PublishError {
-    #[error("no config stored for agent `{0}`")]
-    NotStored(String),
-    /// The config's `Auto` model could not be resolved — no provider-backed model in
-    /// the catalog. Surfaced as 409 ("configure and publish a model first").
-    #[error("cannot resolve an auto model binding: {0}")]
-    Unresolvable(String),
-    #[error("config changed while it was being published (current revision: {0:?})")]
-    StaleRevision(Option<u64>),
-    #[error("{0}")]
-    Compile(String),
-    #[error("{0}")]
-    Store(String),
-}
-
-/// A single validation problem, projected from the config domain's compile so the UI can
-/// route it to the right section instead of parsing a free-text string. `path` is the
-/// config field (`""` = whole config); `message` is the domain's own wording.
-#[derive(Debug, Clone)]
-pub struct ValidationIssue {
-    pub path: String,
-    pub message: String,
-}
 
 /// The config domain service: validate, store, publish, and expose the installed
 /// published executable snapshot per agent.
@@ -71,28 +45,6 @@ pub struct ValidationIssue {
 struct InstalledEntry {
     source_revision: u64,
     snapshot: ExecutableAgentSnapshot,
-}
-
-/// The transient, secret-free result of reading every configuration source once.
-/// It exists only inside the configuration plane; the distributed boundary is the
-/// immutable `ExecutableAgentSnapshot` built from it.
-#[derive(Debug)]
-struct ResolvedAgentConfig {
-    source: awaken_runtime_contract::AgentConfigRevisionRef,
-    config: AgentConfig,
-    resource_prompts: Vec<String>,
-    manifest: awaken_runtime_contract::ResolutionManifest,
-}
-
-fn snapshot_metadata(
-    resolved: &ResolvedAgentConfig,
-) -> awaken_runtime_contract::AgentSnapshotMetadata {
-    awaken_runtime_contract::AgentSnapshotMetadata {
-        source: resolved.source.clone(),
-        publication_version: awaken_runtime_contract::AgentPublicationVersion(String::new()),
-        resolution: resolved.manifest.clone(),
-        fingerprint: awaken_runtime_contract::AgentSnapshotFingerprint(String::new()),
-    }
 }
 
 #[derive(Default)]
@@ -111,6 +63,9 @@ pub struct ConfigService {
     /// D5). `None` → an `Auto` config cannot publish (fail-closed); a `Pinned` config
     /// is unaffected.
     model_resolver: Option<Arc<dyn ModelResolver>>,
+    /// Resolves provider access once at publication. Kept as an inward port so the
+    /// config domain does not depend on vault/catalog adapters.
+    inference_access_publisher: Option<Arc<dyn InferenceAccessPublisher>>,
 }
 
 impl ConfigService {
@@ -127,6 +82,15 @@ impl ConfigService {
     #[must_use]
     pub fn with_model_resolver(mut self, resolver: Arc<dyn ModelResolver>) -> Self {
         self.model_resolver = Some(resolver);
+        self
+    }
+
+    #[must_use]
+    pub fn with_inference_access_publisher(
+        mut self,
+        publisher: Arc<dyn InferenceAccessPublisher>,
+    ) -> Self {
+        self.inference_access_publisher = Some(publisher);
         self
     }
 
@@ -256,7 +220,23 @@ impl ConfigService {
             .map_err(|e| PublishError::Store(e.to_string()))?
             .ok_or_else(|| PublishError::NotStored(id.to_string()))?;
         let source_revision = versioned.revision;
-        let resolved = self.resolve_agent_config(workspace, versioned)?;
+        let mut resolved = self.resolve_agent_config(workspace, versioned)?;
+        if let Some(publisher) = &self.inference_access_publisher {
+            let models = resolved
+                .config
+                .model_binding
+                .resolved()
+                .into_iter()
+                .chain(resolved.config.model_candidates.iter())
+                .cloned()
+                .collect::<Vec<_>>();
+            resolved.inference_access = Some(
+                publisher
+                    .resolve_access(workspace, &models)
+                    .await
+                    .map_err(PublishError::Unresolvable)?,
+            );
+        }
         let snapshot = awaken_config_store::compile_resolved(
             &resolved.config,
             catalog,
@@ -377,6 +357,7 @@ impl ConfigService {
             config,
             resource_prompts,
             manifest,
+            inference_access: None,
         })
     }
 
@@ -972,6 +953,7 @@ mod resource_prompt_tests {
     use awaken_runtime_contract::resolved::ContextPolicy;
 
     use crate::binding_resolver::{ModelResolver, ResolvedModel};
+    use awaken_runtime_contract::InferenceAccess;
     use awaken_runtime_contract::resolved::ModelBinding;
     use awaken_tenancy::WorkspaceScope;
 
@@ -1021,6 +1003,34 @@ mod resource_prompt_tests {
         }
     }
 
+    struct FakeAccessPublisher;
+
+    impl InferenceAccessPublisher for FakeAccessPublisher {
+        fn resolve_access<'a>(
+            &'a self,
+            scope: &'a str,
+            models: &'a [ModelBinding],
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<InferenceAccess, String>> + Send + 'a>,
+        > {
+            Box::pin(async move {
+                let model = models.first().ok_or_else(|| "missing model".to_string())?;
+                Ok(InferenceAccess::resolved_credential(
+                    format!("credential-{scope}"),
+                    3,
+                    scope,
+                    "provider@2",
+                    "endpoint@4",
+                    awaken_runtime_contract::InferenceEndpoint {
+                        adapter_kind: "openai".into(),
+                        base_url: "https://example.invalid/v1".into(),
+                        upstream_model: model.model_ref.clone(),
+                    },
+                ))
+            })
+        }
+    }
+
     /// A config plane (the scope edge) over a fresh in-memory store, an optional
     /// resolver, an optional resource store, and the given tool catalog.
     fn plane_with(
@@ -1037,6 +1047,31 @@ mod resource_prompt_tests {
             service = service.with_resources(resources);
         }
         ConfigPlane::new(Arc::new(service), store, tools)
+    }
+
+    #[tokio::test]
+    async fn publish_resolves_scope_access_once_into_the_persisted_snapshot() {
+        let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+        let service = Arc::new(
+            ConfigService::new().with_inference_access_publisher(Arc::new(FakeAccessPublisher)),
+        );
+        let plane = ConfigPlane::new(
+            service,
+            store,
+            Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
+        );
+        let scope = ScopeId::from("workspace-a");
+        plane.put(&scope, &agent_config("agent-a")).await.unwrap();
+        let publication = plane.publish(&scope, "agent-a").await.unwrap();
+        let access = publication
+            .snapshot
+            .metadata
+            .inference_access
+            .as_ref()
+            .expect("publication carries resolved inference access");
+        assert_eq!(access.scope_id.as_deref(), Some("workspace-a"));
+        assert_eq!(access.reference, "credential-workspace-a");
+        assert_eq!(publication.fingerprint, publication.snapshot.fingerprint.0);
     }
 
     fn static_plane(resolver: Option<Arc<dyn ModelResolver>>) -> ConfigPlane {

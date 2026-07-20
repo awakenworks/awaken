@@ -354,10 +354,9 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         // through the injected provider — which owns how the model is reached (local
         // credentials or a gateway offering). `None` leaves the runtime's bound (host
         // default) executor, so a single-model deployment is unaffected.
-        let model_executor = self.exec.materialize_inference(
-            &claimed.request.activation,
-            claimed.request.model_access.as_ref(),
-        )?;
+        let model_executor = self
+            .exec
+            .materialize_inference(&claimed.request.activation)?;
         // Continue the admitting request's trace across the durable queue boundary:
         // this `wake.dispatch` span's remote parent is the persisted traceparent, so
         // the run driven below (`runtime.run` → …) nests under the trace that
