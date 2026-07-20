@@ -25,7 +25,9 @@ use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::llm::{
     ChatRequest, ChatResponse, DeltaSink, Error as LlmError, LlmExecutor,
 };
-use awaken_runtime_host::{InferenceAccessResolver, InferenceExecutorMaterializer, ModelAccessRef};
+use awaken_runtime_host::{
+    InferenceAccess, InferenceAccessResolver, InferenceExecutorMaterializer,
+};
 
 use crate::executor_from_resolved;
 
@@ -78,17 +80,17 @@ impl ConfiguredInferenceMaterializer {
         self
     }
 
-    fn fallback_access(&self, model_ref: &str) -> Option<ModelAccessRef> {
+    fn fallback_access(&self, model_ref: &str) -> Option<InferenceAccess> {
         self.fallback
             .as_ref()
             .filter(|fallback| fallback.model_ref == model_ref)
-            .map(|_| ModelAccessRef::host_executor(model_ref))
+            .map(|_| InferenceAccess::host_executor(model_ref))
     }
 
     fn fallback_executor(
         &self,
         model_ref: &str,
-        access: &ModelAccessRef,
+        access: &InferenceAccess,
     ) -> Option<Arc<dyn LlmExecutor>> {
         self.fallback
             .as_ref()
@@ -102,7 +104,7 @@ impl ConfiguredInferenceMaterializer {
         catalog: &ProviderCatalog,
         sources: &[CredentialSource],
         model_ref: &str,
-    ) -> Result<ModelAccessRef, String> {
+    ) -> Result<InferenceAccess, String> {
         let offering = catalog
             .offerings
             .iter()
@@ -123,7 +125,7 @@ impl ConfiguredInferenceMaterializer {
                     && can_consume(&offering.provider_id.0, source)
             })
             .ok_or_else(|| format!("no active credential can consume model {model_ref}"))?;
-        Ok(ModelAccessRef::exact_credential(
+        Ok(InferenceAccess::exact_credential(
             chosen.id.0.clone(),
             format!("{}@{}", offering.provider_id.0, provider.version),
             format!("{}@{}", offering.protocol_endpoint_id.0, endpoint.version),
@@ -133,7 +135,7 @@ impl ConfiguredInferenceMaterializer {
     async fn pin_activation_access(
         &self,
         activation: &RunActivation,
-    ) -> Result<ModelAccessRef, String> {
+    ) -> Result<InferenceAccess, String> {
         let model_refs = match activation
             .model_ref_override
             .as_deref()
@@ -188,7 +190,7 @@ impl ConfiguredInferenceMaterializer {
                 Err(error) => last_error = Some(error),
             }
         }
-        ModelAccessRef::candidate_set(pinned).ok_or_else(|| {
+        InferenceAccess::candidate_set(pinned).ok_or_else(|| {
             last_error.unwrap_or_else(|| "run has no materializable model candidate".to_string())
         })
     }
@@ -196,7 +198,7 @@ impl ConfiguredInferenceMaterializer {
     async fn resolve(
         &self,
         model_ref: &str,
-        access: Option<&ModelAccessRef>,
+        access: Option<&InferenceAccess>,
     ) -> Option<Arc<dyn LlmExecutor>> {
         let catalog = self.catalog.snapshot().await.ok()?;
         // The offering names the provider whose credential must authenticate the model.
@@ -251,7 +253,7 @@ impl ConfiguredInferenceMaterializer {
     async fn materialize(
         &self,
         model_ref: &str,
-        access: &ModelAccessRef,
+        access: &InferenceAccess,
     ) -> Option<Arc<dyn LlmExecutor>> {
         if let Some(executor) = self.fallback_executor(model_ref, access) {
             Some(executor)
@@ -263,7 +265,7 @@ impl ConfiguredInferenceMaterializer {
 
 struct PinnedCandidateExecutor {
     provider: ConfiguredInferenceMaterializer,
-    access: ModelAccessRef,
+    access: InferenceAccess,
 }
 
 impl PinnedCandidateExecutor {
@@ -302,7 +304,7 @@ impl LlmExecutor for PinnedCandidateExecutor {
 }
 
 impl InferenceAccessResolver for ConfiguredInferenceMaterializer {
-    fn resolve_access(&self, activation: &RunActivation) -> Result<ModelAccessRef, String> {
+    fn resolve_access(&self, activation: &RunActivation) -> Result<InferenceAccess, String> {
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(self.pin_activation_access(activation))
         })
@@ -313,7 +315,7 @@ impl InferenceExecutorMaterializer for ConfiguredInferenceMaterializer {
     fn materialize(
         &self,
         activation: &RunActivation,
-        model_access: &ModelAccessRef,
+        model_access: &InferenceAccess,
     ) -> Option<Arc<dyn LlmExecutor>> {
         if !model_access.candidates.is_empty() {
             return Some(Arc::new(PinnedCandidateExecutor {

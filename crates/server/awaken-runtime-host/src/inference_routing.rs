@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use awaken_run_ingress::ModelAccessRef;
+use awaken_run_ingress::InferenceAccess;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::llm::LlmExecutor;
 
@@ -23,7 +23,7 @@ pub trait InferenceExecutorMaterializer: Send + Sync {
     fn materialize(
         &self,
         activation: &RunActivation,
-        access: &ModelAccessRef,
+        access: &InferenceAccess,
     ) -> Option<Arc<dyn LlmExecutor>>;
 }
 
@@ -31,7 +31,7 @@ pub trait InferenceExecutorMaterializer: Send + Sync {
 /// configuration role is independent of runtime materialization; a remote worker
 /// needs only [`InferenceExecutorMaterializer`].
 pub trait InferenceAccessResolver: Send + Sync {
-    fn resolve_access(&self, activation: &RunActivation) -> Result<ModelAccessRef, String>;
+    fn resolve_access(&self, activation: &RunActivation) -> Result<InferenceAccess, String>;
 }
 
 /// The host's per-thread model binding: which model ref each thread runs, and how
@@ -105,7 +105,7 @@ impl InferenceRouting {
     pub(crate) fn pin_access(
         &self,
         activation: &RunActivation,
-    ) -> Result<Option<ModelAccessRef>, String> {
+    ) -> Result<Option<InferenceAccess>, String> {
         match &self.access_resolver {
             Some(resolver) => resolver.resolve_access(activation).map(Some),
             None => Ok(None),
@@ -182,8 +182,8 @@ mod tests {
 
     struct MapProvider(HashMap<String, Arc<dyn LlmExecutor>>);
     impl InferenceAccessResolver for MapProvider {
-        fn resolve_access(&self, activation: &RunActivation) -> Result<ModelAccessRef, String> {
-            Ok(ModelAccessRef::host_executor(
+        fn resolve_access(&self, activation: &RunActivation) -> Result<InferenceAccess, String> {
+            Ok(InferenceAccess::host_executor(
                 activation.effective_model_ref(),
             ))
         }
@@ -193,7 +193,7 @@ mod tests {
         fn materialize(
             &self,
             activation: &RunActivation,
-            access: &ModelAccessRef,
+            access: &InferenceAccess,
         ) -> Option<Arc<dyn LlmExecutor>> {
             let model_ref = activation.effective_model_ref();
             access
@@ -272,16 +272,16 @@ mod tests {
     #[test]
     fn durable_run_materialization_forwards_the_opaque_access_reference() {
         struct ReferenceMaterializer {
-            seen: Arc<Mutex<Option<ModelAccessRef>>>,
+            seen: Arc<Mutex<Option<InferenceAccess>>>,
             executor: Arc<dyn LlmExecutor>,
-            grant: ModelAccessRef,
+            grant: InferenceAccess,
         }
 
         impl InferenceExecutorMaterializer for ReferenceMaterializer {
             fn materialize(
                 &self,
                 activation: &RunActivation,
-                model_access: &ModelAccessRef,
+                model_access: &InferenceAccess,
             ) -> Option<Arc<dyn LlmExecutor>> {
                 assert_eq!(activation.effective_model_ref(), "gateway-model");
                 *self.seen.lock().expect("grant capture mutex") = Some(model_access.clone());
@@ -293,14 +293,14 @@ mod tests {
             fn resolve_access(
                 &self,
                 _activation: &RunActivation,
-            ) -> Result<ModelAccessRef, String> {
+            ) -> Result<InferenceAccess, String> {
                 Ok(self.grant.clone())
             }
         }
 
         let seen = Arc::new(Mutex::new(None));
         let executor: Arc<dyn LlmExecutor> = Arc::new(LabeledModel("gateway"));
-        let grant = ModelAccessRef::new("credential-reference/v1", "grant-42");
+        let grant = InferenceAccess::new("credential-reference/v1", "grant-42");
         let mut binding = InferenceRouting::new();
         let materializer = Arc::new(ReferenceMaterializer {
             seen: seen.clone(),

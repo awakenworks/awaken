@@ -9,7 +9,7 @@ use awaken_runtime_contract::RunActivation;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult,
 };
-use awaken_runtime_host::ModelAccessRef;
+use awaken_runtime_host::InferenceAccess;
 use awaken_server::InferenceExecutorMaterializer;
 
 struct GrantExecutor {
@@ -33,7 +33,7 @@ impl InferenceExecutorMaterializer for ReferenceMaterializer {
     fn materialize(
         &self,
         _activation: &RunActivation,
-        access: &ModelAccessRef,
+        access: &InferenceAccess,
     ) -> Option<Arc<dyn LlmExecutor>> {
         (access.scheme == "credential-reference/v1").then(|| {
             Arc::new(GrantExecutor {

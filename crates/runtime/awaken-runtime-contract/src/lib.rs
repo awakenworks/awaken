@@ -9,6 +9,7 @@ pub mod credential;
 pub mod data_subject;
 pub mod delegation;
 pub mod execution;
+pub mod inference_access;
 pub mod live_inbox;
 pub mod llm;
 pub mod metrics;
@@ -45,6 +46,7 @@ pub use delegation::{
     RunDelegationService, RunDelegations,
 };
 pub use execution::{Cancellation, ExecutorCapabilities, RunExecutor, Wait};
+pub use inference_access::{InferenceAccess, InferenceAccessCandidate};
 pub use live_inbox::{LiveInbox, LiveInboxMessage, LiveInboxMessageId};
 pub use llm::{ChatRequest, ChatResponse, LlmExecutor};
 pub use pause::PauseSignal;

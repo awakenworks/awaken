@@ -21,8 +21,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_run_ingress::{
-    DispatchError, DispatchOutcome, DispatchQueue, HttpDispatchQueue, Inbox, MemoryDispatchStore,
-    ModelAccessRef, Outbox, PendingInput, RunClaim, RunDispatch, SettleOutcome, SubmitOptions,
+    DispatchError, DispatchOutcome, DispatchQueue, HttpDispatchQueue, Inbox, InferenceAccess,
+    MemoryDispatchStore, Outbox, PendingInput, RunClaim, RunDispatch, SettleOutcome, SubmitOptions,
 };
 use awaken_runtime_contract::resume::ResumeResult;
 use axum::extract::State;
@@ -226,8 +226,10 @@ async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
     // Enqueue a run over the wire; the server-side store records it.
     queue
         .enqueue(
-            RunDispatch::new(activation("run-1"))
-                .with_model_access(ModelAccessRef::new("credential-reference/v1", "grant-http")),
+            RunDispatch::new(activation("run-1")).with_model_access(InferenceAccess::new(
+                "credential-reference/v1",
+                "grant-http",
+            )),
         )
         .await
         .expect("enqueue over transport");
@@ -248,7 +250,10 @@ async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
     assert_eq!(claimed.request.run_id(), &run);
     assert_eq!(
         claimed.request.model_access,
-        Some(ModelAccessRef::new("credential-reference/v1", "grant-http")),
+        Some(InferenceAccess::new(
+            "credential-reference/v1",
+            "grant-http"
+        )),
         "the opaque grant survives the worker HTTP boundary"
     );
     assert_eq!(claimed.lease.owner, "worker-A");

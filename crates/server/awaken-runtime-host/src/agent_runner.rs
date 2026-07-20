@@ -22,7 +22,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_run_ingress::{
-    AnyDispatchStore, ClaimedRunCommit, Clock, DispatchWorker, ModelAccessRef, PendingInput,
+    AnyDispatchStore, ClaimedRunCommit, Clock, DispatchWorker, InferenceAccess, PendingInput,
     RunDispatch, SystemClock,
 };
 use awaken_runtime::memory::MemoryCommitCoordinator;
@@ -88,7 +88,7 @@ pub(crate) struct RunScheduler {
 }
 
 type ModelAccessResolver =
-    dyn Fn(&RunActivation) -> Result<Option<ModelAccessRef>, String> + Send + Sync;
+    dyn Fn(&RunActivation) -> Result<Option<InferenceAccess>, String> + Send + Sync;
 
 fn child_dispatch_request(
     activation: RunActivation,
@@ -741,14 +741,14 @@ mod tests {
             "child-thread".to_string(),
             RunInput::from(vec![user("go")]),
         );
-        let expected = ModelAccessRef::candidate_set([
+        let expected = InferenceAccess::candidate_set([
             (
                 "primary".to_string(),
-                ModelAccessRef::exact_credential("cred-a", "provider-a@1", "route-a@1"),
+                InferenceAccess::exact_credential("cred-a", "provider-a@1", "route-a@1"),
             ),
             (
                 "fallback".to_string(),
-                ModelAccessRef::exact_credential("cred-b", "provider-b@2", "route-b@3"),
+                InferenceAccess::exact_credential("cred-b", "provider-b@2", "route-b@3"),
             ),
         ])
         .expect("candidate access");

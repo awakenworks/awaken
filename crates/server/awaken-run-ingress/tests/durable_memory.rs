@@ -16,8 +16,8 @@ use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_ext_builtin_tools::MessageSender;
 use awaken_run_ingress::{
-    DispatchOutcome, DispatchQueue, DispatchWorker, DurableRunIngress, Inbox, MemoryDispatchStore,
-    ModelAccessRef, OutboxMessageSender, PendingInput, RunDispatch, RunIngressCapabilities,
+    DispatchOutcome, DispatchQueue, DispatchWorker, DurableRunIngress, Inbox, InferenceAccess,
+    MemoryDispatchStore, OutboxMessageSender, PendingInput, RunDispatch, RunIngressCapabilities,
 };
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime::{DirectRunIngress, RunIngress};
@@ -170,7 +170,7 @@ async fn a_secretless_worker_passes_the_durable_model_access_grant_to_its_resolv
         None,
         Some(resolver),
     );
-    let access = ModelAccessRef::new("credential-reference/v1", "grant-17");
+    let access = InferenceAccess::new("credential-reference/v1", "grant-17");
     let request = RunDispatch::new(activation("run-gateway")).with_model_access(access.clone());
     let (_, state) = ingress
         .worker()

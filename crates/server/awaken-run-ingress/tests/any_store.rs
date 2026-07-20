@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::run::RunState;
 use awaken_run_ingress::{
-    AnyDispatchStore, DispatchOutcome, DispatchQueue, DurableRunIngress, Inbox, LeastLoadedPolicy,
-    MemoryDispatchStore, ModelAccessRef, PlacementContext, PlacementError, PlacementPolicy,
+    AnyDispatchStore, DispatchOutcome, DispatchQueue, DurableRunIngress, Inbox, InferenceAccess,
+    LeastLoadedPolicy, MemoryDispatchStore, PlacementContext, PlacementError, PlacementPolicy,
     PlacementRequirements, RankedWorker, RunDispatch, SubmitOptions, WorkerIdentity,
     WorkerManifest, WorkerSnapshot, WorkerState,
 };
@@ -317,14 +317,14 @@ async fn any_delegates_enqueue_claim_and_owner_scoped_lease() {
 #[tokio::test]
 async fn reclaim_preserves_the_dispatch_pinned_model_candidate_set() {
     let store = any_in_memory();
-    let expected = ModelAccessRef::candidate_set([
+    let expected = InferenceAccess::candidate_set([
         (
             "primary".to_string(),
-            ModelAccessRef::exact_credential("cred-a", "provider-a@1", "route-a@2"),
+            InferenceAccess::exact_credential("cred-a", "provider-a@1", "route-a@2"),
         ),
         (
             "fallback".to_string(),
-            ModelAccessRef::exact_credential("cred-b", "provider-b@3", "route-b@4"),
+            InferenceAccess::exact_credential("cred-b", "provider-b@3", "route-b@4"),
         ),
     ])
     .expect("candidate set");

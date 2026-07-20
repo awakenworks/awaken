@@ -142,7 +142,7 @@ pub use crate::durable_ops::durable_ops_router;
 pub use awaken_env_store::{PostgresEnvRegistry, SqliteEnvRegistry};
 // The durable session-repository backends now live in `awaken-session-store` (a
 // stores/ leaf); re-exported so composition roots keep their import paths.
-pub use awaken_run_ingress::{HttpDispatchQueue, ModelAccessRef, worker_dispatch_store};
+pub use awaken_run_ingress::{HttpDispatchQueue, InferenceAccess, worker_dispatch_store};
 pub use awaken_session_store::{PostgresManagedSessionRepository, SqliteManagedSessionRepository};
 // The durable WorkQueue backends now live in `awaken-work-store` (a stores/ leaf);
 // re-exported so composition roots keep using `awaken_runtime_host::{Sqlite,Postgres}WorkQueue`.

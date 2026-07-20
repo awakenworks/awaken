@@ -2,9 +2,9 @@
 //! and the [`CompletionRegistry`] event-wakeup machinery.
 
 use super::*;
-use awaken_run_ingress::{ModelAccessRef, PlacementRequirements};
+use awaken_run_ingress::{InferenceAccess, PlacementRequirements};
 
-fn remote_worker_placement(access: Option<&ModelAccessRef>) -> PlacementRequirements {
+fn remote_worker_placement(access: Option<&InferenceAccess>) -> PlacementRequirements {
     let mut placement = PlacementRequirements::remote_required();
     placement
         .required_capabilities
@@ -214,7 +214,7 @@ impl CompletionSink for CompletionRegistry {
 
 #[cfg(test)]
 mod completion_tests {
-    use super::{CompletionRegistry, ModelAccessRef, RunId, remote_worker_placement};
+    use super::{CompletionRegistry, InferenceAccess, RunId, remote_worker_placement};
     use awaken_agent_contract::agent::run::RunState;
     use awaken_run_ingress::CompletionSink;
     use std::sync::Arc;
@@ -247,14 +247,14 @@ mod completion_tests {
 
     #[test]
     fn coordinator_admission_pins_protocol_and_every_materialization_capability() {
-        let access = ModelAccessRef::candidate_set([
+        let access = InferenceAccess::candidate_set([
             (
                 "primary".to_string(),
-                ModelAccessRef::new("credential-source/v1", "credential-a"),
+                InferenceAccess::new("credential-source/v1", "credential-a"),
             ),
             (
                 "fallback".to_string(),
-                ModelAccessRef::new("credential-reference/v1", "grant-b"),
+                InferenceAccess::new("credential-reference/v1", "grant-b"),
             ),
         ])
         .unwrap();

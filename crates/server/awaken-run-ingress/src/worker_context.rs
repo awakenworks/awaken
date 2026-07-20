@@ -10,7 +10,7 @@ use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
-use awaken_run_ingress_contract::ModelAccessRef;
+use awaken_run_ingress_contract::InferenceAccess;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::live_inbox::LiveInbox;
 use awaken_runtime_contract::llm::LlmExecutor;
@@ -22,7 +22,7 @@ use tokio_util::sync::CancellationToken;
 /// receives the complete activation and opaque access value; it neither selects a
 /// model nor distinguishes deployment topology.
 pub type InferenceMaterializerFn = Arc<
-    dyn Fn(&RunActivation, Option<&ModelAccessRef>) -> Option<Arc<dyn LlmExecutor>> + Send + Sync,
+    dyn Fn(&RunActivation, Option<&InferenceAccess>) -> Option<Arc<dyn LlmExecutor>> + Send + Sync,
 >;
 
 // The serializable durable-run instruction moved to the dispatch contract
@@ -78,7 +78,7 @@ impl WorkerContext {
     pub(crate) fn materialize_inference(
         &self,
         activation: &RunActivation,
-        model_access: Option<&ModelAccessRef>,
+        model_access: Option<&InferenceAccess>,
     ) -> awaken_runtime_contract::execution::Result<Option<Arc<dyn LlmExecutor>>> {
         let Some(resolve) = &self.inference_materializer else {
             return Ok(None);
