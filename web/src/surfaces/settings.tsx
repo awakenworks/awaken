@@ -45,6 +45,7 @@ export default function SettingsSurface() {
           {link("Credentials", `${base}/credentials`, app.t("Supply-side sources & pools — secret-in, secret-free-out", "供给侧凭证与池——只进不出"))}
           {link("MCP servers", `${base}/mcp-servers`, app.t("Authored definitions with fail-closed bindings", "作者化定义,fail-closed 绑定"))}
           {link("A2A servers", `${base}/a2a-servers`, app.t("Remote delegate directory", "远程委托目录"))}
+          {link("Protocols & API", `${base}/protocols`, app.t("Built-in endpoints, authentication, ACP and sandbox guide", "内置端点、鉴权、ACP 与沙箱指南"))}
           {link("Access", `${base}/access`, app.t("IAM tokens & roles", "IAM 令牌与角色"))}
         </Card>
         <Card>

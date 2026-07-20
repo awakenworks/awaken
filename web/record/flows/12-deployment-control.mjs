@@ -1,21 +1,22 @@
-// Deployment proof: configure a standing schedule and mint an auditable run receipt.
-import { configureSyntheticModel } from "../support/models.mjs";
+// Deployment proof: configure a standing schedule, launch a real Session, and
+// inspect the Agent output produced by the kickoff event.
+import { configureKimi } from "../support/models.mjs";
 
 const AGENT_ID = "scheduled-report-agent";
-const MODEL_ID = "deployment-recording-model";
+const MODEL_ID = "kimi-for-coding";
 const DEPLOYMENT_NAME = `Weekly release report · ${Date.now()}`;
 
 export const story = {
   promise: "Convert a published Agent into a standing scheduled operation and trigger it without editing the Agent.",
-  effect: "The Deployment persists its Agent, Environment, cron schedule, and visibly reports the triggered deployment-run id.",
-  aha: "Automation is a reusable Agent-to-Environment binding, and every trigger receives its own auditable run identity.",
+  effect: "The Deployment persists its Agent, Environment, and cron schedule; Run now creates a real Session that executes the kickoff event.",
+  aha: "A schedule is not a receipt—it becomes a real, inspectable Agent Session with output and an auditable trigger identity.",
   loyalty: "Standing operations make the platform part of recurring work rather than a tool users must remember to invoke.",
   satisfaction: "A visible run receipt confirms the trigger immediately and removes uncertainty about whether the click worked.",
   advocacy: "The shift from chat to scheduled operation communicates production readiness in one compact transformation.",
 };
 
 export async function run({ page, goto, intro, say, clearCaption, checkpoint, aha, expect, click, type, wait }) {
-  await configureSyntheticModel(page, MODEL_ID);
+  await configureKimi(page);
   await page.request.put(`http://127.0.0.1:38080/v1/config/agents/${AGENT_ID}`, {
     data: {
       id: AGENT_ID, name: "Scheduled report agent", model: { id: MODEL_ID },
@@ -34,7 +35,7 @@ export async function run({ page, goto, intro, say, clearCaption, checkpoint, ah
   await goto("/w/default/deployments");
   await intro(
     "Move a proven Agent from ad-hoc use into a repeatable scheduled operation.",
-    "Bind the published Agent to an Environment and cron schedule, then mint a visible deployment-run receipt.",
+    "Bind the published Agent to an Environment and cron schedule; every trigger creates and drives a real Session.",
   );
   await click(page.getByRole("button", { name: /New deployment|新建部署/ }));
   const modal = page.locator(".modal");
@@ -56,18 +57,32 @@ export async function run({ page, goto, intro, say, clearCaption, checkpoint, ah
     ]));
   });
 
-  await say("Run now uses the same standing definition and returns an auditable deployment-run identity.", 4000);
+  await say("Run now uses the standing definition to create a Session and deliver the kickoff event to the Agent.", 4000);
   const responsePromise = page.waitForResponse((response) => response.request().method() === "POST" && /\/v1\/deployments\/[^/]+\/run$/.test(response.url()));
   await click(row.getByRole("button", { name: /Run|运行/, exact: true }));
   const runResponse = await responsePromise;
   expect(runResponse.ok()).toBeTruthy();
   const deploymentRun = await runResponse.json();
-  await checkpoint("the trigger produces a visible deployment-run receipt", async () => {
+  await checkpoint("the trigger creates a real Session with the Agent's output", async () => {
     await expect(page.getByText(deploymentRun.id, { exact: true })).toBeVisible();
+    expect(deploymentRun.session_id).toMatch(/^sesn_/);
     const response = await page.request.get(`http://127.0.0.1:38080/v1/deployment_runs?deployment_id=${deploymentRun.deployment_id}`);
     const body = await response.json();
-    expect(body.data).toEqual(expect.arrayContaining([expect.objectContaining({ id: deploymentRun.id })]));
+    expect(body.data).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: deploymentRun.id, session_id: deploymentRun.session_id, error: null }),
+    ]));
+    const session = await page.request.get(`http://127.0.0.1:38080/v1/sessions/${deploymentRun.session_id}`);
+    expect(session.ok()).toBeTruthy();
+    const sessionBody = await session.json();
+    expect(sessionBody.deployment_id).toBe(deploymentRun.deployment_id);
+    const events = await page.request.get(`http://127.0.0.1:38080/v1/sessions/${deploymentRun.session_id}/events`);
+    const eventBody = await events.json();
+    expect(eventBody.data).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "agent.message" }),
+    ]));
   });
+  await click(page.getByText(deploymentRun.session_id, { exact: true }));
+  await expect(page.getByText(/Prepare this week's verified release report/i)).toBeVisible({ timeout: 15_000 });
   await clearCaption();
   await aha(story.aha);
   await wait(900);

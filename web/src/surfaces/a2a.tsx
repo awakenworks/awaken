@@ -30,10 +30,21 @@ export default function A2aSurface() {
         )}
         {card.error instanceof Error && <div className="err">{card.error.message}</div>}
       </Card>
-      <div className="banner gate">
-        <span>◌</span>
-        <span>{app.t("A2A server CRUD is a roadmap item (§7.9).", "A2A 服务器 CRUD 是路线项(§7.9)。")}</span>
-      </div>
+      <Card>
+        <h2>{app.t("This Awaken server is already an A2A agent", "当前 Awaken 服务已是 A2A Agent")}</h2>
+        <p className="hint">
+          {app.t(
+            "Use the well-known card for discovery, then send or stream a message. Tasks, cancellation, subscriptions and push notification configs share the same runtime.",
+            "通过 well-known card 发现服务，再发送或流式发送消息。任务、取消、订阅和推送通知配置共享同一运行时。",
+          )}
+        </p>
+        <div className="stack" style={{ gap: 6 }}>
+          <code>GET /.well-known/agent-card.json</code>
+          <code>POST /v1/a2a/message:send</code>
+          <code>POST /v1/a2a/message:stream</code>
+          <code>POST /v1/a2a</code>
+        </div>
+      </Card>
     </>
   );
 }

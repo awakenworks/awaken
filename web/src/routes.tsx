@@ -15,6 +15,7 @@ import SkillsSurface from "./surfaces/skills";
 import AgentEditorSurface from "./surfaces/agent-editor";
 import ProjectAgentsSurface from "./surfaces/project-agents";
 import ProjectOverviewSurface from "./surfaces/project-overview";
+import ProtocolsSurface from "./surfaces/protocols";
 import SessionDetailSurface from "./surfaces/session-detail";
 import SessionsSurface from "./surfaces/sessions";
 import SettingsSurface from "./surfaces/settings";
@@ -44,6 +45,7 @@ export const router = createBrowserRouter([
       { path: "w/:ws/credentials", element: <CredentialsSurface /> },
       { path: "w/:ws/mcp-servers", element: <McpServersSurface /> },
       { path: "w/:ws/a2a-servers", element: <A2aSurface /> },
+      { path: "w/:ws/protocols", element: <ProtocolsSurface /> },
       { path: "w/:ws/access", element: <AccessSurface /> },
       { path: "w/:ws/settings", element: <SettingsSurface /> },
 

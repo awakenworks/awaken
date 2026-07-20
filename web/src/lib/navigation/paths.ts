@@ -40,6 +40,7 @@ export const NAV: NavItem[] = [
   { key: "overview", label: "Overview", labelZh: "工作区概览", group: "operate", path: "/w/:ws/overview" },
   { key: "deployments", label: "Deployments", labelZh: "调度部署", group: "operate", path: "/w/:ws/deployments" },
   { key: "sessions", label: "Sessions", labelZh: "会话", group: "operate", path: "/w/:ws/sessions" },
+  { key: "protocols", label: "Protocols & API", labelZh: "协议与 API", group: "operate", path: "/w/:ws/protocols" },
 
   // Supply: the inference layer — infrastructure, not agent-bound building blocks.
   { key: "models", label: "Models", labelZh: "模型", group: "supply", path: "/w/:ws/models" },

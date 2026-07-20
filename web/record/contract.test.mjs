@@ -95,9 +95,11 @@ test("the complete series covers every release-ready platform capability", () =>
     "14-session-control.mjs",
     "15-a2a-discovery.mjs",
     "16-access-boundary.mjs",
+    "17-frontend-protocols.mjs",
+    "18-mcp-server-export.mjs",
   ]);
   const corpus = flows.map((name) => readFileSync(resolve(flowsDir, name), "utf8")).join("\n");
-  for (const claim of ["Skill", "resource", "Deployment", "/v1/sessions", "archive", "A2A", "revoke"]) {
+  for (const claim of ["Skill", "resource", "Deployment", "/v1/sessions", "archive", "A2A", "revoke", "AI SDK", "AG-UI"]) {
     assert.ok(corpus.includes(claim), `series: missing supplemental proof for ${claim}`);
   }
 });
@@ -105,7 +107,10 @@ test("the complete series covers every release-ready platform capability", () =>
 test("dependency-gated stories fail honestly before making a product claim", () => {
   const a2a = readFileSync(resolve(flowsDir, "15-a2a-discovery.mjs"), "utf8");
   const access = readFileSync(resolve(flowsDir, "16-access-boundary.mjs"), "utf8");
+  const mcp = readFileSync(resolve(flowsDir, "18-mcp-server-export.mjs"), "utf8");
   assert.match(a2a, /A2A_DELEGATE_ID/);
   assert.match(access, /AWAKEN_RECORD_ADMIN_TOKEN/);
   assert.match(access, /embedded-IAM host/);
+  assert.match(mcp, /AWAKEN_RECORD_MCP_TOKEN/);
+  assert.match(mcp, /AWAKEN_MCP_BEARER_TOKEN/);
 });
