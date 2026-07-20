@@ -28,6 +28,7 @@ const ENV = {
   AWAKEN_DISABLE_LOCAL_POOL: '1',
 };
 const WORKER = 'ts-worker-1';
+let workerIdentity;
 
 // The exact ThreadCommit wire shape (dumped from the neutral Rust types).
 function threadCommit(runId = 'run-A', threadId = THREAD, text = 'hi from a db-less worker') {
@@ -46,10 +47,13 @@ function threadCommit(runId = 'run-A', threadId = THREAD, text = 'hi from a db-l
 async function postJson(pathname, body, worker = WORKER) {
   const headers = { 'content-type': 'application/json' };
   if (worker !== null) headers['x-awaken-worker-id'] = worker;
+  const payload = worker === WORKER && workerIdentity && pathname !== '/v1/worker/register'
+    ? { ...body, identity: body.identity ?? workerIdentity }
+    : body;
   const res = await fetch(`${BASE}${pathname}`, {
     method: 'POST',
     headers,
-    body: JSON.stringify(body),
+    body: JSON.stringify(payload),
   });
   const text = await res.text();
   let json;
@@ -61,8 +65,42 @@ async function postJson(pathname, body, worker = WORKER) {
   return { status: res.status, json, text };
 }
 
-async function threadMessages() {
-  const res = await fetch(`${BASE}/v1/durable/threads/${THREAD}/messages`);
+async function registerReadyWorker() {
+  const registration = await postJson('/v1/worker/register', {
+    registration: {
+      worker_id: WORKER,
+      incarnation_id: `${WORKER}-${process.pid}`,
+      manifest: {
+        manifest_version: 1,
+        build_digest: 'worker-transport-e2e',
+        capabilities: ['credential-reference/v1', 'host-executor/v1', 'native-runtime'],
+        zone: null,
+        architecture: process.arch,
+        sandbox: {
+          isolation: 'workdir', tool_transparent: false, path_fidelity: false,
+          enforced_readonly: false, network_isolation: false,
+          secret_egress_substitution: false, resource_limits: false, custom_rootfs: false,
+        },
+        sandbox_backends: [],
+        dispatch_contract: { min: 1, max: 1 },
+        runtime_protocol: { min: 1, max: 1 },
+        checkpoint_formats: ['stream-v1'],
+        capacity: { max_concurrent: 1, resources: {} },
+      },
+    },
+  });
+  assert.equal(registration.status, 200, `worker registered: ${registration.text}`);
+  workerIdentity = registration.json?.worker?.snapshot?.identity;
+  assert.ok(workerIdentity, 'registration returns an incarnation-bound identity');
+  const heartbeat = await postJson('/v1/worker/heartbeat', {
+    heartbeat: { sequence: 1, ready: true, in_flight: 0 },
+  });
+  assert.equal(heartbeat.status, 200, `worker heartbeat accepted: ${heartbeat.text}`);
+  assert.equal(heartbeat.json?.mutation, 'applied');
+}
+
+async function threadMessages(threadId = THREAD) {
+  const res = await fetch(`${BASE}/v1/durable/threads/${threadId}/messages`);
   assert.equal(res.status, 200, 'durable thread messages readable');
   return (await res.json()).messages ?? [];
 }
@@ -75,34 +113,10 @@ async function main() {
     // Every worker route is authenticated. The local composition uses the
     // compatibility identity header; cloud replaces the authenticator with a
     // WorkerLease/mTLS implementation behind the same port.
-    const anonymous = await postJson('/v1/worker/commit', threadCommit(), null);
+    const anonymous = await postJson('/v1/worker/commit-claimed', {}, null);
     assert.equal(anonymous.status, 401, `anonymous worker is rejected: ${anonymous.text}`);
     pass('worker transport rejects a request with no authenticated identity');
-
-    // --- commit ingest: a db-less worker pushes facts; the server commits them ---
-    const first = await postJson('/v1/worker/commit', threadCommit());
-    assert.equal(first.status, 200, `commit ingest accepted: ${first.text}`);
-    assert.ok(
-      typeof first.json?.sequence === 'number',
-      `the server returns a CommitRecord with a sequence: ${first.text}`,
-    );
-
-    const committed = await threadMessages();
-    const mine = committed.filter((m) => (m.text ?? '').includes('db-less worker'));
-    assert.equal(mine.length, 1, `the worker's fact committed on the server: ${JSON.stringify(committed)}`);
-    pass('commit ingest: a db-less worker pushed a fact and the server committed it (readable back)');
-
-    // --- idempotent redelivery: at-least-once retry is a no-op, not a duplicate ---
-    const again = await postJson('/v1/worker/commit', threadCommit());
-    assert.equal(again.status, 200, `redelivered commit accepted: ${again.text}`);
-    const afterRedeliver = await threadMessages();
-    const stillMine = afterRedeliver.filter((m) => (m.text ?? '').includes('db-less worker'));
-    assert.equal(
-      stillMine.length,
-      1,
-      `a redelivered commit does not duplicate: ${JSON.stringify(afterRedeliver)}`,
-    );
-    pass('commit ingest: an at-least-once redelivery is idempotent (no duplicate)');
+    await registerReadyWorker();
 
     // --- dispatch transport: the claim endpoint is live and wired to the store ---
     // Queue a real run, then claim it over the authenticated transport. Legacy
@@ -121,7 +135,8 @@ async function main() {
     assert.equal(claim.status, 200, `dispatch claim endpoint live: ${claim.text}`);
     const claimed = claim.json?.claimed;
     assert.ok(claimed, `claim returns the queued run: ${claim.text}`);
-    assert.equal(claimed.lease.owner, WORKER, 'claim owner comes from authenticated identity');
+    const leaseOwner = `${workerIdentity.worker_id}:${workerIdentity.generation}:${workerIdentity.incarnation_id}`;
+    assert.equal(claimed.lease.owner, leaseOwner, 'claim owner comes from authenticated incarnation');
     assert.ok(claimed.lease.epoch >= 1, `claim carries a fencing epoch: ${claim.text}`);
     pass('dispatch claim binds owner to authenticated worker and returns a fencing epoch');
 
@@ -140,6 +155,7 @@ async function main() {
       fingerprint: '',
       inference_access: { scheme: 'credential-reference/v1', reference: 'grant-ts-17' },
     };
+    granted.placement.required_capabilities = ['credential-reference/v1', 'native-runtime'];
     const enqueuedGrant = await postJson('/v1/worker/dispatch/enqueue', { request: granted });
     assert.equal(enqueuedGrant.status, 200, `grant-bearing dispatch enqueued: ${enqueuedGrant.text}`);
 
@@ -187,6 +203,12 @@ async function main() {
     assert.equal(wrongOwner.status, 401, `wrong claim owner rejected: ${wrongOwner.text}`);
     const committedClaim = await postJson('/v1/worker/commit-claimed', claimedCommit);
     assert.equal(committedClaim.status, 200, `current owner/epoch commits: ${committedClaim.text}`);
+    assert.ok(typeof committedClaim.json?.sequence === 'number');
+    const replay = await postJson('/v1/worker/commit-claimed', claimedCommit);
+    assert.equal(replay.status, 200, `claimed commit redelivery accepted: ${replay.text}`);
+    const committed = await threadMessages(grant.request.activation.thread_id);
+    const mine = committed.filter((m) => (m.text ?? '').includes('claimed commit'));
+    assert.equal(mine.length, 1, `claimed commit is idempotent: ${JSON.stringify(committed)}`);
     pass('commit-claimed enforces authenticated owner + epoch before applying facts');
 
     const grantSettle = await postJson('/v1/worker/dispatch/settle', {
