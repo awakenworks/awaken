@@ -4,6 +4,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { Link, useParams } from "react-router";
 import { Button, Card, Pill, SelectField, TextAreaField, TextField } from "../components/ui";
 import { api } from "../lib/api/client";
 import type { AgentConfigList, Deployment, DeploymentRun, Environment, Page } from "../lib/api/types";
@@ -107,6 +108,7 @@ function CreateModal({ onClose }: { onClose: () => void }) {
 
 export default function DeploymentsSurface() {
   const app = useApp();
+  const { ws = "default" } = useParams();
   const qc = useQueryClient();
   const [creating, setCreating] = useState(false);
   const [lastRun, setLastRun] = useState<DeploymentRun | null>(null);
@@ -144,7 +146,11 @@ export default function DeploymentsSurface() {
           <span>✓</span>
           <span>
             {app.t("Deployment run created", "Deployment run 已创建")} · <code>{lastRun.id}</code>
-            {lastRun.session_id ? <> · session <code>{lastRun.session_id}</code></> : null}
+            {lastRun.session_id ? <>
+              {" · session "}
+              <Link to={`/w/${ws}/sessions/${lastRun.session_id}`}><code>{lastRun.session_id}</code></Link>
+            </> : null}
+            {lastRun.error ? <span className="err"> · {lastRun.error.message ?? lastRun.error.type}</span> : null}
           </span>
         </div>
       )}

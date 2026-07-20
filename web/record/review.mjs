@@ -167,6 +167,8 @@ const checks = [
       "14-session-control.mjs",
       "15-a2a-discovery.mjs",
       "16-access-boundary.mjs",
+      "17-frontend-protocols.mjs",
+      "18-mcp-server-export.mjs",
     ]);
   }],
   ["customer relationship objective", () => eachFlow((name, source) => {
