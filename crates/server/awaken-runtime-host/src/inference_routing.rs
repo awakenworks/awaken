@@ -1,11 +1,12 @@
-//! Per-thread model→executor routing (R1/R2).
+//! Per-thread model binding and snapshot-access materialization (R1/R2).
 //!
 //! The host once held a single fixed `LlmExecutor`; this module lifts that to a
 //! per-thread binding so a session (and, with a per-turn override, a turn) selects
-//! its own model. [`InferenceRouting`] holds independent admission-resolution and
-//! runtime-materialization ports plus per-thread overrides. A composition with
-//! neither port uses its explicitly bound executor; a configured resolution or
-//! materialization failure is rejected rather than silently selecting another route.
+//! its published model. [`InferenceRouting`] holds the runtime materialization
+//! port plus per-thread overrides. Configuration resolution is deliberately not
+//! represented here. A composition without the port uses its explicitly bound
+//! executor; a configured materialization failure is rejected rather than
+//! silently selecting another route.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -27,9 +28,6 @@ pub trait InferenceExecutorMaterializer: Send + Sync {
     ) -> Option<Arc<dyn LlmExecutor>>;
 }
 
-/// Resolves and pins the secret-free access descriptor before admission. This
-/// configuration role is independent of runtime materialization; a remote worker
-/// needs only [`InferenceExecutorMaterializer`].
 /// The host's per-thread model binding: which model ref each thread runs, and how
 /// a ref becomes an executor.
 pub(crate) struct InferenceRouting {

@@ -1,13 +1,10 @@
-//! Config-backed inference access resolution and executor materialization: resolves a session's
-//! `model_ref` to a real executor from the authored catalog + the workspace's
-//! credential, so the console configures models through the API and the runtime
-//! makes real calls — never an `AWAKEN_MODEL_SOURCE` env shortcut.
+//! The two composition adapters around immutable published inference access.
+//! Configuration publication selects a complete route and credential reference
+//! once for its trusted workspace scope. Runtime execution only realizes that
+//! exact pin; it cannot enumerate the catalog, choose another credential, or
+//! distinguish a local endpoint from a gateway.
 //!
-//! Resolution chain (our single-tenant scenario, collapsed):
-//!   `model_ref → offering(provider) → the workspace's first Active credential that
-//!    `can_consume` that provider → resolve_inference → executor_from_resolved`.
-//!
-//! `InferenceExecutorMaterializer` is sync but the stores are async; it bridges via
+//! `InferenceExecutorMaterializer` is sync but exact stores are async; it bridges via
 //! `block_in_place` + the ambient runtime handle. Durable admission pins the
 //! non-secret provider/endpoint/credential ids, and execution fails closed if
 //! any of those facts changed or the credential was disabled.
