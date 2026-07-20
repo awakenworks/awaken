@@ -19,7 +19,6 @@
 //! store) lives in the data-plane crate; this crate owns only the config-resource
 //! fence the authoring router applies.
 
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use awaken_protocol_managed::WorkspaceScope;
@@ -36,28 +35,93 @@ const DEFAULT_SCOPE: &str = "default";
 /// The id→owner-scope index for the covered config resources, shared across
 /// requests. Cloneable (an `Arc`), so it is both middleware state and, in tests,
 /// inspectable.
-#[derive(Clone, Default)]
-pub struct ResourceOwners(Arc<Mutex<HashMap<String, String>>>);
+#[derive(Clone)]
+pub struct ResourceOwners(Arc<OwnerRepository>);
+
+enum OwnerRepository {
+    Memory(Mutex<std::collections::HashMap<String, String>>),
+    Sqlite(Mutex<rusqlite::Connection>),
+}
+
+impl Default for ResourceOwners {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl ResourceOwners {
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        Self(Arc::new(OwnerRepository::Memory(Mutex::new(
+            std::collections::HashMap::new(),
+        ))))
+    }
+
+    /// Open the durable owner projection shared by every management process.
+    /// Resource payload stores remain independent; this table is the PEP's
+    /// persisted subject-to-resource assignment and contains no permissions.
+    #[must_use]
+    pub fn open_at(dir: &std::path::Path) -> Self {
+        std::fs::create_dir_all(dir).expect("create management owner directory");
+        let connection = rusqlite::Connection::open(dir.join("resource-owners.sqlite"))
+            .expect("open management owner database");
+        connection
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS resource_owners (\
+                     resource_key TEXT PRIMARY KEY,\
+                     workspace_id TEXT NOT NULL\
+                 );",
+            )
+            .expect("migrate management resource owners");
+        Self(Arc::new(OwnerRepository::Sqlite(Mutex::new(connection))))
+    }
+
+    #[must_use]
+    pub fn open_from_env() -> Self {
+        std::env::var("AWAKEN_MGMT_DIR")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .map_or_else(Self::new, |dir| Self::open_at(std::path::Path::new(&dir)))
     }
 
     fn owner(&self, key: &str) -> Option<String> {
-        self.0
-            .lock()
-            .expect("resource owners poisoned")
-            .get(key)
-            .cloned()
+        match self.0.as_ref() {
+            OwnerRepository::Memory(rows) => rows
+                .lock()
+                .expect("resource owners poisoned")
+                .get(key)
+                .cloned(),
+            OwnerRepository::Sqlite(connection) => connection
+                .lock()
+                .expect("resource owners poisoned")
+                .query_row(
+                    "SELECT workspace_id FROM resource_owners WHERE resource_key = ?1",
+                    rusqlite::params![key],
+                    |row| row.get(0),
+                )
+                .ok(),
+        }
     }
 
     fn record(&self, key: String, scope: String) {
-        self.0
-            .lock()
-            .expect("resource owners poisoned")
-            .insert(key, scope);
+        match self.0.as_ref() {
+            OwnerRepository::Memory(rows) => {
+                rows.lock()
+                    .expect("resource owners poisoned")
+                    .insert(key, scope);
+            }
+            OwnerRepository::Sqlite(connection) => {
+                connection
+                    .lock()
+                    .expect("resource owners poisoned")
+                    .execute(
+                        "INSERT INTO resource_owners(resource_key, workspace_id) VALUES (?1, ?2) \
+                         ON CONFLICT(resource_key) DO UPDATE SET workspace_id = excluded.workspace_id",
+                        rusqlite::params![key, scope],
+                    )
+                    .expect("persist management resource owner");
+            }
+        }
     }
 }
 
@@ -68,21 +132,25 @@ pub async fn resource_ownership_guard(
     request: Request,
     next: Next,
 ) -> Response {
-    let Some(key) = owned_resource_key(request.uri().path()) else {
-        return next.run(request).await;
-    };
+    let path = request.uri().path().to_string();
     let scope = request
         .extensions()
         .get::<WorkspaceScope>()
         .map(|w| w.0.clone())
         .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
-    // Fence: a known owner other than this scope → 404, before the handler runs.
-    if let Some(owner) = owners.owner(&key)
-        && owner != scope
-    {
-        return not_found();
+    if request.method() == Method::GET && path == "/v1/config/mcp-servers" {
+        let response = next.run(request).await;
+        return filter_mcp_list(response, &owners, &scope).await;
     }
+    let Some(key) = owned_resource_key(&path) else {
+        return next.run(request).await;
+    };
     let method = request.method().clone();
+    match owners.owner(&key) {
+        Some(owner) if owner != scope => return not_found(),
+        None if method != Method::PUT => return not_found(),
+        _ => {}
+    }
     let response = next.run(request).await;
     // Record ownership on a first successful author, so a later cross-tenant
     // access is fenced. (A same-scope re-author just re-records the same owner.)
@@ -93,27 +161,60 @@ pub async fn resource_ownership_guard(
 }
 
 /// The ownership key (`"mcp:{id}"` / `"profile:{id}"`) for a covered config
-/// resource path, or `None` for any other path (list routes, the resolve
-/// sub-actions, the shared catalog, and everything else pass through unfenced).
+/// resource path, or `None` for any other path. Resolve sub-actions inherit their
+/// parent key; collection and org-shared catalog routes remain unkeyed.
 fn owned_resource_key(path: &str) -> Option<String> {
     let mut segments = path.trim_start_matches('/').split('/');
     if segments.next()? != "v1" || segments.next()? != "config" {
         return None;
     }
-    let kind = match segments.next()? {
+    let family = segments.next()?;
+    if family == "agents" {
+        let id = segments.next().filter(|value| !value.is_empty())?;
+        return matches!(
+            (segments.next(), segments.next()),
+            (Some("mcp"), None | Some("resolve"))
+        )
+        .then(|| format!("agent-mcp:{id}"));
+    }
+    let kind = match family {
         "mcp-servers" => "mcp",
         "inference-profiles" => "profile",
         "webhook-subscriptions" => "webhook",
         _ => return None,
     };
     let id = segments.next().filter(|s| !s.is_empty())?;
-    // Only the bare `/{id}` resource is owned; sub-actions (e.g. `/resolve`) pass
-    // through — they are reads gated by the same middleware on the parent id in
-    // practice, and never author ownership.
-    if segments.next().is_some() {
+    // Sub-actions inherit the parent resource's owner. Extra nested paths are not
+    // part of these resource APIs and still pass to the router's 404.
+    if segments
+        .next()
+        .is_some_and(|action| !matches!(action, "resolve" | "resolve-candidates"))
+    {
         return None;
     }
     Some(format!("{kind}:{id}"))
+}
+
+async fn filter_mcp_list(response: Response, owners: &ResourceOwners, scope: &str) -> Response {
+    if !response.status().is_success() {
+        return response;
+    }
+    let (parts, body) = response.into_parts();
+    let Ok(bytes) = axum::body::to_bytes(body, 8 << 20).await else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    let Ok(mut rows) = serde_json::from_slice::<Vec<serde_json::Value>>(&bytes) else {
+        return Response::from_parts(parts, axum::body::Body::from(bytes));
+    };
+    rows.retain(|row| {
+        row.get("id")
+            .and_then(|id| {
+                id.as_str()
+                    .or_else(|| id.get(0).and_then(|value| value.as_str()))
+            })
+            .is_some_and(|id| owners.owner(&format!("mcp:{id}")).as_deref() == Some(scope))
+    });
+    Json(rows).into_response()
 }
 
 fn not_found() -> Response {
@@ -141,11 +242,11 @@ mod tests {
             owned_resource_key("/v1/config/inference-profiles/p1"),
             Some("profile:p1".to_string())
         );
-        // List routes, sub-actions, the shared catalog, and unrelated paths: None.
+        // Collection/shared routes are unkeyed; sub-actions inherit the parent key.
         assert_eq!(owned_resource_key("/v1/config/mcp-servers"), None);
         assert_eq!(
             owned_resource_key("/v1/config/inference-profiles/p1/resolve"),
-            None
+            Some("profile:p1".to_string())
         );
         assert_eq!(owned_resource_key("/v1/config/catalog"), None);
         assert_eq!(owned_resource_key("/v1/config/providers/anthropic"), None);
@@ -238,15 +339,12 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn ow1_list_and_subaction_paths_pass_through_unfenced() {
-        // Even with an owner on file for one scope, the un-keyed paths (list, a
-        // resolve sub-action, the shared catalog) never fence another scope.
+    async fn ow1_collection_and_shared_paths_pass_through() {
         let owners = ResourceOwners::new();
         owners.record("mcp:calc".into(), "tenant-a".into());
         let app = app(owners);
         for (m, uri) in [
             ("GET", "/v1/config/mcp-servers"),
-            ("POST", "/v1/config/inference-profiles/p1/resolve"),
             ("GET", "/v1/config/catalog"),
         ] {
             assert_eq!(
@@ -255,6 +353,18 @@ mod tests {
                 "{m} {uri}"
             );
         }
+        assert_eq!(
+            call(
+                &app,
+                "POST",
+                "/v1/config/inference-profiles/p1/resolve",
+                Some("tenant-b"),
+                None,
+            )
+            .await,
+            StatusCode::NOT_FOUND,
+            "an unowned legacy sub-action fails closed"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -382,7 +492,7 @@ mod tests {
     async fn ow5_get_or_failed_put_does_not_record_ownership() {
         let owners = ResourceOwners::new();
         let app = app(owners.clone());
-        // A read never authors ownership…
+        // An unowned legacy read fails closed and never authors ownership…
         assert_eq!(
             call(
                 &app,
@@ -392,7 +502,7 @@ mod tests {
                 None
             )
             .await,
-            StatusCode::OK
+            StatusCode::NOT_FOUND
         );
         assert_eq!(owners.owner("mcp:calc"), None);
         // …nor does a PUT that the handler rejected.
@@ -408,6 +518,18 @@ mod tests {
             StatusCode::BAD_REQUEST
         );
         assert_eq!(owners.owner("mcp:calc"), None);
+    }
+
+    #[test]
+    fn owner_projection_survives_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let owners = ResourceOwners::open_at(dir.path());
+        owners.record("mcp:calc".into(), "tenant-a".into());
+        drop(owners);
+
+        let reopened = ResourceOwners::open_at(dir.path());
+        assert_eq!(reopened.owner("mcp:calc").as_deref(), Some("tenant-a"));
+        assert_eq!(reopened.owner("mcp:unknown"), None);
     }
 
     #[tokio::test(flavor = "multi_thread")]

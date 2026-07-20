@@ -33,6 +33,7 @@ impl SourceLookup for PoolCtx {
 
 fn def(id: &str, binding: CredentialBinding) -> McpServerDef {
     McpServerDef {
+        workspace_id: "ws".into(),
         id: McpServerId(id.into()),
         display_name: format!("{id} display"),
         url: format!("https://{id}.example/mcp"),

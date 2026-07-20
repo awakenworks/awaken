@@ -599,6 +599,7 @@ mod tests {
         // A live MCP store with one authored server.
         let mcp = Arc::new(InMemoryMcpStore::new());
         mcp.put_server(McpServerDef {
+            workspace_id: DEFAULT_SCOPE.into(),
             id: McpServerId("github".into()),
             display_name: "GitHub".into(),
             url: "https://mcp.example".into(),

@@ -215,6 +215,10 @@ async fn resolve_inference_toggled(
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct InferenceProfile {
+    /// Owning workspace, stamped by the trusted configuration edge. Empty only
+    /// for legacy rows, which scoped APIs treat as unowned.
+    #[serde(default)]
+    pub workspace_id: String,
     /// The pinned / primary model — tried first. Kept as a bare field for wire and
     /// storage compatibility; the ordered model axis is [`model_axis`] (this plus
     /// [`model_fallbacks`]).
@@ -512,6 +516,9 @@ pub struct McpServerId(pub String);
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct McpServerDef {
     pub id: McpServerId,
+    /// Owning workspace, stamped by the trusted configuration edge.
+    #[serde(default)]
+    pub workspace_id: String,
     pub display_name: String,
     pub url: String,
     pub credential_binding: CredentialBinding,
@@ -532,8 +539,7 @@ pub struct McpServerDef {
 pub struct WebhookEndpointDef {
     pub id: String,
     /// The owning workspace — events for this workspace only reach this endpoint.
-    /// Carried on the row (unlike mcp/profile) because dispatch enumerates by
-    /// workspace, not by id.
+    /// Carried on the row because dispatch enumerates by workspace, not by id.
     pub workspace_id: String,
     /// The HTTPS endpoint the signed payload is POSTed to.
     pub url: String,
@@ -1054,6 +1060,7 @@ mod tests {
     #[test]
     fn model_axis_is_a_pin_without_fallbacks_and_a_pool_with_them() {
         let single = InferenceProfile {
+            workspace_id: "ws".into(),
             model_id: "primary".into(),
             model_fallbacks: Vec::new(),
             credential_binding: CredentialBinding::None,
@@ -1062,6 +1069,7 @@ mod tests {
         assert_eq!(single.model_axis(), AxisBinding::Pin("primary".into()));
 
         let pooled = InferenceProfile {
+            workspace_id: "ws".into(),
             model_id: "primary".into(),
             model_fallbacks: vec!["backup1".into(), "backup2".into()],
             credential_binding: CredentialBinding::None,
