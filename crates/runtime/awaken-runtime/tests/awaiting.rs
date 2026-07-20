@@ -12,8 +12,6 @@ use awaken_agent_contract::audit::kind::Kind as EventKind;
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::{MemoryCommitCoordinator, replay_latest_state};
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
-use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
@@ -130,20 +128,6 @@ fn runtime(ran: Arc<AtomicUsize>) -> Runtime {
         }))
         .with_tool(Arc::new(EchoTool { ran }))
         .with_gate(Arc::new(SuspendGate));
-    let fingerprint = CatalogFingerprint(FINGERPRINT.to_string());
-    runtime
-        .install_catalog(RuntimeCatalogInstall {
-            publication_id: "pub-1".to_string(),
-            fingerprint: fingerprint.clone(),
-            source_revisions: vec!["rev-1".to_string()],
-            capabilities: RuntimeCapabilityCatalog {
-                catalog_fingerprint: fingerprint,
-                runtime_version: "test".to_string(),
-                tools: Vec::new(),
-                plugins: Vec::new(),
-            },
-        })
-        .expect("installs");
     runtime.register_snapshot(snapshot());
     runtime
 }

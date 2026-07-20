@@ -86,6 +86,10 @@ impl RunExecutor for Runtime {
         activation: RunActivation,
         context: RuntimeRunContext,
     ) -> Result<RunState> {
+        // Execution is the single ingress for fresh activations, including durable
+        // dispatch. Retain the exact immutable snapshot before the run can await so
+        // an in-process resume resolves the same value by id.
+        self.register_snapshot(activation.snapshot.clone());
         // Track this run's cancellation token so live control can steer it, and
         // always deregister on the way out.
         let run_id = activation.run_id.clone();

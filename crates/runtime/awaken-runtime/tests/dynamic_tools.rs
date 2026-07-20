@@ -13,8 +13,6 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
-use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
@@ -125,23 +123,6 @@ impl LlmExecutor for RefreshProbe {
     }
 }
 
-fn install(runtime: &Runtime) {
-    let fingerprint = CatalogFingerprint("catalog-a".to_string());
-    runtime
-        .install_catalog(RuntimeCatalogInstall {
-            publication_id: "pub-1".to_string(),
-            fingerprint: fingerprint.clone(),
-            source_revisions: vec!["rev-1".to_string()],
-            capabilities: RuntimeCapabilityCatalog {
-                catalog_fingerprint: fingerprint,
-                runtime_version: "test".to_string(),
-                tools: Vec::new(),
-                plugins: Vec::new(),
-            },
-        })
-        .expect("catalog installs");
-}
-
 fn activation() -> RunActivation {
     let fingerprint = CatalogFingerprint("catalog-a".to_string());
     RunActivation {
@@ -235,7 +216,6 @@ async fn presentation_aliases_an_mcp_tool_and_dispatches_the_alias_to_canonical(
             version: version.clone(),
             tools: tools.clone(),
         }));
-    install(&runtime);
 
     // Alias the MCP tool + override its description.
     let mut act = activation();
@@ -330,7 +310,6 @@ async fn a_deferred_tool_is_hidden_until_tool_open_then_callable() {
             version: version.clone(),
             tools: tools.clone(),
         }));
-    install(&runtime);
 
     let mut act = activation();
     act.snapshot.resolved_spec.tool_presentation = ToolPresentation::from_facets([(
@@ -388,7 +367,6 @@ async fn dynamic_tool_is_visible_executes_and_refreshes_at_the_step_boundary() {
             version: version.clone(),
             tools: tools.clone(),
         }));
-    install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());

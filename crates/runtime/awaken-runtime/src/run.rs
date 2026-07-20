@@ -122,7 +122,6 @@ impl Runtime {
     where
         F: FnMut(&ResumeTicket) -> ResumeResult,
     {
-        self.register_snapshot(snapshot.clone());
         let mut activation = RunActivation::new(
             run_id.clone(),
             ThreadId(thread.into()),
@@ -188,15 +187,14 @@ impl Runtime {
         Ok((run_id, state))
     }
 
-    /// Register the immutable snapshot, then build a fresh activation on `thread`.
-    /// Registration lets a later resume resolve the same snapshot by id.
+    /// Build a fresh activation on `thread`. The execution ingress retains its
+    /// immutable snapshot before the run can become resumable.
     pub fn prepare(
         &self,
         snapshot: &ExecutableAgentSnapshot,
         thread: String,
         input: impl Into<RunInput>,
     ) -> (RunId, RunActivation) {
-        self.register_snapshot(snapshot.clone());
         let run_id = RunId(next_id("run"));
         let activation = RunActivation {
             run_id: run_id.clone(),

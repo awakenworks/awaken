@@ -28,8 +28,6 @@ use awaken_agent_contract::thread::commit::staged::{CommitRecord, RunDisposition
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
-use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::delegation::{
     DelegationExecutionError, DelegationRequest, DelegationResume, DelegationStep,
     PendingChildRunResults, RunDelegationService, RunDelegations,
@@ -475,20 +473,7 @@ async fn seed_executing_batch(
         .expect("commit Executing recovery seed");
 }
 
-fn install(runtime: &Runtime, snapshot: &ExecutableAgentSnapshot) {
-    runtime
-        .install_catalog(RuntimeCatalogInstall {
-            publication_id: "formal-publication".to_string(),
-            fingerprint: snapshot.fingerprint.clone(),
-            source_revisions: vec!["formal-revision".to_string()],
-            capabilities: RuntimeCapabilityCatalog {
-                catalog_fingerprint: snapshot.fingerprint.clone(),
-                runtime_version: "formal".to_string(),
-                tools: Vec::new(),
-                plugins: Vec::new(),
-            },
-        })
-        .expect("catalog installs");
+fn register_snapshot(runtime: &Runtime, snapshot: &ExecutableAgentSnapshot) {
     runtime.register_snapshot(snapshot.clone());
 }
 
@@ -711,7 +696,7 @@ async fn ordinary_parallel_batch_produces_a_refinement_trace() {
         .with_llm(Arc::new(CallsThenText::new(calls)))
         .with_tool(tool_a)
         .with_tool(tool_b);
-    install(&runtime, &snapshot);
+    register_snapshot(&runtime, &snapshot);
 
     let outcome = runtime
         .execute(
@@ -739,7 +724,7 @@ async fn parallel_child_runs_produce_a_refinement_trace() {
             trace: trace.clone(),
             invocations: invocations.clone(),
         }));
-    install(&runtime, &snapshot);
+    register_snapshot(&runtime, &snapshot);
 
     let outcome = runtime
         .execute(
@@ -767,7 +752,7 @@ async fn approval_resume_produces_a_refinement_trace() {
         )])))
         .with_tool(tool)
         .with_gate(Arc::new(SuspendGate));
-    install(&runtime, &snapshot);
+    register_snapshot(&runtime, &snapshot);
     let context = RuntimeRunContext::new()
         .with_commit(Arc::new(trace.clone()))
         .with_reader(Arc::new(trace.inner.clone()));
@@ -806,7 +791,7 @@ async fn delegated_child_cancel_produces_a_refinement_trace() {
         .with_run_delegation(Arc::new(AwaitingDelegation {
             trace: trace.clone(),
         }));
-    install(&runtime, &snapshot);
+    register_snapshot(&runtime, &snapshot);
     let context = RuntimeRunContext::new()
         .with_commit(Arc::new(trace.clone()))
         .with_reader(Arc::new(trace.inner.clone()));
@@ -856,7 +841,7 @@ async fn replay_safe_crash_recovery_produces_a_refinement_trace() {
     let (tool, invocations) =
         trace_tool_with_capability("replay_tool", &trace, ToolRecoveryCapability::ReplaySafe);
     let runtime = Runtime::new().with_llm(Arc::new(TextOnly)).with_tool(tool);
-    install(&runtime, &snapshot);
+    register_snapshot(&runtime, &snapshot);
 
     let outcome = runtime
         .execute(
@@ -886,7 +871,7 @@ async fn never_replay_crash_recovery_is_fail_closed() {
     let snapshot = snapshot(&["never_tool"]);
     let (tool, invocations) = trace_tool("never_tool", &trace);
     let runtime = Runtime::new().with_llm(Arc::new(TextOnly)).with_tool(tool);
-    install(&runtime, &snapshot);
+    register_snapshot(&runtime, &snapshot);
 
     let outcome = runtime
         .execute(
@@ -942,7 +927,7 @@ async fn durable_delegation_crash_recovery_reuses_the_child_relationship() {
             trace: trace.clone(),
             invocations: invocations.clone(),
         }));
-    install(&runtime, &snapshot);
+    register_snapshot(&runtime, &snapshot);
 
     let outcome = runtime
         .execute(
@@ -976,7 +961,7 @@ async fn retryable_child_owner_crash_produces_a_refinement_trace() {
             "agent_run",
         )])))
         .with_run_delegation(executor.clone());
-    install(&runtime, &snapshot);
+    register_snapshot(&runtime, &snapshot);
     let context = RuntimeRunContext::new()
         .with_commit(Arc::new(trace.clone()))
         .with_reader(Arc::new(trace.inner.clone()));
@@ -1031,7 +1016,7 @@ async fn child_result_survives_crash_and_is_consumed_without_reinvocation() {
             trace: trace.clone(),
             invocations: invocations.clone(),
         }));
-    install(&runtime, &snapshot);
+    register_snapshot(&runtime, &snapshot);
     let crashing = CrashAfterChildResult {
         trace: trace.clone(),
         armed: Arc::new(std::sync::atomic::AtomicBool::new(false)),

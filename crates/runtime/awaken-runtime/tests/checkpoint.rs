@@ -16,8 +16,6 @@ use awaken_runtime::memory::{
     MemoryCommitCoordinator, MemoryStreamCheckpointStore, MemoryStreamSink,
 };
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
-use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, DeltaSink, Error, LlmExecutor, Result,
@@ -105,19 +103,6 @@ async fn drive(
             overloaded_backoff_base_ms: 0,
         });
     let fingerprint = CatalogFingerprint("catalog-a".to_string());
-    runtime
-        .install_catalog(RuntimeCatalogInstall {
-            publication_id: "pub-1".to_string(),
-            fingerprint: fingerprint.clone(),
-            source_revisions: vec!["rev-1".to_string()],
-            capabilities: RuntimeCapabilityCatalog {
-                catalog_fingerprint: fingerprint.clone(),
-                runtime_version: "test".to_string(),
-                tools: Vec::new(),
-                plugins: Vec::new(),
-            },
-        })
-        .expect("installs");
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new()

@@ -33,7 +33,7 @@ impl Runtime {
 impl RunResolver for Runtime {
     fn resolve(&self, snapshot: &ExecutableAgentSnapshot) -> Result<ResolvedRun, Error> {
         // The configuration plane resolved and signed off one immutable value.
-        // Execution validates that value; node topology and installed catalogs do
+        // Execution validates that value; node topology and mutable node state do
         // not alter its meaning.
         if snapshot.fingerprint.0.trim().is_empty()
             || snapshot.resolved_spec.catalog_fingerprint != snapshot.fingerprint

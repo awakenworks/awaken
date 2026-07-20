@@ -13,8 +13,6 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime::{LlmRetryPolicy, Runtime};
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
-use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, Error as LlmError, LlmExecutor, StopReason,
@@ -107,23 +105,6 @@ fn binding(model: &str) -> ModelBinding {
     }
 }
 
-fn install(runtime: &Runtime) {
-    let fingerprint = CatalogFingerprint("catalog-a".to_string());
-    runtime
-        .install_catalog(RuntimeCatalogInstall {
-            publication_id: "pub-1".to_string(),
-            fingerprint: fingerprint.clone(),
-            source_revisions: vec!["rev-1".to_string()],
-            capabilities: RuntimeCapabilityCatalog {
-                catalog_fingerprint: fingerprint,
-                runtime_version: "test".to_string(),
-                tools: Vec::new(),
-                plugins: Vec::new(),
-            },
-        })
-        .expect("installs");
-}
-
 /// An activation whose primary model is `primary` with ordered pool `fallbacks`.
 fn activation(primary: &str, fallbacks: &[&str]) -> RunActivation {
     let fingerprint = CatalogFingerprint("catalog-a".to_string());
@@ -177,7 +158,6 @@ async fn primary_failure_fails_over_to_the_next_candidate() {
             seen: seen.clone(),
         }))
         .with_retry_policy(no_retries());
-    install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
@@ -205,7 +185,6 @@ async fn explicit_override_is_the_only_model_executed_for_the_run() {
             seen: seen.clone(),
         }))
         .with_retry_policy(no_retries());
-    install(&runtime);
 
     let mut activation = activation("primary", &["chosen", "other"]);
     activation.model_ref_override = Some("chosen".to_string());
@@ -228,7 +207,6 @@ async fn a_committed_truncation_partial_does_not_fail_over_to_a_pool_model() {
     let runtime = Runtime::new()
         .with_llm(Arc::new(TruncateThenFailPrimary { seen: seen.clone() }))
         .with_retry_policy(no_retries());
-    install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
@@ -255,7 +233,6 @@ async fn single_model_agent_does_not_fail_over() {
             seen: seen.clone(),
         }))
         .with_retry_policy(no_retries());
-    install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
@@ -281,7 +258,6 @@ async fn all_candidates_failing_ends_in_terminal_failure_after_trying_each() {
             seen: seen.clone(),
         }))
         .with_retry_policy(no_retries());
-    install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());

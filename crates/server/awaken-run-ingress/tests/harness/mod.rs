@@ -17,8 +17,6 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
-use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
 };
@@ -163,29 +161,9 @@ pub fn snapshot() -> ExecutableAgentSnapshot {
     }
 }
 
-fn install(runtime: &Runtime) {
-    let fp = CatalogFingerprint(FP.to_string());
-    runtime
-        .install_catalog(RuntimeCatalogInstall {
-            publication_id: "pub-1".to_string(),
-            fingerprint: fp.clone(),
-            source_revisions: vec!["rev-1".to_string()],
-            capabilities: RuntimeCapabilityCatalog {
-                catalog_fingerprint: fp,
-                runtime_version: "test".to_string(),
-                tools: Vec::new(),
-                plugins: Vec::new(),
-            },
-        })
-        .expect("installs");
-    runtime.register_snapshot(snapshot());
-}
-
 /// A runtime with a plain text model — fresh runs end naturally.
 pub fn text_runtime() -> Arc<Runtime> {
-    let runtime = Arc::new(Runtime::new().with_llm(Arc::new(TextLlm("done"))));
-    install(&runtime);
-    runtime
+    Arc::new(Runtime::new().with_llm(Arc::new(TextLlm("done"))))
 }
 
 /// Echoes the run's user-message text back as the assistant reply, so a test can
@@ -216,9 +194,7 @@ impl LlmExecutor for EchoInputLlm {
 /// A runtime whose model echoes the user input it received — a probe for which
 /// messages actually reached the run.
 pub fn input_echo_runtime() -> Arc<Runtime> {
-    let runtime = Arc::new(Runtime::new().with_llm(Arc::new(EchoInputLlm)));
-    install(&runtime);
-    runtime
+    Arc::new(Runtime::new().with_llm(Arc::new(EchoInputLlm)))
 }
 
 /// A runtime that awaits on a tool gate, exposing the tool-run counter so a test
@@ -233,7 +209,6 @@ pub fn tool_runtime() -> (Arc<Runtime>, Arc<AtomicUsize>) {
             .with_tool(Arc::new(EchoTool { ran: ran.clone() }))
             .with_gate(Arc::new(SuspendGate)),
     );
-    install(&runtime);
     (runtime, ran)
 }
 
@@ -249,7 +224,6 @@ pub fn schedule_runtime() -> (Arc<Runtime>, Arc<AtomicUsize>) {
             .with_tool(Arc::new(EchoTool { ran: ran.clone() }))
             .with_gate(Arc::new(ScheduleGate)),
     );
-    install(&runtime);
     (runtime, ran)
 }
 
@@ -278,7 +252,6 @@ pub fn counting_text_runtime() -> (Arc<Runtime>, Arc<AtomicUsize>) {
     let runtime = Arc::new(Runtime::new().with_llm(Arc::new(CountingTextLlm {
         infers: infers.clone(),
     })));
-    install(&runtime);
     (runtime, infers)
 }
 
@@ -353,7 +326,6 @@ pub fn blocking_tool_runtime(
                 first_seen: std::sync::atomic::AtomicBool::new(false),
             })),
     );
-    install(&runtime);
     (runtime, ran)
 }
 
@@ -399,13 +371,11 @@ pub fn activation_on(run: &str, thread: &str) -> RunActivation {
 /// A plain-text runtime wired to a metrics recorder, so a test can assert the
 /// worker meters the dispatch lifecycle on the same recorder the runtime uses.
 pub fn text_runtime_with_metrics(metrics: Arc<dyn MetricsRecorder>) -> Arc<Runtime> {
-    let runtime = Arc::new(
+    Arc::new(
         Runtime::new()
             .with_llm(Arc::new(TextLlm("done")))
             .with_metrics(metrics),
-    );
-    install(&runtime);
-    runtime
+    )
 }
 
 /// A await-on-gate runtime wired to a metrics recorder, so a test can assert a run
@@ -423,7 +393,6 @@ pub fn tool_runtime_with_metrics(
             .with_gate(Arc::new(SuspendGate))
             .with_metrics(metrics),
     );
-    install(&runtime);
     (runtime, ran)
 }
 
@@ -470,7 +439,6 @@ pub fn schedule_n_runtime(n: usize) -> (Arc<Runtime>, Arc<AtomicUsize>) {
             .with_tool(Arc::new(EchoTool { ran: ran.clone() }))
             .with_gate(Arc::new(ScheduleGate)),
     );
-    install(&runtime);
     (runtime, ran)
 }
 

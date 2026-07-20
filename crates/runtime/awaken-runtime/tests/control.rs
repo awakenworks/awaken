@@ -10,8 +10,6 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime::{DirectRunIngress, RunIngress, RunService, Runtime};
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
-use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::control::{Error as ControlError, LiveCommand, LiveRunControl};
 use awaken_runtime_contract::execution::{Error, RunExecutor};
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
@@ -63,23 +61,6 @@ impl LlmExecutor for GatedLlm {
     }
 }
 
-fn install(runtime: &Runtime) {
-    let fingerprint = CatalogFingerprint("catalog-a".to_string());
-    runtime
-        .install_catalog(RuntimeCatalogInstall {
-            publication_id: "pub-1".to_string(),
-            fingerprint: fingerprint.clone(),
-            source_revisions: vec!["rev-1".to_string()],
-            capabilities: RuntimeCapabilityCatalog {
-                catalog_fingerprint: fingerprint,
-                runtime_version: "test".to_string(),
-                tools: Vec::new(),
-                plugins: Vec::new(),
-            },
-        })
-        .expect("catalog installs");
-}
-
 fn activation() -> RunActivation {
     let fingerprint = CatalogFingerprint("catalog-a".to_string());
     RunActivation {
@@ -121,7 +102,6 @@ fn activation() -> RunActivation {
 #[tokio::test]
 async fn pre_cancelled_run_commits_a_terminal_cancelled_outcome() {
     let runtime = Runtime::new().with_llm(Arc::new(TextLlm));
-    install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let token = CancellationToken::new();
@@ -146,7 +126,6 @@ async fn live_cancel_steers_an_in_flight_run() {
         started: started.clone(),
         release: release.clone(),
     })));
-    install(&runtime);
 
     let token = CancellationToken::new();
     let context = RuntimeRunContext::new().with_cancellation(token);
@@ -177,7 +156,6 @@ async fn live_pause_awaits_an_in_flight_run_at_the_next_boundary() {
         started: started.clone(),
         release: release.clone(),
     })));
-    install(&runtime);
 
     let context = RuntimeRunContext::new().with_pause(PauseSignal::new());
     let runtime_for_run = runtime.clone();
@@ -220,7 +198,6 @@ async fn live_cancel_aborts_a_hung_inference() {
     let runtime = Arc::new(Runtime::new().with_llm(Arc::new(HangingLlm {
         started: started.clone(),
     })));
-    install(&runtime);
 
     let token = CancellationToken::new();
     let context = RuntimeRunContext::new().with_cancellation(token);
@@ -284,7 +261,6 @@ fn wake_on_unknown_run_is_not_active() {
 #[tokio::test]
 async fn direct_ingress_runs_inline_and_rejects_durable() {
     let runtime = Arc::new(Runtime::new().with_llm(Arc::new(TextLlm)));
-    install(&runtime);
     let ingress = DirectRunIngress::new(runtime);
 
     let outcome = ingress
@@ -318,7 +294,6 @@ async fn wake_on_an_active_run_is_accepted() {
         started: started.clone(),
         release: release.clone(),
     })));
-    install(&runtime);
 
     let token = CancellationToken::new();
     let context = RuntimeRunContext::new().with_cancellation(token);

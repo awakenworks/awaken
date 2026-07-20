@@ -1,126 +1,57 @@
-//! Catalog install is atomic and fails closed on an empty or mismatched
-//! fingerprint (G4/G23/G29); capability reporting reflects the active catalog.
+//! Runtime capability discovery is a deterministic projection of the executable
+//! ports actually composed on the node; it is not mutable Agent publication state.
+
+use std::sync::Arc;
 
 use awaken_runtime::Runtime;
-use awaken_runtime_contract::capability::{
-    RuntimeCapabilityCatalog, RuntimeCapabilitySource, ToolCapability,
-};
-use awaken_runtime_contract::catalog::{Error, RuntimeCatalogInstall, RuntimeCatalogInstaller};
-use awaken_runtime_contract::resolved::CatalogFingerprint;
+use awaken_runtime_contract::capability::RuntimeCapabilitySource;
+use awaken_runtime_contract::llm::ToolCall;
+use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
 
-fn catalog(fingerprint: &str, tools: Vec<&str>) -> RuntimeCatalogInstall {
-    let fingerprint = CatalogFingerprint(fingerprint.to_string());
-    RuntimeCatalogInstall {
-        publication_id: "pub-1".to_string(),
-        fingerprint: fingerprint.clone(),
-        source_revisions: vec!["rev-1".to_string()],
-        capabilities: RuntimeCapabilityCatalog {
-            catalog_fingerprint: fingerprint,
-            runtime_version: "test".to_string(),
-            tools: tools
-                .into_iter()
-                .map(|id| ToolCapability { id: id.to_string() })
-                .collect(),
-            plugins: Vec::new(),
-        },
+struct NamedTool(&'static str);
+
+#[async_trait::async_trait]
+impl RawTool for NamedTool {
+    fn id(&self) -> &str {
+        self.0
+    }
+
+    async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
+        Ok(ToolOutput::ok(call.call_id, "ok"))
     }
 }
 
 #[test]
-fn empty_fingerprint_is_rejected() {
-    let runtime = Runtime::new();
-    assert!(matches!(
-        runtime.install_catalog(catalog("   ", Vec::new())),
-        Err(Error::Rejected(_))
-    ));
+fn capabilities_are_projected_from_registered_runtime_ports() {
+    let runtime = Runtime::new()
+        .with_tool(Arc::new(NamedTool("zeta")))
+        .with_tool(Arc::new(NamedTool("alpha")));
+
+    let capabilities = runtime.runtime_capabilities();
+    let ids: Vec<_> = capabilities
+        .tools
+        .iter()
+        .map(|tool| tool.id.as_str())
+        .collect();
+    assert_eq!(ids, vec!["alpha", "zeta"]);
+    assert!(!capabilities.catalog_fingerprint.0.is_empty());
+    assert!(!capabilities.runtime_version.is_empty());
 }
 
 #[test]
-fn capabilities_default_to_empty_without_a_catalog() {
-    let runtime = Runtime::new();
-    let caps = runtime.runtime_capabilities();
-    assert!(caps.tools.is_empty());
-    assert_eq!(caps.catalog_fingerprint, CatalogFingerprint(String::new()));
-    // The reported runtime version is the crate version, not empty.
-    assert!(!caps.runtime_version.is_empty());
-}
+fn capability_fingerprint_is_deterministic_and_content_sensitive() {
+    let first = Runtime::new()
+        .with_tool(Arc::new(NamedTool("beta")))
+        .with_tool(Arc::new(NamedTool("alpha")))
+        .runtime_capabilities();
+    let reordered = Runtime::new()
+        .with_tool(Arc::new(NamedTool("alpha")))
+        .with_tool(Arc::new(NamedTool("beta")))
+        .runtime_capabilities();
+    let changed = Runtime::new()
+        .with_tool(Arc::new(NamedTool("alpha")))
+        .runtime_capabilities();
 
-#[test]
-fn capabilities_reflect_the_active_catalog_and_install_is_atomic() {
-    let runtime = Runtime::new();
-    runtime
-        .install_catalog(catalog("catalog-a", vec!["alpha"]))
-        .expect("first install");
-    assert_eq!(runtime.runtime_capabilities().tools.len(), 1);
-
-    // A later install atomically replaces the active catalog.
-    runtime
-        .install_catalog(catalog("catalog-b", vec!["alpha", "beta"]))
-        .expect("second install");
-    let caps = runtime.runtime_capabilities();
-    assert_eq!(caps.tools.len(), 2);
-    assert_eq!(
-        caps.catalog_fingerprint,
-        CatalogFingerprint("catalog-b".to_string())
-    );
-}
-
-/// A mismatched fingerprint (top-level vs capabilities) must be rejected
-/// before any state change, leaving the active catalog untouched (G4/G23).
-#[test]
-fn fingerprint_catalog_capabilities_mismatch_is_rejected() {
-    let runtime = Runtime::new();
-    runtime
-        .install_catalog(catalog("catalog-a", vec!["alpha"]))
-        .expect("valid catalog installs");
-
-    // Build an install where the top-level fingerprint disagrees with the
-    // capabilities catalog fingerprint — an internally inconsistent install.
-    let fp = CatalogFingerprint("catalog-b".to_string());
-    let caps_fp = CatalogFingerprint("catalog-c".to_string());
-    let inconsistent = RuntimeCatalogInstall {
-        publication_id: "pub-2".to_string(),
-        fingerprint: fp,
-        source_revisions: vec!["rev-2".to_string()],
-        capabilities: RuntimeCapabilityCatalog {
-            catalog_fingerprint: caps_fp,
-            runtime_version: "test".to_string(),
-            tools: Vec::new(),
-            plugins: Vec::new(),
-        },
-    };
-    assert!(
-        matches!(
-            runtime.install_catalog(inconsistent),
-            Err(Error::Rejected(_))
-        ),
-        "mismatched fingerprints must be rejected"
-    );
-
-    // Active catalog must be unchanged — still catalog-a (G23 rollback).
-    assert_eq!(
-        runtime.runtime_capabilities().catalog_fingerprint,
-        CatalogFingerprint("catalog-a".to_string()),
-        "active catalog must remain unchanged after a rejected install"
-    );
-}
-
-/// A rejected install (any reason) must leave the previously active catalog
-/// untouched — incomplete installs do not replace the active catalog (G23).
-#[test]
-fn active_catalog_is_unchanged_on_rejected_install() {
-    let runtime = Runtime::new();
-    runtime
-        .install_catalog(catalog("catalog-a", vec!["alpha"]))
-        .expect("first install");
-
-    // Attempt to install a catalog with an empty fingerprint (always rejected).
-    let _ = runtime.install_catalog(catalog("   ", Vec::new()));
-
-    // The active catalog must still be catalog-a.
-    assert_eq!(
-        runtime.runtime_capabilities().catalog_fingerprint,
-        CatalogFingerprint("catalog-a".to_string()),
-        "active catalog must be unchanged when an install is rejected"
-    );
+    assert_eq!(first.catalog_fingerprint, reordered.catalog_fingerprint);
+    assert_ne!(first.catalog_fingerprint, changed.catalog_fingerprint);
 }

@@ -15,8 +15,6 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
-use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::data_subject::{CaptureSink, DataSubjectId, Purpose};
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
@@ -78,23 +76,6 @@ impl LlmExecutor for OkLlm {
     }
 }
 
-fn install(runtime: &Runtime) {
-    let fingerprint = CatalogFingerprint("catalog-a".to_string());
-    runtime
-        .install_catalog(RuntimeCatalogInstall {
-            publication_id: "pub-1".to_string(),
-            fingerprint: fingerprint.clone(),
-            source_revisions: vec!["rev-1".to_string()],
-            capabilities: RuntimeCapabilityCatalog {
-                catalog_fingerprint: fingerprint,
-                runtime_version: "test".to_string(),
-                tools: Vec::new(),
-                plugins: Vec::new(),
-            },
-        })
-        .expect("installs");
-}
-
 fn activation() -> RunActivation {
     let fingerprint = CatalogFingerprint("catalog-a".to_string());
     RunActivation {
@@ -147,7 +128,6 @@ fn run_context(sink: &Arc<SpyCaptureSink>, capture: CaptureDecision) -> RuntimeR
 async fn structured_default_records_no_content() {
     let sink = Arc::new(SpyCaptureSink::default());
     let runtime = Runtime::new().with_llm(Arc::new(OkLlm));
-    install(&runtime);
 
     // Default decision is `Structured` — the safe operational default.
     let ctx = run_context(&sink, CaptureDecision::default());
@@ -163,7 +143,6 @@ async fn structured_default_records_no_content() {
 async fn full_records_input_and_output_content() {
     let sink = Arc::new(SpyCaptureSink::default());
     let runtime = Runtime::new().with_llm(Arc::new(OkLlm));
-    install(&runtime);
 
     let ctx = run_context(&sink, CaptureDecision::new(ContentCapture::Full));
     runtime.execute(activation(), ctx).await.expect("runs");
@@ -187,7 +166,6 @@ async fn full_records_input_and_output_content() {
 async fn full_with_redactor_persists_only_the_scrubbed_projection() {
     let sink = Arc::new(SpyCaptureSink::default());
     let runtime = Runtime::new().with_llm(Arc::new(OkLlm));
-    install(&runtime);
 
     let decision = CaptureDecision::with_redactor(ContentCapture::Full, Arc::new(ScrubRedactor));
     let ctx = run_context(&sink, decision);

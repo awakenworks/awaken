@@ -44,6 +44,6 @@ fn boundary_values_are_plain_serializable_data() {
     assert_boundary::<awaken_agent_contract::agent::run::EndCause>();
     assert_boundary::<awaken_agent_contract::agent::run::Failure>();
 
-    // G29: the complete catalog install request handed to the runtime.
-    assert_boundary::<rc::catalog::RuntimeCatalogInstall>();
+    // The complete executable publication handed to the runtime.
+    assert_boundary::<rc::snapshot::ExecutableAgentSnapshot>();
 }

@@ -19,8 +19,6 @@ use awaken_ext_state_machine::{
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::{MemoryCommitCoordinator, replay_state};
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
-use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
@@ -99,23 +97,6 @@ fn tool_call(id: &str, tool: &str, file: &str) -> ToolCall {
     }
 }
 
-fn install(runtime: &Runtime) {
-    let fingerprint = CatalogFingerprint("catalog-a".to_string());
-    runtime
-        .install_catalog(RuntimeCatalogInstall {
-            publication_id: "pub-1".to_string(),
-            fingerprint: fingerprint.clone(),
-            source_revisions: vec!["rev-1".to_string()],
-            capabilities: RuntimeCapabilityCatalog {
-                catalog_fingerprint: fingerprint,
-                runtime_version: "test".to_string(),
-                tools: Vec::new(),
-                plugins: Vec::new(),
-            },
-        })
-        .expect("installs");
-}
-
 fn activation() -> RunActivation {
     let fingerprint = CatalogFingerprint("catalog-a".to_string());
     RunActivation {
@@ -172,7 +153,6 @@ async fn deny_then_corrected_read_write_reaches_terminal() {
         .with_tool(Arc::new(OkTool("Read")))
         .with_tool(Arc::new(OkTool("Write")))
         .with_plugin(Arc::new(plugin));
-    install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
@@ -222,7 +202,6 @@ async fn warn_message_reaches_the_next_model_turn() {
         .with_llm(Arc::new(llm))
         .with_tool(Arc::new(OkTool("Write")))
         .with_plugin(Arc::new(plugin));
-    install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
@@ -275,7 +254,6 @@ async fn continuation_nudge_keeps_running_until_terminal() {
         .with_tool(Arc::new(OkTool("Start")))
         .with_tool(Arc::new(OkTool("Finish")))
         .with_plugin(Arc::new(plugin));
-    install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
@@ -330,7 +308,6 @@ async fn config_section_drives_the_machine_set() {
         .with_tool(Arc::new(OkTool("Read")))
         .with_tool(Arc::new(OkTool("Write")))
         .with_plugin(Arc::new(StateMachinePlugin::empty()));
-    install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
@@ -368,7 +345,6 @@ async fn no_section_leaves_calls_unconstrained() {
         .with_llm(Arc::new(llm))
         .with_tool(Arc::new(OkTool("Write")))
         .with_plugin(Arc::new(StateMachinePlugin::empty()));
-    install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
@@ -391,7 +367,6 @@ async fn malformed_section_fails_the_run_closed() {
     let runtime = Runtime::new()
         .with_llm(Arc::new(llm))
         .with_plugin(Arc::new(StateMachinePlugin::empty()));
-    install(&runtime);
 
     let bad = section(
         "state_machine",
@@ -495,7 +470,6 @@ async fn warn_emit_is_in_the_models_next_request() {
         .with_llm(llm.clone())
         .with_tool(Arc::new(OkTool("Write")))
         .with_plugin(Arc::new(plugin));
-    install(&runtime);
 
     let context = RuntimeRunContext::new().with_commit(Arc::new(MemoryCommitCoordinator::new()));
     let state = runtime.execute(activation(), context).await.expect("runs");
@@ -529,7 +503,6 @@ async fn success_transition_emit_is_in_the_models_next_request() {
         .with_llm(llm.clone())
         .with_tool(Arc::new(OkTool("Write")))
         .with_plugin(Arc::new(plugin));
-    install(&runtime);
 
     let context = RuntimeRunContext::new().with_commit(Arc::new(MemoryCommitCoordinator::new()));
     let state = runtime.execute(activation(), context).await.expect("runs");
@@ -598,7 +571,6 @@ async fn emit_survives_a_await_and_is_in_the_resumed_request() {
         .with_tool(Arc::new(OkTool("Await")))
         .with_gate(Arc::new(AwaitTheAwaitTool))
         .with_plugin(Arc::new(plugin));
-    install(&runtime);
     // Resume rebuilds the run from the snapshot registry, so register it.
     runtime.register_snapshot(activation().snapshot);
 

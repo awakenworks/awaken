@@ -15,8 +15,6 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
-use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatMessage, ChatRequest, ChatResponse, LlmExecutor, StopReason, ToolCall,
@@ -121,19 +119,6 @@ async fn replay(case: &Case) -> (String, bool, Vec<String>) {
             }
         }
     }
-    runtime
-        .install_catalog(RuntimeCatalogInstall {
-            publication_id: "eval".to_string(),
-            fingerprint: fingerprint.clone(),
-            source_revisions: vec!["eval".to_string()],
-            capabilities: RuntimeCapabilityCatalog {
-                catalog_fingerprint: fingerprint.clone(),
-                runtime_version: "eval".to_string(),
-                tools: Vec::new(),
-                plugins: Vec::new(),
-            },
-        })
-        .expect("catalog installs");
 
     let activation = RunActivation {
         run_id: RunId(format!("eval-{}", case.id)),

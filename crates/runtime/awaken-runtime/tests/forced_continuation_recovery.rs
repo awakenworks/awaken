@@ -14,8 +14,6 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
-use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 use awaken_runtime_contract::pause::PauseSignal;
@@ -135,23 +133,6 @@ fn snapshot() -> ExecutableAgentSnapshot {
     }
 }
 
-fn install(runtime: &Runtime) {
-    let fingerprint = CatalogFingerprint(FINGERPRINT.to_string());
-    runtime
-        .install_catalog(RuntimeCatalogInstall {
-            publication_id: "pub-1".to_string(),
-            fingerprint: fingerprint.clone(),
-            source_revisions: vec!["rev-1".to_string()],
-            capabilities: RuntimeCapabilityCatalog {
-                catalog_fingerprint: fingerprint,
-                runtime_version: "test".to_string(),
-                tools: Vec::new(),
-                plugins: Vec::new(),
-            },
-        })
-        .expect("installs");
-}
-
 fn activation() -> RunActivation {
     RunActivation {
         run_id: RunId("run-1".to_string()),
@@ -191,7 +172,6 @@ async fn a_guards_forced_continuation_count_survives_a_await_and_resume() {
             pause: pause.clone(),
             steer_budget: 1,
         }));
-    install(&runtime);
     runtime.register_snapshot(snapshot());
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
