@@ -2,6 +2,7 @@
 //! executes even though the tool is registered and visible (G9/G21).
 
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::content::ContentBlock;
@@ -66,6 +67,22 @@ impl LlmExecutor for ToolThenText {
 /// Records whether it actually ran, so denial can be proven.
 struct EchoTool {
     ran: Arc<AtomicUsize>,
+}
+
+struct OperationProbe {
+    seen: Arc<Mutex<Option<String>>>,
+}
+
+#[async_trait::async_trait]
+impl RawTool for OperationProbe {
+    fn id(&self) -> &str {
+        "echo"
+    }
+
+    async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
+        *self.seen.lock().unwrap() = awaken_runtime_contract::tool::current_tool_operation_id();
+        Ok(ToolOutput::ok(call.call_id, "ok"))
+    }
 }
 
 #[async_trait::async_trait]
@@ -165,6 +182,25 @@ async fn allowed_tool_call_executes_and_feeds_result_back() {
         .collect();
     assert_eq!(tool_results.len(), 1);
     assert!(tool_results[0].text_content().contains("echoed"));
+}
+
+#[tokio::test]
+async fn executor_receives_run_and_step_scoped_operation_identity() {
+    let seen = Arc::new(Mutex::new(None));
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(ToolThenText::new()))
+        .with_tool(Arc::new(OperationProbe { seen: seen.clone() }));
+    install(&runtime);
+
+    runtime
+        .execute(activation(), RuntimeRunContext::new())
+        .await
+        .expect("runs");
+
+    assert_eq!(
+        seen.lock().unwrap().as_deref(),
+        Some("tool-batch:run-1:0:call-1")
+    );
 }
 
 #[tokio::test]

@@ -15,6 +15,32 @@ use thiserror::Error;
 
 pub use crate::llm::ToolCall;
 
+tokio::task_local! {
+    /// Runtime-owned identity of the current durable tool invocation.
+    ///
+    /// A provider `ToolCall::call_id` only correlates model tool-use/result blocks and
+    /// may be synthesized with response-local scope. Business tools that need an
+    /// idempotency key must use this run/step-scoped identity instead.
+    static TOOL_OPERATION_ID: String;
+}
+
+/// Return the runtime-scoped identity of the tool invocation currently entering an
+/// executor. Direct unit invocations have no runtime scope and therefore return
+/// `None`; tools may use their call id as a test/legacy fallback in that case.
+#[must_use]
+pub fn current_tool_operation_id() -> Option<String> {
+    TOOL_OPERATION_ID.try_with(Clone::clone).ok()
+}
+
+/// Run one executor future with a durable, runtime-owned operation identity visible
+/// to the called tool. This keeps execution context out of provider protocol ids.
+pub async fn with_tool_operation_id<T>(
+    operation_id: String,
+    future: impl std::future::Future<Output = T>,
+) -> T {
+    TOOL_OPERATION_ID.scope(operation_id, future).await
+}
+
 /// What an implementation can safely do after the owner died while an invocation
 /// was in flight. This is a trusted property of the executable tool, not a claim
 /// supplied by the model or by an agent configuration.
@@ -271,6 +297,17 @@ pub trait ToolExecutorProvider: Send + Sync {
 #[cfg(test)]
 mod recovery_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn operation_identity_is_scoped_to_one_executor_future() {
+        assert_eq!(current_tool_operation_id(), None);
+        let seen = with_tool_operation_id("tool-batch:run-7:3:c1".into(), async {
+            current_tool_operation_id()
+        })
+        .await;
+        assert_eq!(seen.as_deref(), Some("tool-batch:run-7:3:c1"));
+        assert_eq!(current_tool_operation_id(), None);
+    }
 
     #[test]
     fn configuration_can_only_match_or_reduce_capability() {

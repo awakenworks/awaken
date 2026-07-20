@@ -29,7 +29,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_config_store::{AgentConfig, ManagementAuditRecord, ModelSelection, ToolOverride};
 use awaken_runtime_contract::resolved::{ContextPolicy, ToolDescriptor};
-use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
+use awaken_runtime_contract::tool::{
+    RawTool, ToolCall, ToolError, ToolOutput, current_tool_operation_id,
+};
 use serde::{Deserialize, Serialize};
 
 /// The five management tool ids. They are namespaced `admin_*` and are only ever
@@ -271,14 +273,15 @@ pub trait EnvironmentAuthor: Send + Sync {
     async fn create(&self, name: &str, config: serde_json::Value) -> Result<String, String>;
 }
 
-/// A structured record of one management tool invocation (ADR-0052 D6). Emitted on
-/// **every** call. Carries only a short, non-secret summary — never the full arguments.
+/// A structured record of one mutating management operation (ADR-0052 D6). Read-only
+/// calls already live in the Runtime's ToolCall/ToolResult history. Carries only a
+/// short, non-secret summary — never the full arguments.
 pub type AdminAuditEvent = ManagementAuditRecord;
 
-/// Where management tool-call audit records go (ADR-0052 D6). The default
+/// Where management change records go (ADR-0052 D6). The default
 /// [`TracingAuditSink`] logs to the `awaken::admin_audit` target; a deployment can
-/// inject its own (e.g. a durable audit store) — this is also the defense-in-depth
-/// seam, since every privileged call passes through it.
+/// inject its own observability projection. Durable config-store persistence is the
+/// authority paired atomically with the mutation.
 pub trait AuditSink: Send + Sync {
     fn record(&self, event: AdminAuditEvent);
 }
@@ -542,11 +545,7 @@ pub fn admin_tools(
     audit: Arc<dyn AuditSink>,
 ) -> Vec<Arc<dyn RawTool>> {
     vec![
-        Arc::new(GetPlatformCapabilities {
-            reader,
-            store: store.clone(),
-            audit: audit.clone(),
-        }),
+        Arc::new(GetPlatformCapabilities { reader }),
         Arc::new(DraftAgent {
             validator: validator.clone(),
             store: store.clone(),
@@ -560,12 +559,8 @@ pub fn admin_tools(
         Arc::new(ValidateAgent {
             validator,
             store: store.clone(),
-            audit: audit.clone(),
         }),
-        Arc::new(ExplainConsole {
-            store: store.clone(),
-            audit: audit.clone(),
-        }),
+        Arc::new(ExplainConsole),
         Arc::new(DraftEnvironment {
             author: env_author,
             store,
@@ -648,10 +643,7 @@ impl RawTool for DraftEnvironment {
 
 // ---- Tool 5: admin_explain_console (read-only in-console user manual) ------------
 
-struct ExplainConsole {
-    store: Arc<dyn DraftStore>,
-    audit: Arc<dyn AuditSink>,
-}
+struct ExplainConsole;
 
 #[derive(Debug, Deserialize)]
 struct ExplainArgs {
@@ -669,17 +661,6 @@ impl RawTool for ExplainConsole {
         // Tolerant of a missing/empty arg object — an index request is well-formed.
         let args: ExplainArgs =
             serde_json::from_value(call.arguments.clone()).unwrap_or(ExplainArgs { topic: None });
-        audit(
-            &self.store,
-            &self.audit,
-            EXPLAIN_TOOL,
-            &call.call_id,
-            format!(
-                "explain console `{}`",
-                args.topic.as_deref().unwrap_or("(index)")
-            ),
-        )
-        .await?;
         Ok(ToolOutput::ok(
             call.call_id,
             console_help::explain(args.topic.as_deref()).to_string(),
@@ -687,7 +668,10 @@ impl RawTool for ExplainConsole {
     }
 }
 
-/// Emit the audit record for one management tool call (ADR-0052 D6).
+/// Persist the change intent for one mutating management tool call. Runtime
+/// `ToolCall`/`ToolResult` facts are the history for every invocation, including
+/// reads; this record exists only to atomically pair a business write with its
+/// idempotency identity.
 async fn audit(
     store: &Arc<dyn DraftStore>,
     sink: &Arc<dyn AuditSink>,
@@ -695,9 +679,10 @@ async fn audit(
     call_id: &str,
     summary: impl Into<String>,
 ) -> Result<AdminAuditEvent, ToolError> {
+    let operation_id = current_tool_operation_id().unwrap_or_else(|| call_id.to_string());
     let event = AdminAuditEvent {
         tool: tool.to_string(),
-        call_id: call_id.to_string(),
+        call_id: operation_id,
         summary: summary.into(),
     };
     store
@@ -766,8 +751,6 @@ async fn validate_persist_emit(
 
 struct GetPlatformCapabilities {
     reader: Arc<dyn CapabilityReader>,
-    store: Arc<dyn DraftStore>,
-    audit: Arc<dyn AuditSink>,
 }
 
 #[async_trait]
@@ -777,14 +760,6 @@ impl RawTool for GetPlatformCapabilities {
     }
 
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
-        audit(
-            &self.store,
-            &self.audit,
-            CAPABILITIES_TOOL,
-            &call.call_id,
-            "list platform capabilities",
-        )
-        .await?;
         let caps = self.reader.capabilities().await;
         let content = serde_json::to_string(&caps)
             .map_err(|e| ToolError::Execution(format!("serialize capabilities: {e}")))?;
@@ -1075,7 +1050,6 @@ struct ValidateArgs {
 struct ValidateAgent {
     validator: Arc<dyn DraftValidator>,
     store: Arc<dyn DraftStore>,
-    audit: Arc<dyn AuditSink>,
 }
 
 #[async_trait]
@@ -1094,14 +1068,6 @@ impl RawTool for ValidateAgent {
                 ));
             }
         };
-        audit(
-            &self.store,
-            &self.audit,
-            VALIDATE_TOOL,
-            &call.call_id,
-            format!("validate draft `{}`", args.id),
-        )
-        .await?;
         let draft = match self.store.get(&args.id).await {
             Ok(Some(c)) => c,
             Ok(None) => {
