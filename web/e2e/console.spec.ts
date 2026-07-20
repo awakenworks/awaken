@@ -308,6 +308,58 @@ test("author → publish a config agent, and see it in the list", async ({ page 
   await expect(page.getByPlaceholder("Ask the agent…")).toBeVisible();
 });
 
+test("Publish automatically saves and validates a new Draft before the only confirmation", async ({ page, request }) => {
+  const id = `publish-flow-${Date.now()}`;
+  await page.goto("/w/default/agents/new");
+  await page.getByPlaceholder("coding-agent").fill(id);
+  await page.getByLabel("System instructions").fill("Keep the release notes concise.");
+
+  // No separate Save or Validate click: Publish performs both and only then opens
+  // the operator checkpoint.
+  await page.getByRole("button", { name: /Publish/ }).click();
+  const modal = page.locator(".modal");
+  await expect(modal.getByText(/Draft compiled successfully|草稿已通过编译/)).toBeVisible();
+  expect((await request.get(`/v1/config/agents/${id}`)).ok()).toBe(true);
+
+  await modal.getByRole("button", { name: /Publish/ }).click();
+  await expect(page.locator(".toast").filter({ hasText: /Published|已发布/ })).toBeVisible();
+  await expect(page).toHaveURL(new RegExp(`/agents/${id}$`));
+});
+
+test("Agent-authored fields and the State Machine behavior are highlighted after Draft refresh", async ({ page, request }) => {
+  const id = `highlight-e2e-${Date.now()}`;
+  const original = {
+    id,
+    system: "original instructions",
+    tools: [],
+    plugins: [],
+    plugin_config: {},
+    context_policy: { kind: "keep_all" },
+    max_steps: 8,
+  };
+  await request.put(`/v1/config/agents/${id}`, { data: original });
+  await page.goto(`/w/default/agents/${id}`);
+  await expect(page.getByLabel("System instructions")).toHaveValue("original instructions");
+  await page.getByPlaceholder("Coding Assistant").fill("operator's unsaved name");
+  await request.put(`/v1/config/agents/${id}`, { data: { ...original, system: "agent refined instructions" } });
+
+  await page.evaluate(({ agentId }) => {
+    window.dispatchEvent(new CustomEvent("awaken:agent-draft-changed", {
+      detail: { id: agentId, paths: ["system", "plugin_config.state_machine"] },
+    }));
+  }, { agentId: id });
+
+  await expect(page.getByLabel("System instructions")).toHaveValue("agent refined instructions");
+  await expect(page.getByPlaceholder("Coding Assistant")).toHaveValue("operator's unsaved name");
+  await expect(page.getByText(/unsaved|未保存/)).toBeVisible();
+  await expect(page.locator(".agent-change-highlight", { hasText: "System instructions" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Behavior" }).locator(".agent-change-dot")).toBeVisible();
+  await page.getByRole("tab", { name: "Behavior" }).click();
+  const stateMachine = page.locator(".behavior-card", { hasText: "Agent behavior state machine" });
+  await expect(stateMachine).toHaveClass(/agent-change-highlight/);
+  await expect(stateMachine.getByText(/Agent updated|Agent 已更新/)).toBeVisible();
+});
+
 test("publish preview shows the config diff, domain-labeled", async ({ page, request }) => {
   const id = `diff-e2e-${Date.now()}`;
   await request.put(`/v1/config/agents/${id}`, { data: { id, system: "original", tools: [], plugins: [], plugin_config: {}, context_policy: { kind: "keep_all" }, max_steps: 8 } });

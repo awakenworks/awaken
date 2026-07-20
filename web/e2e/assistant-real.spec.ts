@@ -203,6 +203,35 @@ test("Admin Assistant authors a repeat-safe read-before-write machine (real mode
   );
 });
 
+test("Publish hands an invalid Draft to KIMI, highlights the repair, then asks only for confirmation", async ({ page, request }) => {
+  await configureKimi(request);
+  const id = `auto-repair-${Date.now()}`;
+  await request.put(`/v1/config/agents/${id}`, {
+    data: {
+      id,
+      system: "Answer release questions from the configured tools.",
+      tools: ["tool_that_does_not_exist"],
+      plugins: [],
+      plugin_config: {},
+      context_policy: { kind: "keep_all" },
+      max_steps: 8,
+    },
+  });
+
+  await page.goto(`/w/default/agents/${id}`);
+  await expect(page.getByLabel("System instructions")).toHaveValue(/release questions/);
+  await page.getByRole("button", { name: /Publish/ }).click();
+
+  const modal = page.locator(".modal");
+  const failed = page.getByText(/Run failed|运行失败|Needs input|需要处理/).first();
+  await expect(modal.or(failed)).toBeVisible({ timeout: 90_000 });
+  if (await failed.isVisible()) throw new Error(`KIMI did not repair the Draft: ${await failed.textContent()}`);
+  await expect(modal.getByText(/Draft compiled successfully|草稿已通过编译/)).toBeVisible();
+  const repaired = await (await request.get(`/v1/config/agents/${id}`)).json();
+  expect(repaired.tools).not.toContain("tool_that_does_not_exist");
+  await expect(page.getByRole("tab", { name: "Tools" }).locator(".agent-change-dot")).toBeVisible();
+});
+
 async function throwOnSessionFailure(request: APIRequestContext, sessionId: string) {
   const response = await request.get(`/v1/sessions/${sessionId}/events`);
   const events = (await response.json()).data as Array<{ type: string; stop_reason?: { type?: string } }>;
