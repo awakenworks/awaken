@@ -80,6 +80,23 @@ pub trait RunExecutor: Send + Sync {
     }
 }
 
+/// A Run executor that can drive both a fresh activation and a committed resume
+/// boundary. Durable dispatch depends on this port instead of assuming every Run
+/// is owned by the in-process native `Runtime`; Native, ACP, and future adapters
+/// therefore share one claim/fence/settle path.
+#[async_trait::async_trait]
+pub trait RunAttemptExecutor: RunExecutor {
+    /// Resume `activation` using the already-validated, durable identity carried
+    /// by `command`. The live reader/commit/cancellation handles remain in
+    /// `context`, exactly as for [`RunExecutor::execute`].
+    async fn resume(
+        &self,
+        activation: crate::activation::RunActivation,
+        command: crate::resume::ResumeCommand,
+        context: crate::runtime_context::RuntimeRunContext,
+    ) -> Result<RunState>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

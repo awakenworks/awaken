@@ -9,11 +9,21 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use awaken_run_executor_acp::AcpRunExecutor;
+use awaken_run_executor_acp::{AcpRunExecutor, LaunchObserver, SessionHomeProvider};
+use awaken_sandbox_local::LocalSandbox;
+
+enum AcpExecutorSource {
+    Static(Arc<AcpRunExecutor>),
+    Bound {
+        launch: crate::LaunchSource,
+        observer: Option<Arc<dyn LaunchObserver>>,
+        session_home: Option<Arc<dyn SessionHomeProvider>>,
+    },
+}
 
 /// Holds the ACP executor and the per-thread runtime selection.
 pub(crate) struct AcpBackend {
-    pub(crate) executor: Arc<AcpRunExecutor>,
+    source: AcpExecutorSource,
     thread_runtime: Mutex<HashMap<String, String>>,
     /// The deployment's DEFAULT backend adapter (e.g. `"acp:claude"`), applied to a
     /// thread that staged none. This is how a single-purpose ACP deployment routes
@@ -32,9 +42,49 @@ impl AcpBackend {
 
     pub(crate) fn new(executor: Arc<AcpRunExecutor>) -> Self {
         Self {
-            executor,
+            source: AcpExecutorSource::Static(executor),
             thread_runtime: Mutex::new(HashMap::new()),
             default_adapter: None,
+        }
+    }
+
+    fn bound(
+        launch: crate::LaunchSource,
+        observer: Option<Arc<dyn LaunchObserver>>,
+        session_home: Option<Arc<dyn SessionHomeProvider>>,
+    ) -> Self {
+        Self {
+            source: AcpExecutorSource::Bound {
+                launch,
+                observer,
+                session_home,
+            },
+            thread_runtime: Mutex::new(HashMap::new()),
+            default_adapter: None,
+        }
+    }
+
+    /// Materialize the executor for this session. Production local ACP uses a
+    /// source bound to the session's existing sandbox; injected/static executors
+    /// remain available for remote adapters and deterministic tests.
+    pub(crate) fn executor_for(&self, sandbox: Arc<LocalSandbox>) -> Arc<AcpRunExecutor> {
+        match &self.source {
+            AcpExecutorSource::Static(executor) => executor.clone(),
+            AcpExecutorSource::Bound {
+                launch,
+                observer,
+                session_home,
+            } => {
+                let source = Arc::new(crate::BoundLocalChannelSource::new(sandbox, launch.clone()));
+                let mut executor = AcpRunExecutor::new(source);
+                if let Some(observer) = observer {
+                    executor = executor.with_launch_observer(observer.clone());
+                }
+                if let Some(session_home) = session_home {
+                    executor = executor.with_session_home(session_home.clone());
+                }
+                Arc::new(executor)
+            }
         }
     }
 
@@ -113,6 +163,20 @@ impl crate::host::SharedHost {
         self
     }
 
+    fn with_bound_acp(
+        mut self,
+        launch: crate::LaunchSource,
+        session_home: Option<Arc<dyn SessionHomeProvider>>,
+    ) -> Self {
+        let observer = self.acp_launch_observer();
+        self.acp = Some(Arc::new(AcpBackend::bound(
+            launch,
+            Some(observer),
+            session_home,
+        )));
+        self
+    }
+
     /// Serve `acp:*` sessions on `executor` AND make `default_adapter` (e.g.
     /// `"acp:claude"`) the deployment's default backend: every session routes to the
     /// ACP CLI unless it explicitly selects another runtime. This is the "backend
@@ -172,6 +236,9 @@ impl crate::host::SharedHost {
         let egress = self.thread_egress();
         let resources = self.thread_resources_handle();
         let sandbox = self.thread_sandbox();
+        if tier == crate::SandboxTier::Local {
+            return self.with_bound_acp(source, None);
+        }
         let bindings = crate::AcpSandboxBindings::new(egress, resources, sandbox)
             .with_memory_mounter(self.memory_mounter());
         let channel = crate::build_acp_channel_source(
@@ -210,25 +277,24 @@ impl crate::host::SharedHost {
             cli,
             store_dir.clone(),
         ));
-        let source = Arc::new(awaken_run_executor_acp::ProjectingChannelSource::new(
-            cli, resolver,
-        ));
-        // Publish this CLI's bring-up (install/launch/initialize/ready) to the hub,
-        // so a UI can show progress while a cold npx cache installs the adapter.
-        let observer = self.acp_launch_observer();
-        let mut executor = AcpRunExecutor::new(source).with_launch_observer(observer);
+        let source = crate::LaunchSource::Projected {
+            cli: Box::new(cli),
+            resolver,
+        };
         // When a session-blob root is configured, recover this CLI's session across
         // directories/machines: harvest it to the (shared) root after a run and
         // restore it before the next, keyed by thread+adapter — under the same
         // config home the resolver opens. A `Gateway`/stateless CLI is skipped by the
         // executor's own dispatch; a single-machine host leaves this unset.
-        if let Some(blob_root) = self.session_blob_root.clone() {
+        let session_home = if let Some(blob_root) = self.session_blob_root.clone() {
             let blobs = Arc::new(awaken_run_executor_acp::FsSessionBlobStore::new(blob_root));
-            executor = executor.with_session_home(Arc::new(
-                awaken_run_executor_acp::DirSessionHome::new(store_dir, blobs),
-            ));
-        }
-        self.with_acp(Arc::new(executor))
+            Some(Arc::new(awaken_run_executor_acp::DirSessionHome::new(
+                store_dir, blobs,
+            )) as Arc<dyn SessionHomeProvider>)
+        } else {
+            None
+        };
+        self.with_bound_acp(source, session_home)
     }
 
     /// Stage `thread`'s runtime adapter (R3): `"acp:*"` routes it to the ACP CLI.

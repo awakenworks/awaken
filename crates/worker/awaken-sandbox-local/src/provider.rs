@@ -634,6 +634,24 @@ impl LocalSandbox {
     pub fn scan_skill_dir(&self, subdir: &str) -> Vec<DiscoveredSkillFile> {
         scan_skill_dir_at(&self.root, subdir)
     }
+
+    /// Materialize host-projected, non-secret configuration inside this existing
+    /// sandbox. This is the late-bound counterpart of an inline mount: ACP config
+    /// depends on the resolved Run snapshot, but writing it must not require a
+    /// second sandbox. Paths are resolved by the same jail used by every helper.
+    pub fn materialize_inline(
+        &self,
+        logical: &str,
+        contents: &[u8],
+    ) -> Result<(), pc::SandboxError> {
+        let path = self.root.resolve(logical).map_err(err)?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(err)?;
+        }
+        std::fs::write(&path, contents).map_err(err)?;
+        restrict_to_owner(&path)?;
+        Ok(())
+    }
 }
 
 impl pc::RepositoryRealizer for LocalSandbox {

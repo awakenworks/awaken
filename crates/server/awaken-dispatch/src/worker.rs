@@ -17,7 +17,7 @@ use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_runtime::Runtime;
-use awaken_runtime_contract::execution::RunExecutor;
+use awaken_runtime_contract::execution::RunAttemptExecutor;
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use tokio_util::sync::CancellationToken;
@@ -35,6 +35,7 @@ pub const DEFAULT_LEASE_MS: u64 = 30_000;
 /// engine drives the in-memory reference and the Postgres backend unchanged.
 pub struct DispatchWorker<S> {
     runtime: Arc<Runtime>,
+    attempt_executor: std::sync::RwLock<Arc<dyn RunAttemptExecutor>>,
     store: Arc<S>,
     exec: WorkerContext,
     reader: Arc<dyn ThreadReader>,
@@ -75,8 +76,10 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         owner: impl Into<String>,
     ) -> Self {
         let dispatch: Arc<dyn crate::dispatch::DispatchQueue> = store.clone();
+        let attempt_executor: Arc<dyn RunAttemptExecutor> = runtime.clone();
         Self {
             runtime,
+            attempt_executor: std::sync::RwLock::new(attempt_executor),
             store,
             exec: WorkerContext::new(commit.clone()).with_reader(reader.clone()),
             reader,
@@ -96,6 +99,15 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         self.cancellation = context.cancellation.clone();
         self.exec = self.exec.with_context(context);
         self
+    }
+
+    /// Install the session's selected executor before its first claim. The lock
+    /// is read only long enough to clone the `Arc`; no executor call holds it.
+    pub fn install_attempt_executor(&self, executor: Arc<dyn RunAttemptExecutor>) {
+        *self
+            .attempt_executor
+            .write()
+            .expect("attempt executor lock poisoned") = executor;
     }
 
     /// Override how a claimed worker commit is applied. Database-less workers
@@ -343,6 +355,12 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         }
 
         let run_id = claimed.request.run_id().clone();
+        let activation = claimed.request.activation.clone();
+        let attempt_executor = self
+            .attempt_executor
+            .read()
+            .expect("attempt executor lock poisoned")
+            .clone();
         // The fence token this drive holds. Every settle below carries it so a stale
         // owner (whose lease lapsed and was re-claimed under a higher epoch) is
         // rejected and abandons instead of clobbering the reclaimer's dispatch.
@@ -400,11 +418,10 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 match matched {
                     Some(input) => {
                         let command = ResumeCommand::from_ticket(&ticket, input.result, now_ms);
-                        match self
-                            .runtime
+                        match attempt_executor
                             .resume(
+                                activation.clone(),
                                 command,
-                                self.reader.as_ref(),
                                 self.execution_context_with(&claim, &model_executor),
                             )
                             .instrument(dispatch.clone())
@@ -492,7 +509,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                         .map(|r| r.input)
                         .filter(|input| input.run_id.0.is_empty())
                         .collect();
-                    let mut activation = claimed.request.activation;
+                    let mut activation = activation;
                     // Prepend each delivered unbound *input* in arrival order. The
                     // insert position tracks how many were actually inserted, not the
                     // raw scan index — a non-`Input` unbound row (e.g. a stray
@@ -515,8 +532,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                     }
                     // Consumed on settle, not on read, so a crash re-delivers them.
                     all_pending.extend(unbound.into_iter().map(|input| input.message_id));
-                    match self
-                        .runtime
+                    match attempt_executor
                         .execute(
                             activation,
                             self.execution_context_with(&claim, &model_executor),

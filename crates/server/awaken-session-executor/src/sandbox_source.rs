@@ -42,6 +42,7 @@ use awaken_sandbox_local::NamespaceProvider;
 /// This is the public factory input to [`build_acp_channel_source`] (ADR-0057
 /// `serve-selected-cli`): a composition root picks `Projected` to serve each run's
 /// config-plane-selected CLI, or `Fixed` for a trusted/test single argv.
+#[derive(Clone)]
 pub enum LaunchSource {
     /// One CLI for every `acp:*` thread (trusted/test; `AWAKEN_ACP_ARGV`).
     Fixed(AcpLaunch),
@@ -690,6 +691,76 @@ impl AgentChannelSource for SandboxChannelSource {
                 SandboxBackend::Namespace(_) => Some(SANDBOX_WORKSPACE.to_string()),
                 SandboxBackend::Workdir(_) => None,
             },
+            mcp_session_servers: injection.session_servers,
+        })
+    }
+}
+
+/// Launches ACP inside the `LocalSandbox` already owned by a Native session.
+/// Unlike [`SandboxChannelSource`], this source never realizes an environment;
+/// it only projects per-run launch data and starts a process in the bound one.
+pub struct BoundLocalChannelSource {
+    sandbox: Arc<awaken_sandbox_local::LocalSandbox>,
+    launch: LaunchSource,
+    codec: awaken_run_executor_acp::Codec,
+}
+
+impl BoundLocalChannelSource {
+    #[must_use]
+    pub fn new(sandbox: Arc<awaken_sandbox_local::LocalSandbox>, launch: LaunchSource) -> Self {
+        let codec = match &launch {
+            LaunchSource::Fixed(_) => awaken_run_executor_acp::Codec::Newline,
+            LaunchSource::Projected { .. } => awaken_run_executor_acp::Codec::Acp,
+        };
+        Self {
+            sandbox,
+            launch,
+            codec,
+        }
+    }
+}
+
+#[async_trait]
+impl AgentChannelSource for BoundLocalChannelSource {
+    async fn open(&self, activation: &RunActivation) -> Result<AgentSession, OpenError> {
+        let mut launch = self.launch.resolve(activation)?;
+        let injection = match self.launch.cli() {
+            Some(cli) => awaken_run_executor_acp::mcp_injection(
+                cli,
+                &activation.snapshot.resolved_spec.plugin_config,
+                true,
+            )?,
+            None => awaken_run_executor_acp::McpInjection::default(),
+        };
+        if let Some(cli) = self.launch.cli()
+            && let Some((mount, (env_key, env_val))) = acp_config_mount(
+                cli,
+                injection.config_file.clone(),
+                WORKDIR_CONFIG_HOME,
+                false,
+            )
+        {
+            let pc::MountSource::Inline { contents } = mount.source else {
+                return Err(OpenError(
+                    "ACP config projection did not produce an inline mount".to_string(),
+                ));
+            };
+            self.sandbox
+                .materialize_inline(&mount.mount_path, contents.as_bytes())
+                .map_err(|error| OpenError(format!("materialize ACP config: {error}")))?;
+            launch.env.retain(|(key, _)| *key != env_key);
+            launch.env.push((env_key, env_val));
+        }
+        let (process, channel) = self
+            .sandbox
+            .spawn_agent(SandboxChannelSource::command(&launch))
+            .await
+            .map_err(|error| OpenError(format!("bound agent launch: {error}")))?;
+        Ok(AgentSession {
+            channel,
+            process: Arc::from(process),
+            codec: self.codec,
+            workspace_cwd: None,
             mcp_session_servers: injection.session_servers,
         })
     }
