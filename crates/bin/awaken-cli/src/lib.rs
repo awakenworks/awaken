@@ -474,8 +474,9 @@ pub async fn build_management_router_with_fallback(
             });
             let workspace = SharedHost::provision_local_workspace_at(std::path::Path::new(&dir));
             (
-                Some(awaken_control::embedded_iam_for_workspace(
+                Some(awaken_control::embedded_iam_for_tenant(
                     std::path::Path::new(&dir),
+                    &local_org_id(),
                     &workspace,
                 )),
                 None,
@@ -828,7 +829,7 @@ async fn management_router_over(
         plane,
         config_service: config_service.clone(),
         global_tools: global,
-        org_id: std::env::var("AWAKEN_ORG_ID").ok(),
+        org_id: Some(local_org_id()),
         iam,
         remote_iam,
     });
@@ -921,6 +922,16 @@ async fn management_router_over(
     let flat = flat.layer(reconcile_on_catalog_write);
     let flat = awaken_server::workspace_path::with_platform_workspace(flat, platform_workspace);
     awaken_server::workspace_path::with_workspace_path_addressing(flat)
+}
+
+/// Resolve the hidden local Org from one composition-root seam. Self-managed
+/// deployments may explicitly configure it; single-machine mode never asks the
+/// user and consistently uses the default Org.
+fn local_org_id() -> String {
+    std::env::var("AWAKEN_ORG_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| awaken_control::DEFAULT_ORG_ID.to_owned())
 }
 
 // The seal-key resolution tests moved to `awaken_credential_vault::sealed`, the

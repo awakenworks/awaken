@@ -673,7 +673,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-client"
 version = "0.1.1"
-source = "git+https://github.com/awakenworks/awaken-iam?rev=9aa91e1b1c2533acc00cc151aa3fdccc89f0f97f#9aa91e1b1c2533acc00cc151aa3fdccc89f0f97f"
+source = "git+https://github.com/awakenworks/awaken-iam?rev=c3335e8#c3335e8225a9965b138d42b87cb7d7266db2cb10"
 dependencies = [
  "awaken-iam-contract",
  "awaken-iam-core",
@@ -686,7 +686,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-contract"
 version = "0.1.1"
-source = "git+https://github.com/awakenworks/awaken-iam?rev=9aa91e1b1c2533acc00cc151aa3fdccc89f0f97f#9aa91e1b1c2533acc00cc151aa3fdccc89f0f97f"
+source = "git+https://github.com/awakenworks/awaken-iam?rev=c3335e8#c3335e8225a9965b138d42b87cb7d7266db2cb10"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",
@@ -697,7 +697,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-core"
 version = "0.1.1"
-source = "git+https://github.com/awakenworks/awaken-iam?rev=9aa91e1b1c2533acc00cc151aa3fdccc89f0f97f#9aa91e1b1c2533acc00cc151aa3fdccc89f0f97f"
+source = "git+https://github.com/awakenworks/awaken-iam?rev=c3335e8#c3335e8225a9965b138d42b87cb7d7266db2cb10"
 dependencies = [
  "argon2",
  "awaken-iam-contract",
@@ -713,7 +713,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-host"
 version = "0.1.1"
-source = "git+https://github.com/awakenworks/awaken-iam?rev=9aa91e1b1c2533acc00cc151aa3fdccc89f0f97f#9aa91e1b1c2533acc00cc151aa3fdccc89f0f97f"
+source = "git+https://github.com/awakenworks/awaken-iam?rev=c3335e8#c3335e8225a9965b138d42b87cb7d7266db2cb10"
 dependencies = [
  "awaken-iam-client",
  "awaken-iam-contract",
@@ -732,7 +732,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-preset"
 version = "0.1.1"
-source = "git+https://github.com/awakenworks/awaken-iam?rev=9aa91e1b1c2533acc00cc151aa3fdccc89f0f97f#9aa91e1b1c2533acc00cc151aa3fdccc89f0f97f"
+source = "git+https://github.com/awakenworks/awaken-iam?rev=c3335e8#c3335e8225a9965b138d42b87cb7d7266db2cb10"
 dependencies = [
  "awaken-iam-contract",
  "awaken-iam-core",
@@ -741,7 +741,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-server"
 version = "0.1.1"
-source = "git+https://github.com/awakenworks/awaken-iam?rev=9aa91e1b1c2533acc00cc151aa3fdccc89f0f97f#9aa91e1b1c2533acc00cc151aa3fdccc89f0f97f"
+source = "git+https://github.com/awakenworks/awaken-iam?rev=c3335e8#c3335e8225a9965b138d42b87cb7d7266db2cb10"
 dependencies = [
  "async-trait",
  "awaken-iam-client",
@@ -3262,7 +3262,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.4",
+ "socket2 0.5.10",
  "system-configuration 0.7.0",
  "tokio",
  "tower-service",
@@ -4610,7 +4610,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls",
- "socket2 0.6.4",
+ "socket2 0.5.10",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -4648,7 +4648,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.4",
+ "socket2 0.5.10",
  "tracing",
  "windows-sys 0.60.2",
 ]

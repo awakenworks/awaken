@@ -36,6 +36,10 @@ struct SkillVersion {
     description: String,
     directory: String,
     content: String,
+    /// Complete uploaded bundle keyed by normalized relative path. Older rows
+    /// deserialize as an empty map and retain their SKILL.md through `content`.
+    #[serde(default)]
+    files: BTreeMap<String, String>,
 }
 
 impl SkillVersion {
@@ -49,6 +53,7 @@ impl SkillVersion {
             "name": self.name,
             "skill_id": skill_id,
             "version": self.version,
+            "files": self.files.keys().collect::<Vec<_>>(),
         })
     }
 }
@@ -231,6 +236,10 @@ pub fn skills_router(host: Arc<SharedHost>) -> Router {
             "/v1/skills/{id}/versions/{version}/content",
             get(version_content),
         )
+        .route(
+            "/v1/skills/{id}/versions/{version}/files/{*path}",
+            get(version_file),
+        )
         .with_state(state)
 }
 
@@ -264,22 +273,53 @@ async fn read_multipart(mut multipart: Multipart) -> (Option<String>, Vec<(Strin
     (display_title, files)
 }
 
-/// Pick the SKILL.md among the uploaded files (exact name, else any `.md`, else
-/// the first file), returning its content.
-fn pick_skill_md(files: &[(String, String)]) -> Option<&str> {
-    files
+fn normalize_bundle(files: Vec<(String, String)>) -> Result<BTreeMap<String, String>, String> {
+    const MAX_FILES: usize = 128;
+    const MAX_BYTES: usize = 4 * 1024 * 1024;
+    if files.len() > MAX_FILES {
+        return Err(format!("skill bundle exceeds {MAX_FILES} files"));
+    }
+    let mut total = 0usize;
+    let mut bundle = BTreeMap::new();
+    for (raw, content) in files {
+        let path = raw.replace('\\', "/");
+        if path.starts_with('/')
+            || path
+                .split('/')
+                .any(|part| part.is_empty() || matches!(part, "." | ".."))
+        {
+            return Err(format!("invalid skill bundle path `{raw}`"));
+        }
+        total = total.saturating_add(content.len());
+        if total > MAX_BYTES {
+            return Err(format!("skill bundle exceeds {MAX_BYTES} bytes"));
+        }
+        if bundle.insert(path.clone(), content).is_some() {
+            return Err(format!("duplicate skill bundle path `{path}`"));
+        }
+    }
+    Ok(bundle)
+}
+
+fn bundle_skill_md(bundle: &BTreeMap<String, String>) -> Option<&str> {
+    bundle
         .iter()
-        .find(|(n, _)| n.ends_with("SKILL.md"))
-        .or_else(|| files.iter().find(|(n, _)| n.ends_with(".md")))
-        .or_else(|| files.first())
-        .map(|(_, c)| c.as_str())
+        .find(|(name, _)| name.ends_with("SKILL.md"))
+        .or_else(|| bundle.iter().find(|(name, _)| name.ends_with(".md")))
+        .or_else(|| bundle.iter().next())
+        .map(|(_, content)| content.as_str())
 }
 
 /// Build a version's projected metadata from SKILL.md content (parse frontmatter
 /// for name + description). Delivery to the durable catalog is the caller's job —
 /// the SDK path delivers under the skill's name, the legacy path under its id — so
 /// a skill is stored under exactly one durable id (no double-write).
-fn build_version(state: &SkillsApi, content: &str, ordinal: usize) -> SkillVersion {
+fn build_version(
+    state: &SkillsApi,
+    content: &str,
+    ordinal: usize,
+    files: BTreeMap<String, String>,
+) -> SkillVersion {
     let spec = awaken_ext_skills::parse_skill_md("skill", content);
     let n = state.version_seq.fetch_add(1, Ordering::SeqCst);
     SkillVersion {
@@ -289,6 +329,7 @@ fn build_version(state: &SkillsApi, content: &str, ordinal: usize) -> SkillVersi
         description: spec.description.clone(),
         directory: format!("/skills/{}", awaken_skill_store::sanitize_stem(&spec.name)),
         content: content.to_string(),
+        files,
     }
 }
 
@@ -325,10 +366,14 @@ async fn create_skill(
             Err(e) => return err(StatusCode::BAD_REQUEST, e.to_string()),
         };
         let (display_title, files) = read_multipart(multipart).await;
-        let Some(content) = pick_skill_md(&files).map(str::to_string) else {
+        let bundle = match normalize_bundle(files) {
+            Ok(bundle) => bundle,
+            Err(error) => return err(StatusCode::BAD_REQUEST, error),
+        };
+        let Some(content) = bundle_skill_md(&bundle).map(str::to_string) else {
             return err(StatusCode::BAD_REQUEST, "skill upload has no SKILL.md file");
         };
-        let version = build_version(&state, &content, 1);
+        let version = build_version(&state, &content, 1, bundle);
         // Deliver under the skill's name so the runtime offers it on threads. Fail
         // closed (409) when no durable store is wired — exactly like the legacy JSON
         // path below — rather than returning 200 with only an ephemeral registry
@@ -380,7 +425,12 @@ async fn create_skill(
         .await
     {
         Some(stored_id) => {
-            let version = build_version(&state, content, 1);
+            let version = build_version(
+                &state,
+                content,
+                1,
+                BTreeMap::from([("SKILL.md".to_owned(), content.to_owned())]),
+            );
             state.registry.put(
                 &workspace,
                 &stored_id,
@@ -499,13 +549,17 @@ async fn create_version(
         return err(StatusCode::NOT_FOUND, format!("skill `{id}` not found"));
     };
     let (_title, files) = read_multipart(multipart).await;
-    let Some(content) = pick_skill_md(&files).map(str::to_string) else {
+    let bundle = match normalize_bundle(files) {
+        Ok(bundle) => bundle,
+        Err(error) => return err(StatusCode::BAD_REQUEST, error),
+    };
+    let Some(content) = bundle_skill_md(&bundle).map(str::to_string) else {
         return err(
             StatusCode::BAD_REQUEST,
             "version upload has no SKILL.md file",
         );
     };
-    let version = build_version(&state, &content, record.versions.len() + 1);
+    let version = build_version(&state, &content, record.versions.len() + 1, bundle);
     // Deliver the new version's content under the skill's name.
     let _ = state
         .host
@@ -559,7 +613,12 @@ async fn resolve_record(state: &SkillsApi, workspace: &str, id: &str) -> Option<
     let (_stem, content) = state.host.skills.by_catalog_id_in(workspace, id)?;
     Some(SkillRecord {
         display_title: None,
-        versions: vec![build_version(state, &content, 1)],
+        versions: vec![build_version(
+            state,
+            &content,
+            1,
+            BTreeMap::from([("SKILL.md".to_owned(), content.clone())]),
+        )],
     })
 }
 
@@ -620,6 +679,29 @@ async fn version_content(
     {
         Some(content) => (StatusCode::OK, content).into_response(),
         None => err(StatusCode::NOT_FOUND, "skill version not found"),
+    }
+}
+
+/// Retrieve one support file from the immutable uploaded bundle. Traversal and
+/// absolute paths are rejected by the same normalization used at ingestion.
+async fn version_file(
+    State(state): State<Arc<SkillsApi>>,
+    scope: Option<Extension<WorkspaceScope>>,
+    Path((id, version, path)): Path<(String, String, String)>,
+) -> axum::response::Response {
+    let workspace = request_workspace(&state, scope);
+    let normalized = match normalize_bundle(vec![(path, String::new())]) {
+        Ok(bundle) => bundle.into_keys().next().expect("one normalized path"),
+        Err(error) => return err(StatusCode::BAD_REQUEST, error),
+    };
+    match resolve_record(&state, &workspace, &id)
+        .await
+        .as_ref()
+        .and_then(|record| find_version(record, &version))
+        .and_then(|version| version.files.get(&normalized).cloned())
+    {
+        Some(content) => (StatusCode::OK, content).into_response(),
+        None => err(StatusCode::NOT_FOUND, "skill version file not found"),
     }
 }
 
@@ -684,6 +766,10 @@ mod tests {
                     description: "first".into(),
                     directory: "/skills/a".into(),
                     content: "# first".into(),
+                    files: BTreeMap::from([
+                        ("SKILL.md".into(), "# first".into()),
+                        ("references/guide.md".into(), "guide".into()),
+                    ]),
                 }],
             },
         );
@@ -693,6 +779,10 @@ mod tests {
         let record = reopened.get("ws_a", "skill_a").unwrap();
         assert_eq!(record.display_title.as_deref(), Some("A"));
         assert_eq!(record.versions[0].content, "# first");
+        assert_eq!(
+            record.versions[0].files.get("references/guide.md"),
+            Some(&"guide".to_string())
+        );
         assert!(reopened.get("ws_b", "skill_a").is_none());
     }
 

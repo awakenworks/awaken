@@ -143,3 +143,31 @@ fenced against that authority.
 - The awaken-iam whole-profile lifecycle described above must land before
   action/scope rules can be replaced and rolled back as one centrally managed
   unit.
+
+## Amendment — 2026-07-20: Runtime stops at Workspace
+
+The Runtime authorization hierarchy is `Org -> Workspace`; it does not expose
+or evaluate a Project scope. This supersedes the earlier paragraph that required
+Project routes to submit `ScopeRef::Project` and the Project wording in the
+consequences above. A `project_id` occurring in compatibility/config APIs is
+resource data inside its owning Workspace and those routes authorize with
+`workspace.read` / `workspace.write` at `ScopeRef::Workspace`.
+
+Single-machine composition hides Org and uses `org_default`, while its Workspace
+is generated and persisted as `platform-workspace-id` (or explicitly supplied by
+the platform). Embedded IAM registers that one `Org -> Workspace` edge and
+migrates the legacy Global bootstrap binding to the hidden Org. Awaken Flow is a
+different bounded context and retains its own `Org -> Workspace -> Project`
+authorization hierarchy.
+
+The whole-profile lifecycle is now implemented in the pinned awaken-iam
+revision: product-qualified action namespaces, immutable durable revisions,
+validation, CAS activation, hydration, and rollback are shared by embedded and
+remote deployments. The Runtime management profile owns only the qualified
+`workspace.*` and `apikey.*` vocabulary and permits those actions only at
+Workspace targets.
+
+Skill `allowed_tools` is enforced after the platform tool gate as a session-local
+monotonic intersection. It can only remove authority and can never grant or
+restore a tool denied by IAM/platform policy. Full bundle materialization remains
+content delivery and sandbox packaging work; it is not an authorization bypass.

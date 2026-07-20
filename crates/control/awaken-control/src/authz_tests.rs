@@ -31,6 +31,25 @@ fn embedded_iam_bootstrap_uses_the_platform_provisioned_workspace() {
 }
 
 #[test]
+fn embedded_iam_registers_only_org_to_workspace_scope() {
+    let dir = tempfile::tempdir().unwrap();
+    let iam = embedded_iam_for_tenant(dir.path(), "org_local", "workspace_local");
+    let token = std::fs::read_to_string(dir.path().join(ADMIN_TOKEN_FILE)).unwrap();
+    let (principal, _) = iam.authenticate(token.trim()).unwrap();
+
+    assert_eq!(
+        iam.authorize(
+            principal,
+            WORKSPACE_READ,
+            ScopeRef::Workspace {
+                workspace_id: WorkspaceId("workspace_local".into()),
+            },
+        ),
+        AuthorizationDecision::Allow
+    );
+}
+
+#[test]
 fn cloud_guard_uses_cached_login_and_explicit_bearer_override() {
     use std::net::TcpListener as StdListener;
     use std::sync::mpsc;
@@ -507,11 +526,10 @@ async fn mg5_invalid_token_is_401_invalid() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn mg6_token_admin_route_delegates_and_skips_the_equality_fence() {
-    // The bootstrap admin is Global-bound; the TokenAdmin route must NOT
-    // fence the body's foreign workspace_id (it delegates to the handler,
-    // which authorizes at the target). A Scoped route with the same body
-    // would 403; this 201s.
+async fn mg6_token_admin_rejects_an_unregistered_foreign_workspace() {
+    // TokenAdmin delegates to the target-scope PDP. Runtime's bootstrap admin
+    // is Org-bound, and only the platform-provisioned Workspace is registered
+    // below that Org, so an arbitrary body id cannot create a new tenant edge.
     let (dir, iam) = fresh_iam();
     let bootstrap = admin_token(dir.path());
     let app = guarded_app(iam);
@@ -523,8 +541,7 @@ async fn mg6_token_admin_route_delegates_and_skips_the_equality_fence() {
         Some(json!({ "workspace_id": "wrkspc_other", "role": "workspace_admin" })),
     )
     .await;
-    assert_eq!(s, StatusCode::CREATED, "{minted}");
-    assert_eq!(minted["api_token"]["workspace_id"], json!("wrkspc_other"));
+    assert_eq!(s, StatusCode::FORBIDDEN, "{minted}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -669,7 +686,7 @@ async fn mg11b_require_approval_is_403_approval() {
         .add_grant(Grant {
             id: GrantId("ceg-approval".into()),
             subject: GrantSubject::Principal(principal),
-            action_pattern: ActionPattern(WORKSPACE_READ.into()),
+            action_pattern: ActionPattern(qualify_action(WORKSPACE_READ).0),
             scope: ScopeRef::Global,
             effect: Effect::RequireApproval,
         });
@@ -743,29 +760,30 @@ fn af2_credential_id_routes_map_read_and_write_sub_actions() {
 }
 
 #[test]
-fn project_routes_resolve_a_project_scope_while_workspace_routes_do_not() {
+fn project_resources_remain_inside_the_workspace_authorization_scope() {
     assert_eq!(
         action_for(&Method::GET, "/v1/config/projects/proj_alpha"),
         Some(RouteAuthz::Scoped {
             action: WORKSPACE_READ,
-            scope: ScopeClass::Project,
+            scope: ScopeClass::Workspace,
         })
     );
     assert_eq!(
         target_scope(
-            ScopeClass::Project,
+            ScopeClass::Workspace,
             "ws_acme",
             "/v1/config/projects/proj_alpha/agents/a/mcp",
         ),
-        Some(ScopeRef::Project {
+        Some(ScopeRef::Workspace {
             workspace_id: WorkspaceId("ws_acme".into()),
-            project_id: ProjectId("proj_alpha".into()),
         })
     );
     assert_eq!(
-        target_scope(ScopeClass::Project, "ws_acme", "/v1/config/projects"),
-        None,
-        "a collection route cannot invent a project target"
+        target_scope(ScopeClass::Workspace, "ws_acme", "/v1/config/projects"),
+        Some(ScopeRef::Workspace {
+            workspace_id: WorkspaceId("ws_acme".into()),
+        }),
+        "project is resource data in Runtime, not an authorization scope"
     );
 }
 
@@ -1119,11 +1137,11 @@ async fn authorize_at_target_allow_deny_and_require_approval() {
         .add_grant(Grant {
             id: GrantId("ceg-at-approval".into()),
             subject: GrantSubject::Principal(admin_principal.clone()),
-            action_pattern: ActionPattern("custom.approve".into()),
+            action_pattern: ActionPattern(qualify_action(APIKEY_WRITE).0),
             scope: ScopeRef::Global,
             effect: Effect::RequireApproval,
         });
-    let refusal = authorize_at_target(&iam, admin_principal, "custom.approve", BOOTSTRAP_WORKSPACE)
+    let refusal = authorize_at_target(&iam, admin_principal, APIKEY_WRITE, BOOTSTRAP_WORKSPACE)
         .expect("require-approval yields a refusal");
     let (s, err) = resp_parts(refusal).await;
     assert_eq!(s, StatusCode::FORBIDDEN);
