@@ -164,7 +164,8 @@ impl MemDraftStore {
     }
 }
 
-/// Captures audit records so a test can assert every privileged call is recorded.
+/// Captures durable change records so tests can assert mutations, but not reads,
+/// enter the config-store idempotency path.
 #[derive(Default)]
 struct CapturingAudit(Mutex<Vec<AdminAuditEvent>>);
 impl AuditSink for CapturingAudit {
@@ -774,7 +775,7 @@ async fn validate_rejects_bad_arguments() {
 }
 
 #[tokio::test]
-async fn every_tool_call_emits_an_audit_record() {
+async fn only_mutating_tool_calls_emit_a_durable_audit_record() {
     let h = Harness::new();
     h.tool(CAPABILITIES_TOOL)
         .invoke(call(CAPABILITIES_TOOL, serde_json::json!({})))
@@ -787,12 +788,55 @@ async fn every_tool_call_emits_an_audit_record() {
         ))
         .await
         .unwrap();
+    h.tool(VALIDATE_TOOL)
+        .invoke(call(VALIDATE_TOOL, serde_json::json!({ "id": "x" })))
+        .await
+        .unwrap();
+    h.tool(EXPLAIN_TOOL)
+        .invoke(call(EXPLAIN_TOOL, serde_json::json!({})))
+        .await
+        .unwrap();
+
+    let events = h.audit.0.lock().unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].tool, CREATE_DRAFT_TOOL);
+    assert!(events[0].summary.contains("draft agent `x`"));
+}
+
+#[tokio::test]
+async fn repeated_provider_call_id_in_distinct_runs_does_not_collide() {
+    let h = Harness::new();
+    let tool = h.tool(CREATE_DRAFT_TOOL);
+
+    let first = awaken_runtime_contract::tool::with_tool_operation_id(
+        "tool-batch:run-1:0:call#admin_draft_agent#0".into(),
+        tool.invoke(call(
+            CREATE_DRAFT_TOOL,
+            serde_json::json!({ "id": "first", "instructions": "first draft" }),
+        )),
+    )
+    .await
+    .unwrap();
+    assert!(!first.is_error, "first run: {first:?}");
+
+    let second = awaken_runtime_contract::tool::with_tool_operation_id(
+        "tool-batch:run-2:0:call#admin_draft_agent#0".into(),
+        tool.invoke(call(
+            CREATE_DRAFT_TOOL,
+            serde_json::json!({ "id": "second", "instructions": "second draft" }),
+        )),
+    )
+    .await
+    .unwrap();
+    assert!(!second.is_error, "second run: {second:?}");
+    assert!(h.store.stored("first").is_some());
+    assert!(h.store.stored("second").is_some());
 
     let events = h.audit.0.lock().unwrap();
     assert_eq!(events.len(), 2);
-    assert_eq!(events[0].tool, CAPABILITIES_TOOL);
-    assert_eq!(events[1].tool, CREATE_DRAFT_TOOL);
-    assert!(events[1].summary.contains("draft agent `x`"));
+    assert_ne!(events[0].call_id, events[1].call_id);
+    assert!(events[0].call_id.starts_with("tool-batch:run-1:"));
+    assert!(events[1].call_id.starts_with("tool-batch:run-2:"));
 }
 
 #[tokio::test]
@@ -930,11 +974,12 @@ async fn no_tool_call_ever_publishes() {
 
 // ===================================================================================
 // Task 2: admin_explain_console THROUGH the RawTool interface (not just the pure fn),
-// asserting both the projected help payload AND the emitted audit line.
+// asserting the projected help payload while read-only calls stay out of the
+// durable config-change path.
 // ===================================================================================
 
 #[tokio::test]
-async fn explain_console_tool_returns_a_topic_and_audits_the_topic_name() {
+async fn explain_console_tool_returns_a_topic_without_durable_change_audit() {
     let h = Harness::new();
     let out = h
         .tool(EXPLAIN_TOOL)
@@ -951,16 +996,11 @@ async fn explain_console_tool_returns_a_topic_and_audits_the_topic_name() {
     for k in ["what", "why", "where", "how", "gotchas"] {
         assert!(payload[k].as_str().is_some_and(|s| !s.is_empty()));
     }
-    // The audit line names the exact topic asked for (ADR-0052 D6).
-    let events = h.audit.0.lock().unwrap();
-    assert_eq!(events.len(), 1);
-    assert_eq!(events[0].tool, EXPLAIN_TOOL);
-    assert_eq!(events[0].call_id, "c1");
-    assert_eq!(events[0].summary, "explain console `connect-model`");
+    assert!(h.audit.0.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
-async fn explain_console_tool_with_no_topic_returns_the_index_and_audits_it() {
+async fn explain_console_tool_with_no_topic_returns_the_index_without_change_audit() {
     let h = Harness::new();
     // A missing/empty arg object is a well-formed index request.
     let out = h
@@ -971,11 +1011,7 @@ async fn explain_console_tool_with_no_topic_returns_the_index_and_audits_it() {
     assert!(!out.is_error, "{}", out.content);
     let payload: serde_json::Value = serde_json::from_str(&out.content).unwrap();
     assert!(payload["topics"].as_array().is_some_and(|a| !a.is_empty()));
-    // The index request audits the `(index)` placeholder, not a topic name.
-    let events = h.audit.0.lock().unwrap();
-    assert_eq!(events.len(), 1);
-    assert_eq!(events[0].tool, EXPLAIN_TOOL);
-    assert_eq!(events[0].summary, "explain console `(index)`");
+    assert!(h.audit.0.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -994,9 +1030,7 @@ async fn explain_console_tool_falls_back_to_index_for_an_unknown_topic() {
     let payload: serde_json::Value = serde_json::from_str(&out.content).unwrap();
     assert_eq!(payload["unknown_topic"], "does-not-exist");
     assert!(payload["topics"].as_array().is_some_and(|a| !a.is_empty()));
-    // The audit line still records the raw topic string the operator asked for.
-    let events = h.audit.0.lock().unwrap();
-    assert_eq!(events[0].summary, "explain console `does-not-exist`");
+    assert!(h.audit.0.lock().unwrap().is_empty());
 }
 
 // ===================================================================================

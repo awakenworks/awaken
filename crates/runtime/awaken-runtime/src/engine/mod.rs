@@ -48,7 +48,7 @@ use awaken_runtime_contract::resolver::{self, RunResolver};
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult, validate_resume};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId;
-use awaken_runtime_contract::tool::{ToolError, ToolExecutor, ToolOutput};
+use awaken_runtime_contract::tool::{ToolError, ToolExecutor, ToolOutput, with_tool_operation_id};
 use awaken_runtime_contract::tool::{ToolRecoveryCapability, ToolRecoveryMode, ToolRecoveryPolicy};
 use awaken_runtime_contract::tool_batch::{
     ActiveToolBatch, ToolBatch, ToolBatchId, ToolBatchPhase, ToolCallPhase, ToolWaitKind,
@@ -1537,7 +1537,8 @@ async fn resume_into_messages(
                     tool_id: pending.tool_id.clone(),
                     arguments: pending.arguments.clone(),
                 };
-                let output = execute_tool(runtime, Some(env), &call, context).await;
+                let operation_id = format!("tool-resume:{}:{}", run_id.0, call.call_id);
+                let output = execute_tool(runtime, Some(env), &call, context, operation_id).await;
                 let (messages, state) =
                     fold_resume_tool_output(env, run_id, &call_id, Some(call), &output, store)
                         .await;
@@ -1760,6 +1761,7 @@ async fn execute_tool(
     env: Option<&ResolvedExecutionEnv>,
     call: &ToolCall,
     context: &RuntimeRunContext,
+    operation_id: String,
 ) -> ToolOutput {
     let span = tracing::Span::current();
     // ADR-0044 D1: the kernel calls a `ToolExecutor`; where the call runs is the
@@ -1779,7 +1781,8 @@ async fn execute_tool(
     // the single execute-tool confluence, and map it to a model-visible error just like
     // an `Err` — so unknown/invalid-args/execution/panic all fail closed identically.
     use futures_util::FutureExt;
-    let output = match std::panic::AssertUnwindSafe(executor.invoke(call))
+    let invocation = with_tool_operation_id(operation_id, executor.invoke(call));
+    let output = match std::panic::AssertUnwindSafe(invocation)
         .catch_unwind()
         .await
     {

@@ -798,7 +798,8 @@ async fn management_router_over(
     ));
     // The management tool executables (ADR-0052 D3/D4): the capability reader reads the
     // shared catalog + advertised tools; the validator runs the publish-time compile
-    // check on drafts in the tenant scope; every call is audited.
+    // check on drafts in the tenant scope; Runtime history records every call and
+    // mutating tools additionally enter the durable config-change path.
     let admin_execs = awaken_admin_assistant::admin_tools(
         Arc::new(awaken_control::CatalogCapabilityReader::new(
             // The LIVE catalog repo — models/providers an operator adds after startup

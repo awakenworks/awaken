@@ -233,15 +233,18 @@ auto-selection is missing.
   non-reproducible artifacts. Only warranted under strict real-time model churn, which
   is not our posture.
 
-### D6: Access control by `Authority::covers`; no reserved-id guard; audit every call
+### D6: Access control by `Authority::covers`; no reserved-id guard; audit every change
 
 Tenants are kept out of the reserved scope by the **existing** ingress reconciliation:
 `resolve_scope` + `Authority::covers` (`awaken-tenancy/src/lib.rs:178-202`) — a narrow
 tenant token's authority does not cover the reserved scope, so it cannot select it via
 path or domain (a narrow token cannot widen via path/domain, tested at
-`tenancy/lib.rs:253-281`). No bespoke reserved-id blocklist is needed. Every
-management tool call emits a structured audit record (target `awaken::admin_audit`),
-including the read-only draft/validate tools.
+`tenancy/lib.rs:253-281`). No bespoke reserved-id blocklist is needed. Every management
+tool invocation is already durable Runtime history (`ToolCall`/`ToolResult`). Mutating
+tools additionally emit a secret-free change record (target `awaken::admin_audit`) and
+atomically pair the business write with a Runtime-owned `run + step + call` operation
+identity. Read-only capability/help/validate calls do not enter the config-store
+idempotency path.
 
 ## Consequences
 
@@ -324,5 +327,6 @@ Costs (accepted):
   Test: a catalog change re-publishes an `Auto` assistant to the new first-offering and
   leaves a `Pinned` one unchanged.
 - **S5** — Reserved-scope access via `Authority::covers` (no bespoke guard);
-  `awaken::admin_audit` on every tool call; management `ToolExecutor` authority check
-  as defense-in-depth.
+  Runtime `ToolCall`/`ToolResult` history for every invocation,
+  `awaken::admin_audit` plus atomic config-store identity for mutations; management
+  `ToolExecutor` authority check as defense-in-depth.

@@ -208,7 +208,10 @@ pub(super) async fn run_tool_calls(
                                 return Ok(Some(RunDisposition::awaiting(ticket)));
                             }
                             Some(Err(error)) => delegation_error_output(&call.call_id, error)?,
-                            None => execute_tool(runtime, Some(env), &call, context).await,
+                            None => {
+                                let operation_id = format!("{}:{}", batch.id.0, call.call_id);
+                                execute_tool(runtime, Some(env), &call, context, operation_id).await
+                            }
                         }
                     }
                 }
@@ -774,7 +777,10 @@ pub(super) async fn recover_tool_batch(
                     return Ok(Some(RunDisposition::awaiting(ticket)));
                 }
                 Some(Err(error)) => delegation_error_output(&call.call_id, error)?,
-                None => execute_tool(runtime, Some(env), &call, context).await,
+                None => {
+                    let operation_id = format!("{}:{}", batch.id.0, call.call_id);
+                    execute_tool(runtime, Some(env), &call, context, operation_id).await
+                }
             }
         };
         if delegation_started {

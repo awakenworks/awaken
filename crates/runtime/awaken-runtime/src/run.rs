@@ -3,6 +3,7 @@
 //! Every entry consumes the same immutable `ExecutableAgentSnapshot`; embedded and
 //! durable delivery differ only in transport and lifecycle ownership.
 
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use awaken_agent_contract::agent::awaiting::ResumeTicket;
@@ -195,7 +196,7 @@ impl Runtime {
         thread: String,
         input: impl Into<RunInput>,
     ) -> (RunId, RunActivation) {
-        let run_id = RunId(next_id("run"));
+        let run_id = RunId(next_run_id());
         let activation = RunActivation {
             run_id: run_id.clone(),
             thread_id: ThreadId(thread),
@@ -249,4 +250,21 @@ fn user_message(text: impl Into<String>) -> Message {
 fn next_id(prefix: &str) -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(1);
     format!("{prefix}-{}", COUNTER.fetch_add(1, Ordering::Relaxed))
+}
+
+/// A fresh Run id must remain unique across process restarts because mutating tools
+/// derive their durable operation identity from it. Recovered/dispatched Runs supply
+/// their already-persisted explicit id and never pass through this generator.
+fn next_run_id() -> String {
+    static PROCESS_NAMESPACE: OnceLock<String> = OnceLock::new();
+    static RUN_COUNTER: AtomicU64 = AtomicU64::new(1);
+    let namespace = PROCESS_NAMESPACE.get_or_init(|| {
+        let started = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        format!("{}-{started:x}", std::process::id())
+    });
+    let sequence = RUN_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("run-{namespace}-{sequence}")
 }
