@@ -15,6 +15,7 @@ use awaken_agent_contract::agent::message::Role;
 use awaken_config_resolver::ResolvedInference;
 use awaken_protocol_managed::ManagedState;
 use awaken_provider_genai::GenaiExecutor;
+use awaken_runtime_contract::RunActivation;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
 };
@@ -28,21 +29,38 @@ pub use awaken_managed_routers::{default_models, files_router, models_router};
 // builds the adapter here and injects it behind the host's neutral RemoteAgent interface.
 use awaken_run_executor_a2a::{A2aRemoteAgent, HttpTransport};
 pub use awaken_runtime_host::{
-    ConfigService, ExecutorProvider, ExtMcpProbe, HostResume, ManagedHost, PreparedMcpRefresh,
-    ProtocolHost, SharedHost, SkillContext, SkillSpec, ThreadEvent, ThreadEventHub, VaultRefresher,
-    advertised_tools, capabilities_router, config_router, content_fingerprint, durable_ops_router,
-    memory_stores_router, parse_skill_md, skills_router,
+    ConfigService, ExtMcpProbe, HostResume, InferenceAccessResolver, InferenceExecutorMaterializer,
+    ManagedHost, ModelAccessRef, PreparedMcpRefresh, ProtocolHost, SharedHost, SkillContext,
+    SkillSpec, ThreadEvent, ThreadEventHub, VaultRefresher, advertised_tools, capabilities_router,
+    config_router, content_fingerprint, durable_ops_router, memory_stores_router, parse_skill_md,
+    skills_router,
 };
 
 use awaken_server::placement;
-/// An [`ExecutorProvider`] mapping a model ref to a labeled executor, so a
+/// An [`InferenceExecutorMaterializer`] mapping a model ref to a labeled executor, so a
 /// session bound to `fast`/`slow` resolves a distinct model — the R1/R2/R5 demo
 /// surface.
 use awaken_server::{ResolvedExecutorError, executor_from_resolved, mount, mount_with_managed};
 struct RouteProvider;
 
-impl ExecutorProvider for RouteProvider {
-    fn executor_for(&self, model_ref: &str) -> Option<Arc<dyn LlmExecutor>> {
+impl InferenceAccessResolver for RouteProvider {
+    fn resolve_access(&self, activation: &RunActivation) -> Result<ModelAccessRef, String> {
+        Ok(ModelAccessRef::host_executor(
+            activation.effective_model_ref(),
+        ))
+    }
+}
+
+impl InferenceExecutorMaterializer for RouteProvider {
+    fn materialize(
+        &self,
+        activation: &RunActivation,
+        access: &ModelAccessRef,
+    ) -> Option<Arc<dyn LlmExecutor>> {
+        let model_ref = activation.effective_model_ref();
+        if !access.is_host_executor_for(model_ref) {
+            return None;
+        }
         let labeled: Arc<dyn LlmExecutor> = match model_ref {
             "fast" => Arc::new(LabelModel("fast")),
             "slow" => Arc::new(LabelModel("slow")),
@@ -62,7 +80,7 @@ impl ExecutorProvider for RouteProvider {
 pub fn build_model_route_router() -> Router {
     let (default_model, _) = scenario_model(Arc::new(LabelModel("default")), "default");
     mount(Arc::new(
-        SharedHost::new(default_model, "default").with_executor_provider(Arc::new(RouteProvider)),
+        SharedHost::new(default_model, "default").with_inference_services(Arc::new(RouteProvider)),
     ))
 }
 
@@ -248,13 +266,20 @@ pub fn build_error_router() -> Router {
 pub async fn run_echo_worker(upstream: &str) -> Result<(), Box<dyn std::error::Error>> {
     struct EchoWorkerProvider;
 
-    impl ExecutorProvider for EchoWorkerProvider {
-        fn executor_for(&self, _model_ref: &str) -> Option<Arc<dyn LlmExecutor>> {
+    impl InferenceExecutorMaterializer for EchoWorkerProvider {
+        fn materialize(
+            &self,
+            activation: &RunActivation,
+            access: &ModelAccessRef,
+        ) -> Option<Arc<dyn LlmExecutor>> {
+            if !access.is_host_executor_for(activation.effective_model_ref()) {
+                return None;
+            }
             Some(Arc::new(EchoModel))
         }
     }
 
-    awaken_worker::run_with_executor_provider(upstream, Arc::new(EchoWorkerProvider)).await
+    awaken_worker::run_with_inference_materializer(upstream, Arc::new(EchoWorkerProvider)).await
 }
 
 pub fn build_worker_router() -> Router {

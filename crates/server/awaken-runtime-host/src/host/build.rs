@@ -44,7 +44,7 @@ impl SharedHost {
         Self {
             llm,
             model_ref: model_ref.into(),
-            model_route: crate::model_route::ThreadModelBinding::new(),
+            inference_routing: crate::inference_routing::InferenceRouting::new(),
             acp: None,
             provider: LocalProvider::new(sandbox_root),
             grader: Arc::new(KeywordGrader),
@@ -456,18 +456,32 @@ impl SharedHost {
         self
     }
 
-    /// Install the model→executor resolver (R1). Without one, every thread uses `llm`.
-    pub fn with_executor_provider(
+    /// Install runtime-only inference materialization. Remote workers use this
+    /// without a configuration resolver because admission already pinned access.
+    pub fn with_inference_materializer(
         mut self,
-        provider: Arc<dyn crate::model_route::ExecutorProvider>,
+        materializer: Arc<dyn crate::inference_routing::InferenceExecutorMaterializer>,
     ) -> Self {
-        self.model_route.set_provider(provider);
+        self.inference_routing.set_materializer(materializer);
+        self
+    }
+
+    /// Install both the admission resolver and runtime materializer for an
+    /// all-in-one composition while keeping their ports independently reusable.
+    pub fn with_inference_services<T>(mut self, services: Arc<T>) -> Self
+    where
+        T: crate::inference_routing::InferenceAccessResolver
+            + crate::inference_routing::InferenceExecutorMaterializer
+            + 'static,
+    {
+        self.inference_routing.set_access_resolver(services.clone());
+        self.inference_routing.set_materializer(services);
         self
     }
 
     /// Bind `model_ref` to `thread` (R2/R5), staged before its first turn.
     pub fn register_thread_model(&self, thread: &str, model_ref: impl Into<String>) {
-        self.model_route.register(thread, model_ref);
+        self.inference_routing.register(thread, model_ref);
     }
 
     /// Deny network egress for `thread`'s sandbox (from its environment's networking
@@ -575,10 +589,10 @@ impl SharedHost {
                     }
                     Arc::new(commit) as Arc<dyn awaken_run_ingress::ClaimedRunCommit>
                 }),
-                model_access: self.model_route.provider().map(|provider| {
+                model_access: self.inference_routing.access_resolver().map(|resolver| {
                     Arc::new(
                         move |activation: &awaken_runtime_contract::activation::RunActivation| {
-                            provider.model_access_for_activation(activation)
+                            resolver.resolve_access(activation).map(Some)
                         },
                     ) as Arc<_>
                 }),

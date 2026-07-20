@@ -88,7 +88,7 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
         stream_checkpoint: Option<
             Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>,
         >,
-        model_resolver: Option<crate::worker_context::ModelResolverFn>,
+        inference_materializer: Option<crate::worker_context::InferenceMaterializerFn>,
     ) -> Self
     where
         C: CommitCoordinator + ThreadReader + RunStore + Send + Sync + 'static,
@@ -100,8 +100,8 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
         if let Some(store) = stream_checkpoint {
             worker = worker.with_stream_checkpoint(store);
         }
-        if let Some(model_resolver) = model_resolver {
-            worker = worker.with_model_resolver(model_resolver);
+        if let Some(inference_materializer) = inference_materializer {
+            worker = worker.with_inference_materializer(inference_materializer);
         }
         Self {
             worker: Arc::new(worker),

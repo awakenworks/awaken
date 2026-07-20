@@ -2,11 +2,10 @@
 //!
 //! The host once held a single fixed `LlmExecutor`; this module lifts that to a
 //! per-thread binding so a session (and, with a per-turn override, a turn) selects
-//! its own model. [`ThreadModelBinding`] owns the two moving parts — an optional
-//! [`ExecutorProvider`] and the per-thread model refs staged at session prepare —
-//! and resolves a thread's executor, falling back to the host default when no
-//! provider is installed or a ref does not resolve (so a single-model deployment
-//! behaves exactly as before).
+//! its own model. [`InferenceRouting`] holds independent admission-resolution and
+//! runtime-materialization ports plus per-thread overrides. A composition with
+//! neither port uses its explicitly bound executor; a configured resolution or
+//! materialization failure is rejected rather than silently selecting another route.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -15,69 +14,62 @@ use awaken_run_ingress::ModelAccessRef;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::llm::LlmExecutor;
 
-/// Resolves a bound model ref to its executor (R1). `None` from `executor_for`
-/// means "use the host default" — a deployment with one fixed model registers no
-/// provider and is unaffected.
-pub trait ExecutorProvider: Send + Sync {
-    /// The executor for `model_ref`, or `None` to fall back to the host default.
-    fn executor_for(&self, model_ref: &str) -> Option<Arc<dyn LlmExecutor>>;
-
-    /// Resolve and pin the non-secret provider/route/credential binding at
-    /// dispatch admission. Providers without dynamic credentials return `None`.
-    fn model_access_for(&self, _model_ref: &str) -> Result<Option<ModelAccessRef>, String> {
-        Ok(None)
-    }
-
-    /// Pin every model-access candidate this activation may use. Providers that
-    /// only support one model inherit the exact-primary behavior.
-    fn model_access_for_activation(
+/// Turns an admission-pinned, secret-free inference access descriptor into a live
+/// executor. Selecting models and routes is deliberately outside this port; the
+/// materializer may only consume the exact activation and access it is given.
+pub trait InferenceExecutorMaterializer: Send + Sync {
+    /// Materialize exactly the pinned access for this activation. Returning
+    /// `None` rejects the run; it never falls back to a different route.
+    fn materialize(
         &self,
         activation: &RunActivation,
-    ) -> Result<Option<ModelAccessRef>, String> {
-        self.model_access_for(activation.effective_model_ref())
-    }
+        access: &ModelAccessRef,
+    ) -> Option<Arc<dyn LlmExecutor>>;
+}
 
-    /// Resolve one durable run, including its opaque model-access capability.
-    /// Existing local-credential providers inherit the compatibility default and
-    /// ignore the capability. Secretless gateway providers override this method
-    /// and build an executor that presents/renews the referenced grant without
-    /// exposing a provider key to the worker.
-    fn executor_for_run(
-        &self,
-        model_ref: &str,
-        model_access: Option<&ModelAccessRef>,
-    ) -> Option<Arc<dyn LlmExecutor>> {
-        let _ = model_access;
-        self.executor_for(model_ref)
-    }
+/// Resolves and pins the secret-free access descriptor before admission. This
+/// configuration role is independent of runtime materialization; a remote worker
+/// needs only [`InferenceExecutorMaterializer`].
+pub trait InferenceAccessResolver: Send + Sync {
+    fn resolve_access(&self, activation: &RunActivation) -> Result<ModelAccessRef, String>;
 }
 
 /// The host's per-thread model binding: which model ref each thread runs, and how
 /// a ref becomes an executor.
-pub(crate) struct ThreadModelBinding {
-    provider: Option<Arc<dyn ExecutorProvider>>,
+pub(crate) struct InferenceRouting {
+    access_resolver: Option<Arc<dyn InferenceAccessResolver>>,
+    materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,
     /// Per-thread bound model ref, staged at session prepare (mirrors `thread_mcp`).
     /// Absent → the host default model ref.
     thread_model: Mutex<HashMap<String, String>>,
 }
 
-impl ThreadModelBinding {
+impl InferenceRouting {
     pub(crate) fn new() -> Self {
         Self {
-            provider: None,
+            access_resolver: None,
+            materializer: None,
             thread_model: Mutex::new(HashMap::new()),
         }
     }
 
-    /// Install the resolver (R1). Without one, every thread uses the host default.
-    pub(crate) fn set_provider(&mut self, provider: Arc<dyn ExecutorProvider>) {
-        self.provider = Some(provider);
+    pub(crate) fn set_access_resolver(&mut self, resolver: Arc<dyn InferenceAccessResolver>) {
+        self.access_resolver = Some(resolver);
     }
 
-    /// The installed model→executor provider, if any — for wiring the neutral
-    /// resolver closure a durable worker's context carries.
-    pub(crate) fn provider(&self) -> Option<Arc<dyn ExecutorProvider>> {
-        self.provider.clone()
+    pub(crate) fn set_materializer(
+        &mut self,
+        materializer: Arc<dyn InferenceExecutorMaterializer>,
+    ) {
+        self.materializer = Some(materializer);
+    }
+
+    pub(crate) fn access_resolver(&self) -> Option<Arc<dyn InferenceAccessResolver>> {
+        self.access_resolver.clone()
+    }
+
+    pub(crate) fn materializer(&self) -> Option<Arc<dyn InferenceExecutorMaterializer>> {
+        self.materializer.clone()
     }
 
     /// Bind `model_ref` to `thread` (R2/R5), staged before its first turn.
@@ -110,12 +102,12 @@ impl ThreadModelBinding {
             .cloned()
     }
 
-    pub(crate) fn model_access_for_activation(
+    pub(crate) fn pin_access(
         &self,
         activation: &RunActivation,
     ) -> Result<Option<ModelAccessRef>, String> {
-        match &self.provider {
-            Some(provider) => provider.model_access_for_activation(activation),
+        match &self.access_resolver {
+            Some(resolver) => resolver.resolve_access(activation).map(Some),
             None => Ok(None),
         }
     }
@@ -124,11 +116,14 @@ impl ThreadModelBinding {
         &self,
         activation: &RunActivation,
     ) -> Result<Option<Arc<dyn LlmExecutor>>, String> {
-        let Some(provider) = &self.provider else {
+        let Some(resolver) = &self.access_resolver else {
             return Ok(None);
         };
-        let access = provider.model_access_for_activation(activation)?;
-        Ok(provider.executor_for_run(activation.effective_model_ref(), access.as_ref()))
+        let Some(materializer) = &self.materializer else {
+            return Ok(None);
+        };
+        let access = resolver.resolve_access(activation)?;
+        Ok(materializer.materialize(activation, &access))
     }
 }
 
@@ -186,9 +181,25 @@ mod tests {
     }
 
     struct MapProvider(HashMap<String, Arc<dyn LlmExecutor>>);
-    impl ExecutorProvider for MapProvider {
-        fn executor_for(&self, model_ref: &str) -> Option<Arc<dyn LlmExecutor>> {
-            self.0.get(model_ref).cloned()
+    impl InferenceAccessResolver for MapProvider {
+        fn resolve_access(&self, activation: &RunActivation) -> Result<ModelAccessRef, String> {
+            Ok(ModelAccessRef::host_executor(
+                activation.effective_model_ref(),
+            ))
+        }
+    }
+
+    impl InferenceExecutorMaterializer for MapProvider {
+        fn materialize(
+            &self,
+            activation: &RunActivation,
+            access: &ModelAccessRef,
+        ) -> Option<Arc<dyn LlmExecutor>> {
+            let model_ref = activation.effective_model_ref();
+            access
+                .is_host_executor_for(model_ref)
+                .then(|| self.0.get(model_ref).cloned())
+                .flatten()
         }
     }
 
@@ -197,8 +208,10 @@ mod tests {
         let fast: Arc<dyn LlmExecutor> = Arc::new(LabeledModel("fast"));
         let mut map: HashMap<String, Arc<dyn LlmExecutor>> = HashMap::new();
         map.insert("fast-model".into(), fast.clone());
-        let mut binding = ThreadModelBinding::new();
-        binding.set_provider(Arc::new(MapProvider(map)));
+        let mut binding = InferenceRouting::new();
+        let provider = Arc::new(MapProvider(map));
+        binding.set_access_resolver(provider.clone());
+        binding.set_materializer(provider);
 
         // A resolvable ref → the provider's executor (resolved per run, from the ref).
         assert!(Arc::ptr_eq(
@@ -223,7 +236,7 @@ mod tests {
         // a turn cannot keep running a stale prior model ref. `model_ref` reflects the
         // latest registration (the executor itself is resolved separately via
         // `executor_for` at run time).
-        let mut binding = ThreadModelBinding::new();
+        let mut binding = InferenceRouting::new();
         let mut map: HashMap<String, Arc<dyn LlmExecutor>> = HashMap::new();
         map.insert(
             "model-a".into(),
@@ -233,7 +246,9 @@ mod tests {
             "model-b".into(),
             Arc::new(LabeledModel("b")) as Arc<dyn LlmExecutor>,
         );
-        binding.set_provider(Arc::new(MapProvider(map)));
+        let provider = Arc::new(MapProvider(map));
+        binding.set_access_resolver(provider.clone());
+        binding.set_materializer(provider);
 
         binding.register("t", "model-a");
         assert_eq!(binding.model_ref("t", "default-model"), "model-a");
@@ -245,7 +260,7 @@ mod tests {
 
     #[test]
     fn no_provider_means_executor_for_is_always_none() {
-        let binding = ThreadModelBinding::new();
+        let binding = InferenceRouting::new();
         assert!(
             binding
                 .executor_for_activation(&activation("whatever"))
@@ -255,57 +270,57 @@ mod tests {
     }
 
     #[test]
-    fn durable_run_resolution_forwards_the_opaque_gateway_grant() {
-        struct GatewayProvider {
+    fn durable_run_materialization_forwards_the_opaque_access_reference() {
+        struct ReferenceMaterializer {
             seen: Arc<Mutex<Option<ModelAccessRef>>>,
             executor: Arc<dyn LlmExecutor>,
             grant: ModelAccessRef,
         }
 
-        impl ExecutorProvider for GatewayProvider {
-            fn executor_for(&self, _model_ref: &str) -> Option<Arc<dyn LlmExecutor>> {
-                None
-            }
-
-            fn executor_for_run(
+        impl InferenceExecutorMaterializer for ReferenceMaterializer {
+            fn materialize(
                 &self,
-                model_ref: &str,
-                model_access: Option<&ModelAccessRef>,
+                activation: &RunActivation,
+                model_access: &ModelAccessRef,
             ) -> Option<Arc<dyn LlmExecutor>> {
-                assert_eq!(model_ref, "gateway-model");
-                *self.seen.lock().expect("grant capture mutex") = model_access.cloned();
+                assert_eq!(activation.effective_model_ref(), "gateway-model");
+                *self.seen.lock().expect("grant capture mutex") = Some(model_access.clone());
                 Some(self.executor.clone())
             }
+        }
 
-            fn model_access_for_activation(
+        impl InferenceAccessResolver for ReferenceMaterializer {
+            fn resolve_access(
                 &self,
                 _activation: &RunActivation,
-            ) -> Result<Option<ModelAccessRef>, String> {
-                Ok(Some(self.grant.clone()))
+            ) -> Result<ModelAccessRef, String> {
+                Ok(self.grant.clone())
             }
         }
 
         let seen = Arc::new(Mutex::new(None));
         let executor: Arc<dyn LlmExecutor> = Arc::new(LabeledModel("gateway"));
-        let grant = ModelAccessRef::new("cloud-gateway", "grant-42");
-        let mut binding = ThreadModelBinding::new();
-        binding.set_provider(Arc::new(GatewayProvider {
+        let grant = ModelAccessRef::new("credential-reference/v1", "grant-42");
+        let mut binding = InferenceRouting::new();
+        let materializer = Arc::new(ReferenceMaterializer {
             seen: seen.clone(),
             executor: executor.clone(),
             grant: grant.clone(),
-        }));
+        });
+        binding.set_access_resolver(materializer.clone());
+        binding.set_materializer(materializer);
 
         let resolved = binding
             .executor_for_activation(&activation("gateway-model"))
             .unwrap()
-            .expect("gateway provider resolves the run");
+            .expect("reference materializer resolves the run");
         assert!(Arc::ptr_eq(&resolved, &executor));
         assert_eq!(*seen.lock().expect("grant capture mutex"), Some(grant));
     }
 
     #[test]
     fn override_for_returns_the_staged_override_else_none() {
-        let binding = ThreadModelBinding::new();
+        let binding = InferenceRouting::new();
         assert!(binding.override_for("t").is_none());
         binding.register("t", "fast-model");
         assert_eq!(binding.override_for("t").as_deref(), Some("fast-model"));

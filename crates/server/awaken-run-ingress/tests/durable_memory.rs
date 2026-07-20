@@ -109,7 +109,7 @@ async fn a_worker_routes_inference_through_the_resolved_model_executor() {
 
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let resolver: awaken_run_ingress::ModelResolverFn =
+    let resolver: awaken_run_ingress::InferenceMaterializerFn =
         Arc::new(|_model_ref, _access| Some(Arc::new(Labeled) as Arc<dyn LlmExecutor>));
     let ingress = DurableRunIngress::with_owner_and_resolver(
         text_runtime(), // its bound model would reply "done"
@@ -155,10 +155,11 @@ async fn a_secretless_worker_passes_the_durable_model_access_grant_to_its_resolv
 
     let seen = Arc::new(Mutex::new(None));
     let capture = seen.clone();
-    let resolver: awaken_run_ingress::ModelResolverFn = Arc::new(move |_model_ref, access| {
-        *capture.lock().expect("grant capture mutex") = access.cloned();
-        Some(Arc::new(Gateway) as Arc<dyn LlmExecutor>)
-    });
+    let resolver: awaken_run_ingress::InferenceMaterializerFn =
+        Arc::new(move |_model_ref, access| {
+            *capture.lock().expect("grant capture mutex") = access.cloned();
+            Some(Arc::new(Gateway) as Arc<dyn LlmExecutor>)
+        });
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = DurableRunIngress::with_owner_and_resolver(
@@ -169,7 +170,7 @@ async fn a_secretless_worker_passes_the_durable_model_access_grant_to_its_resolv
         None,
         Some(resolver),
     );
-    let access = ModelAccessRef::new("cloud-gateway", "grant-17");
+    let access = ModelAccessRef::new("credential-reference/v1", "grant-17");
     let request = RunDispatch::new(activation("run-gateway")).with_model_access(access.clone());
     let (_, state) = ingress
         .worker()
@@ -194,7 +195,7 @@ async fn a_secretless_worker_passes_the_durable_model_access_grant_to_its_resolv
 #[tokio::test]
 async fn a_per_run_model_override_routes_the_worker_to_the_overridden_model() {
     // R5, end to end on the worker path: a run carrying `model_ref_override` resolves
-    // through `effective_model_ref → resolve_model` to a DIFFERENT executor than its
+    // through `effective_model_ref → materialize_inference` to a DIFFERENT executor than its
     // snapshot binding names — proving the per-turn switch reaches the provider seam,
     // not just the binding. The resolver is keyed by ref: binding "m" → "BOUND",
     // override "alt" → "ALT"; the committed reply must be "ALT".
@@ -217,11 +218,13 @@ async fn a_per_run_model_override_routes_the_worker_to_the_overridden_model() {
 
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let resolver: awaken_run_ingress::ModelResolverFn =
-        Arc::new(|model_ref, _access| match model_ref {
-            "alt" => Some(Arc::new(Fixed("ALT")) as Arc<dyn LlmExecutor>),
-            _ => Some(Arc::new(Fixed("BOUND")) as Arc<dyn LlmExecutor>),
-        });
+    let resolver: awaken_run_ingress::InferenceMaterializerFn =
+        Arc::new(
+            |activation, _access| match activation.effective_model_ref() {
+                "alt" => Some(Arc::new(Fixed("ALT")) as Arc<dyn LlmExecutor>),
+                _ => Some(Arc::new(Fixed("BOUND")) as Arc<dyn LlmExecutor>),
+            },
+        );
     let ingress = DurableRunIngress::with_owner_and_resolver(
         text_runtime(),
         store.clone(),

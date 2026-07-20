@@ -9,7 +9,7 @@
 //!
 //! This crate is the DATA PLANE: the session surface + protocol adapters
 //! ([`mount`] / [`mount_with_managed`]), the resolved-inference executor seam
-//! ([`executor_from_resolved`]), the config-plane executor provider, the model
+//! ([`executor_from_resolved`]), inference access resolution/materialization, the model
 //! resolver, the no-model fallback, workspace path addressing, and the Worker
 //! role helper (the hand is now the separate `awaken-sandbox` execution-plane
 //! binary). Its sibling **authoring / authz plane** lives in
@@ -19,8 +19,8 @@
 //! `awaken-runtime-host`.
 
 pub mod admin;
-pub mod config_executor;
 pub mod dynamic_placement;
+pub mod inference_materializer;
 pub mod model_resolver;
 pub mod no_model;
 pub mod placement;
@@ -43,16 +43,17 @@ use axum::Router;
 // re-exports a composition root (and the integration tests) drive directly.
 pub use awaken_managed_routers::{default_models, files_router, models_router};
 pub use awaken_runtime_host::{
-    ConfigService, ExecutorProvider, ExtMcpProbe, HostResume, ManagedHost, PreparedMcpRefresh,
-    ProtocolHost, SharedHost, SkillContext, SkillSpec, ThreadEvent, ThreadEventHub, VaultRefresher,
-    advertised_tools, capabilities_router, config_router, content_fingerprint, durable_ops_router,
-    memory_stores_router, parse_skill_md, skills_router,
+    ConfigService, ExtMcpProbe, HostResume, InferenceAccessResolver, InferenceExecutorMaterializer,
+    ManagedHost, PreparedMcpRefresh, ProtocolHost, SharedHost, SkillContext, SkillSpec,
+    ThreadEvent, ThreadEventHub, VaultRefresher, advertised_tools, capabilities_router,
+    config_router, content_fingerprint, durable_ops_router, memory_stores_router, parse_skill_md,
+    skills_router,
 };
 pub use worker_registry::{
     init_postgres as init_postgres_worker_registry, inject as init_worker_registry,
 };
 
-/// An [`ExecutorProvider`] mapping a model ref to a labeled executor, so a
+/// An [`InferenceExecutorMaterializer`] mapping a model ref to a labeled executor, so a
 /// session bound to `fast`/`slow` resolves a distinct model — the R1/R2/R5 demo
 /// surface.
 pub fn mount(host: Arc<SharedHost>) -> Router {
@@ -124,7 +125,7 @@ mod role_tests {
 
 // The database-less **worker** role moved to the production `awaken-worker` crate
 // (Stage C): it resolves EACH drained run's model from the DB-configured catalog +
-// vault via `ConfigExecutorProvider`, with `NoModelConfiguredExecutor` only as the
+// vault via `ConfiguredInferenceMaterializer`, with `NoModelConfiguredExecutor` only as the
 // fallback. The `awaken` binary's Worker role delegates to `awaken_worker::run`. The
 // test-only echo-draining worker (for the worker-pool e2e) lives in
 // `awaken-scenario-host::run_echo_worker`.

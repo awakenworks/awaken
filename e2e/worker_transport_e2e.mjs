@@ -133,7 +133,7 @@ async function main() {
     granted.activation.thread_id = `${claimed.request.activation.thread_id}-grant`;
     granted.session_thread_id = granted.activation.thread_id;
     granted.execution_scope = 'scope-ts-17';
-    granted.model_access = { scheme: 'cloud-gateway', reference: 'grant-ts-17' };
+    granted.model_access = { scheme: 'credential-reference/v1', reference: 'grant-ts-17' };
     const enqueuedGrant = await postJson('/v1/worker/dispatch/enqueue', { request: granted });
     assert.equal(enqueuedGrant.status, 200, `grant-bearing dispatch enqueued: ${enqueuedGrant.text}`);
 
@@ -152,7 +152,7 @@ async function main() {
     const grant = grantClaim.json?.claimed;
     assert.deepEqual(
       grant?.request?.model_access,
-      { scheme: 'cloud-gateway', reference: 'grant-ts-17' },
+      { scheme: 'credential-reference/v1', reference: 'grant-ts-17' },
       'model_access survives enqueue → durable store → authenticated claim unchanged',
     );
     assert.equal(

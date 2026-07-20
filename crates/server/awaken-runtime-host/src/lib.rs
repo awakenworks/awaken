@@ -30,6 +30,7 @@ mod durable_ops;
 mod hand_placement;
 mod host;
 mod hub;
+mod inference_routing;
 mod judge;
 mod live_inbox;
 mod mcp;
@@ -37,7 +38,6 @@ mod mcp_relay;
 mod memory;
 mod memory_store_api;
 mod memory_stores;
-mod model_route;
 mod provisioning;
 mod redact;
 mod resource_ownership;
@@ -148,8 +148,8 @@ pub use awaken_session_store::{PostgresManagedSessionRepository, SqliteManagedSe
 // re-exported so composition roots keep using `awaken_runtime_host::{Sqlite,Postgres}WorkQueue`.
 pub use awaken_work_store::{PostgresWorkQueue, SqliteWorkQueue};
 // The model-route seam (R1/R2/R5): a composition root supplies its own
-// `ExecutorProvider` to map a session's model ref to a labeled executor.
-pub use crate::model_route::ExecutorProvider;
+// `InferenceExecutorMaterializer` to map a session's model ref to a labeled executor.
+pub use crate::inference_routing::{InferenceAccessResolver, InferenceExecutorMaterializer};
 // The managed-vault OAuth seams (ADR-0043): the transport-level refresher, its
 // prepared configuration, and the live MCP credential probe.
 pub use crate::mcp::{ExtMcpProbe, PreparedMcpRefresh, VaultRefresher};

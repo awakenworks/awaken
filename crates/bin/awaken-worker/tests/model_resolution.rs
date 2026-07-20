@@ -1,12 +1,12 @@
 //! The production worker resolves a REAL (DB-configured) model per run — no mock.
 //!
 //! This proves the seam the worker's `run()` wires: a
-//! [`ConfigExecutorProvider`](awaken_server::config_executor::ConfigExecutorProvider)
+//! [`ConfiguredInferenceMaterializer`](awaken_server::inference_materializer::ConfiguredInferenceMaterializer)
 //! built over the shared catalog + credential vault turns a run's `model_ref` into a
 //! real (genai) executor when the model is published, and returns `None` (so the host
 //! falls back to `NoModelConfiguredExecutor`) otherwise. It is the same provider the
-//! worker installs via `SharedHost::with_executor_provider`, exercised directly
-//! through the sync `ExecutorProvider::executor_for` port the run loop calls per run.
+//! worker installs via `SharedHost::with_inference_materializer`, exercised directly
+//! through the sync `InferenceExecutorMaterializer::executor_for` port the run loop calls per run.
 //!
 //! The secret is a fake — resolution and executor construction never touch the
 //! network, so every branch is reachable offline.
@@ -14,6 +14,8 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::RedactedString;
+use awaken_agent_contract::agent::run::Id as RunId;
+use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_credential_vault::repo::{CredentialRepo, InMemoryCredentialRepo, enter_credential};
 use awaken_credential_vault::{
     CredentialCreateParams, CredentialKind, CredentialStatus, InMemorySecretStore,
@@ -22,14 +24,18 @@ use awaken_model_catalog::repo::{CatalogRepo, InMemoryCatalogRepo};
 use awaken_model_catalog::{
     ApiDialect, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
 };
-use awaken_server::ExecutorProvider;
-use awaken_server::config_executor::ConfigExecutorProvider;
+use awaken_runtime_contract::{ExecutableAgentSnapshot, ModelBinding, RunActivation};
+use awaken_server::inference_materializer::ConfiguredInferenceMaterializer;
+use awaken_server::{InferenceAccessResolver, InferenceExecutorMaterializer};
 
 /// Author a catalog with one anthropic offering for `model`, plus (optionally) a
-/// workspace credential `(provider, active)`, then build the ConfigExecutorProvider
+/// workspace credential `(provider, active)`, then build the ConfiguredInferenceMaterializer
 /// exactly as the worker's `run()` does — over the shared stores, keyed by a default
 /// workspace.
-async fn provider(model: &str, credential: Option<(&str, bool)>) -> ConfigExecutorProvider {
+async fn provider(
+    model: &str,
+    credential: Option<(&str, bool)>,
+) -> ConfiguredInferenceMaterializer {
     let catalog = Arc::new(InMemoryCatalogRepo::new());
     catalog
         .put_provider(Provider {
@@ -86,7 +92,18 @@ async fn provider(model: &str, credential: Option<(&str, bool)>) -> ConfigExecut
             creds.put(row).await.unwrap();
         }
     }
-    ConfigExecutorProvider::new(catalog, creds, secrets, "ws")
+    ConfiguredInferenceMaterializer::new(catalog, creds, secrets, "ws")
+}
+
+fn activation(model_ref: &str) -> RunActivation {
+    RunActivation::new(
+        RunId("run".into()),
+        ThreadId("thread".into()),
+        ExecutableAgentSnapshot::builder("snapshot")
+            .model(ModelBinding::new("provider", model_ref, "genai"))
+            .build(),
+        Vec::new(),
+    )
 }
 
 /// A drained run whose `model_ref` names a published model with an active, compatible
@@ -96,10 +113,9 @@ async fn provider(model: &str, credential: Option<(&str, bool)>) -> ConfigExecut
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn worker_resolves_a_configured_model_to_a_real_executor() {
     let p = provider("claude-x", Some(("anthropic", true))).await;
-    assert!(
-        p.executor_for("claude-x").is_some(),
-        "a published model with an active, compatible credential resolves to a real executor"
-    );
+    let activation = activation("claude-x");
+    let access = p.resolve_access(&activation).expect("access is pinned");
+    assert!(p.materialize(&activation, &access).is_some());
 }
 
 /// An unpublished `model_ref` returns `None`, so the host falls back to
@@ -107,10 +123,7 @@ async fn worker_resolves_a_configured_model_to_a_real_executor() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn worker_falls_back_when_the_model_is_not_published() {
     let p = provider("claude-x", Some(("anthropic", true))).await;
-    assert!(
-        p.executor_for("no-such-model").is_none(),
-        "no matching offering → None (the host default runs it)"
-    );
+    assert!(p.resolve_access(&activation("no-such-model")).is_err());
 }
 
 /// A published model with no compatible workspace credential also falls back — the
@@ -118,8 +131,5 @@ async fn worker_falls_back_when_the_model_is_not_published() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn worker_falls_back_without_a_compatible_credential() {
     let p = provider("claude-x", None).await;
-    assert!(
-        p.executor_for("claude-x").is_none(),
-        "an offering with no workspace credential → None (fallback)"
-    );
+    assert!(p.resolve_access(&activation("claude-x")).is_err());
 }

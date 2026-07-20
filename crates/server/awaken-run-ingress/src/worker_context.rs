@@ -11,20 +11,19 @@ use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_run_ingress_contract::ModelAccessRef;
+use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::live_inbox::LiveInbox;
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::pause::PauseSignal;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use tokio_util::sync::CancellationToken;
 
-/// Resolves a run's effective model ref to its executor (R1), so a database-less
-/// worker builds the run's configured model with no config service and no
-/// per-session binding — the host injects a closure wrapping its `ExecutorProvider`.
-/// `None` = no provider or an unresolved ref, so the run falls back to the runtime's
-/// bound (host default) executor. This is the *provider* seam: the worker names a
-/// model and gets back an executor, never learning how the model is reached.
-pub type ModelResolverFn =
-    Arc<dyn Fn(&str, Option<&ModelAccessRef>) -> Option<Arc<dyn LlmExecutor>> + Send + Sync>;
+/// Materializes the activation's admission-pinned inference access. A worker
+/// receives the complete activation and opaque access value; it neither selects a
+/// model nor distinguishes deployment topology.
+pub type InferenceMaterializerFn = Arc<
+    dyn Fn(&RunActivation, Option<&ModelAccessRef>) -> Option<Arc<dyn LlmExecutor>> + Send + Sync,
+>;
 
 // The serializable durable-run instruction moved to the dispatch contract
 // (ADR-0039 2.1); re-exported so `awaken_run_ingress_contract::RunDispatch` is stable.
@@ -42,11 +41,9 @@ pub(crate) struct WorkerContext {
     /// placement, capture, observability, and retry accounting stay identical to
     /// a directly admitted Run.
     context: RuntimeRunContext,
-    /// Resolves a run's effective model ref to its executor (R1), so a database-less
-    /// worker builds the run's configured model per attempt. Absent means the run
-    /// falls back to the runtime's bound (host default) executor — the pre-provider
-    /// single-model behaviour.
-    model_resolver: Option<ModelResolverFn>,
+    /// Runtime-only materialization. Absent preserves an explicitly composed host
+    /// executor; once installed, rejecting pinned access fails the run closed.
+    inference_materializer: Option<InferenceMaterializerFn>,
 }
 
 impl WorkerContext {
@@ -56,7 +53,7 @@ impl WorkerContext {
             commit,
             reader: None,
             context: RuntimeRunContext::new(),
-            model_resolver: None,
+            inference_materializer: None,
         }
     }
 
@@ -69,30 +66,27 @@ impl WorkerContext {
         self
     }
 
-    /// Install the model→executor resolver (R1): a worker-driven run resolves its
-    /// effective model ref (override, else its snapshot binding) to an executor
-    /// through this, so a database-less worker runs the configured model without a
-    /// config service. The worker names a model and gets an executor — it never
-    /// learns *how* the model is reached.
+    /// Install runtime-only inference materialization.
     #[must_use]
-    pub(crate) fn with_model_resolver(mut self, resolve: ModelResolverFn) -> Self {
-        self.model_resolver = Some(resolve);
+    pub(crate) fn with_inference_materializer(mut self, resolve: InferenceMaterializerFn) -> Self {
+        self.inference_materializer = Some(resolve);
         self
     }
 
-    /// Resolve `model_ref` to its executor via the injected provider, or `None` to
-    /// fall back to the runtime's bound default (no provider / unresolved ref).
-    pub(crate) fn resolve_model(
+    /// Materialize the pinned access, or use the explicitly bound executor when no
+    /// materializer was composed.
+    pub(crate) fn materialize_inference(
         &self,
-        model_ref: &str,
+        activation: &RunActivation,
         model_access: Option<&ModelAccessRef>,
     ) -> awaken_runtime_contract::execution::Result<Option<Arc<dyn LlmExecutor>>> {
-        let Some(resolve) = &self.model_resolver else {
+        let Some(resolve) = &self.inference_materializer else {
             return Ok(None);
         };
-        resolve(model_ref, model_access).map(Some).ok_or_else(|| {
+        resolve(activation, model_access).map(Some).ok_or_else(|| {
             awaken_runtime_contract::execution::Error::Resolution(format!(
-                "configured model resolver rejected pinned model {model_ref}"
+                "inference materializer rejected pinned model {}",
+                activation.effective_model_ref()
             ))
         })
     }
@@ -152,13 +146,16 @@ impl WorkerContext {
 mod resolve_seam_tests {
     //! Cause-effect coverage for the per-run model resolve seam a database-less
     //! worker carries. Cause: a model resolver is injected or not, and (when it is)
-    //! resolves the ref or declines. Effect: `resolve_model` returns the provider's
+    //! resolves the ref or declines. Effect: `materialize_inference` returns the provider's
     //! executor, else `None` — and `None` leaves the run on the runtime's bound
     //! (host default) executor, so a single-model deployment is unaffected.
     use std::sync::Arc;
 
+    use awaken_agent_contract::agent::run::Id as RunId;
+    use awaken_agent_contract::agent::thread::Id as ThreadId;
     use awaken_runtime::memory::MemoryCommitCoordinator;
     use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
+    use awaken_runtime_contract::{ExecutableAgentSnapshot, ModelBinding, RunActivation};
 
     use super::WorkerContext;
 
@@ -181,13 +178,26 @@ mod resolve_seam_tests {
         WorkerContext::new(Arc::new(MemoryCommitCoordinator::new()))
     }
 
+    fn activation(model_ref: &str) -> RunActivation {
+        RunActivation::new(
+            RunId("run".into()),
+            ThreadId("thread".into()),
+            ExecutableAgentSnapshot::builder("snapshot")
+                .model(ModelBinding::new("provider", model_ref, "backend"))
+                .build(),
+            Vec::new(),
+        )
+    }
+
     #[test]
     fn returns_the_injected_providers_executor() {
         let labeled: Arc<dyn LlmExecutor> = Arc::new(Labeled("resolved"));
         let l = labeled.clone();
-        let c = ctx().with_model_resolver(Arc::new(move |_ref, _access| Some(l.clone())));
+        let c = ctx().with_inference_materializer(Arc::new(move |_ref, _access| Some(l.clone())));
         assert!(Arc::ptr_eq(
-            &c.resolve_model("any-model", None).unwrap().unwrap(),
+            &c.materialize_inference(&activation("any-model"), None)
+                .unwrap()
+                .unwrap(),
             &labeled
         ));
     }
@@ -195,12 +205,20 @@ mod resolve_seam_tests {
     #[test]
     fn is_none_without_a_resolver() {
         // No provider injected → None → the run uses the runtime's bound default.
-        assert!(ctx().resolve_model("any-model", None).unwrap().is_none());
+        assert!(
+            ctx()
+                .materialize_inference(&activation("any-model"), None)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
     fn is_none_when_the_resolver_declines_the_ref() {
-        let c = ctx().with_model_resolver(Arc::new(|_ref, _access| None));
-        assert!(c.resolve_model("unknown-model", None).is_err());
+        let c = ctx().with_inference_materializer(Arc::new(|_ref, _access| None));
+        assert!(
+            c.materialize_inference(&activation("unknown-model"), None)
+                .is_err()
+        );
     }
 }

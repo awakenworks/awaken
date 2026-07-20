@@ -119,12 +119,12 @@ pub struct SharedHost {
     /// Trusted workspace recorded for each prepared thread/session.
     pub(crate) thread_workspaces: std::sync::Mutex<HashMap<String, String>>,
     /// The host DEFAULT executor: used by auxiliary sub-agents (judge, compactor,
-    /// memory) and as the fallback when no [`ExecutorProvider`] resolves a thread's
+    /// memory) and as the fallback when no [`InferenceExecutorMaterializer`] resolves a thread's
     /// model. The main run resolves its executor per thread via `resolve_executor`.
     pub(crate) llm: Arc<dyn LlmExecutor>,
     pub(crate) model_ref: String,
-    /// Per-thread model→executor routing (R1/R2). See [`crate::model_route`].
-    pub(crate) model_route: crate::model_route::ThreadModelBinding,
+    /// Per-thread model→executor routing (R1/R2). See [`crate::inference_routing`].
+    pub(crate) inference_routing: crate::inference_routing::InferenceRouting,
     /// ACP runtime backend (R3/R4): serves `acp:*` sessions on an external CLI.
     pub(crate) acp: Option<Arc<crate::acp_backend::AcpBackend>>,
     pub(crate) provider: LocalProvider,

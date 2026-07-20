@@ -8,8 +8,8 @@
 //! **Real per-run model resolution, no mocks.** A drained run arrives as a
 //! `RunActivation` carrying its own `ExecutableAgentSnapshot`, whose
 //! `resolved_spec.model_binding.model_ref` is the run's model identity. The host's
-//! run loop resolves that ref through the injected [`ExecutorProvider`]
-//! ([`ConfigExecutorProvider`](awaken_server::config_executor::ConfigExecutorProvider)),
+//! run loop resolves that ref through the injected [`InferenceExecutorMaterializer`]
+//! ([`ConfiguredInferenceMaterializer`](awaken_server::inference_materializer::ConfiguredInferenceMaterializer)),
 //! which maps `model_ref → offering(provider) → the workspace's Active credential →
 //! resolve_inference → a real genai executor` over the SAME shared control-plane
 //! stores the console authored (Option A, shared-DB — see
@@ -24,9 +24,9 @@ mod admin;
 
 use awaken_runtime_host::WorkerControlClient;
 use awaken_runtime_host::WorkerUpstream;
-use awaken_server::config_executor::ConfigExecutorProvider;
+use awaken_server::inference_materializer::ConfiguredInferenceMaterializer;
 use awaken_server::no_model::NoModelConfiguredExecutor;
-use awaken_server::{ExecutorProvider, SharedHost};
+use awaken_server::{InferenceExecutorMaterializer, SharedHost};
 use awaken_worker_contract::{
     RegistryMutation, VersionRange, WorkerCapacity, WorkerHeartbeat, WorkerIdentity, WorkerManifest,
 };
@@ -57,7 +57,7 @@ impl WorkerLifecycle {
 /// 2. Open the shared control-plane stores (catalog + credential vault + secret store)
 ///    the same way the Serve composition does — durable under `AWAKEN_MGMT_DIR`
 ///    (Option A shared-DB) or in-memory.
-/// 3. Build a [`ConfigExecutorProvider`] over those stores, so each drained run's
+/// 3. Build a [`ConfiguredInferenceMaterializer`] over those stores, so each drained run's
 ///    `model_ref` resolves to the real DB-configured provider.
 /// 4. Assemble a [`SharedHost`] whose default executor is the production
 ///    `NoModelConfiguredExecutor` fallback and whose per-run resolution is the
@@ -68,7 +68,7 @@ impl WorkerLifecycle {
 /// store routes the drain over HTTP instead of a local queue.
 pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error>> {
     let stores = awaken_control::open_shared_config_stores_from_env().await;
-    let provider = ConfigExecutorProvider::new(
+    let provider = ConfiguredInferenceMaterializer::new(
         stores.catalog,
         stores.credentials,
         stores.secrets,
@@ -84,12 +84,12 @@ pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error>> {
 
 /// Run a genuinely secretless worker with a deployment-provided executor
 /// provider. The provider receives each durable run's opaque `model_access`
-/// reference through [`ExecutorProvider::executor_for_run`]; it can return a
-/// cloud-managed gateway executor that renews/revokes grants while the worker
-/// never opens a credential vault or handles a provider key.
-pub async fn run_with_executor_provider(
+/// reference through [`InferenceExecutorMaterializer::executor_for_run`]; it can return a
+/// executor that injects or renews the referenced credential without requiring
+/// the worker to open a credential vault or persist provider keys.
+pub async fn run_with_inference_materializer(
     upstream: &str,
-    provider: Arc<dyn ExecutorProvider>,
+    provider: Arc<dyn InferenceExecutorMaterializer>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     run_configured(WorkerUpstream::new(upstream), Some(provider), &[]).await
 }
@@ -97,16 +97,16 @@ pub async fn run_with_executor_provider(
 /// Secretless worker composition with one shared authenticated transport. The
 /// supplied upstream may carry a WorkerLease-bound identity and an mTLS client;
 /// it is reused for claim/settle and both commit paths.
-pub async fn run_with_executor_provider_and_upstream(
+pub async fn run_with_inference_materializer_and_upstream(
     upstream: WorkerUpstream,
-    provider: Arc<dyn ExecutorProvider>,
+    provider: Arc<dyn InferenceExecutorMaterializer>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     run_configured(upstream, Some(provider), &[]).await
 }
 
 async fn run_configured(
     upstream: WorkerUpstream,
-    provider: Option<Arc<dyn ExecutorProvider>>,
+    provider: Option<Arc<dyn InferenceExecutorMaterializer>>,
     built_in_capabilities: &[&str],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let upstream_url = upstream.base_url().to_string();
@@ -130,7 +130,7 @@ async fn run_configured(
     let mut host = SharedHost::new(Arc::new(NoModelConfiguredExecutor), "worker")
         .with_worker_upstream(upstream);
     if let Some(provider) = provider {
-        host = host.with_executor_provider(provider);
+        host = host.with_inference_materializer(provider);
     }
 
     // Warm-load the published config catalog from the shared control plane, so a run

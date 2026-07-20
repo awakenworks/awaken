@@ -69,7 +69,7 @@ pub use transport_client::{HttpDispatchQueue, worker_dispatch_store};
 pub use wake::NatsWakeSignal;
 pub use wake::{LocalWakeSignal, PgNotifyWake, WakeSignal};
 pub use worker::{DEFAULT_LEASE_MS, DispatchWorker};
-pub use worker_context::ModelResolverFn;
+pub use worker_context::InferenceMaterializerFn;
 
 /// A durable-ingress failure: either the dispatch store rejected an operation or
 /// a runtime attempt failed. Kept as two arms so a queue-storage failure never

@@ -1,4 +1,4 @@
-//! The config-plane-backed model executor provider: resolves a session's
+//! Config-backed inference access resolution and executor materialization: resolves a session's
 //! `model_ref` to a real executor from the authored catalog + the workspace's
 //! credential, so the console configures models through the API and the runtime
 //! makes real calls — never an `AWAKEN_MODEL_SOURCE` env shortcut.
@@ -7,7 +7,7 @@
 //!   `model_ref → offering(provider) → the workspace's first Active credential that
 //!    `can_consume` that provider → resolve_inference → executor_from_resolved`.
 //!
-//! `ExecutorProvider` is sync but the stores are async; it bridges via
+//! `InferenceExecutorMaterializer` is sync but the stores are async; it bridges via
 //! `block_in_place` + the ambient runtime handle. Durable admission pins the
 //! non-secret provider/endpoint/credential ids, and execution fails closed if
 //! any of those facts changed or the credential was disabled.
@@ -25,13 +25,13 @@ use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::llm::{
     ChatRequest, ChatResponse, DeltaSink, Error as LlmError, LlmExecutor,
 };
-use awaken_runtime_host::{ExecutorProvider, ModelAccessRef};
+use awaken_runtime_host::{InferenceAccessResolver, InferenceExecutorMaterializer, ModelAccessRef};
 
 use crate::executor_from_resolved;
 
 /// Resolves `model_ref → executor` from the live config plane.
 #[derive(Clone)]
-pub struct ConfigExecutorProvider {
+pub struct ConfiguredInferenceMaterializer {
     catalog: Arc<dyn CatalogRepo>,
     credentials: Arc<dyn CredentialRepo>,
     secrets: Arc<dyn SecretStore>,
@@ -46,7 +46,7 @@ struct HostFallback {
     executor: Arc<dyn LlmExecutor>,
 }
 
-impl ConfigExecutorProvider {
+impl ConfiguredInferenceMaterializer {
     pub fn new(
         catalog: Arc<dyn CatalogRepo>,
         credentials: Arc<dyn CredentialRepo>,
@@ -96,31 +96,6 @@ impl ConfigExecutorProvider {
                 fallback.model_ref == model_ref && access.is_host_executor_for(model_ref)
             })
             .map(|fallback| fallback.executor.clone())
-    }
-
-    /// Resolve an executor from configured state, or `None` to fall back to the
-    /// host default (no offering, no compatible credential, or a resolve error).
-    async fn pin_access(&self, model_ref: &str) -> Result<ModelAccessRef, String> {
-        let catalog = self
-            .catalog
-            .snapshot()
-            .await
-            .map_err(|error| error.to_string())?;
-        if catalog
-            .offerings
-            .iter()
-            .any(|offering| offering.model_id == model_ref)
-        {
-            let sources = self
-                .credentials
-                .list(&self.workspace_id)
-                .await
-                .map_err(|error| error.to_string())?;
-            Self::pin_access_from(&catalog, &sources, model_ref)
-        } else {
-            self.fallback_access(model_ref)
-                .ok_or_else(|| format!("model offering {model_ref} is not published"))
-        }
     }
 
     fn pin_access_from(
@@ -287,7 +262,7 @@ impl ConfigExecutorProvider {
 }
 
 struct PinnedCandidateExecutor {
-    provider: ConfigExecutorProvider,
+    provider: ConfiguredInferenceMaterializer,
     access: ModelAccessRef,
 }
 
@@ -326,46 +301,27 @@ impl LlmExecutor for PinnedCandidateExecutor {
     }
 }
 
-impl ExecutorProvider for ConfigExecutorProvider {
-    fn executor_for(&self, model_ref: &str) -> Option<Arc<dyn LlmExecutor>> {
-        // Bridge the sync port to the async stores on the ambient multi-thread
-        // runtime (mirrors the management stores' block_in_place bridge).
+impl InferenceAccessResolver for ConfiguredInferenceMaterializer {
+    fn resolve_access(&self, activation: &RunActivation) -> Result<ModelAccessRef, String> {
         tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(self.resolve(model_ref, None))
+            tokio::runtime::Handle::current().block_on(self.pin_activation_access(activation))
         })
     }
+}
 
-    fn model_access_for(&self, model_ref: &str) -> Result<Option<ModelAccessRef>, String> {
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current()
-                .block_on(self.pin_access(model_ref))
-                .map(Some)
-        })
-    }
-
-    fn model_access_for_activation(
+impl InferenceExecutorMaterializer for ConfiguredInferenceMaterializer {
+    fn materialize(
         &self,
         activation: &RunActivation,
-    ) -> Result<Option<ModelAccessRef>, String> {
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current()
-                .block_on(self.pin_activation_access(activation))
-                .map(Some)
-        })
-    }
-
-    fn executor_for_run(
-        &self,
-        model_ref: &str,
-        model_access: Option<&ModelAccessRef>,
+        model_access: &ModelAccessRef,
     ) -> Option<Arc<dyn LlmExecutor>> {
-        let model_access = model_access?;
         if !model_access.candidates.is_empty() {
             return Some(Arc::new(PinnedCandidateExecutor {
                 provider: self.clone(),
                 access: model_access.clone(),
             }));
         }
+        let model_ref = activation.effective_model_ref();
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(self.materialize(model_ref, model_access))
         })
@@ -393,7 +349,10 @@ mod tests {
     /// workspace credential `(provider, active)`. The secret is a fake — resolution
     /// and executor construction never call the network, so every branch is
     /// reachable offline.
-    async fn provider(model: &str, credential: Option<(&str, bool)>) -> ConfigExecutorProvider {
+    async fn provider(
+        model: &str,
+        credential: Option<(&str, bool)>,
+    ) -> ConfiguredInferenceMaterializer {
         let catalog = Arc::new(InMemoryCatalogRepo::new());
         catalog
             .put_provider(Provider {
@@ -450,7 +409,7 @@ mod tests {
                 creds.put(row).await.unwrap();
             }
         }
-        ConfigExecutorProvider::new(catalog, creds, secrets, "ws")
+        ConfiguredInferenceMaterializer::new(catalog, creds, secrets, "ws")
     }
 
     fn activation_with_fallback(primary: &str, fallback: &str) -> RunActivation {
@@ -505,7 +464,6 @@ mod tests {
         let materialized = p.materialize("embedded", &exact).await.unwrap();
         assert!(Arc::ptr_eq(&materialized, &fallback));
         assert!(p.materialize("other", &exact).await.is_none());
-        assert!(p.executor_for_run("embedded", None).is_none());
     }
 
     #[tokio::test]
@@ -544,14 +502,11 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn pinned_credential_never_switches_to_a_new_default() {
         let p = provider("claude-x", Some(("anthropic", true))).await;
-        assert!(
-            p.executor_for_run("claude-x", None).is_none(),
-            "a durable run without admission-pinned access must fail closed"
-        );
-        let pinned = p.pin_access("claude-x").await.unwrap();
+        let activation = activation_with_fallback("claude-x", "unused");
+        let pinned = InferenceAccessResolver::resolve_access(&p, &activation).unwrap();
         assert_eq!(pinned.scheme, "credential-source/v1");
         assert_eq!(pinned.provider_ref.as_deref(), Some("anthropic@1"));
         assert_eq!(pinned.route_ref.as_deref(), Some("ep1@1"));
@@ -583,10 +538,11 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn pinned_route_does_not_follow_a_catalog_update() {
         let p = provider("claude-x", Some(("anthropic", true))).await;
-        let pinned = p.pin_access("claude-x").await.unwrap();
+        let activation = activation_with_fallback("claude-x", "unused");
+        let pinned = InferenceAccessResolver::resolve_access(&p, &activation).unwrap();
         p.catalog
             .put_endpoint(ProtocolEndpoint {
                 id: ProtocolEndpointId::new("ep1"),

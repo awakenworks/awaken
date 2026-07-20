@@ -117,11 +117,11 @@ impl SharedHost {
         // Every session's worker shares this queue; the process-level `DispatchPool`
         // is its sole claimer and routes each run back to its owning session.
         let store = crate::dispatch_backend::shared_durable_store(self.store_dir.as_deref())?;
-        // Carry the host's ExecutorProvider into the worker as a neutral model→executor
+        // Carry the host's InferenceExecutorMaterializer into the worker as a neutral model→executor
         // closure, so a worker-driven run resolves its own configured model per attempt
         // (R1). `None` when no provider is installed — the worker stays on the host
         // default.
-        let model_resolver = self.worker_model_resolver();
+        let inference_materializer = self.worker_inference_materializer();
         // The recovered dispatch a crash left mid-flight is re-executed by this
         // worker; giving it the same checkpoint store lets that re-execution resume
         // the interrupted step from its flushed partial (Phase 3 cross-process).
@@ -131,7 +131,7 @@ impl SharedHost {
             commit,
             crate::dispatch_backend::dispatch_owner(),
             Some(stream_checkpoint),
-            model_resolver,
+            inference_materializer,
         );
         if let Some(upstream) = &self.upstream {
             let mut commit = crate::commit_ingest::RemoteClaimedRunCommit::new(upstream.base_url())
@@ -150,16 +150,18 @@ impl SharedHost {
         Ok((boxed, Some(ingress)))
     }
 
-    /// Wrap this host's `ExecutorProvider` (if installed) into the neutral
+    /// Wrap this host's `InferenceExecutorMaterializer` (if installed) into the neutral
     /// `model_ref → executor` closure a worker's `WorkerContext` carries, so a
     /// database-less worker resolves the run's configured model per attempt (R1).
     /// `None` when no provider is installed — the worker stays on the runtime's bound
     /// default (a single-model deployment is unaffected).
-    pub(crate) fn worker_model_resolver(&self) -> Option<awaken_run_ingress::ModelResolverFn> {
-        self.model_route.provider().map(|provider| {
-            let resolve: awaken_run_ingress::ModelResolverFn =
-                Arc::new(move |model_ref: &str, model_access| {
-                    provider.executor_for_run(model_ref, model_access)
+    pub(crate) fn worker_inference_materializer(
+        &self,
+    ) -> Option<awaken_run_ingress::InferenceMaterializerFn> {
+        self.inference_routing.materializer().map(|materializer| {
+            let resolve: awaken_run_ingress::InferenceMaterializerFn =
+                Arc::new(move |activation, model_access| {
+                    materializer.materialize(activation, model_access?)
                 });
             resolve
         })
@@ -385,7 +387,7 @@ impl SharedHost {
         let config = installed.unwrap_or_else(|| {
             server_config(
                 "assistant",
-                &self.model_route.model_ref(thread, &self.model_ref),
+                &self.inference_routing.model_ref(thread, &self.model_ref),
                 &self.client_tools,
                 self.delegates.ids_set(),
                 &plugin_ids,
