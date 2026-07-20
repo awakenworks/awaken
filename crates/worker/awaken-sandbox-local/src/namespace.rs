@@ -367,29 +367,7 @@ impl pc::SandboxProvider for NamespaceProvider {
         &self,
         handle: &pc::SandboxHandle,
     ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
-        let outputs_path = handle
-            .extra
-            .as_ref()
-            .and_then(|v| v.get("outputs_path"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("/mnt/session/outputs")
-            .to_string();
-        let root = IsolatedRoot::new(self.base.join(&handle.sandbox_id));
-        let host_workspace = root.resolve("/workspace").map_err(err)?;
-        let host_outputs = root.resolve(&outputs_path).map_err(err)?;
-        Ok(Box::new(NamespaceSandbox {
-            id: handle.sandbox_id.clone(),
-            root,
-            outputs_path,
-            host_workspace,
-            host_outputs,
-            base_env: Vec::new(),
-            network: pc::NetworkPolicy::Unrestricted,
-            layout: Vec::new(),
-            realized: Vec::new(),
-            secret_paths: Vec::new(),
-            memory_mounts: std::sync::Mutex::new(Vec::new()),
-        }))
+        Ok(Box::new(self.adopt_sandbox(handle).await?))
     }
 }
 
@@ -449,6 +427,43 @@ impl NamespaceProvider {
             realized,
             secret_paths,
             memory_mounts: std::sync::Mutex::new(memory_mounts),
+        })
+    }
+
+    /// Re-open a namespace sandbox from its durable handle so companion
+    /// capabilities operate on the Run's existing environment.
+    pub async fn adopt_sandbox(
+        &self,
+        handle: &pc::SandboxHandle,
+    ) -> Result<NamespaceSandbox, pc::SandboxError> {
+        if handle.provider_kind != "bwrap" {
+            return Err(err(format!(
+                "namespace provider cannot adopt {:?} sandbox",
+                handle.provider_kind
+            )));
+        }
+        let outputs_path = handle
+            .extra
+            .as_ref()
+            .and_then(|v| v.get("outputs_path"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("/mnt/session/outputs")
+            .to_string();
+        let root = IsolatedRoot::new(self.base.join(&handle.sandbox_id));
+        let host_workspace = root.resolve("/workspace").map_err(err)?;
+        let host_outputs = root.resolve(&outputs_path).map_err(err)?;
+        Ok(NamespaceSandbox {
+            id: handle.sandbox_id.clone(),
+            root,
+            outputs_path,
+            host_workspace,
+            host_outputs,
+            base_env: Vec::new(),
+            network: pc::NetworkPolicy::Unrestricted,
+            layout: Vec::new(),
+            realized: Vec::new(),
+            secret_paths: Vec::new(),
+            memory_mounts: std::sync::Mutex::new(Vec::new()),
         })
     }
 }

@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::control::{Error as ControlError, LiveCommand, LiveRunControl};
-use awaken_runtime_contract::execution::{Error, Result, RunExecutor};
+use awaken_runtime_contract::execution::{Error, Result, RunAttemptExecutor};
 use awaken_runtime_contract::resume::ResumeCommand;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 
@@ -53,11 +53,24 @@ pub trait RunIngress: RunService {
 #[derive(Clone)]
 pub struct DirectRunIngress {
     runtime: Arc<Runtime>,
+    executor: Arc<dyn RunAttemptExecutor>,
 }
 
 impl DirectRunIngress {
     pub fn new(runtime: Arc<Runtime>) -> Self {
-        Self { runtime }
+        let executor: Arc<dyn RunAttemptExecutor> = runtime.clone();
+        Self { runtime, executor }
+    }
+
+    /// Run inline through a session-selected attempt executor while retaining the
+    /// native runtime as the live cancellation authority. This is the direct
+    /// counterpart of durable dispatch's replaceable attempt executor.
+    #[must_use]
+    pub fn with_attempt_executor(
+        runtime: Arc<Runtime>,
+        executor: Arc<dyn RunAttemptExecutor>,
+    ) -> Self {
+        Self { runtime, executor }
     }
 }
 
@@ -68,7 +81,7 @@ impl RunService for DirectRunIngress {
         activation: RunActivation,
         context: RuntimeRunContext,
     ) -> Result<RunState> {
-        self.runtime.execute(activation, context).await
+        self.executor.execute(activation, context).await
     }
 
     async fn resume(&self, command: ResumeCommand, context: RuntimeRunContext) -> Result<RunState> {

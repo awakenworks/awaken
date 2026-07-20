@@ -33,7 +33,7 @@ use awaken_runtime_contract::delegation::{
     ChildRunResult, DelegationExecutionError, DelegationRequest, DelegationResume, DelegationStep,
     PendingChildRunResults, ResultRecord, RunDelegations,
 };
-use awaken_runtime_contract::execution::{Error, Result, RunExecutor};
+use awaken_runtime_contract::execution::{Error, Result, RunAttemptExecutor, RunExecutor};
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatMessage, ChatRequest, ChatResponse, DeltaSink, StopReason, ThreadUsage,
     ThreadUsageKey, ToolCall,
@@ -103,6 +103,21 @@ impl RunExecutor for Runtime {
         self.deregister_run(&run_id);
         self.deregister_pause(&run_id);
         result
+    }
+}
+
+#[async_trait]
+impl RunAttemptExecutor for Runtime {
+    async fn resume(
+        &self,
+        _activation: RunActivation,
+        command: ResumeCommand,
+        context: RuntimeRunContext,
+    ) -> Result<RunState> {
+        let reader = context.reader.clone().ok_or_else(|| {
+            Error::Execution("RunAttemptExecutor::resume requires committed history".to_string())
+        })?;
+        Runtime::resume(self, command, reader.as_ref(), context).await
     }
 }
 

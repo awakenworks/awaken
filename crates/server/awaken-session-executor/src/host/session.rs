@@ -120,6 +120,7 @@ impl SharedHost {
     async fn build_ingress(
         &self,
         runtime: Arc<Runtime>,
+        attempt_executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>,
         commit: Arc<HostCommit>,
         stream_checkpoint: Arc<dyn StreamCheckpointStore>,
     ) -> Result<
@@ -130,7 +131,13 @@ impl SharedHost {
         HostError,
     > {
         if !self.deployment.durable {
-            return Ok((Arc::new(DirectRunIngress::new(runtime)), None));
+            return Ok((
+                Arc::new(DirectRunIngress::with_attempt_executor(
+                    runtime,
+                    attempt_executor,
+                )),
+                None,
+            ));
         }
         // The ONE process-shared dispatch queue (shared SQLite file, or the shared
         // Postgres pool for a fleet) plus this process's unique claim owner — both
@@ -154,6 +161,7 @@ impl SharedHost {
             Some(stream_checkpoint),
             inference_materializer,
         );
+        ingress.install_attempt_executor(attempt_executor);
         if let Some(upstream) = &self.upstream {
             let mut commit = crate::commit_ingest::RemoteClaimedRunCommit::new(upstream.base_url())
                 .with_client(upstream.client().clone());
@@ -541,12 +549,23 @@ impl SharedHost {
             state.awaiting_run = Some(run_id);
         }
         let runtime = Arc::new(runtime);
+        let acp_executor = self.acp.as_ref().map(|acp| acp.executor_for(env.clone()));
+        let attempt_executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor> =
+            Arc::new(crate::run_exec::SessionAttemptExecutor::new(
+                runtime.clone(),
+                acp_executor,
+            ));
         // The foreground delivery seam (slice C/D): a turn's execution goes through
         // `RunIngress` rather than calling `runtime.start_run` directly. Direct
         // ingress runs inline on the same `runtime`; durable ingress queues the run
         // through a dispatch store first. Both share this thread's `runtime`/`commit`.
         let (ingress, durable_ingress) = self
-            .build_ingress(runtime.clone(), commit.clone(), stream_checkpoint.clone())
+            .build_ingress(
+                runtime.clone(),
+                attempt_executor,
+                commit.clone(),
+                stream_checkpoint.clone(),
+            )
             .await?;
         let durable = durable_ingress.is_some();
         // No per-session dispatch daemon: the process-level `DispatchPool` (spawned

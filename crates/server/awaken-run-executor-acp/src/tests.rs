@@ -8,6 +8,7 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, RunState};
 use awaken_agent_contract::thread::commit::coordinator::{Coordinator, Error as CommitError};
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
+use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_provisioning_contract::{ExitStatus, ProcessHandle, SandboxError, Signal};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
@@ -116,11 +117,80 @@ struct RecordingCoordinator {
     commits: Mutex<Vec<ThreadCommit>>,
 }
 
+impl RecordingCoordinator {
+    fn resume_ticket_for(&self, run_id: &RunId) -> Option<ResumeTicket> {
+        self.commits
+            .lock()
+            .ok()?
+            .iter()
+            .rev()
+            .find(|commit| commit.run_id() == run_id)
+            .and_then(|commit| commit.resume_ticket().cloned())
+    }
+
+    fn messages(&self) -> Vec<Message> {
+        self.commits
+            .lock()
+            .map(|commits| {
+                commits
+                    .iter()
+                    .flat_map(|commit| commit.messages.iter().cloned())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+}
+
 #[async_trait]
 impl Coordinator for RecordingCoordinator {
     async fn commit(&self, commit: ThreadCommit) -> std::result::Result<CommitRecord, CommitError> {
         self.commits.lock().unwrap().push(commit);
         Ok(CommitRecord { sequence: 1 })
+    }
+}
+
+impl ThreadReader for RecordingCoordinator {
+    fn committed_messages(&self, thread_id: &ThreadId) -> Vec<Message> {
+        self.commits
+            .lock()
+            .map(|commits| {
+                commits
+                    .iter()
+                    .filter(|commit| &commit.thread_id == thread_id)
+                    .flat_map(|commit| commit.messages.iter().cloned())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn resume_ticket(&self, run_id: &RunId) -> Option<ResumeTicket> {
+        self.resume_ticket_for(run_id)
+    }
+
+    fn run_state(&self, run_id: &RunId) -> Option<RunState> {
+        self.commits
+            .lock()
+            .ok()?
+            .iter()
+            .rev()
+            .find(|commit| commit.run_id() == run_id)
+            .map(ThreadCommit::run_state)
+    }
+
+    fn committed_state(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Vec<awaken_agent_contract::agent::state::Command> {
+        self.commits
+            .lock()
+            .map(|commits| {
+                commits
+                    .iter()
+                    .filter(|commit| &commit.thread_id == thread_id)
+                    .flat_map(|commit| commit.state.iter().cloned())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 }
 
@@ -159,6 +229,22 @@ fn exec(frames: Vec<String>) -> AcpRunExecutor {
         open_error: None,
     }))
 }
+
+#[cfg(feature = "real-acp")]
+const SESSION_CARRY_AGENT: &str = "while IFS= read -r line; do \
+      case \"$line\" in \
+        *'\"id\":1'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{\"loadSession\":true}}}';; \
+        *'\"id\":2'*) \
+          case \"$line\" in \
+            *s1*) K=load-s1; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}';; \
+            *) K=new; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"s1\"}}';; \
+          esac;; \
+        *'\"id\":3'*) \
+          printf '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"turn:%s\"}}}}\\n' \"$K\"; \
+          printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'; \
+          exit 0;; \
+      esac; \
+    done";
 
 #[test]
 fn advertises_remote_abort_and_auth_wait() {
@@ -1409,21 +1495,6 @@ async fn acp_session_id_is_carried_across_the_per_turn_relaunch() {
     // in it: turn 1's session/new has none (→ `new`, returns sessionId s1); turn 2's
     // session/load carries `s1` (→ `load-s1`, empty result). The turn's agent message
     // echoes which verb fired, so the committed transcript proves the carry.
-    const SESSION_CARRY_AGENT: &str = "while IFS= read -r line; do \
-          case \"$line\" in \
-            *'\"id\":1'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{\"loadSession\":true}}}';; \
-            *'\"id\":2'*) \
-              case \"$line\" in \
-                *s1*) K=load-s1; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}';; \
-                *) K=new; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"s1\"}}';; \
-              esac;; \
-            *'\"id\":3'*) \
-              printf '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"turn:%s\"}}}}\\n' \"$K\"; \
-              printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'; \
-              exit 0;; \
-          esac; \
-        done";
-
     let mut cli = *acp_cli("claude").expect("claude in the catalog");
     cli.command = "/bin/sh";
     cli.args = &["-c", SESSION_CARRY_AGENT];
@@ -1470,6 +1541,77 @@ async fn acp_session_id_is_carried_across_the_per_turn_relaunch() {
         texts.iter().any(|t| t == "turn:load-s1"),
         "turn 2 resumed via session/load carrying the id `s1` — acp_session_id survived \
          the per-turn relaunch; got {texts:?}"
+    );
+}
+
+/// A durable ACP pause survives executor/process replacement. The replacement
+/// validates the committed ticket, restores the protocol session id from thread
+/// state, and issues `session/load` before continuing the SAME Run.
+#[cfg(feature = "real-acp")]
+#[tokio::test]
+async fn paused_run_resumes_after_executor_replacement_with_the_committed_session_id() {
+    use awaken_runtime_contract::pause::PauseSignal;
+    use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
+
+    let mut cli = *acp_cli("claude").expect("claude in the catalog");
+    cli.command = "/bin/sh";
+    cli.args = &["-c", SESSION_CARRY_AGENT];
+    let source: Arc<dyn AgentChannelSource> = Arc::new(ProjectingChannelSource::new(
+        cli,
+        Arc::new(FixedModel(ResolvedModel {
+            base_url: "u".into(),
+            model: "m".into(),
+            api_key: "k".into(), // awaken-allow: secret
+        })),
+    ));
+    let committed = Arc::new(RecordingCoordinator::default());
+    let pause = PauseSignal::new();
+    pause.request();
+
+    let first = AcpRunExecutor::new(source.clone())
+        .execute(
+            activation(),
+            RuntimeRunContext::new()
+                .with_commit(committed.clone())
+                .with_reader(committed.clone())
+                .with_pause(pause),
+        )
+        .await
+        .expect("first ACP attempt pauses durably");
+    assert_eq!(first, RunState::Awaiting);
+    let ticket = committed
+        .resume_ticket_for(&RunId("run-1".into()))
+        .expect("pause committed an active ticket");
+
+    // A new executor models worker/process replacement; no live in-memory ACP
+    // session is shared with the first attempt.
+    let resumed = AcpRunExecutor::new(source)
+        .resume(
+            activation(),
+            ResumeCommand::from_ticket(&ticket, ResumeResult::Input("continue".into()), 1),
+            RuntimeRunContext::new()
+                .with_commit(committed.clone())
+                .with_reader(committed.clone()),
+        )
+        .await
+        .expect("replacement resumes the committed ACP run");
+
+    assert_eq!(resumed, RunState::Ended(EndCause::NaturalEnd));
+    let texts: Vec<String> = committed
+        .messages()
+        .iter()
+        .map(Message::text_content)
+        .collect();
+    assert!(texts.iter().any(|text| text == "turn:new"));
+    assert!(
+        texts.iter().any(|text| text == "turn:load-s1"),
+        "replacement must restore the durable id and use session/load; got {texts:?}"
+    );
+    assert!(
+        committed
+            .resume_ticket_for(&RunId("run-1".into()))
+            .is_none(),
+        "terminal resume consumes the active ticket"
     );
 }
 
