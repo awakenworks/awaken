@@ -436,13 +436,12 @@ commit → settle) is kind-agnostic **by construction**: kind is erased to
 secret-free snapshot; the wire has only `enqueue`/`claim`/`renew_lease`/`settle`).
 Two rules keep it that way:
 
-1. **Resolve once, inject per kind.** The execution edge runs ONE counterparty
-   resolution (`resolve_inference`/`resolve_credential`) with three injectors:
+1. **Resolve once, inject per kind.** Publication runs the one catalog/credential
+   resolution and fingerprints its secret-free result in the executable snapshot.
+   The execution edge consumes that fixed access with three injectors:
    model client (Native), `model_delivery` env (ACP, key last), transport header
-   (A2A). No kind grows its own resolution path — today's three
-   (`ConfigExecutorProvider` / env-reading `EnvLaunchResolver` / nothing) converge
-   via the phase-D/E adapters; `EnvLaunchResolver` remains only the db-less
-   fallback.
+   (A2A). No kind grows its own resolution path: runtime adapters materialize the
+   same published access and may differ only in credential injection/usage.
 2. **Capability-aware claim.** A worker declares what it serves — `native` /
    `acp:<cli>` (one CLI per projecting worker) / `a2a` — and claim filters on a
    routing key that enqueue stamps from the snapshot's `backend_ref` (no new
@@ -458,7 +457,7 @@ gateway-brokered — a local-vault counterparty on a secretless worker fails
 closed. Kind-agnostic shared gap, tracked not solved here: thread resources are
 staged per-process at `prepare_session` and are not in the snapshot, so a
 db-less worker misses them for every kind (fix: carry rendered resource state in
-the snapshot, or fetch via the warm config service).
+the snapshot, or fetch through an explicit resource-delivery port).
 
 ### D10 — Lifecycle end: supersede → disable → archive → erase
 

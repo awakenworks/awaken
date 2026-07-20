@@ -1273,6 +1273,35 @@ async fn ctx_for_carries_one_self_consistent_snapshot_on_any_claiming_node() {
 }
 
 #[tokio::test]
+async fn claimed_snapshot_is_the_worker_session_authority() {
+    let published = awaken_runtime_contract::ExecutableAgentSnapshot::builder("published-agent")
+        .instructions("published instructions")
+        .fingerprint("sha256:published")
+        .plugin_config([(
+            "permission".to_string(),
+            serde_json::json!({"default": "deny", "rules": []}),
+        )])
+        .build();
+    let host = SharedHost::new(Arc::new(OkModel), "host-default");
+
+    let ctx = host
+        .ctx_for_snapshot_with_sandbox(
+            "t-published-claim",
+            Some("published-agent"),
+            Some(published.clone()),
+            None,
+        )
+        .await
+        .expect("worker session builds from claimed snapshot");
+
+    assert_eq!(ctx.config, published);
+    assert_eq!(
+        ctx.config.resolved_spec.catalog_fingerprint.0,
+        "sha256:published"
+    );
+}
+
+#[tokio::test]
 async fn replacement_host_adopts_the_dispatch_sandbox_from_a_stable_root() {
     let storage = tempfile::tempdir().expect("storage dir");
     let thread = "t-sandbox-recovery";

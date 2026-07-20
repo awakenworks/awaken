@@ -56,12 +56,11 @@ pub use crate::authz::{
 };
 pub use crate::control_stores::{ControlStoreConfig, StoreBackend};
 pub use crate::resource_owner::{ResourceOwners, resource_ownership_guard};
-// The database-less worker's shared store subset (Stage C): the catalog + credential
-// vault + secret store a drained run resolves its model from, opened the same way the
-// Serve composition opens them (Option A, shared-DB).
+// The database-less worker's materialization subset (Stage C): only the credential
+// vault + secret store needed by snapshot-pinned inference access.
 pub use crate::worker_stores::{
-    SharedConfigStores, open_shared_config_stores, open_shared_config_stores_from_env,
-    warm_config_service_from_env,
+    InferenceMaterializationStores, open_inference_materialization_stores,
+    open_inference_materialization_stores_from_env,
 };
 
 use awaken_admin_config_api::{

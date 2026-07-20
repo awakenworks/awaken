@@ -90,12 +90,13 @@ impl HostWorkerResolver {
         host: &SharedHost,
         thread_id: &awaken_agent_contract::agent::thread::Id,
         agent_id: Option<&str>,
+        published_snapshot: Option<awaken_runtime_contract::ExecutableAgentSnapshot>,
         sandbox: Option<LocalSandbox>,
     ) -> Result<Arc<awaken_run_ingress::DispatchWorker<AnyDispatchStore>>, awaken_run_ingress::Error>
     {
         let agent = agent_id.filter(|a| !a.is_empty());
         let ctx = host
-            .ctx_for_with_sandbox(&thread_id.0, agent, sandbox)
+            .ctx_for_snapshot_with_sandbox(&thread_id.0, agent, published_snapshot, sandbox)
             .await
             .map_err(|e| Self::execution_error(e.to_string()))?;
         ctx.durable_ingress
@@ -122,7 +123,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
         // against a matching fingerprint, with no session-level model registry. An
         // already-resident session is returned from the cache; a cold thread rebuilds
         // from committed truth. `None`/empty opens the built-in default agent.
-        self.resolve(&host, thread_id, agent_id, None).await
+        self.resolve(&host, thread_id, agent_id, None, None).await
     }
 
     async fn worker_for_claimed(
@@ -144,7 +145,15 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
         )
         .await?;
 
-        let worker = self.resolve(&host, thread_id, agent_id, adopted).await?;
+        let worker = self
+            .resolve(
+                &host,
+                thread_id,
+                agent_id,
+                Some(claimed.request.activation.snapshot.clone()),
+                adopted,
+            )
+            .await?;
 
         // Persist the first placement before executing the claimed run. If the
         // process dies after this write, the next owner sees the handle and adopts

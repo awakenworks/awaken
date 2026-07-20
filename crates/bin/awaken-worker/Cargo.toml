@@ -15,9 +15,9 @@ path = "src/main.rs"
 # The PRODUCTION database-less worker (Stage C): a peer of the control / data planes.
 # It drains runs over the dispatch transport and resolves EACH run's model_ref (from
 # its activation snapshot) to the real DB-configured provider via
-# `awaken_server::ConfigExecutorProvider` over the SAME shared control-plane stores
-# `awaken-cli` opens — no mocks. `NoModelConfiguredExecutor` is only the auxiliary
-# fallback for a run whose model is not yet published.
+# snapshot-pinned inference access over the SAME credential store `awaken-cli`
+# opens — no catalog re-resolution and no mocks. `NoModelConfiguredExecutor` is
+# only the auxiliary fallback for a run whose model is not yet published.
 [features]
 # Container sandbox tiers (AWAKEN_SANDBOX_TIER=docker|podman|k8s), passed through to
 # the shared host via awaken-server so a database-less worker can realize its ACP
@@ -31,12 +31,10 @@ container-k8s = ["awaken-server/container-k8s"]
 # store that routes the drain over HTTP to the cell server.
 awaken-runtime-host = { workspace = true }
 # The data plane: the production NoModelConfiguredExecutor fallback + the
-# ConfigExecutorProvider that resolves a run's model_ref to a real executor.
+# CredentialInferenceMaterializer that opens a pinned credential for an executor.
 awaken-server = { workspace = true }
-# The authoring/control plane: reuse its shared control-store opening (catalog /
-# credential vault / secret store) + seal-key resolution, and its BOOTSTRAP_WORKSPACE
-# default. Depending here (not on awaken-cli) keeps the graph acyclic — awaken-cli's
-# bin depends on this worker crate.
+# Reuse the composition's credential-vault + secret-store opening and seal-key
+# resolution. The worker does not open catalog/config/admin/session stores.
 awaken-control = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal"] }
 # The cloud-native admin surface (readyz / livez / metrics / drain) on a separate
@@ -52,9 +50,8 @@ getrandom = "0.2"
 [dev-dependencies]
 # The admin router tests drive the axum router directly (oneshot).
 tower = { version = "0.5", features = ["util"] }
-# The resolution test builds a ConfigExecutorProvider over in-memory stores and
-# asserts a configured model_ref resolves to a real executor (and falls back
-# otherwise) — proving no-mock per-run model resolution.
+# The resolution test builds a CredentialInferenceMaterializer over in-memory
+# stores and asserts pinned access materializes a real executor.
 awaken-model-catalog = { workspace = true }
 awaken-credential-vault = { workspace = true }
 awaken-agent-contract = { workspace = true }
