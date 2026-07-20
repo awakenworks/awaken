@@ -1,11 +1,75 @@
 use serde::{Deserialize, Serialize};
 
+use crate::resolution::ResolutionManifest;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ExecutableAgentSnapshotId(pub String);
+
+/// The exact mutable source revision an executable snapshot was resolved from.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct AgentConfigRevisionRef {
+    pub agent_id: AgentId,
+    pub revision: u64,
+}
+
+impl Default for AgentConfigRevisionRef {
+    fn default() -> Self {
+        Self {
+            agent_id: AgentId(String::new()),
+            revision: 0,
+        }
+    }
+}
+
+/// Externally addressable immutable publication number.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct AgentPublicationVersion(pub String);
+
+/// Content identity of the complete executable snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct AgentSnapshotFingerprint(pub String);
+
+/// Provenance carried by the next snapshot wire shape while the existing snapshot
+/// is migrated without introducing a second execution path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentSnapshotMetadata {
+    pub source: AgentConfigRevisionRef,
+    pub publication_version: AgentPublicationVersion,
+    pub resolution: ResolutionManifest,
+    pub fingerprint: AgentSnapshotFingerprint,
+}
+
+impl Default for AgentSnapshotMetadata {
+    fn default() -> Self {
+        Self {
+            source: AgentConfigRevisionRef::default(),
+            publication_version: AgentPublicationVersion(String::new()),
+            resolution: ResolutionManifest::default(),
+            fingerprint: AgentSnapshotFingerprint(String::new()),
+        }
+    }
+}
+
+impl AgentSnapshotMetadata {
+    #[must_use]
+    pub fn is_legacy_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExecutableAgentSnapshot {
     pub id: ExecutableAgentSnapshotId,
+    /// Source identity and the complete set of configuration inputs resolved once
+    /// by the configuration plane. Legacy/directly-built snapshots default this
+    /// field; published snapshots must carry a non-empty manifest.
+    #[serde(
+        default,
+        skip_serializing_if = "AgentSnapshotMetadata::is_legacy_default"
+    )]
+    pub metadata: AgentSnapshotMetadata,
     pub root_agent_id: AgentId,
     pub resolved_spec: crate::resolved::ResolvedSpec,
     pub fingerprint: crate::resolved::CatalogFingerprint,
@@ -20,4 +84,37 @@ pub enum AgentSnapshotInput {
     /// common path, which should not carry the inline payload's stack size.
     Inline(Box<ExecutableAgentSnapshot>),
     ById(ExecutableAgentSnapshotId),
+}
+
+#[cfg(test)]
+mod metadata_tests {
+    use super::*;
+    use crate::resolution::{ResolvedInputRef, ResolvedInputVersion};
+
+    #[test]
+    fn metadata_keeps_revision_version_and_content_identity_distinct() {
+        let resolution = ResolutionManifest::new([ResolvedInputRef {
+            kind: "agent_config".into(),
+            id: "agent-1".into(),
+            version: ResolvedInputVersion::Revision(7),
+        }])
+        .unwrap();
+        let metadata = AgentSnapshotMetadata {
+            source: AgentConfigRevisionRef {
+                agent_id: AgentId("agent-1".into()),
+                revision: 7,
+            },
+            publication_version: AgentPublicationVersion("v3".into()),
+            resolution,
+            fingerprint: AgentSnapshotFingerprint("sha256:abc".into()),
+        };
+        let wire = serde_json::to_value(&metadata).unwrap();
+        assert_eq!(wire["source"]["revision"], 7);
+        assert_eq!(wire["publication_version"], "v3");
+        assert_eq!(wire["fingerprint"], "sha256:abc");
+        assert_eq!(
+            wire["resolution"]["inputs"][0]["version"]["type"],
+            "revision"
+        );
+    }
 }

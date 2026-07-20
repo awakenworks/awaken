@@ -596,6 +596,7 @@ mod trust_dispatched_snapshot_tests {
         let fingerprint = CatalogFingerprint(fp.to_string());
         ExecutableAgentSnapshot {
             id: ExecutableAgentSnapshotId("assistant".to_string()),
+            metadata: Default::default(),
             root_agent_id: AgentId("assistant".to_string()),
             resolved_spec: ResolvedSpec {
                 catalog_fingerprint: fingerprint.clone(),

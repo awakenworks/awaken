@@ -135,6 +135,7 @@ pub fn snapshot() -> ExecutableAgentSnapshot {
     let fp = CatalogFingerprint(FP.to_string());
     ExecutableAgentSnapshot {
         id: ExecutableAgentSnapshotId(SNAP.to_string()),
+        metadata: Default::default(),
         root_agent_id: AgentId("agent-1".to_string()),
         resolved_spec: ResolvedSpec {
             catalog_fingerprint: fp.clone(),

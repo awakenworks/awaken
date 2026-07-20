@@ -2,6 +2,7 @@
 
 use awaken_runtime_contract::resolved::{ToolDescriptor, ToolFacet, ToolPresentation};
 use awaken_runtime_contract::runnable::RunnableConfig;
+use awaken_runtime_contract::snapshot::AgentSnapshotMetadata;
 use sha2::{Digest, Sha256};
 
 use crate::config::AgentConfig;
@@ -14,6 +15,8 @@ pub enum CompileError {
     UnknownTool { agent: String, tool: String },
     #[error("serialize config: {0}")]
     Serialize(String),
+    #[error("invalid resolution manifest: {0}")]
+    InvalidResolution(String),
     /// The config's model is still `ModelSelection::Auto` (ADR-0052 D5): compile is
     /// pure and cannot reach the provider catalog, so an `Auto` binding must be
     /// resolved to a concrete one *before* compile (publish does this). Fail-closed.
@@ -47,7 +50,7 @@ impl CompileError {
             CompileError::InvalidToolOverride { .. } => "tool_overrides",
             CompileError::InvalidToolRecovery { .. } => "recovery_policies",
             CompileError::UnsupportedCapability { axis, .. } => axis,
-            CompileError::Serialize(_) => "",
+            CompileError::Serialize(_) | CompileError::InvalidResolution(_) => "",
         }
     }
 }
@@ -80,6 +83,23 @@ pub fn compile_with_resource_prompts(
     config: &AgentConfig,
     tools: &[ToolDescriptor],
     resource_prompts: &[String],
+) -> Result<RunnableConfig, CompileError> {
+    compile_resolved(
+        config,
+        tools,
+        resource_prompts,
+        AgentSnapshotMetadata::default(),
+    )
+}
+
+/// Assemble the one immutable publication produced by configuration resolution.
+/// `metadata` records every input the configuration plane read; runtime code never
+/// calls this function and therefore cannot re-resolve or broaden those inputs.
+pub fn compile_resolved(
+    config: &AgentConfig,
+    tools: &[ToolDescriptor],
+    resource_prompts: &[String],
+    mut metadata: AgentSnapshotMetadata,
 ) -> Result<RunnableConfig, CompileError> {
     let mut descriptors = Vec::with_capacity(config.tool_ids.len());
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
@@ -196,6 +216,23 @@ pub fn compile_with_resource_prompts(
         })?
         .clone();
 
+    if !metadata.is_legacy_default() {
+        let mut inputs = std::mem::take(&mut metadata.resolution.inputs);
+        inputs.extend(
+            descriptors
+                .iter()
+                .map(|tool| awaken_runtime_contract::ResolvedInputRef {
+                    kind: "tool".into(),
+                    id: tool.id.clone(),
+                    version: awaken_runtime_contract::ResolvedInputVersion::ContentHash(
+                        tool.content_hash.clone(),
+                    ),
+                }),
+        );
+        metadata.resolution = awaken_runtime_contract::ResolutionManifest::new(inputs)
+            .map_err(|error| CompileError::InvalidResolution(error.to_string()))?;
+    }
+
     // Capability gate (ADR-0057 D2): the execution kind — derived from the now-concrete
     // `backend_ref` — must be able to honor the declared capabilities. A remote (a2a)
     // agent runs everything on the far side, so local skills/MCP would be a silent
@@ -217,6 +254,7 @@ pub fn compile_with_resource_prompts(
         }
     }
 
+    let fingerprint = fingerprint_of(config, resource_prompts, &descriptors, &metadata)?;
     Ok(RunnableConfig::builder(&config.id)
         .instructions(compose_instructions(&config.instructions, resource_prompts))
         .model(model)
@@ -228,7 +266,8 @@ pub fn compile_with_resource_prompts(
         .plugin_config(config.plugin_config.clone())
         .context_policy(config.context_policy.clone())
         .tool_presentation(presentation)
-        .fingerprint(fingerprint_of(config, resource_prompts)?)
+        .fingerprint(fingerprint)
+        .metadata(metadata)
         .build())
 }
 
@@ -280,6 +319,8 @@ pub fn compose_instructions(base: &str, resource_prompts: &[String]) -> String {
 fn fingerprint_of(
     config: &AgentConfig,
     resource_prompts: &[String],
+    tools: &[ToolDescriptor],
+    metadata: &AgentSnapshotMetadata,
 ) -> Result<String, CompileError> {
     let mut behavioral = config.clone();
     behavioral.name = None;
@@ -291,6 +332,15 @@ fn fingerprint_of(
         let extra = serde_json::to_vec(resource_prompts)
             .map_err(|err| CompileError::Serialize(err.to_string()))?;
         bytes.extend_from_slice(&extra);
+    }
+    if !metadata.is_legacy_default() {
+        bytes.extend_from_slice(
+            &serde_json::to_vec(tools).map_err(|err| CompileError::Serialize(err.to_string()))?,
+        );
+        bytes.extend_from_slice(
+            &serde_json::to_vec(metadata)
+                .map_err(|err| CompileError::Serialize(err.to_string()))?,
+        );
     }
     Ok(format!("{:x}", Sha256::digest(&bytes)))
 }

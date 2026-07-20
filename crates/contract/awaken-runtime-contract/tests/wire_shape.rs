@@ -99,6 +99,7 @@ fn resolved_spec_field_names_are_pinned() {
 fn activation() -> RunActivation {
     let snapshot = ExecutableAgentSnapshot {
         id: ExecutableAgentSnapshotId("snap-1".into()),
+        metadata: Default::default(),
         root_agent_id: AgentId("agent-1".into()),
         resolved_spec: spec(),
         fingerprint: CatalogFingerprint("fp-1".into()),

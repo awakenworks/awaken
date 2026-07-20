@@ -393,6 +393,7 @@ fn snapshot(tool_ids: &[&str]) -> ExecutableAgentSnapshot {
     let fingerprint = CatalogFingerprint(FINGERPRINT.to_string());
     ExecutableAgentSnapshot {
         id: ExecutableAgentSnapshotId(SNAPSHOT_ID.to_string()),
+        metadata: Default::default(),
         root_agent_id: AgentId("formal-agent".to_string()),
         resolved_spec: ResolvedSpec {
             model_candidates: Vec::new(),

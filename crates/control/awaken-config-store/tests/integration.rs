@@ -116,41 +116,41 @@ async fn config_generation_cas_rejects_a_stale_writer_without_lost_update() {
     let store = SqliteConfigStore::open_in_memory().expect("store");
     let mut first = agent_with("cas", "v1");
     assert_eq!(
-        store.put_config_if_generation(&first, 0).await.unwrap(),
-        ConfigWrite::Applied { generation: 1 }
+        store.put_config_if_revision(&first, 0).await.unwrap(),
+        ConfigWrite::Applied { revision: 1 }
     );
     let snapshot = store
-        .get_config_versioned("cas")
+        .get_config_revision("cas")
         .await
         .unwrap()
         .expect("created config");
-    assert_eq!(snapshot.generation, 1);
+    assert_eq!(snapshot.revision, 1);
 
     first.instructions = "v2".into();
     assert_eq!(
         store
-            .put_config_if_generation(&first, snapshot.generation)
+            .put_config_if_revision(&first, snapshot.revision)
             .await
             .unwrap(),
-        ConfigWrite::Applied { generation: 2 }
+        ConfigWrite::Applied { revision: 2 }
     );
     let mut stale = snapshot.config;
     stale.instructions = "stale-overwrite".into();
     assert_eq!(
         store
-            .put_config_if_generation(&stale, snapshot.generation)
+            .put_config_if_revision(&stale, snapshot.revision)
             .await
             .unwrap(),
         ConfigWrite::Conflict {
-            current_generation: Some(2)
+            current_revision: Some(2)
         }
     );
     let current = store
-        .get_config_versioned("cas")
+        .get_config_revision("cas")
         .await
         .unwrap()
         .expect("current config");
-    assert_eq!(current.generation, 2);
+    assert_eq!(current.revision, 2);
     assert_eq!(current.config.instructions, "v2");
 }
 
