@@ -49,11 +49,11 @@ async fn postgres_audit_and_config_commit_are_atomic_replay_safe_and_scope_fence
         AuditedConfigWrite::Applied
     );
     let generation = store
-        .get_config_versioned_scoped(&scope, &config.id)
+        .get_config_revision_scoped(&scope, &config.id)
         .await
         .unwrap()
         .unwrap()
-        .generation;
+        .revision;
     assert_eq!(
         store
             .put_config_with_audit_scoped(&scope, &config, &audit)
@@ -63,11 +63,11 @@ async fn postgres_audit_and_config_commit_are_atomic_replay_safe_and_scope_fence
     );
     assert_eq!(
         store
-            .get_config_versioned_scoped(&scope, &config.id)
+            .get_config_revision_scoped(&scope, &config.id)
             .await
             .unwrap()
             .unwrap()
-            .generation,
+            .revision,
         generation
     );
     assert_eq!(

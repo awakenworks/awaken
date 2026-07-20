@@ -31,6 +31,7 @@ fn activation(run: &str, thread: &str) -> RunActivation {
         ThreadId(thread.into()),
         ExecutableAgentSnapshot {
             id: ExecutableAgentSnapshotId("snap".into()),
+            metadata: Default::default(),
             root_agent_id: AgentId("agent".into()),
             resolved_spec: ResolvedSpec {
                 model_candidates: Vec::new(),

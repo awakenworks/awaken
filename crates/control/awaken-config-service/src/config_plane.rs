@@ -14,55 +14,9 @@ use std::sync::{Arc, Mutex};
 
 use awaken_config_resolver::ResourceStore;
 use awaken_config_store::{
-    AuditedConfigWrite, ManagementAuditEntry, ManagementAuditRecord, ManagementEffect,
-    ModelSelection,
-};
-
-/// Stamp the agent's effective compaction trigger into BOTH realizations' `plugin_config`
-/// slots so native and ACP agree on one window (decided once, at publish, from the resolved
-/// model). The trigger is [`CompactionStrategy::effective_window`] over the model
-/// (`context_window` − `max_output_tokens` headroom, clamped; the agent may override).
-///
-/// - **Native** (`plugin_config["compact"]`): the compact ext folds at `trigger_ratio ×
-///   max_tokens`, so set `max_tokens` to the effective trigger and `trigger_ratio = 1.0` — the
-///   fold point IS the trigger (headroom + ratio are already baked into it).
-/// - **ACP** (`plugin_config["acp"]["compact_window"]`): the external CLI's own auto-compact.
-///
-/// Never *creates* a section (an agent that opted into neither realization stays untouched)
-/// and never overrides an operator-pinned value.
-fn apply_compaction(
-    plugin_config: &mut std::collections::BTreeMap<String, serde_json::Value>,
-    strategy: &awaken_config_store::CompactionStrategy,
-    context_window: Option<u32>,
-    max_output_tokens: Option<u32>,
-) {
-    let Some(eff) = strategy.effective_window(context_window, max_output_tokens) else {
-        return;
-    };
-    if let Some(obj) = plugin_config
-        .get_mut("compact")
-        .and_then(|v| v.as_object_mut())
-    {
-        if obj.get("max_tokens").is_none_or(|v| v.is_null()) {
-            obj.insert("max_tokens".to_string(), serde_json::json!(eff));
-            obj.insert("trigger_ratio".to_string(), serde_json::json!(1.0));
-        }
-        if let Some(keep) = strategy.keep_recent
-            && obj.get("keep_last").is_none_or(|v| v.is_null())
-        {
-            obj.insert("keep_last".to_string(), serde_json::json!(keep));
-        }
-    }
-    if let Some(obj) = plugin_config.get_mut("acp").and_then(|v| v.as_object_mut())
-        && obj.get("compact_window").is_none_or(|v| v.is_null())
-    {
-        obj.insert("compact_window".to_string(), serde_json::json!(eff));
-    }
-}
-use awaken_config_store::{
-    AgentConfig, ConfigRegistry, ConfigWrite, DEFAULT_SCOPE, RunnableConfig, ScopedConfig,
-    ScopedConfigRegistry, StoredPublication, ToolOverride, VersionedAgentConfig,
-    compile_with_resource_prompts,
+    AgentConfig, AgentConfigRevision, AuditedConfigWrite, ConfigRegistry, ConfigWrite,
+    DEFAULT_SCOPE, ManagementAuditEntry, ManagementAuditRecord, ManagementEffect, ModelSelection,
+    RunnableConfig, ScopedConfig, ScopedConfigRegistry, StoredPublication, ToolOverride,
 };
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_tenancy::ScopeId;
@@ -73,6 +27,7 @@ use axum::{Extension, Json, Router};
 use serde_json::{Value, json};
 
 use crate::binding_resolver::ModelResolver;
+use crate::compaction::apply_compaction;
 use crate::tool_catalog::ToolCatalogSource;
 
 /// A publish failure, split so the edge can map it to an HTTP status (ADR-0052 D5:
@@ -85,8 +40,8 @@ pub enum PublishError {
     /// the catalog. Surfaced as 409 ("configure and publish a model first").
     #[error("cannot resolve an auto model binding: {0}")]
     Unresolvable(String),
-    #[error("config changed while it was being published (current generation: {0:?})")]
-    StaleGeneration(Option<u64>),
+    #[error("config changed while it was being published (current revision: {0:?})")]
+    StaleRevision(Option<u64>),
     #[error("{0}")]
     Compile(String),
     #[error("{0}")]
@@ -113,8 +68,30 @@ pub struct ValidationIssue {
 /// hot catalog (by agent id), the resource-prompt store, and the model resolver.
 #[derive(Clone)]
 struct InstalledEntry {
-    source_generation: u64,
+    source_revision: u64,
     runnable: RunnableConfig,
+}
+
+/// The transient, secret-free result of reading every configuration source once.
+/// It exists only inside the configuration plane; the distributed boundary is the
+/// immutable `ExecutableAgentSnapshot` built from it.
+#[derive(Debug)]
+struct ResolvedAgentConfig {
+    source: awaken_runtime_contract::AgentConfigRevisionRef,
+    config: AgentConfig,
+    resource_prompts: Vec<String>,
+    manifest: awaken_runtime_contract::ResolutionManifest,
+}
+
+fn snapshot_metadata(
+    resolved: &ResolvedAgentConfig,
+) -> awaken_runtime_contract::AgentSnapshotMetadata {
+    awaken_runtime_contract::AgentSnapshotMetadata {
+        source: resolved.source.clone(),
+        publication_version: awaken_runtime_contract::AgentPublicationVersion(String::new()),
+        resolution: resolved.manifest.clone(),
+        fingerprint: awaken_runtime_contract::AgentSnapshotFingerprint(String::new()),
+    }
 }
 
 #[derive(Default)]
@@ -163,12 +140,14 @@ impl ConfigService {
 
     /// The agent's bound-resource prompt fragments (ADR-0038 A3a). Empty when no
     /// resource store is wired or the agent binds none, so compilation is unchanged.
-    fn resource_prompts(&self, workspace: &str, agent_id: &str) -> Vec<String> {
+    fn resource_config(
+        &self,
+        workspace: &str,
+        agent_id: &str,
+    ) -> Option<awaken_config_resolver::AgentResourceConfig> {
         self.resources
             .as_ref()
             .and_then(|store| store.get_agent_resource_in(workspace, agent_id))
-            .map(|cfg| awaken_config_resolver::resource_prompts_for(&cfg))
-            .unwrap_or_default()
     }
 
     /// Validate a config by compiling it against the caller-supplied tool `catalog`
@@ -186,16 +165,23 @@ impl ConfigService {
         // (`CompileError::field_path`), so the UI projects the issue to the right section
         // instead of parsing a free-text string. An auto-model that can't resolve is a
         // `model` issue; a compile failure carries its own field.
-        let compile_input =
-            self.resolve_for_compile(config.clone())
-                .map_err(|e| ValidationIssue {
-                    path: "model".to_string(),
-                    message: e.to_string(),
-                })?;
-        compile_with_resource_prompts(
-            &compile_input,
+        let resolved = self
+            .resolve_agent_config(
+                workspace,
+                AgentConfigRevision {
+                    config: config.clone(),
+                    revision: 0,
+                },
+            )
+            .map_err(|e| ValidationIssue {
+                path: "model".to_string(),
+                message: e.to_string(),
+            })?;
+        awaken_config_store::compile_resolved(
+            &resolved.config,
             catalog,
-            &self.resource_prompts(workspace, &config.id),
+            &resolved.resource_prompts,
+            snapshot_metadata(&resolved),
         )
         .map(|_| ())
         .map_err(|e| ValidationIssue {
@@ -214,14 +200,14 @@ impl ConfigService {
         registry.put_config(config).await.map_err(|e| e.to_string())
     }
 
-    pub async fn put_if_generation(
+    pub async fn put_if_revision(
         &self,
         registry: &dyn ConfigRegistry,
         config: &AgentConfig,
         expected_generation: u64,
     ) -> Result<ConfigWrite, String> {
         registry
-            .put_config_if_generation(config, expected_generation)
+            .put_config_if_revision(config, expected_generation)
             .await
             .map_err(|e| e.to_string())
     }
@@ -239,9 +225,9 @@ impl ConfigService {
         &self,
         registry: &dyn ConfigRegistry,
         id: &str,
-    ) -> Result<Option<VersionedAgentConfig>, String> {
+    ) -> Result<Option<AgentConfigRevision>, String> {
         registry
-            .get_config_versioned(id)
+            .get_config_revision(id)
             .await
             .map_err(|e| e.to_string())
     }
@@ -264,41 +250,37 @@ impl ConfigService {
         catalog: &[ToolDescriptor],
     ) -> Result<StoredPublication, PublishError> {
         let versioned = registry
-            .get_config_versioned(id)
+            .get_config_revision(id)
             .await
             .map_err(|e| PublishError::Store(e.to_string()))?
             .ok_or_else(|| PublishError::NotStored(id.to_string()))?;
-        let source_generation = versioned.generation;
-
-        // Resolve the model *before* compile (compile requires a concrete binding).
-        // `Auto` → first-offering via the resolver; `Pinned` → the authored binding
-        // and its authored candidates.
-        let compile_input = self.resolve_for_compile(versioned.config)?;
-
-        let runnable = compile_with_resource_prompts(
-            &compile_input,
+        let source_revision = versioned.revision;
+        let resolved = self.resolve_agent_config(workspace, versioned)?;
+        let runnable = awaken_config_store::compile_resolved(
+            &resolved.config,
             catalog,
-            &self.resource_prompts(workspace, id),
+            &resolved.resource_prompts,
+            snapshot_metadata(&resolved),
         )
         .map_err(|e| PublishError::Compile(e.to_string()))?;
         let publication =
-            StoredPublication::published_at_generation(runnable.clone(), id, source_generation);
+            StoredPublication::published_at_revision(runnable.clone(), id, source_revision);
         let write = registry
-            .put_publication_if_config_generation(&publication, source_generation)
+            .put_publication_if_config_revision(&publication, source_revision)
             .await
             .map_err(|e| PublishError::Store(e.to_string()))?;
-        if let ConfigWrite::Conflict { current_generation } = write {
-            return Err(PublishError::StaleGeneration(current_generation));
+        if let ConfigWrite::Conflict { current_revision } = write {
+            return Err(PublishError::StaleRevision(current_revision));
         }
         let mut installed = self.installed.lock().unwrap();
         let replace = installed
             .get(id)
-            .is_none_or(|current| source_generation >= current.source_generation);
+            .is_none_or(|current| source_revision >= current.source_revision);
         if replace {
             installed.insert(
                 id.to_string(),
                 InstalledEntry {
-                    source_generation,
+                    source_revision,
                     runnable,
                 },
             );
@@ -306,10 +288,15 @@ impl ConfigService {
         Ok(publication)
     }
 
-    /// Produce the concrete config `compile` consumes: an `Auto` selection is
-    /// resolved to a first-offering (D5), a `Pinned` selection is used as authored.
-    /// Only the *returned* config is concrete; the stored source keeps its `Auto`.
-    fn resolve_for_compile(&self, mut config: AgentConfig) -> Result<AgentConfig, PublishError> {
+    /// Read every configuration input once and pin the exact result. No runtime or
+    /// worker path is allowed to repeat this work.
+    fn resolve_agent_config(
+        &self,
+        workspace: &str,
+        source: AgentConfigRevision,
+    ) -> Result<ResolvedAgentConfig, PublishError> {
+        let source_revision = source.revision;
+        let mut config = source.config;
         if crate::binding_resolver::needs_resolution(&config.model_binding) {
             let resolver = self
                 .model_resolver
@@ -337,7 +324,59 @@ impl ConfigService {
                 resolver.max_output_tokens(&model_id),
             );
         }
-        Ok(config)
+        let resource_config = self.resource_config(workspace, &config.id);
+        let resource_prompts = resource_config
+            .as_ref()
+            .map(awaken_config_resolver::resource_prompts_for)
+            .unwrap_or_default();
+
+        let mut inputs = vec![awaken_runtime_contract::ResolvedInputRef {
+            kind: "agent_config".into(),
+            id: config.id.clone(),
+            version: awaken_runtime_contract::ResolvedInputVersion::Revision(source_revision),
+        }];
+        if let Some(resources) = resource_config {
+            inputs.push(awaken_runtime_contract::ResolvedInputRef {
+                kind: "agent_resources".into(),
+                id: resources.agent_id,
+                version: awaken_runtime_contract::ResolvedInputVersion::Revision(
+                    resources.version.try_into().map_err(|_| {
+                        PublishError::Unresolvable(
+                            "agent resource revision must not be negative".into(),
+                        )
+                    })?,
+                ),
+            });
+        }
+        let model_bytes = serde_json::to_vec(&(
+            config.model_binding.resolved(),
+            &config.model_candidates,
+            &config.compaction,
+        ))
+        .map_err(|error| PublishError::Unresolvable(error.to_string()))?;
+        inputs.push(awaken_runtime_contract::ResolvedInputRef {
+            kind: "model_binding".into(),
+            id: config
+                .model_binding
+                .resolved()
+                .map(|binding| binding.model_ref.clone())
+                .unwrap_or_default(),
+            version: awaken_runtime_contract::ResolvedInputVersion::ContentHash(
+                awaken_runtime_contract::content_fingerprint(&model_bytes)
+                    .map_err(|error| PublishError::Unresolvable(error.to_string()))?,
+            ),
+        });
+        let manifest = awaken_runtime_contract::ResolutionManifest::new(inputs)
+            .map_err(|error| PublishError::Unresolvable(error.to_string()))?;
+        Ok(ResolvedAgentConfig {
+            source: awaken_runtime_contract::AgentConfigRevisionRef {
+                agent_id: awaken_runtime_contract::snapshot::AgentId(config.id.clone()),
+                revision: source_revision,
+            },
+            config,
+            resource_prompts,
+            manifest,
+        })
     }
 
     /// Re-resolve and re-publish an `Auto`-bound agent (ADR-0052 D5), reading and
@@ -395,12 +434,12 @@ impl ConfigService {
         for p in pubs {
             let replace = installed
                 .get(&p.agent_id)
-                .is_none_or(|current| p.source_generation >= current.source_generation);
+                .is_none_or(|current| p.source_revision >= current.source_revision);
             if replace {
                 installed.insert(
                     p.agent_id,
                     InstalledEntry {
-                        source_generation: p.source_generation,
+                        source_revision: p.source_revision,
                         runnable: RunnableConfig::from_parts(p.snapshot, p.install),
                     },
                 );
@@ -539,14 +578,14 @@ impl ConfigPlane {
             .map_err(|error| error.to_string())
     }
 
-    pub async fn put_if_generation(
+    pub async fn put_if_revision(
         &self,
         scope: &ScopeId,
         config: &AgentConfig,
         expected_generation: u64,
     ) -> Result<ConfigWrite, String> {
         self.service
-            .put_if_generation(&self.registry_for(scope), config, expected_generation)
+            .put_if_revision(&self.registry_for(scope), config, expected_generation)
             .await
     }
 
@@ -559,7 +598,7 @@ impl ConfigPlane {
         &self,
         scope: &ScopeId,
         id: &str,
-    ) -> Result<Option<VersionedAgentConfig>, String> {
+    ) -> Result<Option<AgentConfigRevision>, String> {
         self.service
             .get_versioned(&self.registry_for(scope), id)
             .await
@@ -682,7 +721,7 @@ async fn get_config(
             let mut body = managed_from_agent_config(&versioned.config, published);
             body.as_object_mut()
                 .expect("managed config is an object")
-                .insert("generation".to_string(), json!(versioned.generation));
+                .insert("generation".to_string(), json!(versioned.revision));
             (StatusCode::OK, Json(body))
         }
         Ok(None) => (
@@ -743,16 +782,16 @@ async fn put_config(
     };
     let scope = request_scope(scope);
     if let Some(expected) = body.get("generation").and_then(Value::as_u64) {
-        return match plane.put_if_generation(&scope, &config, expected).await {
-            Ok(ConfigWrite::Applied { generation }) => (
+        return match plane.put_if_revision(&scope, &config, expected).await {
+            Ok(ConfigWrite::Applied { revision }) => (
                 StatusCode::OK,
-                Json(json!({ "id": id, "generation": generation })),
+                Json(json!({ "id": id, "generation": revision })),
             ),
-            Ok(ConfigWrite::Conflict { current_generation }) => (
+            Ok(ConfigWrite::Conflict { current_revision }) => (
                 StatusCode::CONFLICT,
                 Json(json!({
                     "error": "config generation conflict",
-                    "current_generation": current_generation,
+                    "current_revision": current_revision,
                 })),
             ),
             Err(error) => (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))),
@@ -762,7 +801,7 @@ async fn put_config(
         Ok(()) => match plane.get_versioned(&scope, &id).await {
             Ok(Some(current)) => (
                 StatusCode::OK,
-                Json(json!({ "id": id, "generation": current.generation })),
+                Json(json!({ "id": id, "generation": current.revision })),
             ),
             _ => (StatusCode::OK, Json(json!({ "id": id }))),
         },
@@ -911,7 +950,7 @@ async fn publish(
         ),
         // An unresolvable auto model is a 409 ("configure a model first"), ADR-0052 D5;
         // every other publish failure stays a 400.
-        Err(err @ (PublishError::Unresolvable(_) | PublishError::StaleGeneration(_))) => (
+        Err(err @ (PublishError::Unresolvable(_) | PublishError::StaleRevision(_))) => (
             StatusCode::CONFLICT,
             Json(json!({ "error": err.to_string() })),
         ),
@@ -956,6 +995,19 @@ mod resource_prompt_tests {
         let mut cfg = agent_config(id);
         cfg.model_binding = ModelSelection::Auto;
         cfg
+    }
+
+    fn resolve_config(service: &ConfigService, config: AgentConfig) -> AgentConfig {
+        service
+            .resolve_agent_config(
+                DEFAULT_SCOPE,
+                AgentConfigRevision {
+                    config,
+                    revision: 1,
+                },
+            )
+            .unwrap()
+            .config
     }
 
     struct FakeResolver;
@@ -1061,13 +1113,13 @@ mod resource_prompt_tests {
             Ok(Some(agent_config(id)))
         }
 
-        async fn get_config_versioned(
+        async fn get_config_revision(
             &self,
             id: &str,
-        ) -> Result<Option<VersionedAgentConfig>, ConfigStoreError> {
-            Ok(Some(VersionedAgentConfig {
+        ) -> Result<Option<AgentConfigRevision>, ConfigStoreError> {
+            Ok(Some(AgentConfigRevision {
                 config: agent_config(id),
-                generation: 7,
+                revision: 7,
             }))
         }
 
@@ -1079,15 +1131,15 @@ mod resource_prompt_tests {
             panic!("generation-fenced publish must use the atomic method")
         }
 
-        async fn put_publication_if_config_generation(
+        async fn put_publication_if_config_revision(
             &self,
             publication: &StoredPublication,
             expected_generation: u64,
         ) -> Result<ConfigWrite, ConfigStoreError> {
-            assert_eq!(publication.source_generation, 7);
+            assert_eq!(publication.source_revision, 7);
             assert_eq!(expected_generation, 7);
             Ok(ConfigWrite::Conflict {
-                current_generation: Some(8),
+                current_revision: Some(8),
             })
         }
 
@@ -1175,14 +1227,14 @@ mod resource_prompt_tests {
     }
 
     #[tokio::test]
-    async fn publish_never_installs_an_artifact_from_a_stale_source_generation() {
+    async fn publish_never_installs_an_artifact_from_a_stale_source_revision() {
         let service = ConfigService::new();
         let err = service
             .publish(DEFAULT_SCOPE, &StalePublishRegistry, "a", &[])
             .await
             .unwrap_err();
 
-        assert!(matches!(err, PublishError::StaleGeneration(Some(8))));
+        assert!(matches!(err, PublishError::StaleRevision(Some(8))));
         assert!(
             service.installed("a").is_none(),
             "a stale publication must not enter the live catalog"
@@ -1222,7 +1274,7 @@ mod resource_prompt_tests {
     }
 
     #[test]
-    fn resolve_for_compile_derives_the_effective_compaction_window_for_both_realizations() {
+    fn resolve_agent_config_derives_the_effective_compaction_window_for_both_realizations() {
         struct WindowResolver;
         impl ModelResolver for WindowResolver {
             fn resolve_auto(&self) -> Result<ResolvedModel, String> {
@@ -1249,7 +1301,7 @@ mod resource_prompt_tests {
         cfg.model_binding = pin();
         cfg.plugin_config
             .insert("compact".into(), serde_json::json!({ "keep_last": 4 }));
-        let out = service.resolve_for_compile(cfg).unwrap();
+        let out = resolve_config(&service, cfg);
         assert_eq!(out.plugin_config["compact"]["max_tokens"], 120_000);
         assert_eq!(out.plugin_config["compact"]["trigger_ratio"], 1.0);
 
@@ -1259,7 +1311,7 @@ mod resource_prompt_tests {
         cfg_acp
             .plugin_config
             .insert("acp".into(), serde_json::json!({}));
-        let out_acp = service.resolve_for_compile(cfg_acp).unwrap();
+        let out_acp = resolve_config(&service, cfg_acp);
         assert_eq!(out_acp.plugin_config["acp"]["compact_window"], 120_000);
 
         // Agent OVERRIDE (under budget) is honored verbatim, in BOTH realizations.
@@ -1273,7 +1325,7 @@ mod resource_prompt_tests {
             .insert("compact".into(), serde_json::json!({}));
         cfg2.plugin_config
             .insert("acp".into(), serde_json::json!({}));
-        let out2 = service.resolve_for_compile(cfg2).unwrap();
+        let out2 = resolve_config(&service, cfg2);
         assert_eq!(out2.plugin_config["compact"]["max_tokens"], 90_000);
         assert_eq!(out2.plugin_config["acp"]["compact_window"], 90_000);
 
@@ -1283,14 +1335,14 @@ mod resource_prompt_tests {
         cfg3.plugin_config
             .insert("compact".into(), serde_json::json!({ "max_tokens": 50 }));
         assert_eq!(
-            service.resolve_for_compile(cfg3).unwrap().plugin_config["compact"]["max_tokens"],
+            resolve_config(&service, cfg3).plugin_config["compact"]["max_tokens"],
             50
         );
 
         // No compact/acp section → untouched (neither realization was opted into).
         let mut cfg4 = agent_config("a4");
         cfg4.model_binding = pin();
-        let out4 = service.resolve_for_compile(cfg4).unwrap();
+        let out4 = resolve_config(&service, cfg4);
         assert!(!out4.plugin_config.contains_key("compact"));
         assert!(!out4.plugin_config.contains_key("acp"));
     }
@@ -1299,7 +1351,7 @@ mod resource_prompt_tests {
     // bare string) is a no-op — `apply_compaction` only reaches into an object, so a
     // malformed section is left byte-identical and no window injected.
     #[test]
-    fn resolve_for_compile_leaves_a_non_object_compact_untouched() {
+    fn resolve_agent_config_leaves_a_non_object_compact_untouched() {
         struct WindowResolver;
         impl ModelResolver for WindowResolver {
             fn resolve_auto(&self) -> Result<ResolvedModel, String> {
@@ -1314,7 +1366,7 @@ mod resource_prompt_tests {
         cfg.model_binding = ModelSelection::Pinned(ModelBinding::new("p", "m-x", "b"));
         cfg.plugin_config
             .insert("compact".into(), serde_json::json!("not-an-object"));
-        let out = service.resolve_for_compile(cfg).unwrap();
+        let out = resolve_config(&service, cfg);
         assert_eq!(
             out.plugin_config["compact"],
             serde_json::json!("not-an-object")
@@ -1356,6 +1408,59 @@ mod resource_prompt_tests {
         assert!(instructions.starts_with("be helpful"));
         assert!(instructions.contains("/mnt/memory/prefs"));
         assert!(instructions.contains("user preferences"));
+    }
+
+    #[tokio::test]
+    async fn publish_pins_source_resource_model_and_catalog_inputs_once() {
+        let resources = Arc::new(awaken_config_resolver::InMemoryResourceStore::new());
+        resources.put_agent_resource_in(
+            DEFAULT_SCOPE,
+            AgentResourceConfig {
+                agent_id: "pinned-inputs".into(),
+                resources: vec![],
+                version: 4,
+            },
+        );
+        let tool = ToolDescriptor::pinned(
+            "builtin",
+            "search",
+            "search",
+            serde_json::json!({"type": "object"}),
+        );
+        let plane = plane_with(
+            Arc::new(crate::tool_catalog::StaticToolCatalog(vec![tool.clone()])),
+            None,
+            Some(resources),
+        );
+        let scope = ScopeId::from(DEFAULT_SCOPE);
+        let mut config = agent_config("pinned-inputs");
+        config.tool_ids.push(tool.id.clone());
+        plane.put(&scope, &config).await.unwrap();
+        let publication = plane.publish(&scope, &config.id).await.unwrap();
+
+        let metadata = &publication.snapshot.metadata;
+        assert_eq!(metadata.source.agent_id.0, config.id);
+        assert_eq!(metadata.source.revision, 1);
+        assert_eq!(metadata.publication_version.0, publication.fingerprint);
+        assert_eq!(metadata.fingerprint.0, publication.fingerprint);
+        let kinds: Vec<_> = metadata
+            .resolution
+            .inputs
+            .iter()
+            .map(|input| input.kind.as_str())
+            .collect();
+        assert_eq!(
+            kinds,
+            ["agent_config", "agent_resources", "model_binding", "tool"]
+        );
+        assert_eq!(
+            metadata.resolution.inputs[1].version,
+            awaken_runtime_contract::ResolvedInputVersion::Revision(4)
+        );
+        assert_eq!(
+            metadata.resolution.inputs[3].version,
+            awaken_runtime_contract::ResolvedInputVersion::ContentHash(tool.content_hash)
+        );
     }
 
     #[tokio::test]
@@ -1505,7 +1610,7 @@ mod resource_prompt_tests {
         }
     }
 
-    // ---- publish + resolve_for_compile (F8/F10) ----
+    // ---- publish + resolve_agent_config (F8/F10) ----
 
     #[tokio::test]
     async fn publish_missing_config_is_not_stored() {

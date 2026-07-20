@@ -12,6 +12,7 @@
 
 mod binding_resolver;
 mod capabilities;
+mod compaction;
 mod config_plane;
 mod tool_catalog;
 

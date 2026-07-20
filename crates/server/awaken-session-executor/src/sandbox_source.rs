@@ -1255,6 +1255,7 @@ mod tests {
             awaken_agent_contract::agent::thread::Id("t".into()),
             ExecutableAgentSnapshot {
                 id: ExecutableAgentSnapshotId("s".into()),
+                metadata: Default::default(),
                 root_agent_id: AgentId("a".into()),
                 resolved_spec: ResolvedSpec {
                     model_candidates: Vec::new(),

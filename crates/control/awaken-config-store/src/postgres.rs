@@ -9,9 +9,9 @@ use awaken_tenancy::ScopeId;
 use crate::config::AgentConfig;
 use crate::schema::config_bundle;
 use crate::store::{
-    AuditedConfigWrite, ConfigRegistry, ConfigStoreError, ConfigWrite, DEFAULT_SCOPE,
-    ManagementAuditEntry, ManagementAuditRecord, ManagementEffect, ScopedConfigRegistry,
-    StoredPublication, VersionedAgentConfig,
+    AgentConfigRevision, AuditedConfigWrite, ConfigRegistry, ConfigStoreError, ConfigWrite,
+    DEFAULT_SCOPE, ManagementAuditEntry, ManagementAuditRecord, ManagementEffect,
+    ScopedConfigRegistry, StoredPublication,
 };
 
 /// The config component's table namespace (ADR-0029/ADR-0031). Built in, so the
@@ -389,7 +389,7 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         Ok(())
     }
 
-    async fn put_config_if_generation_scoped(
+    async fn put_config_if_revision_scoped(
         &self,
         scope: &ScopeId,
         config: &AgentConfig,
@@ -411,10 +411,10 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         .map_err(reject)?;
         if let Some(generation) = applied {
             return Ok(ConfigWrite::Applied {
-                generation: generation as u64,
+                revision: generation as u64,
             });
         }
-        let current_generation = sqlx::query_scalar::<_, i64>(&format!(
+        let current_revision = sqlx::query_scalar::<_, i64>(&format!(
             "SELECT generation FROM {NS}_agent WHERE id = $1 AND scope_id = $2"
         ))
         .bind(&config.id)
@@ -423,7 +423,7 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         .await
         .map_err(reject)?
         .map(|generation| generation as u64);
-        Ok(ConfigWrite::Conflict { current_generation })
+        Ok(ConfigWrite::Conflict { current_revision })
     }
 
     async fn get_config_scoped(
@@ -448,11 +448,11 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         }
     }
 
-    async fn get_config_versioned_scoped(
+    async fn get_config_revision_scoped(
         &self,
         scope: &ScopeId,
         id: &str,
-    ) -> Result<Option<VersionedAgentConfig>, ConfigStoreError> {
+    ) -> Result<Option<AgentConfigRevision>, ConfigStoreError> {
         let row = sqlx::query(&format!(
             "SELECT data, generation FROM {NS}_agent WHERE id = $1 AND scope_id = $2"
         ))
@@ -464,10 +464,10 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         match row {
             Some(row) => {
                 let Json(config): Json<AgentConfig> = row.try_get("data").map_err(reject)?;
-                let generation: i64 = row.try_get("generation").map_err(reject)?;
-                Ok(Some(VersionedAgentConfig {
+                let revision: i64 = row.try_get("generation").map_err(reject)?;
+                Ok(Some(AgentConfigRevision {
                     config,
-                    generation: generation as u64,
+                    revision: revision as u64,
                 }))
             }
             None => Ok(None),
@@ -513,14 +513,14 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         Ok(())
     }
 
-    async fn put_publication_if_config_generation_scoped(
+    async fn put_publication_if_config_revision_scoped(
         &self,
         scope: &ScopeId,
         publication: &StoredPublication,
         expected_generation: u64,
     ) -> Result<ConfigWrite, ConfigStoreError> {
         let mut tx = self.pool.begin().await.map_err(reject)?;
-        let current_generation = sqlx::query_scalar::<_, i64>(&format!(
+        let current_revision = sqlx::query_scalar::<_, i64>(&format!(
             "SELECT generation FROM {NS}_agent WHERE id = $1 AND scope_id = $2 FOR UPDATE"
         ))
         .bind(&publication.agent_id)
@@ -529,9 +529,9 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         .await
         .map_err(reject)?
         .map(|generation| generation as u64);
-        if current_generation != Some(expected_generation) {
+        if current_revision != Some(expected_generation) {
             tx.rollback().await.map_err(reject)?;
-            return Ok(ConfigWrite::Conflict { current_generation });
+            return Ok(ConfigWrite::Conflict { current_revision });
         }
         sqlx::query(&format!(
             "INSERT INTO {NS}_publication (fingerprint, agent_id, state, record, scope_id) \
@@ -547,7 +547,7 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         .map_err(reject)?;
         tx.commit().await.map_err(reject)?;
         Ok(ConfigWrite::Applied {
-            generation: expected_generation,
+            revision: expected_generation,
         })
     }
 
@@ -611,12 +611,12 @@ impl ConfigRegistry for PostgresConfigStore {
             .await
     }
 
-    async fn put_config_if_generation(
+    async fn put_config_if_revision(
         &self,
         config: &AgentConfig,
         expected_generation: u64,
     ) -> Result<ConfigWrite, ConfigStoreError> {
-        self.put_config_if_generation_scoped(
+        self.put_config_if_revision_scoped(
             &ScopeId::from(DEFAULT_SCOPE),
             config,
             expected_generation,
@@ -629,11 +629,11 @@ impl ConfigRegistry for PostgresConfigStore {
             .await
     }
 
-    async fn get_config_versioned(
+    async fn get_config_revision(
         &self,
         id: &str,
-    ) -> Result<Option<VersionedAgentConfig>, ConfigStoreError> {
-        self.get_config_versioned_scoped(&ScopeId::from(DEFAULT_SCOPE), id)
+    ) -> Result<Option<AgentConfigRevision>, ConfigStoreError> {
+        self.get_config_revision_scoped(&ScopeId::from(DEFAULT_SCOPE), id)
             .await
     }
 
@@ -650,12 +650,12 @@ impl ConfigRegistry for PostgresConfigStore {
             .await
     }
 
-    async fn put_publication_if_config_generation(
+    async fn put_publication_if_config_revision(
         &self,
         publication: &StoredPublication,
         expected_generation: u64,
     ) -> Result<ConfigWrite, ConfigStoreError> {
-        self.put_publication_if_config_generation_scoped(
+        self.put_publication_if_config_revision_scoped(
             &ScopeId::from(DEFAULT_SCOPE),
             publication,
             expected_generation,
