@@ -142,8 +142,11 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     /// Install the model→executor resolver (R1), so a worker-driven run resolves its
     /// effective model ref to the configured executor without a config service.
     #[must_use]
-    pub fn with_model_resolver(mut self, resolve: crate::worker_context::ModelResolverFn) -> Self {
-        self.exec = self.exec.with_model_resolver(resolve);
+    pub fn with_inference_materializer(
+        mut self,
+        resolve: crate::worker_context::InferenceMaterializerFn,
+    ) -> Self {
+        self.exec = self.exec.with_inference_materializer(resolve);
         self
     }
 
@@ -351,10 +354,10 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         // through the injected provider — which owns how the model is reached (local
         // credentials or a gateway offering). `None` leaves the runtime's bound (host
         // default) executor, so a single-model deployment is unaffected.
-        let effective_model = claimed.request.activation.effective_model_ref().to_string();
-        let model_executor = self
-            .exec
-            .resolve_model(&effective_model, claimed.request.model_access.as_ref())?;
+        let model_executor = self.exec.materialize_inference(
+            &claimed.request.activation,
+            claimed.request.model_access.as_ref(),
+        )?;
         // Continue the admitting request's trace across the durable queue boundary:
         // this `wake.dispatch` span's remote parent is the persisted traceparent, so
         // the run driven below (`runtime.run` → …) nests under the trace that

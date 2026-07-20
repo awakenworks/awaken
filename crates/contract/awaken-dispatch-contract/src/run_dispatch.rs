@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 /// Opaque reference to a renewable model-access grant.
 ///
-/// It identifies a capability understood by the host's `ExecutorProvider`; it is
+/// It identifies a capability understood by the host's `InferenceExecutorMaterializer`; it is
 /// never a provider API key. The runtime and dispatch stores persist and forward
 /// the value without interpreting its scheme or reference.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -411,10 +411,10 @@ mod tests {
             .expect("scope belongs to authority");
         let request = RunDispatch::new(activation())
             .with_execution_scope(verified.into_ref())
-            .with_model_access(ModelAccessRef::new("cloud-gateway", "grant-17"));
+            .with_model_access(ModelAccessRef::new("credential-reference/v1", "grant-17"));
         let wire = serde_json::to_value(&request).expect("serializes");
         assert_eq!(wire["execution_scope"], "workspace-a");
-        assert_eq!(wire["model_access"]["scheme"], "cloud-gateway");
+        assert_eq!(wire["model_access"]["scheme"], "credential-reference/v1");
         assert_eq!(wire["model_access"]["reference"], "grant-17");
         assert!(!wire.to_string().contains("provider-key"));
         let restored: RunDispatch = serde_json::from_value(wire).expect("deserializes");

@@ -246,7 +246,7 @@ pub trait ToolExecutor: Send + Sync {
 /// and returns a `ToolExecutor` — no worker registry, lease, pool, or scheduler
 /// type crosses it. The default the runtime ships selects from static config; any
 /// richer (e.g. dynamically scheduling) policy is a host-supplied alternative the
-/// runtime never names. Mirrors the `ExecutorProvider`/`SandboxProvider` seams.
+/// runtime never names. Mirrors the `InferenceExecutorMaterializer`/`SandboxProvider` seams.
 ///
 /// `provide` is **async**: the static default resolves in a trivial ready future,
 /// but a dynamic policy (consult a fleet, lease a worker, dial it) needs to await
