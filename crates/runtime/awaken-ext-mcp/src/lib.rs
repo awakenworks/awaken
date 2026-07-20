@@ -18,7 +18,6 @@
 //! credentials.
 
 pub mod client;
-pub mod config;
 pub mod credential;
 pub mod error;
 pub mod http;
@@ -39,7 +38,6 @@ pub mod types;
 pub use awaken_mcp_wire::{jsonrpc, progress, sse};
 
 pub use client::{McpConnection, connect_tools};
-pub use config::{McpServerConnectionConfig, TransportTypeId};
 pub use credential::{AuthChallenge, Credential, CredentialRefresher};
 pub use error::McpError;
 pub use http::{HttpTransport, HttpTransportBuilder};

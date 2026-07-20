@@ -3,7 +3,7 @@ pub mod awaken_ext_compact::agent
 pub const awaken_ext_compact::agent::COMPACT_AGENT_ID: &str
 pub const awaken_ext_compact::agent::DEFAULT_COMPACT_INSTRUCTIONS: &str
 pub const awaken_ext_compact::agent::SUMMARIZE_PROMPT: &str
-pub fn awaken_ext_compact::agent::default_compact_agent(&str, &str) -> awaken_runtime_contract::runnable::RunnableConfig
+pub fn awaken_ext_compact::agent::default_compact_agent(&str, &str) -> awaken_runtime_contract::snapshot::ExecutableAgentSnapshot
 pub mod awaken_ext_compact::config
 pub struct awaken_ext_compact::config::CompactConfig
 pub awaken_ext_compact::config::CompactConfig::instructions: core::option::Option<alloc::string::String>
@@ -55,5 +55,5 @@ pub const awaken_ext_compact::DEFAULT_COMPACT_INSTRUCTIONS: &str
 pub const awaken_ext_compact::SUMMARIZE_PROMPT: &str
 pub fn awaken_ext_compact::compact_config_schema() -> serde_json::value::Value
 pub fn awaken_ext_compact::compaction_count(&[awaken_agent_contract::agent::state::Command]) -> usize
-pub fn awaken_ext_compact::default_compact_agent(&str, &str) -> awaken_runtime_contract::runnable::RunnableConfig
+pub fn awaken_ext_compact::default_compact_agent(&str, &str) -> awaken_runtime_contract::snapshot::ExecutableAgentSnapshot
 pub fn awaken_ext_compact::fold_point(usize, usize, usize) -> core::option::Option<usize>

@@ -4,9 +4,6 @@
 //! either adapter from depending on a third-party client implementation merely to
 //! serialize the MCP JSON-RPC surface.
 
-use std::collections::HashMap;
-use std::fmt;
-
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -225,22 +222,6 @@ pub enum ToolContent {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum TransportTypeId {
-    Stdio,
-    Http,
-}
-
-impl fmt::Display for TransportTypeId {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Stdio => formatter.write_str("stdio"),
-            Self::Http => formatter.write_str("http"),
-        }
-    }
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum McpTransportError {
     #[error("Unknown tool: {0}")]
@@ -265,52 +246,6 @@ pub enum McpTransportError {
     ConnectionClosed,
     #[error("Server '{0}' is restarting")]
     ServerRestarting(String),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RestartPolicy {
-    pub enabled: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_attempts: Option<u32>,
-    pub delay_ms: u64,
-    pub backoff_multiplier: f64,
-    pub max_delay_ms: u64,
-}
-
-impl Default for RestartPolicy {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            max_attempts: None,
-            delay_ms: 1_000,
-            backoff_multiplier: 2.0,
-            max_delay_ms: 30_000,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct McpServerConnectionConfig {
-    pub name: String,
-    pub transport: TransportTypeId,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub command: Option<String>,
-    #[serde(default)]
-    pub args: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub url: Option<String>,
-    #[serde(default)]
-    pub config: Value,
-    #[serde(default = "default_timeout")]
-    pub timeout_secs: u64,
-    #[serde(default)]
-    pub env: HashMap<String, String>,
-    #[serde(default)]
-    pub restart_policy: RestartPolicy,
-}
-
-const fn default_timeout() -> u64 {
-    30
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

@@ -87,16 +87,6 @@ pub async fn run_with_inference_materializer(
     run_configured(WorkerUpstream::new(upstream), Some(materializer), &[]).await
 }
 
-/// Secretless worker composition with one shared authenticated transport. The
-/// supplied upstream may carry a WorkerLease-bound identity and an mTLS client;
-/// it is reused for claim/settle and both commit paths.
-pub async fn run_with_inference_materializer_and_upstream(
-    upstream: WorkerUpstream,
-    materializer: Arc<dyn InferenceExecutorMaterializer>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    run_configured(upstream, Some(materializer), &[]).await
-}
-
 async fn run_configured(
     upstream: WorkerUpstream,
     materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,

@@ -685,7 +685,7 @@ pub fn realized_mount_path(kind: ResourceKind, mount_path: &str) -> String {
 }
 
 /// The ordered prompt fragments for an agent's bound resources — the bridge from the
-/// [`AgentResourceConfig`] aggregate to the config-store's `compile_with_resource_prompts`
+/// [`AgentResourceConfig`] aggregate to the configuration publication compiler
 /// (which appends them to the agent's effective system prompt, ADR-0038 A3a). One
 /// fragment per binding, in binding order; empty when the agent binds no resources
 /// (so compilation stays byte-identical to an unbound agent). Each fragment names the

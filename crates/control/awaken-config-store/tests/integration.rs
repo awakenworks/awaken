@@ -13,7 +13,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_config_store::{
     AgentConfig, AuditedConfigWrite, ConfigRegistry, ConfigWrite, DEFAULT_SCOPE,
     ManagementAuditRecord, ManagementEffect, ModelSelection, PublicationState, ScopeId,
-    ScopedConfig, ScopedConfigRegistry, SqliteConfigStore, StoredPublication, compile,
+    ScopedConfig, ScopedConfigRegistry, SqliteConfigStore, StoredPublication, compile_resolved,
 };
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
@@ -22,6 +22,14 @@ use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
+use awaken_runtime_contract::snapshot::AgentSnapshotMetadata;
+
+fn compile(
+    config: &AgentConfig,
+    tools: &[ToolDescriptor],
+) -> Result<awaken_config_store::ExecutableAgentSnapshot, awaken_config_store::CompileError> {
+    compile_resolved(config, tools, &[], AgentSnapshotMetadata::default())
+}
 
 struct TextLlm;
 #[async_trait::async_trait]

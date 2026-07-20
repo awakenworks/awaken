@@ -5,7 +5,8 @@
 
 use std::sync::Arc;
 
-use awaken_config_store::{AgentConfig, ModelSelection, compile};
+use awaken_config_store::{AgentConfig, ModelSelection, compile_resolved};
+use awaken_runtime_contract::snapshot::AgentSnapshotMetadata;
 use awaken_runtime_examples::prelude::*;
 
 #[tokio::test]
@@ -24,7 +25,8 @@ async fn hello_agent_example_runs_to_completion() {
         tool_patterns: Vec::new(),
         ..Default::default()
     };
-    let snapshot = compile(&config, &[]).expect("compile");
+    let snapshot = compile_resolved(&config, &[], &[], AgentSnapshotMetadata::default())
+        .expect("compile resolved config");
 
     // The fingerprint is derived and consistent across the snapshot envelope and
     // resolved payload — the property the runtime checks fail-closed.

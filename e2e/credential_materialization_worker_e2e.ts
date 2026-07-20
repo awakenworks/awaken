@@ -176,6 +176,44 @@ async function main() {
       },
     };
     dispatch.placement.required_capabilities = ['credential-source/v1', 'native-runtime'];
+
+    // The same production Worker must fail closed for malformed or stale pins
+    // and continue draining. Dispatch retry policy retains failed attempts; none
+    // may reach a provider or fall back to catalog resolution.
+    const invalidAccesses = [
+      { ...structuredClone(dispatch.activation.snapshot.metadata.inference_access), scheme: 'unknown/v1' },
+      {
+        ...structuredClone(dispatch.activation.snapshot.metadata.inference_access),
+        credential_access: {
+          ...structuredClone(dispatch.activation.snapshot.metadata.inference_access.credential_access),
+          credential: { id: 'different-credential', revision: credential.json.version },
+        },
+      },
+      { ...structuredClone(dispatch.activation.snapshot.metadata.inference_access), scope_id: 'foreign-workspace' },
+      {
+        ...structuredClone(dispatch.activation.snapshot.metadata.inference_access),
+        endpoint: {
+          ...structuredClone(dispatch.activation.snapshot.metadata.inference_access.endpoint),
+          upstream_model: '',
+        },
+      },
+      {
+        ...structuredClone(dispatch.activation.snapshot.metadata.inference_access),
+        candidates: [{
+          model_ref: 'a-different-model',
+          access: structuredClone(dispatch.activation.snapshot.metadata.inference_access),
+        }],
+      },
+    ];
+    for (const [index, inferenceAccess] of invalidAccesses.entries()) {
+      const invalid = structuredClone(dispatch);
+      const thread = `${THREAD}-invalid-${index}`;
+      invalid.activation.run_id = `${claimed.request.activation.run_id}-invalid-${index}`;
+      invalid.activation.thread_id = thread;
+      invalid.session_thread_id = thread;
+      invalid.activation.snapshot.metadata.inference_access = inferenceAccess;
+      assert.equal((await request('POST', '/v1/worker/dispatch/enqueue', { request: invalid }, seed.id)).status, 200);
+    }
     assert.equal((await request('POST', '/v1/worker/dispatch/enqueue', { request: dispatch }, seed.id)).status, 200);
     const settled = await request('POST', '/v1/worker/dispatch/settle', {
       run_id: claimed.lease.run_id,
@@ -207,7 +245,7 @@ async function main() {
     });
     assert.equal(messages.filter((message: any) => String(message.text ?? '').includes('FAKE:seed activation')).length, 1);
     assert.ok(!output.includes(PROVIDER_KEY), 'plaintext provider credential never entered worker logs');
-    assert.ok(upstream.requests.length >= 1, 'pinned endpoint received the worker inference call');
+    assert.equal(upstream.requests.length, 1, 'only the valid pin reached the provider endpoint');
     console.log('CREDENTIAL MATERIALIZATION WORKER TS E2E PASS: production worker opened credential stores, injected the exact pinned revision, called the pinned endpoint, and committed once.');
   } finally {
     if (worker) await stopServer(worker).catch(() => {});

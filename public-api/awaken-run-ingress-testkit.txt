@@ -1,5 +1,6 @@
 pub mod awaken_run_ingress_testkit
 pub struct awaken_run_ingress_testkit::ConformanceCapabilities
+pub awaken_run_ingress_testkit::ConformanceCapabilities::completion_events: bool
 pub awaken_run_ingress_testkit::ConformanceCapabilities::local_commit_guard: bool
 pub awaken_run_ingress_testkit::ConformanceCapabilities::sandbox_binding: bool
 impl awaken_run_ingress_testkit::ConformanceCapabilities

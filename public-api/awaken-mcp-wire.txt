@@ -2,15 +2,15 @@ pub mod awaken_mcp_wire
 pub mod awaken_mcp_wire::jsonrpc
 pub struct awaken_mcp_wire::jsonrpc::JsonRpcNotifier
 impl awaken_mcp_wire::jsonrpc::JsonRpcNotifier
-pub async fn awaken_mcp_wire::jsonrpc::JsonRpcNotifier::notify(&self, &str, serde_json::value::Value) -> core::result::Result<(), model_context_protocol::transport::McpTransportError>
+pub async fn awaken_mcp_wire::jsonrpc::JsonRpcNotifier::notify(&self, &str, serde_json::value::Value) -> core::result::Result<(), awaken_mcp_wire::McpTransportError>
 pub struct awaken_mcp_wire::jsonrpc::JsonRpcPeer
 impl awaken_mcp_wire::jsonrpc::JsonRpcPeer
 pub async fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::closed(&self)
 pub fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::is_alive(&self) -> bool
 pub fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::new<R, W>(R, W, core::option::Option<alloc::sync::Arc<dyn awaken_mcp_wire::jsonrpc::ServerRequestHandler>>) -> (Self, tokio::sync::mpsc::bounded::Receiver<awaken_mcp_wire::jsonrpc::ServerNotification>) where R: tokio::io::async_read::AsyncRead + core::marker::Unpin + core::marker::Send + 'static, W: tokio::io::async_write::AsyncWrite + core::marker::Unpin + core::marker::Send + 'static
 pub fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::notifier(&self) -> awaken_mcp_wire::jsonrpc::JsonRpcNotifier
-pub async fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::notify(&self, &str, serde_json::value::Value) -> core::result::Result<(), model_context_protocol::transport::McpTransportError>
-pub async fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::request(&self, &str, serde_json::value::Value, core::time::Duration) -> core::result::Result<serde_json::value::Value, model_context_protocol::transport::McpTransportError>
+pub async fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::notify(&self, &str, serde_json::value::Value) -> core::result::Result<(), awaken_mcp_wire::McpTransportError>
+pub async fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::request(&self, &str, serde_json::value::Value, core::time::Duration) -> core::result::Result<serde_json::value::Value, awaken_mcp_wire::McpTransportError>
 pub struct awaken_mcp_wire::jsonrpc::ServerNotification
 pub awaken_mcp_wire::jsonrpc::ServerNotification::method: alloc::string::String
 pub awaken_mcp_wire::jsonrpc::ServerNotification::params: serde_json::value::Value
@@ -38,21 +38,150 @@ pub struct awaken_mcp_wire::sse::SseParser
 impl awaken_mcp_wire::sse::SseParser
 pub fn awaken_mcp_wire::sse::SseParser::new() -> Self
 pub fn awaken_mcp_wire::sse::SseParser::push(&mut self, &str) -> alloc::vec::Vec<alloc::string::String>
+pub enum awaken_mcp_wire::IconTheme
+pub awaken_mcp_wire::IconTheme::Dark
+pub awaken_mcp_wire::IconTheme::Light
+pub enum awaken_mcp_wire::McpTransportError
+pub awaken_mcp_wire::McpTransportError::ConnectionClosed
+pub awaken_mcp_wire::McpTransportError::IoError(core::io::error::Error)
+pub awaken_mcp_wire::McpTransportError::JsonError(serde_json::error::Error)
+pub awaken_mcp_wire::McpTransportError::NotSupported(alloc::string::String)
+pub awaken_mcp_wire::McpTransportError::ProtocolError(alloc::string::String)
+pub awaken_mcp_wire::McpTransportError::ServerError(alloc::string::String)
+pub awaken_mcp_wire::McpTransportError::ServerNotFound(alloc::string::String)
+pub awaken_mcp_wire::McpTransportError::ServerRestarting(alloc::string::String)
+pub awaken_mcp_wire::McpTransportError::Timeout(alloc::string::String)
+pub awaken_mcp_wire::McpTransportError::TransportError(alloc::string::String)
+pub awaken_mcp_wire::McpTransportError::UnknownTool(alloc::string::String)
+pub enum awaken_mcp_wire::Role
+pub awaken_mcp_wire::Role::Assistant
+pub awaken_mcp_wire::Role::User
+pub enum awaken_mcp_wire::TaskSupport
+pub awaken_mcp_wire::TaskSupport::Forbidden
+pub awaken_mcp_wire::TaskSupport::Optional
+pub awaken_mcp_wire::TaskSupport::Required
+pub enum awaken_mcp_wire::ToolContent
+pub awaken_mcp_wire::ToolContent::Audio
+pub awaken_mcp_wire::ToolContent::Audio::annotations: core::option::Option<awaken_mcp_wire::Annotations>
+pub awaken_mcp_wire::ToolContent::Audio::data: alloc::string::String
+pub awaken_mcp_wire::ToolContent::Audio::meta: core::option::Option<serde_json::value::Value>
+pub awaken_mcp_wire::ToolContent::Audio::mime_type: alloc::string::String
+pub awaken_mcp_wire::ToolContent::Image
+pub awaken_mcp_wire::ToolContent::Image::annotations: core::option::Option<awaken_mcp_wire::Annotations>
+pub awaken_mcp_wire::ToolContent::Image::data: alloc::string::String
+pub awaken_mcp_wire::ToolContent::Image::meta: core::option::Option<serde_json::value::Value>
+pub awaken_mcp_wire::ToolContent::Image::mime_type: alloc::string::String
+pub awaken_mcp_wire::ToolContent::Resource
+pub awaken_mcp_wire::ToolContent::Resource::mime_type: core::option::Option<alloc::string::String>
+pub awaken_mcp_wire::ToolContent::Resource::uri: alloc::string::String
+pub awaken_mcp_wire::ToolContent::ResourceLink
+pub awaken_mcp_wire::ToolContent::ResourceLink::annotations: core::option::Option<awaken_mcp_wire::Annotations>
+pub awaken_mcp_wire::ToolContent::ResourceLink::description: core::option::Option<alloc::string::String>
+pub awaken_mcp_wire::ToolContent::ResourceLink::mime_type: core::option::Option<alloc::string::String>
+pub awaken_mcp_wire::ToolContent::ResourceLink::name: alloc::string::String
+pub awaken_mcp_wire::ToolContent::ResourceLink::title: core::option::Option<alloc::string::String>
+pub awaken_mcp_wire::ToolContent::ResourceLink::uri: alloc::string::String
+pub awaken_mcp_wire::ToolContent::Text
+pub awaken_mcp_wire::ToolContent::Text::annotations: core::option::Option<awaken_mcp_wire::Annotations>
+pub awaken_mcp_wire::ToolContent::Text::meta: core::option::Option<serde_json::value::Value>
+pub awaken_mcp_wire::ToolContent::Text::text: alloc::string::String
+pub struct awaken_mcp_wire::Annotations
+pub awaken_mcp_wire::Annotations::audience: core::option::Option<alloc::vec::Vec<awaken_mcp_wire::Role>>
+pub awaken_mcp_wire::Annotations::last_modified: core::option::Option<alloc::string::String>
+pub awaken_mcp_wire::Annotations::priority: core::option::Option<f64>
+pub struct awaken_mcp_wire::CallToolParams
+pub awaken_mcp_wire::CallToolParams::arguments: core::option::Option<serde_json::value::Value>
+pub awaken_mcp_wire::CallToolParams::meta: core::option::Option<serde_json::value::Value>
+pub awaken_mcp_wire::CallToolParams::name: alloc::string::String
+pub awaken_mcp_wire::CallToolParams::task: core::option::Option<awaken_mcp_wire::TaskMetadata>
+pub struct awaken_mcp_wire::CallToolResult
+pub awaken_mcp_wire::CallToolResult::content: alloc::vec::Vec<awaken_mcp_wire::ToolContent>
+pub awaken_mcp_wire::CallToolResult::is_error: core::option::Option<bool>
+pub awaken_mcp_wire::CallToolResult::structured_content: core::option::Option<serde_json::value::Value>
+pub struct awaken_mcp_wire::ClientInfo
+pub awaken_mcp_wire::ClientInfo::description: core::option::Option<alloc::string::String>
+pub awaken_mcp_wire::ClientInfo::icons: core::option::Option<alloc::vec::Vec<awaken_mcp_wire::Icon>>
+pub awaken_mcp_wire::ClientInfo::name: alloc::string::String
+pub awaken_mcp_wire::ClientInfo::title: core::option::Option<alloc::string::String>
+pub awaken_mcp_wire::ClientInfo::version: alloc::string::String
+pub awaken_mcp_wire::ClientInfo::website_url: core::option::Option<alloc::string::String>
+impl awaken_mcp_wire::ClientInfo
+pub fn awaken_mcp_wire::ClientInfo::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub struct awaken_mcp_wire::Icon
+pub awaken_mcp_wire::Icon::mime_type: core::option::Option<alloc::string::String>
+pub awaken_mcp_wire::Icon::sizes: core::option::Option<alloc::vec::Vec<alloc::string::String>>
+pub awaken_mcp_wire::Icon::src: alloc::string::String
+pub awaken_mcp_wire::Icon::theme: core::option::Option<awaken_mcp_wire::IconTheme>
+pub struct awaken_mcp_wire::InitializeCapabilities
+pub awaken_mcp_wire::InitializeCapabilities::elicitation: core::option::Option<serde_json::value::Value>
+pub awaken_mcp_wire::InitializeCapabilities::experimental: core::option::Option<serde_json::value::Value>
+pub awaken_mcp_wire::InitializeCapabilities::roots: core::option::Option<serde_json::value::Value>
+pub awaken_mcp_wire::InitializeCapabilities::sampling: core::option::Option<serde_json::value::Value>
+pub awaken_mcp_wire::InitializeCapabilities::tasks: core::option::Option<serde_json::value::Value>
+pub awaken_mcp_wire::InitializeCapabilities::tools: core::option::Option<serde_json::value::Value>
+pub struct awaken_mcp_wire::InitializeParams
+pub awaken_mcp_wire::InitializeParams::capabilities: awaken_mcp_wire::InitializeCapabilities
+pub awaken_mcp_wire::InitializeParams::client_info: awaken_mcp_wire::ClientInfo
+pub awaken_mcp_wire::InitializeParams::config: core::option::Option<serde_json::value::Value>
+pub awaken_mcp_wire::InitializeParams::protocol_version: alloc::string::String
+impl awaken_mcp_wire::InitializeParams
+pub fn awaken_mcp_wire::InitializeParams::new(core::option::Option<serde_json::value::Value>) -> Self
+pub struct awaken_mcp_wire::InitializeResult
+pub awaken_mcp_wire::InitializeResult::capabilities: awaken_mcp_wire::ServerCapabilities
+pub awaken_mcp_wire::InitializeResult::protocol_version: alloc::string::String
+pub awaken_mcp_wire::InitializeResult::server_info: awaken_mcp_wire::ServerInfo
 pub struct awaken_mcp_wire::JsonRpcNotifier
 impl awaken_mcp_wire::jsonrpc::JsonRpcNotifier
-pub async fn awaken_mcp_wire::jsonrpc::JsonRpcNotifier::notify(&self, &str, serde_json::value::Value) -> core::result::Result<(), model_context_protocol::transport::McpTransportError>
+pub async fn awaken_mcp_wire::jsonrpc::JsonRpcNotifier::notify(&self, &str, serde_json::value::Value) -> core::result::Result<(), awaken_mcp_wire::McpTransportError>
 pub struct awaken_mcp_wire::JsonRpcPeer
 impl awaken_mcp_wire::jsonrpc::JsonRpcPeer
 pub async fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::closed(&self)
 pub fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::is_alive(&self) -> bool
 pub fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::new<R, W>(R, W, core::option::Option<alloc::sync::Arc<dyn awaken_mcp_wire::jsonrpc::ServerRequestHandler>>) -> (Self, tokio::sync::mpsc::bounded::Receiver<awaken_mcp_wire::jsonrpc::ServerNotification>) where R: tokio::io::async_read::AsyncRead + core::marker::Unpin + core::marker::Send + 'static, W: tokio::io::async_write::AsyncWrite + core::marker::Unpin + core::marker::Send + 'static
 pub fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::notifier(&self) -> awaken_mcp_wire::jsonrpc::JsonRpcNotifier
-pub async fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::notify(&self, &str, serde_json::value::Value) -> core::result::Result<(), model_context_protocol::transport::McpTransportError>
-pub async fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::request(&self, &str, serde_json::value::Value, core::time::Duration) -> core::result::Result<serde_json::value::Value, model_context_protocol::transport::McpTransportError>
+pub async fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::notify(&self, &str, serde_json::value::Value) -> core::result::Result<(), awaken_mcp_wire::McpTransportError>
+pub async fn awaken_mcp_wire::jsonrpc::JsonRpcPeer::request(&self, &str, serde_json::value::Value, core::time::Duration) -> core::result::Result<serde_json::value::Value, awaken_mcp_wire::McpTransportError>
+pub struct awaken_mcp_wire::ListToolsParams
+pub awaken_mcp_wire::ListToolsParams::cursor: core::option::Option<alloc::string::String>
+pub struct awaken_mcp_wire::ListToolsResult
+pub awaken_mcp_wire::ListToolsResult::next_cursor: core::option::Option<alloc::string::String>
+pub awaken_mcp_wire::ListToolsResult::tools: alloc::vec::Vec<awaken_mcp_wire::McpToolDefinition>
 pub struct awaken_mcp_wire::McpProgressUpdate
 pub awaken_mcp_wire::McpProgressUpdate::message: core::option::Option<alloc::string::String>
 pub awaken_mcp_wire::McpProgressUpdate::progress: f64
 pub awaken_mcp_wire::McpProgressUpdate::total: core::option::Option<f64>
+pub struct awaken_mcp_wire::McpToolDefinition
+pub awaken_mcp_wire::McpToolDefinition::annotations: core::option::Option<awaken_mcp_wire::ToolAnnotations>
+pub awaken_mcp_wire::McpToolDefinition::description: core::option::Option<alloc::string::String>
+pub awaken_mcp_wire::McpToolDefinition::execution: core::option::Option<awaken_mcp_wire::ToolExecution>
+pub awaken_mcp_wire::McpToolDefinition::group: core::option::Option<alloc::string::String>
+pub awaken_mcp_wire::McpToolDefinition::icons: core::option::Option<alloc::vec::Vec<awaken_mcp_wire::Icon>>
+pub awaken_mcp_wire::McpToolDefinition::input_schema: serde_json::value::Value
+pub awaken_mcp_wire::McpToolDefinition::meta: core::option::Option<serde_json::value::Value>
+pub awaken_mcp_wire::McpToolDefinition::name: alloc::string::String
+pub awaken_mcp_wire::McpToolDefinition::output_schema: core::option::Option<serde_json::value::Value>
+pub awaken_mcp_wire::McpToolDefinition::title: core::option::Option<alloc::string::String>
+impl awaken_mcp_wire::McpToolDefinition
+pub fn awaken_mcp_wire::McpToolDefinition::new(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_mcp_wire::McpToolDefinition::with_description(self, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_mcp_wire::McpToolDefinition::with_schema(self, serde_json::value::Value) -> Self
+pub struct awaken_mcp_wire::ServerCapabilities
+pub awaken_mcp_wire::ServerCapabilities::completions: core::option::Option<serde_json::value::Value>
+pub awaken_mcp_wire::ServerCapabilities::experimental: core::option::Option<serde_json::value::Value>
+pub awaken_mcp_wire::ServerCapabilities::logging: core::option::Option<serde_json::value::Value>
+pub awaken_mcp_wire::ServerCapabilities::prompts: core::option::Option<serde_json::value::Value>
+pub awaken_mcp_wire::ServerCapabilities::resources: core::option::Option<serde_json::value::Value>
+pub awaken_mcp_wire::ServerCapabilities::tasks: core::option::Option<serde_json::value::Value>
+pub awaken_mcp_wire::ServerCapabilities::tools: core::option::Option<awaken_mcp_wire::ServerToolCapabilities>
+pub struct awaken_mcp_wire::ServerInfo
+pub awaken_mcp_wire::ServerInfo::description: core::option::Option<alloc::string::String>
+pub awaken_mcp_wire::ServerInfo::icons: core::option::Option<alloc::vec::Vec<awaken_mcp_wire::Icon>>
+pub awaken_mcp_wire::ServerInfo::name: alloc::string::String
+pub awaken_mcp_wire::ServerInfo::title: core::option::Option<alloc::string::String>
+pub awaken_mcp_wire::ServerInfo::version: alloc::string::String
+pub awaken_mcp_wire::ServerInfo::website_url: core::option::Option<alloc::string::String>
+impl awaken_mcp_wire::ServerInfo
+pub fn awaken_mcp_wire::ServerInfo::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
 pub struct awaken_mcp_wire::ServerNotification
 pub awaken_mcp_wire::ServerNotification::method: alloc::string::String
 pub awaken_mcp_wire::ServerNotification::params: serde_json::value::Value
@@ -63,10 +192,23 @@ impl awaken_mcp_wire::jsonrpc::ServerRequestError
 pub fn awaken_mcp_wire::jsonrpc::ServerRequestError::internal(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_mcp_wire::jsonrpc::ServerRequestError::invalid_params(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_mcp_wire::jsonrpc::ServerRequestError::method_not_found(&str) -> Self
+pub struct awaken_mcp_wire::ServerToolCapabilities
+pub awaken_mcp_wire::ServerToolCapabilities::list_changed: core::option::Option<bool>
 pub struct awaken_mcp_wire::SseParser
 impl awaken_mcp_wire::sse::SseParser
 pub fn awaken_mcp_wire::sse::SseParser::new() -> Self
 pub fn awaken_mcp_wire::sse::SseParser::push(&mut self, &str) -> alloc::vec::Vec<alloc::string::String>
+pub struct awaken_mcp_wire::TaskMetadata
+pub awaken_mcp_wire::TaskMetadata::ttl: core::option::Option<u64>
+pub struct awaken_mcp_wire::ToolAnnotations
+pub awaken_mcp_wire::ToolAnnotations::destructive_hint: core::option::Option<bool>
+pub awaken_mcp_wire::ToolAnnotations::idempotent_hint: core::option::Option<bool>
+pub awaken_mcp_wire::ToolAnnotations::open_world_hint: core::option::Option<bool>
+pub awaken_mcp_wire::ToolAnnotations::read_only_hint: core::option::Option<bool>
+pub awaken_mcp_wire::ToolAnnotations::title: core::option::Option<alloc::string::String>
+pub struct awaken_mcp_wire::ToolExecution
+pub awaken_mcp_wire::ToolExecution::task_support: core::option::Option<awaken_mcp_wire::TaskSupport>
+pub const awaken_mcp_wire::MCP_PROTOCOL_VERSION: &str
 pub trait awaken_mcp_wire::ServerRequestHandler: core::marker::Send + core::marker::Sync
 pub fn awaken_mcp_wire::ServerRequestHandler::handle<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 serde_json::value::Value, &'life2 str, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<serde_json::value::Value, awaken_mcp_wire::jsonrpc::ServerRequestError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_mcp_wire::normalize_progress(&awaken_mcp_wire::progress::McpProgressUpdate) -> core::option::Option<f64>
