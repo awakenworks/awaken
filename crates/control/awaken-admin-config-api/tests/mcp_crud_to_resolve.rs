@@ -134,6 +134,7 @@ async fn author_credential_mcp_server_and_agent_binding_then_resolve_secret_free
         "/v1/config/agents/agent1/mcp",
         Some(json!({
             "agent_id": "ignored-by-path",
+            "workspace_id": "ws",
             "mcp_server_ids": ["jira", "docs"],
             "version": 1
         })),

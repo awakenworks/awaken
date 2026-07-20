@@ -99,18 +99,25 @@ npm run test:fs
 # vaults/files APIs; managed full-lifecycle/reconnect/terminated/concurrency) was
 # measured as uncovered though the tests exist and pass.
 npm run test:extended
+# The production `awaken` composition (not the scenario host) proves
+# catalog publication -> snapshot-pinned access -> credential materialization.
+node awaken_cli_e2e.mjs
+node runtime_embedded_e2e.mjs
+# Exercise the production cross-node worker-pool path as part of the same
+# changed-line evidence instead of leaving scenario-host worker code uncovered.
+node worker_pool_e2e.mjs
 # Cross-process worker/credential-reference, sandbox, MCP and PostgreSQL stage
 # scenarios are part of the changed runtime surface and must contribute real
 # process coverage (including the exact anonymous-worker 401 contract).
 npm run test:runtime-stages
-if [ -n "${coverage_anthropic_key}${coverage_kimi_key}" ]; then
+if [ "${AWAKEN_COVERAGE_REAL:-0}" = "1" ] && [ -n "${coverage_anthropic_key}${coverage_kimi_key}" ]; then
   (
     export ANTHROPIC_API_KEY="$coverage_anthropic_key" # awaken-allow: secret
     export KIMI_API_KEY="$coverage_kimi_key" # awaken-allow: secret
     npm run test:real
   )
 else
-  echo "SKIP test:real (no ANTHROPIC_API_KEY/KIMI_API_KEY)"
+  echo "SKIP test:real (hermetic by default; set AWAKEN_COVERAGE_REAL=1 with a provider key to opt in)"
 fi
 popd >/dev/null
 
