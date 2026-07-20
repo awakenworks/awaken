@@ -2,8 +2,6 @@
 
 use std::sync::Arc;
 
-use awaken_runtime_contract::catalog::RuntimeCatalogInstall;
-use awaken_runtime_contract::runnable::RunnableConfig;
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 use awaken_tenancy::ScopeId;
 use serde::{Deserialize, Serialize};
@@ -90,31 +88,28 @@ pub struct StoredPublication {
     pub source_revision: u64,
     pub state: PublicationState,
     pub snapshot: ExecutableAgentSnapshot,
-    pub install: RuntimeCatalogInstall,
 }
 
 impl StoredPublication {
     /// Wrap a freshly compiled config as `published`. The fingerprint and
-    /// publication id come from the runnable config itself (the producer stamped
-    /// them), so the store never re-derives them.
-    pub fn published(config: RunnableConfig, agent_id: impl Into<String>) -> Self {
+    /// publication id come from the snapshot itself (the producer stamped it), so
+    /// the store never re-derives content identity.
+    pub fn published(config: ExecutableAgentSnapshot, agent_id: impl Into<String>) -> Self {
         Self::published_at_revision(config, agent_id, 0)
     }
 
     pub fn published_at_revision(
-        config: RunnableConfig,
+        config: ExecutableAgentSnapshot,
         agent_id: impl Into<String>,
         source_revision: u64,
     ) -> Self {
-        let (snapshot, install) = config.into_parts();
         Self {
-            publication_id: install.publication_id.clone(),
-            fingerprint: snapshot.fingerprint.0.clone(),
+            publication_id: config.fingerprint.0.clone(),
+            fingerprint: config.fingerprint.0.clone(),
             agent_id: agent_id.into(),
             source_revision,
             state: PublicationState::Published,
-            snapshot,
-            install,
+            snapshot: config,
         }
     }
 }

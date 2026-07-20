@@ -1,9 +1,9 @@
 //! The smallest agent: instructions + a model, **no tools, no permissions**.
 //!
 //! It declares an `AgentConfig` (external authoring config), compiles it to a
-//! `RunnableConfig`, and runs one turn. `compile()` derives the fingerprint from
-//! the config; `runtime.run` installs the catalog and executes in one call. The
-//! counterpart `direct_runtime` builds the `RunnableConfig` by hand instead — the
+//! `ExecutableAgentSnapshot`, and runs one turn. `compile()` derives the fingerprint from
+//! the config; `runtime.run` executes that exact snapshot in one call. The
+//! counterpart `direct_runtime` builds the `ExecutableAgentSnapshot` by hand instead — the
 //! `runtime.run` line is the same.
 //!
 //! `compile()` is the pure half of `awaken-config-store` (no storage dependency),
@@ -38,16 +38,16 @@ async fn main() {
         ..Default::default()
     };
 
-    // 2. Compile to a runnable config — the fingerprint is sha256(config), stamped
+    // 2. Compile to an executable snapshot — the fingerprint is sha256(config), stamped
     //    into the snapshot and the install for you.
-    let runnable = compile(&config, &[]).expect("compile config");
+    let snapshot = compile(&config, &[]).expect("compile config");
 
     // 3. Assemble the runtime and run one turn.
     let runtime = Runtime::new().with_llm(Arc::new(GreeterLlm));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let state = runtime
-        .run(&runnable, "Say hi.", context)
+        .run(&snapshot, "Say hi.", context)
         .await
         .expect("run");
 

@@ -35,12 +35,11 @@ use awaken_runtime::memory::{MemoryCommitCoordinator, MemoryStreamCheckpointStor
 use awaken_runtime::{DirectRunIngress, RunIngress, Runtime};
 use awaken_runtime_contract::CancellationToken;
 use awaken_runtime_contract::RunDelegations;
-use awaken_runtime_contract::RuntimeCatalogInstaller;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
-use awaken_runtime_contract::runnable::RunnableConfig;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
+use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 use awaken_runtime_contract::tool::{ToolExecutor, ToolExecutorProvider, ToolOutput};
 // The Workdir-tier sandbox realized through the neutral provisioning contract:
 // `LocalProvider::create_sandbox` yields a `LocalSandbox` whose host-tier helpers

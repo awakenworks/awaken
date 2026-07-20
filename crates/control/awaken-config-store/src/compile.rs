@@ -1,8 +1,8 @@
-//! Compilation: a pure config → runnable-config function.
+//! Compilation: a pure config → executable-snapshot function.
 
 use awaken_runtime_contract::resolved::{ToolDescriptor, ToolFacet, ToolPresentation};
-use awaken_runtime_contract::runnable::RunnableConfig;
 use awaken_runtime_contract::snapshot::AgentSnapshotMetadata;
+use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 use sha2::{Digest, Sha256};
 
 use crate::config::AgentConfig;
@@ -56,18 +56,18 @@ impl CompileError {
 }
 
 /// Compile an agent config against an available tool catalog into a
-/// content-addressed [`RunnableConfig`] the runtime can run. Each `tool_id` must
+/// content-addressed [`ExecutableAgentSnapshot`] the runtime can run. Each `tool_id` must
 /// resolve (unknown references are rejected, fail-closed). The fingerprint is the
 /// sha256 of the canonical config, so the same config always compiles to the same
-/// runnable config.
+/// executable snapshot.
 ///
-/// This is a thin wrapper over [`RunnableConfig::builder`]: it resolves tool ids to
+/// This is a thin wrapper over [`ExecutableAgentSnapshot::builder`]: it resolves tool ids to
 /// descriptors and stamps the content hash; the builder does the assembly, so the
 /// compiled path and the direct path share one assembly (no duplication).
 pub fn compile(
     config: &AgentConfig,
     tools: &[ToolDescriptor],
-) -> Result<RunnableConfig, CompileError> {
+) -> Result<ExecutableAgentSnapshot, CompileError> {
     compile_with_resource_prompts(config, tools, &[])
 }
 
@@ -78,12 +78,12 @@ pub fn compile(
 /// runtime per turn. Passing `&[]` is exactly [`compile`] (fingerprint included), so
 /// bare compilation is byte-identical to before resources existed. Each fragment
 /// also enters the content-address fingerprint, so a different prompt set compiles to
-/// a different runnable (no stale cache hit on changed instructions).
+/// a different snapshot (no stale cache hit on changed instructions).
 pub fn compile_with_resource_prompts(
     config: &AgentConfig,
     tools: &[ToolDescriptor],
     resource_prompts: &[String],
-) -> Result<RunnableConfig, CompileError> {
+) -> Result<ExecutableAgentSnapshot, CompileError> {
     compile_resolved(
         config,
         tools,
@@ -100,7 +100,7 @@ pub fn compile_resolved(
     tools: &[ToolDescriptor],
     resource_prompts: &[String],
     mut metadata: AgentSnapshotMetadata,
-) -> Result<RunnableConfig, CompileError> {
+) -> Result<ExecutableAgentSnapshot, CompileError> {
     let mut descriptors = Vec::with_capacity(config.tool_ids.len());
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     // Exact tool ids: each must resolve (unknown references are rejected, fail-closed).
@@ -255,7 +255,7 @@ pub fn compile_resolved(
     }
 
     let fingerprint = fingerprint_of(config, resource_prompts, &descriptors, &metadata)?;
-    Ok(RunnableConfig::builder(&config.id)
+    Ok(ExecutableAgentSnapshot::builder(&config.id)
         .instructions(compose_instructions(&config.instructions, resource_prompts))
         .model(model)
         .model_candidates(config.model_candidates.clone())
@@ -306,14 +306,14 @@ pub fn compose_instructions(base: &str, resource_prompts: &[String]) -> String {
 /// extended by the resource prompts when present. Empty prompts hash exactly the
 /// behavioral config bytes, so a bare compile keeps its prior content address; a
 /// non-empty prompt set changes it (a different effective system prompt is a
-/// different runnable). The config has no maps in its behavioral subset, so
+/// different snapshot). The config has no maps in its behavioral subset, so
 /// serialization is deterministic across runs.
 ///
 /// The Managed-Agent wire-identity metadata (`name` / `description` / `metadata`) is
-/// **excluded**: it is authoring metadata the runtime never consumes (the runnable is
+/// **excluded**: it is authoring metadata the runtime never consumes (the snapshot is
 /// compiled only from instructions/model/tools/plugins/policy), so it must not enter
 /// the content-address. Otherwise editing a display `name` or a delegation
-/// `description` would mint a new fingerprint for a byte-identical runnable —
+/// `description` would mint a new fingerprint for a byte-identical snapshot —
 /// polluting the "same fingerprint ⇒ same behavior" contract. A config that never set
 /// these fields hashes byte-identically to before (they `skip_serializing_if`-empty).
 fn fingerprint_of(
@@ -387,7 +387,7 @@ mod tests {
         );
         let compiled = compile(&cfg, &tools).unwrap();
         assert_eq!(
-            compiled.snapshot().resolved_spec.tool_descriptors[0].recovery_policy,
+            compiled.resolved_spec.tool_descriptors[0].recovery_policy,
             cfg.recovery_policies["echo"]
         );
 
@@ -414,13 +414,10 @@ mod tests {
             awaken_runtime_contract::delegation::DelegationLimits::new(2, 3, 5);
         let bounded_compiled = compile(&bounded, &[]).unwrap();
         assert_eq!(
-            bounded_compiled.snapshot().resolved_spec.delegation_limits,
+            bounded_compiled.resolved_spec.delegation_limits,
             bounded.delegation_limits
         );
-        assert_ne!(
-            bounded_compiled.snapshot().fingerprint,
-            base_compiled.snapshot().fingerprint
-        );
+        assert_ne!(bounded_compiled.fingerprint, base_compiled.fingerprint);
     }
 
     #[test]
@@ -430,21 +427,20 @@ mod tests {
         let mut pooled = config(&["echo"]);
         pooled.model_candidates = vec![ModelBinding::new("p", "fallback", "b")];
         let compiled = compile(&pooled, &tools).unwrap();
-        let spec = &compiled.snapshot().resolved_spec;
+        let spec = &compiled.resolved_spec;
         // The pool is carried onto the resolved spec: primary + one fallback.
         assert_eq!(spec.model_candidates.len(), 1);
         assert_eq!(spec.candidate_bindings().len(), 2);
         assert_eq!(spec.candidate_bindings()[1].model_ref, "fallback");
 
-        // A pool enters the content address (a different pool is a different runnable);
+        // A pool enters the content address (a different pool is a different snapshot);
         // an empty pool (the default) leaves the fingerprint byte-identical.
         let single = compile(&config(&["echo"]), &tools).unwrap();
         assert_ne!(
-            compiled.snapshot().fingerprint.0,
-            single.snapshot().fingerprint.0,
+            compiled.fingerprint.0, single.fingerprint.0,
             "a pool must change the content address"
         );
-        assert!(single.snapshot().resolved_spec.model_candidates.is_empty());
+        assert!(single.resolved_spec.model_candidates.is_empty());
     }
 
     #[test]
@@ -468,7 +464,7 @@ mod tests {
             },
         ];
         let compiled = compile(&cfg, &tools).unwrap();
-        let pres = &compiled.snapshot().resolved_spec.tool_presentation;
+        let pres = &compiled.resolved_spec.tool_presentation;
         assert!(!pres.is_empty());
         // The alias reverse-maps back to the canonical id; the model face renames + defers.
         assert_eq!(pres.resolve("say"), "echo");
@@ -488,11 +484,8 @@ mod tests {
 
         // Overrides enter the content address; no overrides ⇒ byte-identical fingerprint.
         let bare = compile(&config(&["echo", "mcp__gh__create_issue"]), &tools).unwrap();
-        assert_ne!(
-            compiled.snapshot().fingerprint.0,
-            bare.snapshot().fingerprint.0
-        );
-        assert!(bare.snapshot().resolved_spec.tool_presentation.is_empty());
+        assert_ne!(compiled.fingerprint.0, bare.fingerprint.0);
+        assert!(bare.resolved_spec.tool_presentation.is_empty());
     }
 
     #[test]
@@ -537,24 +530,16 @@ mod tests {
         let tools = vec![tool("echo")];
         let a = compile(&config(&["echo"]), &tools).unwrap();
         let b = compile(&config(&["echo"]), &tools).unwrap();
-        let fp = a.snapshot().fingerprint.0.clone();
-        assert_eq!(
-            fp,
-            b.snapshot().fingerprint.0,
-            "same config, same fingerprint"
-        );
+        let fp = a.fingerprint.0.clone();
+        assert_eq!(fp, b.fingerprint.0, "same config, same fingerprint");
 
-        // The snapshot and install agree on the fingerprint the runtime validates.
-        assert_eq!(a.snapshot().resolved_spec.catalog_fingerprint.0, fp);
-        assert_eq!(a.install().fingerprint.0, fp);
+        // The snapshot envelope and resolved payload agree on the fingerprint.
+        assert_eq!(a.resolved_spec.catalog_fingerprint.0, fp);
 
         // A different config yields a different fingerprint.
         let mut other = config(&["echo"]);
         other.instructions = "be terse".to_string();
-        assert_ne!(
-            compile(&other, &tools).unwrap().snapshot().fingerprint.0,
-            fp
-        );
+        assert_ne!(compile(&other, &tools).unwrap().fingerprint.0, fp);
     }
 
     #[test]
@@ -564,17 +549,12 @@ mod tests {
         cfg.context_policy = ContextPolicy::KeepLast { keep_last: 3 };
         let compiled = compile(&cfg, &[]).unwrap();
         assert_eq!(
-            compiled.snapshot().resolved_spec.context_policy,
+            compiled.resolved_spec.context_policy,
             ContextPolicy::KeepLast { keep_last: 3 }
         );
         // The policy is part of the content address: changing it changes the hash.
-        let default_fp = compile(&config(&[]), &[])
-            .unwrap()
-            .snapshot()
-            .fingerprint
-            .0
-            .clone();
-        assert_ne!(compiled.snapshot().fingerprint.0, default_fp);
+        let default_fp = compile(&config(&[]), &[]).unwrap().fingerprint.0.clone();
+        assert_ne!(compiled.fingerprint.0, default_fp);
     }
 
     #[test]
@@ -585,7 +565,6 @@ mod tests {
         cfg.tool_patterns = vec!["fs_*".to_string()]; // plus a glob
         let spec = compile(&cfg, &catalog).unwrap();
         let ids: Vec<String> = spec
-            .snapshot()
             .resolved_spec
             .tool_descriptors
             .iter()
@@ -602,12 +581,11 @@ mod tests {
         // Empty patterns keep the fingerprint byte-identical to before the field.
         let plain_fp = compile(&config(&["net_get"]), &catalog)
             .unwrap()
-            .snapshot()
             .fingerprint
             .0
             .clone();
         // A non-empty pattern set enters the content address.
-        assert_ne!(spec.snapshot().fingerprint.0, plain_fp);
+        assert_ne!(spec.fingerprint.0, plain_fp);
     }
 
     #[test]
@@ -720,13 +698,13 @@ mod tests {
         // ResourceKind) live in awaken-config-resolver.
         let frag = "Outputs are collected under `/mnt/session/outputs`.".to_string();
         let with = compile_with_resource_prompts(&cfg, &[], std::slice::from_ref(&frag)).unwrap();
-        let spec = &with.snapshot().resolved_spec;
+        let spec = &with.resolved_spec;
         assert!(spec.instructions.starts_with("be helpful"));
         assert!(spec.instructions.contains("/mnt/session/outputs"));
-        // The prompt changes the runnable's content address (no stale cache hit).
+        // The prompt changes the snapshot's content address (no stale cache hit).
         assert_ne!(
-            with.snapshot().fingerprint.0,
-            compile(&cfg, &[]).unwrap().snapshot().fingerprint.0
+            with.fingerprint.0,
+            compile(&cfg, &[]).unwrap().fingerprint.0
         );
     }
 
@@ -734,15 +712,10 @@ mod tests {
     fn wire_identity_metadata_is_excluded_from_the_fingerprint() {
         // name / description / metadata are authoring metadata the runtime never
         // consumes — editing them must NOT mint a new content-address for a
-        // byte-identical runnable (so a delegation `description` edit is not a republish).
+        // byte-identical snapshot (so a delegation `description` edit is not a republish).
         let tools = vec![tool("echo")];
         let base = config(&["echo"]);
-        let base_fp = compile(&base, &tools)
-            .unwrap()
-            .snapshot()
-            .fingerprint
-            .0
-            .clone();
+        let base_fp = compile(&base, &tools).unwrap().fingerprint.0.clone();
 
         let mut labeled = base.clone();
         labeled.description = Some("routes research questions".to_string());
@@ -750,12 +723,7 @@ mod tests {
         labeled
             .metadata
             .insert("team".to_string(), "research".to_string());
-        let labeled_fp = compile(&labeled, &tools)
-            .unwrap()
-            .snapshot()
-            .fingerprint
-            .0
-            .clone();
+        let labeled_fp = compile(&labeled, &tools).unwrap().fingerprint.0.clone();
         assert_eq!(
             base_fp, labeled_fp,
             "name/description/metadata are excluded from the content-address"
@@ -764,12 +732,7 @@ mod tests {
         // A genuinely behavioral change still moves the fingerprint.
         let mut rebehaved = base.clone();
         rebehaved.instructions = "be terse".to_string();
-        let rebehaved_fp = compile(&rebehaved, &tools)
-            .unwrap()
-            .snapshot()
-            .fingerprint
-            .0
-            .clone();
+        let rebehaved_fp = compile(&rebehaved, &tools).unwrap().fingerprint.0.clone();
         assert_ne!(
             base_fp, rebehaved_fp,
             "instructions still enter the fingerprint"
@@ -783,13 +746,10 @@ mod tests {
         let bare = compile(&cfg, &tools).unwrap();
         let with_empty = compile_with_resource_prompts(&cfg, &tools, &[]).unwrap();
         assert_eq!(
-            bare.snapshot().resolved_spec.instructions,
-            with_empty.snapshot().resolved_spec.instructions
+            bare.resolved_spec.instructions,
+            with_empty.resolved_spec.instructions
         );
-        assert_eq!(
-            bare.snapshot().fingerprint.0,
-            with_empty.snapshot().fingerprint.0
-        );
+        assert_eq!(bare.fingerprint.0, with_empty.fingerprint.0);
     }
 
     #[test]
@@ -800,8 +760,8 @@ mod tests {
             "state_machine".to_string(),
             serde_json::json!({"machines": []}),
         );
-        let runnable = compile(&cfg, &[tool("echo")]).unwrap();
-        let spec = &runnable.snapshot().resolved_spec;
+        let snapshot = compile(&cfg, &[tool("echo")]).unwrap();
+        let spec = &snapshot.resolved_spec;
         assert_eq!(spec.plugin_ids, vec!["state_machine".to_string()]);
         assert_eq!(
             spec.plugin_config.get("state_machine"),
@@ -814,12 +774,8 @@ mod tests {
             serde_json::json!({"machines": [{"name": "m"}]}),
         );
         assert_ne!(
-            runnable.snapshot().fingerprint.0,
-            compile(&other, &[tool("echo")])
-                .unwrap()
-                .snapshot()
-                .fingerprint
-                .0
+            snapshot.fingerprint.0,
+            compile(&other, &[tool("echo")]).unwrap().fingerprint.0
         );
     }
 
@@ -906,7 +862,7 @@ mod tests {
         }];
         let compiled = compile(&cfg, &tools).expect("missing MCP target must compile");
         // The override still projects into the presentation (applied at runtime).
-        let pres = &compiled.snapshot().resolved_spec.tool_presentation;
+        let pres = &compiled.resolved_spec.tool_presentation;
         assert!(!pres.is_empty());
         assert_eq!(pres.resolve("file_issue"), "mcp__gh__create_issue");
     }

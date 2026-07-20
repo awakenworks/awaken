@@ -66,7 +66,7 @@ pub fn admin_tool_ids() -> Vec<String> {
 /// **ordinary** config — instructions + the five admin tool ids + an `Auto` model
 /// binding — with the native backend (no sandbox). The host publishes it into the
 /// reserved scope through the ordinary publish path, so it becomes a compiled,
-/// content-addressed `RunnableConfig` like any agent (no builder bypass).
+/// content-addressed `ExecutableAgentSnapshot` like any agent (no builder bypass).
 #[must_use]
 pub fn admin_assistant_config() -> AgentConfig {
     AgentConfig {

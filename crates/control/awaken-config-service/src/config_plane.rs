@@ -4,7 +4,7 @@
 //! stores declarative [`AgentConfig`]s in a [`ConfigRegistry`], and on publish
 //! compiles one into a content-addressed [`StoredPublication`] and hot-swaps it
 //! into the installed catalog. The host then resolves a session's agent to its
-//! installed runnable config, so a published agent runs with its own instructions,
+//! installed executable snapshot, so a published agent runs with its own instructions,
 //! tools, and plugins (ADR-0031; the config/runtime seam is the compiled snapshot).
 //!
 //! The runtime never edits config records; it consumes only the compiled config.
@@ -15,8 +15,9 @@ use std::sync::{Arc, Mutex};
 use awaken_config_resolver::ResourceStore;
 use awaken_config_store::{
     AgentConfig, AgentConfigRevision, AuditedConfigWrite, ConfigRegistry, ConfigWrite,
-    DEFAULT_SCOPE, ManagementAuditEntry, ManagementAuditRecord, ManagementEffect, ModelSelection,
-    RunnableConfig, ScopedConfig, ScopedConfigRegistry, StoredPublication, ToolOverride,
+    DEFAULT_SCOPE, ExecutableAgentSnapshot, ManagementAuditEntry, ManagementAuditRecord,
+    ManagementEffect, ModelSelection, ScopedConfig, ScopedConfigRegistry, StoredPublication,
+    ToolOverride,
 };
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_tenancy::ScopeId;
@@ -58,7 +59,7 @@ pub struct ValidationIssue {
 }
 
 /// The config domain service: validate, store, publish, and expose the installed
-/// (published) runnable config per agent.
+/// published executable snapshot per agent.
 ///
 /// **Scope-free by design (ADR-0051/0052).** Tenancy is an edge aspect: this service
 /// never names a `ScopeId`. The already-scoped collaborators — a scope-bound
@@ -69,7 +70,7 @@ pub struct ValidationIssue {
 #[derive(Clone)]
 struct InstalledEntry {
     source_revision: u64,
-    runnable: RunnableConfig,
+    snapshot: ExecutableAgentSnapshot,
 }
 
 /// The transient, secret-free result of reading every configuration source once.
@@ -96,7 +97,7 @@ fn snapshot_metadata(
 
 #[derive(Default)]
 pub struct ConfigService {
-    /// The installed catalog: agent id → compiled runnable config, hot-swapped on
+    /// The installed catalog: agent id → executable snapshot, hot-swapped on
     /// publish. A run resolves its agent here (awaken-next `set_registry_snapshot`).
     /// Keyed by agent id alone (the durable, scope-owned store is the tenant-isolated
     /// truth); built-in and reserved ids are globally unique, so no cross-scope
@@ -256,7 +257,7 @@ impl ConfigService {
             .ok_or_else(|| PublishError::NotStored(id.to_string()))?;
         let source_revision = versioned.revision;
         let resolved = self.resolve_agent_config(workspace, versioned)?;
-        let runnable = awaken_config_store::compile_resolved(
+        let snapshot = awaken_config_store::compile_resolved(
             &resolved.config,
             catalog,
             &resolved.resource_prompts,
@@ -264,7 +265,7 @@ impl ConfigService {
         )
         .map_err(|e| PublishError::Compile(e.to_string()))?;
         let publication =
-            StoredPublication::published_at_revision(runnable.clone(), id, source_revision);
+            StoredPublication::published_at_revision(snapshot.clone(), id, source_revision);
         let write = registry
             .put_publication_if_config_revision(&publication, source_revision)
             .await
@@ -281,7 +282,7 @@ impl ConfigService {
                 id.to_string(),
                 InstalledEntry {
                     source_revision,
-                    runnable,
+                    snapshot,
                 },
             );
         }
@@ -405,13 +406,13 @@ impl ConfigService {
         }
     }
 
-    /// The installed (published) runnable config for `agent`, if any.
-    pub fn installed(&self, agent: &str) -> Option<RunnableConfig> {
+    /// The installed (published) executable snapshot for `agent`, if any.
+    pub fn installed(&self, agent: &str) -> Option<ExecutableAgentSnapshot> {
         self.installed
             .lock()
             .unwrap()
             .get(agent)
-            .map(|entry| entry.runnable.clone())
+            .map(|entry| entry.snapshot.clone())
     }
 
     /// Warm-load the installed catalog from a durable registry's published configs
@@ -440,7 +441,7 @@ impl ConfigService {
                     p.agent_id,
                     InstalledEntry {
                         source_revision: p.source_revision,
-                        runnable: RunnableConfig::from_parts(p.snapshot, p.install),
+                        snapshot: p.snapshot,
                     },
                 );
             }
@@ -653,8 +654,8 @@ pub struct ConfigServiceAgentSource(pub Arc<ConfigService>);
 
 impl awaken_session_contract::AgentConfigSource for ConfigServiceAgentSource {
     fn agent_view(&self, agent_id: &str) -> Option<awaken_session_contract::AgentConfigView> {
-        let runnable = self.0.installed(agent_id)?;
-        let spec = &runnable.snapshot().resolved_spec;
+        let snapshot = self.0.installed(agent_id)?;
+        let spec = &snapshot.resolved_spec;
         Some(awaken_session_contract::AgentConfigView {
             model: Some(spec.model_binding.model_ref.clone()),
             system: (!spec.instructions.is_empty()).then(|| spec.instructions.clone()),
@@ -1404,7 +1405,7 @@ mod resource_prompt_tests {
         // The compiled (installed) config's system prompt carries the base plus the
         // bound memory store's fragment + its per-binding instructions.
         let installed = plane.service().installed("agent-1").unwrap();
-        let instructions = &installed.snapshot().resolved_spec.instructions;
+        let instructions = &installed.resolved_spec.instructions;
         assert!(instructions.starts_with("be helpful"));
         assert!(instructions.contains("/mnt/memory/prefs"));
         assert!(instructions.contains("user preferences"));
@@ -1473,7 +1474,7 @@ mod resource_prompt_tests {
         // The compiled (installed) config carries the resolved concrete binding +
         // the remaining offerings as pool candidates (ADR-0052 D5).
         let installed = plane.service().installed("mgmt").unwrap();
-        let spec = &installed.snapshot().resolved_spec;
+        let spec = &installed.resolved_spec;
         assert_eq!(spec.model_binding.model_ref, "m-first");
         assert_eq!(spec.model_candidates.len(), 1);
         assert_eq!(spec.model_candidates[0].model_ref, "m-second");
@@ -1539,10 +1540,7 @@ mod resource_prompt_tests {
         plane.put(&scope, &agent_config("pinned")).await.unwrap();
         plane.publish(&scope, "pinned").await.unwrap();
         let installed = plane.service().installed("pinned").unwrap();
-        assert_eq!(
-            installed.snapshot().resolved_spec.model_binding.model_ref,
-            "m"
-        );
+        assert_eq!(installed.resolved_spec.model_binding.model_ref, "m");
     }
 
     #[tokio::test]
@@ -1593,10 +1591,7 @@ mod resource_prompt_tests {
         plane.put(&scope, &agent_config("agent-2")).await.unwrap();
         plane.publish(&scope, "agent-2").await.unwrap();
         let installed = plane.service().installed("agent-2").unwrap();
-        assert_eq!(
-            installed.snapshot().resolved_spec.instructions,
-            "be helpful"
-        );
+        assert_eq!(installed.resolved_spec.instructions, "be helpful");
     }
 
     // ==== CEG section 04: extra publish / resolve / handler coverage ====
@@ -1932,8 +1927,7 @@ mod resource_prompt_tests {
         assert_eq!(n, 2, "both published rows are read");
         let installed = cold.installed("warm-agent").expect("agent hydrated");
         assert_eq!(
-            installed.snapshot().resolved_spec.instructions,
-            "version two",
+            installed.resolved_spec.instructions, "version two",
             "the latest publication wins on rehydrate"
         );
 

@@ -163,13 +163,12 @@ impl SharedHost {
         // resume) so it spans an awaiting→resumed turn.
         st.compactions_before =
             awaken_ext_compact::compaction_count(&ctx.commit.committed_state(&ctx.thread_id));
-        // Prepare the activation (install catalog + register snapshot + mint ids),
+        // Prepare the activation (register snapshot + mint ids),
         // then deliver it through the ingress seam. Direct ingress executes inline,
         // so this is behavior-identical to the former `start_run` call.
-        let (mut run_id, mut activation) = ctx
-            .runtime
-            .prepare(&ctx.config, thread.to_string(), messages)
-            .map_err(|e| HostError::internal(e.to_string()))?;
+        let (mut run_id, mut activation) =
+            ctx.runtime
+                .prepare(&ctx.config, thread.to_string(), messages);
         // Stamp the thread's per-turn model override (R2/R5) onto the activation, OFF
         // the fingerprinted snapshot, so the resolve seam (here or on a claiming
         // worker) picks the effective model without a session-level registry.
@@ -360,10 +359,9 @@ impl SharedHost {
                 .collect()
         };
         messages.extend(input);
-        let (_run_id, mut activation) = ctx
-            .runtime
-            .prepare(&ctx.config, thread.to_string(), messages)
-            .map_err(|e| HostError::internal(e.to_string()))?;
+        let (_run_id, mut activation) =
+            ctx.runtime
+                .prepare(&ctx.config, thread.to_string(), messages);
         // Stamp the thread's per-turn model override (R2/R5) off the fingerprinted
         // snapshot, so the claiming worker resolves the effective model itself.
         activation.model_ref_override = self.model_route.override_for(thread);

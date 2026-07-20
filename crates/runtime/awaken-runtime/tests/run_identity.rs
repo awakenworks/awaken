@@ -8,8 +8,8 @@ use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 use awaken_runtime_contract::resolved::ModelBinding;
 use awaken_runtime_contract::resume::ResumeResult;
-use awaken_runtime_contract::runnable::RunnableConfig;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
+use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 
 struct FixedModel;
 
@@ -27,8 +27,8 @@ impl LlmExecutor for FixedModel {
     }
 }
 
-fn config() -> RunnableConfig {
-    RunnableConfig::builder("worker")
+fn config() -> ExecutableAgentSnapshot {
+    ExecutableAgentSnapshot::builder("worker")
         .model(ModelBinding::new("test", "fixed", "local"))
         .max_steps(4)
         .build()

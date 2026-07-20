@@ -2,7 +2,7 @@
 //! its default config, and the per-run extraction prompt.
 
 use awaken_runtime_contract::resolved::ModelBinding;
-use awaken_runtime_contract::runnable::RunnableConfig;
+use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 
 use crate::tool::write_memory_descriptor;
 
@@ -47,8 +47,8 @@ pub const EXTRACT_PROMPT: &str =
 /// A default `memory-extractor` agent config: advertises only `write_memory` and
 /// carries the extraction instructions. A host may override by registering its own
 /// config under [`MEMORY_AGENT_ID`].
-pub fn default_memory_agent(model_ref: &str, instructions: &str) -> RunnableConfig {
-    RunnableConfig::builder(MEMORY_AGENT_ID)
+pub fn default_memory_agent(model_ref: &str, instructions: &str) -> ExecutableAgentSnapshot {
+    ExecutableAgentSnapshot::builder(MEMORY_AGENT_ID)
         .instructions(instructions)
         .model(ModelBinding::new("default", model_ref, "default"))
         .max_steps(6)
@@ -69,8 +69,8 @@ Do not explain, do not use tools.";
 
 /// A default `memory-selector` agent config: no tools, a single step (it replies
 /// once), and no plugins — its Agent config therefore cannot invoke memory recall.
-pub fn default_selector_agent(model_ref: &str, instructions: &str) -> RunnableConfig {
-    RunnableConfig::builder(SELECTOR_AGENT_ID)
+pub fn default_selector_agent(model_ref: &str, instructions: &str) -> ExecutableAgentSnapshot {
+    ExecutableAgentSnapshot::builder(SELECTOR_AGENT_ID)
         .instructions(instructions)
         .model(ModelBinding::new("default", model_ref, "default"))
         .max_steps(1)
@@ -84,8 +84,8 @@ mod tests {
     #[test]
     fn default_agent_carries_id_instructions_and_the_write_tool() {
         let cfg = default_memory_agent("stub", DEFAULT_MEMORY_INSTRUCTIONS);
-        assert_eq!(cfg.snapshot().root_agent_id.0, MEMORY_AGENT_ID);
-        let spec = &cfg.snapshot().resolved_spec;
+        assert_eq!(cfg.root_agent_id.0, MEMORY_AGENT_ID);
+        let spec = &cfg.resolved_spec;
         assert!(spec.instructions.contains("memory extraction Agent"));
         assert_eq!(spec.tool_descriptors.len(), 1);
         assert_eq!(spec.tool_descriptors[0].id, "write_memory");

@@ -33,7 +33,7 @@ const TOPICS: &[Topic] = &[
     Topic {
         key: "agent",
         title: "What an agent is",
-        what: "A declarative configuration (system prompt, model, tools, plugins, policy, resources) that compiles to a content-addressed runnable config.",
+        what: "A declarative configuration (system prompt, model, tools, plugins, policy, resources) that compiles to a content-addressed executable snapshot.",
         why: "Agents are configured, not coded — you change behavior by editing config and re-publishing, never by shipping code.",
         location: "Author ▸ Agents. Open one to edit; the left rail sections are Overview / Behavior / Tools / Resources.",
         how: "New agent (or Draft with AI) → set model + system prompt + tools/plugins → Save → Publish (review the diff).",

@@ -1,5 +1,5 @@
 //! A composition-root registry mapping a human agent id to its compiled
-//! [`RunnableConfig`].
+//! [`ExecutableAgentSnapshot`].
 //!
 //! Every locally-runnable agent — the main assistant, native delegates, and the
 //! auxiliary agents (memory extractor, judge, compactor) — is one entry here, so
@@ -8,20 +8,20 @@
 //! goal / compact each be an ordinary, separately-configured agent rather than a
 //! bespoke mechanism.
 //!
-//! The catalog is data-only: it holds already-compiled `RunnableConfig`s (from
-//! `RunnableConfig::builder` or `awaken-config-store::compile`). It never reaches
+//! The catalog is data-only: it holds already-compiled `ExecutableAgentSnapshot`s (from
+//! `ExecutableAgentSnapshot::builder` or `awaken-config-store::compile`). It never reaches
 //! a store, a model, or the kernel — the sub-run driver reads it to resolve an id.
 
 use std::collections::HashMap;
 
-use awaken_runtime_contract::runnable::RunnableConfig;
+use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 
-/// Maps an agent id to its runnable config. A later registration for the same id
+/// Maps an agent id to its executable snapshot. A later registration for the same id
 /// replaces the earlier one (last write wins), so a host can layer defaults then
 /// overrides.
 #[derive(Clone, Default)]
 pub struct AgentCatalog {
-    configs: HashMap<String, RunnableConfig>,
+    configs: HashMap<String, ExecutableAgentSnapshot>,
 }
 
 impl AgentCatalog {
@@ -30,20 +30,20 @@ impl AgentCatalog {
     }
 
     /// Register `config` under its own agent id (`root_agent_id`).
-    pub fn insert(&mut self, config: RunnableConfig) {
-        let id = config.snapshot().root_agent_id.0.clone();
+    pub fn insert(&mut self, config: ExecutableAgentSnapshot) {
+        let id = config.root_agent_id.0.clone();
         self.configs.insert(id, config);
     }
 
     /// Builder-style [`insert`](Self::insert), for one-liner assembly.
     #[must_use]
-    pub fn with_agent(mut self, config: RunnableConfig) -> Self {
+    pub fn with_agent(mut self, config: ExecutableAgentSnapshot) -> Self {
         self.insert(config);
         self
     }
 
     /// The config registered for `agent_id`, if any.
-    pub fn resolve(&self, agent_id: &str) -> Option<&RunnableConfig> {
+    pub fn resolve(&self, agent_id: &str) -> Option<&ExecutableAgentSnapshot> {
         self.configs.get(agent_id)
     }
 }
@@ -53,8 +53,8 @@ mod tests {
     use super::*;
     use awaken_runtime_contract::resolved::ModelBinding;
 
-    fn config(id: &str, instructions: &str) -> RunnableConfig {
-        RunnableConfig::builder(id)
+    fn config(id: &str, instructions: &str) -> ExecutableAgentSnapshot {
+        ExecutableAgentSnapshot::builder(id)
             .instructions(instructions)
             .model(ModelBinding::new("default", "stub", "default"))
             .build()
@@ -70,18 +70,12 @@ mod tests {
             catalog
                 .resolve("assistant")
                 .unwrap()
-                .snapshot()
                 .resolved_spec
                 .instructions,
             "be helpful"
         );
         assert_eq!(
-            catalog
-                .resolve("judge")
-                .unwrap()
-                .snapshot()
-                .resolved_spec
-                .instructions,
+            catalog.resolve("judge").unwrap().resolved_spec.instructions,
             "be strict"
         );
         assert!(catalog.resolve("missing").is_none());
@@ -97,7 +91,6 @@ mod tests {
             catalog
                 .resolve("memory-extractor")
                 .unwrap()
-                .snapshot()
                 .resolved_spec
                 .instructions,
             "v2"

@@ -166,8 +166,8 @@ impl RunDelegationService for AwaitingResolver {
     }
 }
 
-fn config() -> RunnableConfig {
-    RunnableConfig::builder("assistant")
+fn config() -> ExecutableAgentSnapshot {
+    ExecutableAgentSnapshot::builder("assistant")
         .model(ModelBinding::new("demo", "stub", "stub"))
         .tool(ToolDescriptor::pinned(
             "demo",
