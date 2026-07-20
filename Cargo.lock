@@ -1426,6 +1426,7 @@ dependencies = [
  "awaken-protocol-ag-ui",
  "awaken-protocol-ai-sdk",
  "awaken-protocol-managed",
+ "awaken-protocol-mcp",
  "awaken-protocol-transport",
  "awaken-provider-genai",
  "awaken-run-executor-a2a",
