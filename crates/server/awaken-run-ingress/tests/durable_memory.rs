@@ -30,6 +30,19 @@ use harness::{
     tool_runtime,
 };
 
+fn opaque_access(scheme: &str, reference: &str) -> InferenceAccess {
+    InferenceAccess {
+        scheme: scheme.into(),
+        reference: reference.into(),
+        provider_ref: None,
+        route_ref: None,
+        scope_id: None,
+        credential_access: None,
+        endpoint: None,
+        candidates: Vec::new(),
+    }
+}
+
 fn allow_command() -> ResumeCommand {
     ResumeCommand {
         correlation_id: TICKET.to_string(),
@@ -170,7 +183,7 @@ async fn a_secretless_worker_reads_the_snapshot_pinned_access() {
         None,
         Some(resolver),
     );
-    let access = InferenceAccess::new("credential-reference/v1", "grant-17");
+    let access = opaque_access("credential-reference/v1", "grant-17");
     let mut activation = activation("run-gateway");
     activation.snapshot.metadata.inference_access = Some(access.clone());
     let request = RunDispatch::new(activation);

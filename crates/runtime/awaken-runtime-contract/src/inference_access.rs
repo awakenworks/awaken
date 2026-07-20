@@ -40,46 +40,6 @@ pub struct InferenceAccess {
 }
 
 impl InferenceAccess {
-    #[must_use]
-    pub fn new(scheme: impl Into<String>, reference: impl Into<String>) -> Self {
-        Self {
-            scheme: scheme.into(),
-            reference: reference.into(),
-            provider_ref: None,
-            route_ref: None,
-            scope_id: None,
-            credential_access: None,
-            endpoint: None,
-            candidates: Vec::new(),
-        }
-    }
-
-    #[must_use]
-    pub fn exact_credential(
-        credential_ref: impl Into<String>,
-        provider_ref: impl Into<String>,
-        route_ref: impl Into<String>,
-    ) -> Self {
-        let credential_ref = credential_ref.into();
-        Self {
-            scheme: "credential-source/v1".to_string(),
-            reference: credential_ref.clone(),
-            provider_ref: Some(provider_ref.into()),
-            route_ref: Some(route_ref.into()),
-            scope_id: None,
-            credential_access: Some(CredentialAccess {
-                credential: CredentialRef {
-                    id: credential_ref,
-                    revision: 0,
-                },
-                injection: CredentialInjectionKind::Reference,
-                usage: CredentialUsage::ProviderAdapter,
-            }),
-            endpoint: None,
-            candidates: Vec::new(),
-        }
-    }
-
     /// Pin every non-secret input required to construct one provider client. The
     /// execution plane may validate these pins and inject the referenced material,
     /// but must not select another catalog route or workspace credential.

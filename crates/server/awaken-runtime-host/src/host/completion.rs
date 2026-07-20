@@ -216,6 +216,19 @@ mod completion_tests {
     use awaken_run_ingress::CompletionSink;
     use std::sync::Arc;
 
+    fn opaque_access(scheme: &str, reference: &str) -> InferenceAccess {
+        InferenceAccess {
+            scheme: scheme.into(),
+            reference: reference.into(),
+            provider_ref: None,
+            route_ref: None,
+            scope_id: None,
+            credential_access: None,
+            endpoint: None,
+            candidates: Vec::new(),
+        }
+    }
+
     /// A3: dropping the guard (caller future dropped / timed out) removes the
     /// waiter, so a run that never settles does not leak an entry.
     #[tokio::test]
@@ -247,11 +260,11 @@ mod completion_tests {
         let access = InferenceAccess::candidate_set([
             (
                 "primary".to_string(),
-                InferenceAccess::new("credential-source/v1", "credential-a"),
+                opaque_access("credential-source/v1", "credential-a"),
             ),
             (
                 "fallback".to_string(),
-                InferenceAccess::new("credential-reference/v1", "grant-b"),
+                opaque_access("credential-reference/v1", "grant-b"),
             ),
         ])
         .unwrap();

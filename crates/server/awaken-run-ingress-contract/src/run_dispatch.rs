@@ -107,6 +107,43 @@ mod tests {
         AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
     };
 
+    fn opaque_access(scheme: &str, reference: &str) -> awaken_runtime_contract::InferenceAccess {
+        awaken_runtime_contract::InferenceAccess {
+            scheme: scheme.into(),
+            reference: reference.into(),
+            provider_ref: None,
+            route_ref: None,
+            scope_id: None,
+            credential_access: None,
+            endpoint: None,
+            candidates: Vec::new(),
+        }
+    }
+
+    fn exact_access(
+        credential: &str,
+        provider: &str,
+        route: &str,
+    ) -> awaken_runtime_contract::InferenceAccess {
+        awaken_runtime_contract::InferenceAccess {
+            scheme: "credential-source/v1".into(),
+            reference: credential.into(),
+            provider_ref: Some(provider.into()),
+            route_ref: Some(route.into()),
+            scope_id: None,
+            credential_access: Some(awaken_runtime_contract::CredentialAccess {
+                credential: awaken_runtime_contract::CredentialRef {
+                    id: credential.into(),
+                    revision: 0,
+                },
+                injection: awaken_runtime_contract::CredentialInjectionKind::Reference,
+                usage: awaken_runtime_contract::CredentialUsage::ProviderAdapter,
+            }),
+            endpoint: None,
+            candidates: Vec::new(),
+        }
+    }
+
     fn activation() -> RunActivation {
         RunActivation::new(
             RunId("run-1".into()),
@@ -269,9 +306,8 @@ mod tests {
             .verify_execution_scope(&claimed)
             .expect("scope belongs to authority");
         let mut activation = activation();
-        activation.snapshot.metadata.inference_access = Some(
-            awaken_runtime_contract::InferenceAccess::new("credential-reference/v1", "grant-17"),
-        );
+        activation.snapshot.metadata.inference_access =
+            Some(opaque_access("credential-reference/v1", "grant-17"));
         let request = RunDispatch::new(activation).with_execution_scope(verified.into_ref());
         let wire = serde_json::to_value(&request).expect("serializes");
         assert_eq!(wire["execution_scope"], "workspace-a");
@@ -289,19 +325,11 @@ mod tests {
         let access = awaken_runtime_contract::InferenceAccess::candidate_set([
             (
                 "primary".to_string(),
-                awaken_runtime_contract::InferenceAccess::exact_credential(
-                    "cred-a",
-                    "provider-a@1",
-                    "route-a@2",
-                ),
+                exact_access("cred-a", "provider-a@1", "route-a@2"),
             ),
             (
                 "fallback".to_string(),
-                awaken_runtime_contract::InferenceAccess::exact_credential(
-                    "cred-b",
-                    "provider-b@4",
-                    "route-b@3",
-                ),
+                exact_access("cred-b", "provider-b@4", "route-b@3"),
             ),
         ])
         .unwrap();

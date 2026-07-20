@@ -33,6 +33,19 @@ use serde_json::{Value, json};
 
 use harness::activation;
 
+fn opaque_access(scheme: &str, reference: &str) -> InferenceAccess {
+    InferenceAccess {
+        scheme: scheme.into(),
+        reference: reference.into(),
+        provider_ref: None,
+        route_ref: None,
+        scope_id: None,
+        credential_access: None,
+        endpoint: None,
+        candidates: Vec::new(),
+    }
+}
+
 /// Stand up a live server mirroring a cell server's `dispatch_transport_router`
 /// over a shared [`MemoryDispatchStore`], bound to an ephemeral port. Returns the
 /// base URL a `HttpDispatchQueue` points at plus the shared store handle, so a test
@@ -225,10 +238,8 @@ async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
 
     // Enqueue a run over the wire; the server-side store records it.
     let mut activation = activation("run-1");
-    activation.snapshot.metadata.inference_access = Some(InferenceAccess::new(
-        "credential-reference/v1",
-        "grant-http",
-    ));
+    activation.snapshot.metadata.inference_access =
+        Some(opaque_access("credential-reference/v1", "grant-http"));
     queue
         .enqueue(RunDispatch::new(activation))
         .await
@@ -255,10 +266,7 @@ async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
             .snapshot
             .metadata
             .inference_access,
-        Some(InferenceAccess::new(
-            "credential-reference/v1",
-            "grant-http"
-        )),
+        Some(opaque_access("credential-reference/v1", "grant-http")),
         "the opaque grant survives the worker HTTP boundary"
     );
     assert_eq!(claimed.lease.owner, "worker-A");

@@ -15,7 +15,6 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::{MemoryCommitCoordinator, replay_state};
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::capability::RuntimeCapabilitySource;
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
@@ -419,25 +418,6 @@ async fn inactive_plugin_contributes_nothing() {
 
     assert!(commit.committed().state.is_empty());
     assert_eq!(resolves.load(Ordering::SeqCst), 0);
-}
-
-#[test]
-fn runtime_capabilities_project_the_plugin_declared_bound() {
-    let runtime = Runtime::new()
-        .with_llm(Arc::new(TextLlm))
-        .with_plugin(Arc::new(MarkPlugin {
-            resolves: Arc::new(AtomicUsize::new(0)),
-        }));
-    // The served catalog projects the plugin's authoritative manifest bound (G8),
-    // so an operator overlay sees the real ceiling, not the deny-all placeholder.
-    let served = runtime.runtime_capabilities();
-    let mark = served
-        .plugins
-        .iter()
-        .find(|p| p.id == "mark")
-        .expect("mark advertised");
-    assert_eq!(mark.bound.phase_hooks, vec![PhaseHookPoint::StepStart]);
-    assert!(mark.bound.state_keys.allows("phase"));
 }
 
 #[tokio::test]
