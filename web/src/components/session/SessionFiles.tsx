@@ -16,6 +16,7 @@ const KIND_TONE: Record<string, "agent" | "info" | "ok" | "neutral"> = {
   memory_store: "agent",
   file: "info",
   github_repository: "ok",
+  skill: "ok",
 };
 
 export default function SessionFiles({ base, sid }: { base: string; sid: string }) {
@@ -59,7 +60,7 @@ export default function SessionFiles({ base, sid }: { base: string; sid: string 
                   <code style={{ fontSize: 12 }}>{r.mount_path}</code>
                 </span>
                 <span className="mut mono" style={{ fontSize: 11 }}>
-                  {r.memory_store_id ?? r.file_id ?? r.url ?? ""}
+                  {r.memory_store_id ?? r.file_id ?? r.url ?? r.resource_id ?? ""}
                 </span>
               </div>
             ))}

@@ -637,10 +637,41 @@ impl awaken_session_contract::AgentConfigSource for ConfigServiceAgentSource {
     fn agent_view(&self, agent_id: &str) -> Option<awaken_session_contract::AgentConfigView> {
         let snapshot = self.0.installed(agent_id)?;
         let spec = &snapshot.resolved_spec;
+        let resources = self
+            .0
+            .resources
+            .as_ref()
+            .and_then(|store| store.get_agent_resource(agent_id))
+            .map(|config| {
+                config
+                    .resources
+                    .into_iter()
+                    .map(|binding| {
+                        use awaken_config_resolver::ResourceKind as Kind;
+                        awaken_session_contract::SessionResource {
+                            kind: match binding.kind {
+                                Kind::Outputs => "outputs",
+                                Kind::File => "file",
+                                Kind::MemoryStore => "memory_store",
+                                Kind::GithubRepository => "github_repository",
+                                Kind::Skill => "skill",
+                            }
+                            .to_string(),
+                            id: binding.resource_id,
+                            mount_path: binding.mount_path,
+                            instructions: binding.instructions,
+                            auth_token: None,
+                            git_ref: None,
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         Some(awaken_session_contract::AgentConfigView {
             model: Some(spec.model_binding.model_ref.clone()),
             system: (!spec.instructions.is_empty()).then(|| spec.instructions.clone()),
             tool_ids: spec.tool_descriptors.iter().map(|d| d.id.clone()).collect(),
+            resources,
         })
     }
 }

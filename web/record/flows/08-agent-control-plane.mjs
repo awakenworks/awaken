@@ -1,19 +1,31 @@
 // Agent control-plane proof: tune the context view, compaction prompt, memory
 // extraction prompts, and a state-machine reminder/continuation from one Behavior
 // chapter, then verify the exact persisted configuration through the real API.
+import { configureSyntheticModel } from "../support/models.mjs";
 
 const AGENT_ID = "control-plane-demo";
 const COMPACT_PROMPT = "Preserve decisions, unresolved risks, file paths, and exact verification results.";
 const MEMORY_INSTRUCTIONS = "Remember durable user preferences and accepted project conventions; ignore transient logs.";
 const MEMORY_TASK = "Extract only reusable facts from this completed step. Return no implementation-note memories.";
 const CONTINUE_PROMPT = "Continue until the tracked work is complete: {summary}";
+const MODEL_ID = "control-plane-recording-model";
+
+export const story = {
+  promise: "Convert a generic project Agent into a versioned behavior contract without editing runtime code.",
+  effect: "One published Draft carries bounded context, compaction guidance, Memory extraction, reminders, and completion rules.",
+  aha: "One Agent page controls what the model sees, remembers, is reminded of, and is allowed to call complete.",
+  loyalty: "Deep per-Agent control lets teams improve behavior over time instead of replacing the platform.",
+  satisfaction: "Related controls live together and publish as one auditable diff, reducing configuration guesswork.",
+  advocacy: "Showing formerly hidden prompts as editable product controls differentiates Awaken in technical evaluations.",
+};
 
 export async function run({ page, goto, intro, say, clearCaption, checkpoint, aha, expect, click, type, wait }) {
+  await configureSyntheticModel(page, MODEL_ID);
   await page.request.put(`http://127.0.0.1:38080/v1/config/agents/${AGENT_ID}`, {
     data: {
       id: AGENT_ID,
       name: "Control plane demo",
-      model: { id: "" },
+      model: { id: MODEL_ID },
       system: "You are a careful project agent. Make progress, keep evidence, and finish declared work.",
       metadata: {},
       tools: [],
@@ -78,8 +90,18 @@ export async function run({ page, goto, intro, say, clearCaption, checkpoint, ah
     });
   });
 
+  await say("Publish compiles these related controls as one reviewable behavior change, not hidden runtime defaults.", 4000);
+  await click(page.getByRole("button", { name: /Publish|发布/ }));
+  const modal = page.locator(".modal");
+  await checkpoint("the publish gate shows a validated behavior diff", async () => {
+    await expect(modal.getByText(/Draft compiled successfully|草稿已通过编译/)).toBeVisible();
+    await expect(modal).toContainText(/Behavior config|Enabled behaviors|行为/);
+  });
+  await click(modal.getByRole("button", { name: /Publish|发布/ }));
+  await wait(900);
+
   await clearCaption();
-  await aha("One Agent page controls what the model sees, remembers, is reminded of, and is allowed to call complete.");
+  await aha(story.aha);
   await wait(1200);
   await clearCaption();
 }

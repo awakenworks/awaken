@@ -215,9 +215,17 @@ export type InboundEvent =
     }
   | { type: "user.custom_tool_result"; custom_tool_use_id: string; content?: ContentBlock[]; is_error?: boolean }
   | { type: "user.define_outcome"; description: string; rubric: string; max_iterations?: number }
-  | { type: "user.interrupt" }
-  | { type: "user.pause" }
-  | { type: "user.resume" };
+  | { type: "user.interrupt" };
+
+export interface EventReceipt {
+  id: string;
+  type: string;
+  processed_at?: string | null;
+}
+
+export interface SendEventsResponse {
+  data: EventReceipt[];
+}
 
 export interface ListSessionsResponse {
   data: Session[];
@@ -249,14 +257,15 @@ export interface Page<T> {
 }
 
 /** A resource mounted for a session (ADR-0038): the SDK-shaped item `/v1/sessions/:id/
- * resources` returns — a memory store / file / repo attached to the session's sandbox. */
+ * resources` returns — a memory store / file / repo / Skill attached to the sandbox. */
 export interface SessionResourceDto {
   id: string;
-  type: string; // "file" | "memory_store" | "github_repository"
+  type: string; // "file" | "memory_store" | "github_repository" | "skill"
   mount_path: string;
   memory_store_id?: string;
   file_id?: string;
   url?: string;
+  resource_id?: string;
   instructions?: string;
 }
 /** An output artifact a session produced — a file the agent wrote under `outputs/`,
