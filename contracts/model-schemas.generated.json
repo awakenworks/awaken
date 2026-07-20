@@ -23,6 +23,11 @@
         "version": {
           "format": "int64",
           "type": "integer"
+        },
+        "workspace_id": {
+          "default": "",
+          "description": "Owning workspace, stamped by the trusted configuration edge.",
+          "type": "string"
         }
       },
       "required": [
@@ -216,6 +221,81 @@
         "request_id"
       ],
       "title": "ApiError",
+      "type": "object"
+    },
+    "AvailabilityState": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "The availability of one credential source at a point in time.",
+      "oneOf": [
+        {
+          "description": "Selectable now.",
+          "properties": {
+            "state": {
+              "const": "available",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Cooled by a transient quota/rate signal until `retry_at_ms`; selectable\nagain at or after that wall-clock deadline (auto-resume, no timer).",
+          "properties": {
+            "retry_at_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "state": {
+              "const": "cooled_down",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "retry_at_ms"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Cooled by a hard exhaustion with no known reset — excluded until explicitly\n[`cleared`](AvailabilityLedger::clear) (e.g. a fresh availability check\npasses).",
+          "properties": {
+            "state": {
+              "const": "exhausted",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        }
+      ],
+      "title": "AvailabilityState"
+    },
+    "CooldownRequest": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "A cooldown signal an operator (or an external rate-limit integration) records\nagainst a credential source. `kind` maps to a failure\n[`Disposition`](awaken_runtime_contract::resilience::Disposition): `quota` cools\nuntil `retry_after_secs` (or a default window); `exhausted` cools until cleared;\n`available` / `clear` lifts any cooldown; `transient` / `permanent` are no-ops on\navailability (they are retry/next-binding decisions, not identity cooldowns).",
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "retry_after_secs": {
+          "default": null,
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "CooldownRequest",
       "type": "object"
     },
     "CredentialBinding": {
@@ -726,6 +806,11 @@
         "model_id": {
           "description": "The pinned / primary model — tried first. Kept as a bare field for wire and\nstorage compatibility; the ordered model axis is [`model_axis`] (this plus\n[`model_fallbacks`]).\n\n[`model_axis`]: InferenceProfile::model_axis\n[`model_fallbacks`]: InferenceProfile::model_fallbacks",
           "type": "string"
+        },
+        "workspace_id": {
+          "default": "",
+          "description": "Owning workspace, stamped by the trusted configuration edge. Empty only\nfor legacy rows, which scoped APIs treat as unowned.",
+          "type": "string"
         }
       },
       "required": [
@@ -820,6 +905,11 @@
         "version": {
           "format": "int64",
           "type": "integer"
+        },
+        "workspace_id": {
+          "default": "",
+          "description": "Owning workspace, stamped by the trusted configuration edge.",
+          "type": "string"
         }
       },
       "required": [
@@ -837,6 +927,32 @@
       "description": "A management-plane MCP server identifier.",
       "title": "McpServerId",
       "type": "string"
+    },
+    "ModelAttributes": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "The published intrinsic attributes of a catalog model, keyed by `model_id`. This is\nthe control plane's OWN projection of what a console publishes — deliberately not the\nagent-domain `ModelSpec` (a runtime type the control plane must not depend on, per the\ndependency-direction ban); it carries only what the catalog's consumers read. Extended\nas the console publishes more attributes.",
+      "properties": {
+        "context_window": {
+          "description": "Max context window in tokens — the single budget both the ACP CLIs' auto-compact\nwindow and the native compaction ext derive from. Absent → the consumer falls back.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_output_tokens": {
+          "description": "Max output tokens the model emits, when published.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "title": "ModelAttributes",
+      "type": "object"
     },
     "Offering": {
       "$defs": {
@@ -900,6 +1016,30 @@
         "dialect"
       ],
       "title": "Offering",
+      "type": "object"
+    },
+    "PoolEligibleView": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Which members of a pool are selectable right now — `selection_order` with cooled\nmembers dropped (`eligible_order`). The ops view of the mid-run rotation.",
+      "properties": {
+        "cooled": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "eligible": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "eligible",
+        "cooled"
+      ],
+      "title": "PoolEligibleView",
       "type": "object"
     },
     "ProtocolEndpoint": {

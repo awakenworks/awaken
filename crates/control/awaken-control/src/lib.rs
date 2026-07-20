@@ -18,7 +18,6 @@
 pub mod admin_assistant;
 pub mod authz;
 pub mod control_stores;
-pub mod resource_owner;
 pub mod worker_stores;
 
 async fn stamp_admin_resource_workspace(
@@ -55,7 +54,6 @@ pub use crate::authz::{
     embedded_iam_for_tenant, embedded_iam_for_workspace,
 };
 pub use crate::control_stores::{ControlStoreConfig, StoreBackend};
-pub use crate::resource_owner::{ResourceOwners, resource_ownership_guard};
 // The database-less worker's materialization subset (Stage C): only the credential
 // vault + secret store needed by snapshot-pinned inference access.
 pub use crate::worker_stores::{
@@ -269,15 +267,6 @@ pub fn control_router(input: ControlRouterInput) -> (Router, Arc<WebhookLifecycl
     let admin = admin
         .merge(webhook_crud)
         .layer(axum::middleware::from_fn(stamp_admin_resource_workspace));
-    // Tenant ownership for the id-addressed config resources (ADR-0051): MCP server
-    // defs, inference profiles, and webhook subscriptions are fenced by the authoring
-    // scope. The shared catalog is intentionally uncovered (org/deployment-level
-    // config). Wraps the admin router only; these are matched routes, so a route
-    // `layer` runs correctly.
-    let admin = admin.layer(axum::middleware::from_fn_with_state(
-        ResourceOwners::open_from_env(),
-        resource_ownership_guard,
-    ));
     let vaults = vault_router(vault_state);
     // The user-profiles front door (`/v1/user_profiles`) over its own in-mem store.
     let user_profiles = user_profiles_router(Arc::new(UserProfileState::new()));

@@ -566,6 +566,9 @@ impl WebhookEndpointDef {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AgentMcpConfig {
+    /// Owning workspace, stamped by the trusted configuration edge.
+    #[serde(default)]
+    pub workspace_id: String,
     pub agent_id: String,
     pub mcp_server_ids: Vec<McpServerId>,
     pub version: i64,
