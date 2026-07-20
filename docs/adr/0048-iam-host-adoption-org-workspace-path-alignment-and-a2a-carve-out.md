@@ -232,11 +232,10 @@ driving a `SubscriptionSource` port whose config-plane adapter lives in
 
 **Consequences.**
 - The CRUD surface moves to `/v1/config/webhook-subscriptions/{id}` (PUT/GET/
-  LIST/DELETE), joining the id-addressed resources under the `resource_owner`
-  tenant fence. PUT mints + seals the secret and returns it once; GET/LIST are
-  secret-free. Handlers **self-fence** on the row's `workspace_id` (the row
-  carries it, unlike MCP/profile, because dispatch enumerates by workspace), so
-  tenant isolation holds even without the management-plane ownership middleware.
+  LIST/DELETE). PUT mints + seals the secret and returns it once; GET/LIST are
+  secret-free. Handlers **self-fence** on the row's `workspace_id`, as MCP/profile
+  handlers do. Ownership lives on each aggregate rather than in a second
+  management-plane owner index.
 - The webhook plane moves from the plain `mount()` to the management path
   (`management_router_over`), where the admin store + vault exist. A deployment
   without the config plane has no durable webhooks.

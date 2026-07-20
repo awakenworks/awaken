@@ -82,6 +82,7 @@ async fn author_credential_mcp_server_and_agent_binding_then_resolve_secret_free
         "/v1/config/mcp-servers/jira",
         Some(json!({
             "id": "ignored-by-path",
+            "workspace_id": "ws",
             "display_name": "Jira",
             "url": "https://jira.example/mcp",
             "credential_binding": { "type": "exact", "credential_source_id": cred_id },
@@ -99,6 +100,7 @@ async fn author_credential_mcp_server_and_agent_binding_then_resolve_secret_free
         "/v1/config/mcp-servers/docs",
         Some(json!({
             "id": "docs",
+            "workspace_id": "ws",
             "display_name": "Docs",
             "url": "https://docs.example/mcp",
             "credential_binding": { "type": "none" },

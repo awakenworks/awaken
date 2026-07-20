@@ -342,6 +342,7 @@ mod tests {
         assert_eq!(ids, vec!["alpha".to_string(), "zeta".to_string()]);
 
         let config = AgentMcpConfig {
+            workspace_id: "ws".into(),
             agent_id: "agent-1".into(),
             mcp_server_ids: vec![McpServerId("alpha".into())],
             version: 1,
@@ -455,6 +456,7 @@ mod tests {
             InferenceProfileStore::put(&store, "p1".into(), profile("m1"));
             store.put_server(server("calc"));
             store.put_agent_config(AgentMcpConfig {
+                workspace_id: "ws".into(),
                 agent_id: "agent-1".into(),
                 mcp_server_ids: vec![McpServerId("calc".into())],
                 version: 1,
