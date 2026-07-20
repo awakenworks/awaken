@@ -1,6 +1,6 @@
 // Memory effect, not just binding UI: one real-model session writes a random fact,
 // the store is harvested, and a fresh session recalls it with no shared chat history.
-import { configureKimi } from "../support/models.mjs";
+import { LIVE_MODEL_ID, configureLiveModel } from "../support/models.mjs";
 
 const AGENT = "release-notes-writer";
 
@@ -14,7 +14,7 @@ export const story = {
 };
 
 export async function run({ page, goto, say, clearCaption, intro, runtimeCheckpoint, aha, expect, click, type, wait, beat }) {
-  await configureKimi(page);
+  await configureLiveModel(page);
   const secret = `AHA-${Date.now()}`;
   const store = await (await page.request.post("http://127.0.0.1:38080/v1/memory_stores", {
     data: { name: `release-memory-${Date.now()}` },
@@ -23,7 +23,7 @@ export async function run({ page, goto, say, clearCaption, intro, runtimeCheckpo
     data: {
       id: AGENT,
       name: "Release memory keeper",
-      model: { id: "kimi-for-coding" },
+      model: { id: LIVE_MODEL_ID },
       system: "Use the persistent memory file. WRITE exact facts the user asks you to remember; READ it to recall. Always use file tools.",
       tools: ["bash", "read", "write", "glob", "grep"],
       plugins: [],
