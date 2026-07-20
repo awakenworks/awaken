@@ -18,8 +18,6 @@ use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
-use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 use awaken_runtime_contract::plugin::{
@@ -157,23 +155,6 @@ impl Sink for ContinuationCollector {
     }
 }
 
-fn install(runtime: &Runtime) {
-    let fingerprint = CatalogFingerprint("catalog-a".to_string());
-    runtime
-        .install_catalog(RuntimeCatalogInstall {
-            publication_id: "pub-1".to_string(),
-            fingerprint: fingerprint.clone(),
-            source_revisions: vec!["rev-1".to_string()],
-            capabilities: RuntimeCapabilityCatalog {
-                catalog_fingerprint: fingerprint,
-                runtime_version: "test".to_string(),
-                tools: Vec::new(),
-                plugins: Vec::new(),
-            },
-        })
-        .expect("installs");
-}
-
 fn activation(plugin_ids: Vec<String>, max_steps: usize) -> RunActivation {
     let fingerprint = CatalogFingerprint("catalog-a".to_string());
     RunActivation {
@@ -230,7 +211,6 @@ async fn guard_steers_then_completes_and_surfaces_each_round() {
             steer_budget: 2,
             seen_fc: seen_fc.clone(),
         }));
-    install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let collector = Arc::new(ContinuationCollector::default());
@@ -286,7 +266,6 @@ async fn no_guard_ends_at_the_first_natural_end() {
             steer_budget: 5,
             seen_fc: seen_fc.clone(),
         }));
-    install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let collector = Arc::new(ContinuationCollector::default());
@@ -315,7 +294,6 @@ async fn an_always_steering_guard_is_bounded_by_max_steps() {
             steer_budget: usize::MAX, // never completes on its own
             seen_fc: seen_fc.clone(),
         }));
-    install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let collector = Arc::new(ContinuationCollector::default());
@@ -346,7 +324,6 @@ async fn a_guard_outside_its_bound_fails_the_run_closed() {
     let runtime = Runtime::new()
         .with_llm(Arc::new(EchoLlm))
         .with_plugin(Arc::new(RogueGuardPlugin));
-    install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
@@ -458,7 +435,6 @@ async fn a_later_guards_steer_overrides_an_earlier_guards_completion() {
         .with_llm(Arc::new(EchoLlm))
         .with_plugin(g1)
         .with_plugin(g2);
-    install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let collector = Arc::new(ContinuationCollector::default());
@@ -495,7 +471,6 @@ async fn all_completing_guards_end_with_the_last_guards_detail() {
         .with_llm(Arc::new(EchoLlm))
         .with_plugin(g1)
         .with_plugin(g2);
-    install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let collector = Arc::new(ContinuationCollector::default());
@@ -531,7 +506,6 @@ async fn a_guard_receives_the_run_conversation() {
     let runtime = Runtime::new()
         .with_llm(Arc::new(EchoLlm))
         .with_plugin(plugin);
-    install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());

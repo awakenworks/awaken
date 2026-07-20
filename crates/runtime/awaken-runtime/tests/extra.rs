@@ -11,8 +11,7 @@ use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::capability::{RuntimeCapabilityCatalog, RuntimeCapabilitySource};
-use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
+use awaken_runtime_contract::capability::RuntimeCapabilitySource;
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 use awaken_runtime_contract::resolved::{
@@ -40,12 +39,12 @@ impl LlmExecutor for TextLlm {
 }
 
 #[test]
-fn capability_source_returns_an_empty_default_before_install() {
+fn capability_source_projects_an_empty_runtime() {
     let runtime = Runtime::new();
     let caps = runtime.runtime_capabilities();
     assert!(caps.tools.is_empty());
     assert!(caps.plugins.is_empty());
-    assert_eq!(caps.catalog_fingerprint, CatalogFingerprint(String::new()));
+    assert!(!caps.catalog_fingerprint.0.is_empty());
     assert!(!caps.runtime_version.is_empty());
 }
 
@@ -64,19 +63,6 @@ fn thread_reader_returns_empty_for_unknown_ids() {
 async fn a_system_role_message_is_carried_into_inference() {
     let runtime = Runtime::new().with_llm(Arc::new(TextLlm));
     let fingerprint = CatalogFingerprint("catalog-a".to_string());
-    runtime
-        .install_catalog(RuntimeCatalogInstall {
-            publication_id: "pub-1".to_string(),
-            fingerprint: fingerprint.clone(),
-            source_revisions: vec!["rev-1".to_string()],
-            capabilities: RuntimeCapabilityCatalog {
-                catalog_fingerprint: fingerprint.clone(),
-                runtime_version: "test".to_string(),
-                tools: Vec::new(),
-                plugins: Vec::new(),
-            },
-        })
-        .expect("installs");
 
     let activation = RunActivation {
         run_id: RunId("run-1".to_string()),

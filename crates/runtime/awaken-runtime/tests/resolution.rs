@@ -61,7 +61,7 @@ fn resolve_fails_closed_on_fingerprint_mismatch() {
 fn resolve_fails_closed_when_only_the_spec_catalog_fingerprint_drifts() {
     // The configuration plane distributes one immutable value. If its embedded
     // resolved-spec identity drifts from the envelope identity, execution rejects
-    // it independently of any catalog installed on this runtime node.
+    // it without consulting mutable runtime-node state.
     let runtime = Runtime::new();
 
     let mut snap = snapshot("catalog-a");
@@ -71,7 +71,7 @@ fn resolve_fails_closed_when_only_the_spec_catalog_fingerprint_drifts() {
 }
 
 #[test]
-fn resolve_is_independent_of_an_installed_catalog() {
+fn resolve_depends_only_on_snapshot_consistency() {
     let runtime = Runtime::new();
     assert!(runtime.resolve(&snapshot("catalog-a")).is_ok());
 }

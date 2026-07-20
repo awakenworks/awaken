@@ -14,8 +14,6 @@ use awaken_agent_contract::event::{AgentEvent, Fact};
 use awaken_runtime::memory::{MemoryCommitCoordinator, MemoryStreamSink};
 use awaken_runtime::{CircuitBreakerConfig, LlmRetryPolicy, Runtime};
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
-use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, Error as LlmError, LlmExecutor, StopReason,
@@ -174,23 +172,6 @@ impl LlmExecutor for TruncatedToolCallLlm {
     }
 }
 
-fn install(runtime: &Runtime) {
-    let fingerprint = CatalogFingerprint("catalog-a".to_string());
-    runtime
-        .install_catalog(RuntimeCatalogInstall {
-            publication_id: "pub-1".to_string(),
-            fingerprint: fingerprint.clone(),
-            source_revisions: vec!["rev-1".to_string()],
-            capabilities: RuntimeCapabilityCatalog {
-                catalog_fingerprint: fingerprint,
-                runtime_version: "test".to_string(),
-                tools: Vec::new(),
-                plugins: Vec::new(),
-            },
-        })
-        .expect("installs");
-}
-
 fn activation() -> RunActivation {
     let fingerprint = CatalogFingerprint("catalog-a".to_string());
     RunActivation {
@@ -236,7 +217,6 @@ async fn permanent_inference_error_commits_a_terminal_failed_reason() {
         retryable: false,
         calls: calls.clone(),
     }));
-    install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
@@ -287,7 +267,6 @@ async fn retryable_error_is_retried_until_exhausted_then_failed_with_code() {
             calls: calls.clone(),
         }))
         .with_retry_policy(fast_retries(2));
-    install(&runtime);
 
     let context = RuntimeRunContext::new();
     let outcome = runtime.execute(activation(), context).await.expect("runs");
@@ -311,7 +290,6 @@ async fn transient_error_then_success_recovers() {
             calls: calls.clone(),
         }))
         .with_retry_policy(fast_retries(3));
-    install(&runtime);
 
     let context = RuntimeRunContext::new();
     let outcome = runtime.execute(activation(), context).await.expect("runs");
@@ -328,7 +306,6 @@ async fn max_tokens_truncation_continues_in_place_and_recovers() {
         truncated_turns: 1,
         calls: calls.clone(),
     }));
-    install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
@@ -378,7 +355,6 @@ async fn max_tokens_budget_exhausted_lets_the_partial_turn_stand() {
             calls: calls.clone(),
         }))
         .with_max_continuation_retries(2);
-    install(&runtime);
 
     let context = RuntimeRunContext::new();
     let outcome = runtime.execute(activation(), context).await.expect("runs");
@@ -396,7 +372,6 @@ async fn failed_run_emits_run_failed_on_the_live_stream_before_run_finished() {
         retryable: false,
         calls,
     }));
-    install(&runtime);
 
     let sink = Arc::new(MemoryStreamSink::new());
     let context = RuntimeRunContext::new().with_stream_sink(sink.clone());
@@ -433,7 +408,6 @@ async fn consecutive_failure_tolerance_absorbs_a_failed_step_until_success() {
             calls: calls.clone(),
         }))
         .with_max_consecutive_inference_failures(3);
-    install(&runtime);
 
     let context = RuntimeRunContext::new();
     let outcome = runtime.execute(activation(), context).await.expect("runs");
@@ -453,7 +427,6 @@ async fn consecutive_failure_tolerance_exhausted_ends_with_the_last_error() {
             calls: calls.clone(),
         }))
         .with_max_consecutive_inference_failures(2);
-    install(&runtime);
 
     let context = RuntimeRunContext::new();
     let outcome = runtime.execute(activation(), context).await.expect("runs");
@@ -482,7 +455,6 @@ async fn circuit_breaker_opens_after_counted_failures_and_fails_fast() {
             cooldown: std::time::Duration::from_secs(600),
             half_open_max_probes: 1,
         });
-    install(&runtime);
 
     // Two runs, each one counted failure: the circuit opens at the threshold.
     for _ in 0..2 {
@@ -522,7 +494,6 @@ async fn permanent_failures_do_not_trip_the_circuit_breaker() {
             cooldown: std::time::Duration::from_secs(600),
             half_open_max_probes: 1,
         });
-    install(&runtime);
 
     // A permanent error says nothing about provider health: even with a
     // threshold of 1, every run still reaches the provider.
@@ -545,7 +516,6 @@ async fn max_tokens_with_tool_calls_skips_continuation() {
     let runtime = Runtime::new().with_llm(Arc::new(TruncatedToolCallLlm {
         calls: calls.clone(),
     }));
-    install(&runtime);
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());

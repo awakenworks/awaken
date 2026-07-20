@@ -15,8 +15,6 @@ use awaken_agent_contract::audit::kind::Kind as EventKind;
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime::{PermissionGate, Runtime};
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
-use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
@@ -127,20 +125,6 @@ fn runtime(ran: Arc<AtomicUsize>, decision: ToolPermissionVerdict) -> Runtime {
         .with_gate(Arc::new(PermissionGate::new(Arc::new(FixedPolicy(
             decision,
         )))));
-    let fp = CatalogFingerprint(FP.to_string());
-    runtime
-        .install_catalog(RuntimeCatalogInstall {
-            publication_id: "pub-1".to_string(),
-            fingerprint: fp.clone(),
-            source_revisions: vec!["rev-1".to_string()],
-            capabilities: RuntimeCapabilityCatalog {
-                catalog_fingerprint: fp,
-                runtime_version: "test".to_string(),
-                tools: Vec::new(),
-                plugins: Vec::new(),
-            },
-        })
-        .expect("installs");
     runtime.register_snapshot(snapshot());
     runtime
 }
@@ -335,20 +319,6 @@ async fn a_tool_alias_reverse_maps_to_canonical_before_the_permission_gate() {
         .with_gate(Arc::new(PermissionGate::new(Arc::new(
             RecordingDenyCanonical { seen: seen.clone() },
         ))));
-    let fp = CatalogFingerprint(FP.to_string());
-    runtime
-        .install_catalog(RuntimeCatalogInstall {
-            publication_id: "pub-1".to_string(),
-            fingerprint: fp.clone(),
-            source_revisions: vec!["rev-1".to_string()],
-            capabilities: RuntimeCapabilityCatalog {
-                catalog_fingerprint: fp,
-                runtime_version: "test".to_string(),
-                tools: Vec::new(),
-                plugins: Vec::new(),
-            },
-        })
-        .expect("installs");
     runtime.register_snapshot(snapshot_aliased());
 
     let mut act = activation();

@@ -14,8 +14,6 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime::{LlmRetryPolicy, Runtime};
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::capability::RuntimeCapabilityCatalog;
-use awaken_runtime_contract::catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, Error as LlmError, LlmExecutor, StopReason,
@@ -89,23 +87,6 @@ impl LlmExecutor for UnauthorizedLlm {
     }
 }
 
-fn install(runtime: &Runtime) {
-    let fingerprint = CatalogFingerprint("catalog-a".to_string());
-    runtime
-        .install_catalog(RuntimeCatalogInstall {
-            publication_id: "pub-1".to_string(),
-            fingerprint: fingerprint.clone(),
-            source_revisions: vec!["rev-1".to_string()],
-            capabilities: RuntimeCapabilityCatalog {
-                catalog_fingerprint: fingerprint,
-                runtime_version: "test".to_string(),
-                tools: Vec::new(),
-                plugins: Vec::new(),
-            },
-        })
-        .expect("installs");
-}
-
 fn activation() -> RunActivation {
     let fingerprint = CatalogFingerprint("catalog-a".to_string());
     RunActivation {
@@ -158,7 +139,6 @@ async fn a_successful_turn_records_an_ok_inference_metric_with_model_and_tokens(
     let runtime = Runtime::new()
         .with_llm(Arc::new(OkLlm))
         .with_metrics(spy.clone());
-    install(&runtime);
 
     let context = RuntimeRunContext::new().with_commit(Arc::new(MemoryCommitCoordinator::new()));
     runtime.execute(activation(), context).await.expect("runs");
@@ -220,7 +200,6 @@ async fn a_tool_call_records_a_tool_metric_with_id_and_outcome() {
         }))
         .with_tool(Arc::new(EchoTool))
         .with_metrics(spy.clone());
-    install(&runtime);
 
     let context = RuntimeRunContext::new().with_commit(Arc::new(MemoryCommitCoordinator::new()));
     runtime.execute(activation(), context).await.expect("runs");
@@ -239,7 +218,6 @@ async fn a_permanent_failure_records_the_error_class_as_the_outcome() {
         .with_llm(Arc::new(UnauthorizedLlm))
         .with_metrics(spy.clone())
         .with_retry_policy(no_retries());
-    install(&runtime);
 
     let context = RuntimeRunContext::new().with_commit(Arc::new(MemoryCommitCoordinator::new()));
     runtime.execute(activation(), context).await.expect("runs");

@@ -4,7 +4,6 @@ pub mod activation;
 pub mod boundary;
 pub mod capability;
 pub mod capture;
-pub mod catalog;
 pub mod control;
 pub mod credential;
 pub mod data_subject;
@@ -30,7 +29,6 @@ pub mod tool_batch;
 pub use activation::RunActivation;
 pub use boundary::{BoundaryOutcome, evaluate_boundary};
 pub use capture::{CaptureDecision, ContentCapture, ContentKind, ContentRedactor, NoopRedactor};
-pub use catalog::{RuntimeCatalogInstall, RuntimeCatalogInstaller};
 pub use control::LiveRunControl;
 pub use credential::{
     CredentialAccess, CredentialInjectionKind, CredentialInjectionPolicy, CredentialPolicyError,
