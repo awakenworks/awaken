@@ -43,7 +43,7 @@ export const RED_PNG_B64 =
   'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAb0lEQVR4nO3PAQkAAAyEwO9feoshgnABdLep8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3IPanc8OLDQitxAAAAAElFTkSuQmCC';
 export const RED_PNG_DATA_URI = `data:image/png;base64,${RED_PNG_B64}`;
 
-export function waitForPort(port, timeoutMs = 180_000) {
+export function waitForPort(port, timeoutMs = 180_000, server = null) {
   const deadline = Date.now() + timeoutMs;
   return new Promise((resolve, reject) => {
     const attempt = () => {
@@ -54,7 +54,14 @@ export function waitForPort(port, timeoutMs = 180_000) {
       });
       sock.once('error', () => {
         sock.destroy();
-        if (Date.now() > deadline) reject(new Error(`server did not listen on ${port}`));
+        if (server && (server.exitCode !== null || server.signalCode !== null)) {
+          reject(
+            new Error(
+              `server exited before it listened on ${port} ` +
+                `(code=${server.exitCode}, signal=${server.signalCode})`,
+            ),
+          );
+        } else if (Date.now() > deadline) reject(new Error(`server did not listen on ${port}`));
         else setTimeout(attempt, 200);
       });
     };
@@ -62,21 +69,40 @@ export function waitForPort(port, timeoutMs = 180_000) {
   });
 }
 
+function waitForServer(server, port) {
+  return waitForPort(port, 180_000, server);
+}
+
+async function availablePort(preferred) {
+  const tryListen = (port) =>
+    new Promise((resolve, reject) => {
+      const reservation = net.createServer();
+      reservation.once('error', reject);
+      reservation.listen(port, '127.0.0.1', () => {
+        const address = reservation.address();
+        const selected = typeof address === 'object' && address ? address.port : port;
+        reservation.close(() => resolve(selected));
+      });
+    });
+  try {
+    return await tryListen(preferred);
+  } catch (error) {
+    if (error?.code !== 'EADDRINUSE') throw error;
+    return tryListen(0);
+  }
+}
+
 /// Spawn the server in `mode` on `port`, run `fn(baseUrl)`, then stop it.
 export async function withServer(mode, port, fn) {
   const bin = ensureBuilt();
-  const addr = `127.0.0.1:${port}`;
+  const listenPort = await availablePort(port);
+  const addr = `127.0.0.1:${listenPort}`;
   const server = spawn(bin, {
     env: { ...process.env, AWAKEN_HTTP_ADDR: addr, AWAKEN_MODEL_MODE: mode },
     stdio: ['ignore', 'inherit', 'inherit'],
   });
-  let exitedEarly = false;
-  server.on('exit', (code) => {
-    if (code !== null && code !== 0) exitedEarly = true;
-  });
   try {
-    await waitForPort(port);
-    if (exitedEarly) throw new Error('server exited before it listened');
+    await waitForServer(server, listenPort);
     return await fn(`http://${addr}`);
   } finally {
     await stopServer(server);
@@ -132,8 +158,9 @@ export function realServerEnv(behavior, upstream, { mode = 'real', extraEnv = {}
 
 export async function withRealServer(behavior, port, fn, opts = {}) {
   const bin = ensureBuilt();
-  const addr = `127.0.0.1:${port}`;
   const upstream = await startFakeAnthropic(FAKE_KEY, { behavior });
+  const listenPort = await availablePort(port);
+  const addr = `127.0.0.1:${listenPort}`;
   // When `opts.capture` is set, pipe the child's stdout/stderr so a test can scan
   // the server logs (e.g. the secret-non-leak invariant), teeing them through to
   // this process's streams so behavior is unchanged for a human watching. The
@@ -152,13 +179,8 @@ export async function withRealServer(behavior, port, fn, opts = {}) {
     server.stdout.on('data', (c) => tee(c, process.stdout));
     server.stderr.on('data', (c) => tee(c, process.stderr));
   }
-  let exitedEarly = false;
-  server.on('exit', (code) => {
-    if (code !== null && code !== 0) exitedEarly = true;
-  });
   try {
-    await waitForPort(port);
-    if (exitedEarly) throw new Error('server exited before it listened');
+    await waitForServer(server, listenPort);
     return await fn(`http://${addr}`, upstream, capture ? { text: () => capture.buf } : null);
   } finally {
     await stopServer(server);

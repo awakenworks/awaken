@@ -135,6 +135,17 @@ replaced by composition of one `InferenceAccess` value. The unused
 types are deleted: execution receives one selected `CredentialInjectionKind`,
 not a fallback list it could reinterpret.
 
+The same cleanup also removes the two resource-layer `ResourceWorkspace`
+projection structs and their conversion middleware; resource adapters consume
+the shared `awaken_tenancy::WorkspaceScope` coordinate directly. The public
+unresolved `compile`/`compile_with_resource_prompts` entry points are removed in
+favor of `compile_resolved`, so production publication cannot bypass scoped
+access resolution. Dead MCP configuration vocabulary (`TransportTypeId`,
+`RestartPolicy`, `McpServerConnectionConfig`, and the `awaken-ext-mcp` config
+module), the duplicate runtime capability projection, the unused
+`run_with_inference_materializer_and_upstream` worker overload, and the unused
+`ResourceOwners::new`/`Default` construction path are removed as well.
+
 No `InferencePlan`, local/gateway mode, or runtime inference-executor provider is
 part of the resulting domain language.
 
@@ -144,7 +155,8 @@ part of the resulting domain language.
   revocation/version/owner rejection, injection-policy non-downgrade and pinned
   fallback candidates.
 - `formal/tla/InferenceAccessPublication.tla` checks that access is published at
-  most once, dispatch copies the published value, and runtime cannot create a
-  different value.
+  most once, dispatch copies the published value, later catalog edits cannot
+  redirect it, and credential revocation/revision changes reject rather than
+  materialize a stale pin.
 - TypeScript E2E exercises the serialized snapshot through registered Worker
   claim/commit transport; anonymous claimed-commit remains an exact `401` check.

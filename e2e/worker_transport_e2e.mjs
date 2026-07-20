@@ -108,7 +108,7 @@ async function threadMessages(threadId = THREAD) {
 async function main() {
   const { server } = spawnServer('echo', PORT, ENV);
   try {
-    await waitForPort(PORT);
+    await waitForPort(PORT, 180_000, server);
 
     // Every worker route is authenticated. The local composition uses the
     // compatibility identity header; cloud replaces the authenticator with a

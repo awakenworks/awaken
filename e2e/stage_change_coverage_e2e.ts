@@ -170,14 +170,18 @@ async function main(): Promise<void> {
   }
 
   const postgres = await startPostgres();
+  // Keep stage ports below Linux's default ephemeral range so Docker's
+  // dynamically-published Postgres port cannot occupy one. A per-process block
+  // also lets independent stage runs coexist without sharing fixed ports.
+  const portBase = 12_000 + (process.pid % 200) * 50;
   const passed = new Set<string>();
   try {
     for (const [index, scenario] of scenarios.entries()) {
       console.log(`\n[stage-e2e ${index + 1}/${scenarios.length}] ${scenario.id}`);
       const environment = {
         ...process.env,
-        E2E_PORT: String(41000 + index),
-        E2E_WORKER_PORT: String(42000 + index),
+        E2E_PORT: String(portBase + index),
+        E2E_WORKER_PORT: String(portBase + 25 + index),
         ...(scenario.postgres
           ? {
               AWAKEN_DATABASE_URL: postgres.url,
