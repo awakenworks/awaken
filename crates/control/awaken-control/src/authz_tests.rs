@@ -1,15 +1,180 @@
 use super::*;
 
 #[test]
+fn identity_modes_accept_product_names_and_legacy_aliases() {
+    assert_eq!(
+        ManagementIdentityMode::parse("no-login"),
+        Some(ManagementIdentityMode::NoLogin)
+    );
+    assert_eq!(
+        ManagementIdentityMode::parse("awaken-cloud"),
+        Some(ManagementIdentityMode::AwakenCloud)
+    );
+    assert_eq!(
+        ManagementIdentityMode::parse("self-managed"),
+        Some(ManagementIdentityMode::SelfManaged)
+    );
+    assert_eq!(
+        ManagementIdentityMode::parse("embedded"),
+        Some(ManagementIdentityMode::SelfManaged)
+    );
+    assert_eq!(ManagementIdentityMode::parse("unknown"), None);
+}
+
+#[test]
+fn embedded_iam_bootstrap_uses_the_platform_provisioned_workspace() {
+    let dir = tempfile::tempdir().unwrap();
+    let iam = embedded_iam_for_workspace(dir.path(), "workspace_platform_owned");
+    let token = std::fs::read_to_string(dir.path().join(ADMIN_TOKEN_FILE)).unwrap();
+    let (_, workspace) = iam.authenticate(token.trim()).unwrap();
+    assert_eq!(workspace.0, "workspace_platform_owned");
+}
+
+#[test]
+fn embedded_iam_registers_only_org_to_workspace_scope() {
+    let dir = tempfile::tempdir().unwrap();
+    let iam = embedded_iam_for_tenant(dir.path(), "org_local", "workspace_local");
+    let token = std::fs::read_to_string(dir.path().join(ADMIN_TOKEN_FILE)).unwrap();
+    let (principal, _) = iam.authenticate(token.trim()).unwrap();
+
+    assert_eq!(
+        iam.authorize(
+            principal,
+            WORKSPACE_READ,
+            ScopeRef::Workspace {
+                workspace_id: WorkspaceId("workspace_local".into()),
+            },
+        ),
+        AuthorizationDecision::Allow
+    );
+}
+
+#[test]
+fn cloud_guard_uses_cached_login_and_explicit_bearer_override() {
+    use std::net::TcpListener as StdListener;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use awaken_iam_contract::{AuthorizationOutcome, Jwks};
+    use awaken_iam_host::{AccessTokenAuthority, AccessTokenClaims, LocalSeedSigner};
+    use axum::routing::{get, post};
+
+    const SEED: [u8; 32] = [19; 32];
+    const KID: &str = "awaken-local-cloud-test";
+    const ISSUER: &str = "https://fake-accounts.test";
+    const AUDIENCE: &str = "awaken-runtime";
+
+    async fn jwks(State(jwks): State<Jwks>) -> Json<Jwks> {
+        Json(jwks)
+    }
+    async fn authorize(Json(_request): Json<AuthorizationRequest>) -> Json<AuthorizationOutcome> {
+        Json(AuthorizationOutcome {
+            decision: AuthorizationDecision::Allow,
+            reason: "test-policy".into(),
+            matched_grants: Vec::new(),
+            matched_roles: Vec::new(),
+            obligation: None,
+        })
+    }
+
+    let listener = StdListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let (ready_tx, ready_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async move {
+            let keys = AccessTokenAuthority::new(LocalSeedSigner::new(KID, SEED)).jwks();
+            let app = Router::new()
+                .route("/.well-known/jwks.json", get(jwks))
+                .route("/v1/authorize", post(authorize))
+                .with_state(keys);
+            listener.set_nonblocking(true).unwrap();
+            let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+            ready_tx.send(()).ok();
+            axum::serve(listener, app).await.unwrap();
+        });
+    });
+    ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    let base_url = format!("http://{address}");
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let token = runtime.block_on(async {
+        let now = now_unix();
+        AccessTokenAuthority::new(LocalSeedSigner::new(KID, SEED))
+            .mint(&AccessTokenClaims {
+                iss: ISSUER.into(),
+                sub: "account-alice".into(),
+                aud: AUDIENCE.into(),
+                exp: now + 3600,
+                iat: now,
+                jti: "cloud-login-1".into(),
+                scope: Vec::new(),
+            })
+            .await
+            .unwrap()
+    });
+    let authz = RemoteManagementAuthz::connect(
+        base_url,
+        AUDIENCE.into(),
+        ISSUER.into(),
+        token.clone(),
+        Some("service-test".into()),
+    )
+    .unwrap();
+
+    async fn ok() -> StatusCode {
+        StatusCode::OK
+    }
+    let app = Router::new().route("/v1/config/catalog", get(ok)).layer(
+        axum::middleware::from_fn_with_state(authz, cloud_management_guard),
+    );
+    runtime.block_on(async {
+        let request = |bearer: Option<&str>| {
+            let mut builder = Request::builder().uri("/v1/config/catalog");
+            if let Some(bearer) = bearer {
+                builder = builder.header("authorization", format!("Bearer {bearer}"));
+            }
+            let mut request = builder.body(Body::empty()).unwrap();
+            request
+                .extensions_mut()
+                .insert(awaken_tenancy::WorkspaceScope("ws_cloud".into()));
+            request
+        };
+        assert_eq!(
+            app.clone().oneshot(request(None)).await.unwrap().status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            app.clone()
+                .oneshot(request(Some(&token)))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            app.clone()
+                .oneshot(request(Some("not-a-jwt")))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+    });
+}
+
+#[test]
 fn the_route_table_maps_reads_to_read_actions_and_mutations_to_writes() {
     let get = Method::GET;
     let post = Method::POST;
     let put = Method::PUT;
     let delete = Method::DELETE;
-    // Scoped(action) shorthand so the assertions below stay line-per-route.
+    // Scoped action shorthand so the assertions below stay line-per-route.
     fn action_for(method: &Method, path: &str) -> Option<&'static str> {
         match super::action_for(method, path) {
-            Some(RouteAuthz::Scoped(action)) => Some(action),
+            Some(RouteAuthz::Scoped { action, .. }) => Some(action),
             Some(RouteAuthz::TokenAdmin) => panic!("{path} is not a Scoped route"),
             None => None,
         }
@@ -361,11 +526,10 @@ async fn mg5_invalid_token_is_401_invalid() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn mg6_token_admin_route_delegates_and_skips_the_equality_fence() {
-    // The bootstrap admin is Global-bound; the TokenAdmin route must NOT
-    // fence the body's foreign workspace_id (it delegates to the handler,
-    // which authorizes at the target). A Scoped route with the same body
-    // would 403; this 201s.
+async fn mg6_token_admin_rejects_an_unregistered_foreign_workspace() {
+    // TokenAdmin delegates to the target-scope PDP. Runtime's bootstrap admin
+    // is Org-bound, and only the platform-provisioned Workspace is registered
+    // below that Org, so an arbitrary body id cannot create a new tenant edge.
     let (dir, iam) = fresh_iam();
     let bootstrap = admin_token(dir.path());
     let app = guarded_app(iam);
@@ -377,8 +541,7 @@ async fn mg6_token_admin_route_delegates_and_skips_the_equality_fence() {
         Some(json!({ "workspace_id": "wrkspc_other", "role": "workspace_admin" })),
     )
     .await;
-    assert_eq!(s, StatusCode::CREATED, "{minted}");
-    assert_eq!(minted["api_token"]["workspace_id"], json!("wrkspc_other"));
+    assert_eq!(s, StatusCode::FORBIDDEN, "{minted}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -523,7 +686,7 @@ async fn mg11b_require_approval_is_403_approval() {
         .add_grant(Grant {
             id: GrantId("ceg-approval".into()),
             subject: GrantSubject::Principal(principal),
-            action_pattern: ActionPattern(WORKSPACE_READ.into()),
+            action_pattern: ActionPattern(qualify_action(WORKSPACE_READ).0),
             scope: ScopeRef::Global,
             effect: Effect::RequireApproval,
         });
@@ -574,17 +737,54 @@ fn af2_credential_id_routes_map_read_and_write_sub_actions() {
     // asserted here as the actual, correct behavior.)
     assert_eq!(
         action_for(&Method::GET, "/v1/config/credentials/c1"),
-        Some(RouteAuthz::Scoped(APIKEY_READ))
+        Some(RouteAuthz::Scoped {
+            action: APIKEY_READ,
+            scope: ScopeClass::Workspace,
+        })
     );
     assert_eq!(
         action_for(&Method::POST, "/v1/config/credentials"),
-        Some(RouteAuthz::Scoped(APIKEY_WRITE))
+        Some(RouteAuthz::Scoped {
+            action: APIKEY_WRITE,
+            scope: ScopeClass::Workspace,
+        })
     );
     assert_eq!(
         action_for(&Method::POST, "/v1/config/credentials/c1/archive"),
-        Some(RouteAuthz::Scoped(APIKEY_WRITE))
+        Some(RouteAuthz::Scoped {
+            action: APIKEY_WRITE,
+            scope: ScopeClass::Workspace,
+        })
     );
     assert_eq!(action_for(&Method::PUT, "/v1/config/credentials/c1"), None);
+}
+
+#[test]
+fn project_resources_remain_inside_the_workspace_authorization_scope() {
+    assert_eq!(
+        action_for(&Method::GET, "/v1/config/projects/proj_alpha"),
+        Some(RouteAuthz::Scoped {
+            action: WORKSPACE_READ,
+            scope: ScopeClass::Workspace,
+        })
+    );
+    assert_eq!(
+        target_scope(
+            ScopeClass::Workspace,
+            "ws_acme",
+            "/v1/config/projects/proj_alpha/agents/a/mcp",
+        ),
+        Some(ScopeRef::Workspace {
+            workspace_id: WorkspaceId("ws_acme".into()),
+        })
+    );
+    assert_eq!(
+        target_scope(ScopeClass::Workspace, "ws_acme", "/v1/config/projects"),
+        Some(ScopeRef::Workspace {
+            workspace_id: WorkspaceId("ws_acme".into()),
+        }),
+        "project is resource data in Runtime, not an authorization scope"
+    );
 }
 
 #[test]
@@ -595,7 +795,7 @@ fn af_covers_the_deployment_environment_agent_and_project_families() {
     // the fail-closed `None` rows) so a regression cannot loosen them.
     fn scoped(method: Method, path: &str) -> Option<&'static str> {
         match super::action_for(&method, path) {
-            Some(RouteAuthz::Scoped(a)) => Some(a),
+            Some(RouteAuthz::Scoped { action, .. }) => Some(action),
             Some(RouteAuthz::TokenAdmin) => panic!("{path} is TokenAdmin, not Scoped"),
             None => None,
         }
@@ -824,7 +1024,11 @@ async fn af6_workspace_user_reading_credentials_denies() {
     let user = mint(&iam, "tok_af6", BOOTSTRAP_WORKSPACE, "workspace_user");
     let (principal, ws) = iam.authenticate(&user).unwrap();
     assert_eq!(
-        iam.authorize(principal, APIKEY_READ, ws),
+        iam.authorize(
+            principal,
+            APIKEY_READ,
+            ScopeRef::Workspace { workspace_id: ws }
+        ),
         AuthorizationDecision::Deny
     );
 }
@@ -933,11 +1137,11 @@ async fn authorize_at_target_allow_deny_and_require_approval() {
         .add_grant(Grant {
             id: GrantId("ceg-at-approval".into()),
             subject: GrantSubject::Principal(admin_principal.clone()),
-            action_pattern: ActionPattern("custom.approve".into()),
+            action_pattern: ActionPattern(qualify_action(APIKEY_WRITE).0),
             scope: ScopeRef::Global,
             effect: Effect::RequireApproval,
         });
-    let refusal = authorize_at_target(&iam, admin_principal, "custom.approve", BOOTSTRAP_WORKSPACE)
+    let refusal = authorize_at_target(&iam, admin_principal, APIKEY_WRITE, BOOTSTRAP_WORKSPACE)
         .expect("require-approval yields a refusal");
     let (s, err) = resp_parts(refusal).await;
     assert_eq!(s, StatusCode::FORBIDDEN);
@@ -1494,7 +1698,9 @@ async fn embedded_iam_imports_the_legacy_layout_mapping_star_to_global() {
         iam.authorize(
             principal,
             APIKEY_WRITE,
-            WorkspaceId("wrkspc_unrelated".into())
+            ScopeRef::Workspace {
+                workspace_id: WorkspaceId("wrkspc_unrelated".into())
+            }
         ),
         AuthorizationDecision::Allow
     );

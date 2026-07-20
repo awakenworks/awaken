@@ -163,10 +163,10 @@ impl ConfigService {
 
     /// The agent's bound-resource prompt fragments (ADR-0038 A3a). Empty when no
     /// resource store is wired or the agent binds none, so compilation is unchanged.
-    fn resource_prompts(&self, agent_id: &str) -> Vec<String> {
+    fn resource_prompts(&self, workspace: &str, agent_id: &str) -> Vec<String> {
         self.resources
             .as_ref()
-            .and_then(|store| store.get_agent_resource(agent_id))
+            .and_then(|store| store.get_agent_resource_in(workspace, agent_id))
             .map(|cfg| awaken_config_resolver::resource_prompts_for(&cfg))
             .unwrap_or_default()
     }
@@ -178,6 +178,7 @@ impl ConfigService {
     /// the edge resolves the catalog for the request scope).
     pub fn validate(
         &self,
+        workspace: &str,
         config: &AgentConfig,
         catalog: &[ToolDescriptor],
     ) -> Result<(), ValidationIssue> {
@@ -191,12 +192,16 @@ impl ConfigService {
                     path: "model".to_string(),
                     message: e.to_string(),
                 })?;
-        compile_with_resource_prompts(&compile_input, catalog, &self.resource_prompts(&config.id))
-            .map(|_| ())
-            .map_err(|e| ValidationIssue {
-                path: e.field_path().to_string(),
-                message: e.to_string(),
-            })
+        compile_with_resource_prompts(
+            &compile_input,
+            catalog,
+            &self.resource_prompts(workspace, &config.id),
+        )
+        .map(|_| ())
+        .map_err(|e| ValidationIssue {
+            path: e.field_path().to_string(),
+            message: e.to_string(),
+        })
     }
 
     /// Store a config draft (upsert by id) in the caller-supplied scope-bound
@@ -253,6 +258,7 @@ impl ConfigService {
     /// its `Auto` selection persists so the reconciler can re-resolve it later.
     pub async fn publish(
         &self,
+        workspace: &str,
         registry: &dyn ConfigRegistry,
         id: &str,
         catalog: &[ToolDescriptor],
@@ -269,9 +275,12 @@ impl ConfigService {
         // and its authored candidates.
         let compile_input = self.resolve_for_compile(versioned.config)?;
 
-        let runnable =
-            compile_with_resource_prompts(&compile_input, catalog, &self.resource_prompts(id))
-                .map_err(|e| PublishError::Compile(e.to_string()))?;
+        let runnable = compile_with_resource_prompts(
+            &compile_input,
+            catalog,
+            &self.resource_prompts(workspace, id),
+        )
+        .map_err(|e| PublishError::Compile(e.to_string()))?;
         let publication =
             StoredPublication::published_at_generation(runnable.clone(), id, source_generation);
         let write = registry
@@ -339,6 +348,7 @@ impl ConfigService {
     /// drives from the catalog write path.
     pub async fn reconcile(
         &self,
+        workspace: &str,
         registry: &dyn ConfigRegistry,
         id: &str,
         catalog: &[ToolDescriptor],
@@ -347,7 +357,7 @@ impl ConfigService {
         match stored {
             // Only auto bindings are re-resolved; an operator pin is authoritative.
             Some(config) if config.model_binding.is_auto() => {
-                self.publish(registry, id, catalog)
+                self.publish(workspace, registry, id, catalog)
                     .await
                     .map_err(|e| e.to_string())?;
                 Ok(true)
@@ -438,7 +448,8 @@ impl ConfigPlane {
 
     /// Validate a config in `scope` (compile dry-run against the scope's catalog).
     pub fn validate(&self, scope: &ScopeId, config: &AgentConfig) -> Result<(), ValidationIssue> {
-        self.service.validate(config, &self.catalog_for(scope))
+        self.service
+            .validate(scope.as_str(), config, &self.catalog_for(scope))
     }
 
     /// Store a config draft owned by `scope`.
@@ -566,14 +577,24 @@ impl ConfigPlane {
         id: &str,
     ) -> Result<StoredPublication, PublishError> {
         self.service
-            .publish(&self.registry_for(scope), id, &self.catalog_for(scope))
+            .publish(
+                scope.as_str(),
+                &self.registry_for(scope),
+                id,
+                &self.catalog_for(scope),
+            )
             .await
     }
 
     /// Re-resolve and re-publish an `Auto`-bound agent in `scope` (ADR-0052 D5).
     pub async fn reconcile(&self, scope: &ScopeId, id: &str) -> Result<bool, String> {
         self.service
-            .reconcile(&self.registry_for(scope), id, &self.catalog_for(scope))
+            .reconcile(
+                scope.as_str(),
+                &self.registry_for(scope),
+                id,
+                &self.catalog_for(scope),
+            )
             .await
     }
 
@@ -1137,7 +1158,7 @@ mod resource_prompt_tests {
     #[tokio::test]
     async fn publish_maps_a_registry_read_failure_to_store() {
         let err = ConfigService::new()
-            .publish(&FailingRegistry, "a", &[])
+            .publish(DEFAULT_SCOPE, &FailingRegistry, "a", &[])
             .await
             .unwrap_err();
         assert!(matches!(err, PublishError::Store(_)), "got {err:?}");
@@ -1147,7 +1168,7 @@ mod resource_prompt_tests {
     #[tokio::test]
     async fn publish_maps_a_publication_persist_failure_to_store() {
         let err = ConfigService::new()
-            .publish(&PublishFailRegistry, "a", &[])
+            .publish(DEFAULT_SCOPE, &PublishFailRegistry, "a", &[])
             .await
             .unwrap_err();
         assert!(matches!(err, PublishError::Store(_)), "got {err:?}");
@@ -1157,7 +1178,7 @@ mod resource_prompt_tests {
     async fn publish_never_installs_an_artifact_from_a_stale_source_generation() {
         let service = ConfigService::new();
         let err = service
-            .publish(&StalePublishRegistry, "a", &[])
+            .publish(DEFAULT_SCOPE, &StalePublishRegistry, "a", &[])
             .await
             .unwrap_err();
 
@@ -1173,7 +1194,7 @@ mod resource_prompt_tests {
     async fn reconcile_propagates_a_registry_read_failure() {
         assert!(
             ConfigService::new()
-                .reconcile(&FailingRegistry, "a", &[])
+                .reconcile(DEFAULT_SCOPE, &FailingRegistry, "a", &[])
                 .await
                 .is_err()
         );
@@ -1304,17 +1325,20 @@ mod resource_prompt_tests {
     async fn publish_injects_bound_resource_prompts_into_the_compiled_instructions() {
         // Author a resource binding for agent-1 in the shared store (ADR-0038 A3a).
         let resources = Arc::new(awaken_config_resolver::InMemoryResourceStore::new());
-        resources.put_agent_resource(AgentResourceConfig {
-            agent_id: "agent-1".into(),
-            resources: vec![ResourceBinding {
-                kind: ResourceKind::MemoryStore,
-                resource_id: "memstore-7".into(),
-                mount_path: "/mnt/memory/prefs".into(),
-                access: ResourceAccess::ReadWrite,
-                instructions: Some("user preferences".into()),
-            }],
-            version: 1,
-        });
+        resources.put_agent_resource_in(
+            DEFAULT_SCOPE,
+            AgentResourceConfig {
+                agent_id: "agent-1".into(),
+                resources: vec![ResourceBinding {
+                    kind: ResourceKind::MemoryStore,
+                    resource_id: "memstore-7".into(),
+                    mount_path: "/mnt/memory/prefs".into(),
+                    access: ResourceAccess::ReadWrite,
+                    instructions: Some("user preferences".into()),
+                }],
+                version: 1,
+            },
+        );
 
         let scope = ScopeId::from(DEFAULT_SCOPE);
         let plane = plane_with(

@@ -34,7 +34,7 @@ awaken-sandbox-container = { workspace = true }
 # The content-addressed store the host serves files/artifacts from + adapts behind
 # the sandbox providers' BlobSource port (was re-exported via awaken-sandbox-local,
 # now a direct dependency since that worker-tier crate no longer links it).
-awaken-file-store = { workspace = true }
+awaken-file-store = { workspace = true, features = ["sqlite"] }
 # The neutral sandbox vocabulary the sandboxed ACP channel source speaks
 # (SandboxSpec/Command/NetworkPolicy) when realizing the namespace tier.
 awaken-provisioning-contract = { workspace = true }

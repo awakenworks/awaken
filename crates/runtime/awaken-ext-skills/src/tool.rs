@@ -80,6 +80,79 @@ pub struct RecordingGate {
     activations: PathActivations,
 }
 
+/// Session-local skill capability restrictions. Each activated skill with a
+/// non-empty `allowed_tools` list adds one conjunctive layer, so activation can
+/// only narrow the host/platform gate and can never restore authority removed
+/// by an earlier layer.
+#[derive(Clone, Default)]
+pub struct ActiveSkillTools {
+    layers: Arc<Mutex<Vec<BTreeSet<String>>>>,
+}
+
+impl ActiveSkillTools {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn narrow(&self, patterns: &[String]) {
+        if patterns.is_empty() {
+            return;
+        }
+        if let Ok(mut layers) = self.layers.lock() {
+            layers.push(patterns.iter().cloned().collect());
+        }
+    }
+
+    pub fn allows(&self, tool_id: &str) -> bool {
+        self.layers.lock().is_ok_and(|layers| {
+            layers.iter().all(|layer| {
+                layer.iter().any(|pattern| {
+                    glob::Pattern::new(pattern)
+                        .map(|pattern| pattern.matches(tool_id))
+                        .unwrap_or(false)
+                })
+            })
+        })
+    }
+}
+
+/// Post-platform skill gate. The inner gate always decides first; only an
+/// `Allow` is eligible for skill narrowing. Skill discovery/activation remain
+/// reachable, but each new activation is conjunctive and therefore cannot be
+/// used to widen the accumulated restriction.
+pub struct SkillAllowedToolsGate {
+    inner: Arc<dyn ToolGateHook>,
+    active: ActiveSkillTools,
+}
+
+impl SkillAllowedToolsGate {
+    pub fn new(inner: Arc<dyn ToolGateHook>, active: ActiveSkillTools) -> Self {
+        Self { inner, active }
+    }
+}
+
+#[async_trait]
+impl ToolGateHook for SkillAllowedToolsGate {
+    async fn gate(&self, call: &ToolCall, state: &Store) -> GateOutcome {
+        let platform = self.inner.gate(call, state).await;
+        if platform != GateOutcome::Allow {
+            return platform;
+        }
+        if matches!(call.tool_id.as_str(), SKILL_LIST_TOOL_ID | SKILL_TOOL_ID)
+            || self.active.allows(&call.tool_id)
+        {
+            GateOutcome::Allow
+        } else {
+            GateOutcome::Block {
+                reason: format!(
+                    "tool `{}` is outside the active skill allowed_tools intersection",
+                    call.tool_id
+                ),
+            }
+        }
+    }
+}
+
 impl RecordingGate {
     pub fn new(inner: Arc<dyn ToolGateHook>, activations: PathActivations) -> Self {
         Self { inner, activations }
@@ -368,6 +441,7 @@ pub struct SkillTool {
     registry: Arc<dyn SkillRegistry>,
     session_id: Option<String>,
     agent_tool: Option<Arc<dyn RawTool>>,
+    active_tools: Option<ActiveSkillTools>,
 }
 
 impl SkillTool {
@@ -376,6 +450,7 @@ impl SkillTool {
             registry,
             session_id: None,
             agent_tool: None,
+            active_tools: None,
         }
     }
 
@@ -391,6 +466,12 @@ impl SkillTool {
     #[must_use]
     pub fn with_agent_tool(mut self, tool: Arc<dyn RawTool>) -> Self {
         self.agent_tool = Some(tool);
+        self
+    }
+
+    #[must_use]
+    pub fn with_active_tools(mut self, active_tools: ActiveSkillTools) -> Self {
+        self.active_tools = Some(active_tools);
         self
     }
 
@@ -445,6 +526,9 @@ impl RawTool for SkillTool {
             .and_then(|v| v.as_str())
             .unwrap_or("");
         let session = self.session_id.as_deref();
+        if let Some(active_tools) = &self.active_tools {
+            active_tools.narrow(&skill.allowed_tools);
+        }
 
         // A `context: fork` skill runs as a sub-agent (when a runner is wired),
         // returning its reply as the tool result; otherwise it falls back to inline.
@@ -1020,6 +1104,59 @@ mod tests {
             touched.len(),
             2,
             "only path/pattern args recorded: {touched:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn skill_allowed_tools_only_narrows_and_is_monotonic() {
+        let active = ActiveSkillTools::new();
+        let gate = SkillAllowedToolsGate::new(Arc::new(AllowGate), active.clone());
+        let state = Store::new();
+
+        assert_eq!(
+            gate.gate(&ctx("bash", serde_json::json!({})), &state).await,
+            GateOutcome::Allow
+        );
+        active.narrow(&["read".into(), "mcp__github__*".into()]);
+        assert_eq!(
+            gate.gate(&ctx("read", serde_json::json!({})), &state).await,
+            GateOutcome::Allow
+        );
+        assert!(matches!(
+            gate.gate(&ctx("bash", serde_json::json!({})), &state).await,
+            GateOutcome::Block { .. }
+        ));
+        active.narrow(&["read".into(), "bash".into()]);
+        assert!(matches!(
+            gate.gate(&ctx("bash", serde_json::json!({})), &state).await,
+            GateOutcome::Block { .. }
+        ));
+        assert_eq!(
+            gate.gate(&ctx(SKILL_TOOL_ID, serde_json::json!({})), &state)
+                .await,
+            GateOutcome::Allow
+        );
+    }
+
+    #[tokio::test]
+    async fn skill_gate_never_overrides_a_platform_denial() {
+        struct DenyGate;
+        #[async_trait]
+        impl ToolGateHook for DenyGate {
+            async fn gate(&self, _ctx: &ToolCall, _state: &Store) -> GateOutcome {
+                GateOutcome::Block {
+                    reason: "platform policy".into(),
+                }
+            }
+        }
+
+        let gate = SkillAllowedToolsGate::new(Arc::new(DenyGate), ActiveSkillTools::new());
+        assert_eq!(
+            gate.gate(&ctx("read", serde_json::json!({})), &Store::new())
+                .await,
+            GateOutcome::Block {
+                reason: "platform policy".into(),
+            }
         );
     }
 

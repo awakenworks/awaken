@@ -30,7 +30,7 @@ use awaken_model_catalog::{
     ModelAttributes, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
 };
 use awaken_runtime_contract::resilience::Disposition;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Extension, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header::CONTENT_TYPE};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
@@ -64,6 +64,11 @@ pub struct AdminState {
     /// every route observes the same cooldown state.
     pub availability: Arc<AvailabilityLedger>,
 }
+
+/// Trusted workspace coordinate supplied by the composition edge. This adapter
+/// owns no tenancy or IAM dependency; it only consumes the already-resolved id.
+#[derive(Debug, Clone)]
+pub struct ResourceWorkspace(pub String);
 
 /// The result of a live credential probe (secret-free), aligned with the Managed
 /// wire's `valid` / `invalid` / `unknown` statuses.
@@ -770,22 +775,28 @@ async fn get_agent_mcp(
 /// authoritative; the binding set is stored whole (upsert by agent id).
 async fn put_agent_resource(
     State(state): State<AdminState>,
+    scope: Option<Extension<ResourceWorkspace>>,
     Path(agent_id): Path<String>,
     Json(mut config): Json<AgentResourceConfig>,
 ) -> Json<AgentResourceConfig> {
     config.agent_id = agent_id;
-    state.resources.put_agent_resource(config.clone());
+    let workspace = scope.map_or_else(String::new, |Extension(scope)| scope.0);
+    state
+        .resources
+        .put_agent_resource_in(&workspace, config.clone());
     Json(config)
 }
 
 async fn get_agent_resource(
     State(state): State<AdminState>,
+    scope: Option<Extension<ResourceWorkspace>>,
     Path(agent_id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<AgentResourceConfig>, Problem> {
+    let workspace = scope.map_or_else(String::new, |Extension(scope)| scope.0);
     state
         .resources
-        .get_agent_resource(&agent_id)
+        .get_agent_resource_in(&workspace, &agent_id)
         .map(Json)
         .ok_or_else(|| agent_resource_missing(&agent_id, &req_id(&headers)))
 }

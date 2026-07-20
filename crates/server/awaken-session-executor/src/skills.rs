@@ -12,9 +12,9 @@ use std::sync::Arc;
 
 use awaken_ext_builtin_tools::{AGENT_RUN, AgentRunArgs};
 use awaken_ext_skills::{
-    CompositeSkillRegistry, InMemorySkillRegistry, ListSkillsTool, PathActivations, RecordingGate,
-    SkillFile, SkillProvenance, SkillRegistry, SkillSource, SkillSpec, SkillTool,
-    SourceSkillRegistry,
+    ActiveSkillTools, CompositeSkillRegistry, InMemorySkillRegistry, ListSkillsTool,
+    PathActivations, RecordingGate, SkillAllowedToolsGate, SkillFile, SkillProvenance,
+    SkillRegistry, SkillSource, SkillSpec, SkillTool, SourceSkillRegistry,
 };
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::permission::ToolGateHook;
@@ -191,7 +191,11 @@ pub(crate) fn wire_skills(
     let registry: Arc<dyn SkillRegistry> = Arc::new(CompositeSkillRegistry::new(registries));
 
     let activations = PathActivations::new();
-    let gate: Arc<dyn ToolGateHook> = Arc::new(RecordingGate::new(base_gate, activations.clone()));
+    let active_tools = ActiveSkillTools::new();
+    let recording: Arc<dyn ToolGateHook> =
+        Arc::new(RecordingGate::new(base_gate, activations.clone()));
+    let gate: Arc<dyn ToolGateHook> =
+        Arc::new(SkillAllowedToolsGate::new(recording, active_tools.clone()));
     let list: Arc<dyn RawTool> =
         Arc::new(ListSkillsTool::new(registry.clone()).with_path_activations(activations));
     let agent_tool: Arc<dyn RawTool> = Arc::new(ForkAgentTool {
@@ -204,7 +208,8 @@ pub(crate) fn wire_skills(
     let activate: Arc<dyn RawTool> = Arc::new(
         SkillTool::new(registry.clone())
             .with_session_id(session_id)
-            .with_agent_tool(agent_tool),
+            .with_agent_tool(agent_tool)
+            .with_active_tools(active_tools),
     );
 
     Some(SkillWiring {

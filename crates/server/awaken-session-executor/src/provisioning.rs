@@ -51,16 +51,6 @@ pub(crate) fn mount_to_requirement(mount: &Mount) -> pc::MountRequirement {
     }
 }
 
-/// The single workspace the host addresses its durable skill catalog under. The
-/// `SkillStore` port is workspace-scoped (multi-node/multi-tenant-ready); this host
-/// is currently single-catalog, so it uses one fixed workspace. Threading a
-/// per-session workspace (ADR-0051) is a later tenancy step over the same store.
-pub(crate) const HOST_SKILL_WORKSPACE: &str = "default";
-
-/// The single workspace the host addresses its durable memory-store family under —
-/// see [`HOST_SKILL_WORKSPACE`] for the tenancy rationale.
-pub(crate) const HOST_MEMORY_WORKSPACE: &str = "default";
-
 /// A thread's staged resources (ADR-0038): the legacy [`Mount`]s realized into its
 /// sandbox plus the prompt fragments appended to its system prompt. Built by a
 /// session's `prepare_session` from the wire `resources[]`.
@@ -242,24 +232,48 @@ impl SharedHost {
         self.file_store.clone()
     }
 
+    pub fn grant_file(&self, workspace: &str, id: &str) {
+        self.resource_ownership.grant("file", id, workspace);
+    }
+
+    pub fn owns_file(&self, workspace: &str, id: &str) -> bool {
+        self.resource_ownership.owns("file", id, workspace)
+    }
+
+    pub fn revoke_file(&self, workspace: &str, id: &str) -> bool {
+        self.resource_ownership.revoke("file", id, workspace)
+    }
+
+    pub fn file_has_any_owner(&self, id: &str) -> bool {
+        self.resource_ownership.has_any_owner("file", id)
+    }
+
     /// Create a new, empty memory store and return its stable id (ADR-0038 MemoryStore).
     /// Unlike a blob id, this id is mutable: a session mounts it read-write and the host
     /// harvests the write back under the same id. Backed by the durable
     /// [`awaken_memory_store::MemoryBlobStore`], so the store (and its id) survive a
     /// process restart when the host runs under a storage dir.
     pub async fn create_memory_store(&self) -> String {
+        self.create_memory_store_in(&self.local_workspace).await
+    }
+
+    pub async fn create_memory_store_in(&self, workspace: &str) -> String {
         self.memory_stores
             .blob()
-            .create(HOST_MEMORY_WORKSPACE)
+            .create(workspace)
             .await
             .expect("create durable memory store")
     }
 
     /// The current bytes of a memory store; `None` if the id is unknown.
     pub async fn memory_get(&self, id: &str) -> Option<Vec<u8>> {
+        self.memory_get_in(&self.local_workspace, id).await
+    }
+
+    pub async fn memory_get_in(&self, workspace: &str, id: &str) -> Option<Vec<u8>> {
         self.memory_stores
             .blob()
-            .get(HOST_MEMORY_WORKSPACE, id)
+            .get(workspace, id)
             .await
             .unwrap_or(None)
     }
@@ -291,10 +305,11 @@ impl SharedHost {
         // Realized memory mounts live under `.mnt/<logical>`; `list_files(".mnt")` keys
         // each by its path relative to `.mnt/`, i.e. exactly the mount's logical path.
         let realized = env.list_files(".mnt");
+        let workspace = self.thread_workspace(thread);
         for (store_id, bytes) in select_memory_writebacks(&mounts, &realized) {
             self.memory_stores
                 .blob()
-                .put(HOST_MEMORY_WORKSPACE, &store_id, &bytes)
+                .put(&workspace, &store_id, &bytes)
                 .await
                 .expect("persist harvested memory write-back");
         }
@@ -394,15 +409,22 @@ impl SharedHost {
         let Some(env) = env else {
             return;
         };
-        self.persist_authored_skills(env.as_ref()).await;
+        let workspace = self.thread_workspace(thread);
+        self.persist_authored_skills(&workspace, env.as_ref()).await;
     }
 
     /// Scan a live environment's workspace skill dir and persist each authored skill to the
     /// durable catalog. Split from [`harvest_thread_skills`](Self::harvest_thread_skills) so
     /// the scan→store path is testable with a real sandbox, without a full `SessionCtx`.
-    async fn persist_authored_skills(&self, env: &awaken_sandbox_local::LocalSandbox) {
+    async fn persist_authored_skills(
+        &self,
+        workspace: &str,
+        env: &awaken_sandbox_local::LocalSandbox,
+    ) {
         for skill in env.scan_skill_dir(crate::skills::DEFAULT_SKILLS_SUBDIR) {
-            self.skills.store_put(&skill.id, &skill.content).await;
+            self.skills
+                .store_put_in(workspace, &skill.id, &skill.content)
+                .await;
         }
     }
 
@@ -422,6 +444,8 @@ impl SharedHost {
         let mut out = Vec::new();
         for (path, bytes) in env.list_files("outputs") {
             if let Ok(id) = self.file_store.put(&bytes).await {
+                let workspace = self.thread_workspace(thread);
+                self.grant_file(&workspace, &id);
                 out.push((id, path));
             }
         }
@@ -812,7 +836,8 @@ mod provisioning_registry_tests {
         // The catalog is empty until the run-authored skill is harvested; after harvest it
         // holds the skill, addressable for delivery to the next session.
         assert!(host.skills.store_list().await.is_empty());
-        host.persist_authored_skills(&env).await;
+        host.persist_authored_skills(host.local_workspace(), &env)
+            .await;
         let ids = host.skills.store_list().await;
         assert!(
             ids.iter().any(|id| id.contains("notes")),
