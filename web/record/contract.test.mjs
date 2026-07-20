@@ -97,11 +97,28 @@ test("the complete series covers every release-ready platform capability", () =>
     "16-access-boundary.mjs",
     "17-frontend-protocols.mjs",
     "18-mcp-server-export.mjs",
+    "19-codex-acp-agent.mjs",
   ]);
   const corpus = flows.map((name) => readFileSync(resolve(flowsDir, name), "utf8")).join("\n");
   for (const claim of ["Skill", "resource", "Deployment", "/v1/sessions", "archive", "A2A", "revoke", "AI SDK", "AG-UI"]) {
     assert.ok(corpus.includes(claim), `series: missing supplemental proof for ${claim}`);
   }
+});
+
+test("the Codex ACP video proves a real adapter result rather than configuration", () => {
+  const source = readFileSync(resolve(flowsDir, "19-codex-acp-agent.mjs"), "utf8");
+  assert.match(source, /AWAKEN_RECORD_CODEX_ACP/);
+  assert.match(source, /AWAKEN_RECORD_CODEX_ACP_CONTAINER/);
+  assert.match(source, /label=awaken\.sandbox=1/);
+  assert.match(source, /acp:codex/);
+  assert.match(source, /agent-working/);
+  assert.match(source, /CODEX ACP READY/);
+  assert.match(source, /AWAKEN_ACP_CREDENTIAL_FILE/);
+  assert.match(source, /\/acp-config\/auth\.json/);
+  assert.match(source, /apiKeyAbsent/);
+  assert.match(source, /writableCredential/);
+  assert.match(source, /proof\.user === "10001"/);
+  assert.match(source, /answers\)\.toHaveLength\(1\)/);
 });
 
 test("dependency-gated stories fail honestly before making a product claim", () => {

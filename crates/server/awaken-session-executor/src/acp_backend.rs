@@ -46,19 +46,24 @@ impl AcpBackend {
             .insert(thread.to_string(), adapter.to_string());
     }
 
+    /// Resolve the effective runtime selected for a thread. An explicit Session
+    /// selection wins over the deployment default.
+    pub(crate) fn adapter_for(&self, thread: &str) -> Option<String> {
+        self.thread_runtime
+            .lock()
+            .expect("acp thread-runtime mutex poisoned")
+            .get(thread)
+            .cloned()
+            .or_else(|| self.default_adapter.clone())
+    }
+
     /// Whether `thread` runs on an ACP CLI (`acp` / `acp:*`). Routes through the
     /// typed [`Backend`](awaken_runtime_contract::resolved::Backend) so the `acp:`
     /// parsing lives in one place, not duplicated as a string check here.
     pub(crate) fn is_acp(&self, thread: &str) -> bool {
-        let staged = self
-            .thread_runtime
-            .lock()
-            .expect("acp thread-runtime mutex poisoned")
-            .get(thread)
-            .cloned();
         // The thread's explicit selection, else the deployment default — either way
         // the `acp:` parse lives in the one `Backend::from_ref`, never a string check.
-        match staged.as_deref().or(self.default_adapter.as_deref()) {
+        match self.adapter_for(thread).as_deref() {
             Some(adapter) => awaken_runtime_contract::resolved::Backend::from_ref(adapter).is_acp(),
             None => false,
         }
@@ -144,7 +149,10 @@ impl crate::host::SharedHost {
                     cli,
                     Some(base.clone()),
                 ));
-                crate::LaunchSource::Projected { cli, resolver }
+                crate::LaunchSource::Projected {
+                    cli: Box::new(cli),
+                    resolver,
+                }
             }
             (None, Some(argv)) => {
                 crate::LaunchSource::Fixed(awaken_run_executor_acp::AcpLaunch::custom(argv, vec![]))
@@ -284,6 +292,7 @@ mod tests {
         host.register_thread_runtime("t", "acp:claude");
         let acp = host.acp.as_ref().expect("acp backend wired");
         assert!(acp.is_acp("t"));
+        assert_eq!(acp.adapter_for("t").as_deref(), Some("acp:claude"));
         assert!(!acp.is_acp("native-thread"));
     }
 
@@ -302,9 +311,14 @@ mod tests {
         let acp = host.acp.as_ref().expect("acp backend wired");
         // An unstaged thread inherits the deployment default → routes to ACP.
         assert!(acp.is_acp("unstaged-thread"));
+        assert_eq!(
+            acp.adapter_for("unstaged-thread").as_deref(),
+            Some("acp:custom")
+        );
         // An explicit non-ACP selection still overrides the default (native path).
         host.register_thread_runtime("native-thread", "awaken");
         assert!(!acp.is_acp("native-thread"));
+        assert_eq!(acp.adapter_for("native-thread").as_deref(), Some("awaken"));
     }
 
     #[test]

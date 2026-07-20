@@ -22,7 +22,8 @@ use futures_util::StreamExt;
 
 use crate::net::TcpAgentTransport;
 use crate::{
-    ContainerPlan, ContainerRuntime, ContainerState, ManagedContainer, REAPER_LABEL, RuntimeError,
+    ContainerPlan, ContainerRuntime, ContainerState, ManagedContainer, REAPER_LABEL,
+    REAPER_OWNER_LABEL, RuntimeError,
 };
 
 fn backend(e: impl std::fmt::Display) -> RuntimeError {
@@ -133,6 +134,9 @@ mod cgroup_host_config_tests {
                     read_only: true,
                     content: None,
                     content_bytes: None,
+                    secret_content: None,
+                    secret_writeback: false,
+                    credential_file_path: None,
                 },
                 crate::BindPlan {
                     source_ref: "/host/rw".into(),
@@ -140,6 +144,9 @@ mod cgroup_host_config_tests {
                     read_only: false,
                     content: None,
                     content_bytes: None,
+                    secret_content: None,
+                    secret_writeback: false,
+                    credential_file_path: None,
                 },
             ],
             ..plan()
@@ -232,18 +239,27 @@ fn signal_name(signal: pc::Signal) -> &'static str {
 pub struct DockerRuntime {
     docker: Docker,
     agent_port: u16,
+    owner_id: String,
 }
 
 impl DockerRuntime {
     /// Connect using the local defaults (unix socket / named pipe / env).
     pub fn connect_local(agent_port: u16) -> Result<Self, RuntimeError> {
         let docker = Docker::connect_with_local_defaults().map_err(backend)?;
-        Ok(Self { docker, agent_port })
+        Ok(Self {
+            docker,
+            agent_port,
+            owner_id: crate::runtime_owner_id(),
+        })
     }
 
     /// Wrap an already-built client.
     pub fn with_client(docker: Docker, agent_port: u16) -> Self {
-        Self { docker, agent_port }
+        Self {
+            docker,
+            agent_port,
+            owner_id: crate::runtime_owner_id(),
+        }
     }
 
     /// Probe the daemon (for tests / health checks): `Ok` iff it responds.
@@ -325,6 +341,7 @@ impl ContainerRuntime for DockerRuntime {
         // a container this worker leaks on a crash is found + swept by a later process.
         let mut labels = HashMap::new();
         labels.insert(REAPER_LABEL.to_string(), "1".to_string());
+        labels.insert(REAPER_OWNER_LABEL.to_string(), self.owner_id.clone());
         let config = Config {
             image: Some(plan.image.clone()),
             // Process-as-container: the agent argv IS the container command.
@@ -510,6 +527,11 @@ impl ContainerRuntime for DockerRuntime {
                     .unwrap_or(0);
                 Some(ManagedContainer {
                     id,
+                    owned_by_current_runtime: c
+                        .labels
+                        .as_ref()
+                        .and_then(|labels| labels.get(REAPER_OWNER_LABEL))
+                        == Some(&self.owner_id),
                     running,
                     age_secs,
                 })

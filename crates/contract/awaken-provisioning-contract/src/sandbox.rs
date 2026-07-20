@@ -35,6 +35,20 @@ pub trait BlobSource: Send + Sync {
     async fn get(&self, id: &str) -> Option<Vec<u8>>;
 }
 
+/// Broker for a file-materialized credential. Unlike [`BlobSource`], this port is
+/// deliberately bidirectional: a CLI may rotate an OAuth access/refresh token by
+/// replacing its native auth file, and a durable writable `Secret` mount must commit
+/// those bytes back under the same opaque reference. Secret bytes never enter a
+/// [`SandboxSpec`].
+#[async_trait]
+pub trait SecretBroker: Send + Sync {
+    /// Materialize the current credential file bytes for `reference`.
+    async fn materialize(&self, reference: &str) -> Result<Vec<u8>, SandboxError>;
+
+    /// Atomically persist a CLI-refreshed credential file under `reference`.
+    async fn write_back(&self, reference: &str, bytes: Vec<u8>) -> Result<(), SandboxError>;
+}
+
 /// Realizes a [`MountSource::MemoryStore`](crate::vocab::MountSource::MemoryStore)
 /// into a sandbox at a provider-resolved host path — the path-addressed counterpart
 /// of [`BlobSource`] (a store is a keyed filesystem, not one blob). The FUSE / copy

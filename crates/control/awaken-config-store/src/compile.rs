@@ -986,8 +986,8 @@ mod tests {
             serde_json::json!({ "id": "skill_docs" }),
             serde_json::json!("skill_release"),
         ];
-        let runnable = compile(&cfg, &[]).expect("valid integrations compile");
-        let bindings = AgentBindings::from_config(&runnable.snapshot().resolved_spec.plugin_config)
+        let snapshot = compile(&cfg, &[]).expect("valid integrations compile");
+        let bindings = AgentBindings::from_config(&snapshot.resolved_spec.plugin_config)
             .expect("new publications always carry the binding section");
         assert_eq!(bindings.mcp_servers[0].name, "docs");
         assert_eq!(bindings.skill_ids, vec!["skill_docs", "skill_release"]);

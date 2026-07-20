@@ -499,6 +499,9 @@ impl Supervisor {
         grace: std::time::Duration,
     ) -> Result<bool, AcpError> {
         let io = |e: pc::SandboxError| AcpError::Io(e.to_string());
+        if process.poll().await.map_err(io)?.is_some() {
+            return Ok(false);
+        }
         process.signal(pc::Signal::Term).await.map_err(io)?;
         const STEPS: u32 = 5;
         let step = grace / STEPS;
@@ -509,6 +512,9 @@ impl Supervisor {
             tokio::time::sleep(step).await;
         }
         process.signal(pc::Signal::Kill).await.map_err(io)?;
+        // Wait through the provider boundary so lifecycle hooks (notably durable
+        // credential-file write-back) run before the turn is considered finished.
+        process.wait().await.map_err(io)?;
         Ok(true)
     }
 

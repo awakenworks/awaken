@@ -9,13 +9,29 @@
 //! are set up by `scripts/e2e/k8s_container_e2e.sh`, which runs this test.
 #![cfg(feature = "k8s")]
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
+use awaken_provisioning_contract::SandboxProvider;
 use awaken_sandbox_container::ContainerProvider;
 use awaken_sandbox_container::k8s::K8sRuntime;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+struct CredentialBroker(Mutex<Vec<u8>>);
+
+#[async_trait]
+impl pc::SecretBroker for CredentialBroker {
+    async fn materialize(&self, _reference: &str) -> Result<Vec<u8>, pc::SandboxError> {
+        Ok(self.0.lock().unwrap().clone())
+    }
+
+    async fn write_back(&self, _reference: &str, bytes: Vec<u8>) -> Result<(), pc::SandboxError> {
+        *self.0.lock().unwrap() = bytes;
+        Ok(())
+    }
+}
 
 /// The busybox `nc` fixture: listen on 8080 and, per connection, read the prompt and
 /// reply with the newline-wire message + turn_end (the same stand-in the Docker e2e
@@ -166,11 +182,87 @@ fn binary_file_spec(scope: &str) -> pc::SandboxSpec {
     }
 }
 
+fn credential_spec(scope: &str, refreshed: &[u8]) -> pc::SandboxSpec {
+    pc::SandboxSpec {
+        scope: scope.into(),
+        isolation: pc::IsolationClass::Container,
+        mounts: vec![pc::MountRequirement {
+            mount_id: "codex-auth".into(),
+            source: pc::MountSource::Secret {
+                reference: "credential://acp/native/codex".into(),
+                content_hash: None,
+            },
+            mount_path: "/acp-config/auth.json".into(),
+            access: pc::MountAccess::ReadWrite,
+            lifetime: pc::MountLifetime::Durable,
+            required: true,
+        }],
+        env: Vec::new(),
+        network: pc::NetworkPolicy::Unrestricted,
+        outputs_path: "/mnt/session/outputs".into(),
+        limits: Default::default(),
+        lease_ttl_secs: None,
+        extra: Some(serde_json::json!({
+            "command": ["sh", "-c", format!("printf '%s' '{}' > /acp-config/auth.json; sleep 300", String::from_utf8_lossy(refreshed))],
+            "image": "awaken-bb:1"
+        })),
+    }
+}
+
 fn kubectl(args: &[&str]) -> std::process::Output {
     std::process::Command::new("kubectl")
         .args(args)
         .output()
         .expect("kubectl runs")
+}
+
+#[tokio::test]
+async fn a_k8s_pod_rotates_and_persists_a_native_credential_file() {
+    if std::env::var("AWAKEN_K8S_E2E").as_deref() != Ok("1")
+        || !kubectl(&["get", "nodes"]).status.success()
+    {
+        eprintln!("skipping: set AWAKEN_K8S_E2E=1 with a reachable cluster to run");
+        return;
+    }
+    let initial = br#"{"tokens":{"access_token":"old","refresh_token":"old"}}"#;
+    let refreshed = br#"{"tokens":{"access_token":"new","refresh_token":"rotated"}}"#;
+    let scope = format!("k8s-credential-{}", std::process::id());
+    let pod = format!("awaken-{scope}");
+    let secret = format!("{pod}-credential-0");
+    let _ = kubectl(&["delete", "pod", &pod, "--ignore-not-found", "--now"]);
+    let broker = Arc::new(CredentialBroker(Mutex::new(initial.to_vec())));
+    let runtime = K8sRuntime::connect("default", "127.0.0.1:1".parse().unwrap())
+        .await
+        .expect("connect to the cluster");
+    let provider =
+        ContainerProvider::new(Arc::new(runtime), "awaken-bb:1").with_secret_broker(broker.clone());
+    let sandbox = provider
+        .create(&credential_spec(&scope, refreshed))
+        .await
+        .expect("create Pod with writable native credential");
+    let mut ready = false;
+    for _ in 0..120 {
+        let phase = kubectl(&["get", "pod", &pod, "-o", "jsonpath={.status.phase}"]);
+        if String::from_utf8_lossy(&phase.stdout) == "Running" {
+            ready = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    assert!(
+        ready,
+        "credential Pod reaches Running after its init container"
+    );
+    let process = sandbox.spawn(pc::Command::new(["true"])).await.unwrap();
+    process.signal(pc::Signal::Term).await.unwrap();
+    assert_eq!(broker.0.lock().unwrap().as_slice(), refreshed);
+    let secret_after = kubectl(&["get", "secret", &secret, "--ignore-not-found"]);
+    assert!(
+        String::from_utf8_lossy(&secret_after.stdout)
+            .trim()
+            .is_empty(),
+        "credential Secret is deleted after harvest"
+    );
 }
 
 #[tokio::test]

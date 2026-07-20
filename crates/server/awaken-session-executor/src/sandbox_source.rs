@@ -44,7 +44,7 @@ pub enum LaunchSource {
     /// The run's config-plane-selected CLI, projected per run through its [`AcpCli`]
     /// row + `resolver` (production; `AWAKEN_ACP_CLI`).
     Projected {
-        cli: AcpCli,
+        cli: Box<AcpCli>,
         resolver: Arc<dyn LaunchResolver>,
     },
 }
@@ -72,7 +72,7 @@ impl LaunchSource {
                     }
                     _ => return Err(OpenError(format!("run backend `{selected}` is not ACP"))),
                 }
-                project_launch(cli, resolver.as_ref(), activation)
+                project_launch(cli.as_ref(), resolver.as_ref(), activation)
             }
         }
     }
@@ -82,7 +82,7 @@ impl LaunchSource {
     fn cli(&self) -> Option<&AcpCli> {
         match self {
             LaunchSource::Fixed(_) => None,
-            LaunchSource::Projected { cli, .. } => Some(cli),
+            LaunchSource::Projected { cli, .. } => Some(cli.as_ref()),
         }
     }
 }
@@ -166,6 +166,160 @@ const SANDBOX_WORKSPACE: &str = "/workspace";
 /// from: the projected `config.toml` is mounted here (`MountSource::Inline`) and the
 /// CLI's config-home env (e.g. `CODEX_HOME`) points at it.
 const SANDBOX_CONFIG_HOME: &str = "/acp-config";
+
+#[cfg(any(
+    test,
+    feature = "container-docker",
+    feature = "container-podman",
+    feature = "container-k8s"
+))]
+const ACP_NATIVE_CREDENTIAL_REF_PREFIX: &str = "credential://acp/native/";
+#[cfg(any(
+    feature = "container-docker",
+    feature = "container-podman",
+    feature = "container-k8s"
+))]
+const MAX_ACP_CREDENTIAL_FILE_BYTES: usize = 1024 * 1024;
+#[cfg(any(
+    feature = "container-docker",
+    feature = "container-podman",
+    feature = "container-k8s"
+))]
+static ACP_CREDENTIAL_WRITE_SEQ: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(1);
+
+#[cfg(any(
+    test,
+    feature = "container-docker",
+    feature = "container-podman",
+    feature = "container-k8s"
+))]
+#[derive(Debug, Clone)]
+struct AcpCredentialBinding {
+    reference: String,
+}
+
+/// Local deployment adapter for the generic SecretBroker port. The sandbox sees only
+/// `credential://...`; this host-only adapter reads/writes the operator-selected native
+/// credential file atomically, so a CLI token refresh survives the container.
+#[cfg(any(
+    feature = "container-docker",
+    feature = "container-podman",
+    feature = "container-k8s"
+))]
+struct LocalCredentialFileBroker {
+    reference: String,
+    path: std::path::PathBuf,
+}
+
+#[cfg(any(
+    feature = "container-docker",
+    feature = "container-podman",
+    feature = "container-k8s"
+))]
+#[async_trait]
+impl pc::SecretBroker for LocalCredentialFileBroker {
+    async fn materialize(&self, reference: &str) -> Result<Vec<u8>, pc::SandboxError> {
+        if reference != self.reference {
+            return Err(pc::SandboxError::new("unknown ACP credential reference"));
+        }
+        let bytes = std::fs::read(&self.path)
+            .map_err(|e| pc::SandboxError::new(format!("read ACP credential file: {e}")))?;
+        if bytes.is_empty() || bytes.len() > MAX_ACP_CREDENTIAL_FILE_BYTES {
+            return Err(pc::SandboxError::new(
+                "ACP credential file must be between 1 byte and 1 MiB",
+            ));
+        }
+        Ok(bytes)
+    }
+
+    async fn write_back(&self, reference: &str, bytes: Vec<u8>) -> Result<(), pc::SandboxError> {
+        if reference != self.reference {
+            return Err(pc::SandboxError::new("unknown ACP credential reference"));
+        }
+        if bytes.is_empty() || bytes.len() > MAX_ACP_CREDENTIAL_FILE_BYTES {
+            return Err(pc::SandboxError::new(
+                "refreshed ACP credential file must be between 1 byte and 1 MiB",
+            ));
+        }
+        if std::fs::read(&self.path).is_ok_and(|current| current == bytes) {
+            return Ok(());
+        }
+        let parent = self
+            .path
+            .parent()
+            .ok_or_else(|| pc::SandboxError::new("ACP credential path has no parent"))?;
+        let tmp = parent.join(format!(
+            ".awaken-credential-{}-{}.tmp",
+            std::process::id(),
+            ACP_CREDENTIAL_WRITE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::write(&tmp, bytes)
+            .map_err(|e| pc::SandboxError::new(format!("stage refreshed credential: {e}")))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))
+                .map_err(|e| pc::SandboxError::new(format!("secure refreshed credential: {e}")))?;
+        }
+        std::fs::rename(&tmp, &self.path)
+            .map_err(|e| pc::SandboxError::new(format!("commit refreshed credential: {e}")))
+    }
+}
+
+#[cfg(any(
+    feature = "container-docker",
+    feature = "container-podman",
+    feature = "container-k8s"
+))]
+type CredentialProjection = Option<(AcpCredentialBinding, Arc<dyn pc::SecretBroker>)>;
+
+#[cfg(any(
+    feature = "container-docker",
+    feature = "container-podman",
+    feature = "container-k8s"
+))]
+fn credential_projection(source: &LaunchSource) -> Result<CredentialProjection, String> {
+    let Some(raw_path) = std::env::var(crate::acp_provision::ACP_CREDENTIAL_FILE_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return Ok(None);
+    };
+    let cli = source.cli().ok_or_else(|| {
+        format!(
+            "{} requires a projected AWAKEN_ACP_CLI",
+            crate::acp_provision::ACP_CREDENTIAL_FILE_ENV
+        )
+    })?;
+    if cli.credential_file.is_none() {
+        return Err(format!(
+            "ACP CLI `{}` has no native credential file",
+            cli.id
+        ));
+    }
+    let path = std::path::PathBuf::from(raw_path)
+        .canonicalize()
+        .map_err(|e| format!("ACP credential file is not readable: {e}"))?;
+    let metadata =
+        std::fs::metadata(&path).map_err(|e| format!("ACP credential file metadata: {e}"))?;
+    if !metadata.is_file() {
+        return Err("ACP credential path must name a regular file".to_string());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return Err("ACP credential file must be owner-only (mode 0600)".to_string());
+        }
+    }
+    let reference = format!("{ACP_NATIVE_CREDENTIAL_REF_PREFIX}{}", cli.id);
+    let broker: Arc<dyn pc::SecretBroker> = Arc::new(LocalCredentialFileBroker {
+        reference: reference.clone(),
+        path,
+    });
+    Ok(Some((AcpCredentialBinding { reference }, broker)))
+}
 
 /// The workdir-relative config-home for the unsandboxed Workdir tier: the CLI runs on
 /// the host in its workdir, so its config mount + config-home env are relative to that
@@ -334,7 +488,10 @@ impl SandboxChannelSource {
     ) -> Self {
         Self {
             provider: SandboxBackend::Namespace(NamespaceProvider::new(base)),
-            launch: LaunchSource::Projected { cli, resolver },
+            launch: LaunchSource::Projected {
+                cli: Box::new(cli),
+                resolver,
+            },
             egress: ThreadEgress::default(),
             codec: awaken_run_executor_acp::Codec::Acp,
             resources: None,
@@ -348,7 +505,7 @@ impl SandboxChannelSource {
     pub fn from_source(base: impl Into<std::path::PathBuf>, source: LaunchSource) -> Self {
         match source {
             LaunchSource::Fixed(launch) => Self::new(base, launch),
-            LaunchSource::Projected { cli, resolver } => Self::projecting(base, cli, resolver),
+            LaunchSource::Projected { cli, resolver } => Self::projecting(base, *cli, resolver),
         }
     }
 
@@ -550,6 +707,34 @@ fn acp_config_mount(
     ))
 }
 
+#[cfg(any(
+    test,
+    feature = "container-docker",
+    feature = "container-podman",
+    feature = "container-k8s"
+))]
+fn acp_credential_mount(
+    cli: &AcpCli,
+    binding: &AcpCredentialBinding,
+    config_home: &str,
+) -> Option<(pc::MountRequirement, (String, String))> {
+    let rel_path = cli.credential_file?;
+    Some((
+        pc::MountRequirement {
+            mount_id: "acp-native-credential".to_string(),
+            source: pc::MountSource::Secret {
+                reference: binding.reference.clone(),
+                content_hash: None,
+            },
+            mount_path: format!("{config_home}/{rel_path}"),
+            access: pc::MountAccess::ReadWrite,
+            lifetime: pc::MountLifetime::Durable,
+            required: true,
+        },
+        (cli.config_home_env.to_string(), config_home.to_string()),
+    ))
+}
+
 /// Runs each turn's agent inside a **user-supplied container image** (ADR-0056 custom
 /// rootfs): it realizes a container from the worker-configured [`AgentContainerProvider`]
 /// (podman / docker / k8s) with the ACP CLI as the container's main process
@@ -563,6 +748,7 @@ pub struct ContainerChannelSource {
     codec: awaken_run_executor_acp::Codec,
     resources: Option<ThreadResources>,
     sandbox: Option<ThreadSandbox>,
+    credential: Option<AcpCredentialBinding>,
 }
 
 impl ContainerChannelSource {
@@ -577,6 +763,7 @@ impl ContainerChannelSource {
             codec: awaken_run_executor_acp::Codec::Newline,
             resources: None,
             sandbox: None,
+            credential: None,
         }
     }
 
@@ -590,11 +777,15 @@ impl ContainerChannelSource {
     ) -> Self {
         Self {
             provider,
-            launch: LaunchSource::Projected { cli, resolver },
+            launch: LaunchSource::Projected {
+                cli: Box::new(cli),
+                resolver,
+            },
             egress: ThreadEgress::default(),
             codec: awaken_run_executor_acp::Codec::Acp,
             resources: None,
             sandbox: None,
+            credential: None,
         }
     }
 
@@ -603,7 +794,7 @@ impl ContainerChannelSource {
     pub fn from_source(provider: Arc<dyn AgentContainerProvider>, source: LaunchSource) -> Self {
         match source {
             LaunchSource::Fixed(launch) => Self::new(provider, launch),
-            LaunchSource::Projected { cli, resolver } => Self::projecting(provider, cli, resolver),
+            LaunchSource::Projected { cli, resolver } => Self::projecting(provider, *cli, resolver),
         }
     }
 
@@ -635,6 +826,17 @@ impl ContainerChannelSource {
     #[must_use]
     pub fn with_thread_sandbox(mut self, sandbox: ThreadSandbox) -> Self {
         self.sandbox = Some(sandbox);
+        self
+    }
+
+    #[cfg(any(
+        feature = "container-docker",
+        feature = "container-podman",
+        feature = "container-k8s"
+    ))]
+    #[must_use]
+    fn with_credential(mut self, credential: Option<AcpCredentialBinding>) -> Self {
+        self.credential = credential;
         self
     }
 
@@ -700,6 +902,16 @@ impl AgentChannelSource for ContainerChannelSource {
         // (codex) gets its config.toml as an inline mount the container tier materializes
         // into a host bind at the interior config home. Fail-closed on an inline secret.
         let mut launch = launch;
+        // Container images preinstall the catalog's fixed adapter version. Use its
+        // data-declared direct argv instead of a host-oriented `npx` launcher, which
+        // would attempt a registry download and a writable npm cache at run time.
+        if let Some(cli) = self.launch.cli() {
+            launch.argv = cli
+                .container_argv
+                .iter()
+                .map(|part| (*part).to_string())
+                .collect();
+        }
         let injection = match self.launch.cli() {
             Some(cli) => awaken_run_executor_acp::mcp_injection(
                 cli,
@@ -719,12 +931,20 @@ impl AgentChannelSource for ContainerChannelSource {
                 true,
             )
         });
-        if let Some((_, (env_key, env_val))) = &config_mount {
+        let credential_mount = self.launch.cli().and_then(|cli| {
+            self.credential
+                .as_ref()
+                .and_then(|binding| acp_credential_mount(cli, binding, SANDBOX_CONFIG_HOME))
+        });
+        if let Some((_, (env_key, env_val))) = credential_mount.as_ref().or(config_mount.as_ref()) {
             launch.env.retain(|(k, _)| k != env_key);
             launch.env.push((env_key.clone(), env_val.clone()));
         }
         let mut spec = self.spec(thread, &launch);
         if let Some((mount, _)) = config_mount {
+            spec.mounts.push(mount);
+        }
+        if let Some((mount, _)) = credential_mount {
             spec.mounts.push(mount);
         }
         let session = self
@@ -894,6 +1114,18 @@ fn warm_wrap<R: awaken_sandbox_container::ContainerRuntime + 'static>(
     }
 }
 
+#[cfg(any(
+    feature = "container-docker",
+    feature = "container-podman",
+    feature = "container-k8s"
+))]
+fn configured_container_egress_proxy() -> Option<awaken_sandbox_container::EgressProxy> {
+    std::env::var("AWAKEN_CONTAINER_EGRESS_PROXY")
+        .ok()
+        .filter(|url| !url.trim().is_empty())
+        .map(|url| awaken_sandbox_container::EgressProxy { url })
+}
+
 /// Spawn the cross-restart container reaper on `runtime` (docker/podman): a background
 /// sweep that reaps awaken-labeled containers a *crashed* worker left behind — exited
 /// (agent done) or aged past the cap (hung / leaked warm instance). On by default (a
@@ -928,12 +1160,14 @@ fn container_source(
     egress: ThreadEgress,
     resources: ThreadResources,
     sandbox: ThreadSandbox,
+    credential: Option<AcpCredentialBinding>,
 ) -> Arc<dyn AgentChannelSource> {
     Arc::new(
         ContainerChannelSource::from_source(provider, source)
             .with_thread_egress(egress)
             .with_thread_resources(resources)
-            .with_thread_sandbox(sandbox),
+            .with_thread_sandbox(sandbox)
+            .with_credential(credential),
     )
 }
 
@@ -945,20 +1179,28 @@ fn build_docker_source(
     resources: ThreadResources,
     sandbox: ThreadSandbox,
 ) -> Result<Arc<dyn AgentChannelSource>, String> {
+    let credential = credential_projection(&source)?;
     let runtime = std::sync::Arc::new(
         awaken_sandbox_container::docker::DockerRuntime::connect_local(CONTAINER_AGENT_PORT)
             .map_err(|e| format!("docker runtime: {e}"))?,
     );
     // Sweep leaked containers of a crashed prior worker (startup + periodic).
     spawn_container_reaper(runtime.clone());
-    let provider =
+    let mut provider =
         awaken_sandbox_container::ContainerProvider::new(runtime, container_image(image)?);
+    if let Some((_, broker)) = &credential {
+        provider = provider.with_secret_broker(broker.clone());
+    }
+    if let Some(proxy) = configured_container_egress_proxy() {
+        provider = provider.with_egress_proxy(proxy);
+    }
     Ok(container_source(
         warm_wrap(provider),
         source,
         egress,
         resources,
         sandbox,
+        credential.map(|(binding, _)| binding),
     ))
 }
 
@@ -981,18 +1223,26 @@ fn build_podman_source(
     resources: ThreadResources,
     sandbox: ThreadSandbox,
 ) -> Result<Arc<dyn AgentChannelSource>, String> {
+    let credential = credential_projection(&source)?;
     let runtime = std::sync::Arc::new(awaken_sandbox_container::podman::PodmanRuntime::new(
         CONTAINER_AGENT_PORT,
     ));
     spawn_container_reaper(runtime.clone());
-    let provider =
+    let mut provider =
         awaken_sandbox_container::ContainerProvider::new(runtime, container_image(image)?);
+    if let Some((_, broker)) = &credential {
+        provider = provider.with_secret_broker(broker.clone());
+    }
+    if let Some(proxy) = configured_container_egress_proxy() {
+        provider = provider.with_egress_proxy(proxy);
+    }
     Ok(container_source(
         warm_wrap(provider),
         source,
         egress,
         resources,
         sandbox,
+        credential.map(|(binding, _)| binding),
     ))
 }
 
@@ -1015,6 +1265,7 @@ async fn build_k8s_source(
     resources: ThreadResources,
     sandbox: ThreadSandbox,
 ) -> Result<Arc<dyn AgentChannelSource>, String> {
+    let credential = credential_projection(&source)?;
     // The Pod's reachable agent address + namespace come from the worker's env; the
     // Service/NodePort exposure is a cluster-deployment concern outside this process.
     let namespace = std::env::var("AWAKEN_K8S_NAMESPACE").unwrap_or_else(|_| "default".into());
@@ -1028,16 +1279,23 @@ async fn build_k8s_source(
     let runtime = awaken_sandbox_container::k8s::K8sRuntime::connect(namespace, addr)
         .await
         .map_err(|e| format!("k8s runtime: {e}"))?;
-    let provider = awaken_sandbox_container::ContainerProvider::new(
+    let mut provider = awaken_sandbox_container::ContainerProvider::new(
         std::sync::Arc::new(runtime),
         container_image(image)?,
     );
+    if let Some((_, broker)) = &credential {
+        provider = provider.with_secret_broker(broker.clone());
+    }
+    if let Some(proxy) = configured_container_egress_proxy() {
+        provider = provider.with_egress_proxy(proxy);
+    }
     Ok(container_source(
         warm_wrap(provider),
         source,
         egress,
         resources,
         sandbox,
+        credential.map(|(binding, _)| binding),
     ))
 }
 
@@ -1127,6 +1385,36 @@ mod tests {
         // A session-server CLI (claude, no config file) → no config mount.
         let claude = awaken_run_executor_acp::acp_cli("claude").unwrap();
         assert!(acp_config_mount(claude, None, SANDBOX_CONFIG_HOME, true).is_none());
+    }
+
+    #[test]
+    fn codex_and_claude_credentials_use_their_native_writable_paths() {
+        for (id, path, env_key) in [
+            ("codex", "/acp-config/auth.json", "CODEX_HOME"),
+            (
+                "claude",
+                "/acp-config/.credentials.json",
+                "CLAUDE_CONFIG_DIR",
+            ),
+        ] {
+            let cli = awaken_run_executor_acp::acp_cli(id).unwrap();
+            let binding = AcpCredentialBinding {
+                reference: format!("{ACP_NATIVE_CREDENTIAL_REF_PREFIX}{id}"),
+            };
+            let (mount, (key, home)) =
+                acp_credential_mount(cli, &binding, SANDBOX_CONFIG_HOME).unwrap();
+            assert_eq!(mount.mount_path, path);
+            assert_eq!(mount.access, pc::MountAccess::ReadWrite);
+            assert_eq!(mount.lifetime, pc::MountLifetime::Durable);
+            assert!(mount.is_secret_writeback());
+            assert_eq!(key, env_key);
+            assert_eq!(home, SANDBOX_CONFIG_HOME);
+            assert!(matches!(
+                mount.source,
+                pc::MountSource::Secret { reference, .. }
+                    if reference == format!("{ACP_NATIVE_CREDENTIAL_REF_PREFIX}{id}")
+            ));
+        }
     }
 
     #[tokio::test]
@@ -1463,26 +1751,16 @@ mod tests {
             .await
             .expect("open the containerized agent");
 
-        // The container ran claude's *projected* launch (npx …), not a fixed argv —
-        // i.e. the config-plane CLI selection reached the container tier.
+        // The container ran the row's preinstalled argv, not the host-oriented npx
+        // launcher — the config-plane CLI selection reached the container tier without
+        // a runtime package download.
         let cmd = captured
             .0
             .lock()
             .unwrap()
             .clone()
             .expect("open_agent was called");
-        let expected = project_launch(cli, resolver.as_ref(), &act)
-            .expect("project")
-            .argv;
-        assert_eq!(
-            cmd, expected,
-            "the container runs the agent's projected CLI launch"
-        );
-        assert_eq!(
-            cmd.first().map(String::as_str),
-            Some("npx"),
-            "claude projects to an npx launch: {cmd:?}"
-        );
+        assert_eq!(cmd, vec!["claude-agent-acp"]);
     }
 
     #[tokio::test]

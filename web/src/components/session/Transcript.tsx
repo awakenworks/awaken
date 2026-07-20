@@ -350,7 +350,11 @@ export default function Transcript({
         <Card className="transcript-pending-message" style={{ padding: "8px 12px", maxWidth: "88%", alignSelf: "flex-end", background: "var(--soft)" }}>
           <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{pendingMessage}</div>
           <span className={sendError ? "err" : "mut"} style={{ fontSize: 10.5 }}>
-            {sendError ? app.t("send failed — message retained", "发送失败——消息已保留") : app.t("sending…", "发送中…")}
+            {sendError
+              ? app.t("send failed — message retained", "发送失败——消息已保留")
+              : sendPending || running
+                ? app.t("sending…", "发送中…")
+                : app.t("sent ✓", "已发送 ✓")}
           </span>
         </Card>
       )}
