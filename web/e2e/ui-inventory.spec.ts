@@ -30,7 +30,7 @@ for (const item of NAV) {
 
 test("Agent configuration exposes every controllable capability by user intent", async ({ page }) => {
   await page.goto("/w/default/agents/new");
-  for (const tab of ["Overview", "Behavior", "Tools", "Resources"]) {
+  for (const tab of ["Overview", "Behavior", "Tools", "Integrations", "Resources"]) {
     await expect(page.getByRole("tab", { name: tab, exact: true })).toBeVisible();
   }
 
@@ -62,7 +62,16 @@ test("Agent configuration exposes every controllable capability by user intent",
   await page.getByRole("tab", { name: "Tools", exact: true }).click();
   await expect(page.getByText("Permissions", { exact: true })).toBeVisible();
   await expect(page.getByRole("checkbox", { name: /bash Run a shell command/ })).toBeVisible();
-  await expect(page.getByPlaceholder(/add custom tool id/)).toBeVisible();
+  await expect(page.getByRole("button", { name: /override an MCP tool/ })).toBeVisible();
+
+  await page.getByRole("tab", { name: "Integrations", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Direct MCP servers" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Skill optimization" })).toBeVisible();
+  await expect(page.getByText(/state only the goal/)).toBeVisible();
+
+  await page.getByRole("button", { name: "{} JSON" }).click();
+  await expect(page.getByLabel("Agent JSON")).toBeVisible();
+  await expect(page.getByText(/Lossless Agent object view/)).toBeVisible();
 
   await page.getByRole("tab", { name: "Resources", exact: true }).click();
   await expect(page.getByText(/Save the agent first, then bind resources/)).toBeVisible();

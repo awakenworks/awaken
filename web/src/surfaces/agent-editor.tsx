@@ -16,6 +16,8 @@ import { useToast } from "../components/ui/Toast";
 import { Button, Card, CheckPicker, Pill, Segmented, TextAreaField, TextField } from "../components/ui";
 import type { JsonSchema } from "../components/ui";
 import BehaviorCard from "../components/agent/BehaviorCard";
+import AgentIntegrationsEditor from "../components/agent/AgentIntegrationsEditor";
+import AgentRawEditor from "../components/agent/AgentRawEditor";
 import ToolOverridesEditor from "../components/agent/ToolOverridesEditor";
 import SandboxPane from "../components/session/SandboxPane";
 import PermissionEditor from "../components/agent/PermissionEditor";
@@ -40,7 +42,7 @@ import ModelsSurface from "./models";
 // Editor sections, organized by user intent (not by mechanism): Behavior groups the
 // runtime behaviors (context window, auto-compaction, memory recall, tool ordering) as
 // named cards; Tools holds selection + presentation + permissions.
-type Tab = "overview" | "behavior" | "tools" | "resources";
+type Tab = "overview" | "behavior" | "tools" | "integrations" | "resources";
 
 const BLANK: AgentConfig = {
   id: "",
@@ -61,52 +63,6 @@ function modelId(m: AgentConfig["model"]): string {
   return typeof m === "string" ? m : (m?.id ?? "");
 }
 
-/** A minimal add/remove editor for a string list (tools, plugins). */
-function ListEditor({
-  values,
-  onChange,
-  placeholder,
-}: {
-  values: string[];
-  onChange: (next: string[]) => void;
-  placeholder: string;
-}) {
-  const [draft, setDraft] = useState("");
-  const add = () => {
-    const v = draft.trim();
-    if (v && !values.includes(v)) onChange([...values, v]);
-    setDraft("");
-  };
-  return (
-    <div className="field">
-      <div className="chain">
-        {values.map((v) => (
-          <span className="chip" key={v}>
-            <span className="mono">{v}</span>
-            <Button variant="ghost" style={{ height: 20 }} onClick={() => onChange(values.filter((x) => x !== v))}>
-              ✕
-            </Button>
-          </span>
-        ))}
-        {values.length === 0 && <span className="mut">—</span>}
-      </div>
-      <div className="row">
-        <input
-          className="input mono"
-          style={{ flex: 1 }}
-          placeholder={placeholder}
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && add()}
-        />
-        <Button onClick={add}>
-          + add
-        </Button>
-      </div>
-    </div>
-  );
-}
-
 export default function AgentEditorSurface() {
   const app = useApp();
   const nav = useNavigate();
@@ -119,6 +75,9 @@ export default function AgentEditorSurface() {
   const [showSandbox, setShowSandbox] = useState(false);
   // Publish opens a confirm modal previewing the diff vs the config as loaded.
   const [showPublish, setShowPublish] = useState(false);
+  const [rawOpen, setRawOpen] = useState(false);
+  const [rawValid, setRawValid] = useState(true);
+  const [integrationsValid, setIntegrationsValid] = useState(true);
   const [cfg, setCfg] = useState<AgentConfig>(BLANK);
   const [dirty, setDirty] = useState(false);
   const [manageModels, setManageModels] = useState(false);
@@ -137,6 +96,7 @@ export default function AgentEditorSurface() {
       const { published: _published, ...rest } = existing.data;
       setCfg({ ...BLANK, ...rest });
       setDirty(false);
+      setIntegrationsValid(true);
     }
   }, [existing.data]);
 
@@ -167,7 +127,7 @@ export default function AgentEditorSurface() {
   };
 
   const targetId = () => (isNew ? cfg.id.trim() : id);
-  const canSave = targetId().length > 0 && (cfg.system ?? "").trim().length > 0;
+  const canSave = rawValid && integrationsValid && targetId().length > 0 && (cfg.system ?? "").trim().length > 0;
   const body = () => ({ ...cfg, id: targetId() });
 
   // Validation issues from the config domain (compile), field-routed. The UI only
@@ -217,11 +177,18 @@ export default function AgentEditorSurface() {
     { key: "overview", label: "Overview", zh: "概览" },
     { key: "behavior", label: "Behavior", zh: "行为" },
     { key: "tools", label: "Tools", zh: "工具" },
+    { key: "integrations", label: "Integrations", zh: "集成" },
     { key: "resources", label: "Resources", zh: "资源" },
   ];
   // The count shown as a rail badge, so each section's fill is visible at a glance.
   const sectionBadge = (k: Tab) =>
-    k === "behavior" ? cfg.plugins.length : k === "tools" ? cfg.tools.length : 0;
+    k === "behavior"
+      ? cfg.plugins.length
+      : k === "tools"
+        ? cfg.tools.length + (cfg.tool_overrides?.length ?? 0)
+        : k === "integrations"
+          ? cfg.mcp_servers.length + cfg.skills.length
+          : 0;
 
   return (
     <>
@@ -234,6 +201,16 @@ export default function AgentEditorSurface() {
           {dirty && <Pill tone="warn">{app.t("unsaved", "未保存")}</Pill>}
         </span>
         <span className="row">
+          <Button
+            variant="ghost"
+            aria-pressed={rawOpen}
+            onClick={() => {
+              setRawOpen((open) => !open);
+              setRawValid(true);
+            }}
+          >
+            {rawOpen ? app.t("Visual editor", "可视化编辑") : "{} JSON"}
+          </Button>
           <Button variant="ghost" disabled={!canSave || validate.isPending} onClick={() => validate.mutate()}>
             {app.t("Validate", "校验")}
           </Button>
@@ -251,9 +228,10 @@ export default function AgentEditorSurface() {
         </span>
       </div>
       <div className="agent-editor">
-        {/* Left rail: sections by intent (Overview / Behavior / Tools / Resources). */}
+        {/* Guided chapters follow the workflow/issue-editor pattern: the operator
+            always knows where they are, while JSON remains a lossless peer view. */}
         <div className="editor-rail" role="tablist" aria-label={app.t("Agent config sections", "Agent 配置分区")}>
-          {SECTIONS.map((s) => {
+          {SECTIONS.map((s, index) => {
             const n = sectionBadge(s.key);
             const hasIssue = issues.some((i) => sectionForPath(i.path) === s.key);
             return (
@@ -262,13 +240,16 @@ export default function AgentEditorSurface() {
                 role="tab"
                 aria-selected={tab === s.key}
                 variant={tab === s.key ? "primary" : "ghost"}
-                onClick={() => setTab(s.key)}
+                onClick={() => {
+                  setTab(s.key);
+                  setRawOpen(false);
+                }}
               >
                 <span>
-                  {app.t(s.label, s.zh)}
+                  <small aria-hidden="true">{index + 1}</small> {app.t(s.label, s.zh)}
                   {hasIssue && <span title={app.t("has a validation issue", "有校验问题")} style={{ color: "var(--danger)", marginLeft: 4 }}>●</span>}
                 </span>
-                {n > 0 && <span className="rail-badge">{n}</span>}
+                {n > 0 && <span className="rail-badge" aria-hidden="true">{n}</span>}
               </Button>
             );
           })}
@@ -280,7 +261,22 @@ export default function AgentEditorSurface() {
         {/* Content column: one section at a time. */}
         <div className="editor-content">
 
-      {issues.length > 0 && (
+      {rawOpen && (
+        <Card>
+          <AgentRawEditor
+            value={cfg}
+            onChange={(next) => {
+              setCfg({ ...BLANK, ...next });
+              setDirty(true);
+              setIntegrationsValid(true);
+              if (issues.length) setIssues([]);
+            }}
+            onValidityChange={setRawValid}
+          />
+        </Card>
+      )}
+
+      {!rawOpen && issues.length > 0 && (
         <div className="banner warn" style={{ flexDirection: "column", alignItems: "stretch", gap: 6 }}>
           {issues.map((iss, i) => (
             <div key={i} className="row" style={{ justifyContent: "space-between", gap: 8 }}>
@@ -297,7 +293,7 @@ export default function AgentEditorSurface() {
         </div>
       )}
 
-      {tab === "resources" && (
+      {!rawOpen && tab === "resources" && (
         <Card>
           {isNew ? (
             <div className="banner gate">
@@ -310,7 +306,11 @@ export default function AgentEditorSurface() {
         </Card>
       )}
 
-      {tab !== "resources" && (
+      {!rawOpen && tab === "integrations" && (
+        <AgentIntegrationsEditor config={cfg} onChange={patch} onValidityChange={setIntegrationsValid} />
+      )}
+
+      {!rawOpen && tab !== "resources" && tab !== "integrations" && (
       <Card>
         {tab === "overview" && (
           <>
@@ -476,8 +476,8 @@ export default function AgentEditorSurface() {
             <label>{app.t("Tools", "工具")}</label>
             <span className="mut">
               {app.t(
-                "Pick from the host's advertised tools, or add an id not in the catalog (e.g. an MCP tool).",
-                "从 host 广告的工具中勾选,或添加目录外的 id(如 MCP 工具)。",
+                "Pick executable tools advertised by the host. Dynamic MCP tools are bound in Integrations and targeted below by canonical id.",
+                "选择 host 广告的可执行工具。动态 MCP 工具在 Integrations 中绑定，并在下方按规范 id 配置。",
               )}
             </span>
             <CheckPicker
@@ -491,11 +491,6 @@ export default function AgentEditorSurface() {
               selected={cfg.tools}
               onChange={(v) => patch({ tools: v })}
               empty={caps.isLoading ? "…" : app.t("No tools advertised.", "无广告工具。")}
-            />
-            <ListEditor
-              values={cfg.tools}
-              onChange={(v) => patch({ tools: v })}
-              placeholder={app.t("add custom tool id (e.g. mcp__calc__add)", "添加自定义工具 id")}
             />
             <div className="field" style={{ marginTop: 14 }}>
               <label>{app.t("Tool presentation", "工具呈现")}</label>
@@ -580,4 +575,3 @@ export default function AgentEditorSurface() {
     </>
   );
 }
-
