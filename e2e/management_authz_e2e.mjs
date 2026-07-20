@@ -35,7 +35,6 @@ const BETAS = ['managed-agents-2026-04-01'];
 const PORT = 38197;
 // 64 hex chars = the 32-byte AEAD key AWAKEN_MGMT_SEAL_KEY requires.
 const SEAL_KEY = 'ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100';
-const WORKSPACE = 'wrkspc_default'; // the bootstrap admin token's workspace
 
 async function req(base, method, uri, body, token) {
   const headers = {};
@@ -61,6 +60,11 @@ async function main() {
     let { server: a, baseUrl: base } = spawnServer('management', PORT, { ...env, ...realServerEnv('mcp', upstream, { mode: 'management' }) });
     server = a;
     await waitForPort(PORT);
+    // Scope is provisioned once by the platform and persisted beside the other
+    // local control-plane state. Tests consume that authority; they never invent
+    // or hard-code a workspace coordinate.
+    const workspace = fs.readFileSync(path.join(dir, 'platform-workspace-id'), 'utf8').trim();
+    assert.ok(workspace.startsWith('workspace_local_'), `platform workspace: ${workspace}`);
 
     // The bootstrap contract: the admin token is on disk, owner-only.
     const tokenPath = path.join(dir, 'admin-token');
@@ -88,7 +92,7 @@ async function main() {
     assert.equal(r.status, 200);
     assert.ok(r.json.providers && r.json.providers.anthropic, 'authored provider is in the catalog');
     r = await req(base, 'POST', '/v1/config/credentials', {
-      workspace_id: WORKSPACE, kind: 'vault', provider_id: 'anthropic',
+      workspace_id: workspace, kind: 'vault', provider_id: 'anthropic',
       env_key: 'ANTHROPIC_API_KEY',
       secret: 'sk-authz-e2e-secret', // awaken-allow: secret
     }, token);
@@ -123,7 +127,7 @@ async function main() {
     r = await req(base, 'GET', '/v1/config/catalog', undefined, token);
     assert.equal(r.status, 200, `post-restart catalog: ${JSON.stringify(r.json)}`);
     assert.ok(r.json.providers && r.json.providers.anthropic, 'provider persisted across restart');
-    r = await req(base, 'GET', `/v1/config/credentials?workspace_id=${WORKSPACE}`, undefined, token);
+    r = await req(base, 'GET', `/v1/config/credentials?workspace_id=${workspace}`, undefined, token);
     assert.equal(r.status, 200);
     assert.ok(r.json.some((c) => c.id === credId), 'credential row persisted across restart');
     r = await req(base, 'GET', '/v1/config/catalog');
@@ -134,11 +138,11 @@ async function main() {
     // Mint a workspace admin token over HTTP with the bootstrap token. The
     // cleartext comes back exactly once, next to the secret-free view.
     r = await req(base, 'POST', '/v1/config/iam/tokens',
-      { workspace_id: WORKSPACE, role: 'workspace_admin' }, token);
+      { workspace_id: workspace, role: 'workspace_admin' }, token);
     assert.equal(r.status, 201, `token mint: ${JSON.stringify(r.json)}`);
     const opToken = r.json.token;
     assert.ok(opToken.startsWith('sk-awaken-'), 'minted cleartext is sk-awaken-… shaped');
-    assert.equal(r.json.api_token.workspace_id, WORKSPACE);
+    assert.equal(r.json.api_token.workspace_id, workspace);
     assert.equal(r.json.api_token.role, 'workspace_admin');
     assert.ok(!JSON.stringify(r.json.api_token).includes('$argon2'), 'view is hash-free');
 
@@ -149,7 +153,7 @@ async function main() {
     pass('HTTP-minted workspace admin token authors config (cleartext returned once)');
 
     // The token list is secret-free: views only — never a hash or cleartext.
-    r = await req(base, 'GET', `/v1/config/iam/tokens?workspace_id=${WORKSPACE}`, undefined, opToken);
+    r = await req(base, 'GET', `/v1/config/iam/tokens?workspace_id=${workspace}`, undefined, opToken);
     assert.equal(r.status, 200, `token list: ${r.text}`);
     assert.ok(!r.text.includes('$argon2'), 'token list has no argon2 hash');
     assert.ok(!r.text.includes(opToken), 'token list has no minted cleartext');
@@ -174,7 +178,7 @@ async function main() {
     // arm of authentication — distinct from revocation).
     const soon = new Date(Date.now() + 2000).toISOString().replace(/\.\d{3}Z$/, 'Z');
     r = await req(base, 'POST', '/v1/config/iam/tokens', {
-      workspace_id: 'wrkspc_default', role: 'workspace_admin', expires_at: soon,
+      workspace_id: workspace, role: 'workspace_admin', expires_at: soon,
     }, opToken);
     assert.equal(r.status, 201, `short-lived mint: ${JSON.stringify(r.json)}`);
     const shortLived = r.json.token;

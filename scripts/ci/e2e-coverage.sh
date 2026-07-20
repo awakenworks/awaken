@@ -80,6 +80,13 @@ export RUSTFLAGS="${RUSTFLAGS:-} -C llvm-args=-runtime-counter-relocation"
 export LLVM_PROFILE_FILE="$CARGO_LLVM_COV_TARGET_DIR/awaken-%p%c.profraw"
 cargo llvm-cov clean --workspace
 
+# The deterministic suites contain optional live-provider arms when a developer
+# happens to have credentials in the shell. Keep those credentials out of the
+# hermetic run, then restore them only for the explicit `test:real` phase.
+coverage_anthropic_key="${ANTHROPIC_API_KEY:-}"
+coverage_kimi_key="${KIMI_API_KEY:-}"
+unset ANTHROPIC_API_KEY KIMI_API_KEY
+
 pushd e2e >/dev/null
 npm run test
 npm run test:protocols
@@ -92,14 +99,25 @@ npm run test:fs
 # vaults/files APIs; managed full-lifecycle/reconnect/terminated/concurrency) was
 # measured as uncovered though the tests exist and pass.
 npm run test:extended
-if [ -n "${ANTHROPIC_API_KEY:-}${KIMI_API_KEY:-}" ]; then
-  npm run test:real
+# Cross-process worker/credential-reference, sandbox, MCP and PostgreSQL stage
+# scenarios are part of the changed runtime surface and must contribute real
+# process coverage (including the exact anonymous-worker 401 contract).
+npm run test:runtime-stages
+if [ -n "${coverage_anthropic_key}${coverage_kimi_key}" ]; then
+  (
+    export ANTHROPIC_API_KEY="$coverage_anthropic_key" # awaken-allow: secret
+    export KIMI_API_KEY="$coverage_kimi_key" # awaken-allow: secret
+    npm run test:real
+  )
 else
   echo "SKIP test:real (no ANTHROPIC_API_KEY/KIMI_API_KEY)"
 fi
 popd >/dev/null
 
 cargo llvm-cov report --ignore-filename-regex "$IGNORE" --summary-only
+python3 scripts/ci/check_changed_e2e_line_coverage.py \
+  --base "${AWAKEN_COVERAGE_BASE:-origin/1.0.0-dev}" \
+  --minimum "${AWAKEN_CHANGED_E2E_MINIMUM:-0.95}"
 if [ "${1:-}" = "--open" ]; then
   cargo llvm-cov report --ignore-filename-regex "$IGNORE" --html --open
 fi
