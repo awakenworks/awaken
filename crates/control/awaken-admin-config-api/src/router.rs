@@ -866,9 +866,9 @@ async fn put_agent_mcp(
     let rid = req_id(&headers);
     config.agent_id = agent_id;
     let trusted_workspace = scope.map(|Extension(scope)| scope.0);
-    let mut workspace = trusted_workspace
+    let workspace = trusted_workspace
         .clone()
-        .or_else(|| (!config.workspace_id.is_empty()).then(|| config.workspace_id.clone()));
+        .unwrap_or_else(|| config.workspace_id.clone());
     if let Some(workspace) = &trusted_workspace
         && state
             .mcp
@@ -881,17 +881,11 @@ async fn put_agent_mcp(
         let Some(server) = state.mcp.get_server(&server_id.0) else {
             return Err(mcp_server_missing(&server_id.0, &rid));
         };
-        if let Some(workspace) = &workspace {
-            if server.workspace_id != *workspace {
-                return Err(mcp_server_missing(&server_id.0, &rid));
-            }
-        } else {
-            workspace = Some(server.workspace_id);
+        if server.workspace_id != workspace {
+            return Err(mcp_server_missing(&server_id.0, &rid));
         }
     }
-    if let Some(workspace) = workspace {
-        config.workspace_id = workspace;
-    }
+    config.workspace_id = workspace;
     state.mcp.put_agent_config(config.clone());
     Ok(Json(config))
 }
