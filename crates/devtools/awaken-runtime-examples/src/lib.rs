@@ -1,9 +1,9 @@
-//! Reusable stub adapters for the runnable examples. The examples themselves are
+//! Reusable stub adapters for the snapshot examples. The examples themselves are
 //! the teaching artifacts (`examples/*.rs`); this crate only holds the small,
 //! deterministic ports they wire so each example stays focused on *assembly*.
 //!
 //! The `coding-agent` feature adds a fuller example: a coding agent assembled from
-//! the built-in tools, the permission gate, and `RunnableConfig` (see
+//! the built-in tools, the permission gate, and `ExecutableAgentSnapshot` (see
 //! [`coding_agent`]).
 
 #[cfg(feature = "coding-agent")]
@@ -109,11 +109,9 @@ pub mod prelude {
     pub use awaken_runtime_contract::resolved::{
         CatalogFingerprint, ModelBinding, ResolvedSpec, ToolDescriptor,
     };
-    pub use awaken_runtime_contract::runnable::{RunnableConfig, RunnableConfigBuilder};
     pub use awaken_runtime_contract::runtime_context::RuntimeRunContext;
-    pub use awaken_runtime_contract::snapshot::{
-        AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
-    };
+    pub use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshotId};
+    pub use awaken_runtime_contract::{ExecutableAgentSnapshot, ExecutableAgentSnapshotBuilder};
 
     pub use crate::{EchoTool, GreeterLlm, ScriptedLlm};
 }

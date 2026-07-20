@@ -21,9 +21,9 @@ pub mod resolution;
 pub mod resolved;
 pub mod resolver;
 pub mod resume;
-pub mod runnable;
 pub mod runtime_context;
 pub mod snapshot;
+mod snapshot_builder;
 pub mod tool;
 pub mod tool_batch;
 
@@ -70,12 +70,12 @@ pub use resolution::{
 pub use resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
 pub use resolver::{AgentSnapshotResolver, RunResolver};
 pub use resume::{ResumeCommand, ResumeError, ResumeResult, validate_resume};
-pub use runnable::{RunnableConfig, RunnableConfigBuilder};
 pub use runtime_context::{CaptureContext, RuntimeRunContext};
 pub use snapshot::{
     AgentConfigRevisionRef, AgentPublicationVersion, AgentSnapshotFingerprint,
     AgentSnapshotMetadata, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
+pub use snapshot_builder::ExecutableAgentSnapshotBuilder;
 pub use tokio_util::sync::CancellationToken;
 pub use tool::{
     RawTool, Tool, ToolExecutor, ToolOutput, ToolRecoveryCapability, ToolRecoveryMode,

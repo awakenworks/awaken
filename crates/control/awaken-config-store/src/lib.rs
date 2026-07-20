@@ -1,11 +1,10 @@
 //! The config domain's store: compile a declarative agent config into a
-//! content-addressed publication the runtime installs, and persist configs and
+//! content-addressed executable snapshot, and persist configs and
 //! publications durably under the `config` table namespace (ADR-0031).
 //!
 //! The config domain and the runtime are separate bounded contexts; their only
-//! seam is the published `ExecutableAgentSnapshot` / `RuntimeCatalogInstall`. The
-//! config store produces them; the runtime validates and installs them and never
-//! edits config records.
+//! seam is the published `ExecutableAgentSnapshot`. The config store produces it;
+//! the runtime validates and executes it and never edits config records.
 
 #![forbid(unsafe_code)]
 
@@ -17,7 +16,7 @@ mod store;
 mod postgres;
 mod sqlite;
 
-pub use awaken_runtime_contract::runnable::{RunnableConfig, RunnableConfigBuilder};
+pub use awaken_runtime_contract::{ExecutableAgentSnapshot, ExecutableAgentSnapshotBuilder};
 pub use awaken_tenancy::ScopeId;
 pub use compile::{
     CompileError, compile, compile_resolved, compile_with_resource_prompts, compose_instructions,

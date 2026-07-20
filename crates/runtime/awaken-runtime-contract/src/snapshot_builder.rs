@@ -1,20 +1,16 @@
-//! `RunnableConfig`: a runtime-ready agent configuration.
+//! Builder for the immutable runtime-ready [`ExecutableAgentSnapshot`].
 //!
 //! It is what [`Runtime::run`](../../awaken_runtime/struct.Runtime.html) consumes:
-//! built directly by hand with [`RunnableConfig::builder`], or produced by an
-//! external compiler (`awaken-config-store::compile`). Either way it bundles the
-//! executable snapshot and the catalog install it was built against under **one
-//! fingerprint** — the producer stamps it once, the consumer never juggles
-//! snapshot/install/fingerprint by hand.
+//! built directly by hand with [`ExecutableAgentSnapshot::builder`], or produced
+//! by an external compiler (`awaken-config-store::compile`). The producer stamps
+//! the fingerprint once and the runtime consumes that exact value.
 //!
 //! Direct construction needs no config store and no hashing: the builder stamps
 //! the agent id as the consistency token (enough for in-process use). A compiler
-//! overrides it with a content hash via [`RunnableConfigBuilder::fingerprint`].
+//! overrides it with a content hash via [`ExecutableAgentSnapshotBuilder::fingerprint`].
 
 use std::collections::BTreeMap;
 
-use crate::capability::{PluginCapability, RuntimeCapabilityCatalog};
-use crate::catalog::RuntimeCatalogInstall;
 use crate::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor, ToolPresentation,
 };
@@ -25,55 +21,19 @@ use crate::snapshot::{
 /// A loop-step ceiling used when the builder is not told otherwise.
 const DEFAULT_MAX_STEPS: usize = 16;
 
-/// A runtime-ready agent configuration: the executable snapshot plus the catalog
-/// install it was built against, sharing one fingerprint. Build it with
-/// [`RunnableConfig::builder`], or get one from an external compiler. The snapshot
-/// and install are kept internal so they cannot drift apart — the only way to make
-/// one is through a path that stamps a consistent fingerprint.
-#[derive(Debug, Clone)]
-pub struct RunnableConfig {
-    snapshot: ExecutableAgentSnapshot,
-    install: RuntimeCatalogInstall,
-}
-
-impl RunnableConfig {
+impl ExecutableAgentSnapshot {
     /// Start building a config for the agent identified by `id`.
-    pub fn builder(id: impl Into<String>) -> RunnableConfigBuilder {
-        RunnableConfigBuilder::new(id)
-    }
-
-    /// The executable snapshot the runtime resolves and runs.
-    pub fn snapshot(&self) -> &ExecutableAgentSnapshot {
-        &self.snapshot
-    }
-
-    /// The catalog install the runtime registers before running.
-    pub fn install(&self) -> &RuntimeCatalogInstall {
-        &self.install
-    }
-
-    /// Consume the config into its parts, for a consumer that persists them (a
-    /// config store). The two carry the same fingerprint by construction.
-    pub fn into_parts(self) -> (ExecutableAgentSnapshot, RuntimeCatalogInstall) {
-        (self.snapshot, self.install)
-    }
-
-    /// Rebuild a config from parts a store persisted with [`into_parts`] — the
-    /// inverse used when a process warm-loads a published config back from the
-    /// durable store (the two parts carry the same fingerprint by construction, so
-    /// no re-stamping is needed).
-    pub fn from_parts(snapshot: ExecutableAgentSnapshot, install: RuntimeCatalogInstall) -> Self {
-        Self { snapshot, install }
+    pub fn builder(id: impl Into<String>) -> ExecutableAgentSnapshotBuilder {
+        ExecutableAgentSnapshotBuilder::new(id)
     }
 }
 
-/// Fluent builder for [`RunnableConfig`]. `build` stamps one fingerprint into the
-/// snapshot and the install, so the two always agree — the property the runtime
-/// re-checks on resolution (fail-closed). This is the single assembly path: a
+/// Fluent builder for [`ExecutableAgentSnapshot`]. `build` stamps one fingerprint
+/// into the snapshot envelope and resolved payload. This is the single assembly path: a
 /// compiler feeds resolved tool descriptors plus a content-hash `fingerprint`; a
 /// direct caller feeds descriptors and lets the id stand in as the token.
 #[derive(Debug, Clone)]
-pub struct RunnableConfigBuilder {
+pub struct ExecutableAgentSnapshotBuilder {
     id: String,
     instructions: String,
     max_steps: usize,
@@ -83,14 +43,13 @@ pub struct RunnableConfigBuilder {
     tools: Vec<ToolDescriptor>,
     plugin_ids: Vec<String>,
     plugin_config: BTreeMap<String, serde_json::Value>,
-    plugin_capabilities: Vec<PluginCapability>,
     context_policy: ContextPolicy,
     tool_presentation: ToolPresentation,
     fingerprint: Option<String>,
     metadata: AgentSnapshotMetadata,
 }
 
-impl RunnableConfigBuilder {
+impl ExecutableAgentSnapshotBuilder {
     fn new(id: impl Into<String>) -> Self {
         Self {
             id: id.into(),
@@ -102,7 +61,6 @@ impl RunnableConfigBuilder {
             tools: Vec::new(),
             plugin_ids: Vec::new(),
             plugin_config: BTreeMap::new(),
-            plugin_capabilities: Vec::new(),
             context_policy: ContextPolicy::default(),
             tool_presentation: ToolPresentation::default(),
             fingerprint: None,
@@ -183,17 +141,6 @@ impl RunnableConfigBuilder {
         self
     }
 
-    /// The plugin capabilities advertised in the catalog (id + config schema), so
-    /// a config frontend can discover and author each plugin's section.
-    #[must_use]
-    pub fn plugin_capabilities(
-        mut self,
-        capabilities: impl IntoIterator<Item = PluginCapability>,
-    ) -> Self {
-        self.plugin_capabilities.extend(capabilities);
-        self
-    }
-
     /// Bound the model-visible context window (default [`ContextPolicy::KeepAll`]).
     #[must_use]
     pub fn context_policy(mut self, policy: ContextPolicy) -> Self {
@@ -226,9 +173,9 @@ impl RunnableConfigBuilder {
         self
     }
 
-    /// Assemble the [`RunnableConfig`], stamping the fingerprint into the snapshot
-    /// and the install so they agree.
-    pub fn build(self) -> RunnableConfig {
+    /// Assemble one immutable [`ExecutableAgentSnapshot`], stamping the same
+    /// fingerprint into its envelope and resolved payload.
+    pub fn build(self) -> ExecutableAgentSnapshot {
         let fingerprint = self.fingerprint.unwrap_or_else(|| self.id.clone());
         let fp = CatalogFingerprint(fingerprint.clone());
         let metadata = if self.metadata.is_legacy_default() {
@@ -240,7 +187,7 @@ impl RunnableConfigBuilder {
                 ..self.metadata
             }
         };
-        let snapshot = ExecutableAgentSnapshot {
+        ExecutableAgentSnapshot {
             id: ExecutableAgentSnapshotId(self.id.clone()),
             metadata,
             root_agent_id: AgentId(self.id.clone()),
@@ -257,20 +204,8 @@ impl RunnableConfigBuilder {
                 context_policy: self.context_policy,
                 tool_presentation: self.tool_presentation,
             },
-            fingerprint: fp.clone(),
-        };
-        let install = RuntimeCatalogInstall {
-            publication_id: fingerprint,
-            fingerprint: fp.clone(),
-            source_revisions: vec![self.id],
-            capabilities: RuntimeCapabilityCatalog {
-                catalog_fingerprint: fp,
-                runtime_version: env!("CARGO_PKG_VERSION").to_string(),
-                tools: Vec::new(),
-                plugins: self.plugin_capabilities,
-            },
-        };
-        RunnableConfig { snapshot, install }
+            fingerprint: fp,
+        }
     }
 }
 
@@ -280,40 +215,36 @@ mod tests {
 
     #[test]
     fn builder_stamps_one_consistent_fingerprint() {
-        let config = RunnableConfig::builder("assistant")
+        let snapshot = ExecutableAgentSnapshot::builder("assistant")
             .instructions("be concise")
             .model(ModelBinding::new("demo", "stub", "stub"))
             .max_steps(8)
             .build();
 
         // Default token is the id, stamped into every fingerprint slot.
-        let snap = config.snapshot();
-        let install = config.install();
-        assert_eq!(snap.fingerprint.0, "assistant");
-        assert_eq!(snap.resolved_spec.catalog_fingerprint.0, "assistant");
-        assert_eq!(install.fingerprint.0, "assistant");
-        assert_eq!(install.capabilities.catalog_fingerprint.0, "assistant");
-        assert_eq!(snap.resolved_spec.instructions, "be concise");
-        assert_eq!(snap.resolved_spec.max_steps, 8);
+        assert_eq!(snapshot.fingerprint.0, "assistant");
+        assert_eq!(snapshot.resolved_spec.catalog_fingerprint.0, "assistant");
+        assert_eq!(snapshot.resolved_spec.instructions, "be concise");
+        assert_eq!(snapshot.resolved_spec.max_steps, 8);
     }
 
     #[test]
     fn model_candidates_populate_the_resolved_pool_and_default_empty() {
         // No candidates → single-model agent (unchanged).
-        let single = RunnableConfig::builder("a")
+        let single = ExecutableAgentSnapshot::builder("a")
             .model(ModelBinding::new("p", "primary", "genai"))
             .build();
-        assert!(single.snapshot().resolved_spec.model_candidates.is_empty());
+        assert!(single.resolved_spec.model_candidates.is_empty());
 
         // Candidates land on the resolved spec as ordered pool fallbacks.
-        let pooled = RunnableConfig::builder("a")
+        let pooled = ExecutableAgentSnapshot::builder("a")
             .model(ModelBinding::new("p", "primary", "genai"))
             .model_candidates([
                 ModelBinding::new("p", "fallback-1", "genai"),
                 ModelBinding::new("p", "fallback-2", "genai"),
             ])
             .build();
-        let spec = &pooled.snapshot().resolved_spec;
+        let spec = &pooled.resolved_spec;
         assert_eq!(spec.model_binding.model_ref, "primary");
         assert_eq!(spec.model_candidates.len(), 2);
         // The engine tries the primary first, then these in order.
@@ -323,12 +254,12 @@ mod tests {
 
     #[test]
     fn explicit_fingerprint_overrides_the_id_token() {
-        let config = RunnableConfig::builder("assistant")
+        let snapshot = ExecutableAgentSnapshot::builder("assistant")
             .fingerprint("sha256:abc")
             .build();
-        assert_eq!(config.snapshot().fingerprint.0, "sha256:abc");
-        assert_eq!(config.install().fingerprint.0, "sha256:abc");
+        assert_eq!(snapshot.fingerprint.0, "sha256:abc");
+        assert_eq!(snapshot.resolved_spec.catalog_fingerprint.0, "sha256:abc");
         // The snapshot id stays the agent id, not the fingerprint.
-        assert_eq!(config.snapshot().id.0, "assistant");
+        assert_eq!(snapshot.id.0, "assistant");
     }
 }

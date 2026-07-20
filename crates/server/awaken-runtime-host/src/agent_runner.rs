@@ -8,7 +8,7 @@
 //! isolated context because their work is outside the user-visible Run tree.
 //!
 //! [`run_configured_agent`] is the parameterized form: it resolves the Agent's
-//! own `RunnableConfig` (instructions, model, tools) from an [`AgentCatalog`] by
+//! own `ExecutableAgentSnapshot` (instructions, model, tools) from an [`AgentCatalog`] by
 //! id. [`run_agent`] is the thin wrapper that runs the default
 //! `assistant` config with a plain string prompt.
 
@@ -274,17 +274,13 @@ pub(crate) async fn run_configured_agent_until_boundary(
     }
     let operation = match (seed, resume) {
         (Some(seed), None) => {
-            let (_, mut activation) = runtime
-                .prepare(&config, thread, seed)
-                .map_err(AgentRunError::Runtime)?;
+            let (_, mut activation) = runtime.prepare(&config, thread, seed);
             activation.run_id = child_run_id.clone();
             activation.delegation_origin = Some(origin);
             Ok((Some(activation), None))
         }
         (None, Some(result)) => {
-            runtime
-                .install_for_resume(&config)
-                .map_err(AgentRunError::Runtime)?;
+            runtime.register_snapshot(config.clone());
             let ticket = reader.resume_ticket(&child_run_id).ok_or_else(|| {
                 AgentRunError::Configuration(format!(
                     "child Run {:?} is not awaiting",
@@ -623,7 +619,7 @@ mod tests {
         AssistantOutput, ChatRequest, ChatResponse, Result as LlmResult,
     };
     use awaken_runtime_contract::resolved::ModelBinding;
-    use awaken_runtime_contract::runnable::RunnableConfig;
+    use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 
     /// A model that replies with the leading system instruction it was given, so a
     /// test can prove the sub-run resolved that agent's own config.
@@ -720,8 +716,8 @@ mod tests {
         }
     }
 
-    fn agent(id: &str, instructions: &str) -> RunnableConfig {
-        RunnableConfig::builder(id)
+    fn agent(id: &str, instructions: &str) -> ExecutableAgentSnapshot {
+        ExecutableAgentSnapshot::builder(id)
             .instructions(instructions)
             .model(ModelBinding::new("default", "stub", "default"))
             .max_steps(4)
@@ -740,13 +736,11 @@ mod tests {
     fn child_dispatch_persists_admission_pinned_model_access() {
         let config = agent("child", "child");
         let runtime = awaken_runtime::Runtime::new();
-        let (_, activation) = runtime
-            .prepare(
-                &config,
-                "child-thread".to_string(),
-                RunInput::from(vec![user("go")]),
-            )
-            .expect("prepare child activation");
+        let (_, activation) = runtime.prepare(
+            &config,
+            "child-thread".to_string(),
+            RunInput::from(vec![user("go")]),
+        );
         let expected = ModelAccessRef::candidate_set([
             (
                 "primary".to_string(),

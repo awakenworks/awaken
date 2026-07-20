@@ -1,7 +1,7 @@
 //! Assembling a runtime and its config, and reading a run's output.
 //!
 //! The "how to build a run" concern, kept out of the session substrate: the
-//! permission policy, the advertised tool descriptors, the `RunnableConfig`, and
+//! permission policy, the advertised tool descriptors, the `ExecutableAgentSnapshot`, and
 //! the per-thread `Runtime`. The session substrate (`host`) and the sub-agent
 //! helper (`agent_runner`) both depend on this leaf rather than each other.
 
@@ -20,7 +20,7 @@ use awaken_runtime::{PermissionGate, Runtime};
 use awaken_runtime_contract::capability::PluginCapability;
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::resolved::{ContextPolicy, ModelBinding, ToolDescriptor};
-use awaken_runtime_contract::runnable::RunnableConfig;
+use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 use awaken_sandbox_local::LocalSandbox;
 
 const SYSTEM_PROMPT: &str = "You are a helpful assistant working in a local repository.";
@@ -229,9 +229,9 @@ pub(crate) fn server_config(
     plugin_config: &std::collections::BTreeMap<String, serde_json::Value>,
     dynamic_descriptors: &[ToolDescriptor],
     context_policy: ContextPolicy,
-) -> RunnableConfig {
+) -> ExecutableAgentSnapshot {
     let tools = advertised_tools(client_tools, delegates, dynamic_descriptors);
-    RunnableConfig::builder(agent_id)
+    ExecutableAgentSnapshot::builder(agent_id)
         .instructions(SYSTEM_PROMPT)
         .model(ModelBinding::new("default", model_ref, "default"))
         .model_candidates(model_fallbacks())
@@ -239,7 +239,6 @@ pub(crate) fn server_config(
         .max_steps(20)
         .plugins(plugin_ids.iter().cloned())
         .plugin_config(plugin_config.iter().map(|(k, v)| (k.clone(), v.clone())))
-        .plugin_capabilities(platform_plugin_capabilities())
         .context_policy(context_policy)
         .build()
 }
@@ -350,33 +349,10 @@ mod tests {
             &[],
             ContextPolicy::KeepAll,
         );
-        let mut spec = config.snapshot().resolved_spec.clone();
+        let mut spec = config.resolved_spec.clone();
         spec.plugin_config
             .insert(STATE_MACHINE_PLUGIN_ID.to_string(), section);
         spec
-    }
-
-    #[test]
-    fn server_config_advertises_the_state_machine_schema() {
-        // A2/A4: the schema is discoverable in the installed catalog.
-        let config = server_config(
-            "assistant",
-            "m",
-            &HashSet::new(),
-            &HashSet::new(),
-            &["state_machine".to_string()],
-            &Default::default(),
-            &[],
-            ContextPolicy::KeepAll,
-        );
-        let sm = config
-            .install()
-            .capabilities
-            .plugins
-            .iter()
-            .find(|p| p.id == STATE_MACHINE_PLUGIN_ID)
-            .expect("state machine is advertised");
-        assert!(sm.config_schema.is_some(), "config schema is discoverable");
     }
 
     #[test]

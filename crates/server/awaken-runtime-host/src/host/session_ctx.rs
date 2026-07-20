@@ -41,7 +41,7 @@ pub(crate) struct SessionCtx {
     /// dead-letter GC / superseding submit — slice E) stay reachable; the boxed
     /// trait object erases them.
     pub(crate) durable_ingress: Option<Arc<DurableRunIngress<AnyDispatchStore>>>,
-    pub(crate) config: RunnableConfig,
+    pub(crate) config: ExecutableAgentSnapshot,
     pub(crate) commit: Arc<HostCommit>,
     /// This thread's interrupted-stream checkpoint store (Phase 3), wired into
     /// every run context so an inference drop flushes durably at its boundary.

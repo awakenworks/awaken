@@ -1,5 +1,5 @@
-//! `Runtime::run`: one call installs the config's catalog and executes a turn.
-//! No separate `install_catalog`/`register_snapshot`, no hand-built activation.
+//! `Runtime::run`: one call registers the immutable snapshot and executes a turn.
+//! No duplicate catalog object and no hand-built activation.
 
 use std::sync::Arc;
 
@@ -9,8 +9,8 @@ use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 use awaken_runtime_contract::resolved::ModelBinding;
-use awaken_runtime_contract::runnable::RunnableConfig;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
+use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 
 struct TextLlm(&'static str);
 
@@ -29,11 +29,11 @@ impl LlmExecutor for TextLlm {
 }
 
 #[tokio::test]
-async fn run_installs_and_executes_in_one_call() {
+async fn run_registers_and_executes_one_snapshot_in_one_call() {
     let runtime = Runtime::new().with_llm(Arc::new(TextLlm("hi there")));
 
     // Built by hand — no config store, no fingerprint written.
-    let config = RunnableConfig::builder("assistant")
+    let config = ExecutableAgentSnapshot::builder("assistant")
         .instructions("be concise")
         .model(ModelBinding::new("demo", "stub", "stub"))
         .build();
@@ -41,7 +41,7 @@ async fn run_installs_and_executes_in_one_call() {
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ctx = RuntimeRunContext::new().with_commit(commit.clone());
 
-    // One call: installs the catalog, runs a fresh turn. No prior install_catalog.
+    // One call: registers the snapshot and runs a fresh turn.
     let state = runtime.run(&config, "Say hi.", ctx).await.expect("run");
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
 
@@ -63,7 +63,7 @@ async fn per_run_model_executor_override_wins_over_the_runtime_default() {
     // NOT the runtime's bound default. This is the provider seam a database-less
     // worker uses to run each run's own configured model.
     let runtime = Runtime::new().with_llm(Arc::new(TextLlm("DEFAULT")));
-    let config = RunnableConfig::builder("assistant")
+    let config = ExecutableAgentSnapshot::builder("assistant")
         .model(ModelBinding::new("demo", "stub", "stub"))
         .build();
 
@@ -94,7 +94,7 @@ async fn without_an_override_the_run_uses_the_runtime_default() {
     // The override is opt-in: absent it, the runtime's bound executor drives the run
     // exactly as before (no regression for the common single-model path).
     let runtime = Runtime::new().with_llm(Arc::new(TextLlm("DEFAULT")));
-    let config = RunnableConfig::builder("assistant")
+    let config = ExecutableAgentSnapshot::builder("assistant")
         .model(ModelBinding::new("demo", "stub", "stub"))
         .build();
     let commit = Arc::new(MemoryCommitCoordinator::new());
@@ -119,7 +119,7 @@ async fn with_neither_an_override_nor_a_bound_default_the_run_fails_closed() {
     // secretless worker hits when the resolver declines the ref and no host default
     // exists.
     let runtime = Runtime::new(); // no with_llm → no bound default
-    let config = RunnableConfig::builder("assistant")
+    let config = ExecutableAgentSnapshot::builder("assistant")
         .model(ModelBinding::new("demo", "stub", "stub"))
         .build();
     let commit = Arc::new(MemoryCommitCoordinator::new());
@@ -141,7 +141,7 @@ async fn run_to_completion_drives_an_ungated_run_without_asking() {
     // state in one shot. (The gated await→resume path is covered by the coding-agent
     // example's tests.)
     let runtime = Runtime::new().with_llm(Arc::new(TextLlm("done")));
-    let config = RunnableConfig::builder("assistant")
+    let config = ExecutableAgentSnapshot::builder("assistant")
         .model(ModelBinding::new("demo", "stub", "stub"))
         .build();
 

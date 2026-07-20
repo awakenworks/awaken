@@ -261,8 +261,7 @@ impl SharedHost {
         let skills_subdir = installed
             .as_ref()
             .and_then(|c| {
-                c.snapshot()
-                    .resolved_spec
+                c.resolved_spec
                     .plugin_config
                     .get("skills_dir")
                     .and_then(|v| v.as_str())
@@ -278,7 +277,7 @@ impl SharedHost {
         let authored_permission = config_permission_ruleset(
             installed
                 .as_ref()
-                .map(|c| &c.snapshot().resolved_spec.plugin_config)
+                .map(|c| &c.resolved_spec.plugin_config)
                 .unwrap_or(&self.plugin_config),
         );
         let apply_base_gate = !pre_authorized.is_empty() || authored_permission.is_some();
@@ -434,12 +433,6 @@ impl SharedHost {
             relay,
             thread,
         );
-        // Install the session catalog for capability reporting on whichever pool
-        // node claims a durable run (ADR-0019). Snapshot validation itself is
-        // topology-independent; a later `prepare` may repeat this idempotently.
-        runtime
-            .install_catalog(config.install().clone())
-            .map_err(|e| HostError::internal(format!("install session catalog: {e}")))?;
         // Recover the session's position from committed truth: a durable store may
         // already hold this thread's history and an awaiting run (e.g. after a
         // restart). `consumed_rounds` starts past any prior outcome rounds so a new
@@ -451,9 +444,7 @@ impl SharedHost {
         if let Some((run_id, _)) = commit.open_wait_for_thread(&thread_id) {
             // Prime the fresh runtime so the awaiting run's snapshot resolves on
             // resume — `start_run` would normally have installed it.
-            runtime
-                .install_for_resume(&config)
-                .map_err(|e| HostError::internal(e.to_string()))?;
+            runtime.register_snapshot(config.clone());
             state.awaiting_run = Some(run_id);
         }
         let runtime = Arc::new(runtime);

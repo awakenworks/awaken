@@ -1433,7 +1433,7 @@ pub async fn build_config_router() -> Router {
     )));
     let plane = awaken_runtime_host::ConfigPlane::new(service.clone(), store, tools);
     // Seed the management assistant as an ordinary published agent in the reserved
-    // scope (ADR-0052 D1/D2): it becomes a compiled RunnableConfig via the same path
+    // scope (ADR-0052 D1/D2): it becomes a compiled ExecutableAgentSnapshot via the same path
     // as any agent, projectable on `/v1/agents`.
     awaken_control::seed_admin_assistant(&plane)
         .await

@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use awaken_ext_builtin_tools::{AGENT_RUN, AgentRunArgs};
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::resolved::ModelBinding;
-use awaken_runtime_contract::runnable::RunnableConfig;
+use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
 use awaken_sandbox_local::LocalProvider;
 
@@ -29,8 +29,12 @@ and nothing else.";
 
 /// A default judge agent config registered under `agent_id`: no tools, a fresh
 /// grading window. A host may override by registering its own config for the id.
-pub fn default_judge_agent(model_ref: &str, agent_id: &str, instructions: &str) -> RunnableConfig {
-    RunnableConfig::builder(agent_id)
+pub fn default_judge_agent(
+    model_ref: &str,
+    agent_id: &str,
+    instructions: &str,
+) -> ExecutableAgentSnapshot {
+    ExecutableAgentSnapshot::builder(agent_id)
         .instructions(instructions)
         .model(ModelBinding::new("default", model_ref, "default"))
         .max_steps(2)
@@ -93,14 +97,9 @@ mod tests {
     #[test]
     fn default_judge_agent_carries_its_id_and_instructions() {
         let cfg = default_judge_agent("stub", "judge", DEFAULT_JUDGE_INSTRUCTIONS);
-        assert_eq!(cfg.snapshot().root_agent_id.0, "judge");
-        assert!(
-            cfg.snapshot()
-                .resolved_spec
-                .instructions
-                .contains("strict evaluator")
-        );
+        assert_eq!(cfg.root_agent_id.0, "judge");
+        assert!(cfg.resolved_spec.instructions.contains("strict evaluator"));
         // A judge is pure reasoning: no tools.
-        assert!(cfg.snapshot().resolved_spec.tool_descriptors.is_empty());
+        assert!(cfg.resolved_spec.tool_descriptors.is_empty());
     }
 }

@@ -39,12 +39,7 @@ fn echo_tool() -> ToolDescriptor {
 }
 
 fn fingerprint(cfg: &AgentConfig) -> String {
-    compile(cfg, &[echo_tool()])
-        .unwrap()
-        .snapshot()
-        .fingerprint
-        .0
-        .clone()
+    compile(cfg, &[echo_tool()]).unwrap().fingerprint.0.clone()
 }
 
 // ─── 1. Golden fingerprints ──────────────────────────────────────────────────

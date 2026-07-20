@@ -4,7 +4,7 @@
 //! compile (compile is pure and cannot reach the provider catalog). The
 //! [`ModelResolver`] port answers "what is the first provider-backed offering" — the
 //! host implements it over the shared model catalog — and [`ConfigService`] calls it
-//! in `publish`, *before* `compile`, so the stored `RunnableConfig` is self-contained,
+//! in `publish`, *before* `compile`, so the stored `ExecutableAgentSnapshot` is self-contained,
 //! content-addressed, and reproducible. `Pinned` selections skip the resolver.
 //!
 //! Freshness (an `Auto` binding can go stale when the catalog changes) is recovered

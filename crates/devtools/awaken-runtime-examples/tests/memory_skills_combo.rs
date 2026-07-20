@@ -151,8 +151,8 @@ fn memory_dir(label: &str) -> MemoryDir {
     MemoryDir::new(std::env::temp_dir().join(format!("awaken-combo-{label}-{stamp}")))
 }
 
-fn combo_config(with_memory_plugin: bool) -> RunnableConfig {
-    let mut builder = RunnableConfig::builder("combo")
+fn combo_config(with_memory_plugin: bool) -> ExecutableAgentSnapshot {
+    let mut builder = ExecutableAgentSnapshot::builder("combo")
         .model(ModelBinding::new("demo", "stub", "stub"))
         .tool(ToolDescriptor::pinned(
             "demo",

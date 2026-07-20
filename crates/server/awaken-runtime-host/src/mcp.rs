@@ -117,8 +117,8 @@ pub fn acp_mcp_plugin_value(
 /// run (those servers are already connected in-process via [`connect_staged`]) or when
 /// there are none. The managed session build is the untrusted/sandboxed path, so callers
 /// pass `trusted = false` → **α** (secretless reference); the raw bearer never leaves the
-/// host. Rebuilds the config from its parts so the mutated plugin_config rides the run's
-/// snapshot the same way the authored config does.
+/// host. Mutates the transient session snapshot so the plugin config rides the run
+/// without changing the durable published snapshot.
 ///
 /// `is_acp` is the caller's authoritative "this run executes on an external ACP CLI"
 /// decision — the host's runtime registration (`AcpBackend::is_acp`), NOT the config's
@@ -128,20 +128,18 @@ pub fn acp_mcp_plugin_value(
 /// its MCP servers are already the in-process tools connected by `connect_staged`.
 #[must_use]
 pub fn overlay_acp_mcp(
-    config: awaken_runtime_contract::runnable::RunnableConfig,
+    mut config: awaken_runtime_contract::snapshot::ExecutableAgentSnapshot,
     staged: &[PreparedMcpServer],
     is_acp: bool,
     trusted: bool,
     relay: Option<&crate::mcp_relay::McpRelay>,
     thread: &str,
-) -> awaken_runtime_contract::runnable::RunnableConfig {
-    use awaken_runtime_contract::runnable::RunnableConfig;
+) -> awaken_runtime_contract::snapshot::ExecutableAgentSnapshot {
     if staged.is_empty() || !is_acp {
         return config;
     }
-    let (mut snapshot, install) = config.into_parts();
     if let Some(value) = acp_mcp_plugin_value(staged, trusted, relay, thread) {
-        let acp = snapshot
+        let acp = config
             .resolved_spec
             .plugin_config
             .entry("acp".to_string())
@@ -150,7 +148,7 @@ pub fn overlay_acp_mcp(
             obj.insert("mcp_servers".to_string(), value);
         }
     }
-    RunnableConfig::from_parts(snapshot, install)
+    config
 }
 
 /// The refresh half of a prepared MCP server (an `mcp_oauth` vault credential
@@ -459,12 +457,12 @@ mod alpha_beta_tests {
     #[test]
     fn overlay_injects_into_an_acp_run_and_leaves_a_native_run_untouched() {
         use awaken_runtime_contract::resolved::ModelBinding;
-        use awaken_runtime_contract::runnable::RunnableConfig;
+        use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 
         // ACP run (is_acp = true) → the servers land under plugin_config.acp.mcp_servers,
         // secretless. The backend_ref is the fixed managed "default" — proving the overlay
         // keys off the caller's runtime decision, not backend_ref.
-        let acp = RunnableConfig::builder("a")
+        let acp = ExecutableAgentSnapshot::builder("a")
             .model(ModelBinding::new("default", "m", "default"))
             .build();
         let out = overlay_acp_mcp(
@@ -475,22 +473,16 @@ mod alpha_beta_tests {
             None,
             "",
         );
-        let pc = &out.snapshot().resolved_spec.plugin_config;
+        let pc = &out.resolved_spec.plugin_config;
         assert!(pc["acp"]["mcp_servers"].is_array());
         assert!(!serde_json::to_string(pc).unwrap().contains("sk-RAW-SECRET"));
 
         // Native run (is_acp = false) → untouched (its MCP servers are already in-process
         // tools), even though its backend_ref happens to read "acp:claude".
-        let native = RunnableConfig::builder("b")
+        let native = ExecutableAgentSnapshot::builder("b")
             .model(ModelBinding::new("p", "m", "acp:claude"))
             .build();
         let out2 = overlay_acp_mcp(native, &[prepared(Some("sk"))], false, false, None, "");
-        assert!(
-            !out2
-                .snapshot()
-                .resolved_spec
-                .plugin_config
-                .contains_key("acp")
-        );
+        assert!(!out2.resolved_spec.plugin_config.contains_key("acp"));
     }
 }

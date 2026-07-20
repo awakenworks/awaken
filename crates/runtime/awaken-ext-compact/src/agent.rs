@@ -2,7 +2,7 @@
 //! per-run summarize prompt.
 
 use awaken_runtime_contract::resolved::ModelBinding;
-use awaken_runtime_contract::runnable::RunnableConfig;
+use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 
 /// The agent id under which the compactor is registered.
 pub const COMPACT_AGENT_ID: &str = "compactor";
@@ -20,8 +20,8 @@ already-resolved detail. Reply with only the summary text.";
 pub const SUMMARIZE_PROMPT: &str = "Summarize the conversation above per your instructions.";
 
 /// A default `compactor` agent config: no tools, a summary-only prompt.
-pub fn default_compact_agent(model_ref: &str, instructions: &str) -> RunnableConfig {
-    RunnableConfig::builder(COMPACT_AGENT_ID)
+pub fn default_compact_agent(model_ref: &str, instructions: &str) -> ExecutableAgentSnapshot {
+    ExecutableAgentSnapshot::builder(COMPACT_AGENT_ID)
         .instructions(instructions)
         .model(ModelBinding::new("default", model_ref, "default"))
         .max_steps(2)
@@ -35,8 +35,8 @@ mod tests {
     #[test]
     fn default_agent_carries_id_instructions_and_no_tools() {
         let cfg = default_compact_agent("stub", DEFAULT_COMPACT_INSTRUCTIONS);
-        assert_eq!(cfg.snapshot().root_agent_id.0, COMPACT_AGENT_ID);
-        let spec = &cfg.snapshot().resolved_spec;
+        assert_eq!(cfg.root_agent_id.0, COMPACT_AGENT_ID);
+        let spec = &cfg.resolved_spec;
         assert!(spec.instructions.contains("conversation-compaction Agent"));
         assert!(spec.tool_descriptors.is_empty());
     }

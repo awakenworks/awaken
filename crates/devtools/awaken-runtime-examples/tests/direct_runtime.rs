@@ -8,7 +8,7 @@ use awaken_runtime_examples::prelude::*;
 
 #[tokio::test]
 async fn direct_runtime_example_runs_to_completion() {
-    let config = RunnableConfig::builder("assistant")
+    let config = ExecutableAgentSnapshot::builder("assistant")
         .model(ModelBinding::new("demo", "stub", "stub"))
         .tool(ToolDescriptor::pinned(
             "demo",
