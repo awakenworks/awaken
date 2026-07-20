@@ -86,6 +86,71 @@ test("PermissionEditor authors a rule and persists it through save + reload", as
   await expect(editor.getByPlaceholder(pattern)).toHaveValue(pattern);
 });
 
+test("Agent editor persists and publishes a direct MCP binding plus MCP tool override", async ({ page, request }) => {
+  const id = `mcp-agent-${Date.now()}`;
+  await page.goto("/w/default/agents/new");
+  await page.getByPlaceholder("coding-agent").fill(id);
+  await page.getByLabel("System instructions").fill("Use the issue tracker when the goal requires it.");
+
+  await page.getByRole("tab", { name: "Tools", exact: true }).click();
+  await page.getByRole("button", { name: /override an MCP tool/ }).click();
+  await page.getByLabel("Canonical tool id 1").fill("mcp__issues__create_issue");
+  await page.getByLabel("Alias").fill("file_issue");
+  await page.getByLabel("Description").last().fill("Create an issue with the verified acceptance criteria.");
+  await page.getByLabel("Defer this tool").check();
+  await expect(page.getByText(/Runtime-discovered MCP tool/)).toBeVisible();
+
+  await page.getByRole("tab", { name: "Integrations", exact: true }).click();
+  await page.getByRole("button", { name: "+ MCP server", exact: true }).click();
+  await page.getByLabel("Server name").fill("issues");
+  await page.getByLabel("URL").fill("https://mcp.example.test/issues");
+  await page.getByRole("button", { name: "+ Skill", exact: true }).click();
+  await page.getByLabel("Skill id").fill("issue-writing");
+  await page.getByLabel("multiagent JSON").fill("{");
+  await expect(page.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
+  await expect(page.getByRole("alert")).toContainText("Invalid JSON");
+  await page.getByLabel("multiagent JSON").fill('{"strategy":"managed"}');
+  await expect(page.getByRole("button", { name: "Save", exact: true })).toBeEnabled();
+
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.locator(".toast").filter({ hasText: /Saved|已保存/ })).toBeVisible();
+  await expect(page).toHaveURL(new RegExp(`/agents/${id}$`));
+
+  const response = await request.get(`/v1/config/agents/${id}`);
+  expect(response.ok()).toBe(true);
+  const stored = await response.json();
+  expect(stored.tools).not.toContain("mcp__issues__create_issue");
+  expect(stored.mcp_servers).toEqual([
+    { type: "url", name: "issues", url: "https://mcp.example.test/issues" },
+  ]);
+  expect(stored.skills).toEqual([{ id: "issue-writing" }]);
+  expect(stored.multiagent).toEqual({ strategy: "managed" });
+  expect(stored.tool_overrides).toEqual([
+    {
+      target: "mcp__issues__create_issue",
+      alias: "file_issue",
+      description: "Create an issue with the verified acceptance criteria.",
+      defer: true,
+    },
+  ]);
+
+  await page.reload();
+  await page.getByRole("button", { name: "{} JSON" }).click();
+  const rawEditor = page.getByLabel("Agent JSON");
+  await expect(rawEditor).toHaveValue(/mcp__issues__create_issue/);
+  const rawConfig = JSON.parse(await rawEditor.inputValue());
+  rawConfig.compaction = { window: 32000, keep_recent: 12 };
+  await rawEditor.fill(JSON.stringify(rawConfig, null, 2));
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.locator(".toast").filter({ hasText: /Saved|已保存/ })).toBeVisible();
+  const lossless = await (await request.get(`/v1/config/agents/${id}`)).json();
+  expect(lossless.compaction).toEqual({ window: 32000, keep_recent: 12 });
+
+  await page.getByRole("button", { name: "Publish", exact: false }).first().click();
+  await page.locator(".modal").getByRole("button", { name: "Publish", exact: false }).click();
+  await expect(page.locator(".toast").filter({ hasText: /Published|已发布/ })).toBeVisible();
+});
+
 test("enabling a behavior renders a schema-driven form (not raw JSON)", async ({ page }) => {
   await page.goto("/w/default/agents/new");
   await page.getByRole("tab", { name: "Behavior" }).click();
@@ -129,6 +194,39 @@ test("session detail toggles Chat ⇄ Trace (the log read as spans)", async ({ p
   await expect(page.getByRole("button", { name: "Chat", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Trace", exact: true }).click();
   await expect(page.getByText(/No spans yet|暂无 span/)).toBeVisible();
+});
+
+test("Agent composer supports multiline input and shows work immediately on the first message", async ({ page, request }) => {
+  const res = await request.post("/v1/sessions", { data: { agent: "default", title: "composer-e2e" } });
+  const sid = (await res.json()).id as string;
+  let postedText = "";
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  await page.route(`**/v1/sessions/${sid}/events`, async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    const body = route.request().postDataJSON() as { events: Array<{ content: Array<{ text: string }> }> };
+    postedText = body.events[0].content[0].text;
+    await held;
+    await route.fulfill({ status: 202, contentType: "application/json", body: "{}" });
+  });
+
+  await page.goto(`/w/default/sessions/${sid}`);
+  const composer = page.getByLabel("Message to agent");
+  await composer.fill("Summarize the issue");
+  await composer.press("Shift+Enter");
+  await composer.pressSequentially("  Keep only decisions");
+  await composer.press("Shift+Enter");
+  await expect(composer).toHaveValue("Summarize the issue\n  Keep only decisions\n");
+  await composer.press("Enter");
+
+  await expect(page.locator(".agent-working")).toContainText("Agent is working");
+  await expect(page.locator(".transcript-pending-message")).toContainText("Summarize the issue\n  Keep only decisions");
+  await expect.poll(() => postedText).toBe("Summarize the issue\n  Keep only decisions\n");
+  await expect(page.locator(".transcript-composer")).toBeVisible();
+  const composerBox = await page.locator(".transcript-composer").boundingBox();
+  const viewport = page.viewportSize();
+  expect(composerBox && viewport && viewport.height - (composerBox.y + composerBox.height)).toBeLessThan(80);
+  release();
 });
 
 test("Models Test opens a live model dialog (scratch session + composer)", async ({ page }) => {

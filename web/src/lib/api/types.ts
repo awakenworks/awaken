@@ -452,6 +452,9 @@ export interface AgentConfig {
   /** Per-tool model-facing presentation (ADR-0053): alias / description override /
    * defer, keyed by canonical tool id (a catalog id or an MCP `mcp__server__tool`). */
   tool_overrides?: ToolOverride[];
+  /** Advanced persisted fields surfaced in the lossless JSON editor. */
+  recovery_policies?: Record<string, unknown>;
+  compaction?: unknown;
 }
 /** One tool's presentation override. `target` is the canonical tool id; `alias`
  * renames it for the model, `description` replaces its text, `defer` withholds its

@@ -22,6 +22,9 @@ export interface SessionLog {
   freshCount: number;
   applyPending: () => void;
   send: (events: InboundEvent[]) => void;
+  /** True from the local submit until the events POST settles. This does not wait
+   * for a committed `session.status_running` frame, so first-step feedback is instant. */
+  sendPending: boolean;
   sendError: Error | null;
   loadError: Error | null;
   refetch: () => void;
@@ -94,6 +97,7 @@ export function useSessionLog(
     freshCount,
     applyPending,
     send: (evs) => send.mutate(evs),
+    sendPending: send.isPending,
     sendError: send.error instanceof Error ? send.error : null,
     loadError: events.error instanceof Error ? events.error : null,
     refetch: () => void events.refetch(),
