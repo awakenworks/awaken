@@ -142,6 +142,15 @@ impl SharedHost {
         &self.local_workspace
     }
 
+    /// The resolved durable storage root, when this host is persistent.
+    ///
+    /// Composition roots use this to place sibling repositories beside runtime
+    /// truth without re-reading process configuration or teaching the runtime
+    /// about those repositories.
+    pub fn storage_dir(&self) -> Option<&std::path::Path> {
+        self.store_dir.as_deref()
+    }
+
     pub(crate) fn register_thread_workspace(&self, thread: &str, workspace: &str) {
         self.thread_workspaces
             .lock()
