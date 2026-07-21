@@ -180,6 +180,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0061-selectable-identity-and-platform-managed-resource-scopes.md` | Decision record | Not required | n/a |
 | `adr/0062-published-inference-access-and-runtime-credential-injection.md` | Decision record | Not required | n/a |
 | `adr/0063-resource-input-identity-configuration-pinning-and-lifecycle.md` | Decision record | Not required | n/a |
+| `adr/0064-runtime-owned-outcome-orchestration.md` | Decision record | Not required | n/a |
 
 ## Implementation Context
 
