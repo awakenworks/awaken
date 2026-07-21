@@ -21,6 +21,7 @@ use std::sync::Arc;
 
 mod environment_owned;
 use environment_owned::EnvironmentOwnedProcess;
+mod files;
 mod podman_plan;
 pub use podman_plan::{RootfsError, RootfsPlan, podman_run_argv, rootfs_plan};
 
@@ -1579,6 +1580,17 @@ pub trait ContainerEnvironment: pc::Sandbox {
         &self,
         command: pc::Command,
     ) -> Result<RuntimeAgentProcess, pc::SandboxError>;
+
+    /// Read regular files below an absolute sandbox directory over the environment's
+    /// attached exec channel. Implementations enforce an archive-size bound.
+    async fn read_files(&self, root: &str) -> Result<Vec<EnvironmentFile>, pc::SandboxError>;
+}
+
+/// One file harvested from a live container environment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnvironmentFile {
+    pub path: String,
+    pub bytes: Vec<u8>,
 }
 
 #[async_trait]
@@ -1588,6 +1600,10 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironment for ContainerSandbox<R>
         command: pc::Command,
     ) -> Result<RuntimeAgentProcess, pc::SandboxError> {
         self.spawn_agent(command).await
+    }
+
+    async fn read_files(&self, root: &str) -> Result<Vec<EnvironmentFile>, pc::SandboxError> {
+        files::read_files(self, root).await
     }
 }
 

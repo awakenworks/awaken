@@ -99,9 +99,10 @@ pub struct RepositoryRealizationPlan {
 /// only construct/use a working tree. A credential value is injected ephemerally
 /// for the transport operation and must never be persisted in the plan, origin URL,
 /// or sandbox.
+#[async_trait]
 pub trait RepositoryRealizer: Send + Sync {
     /// Clone the current remote content into this realizer's Sandbox.
-    fn realize_repository(
+    async fn realize_repository(
         &self,
         plan: &RepositoryRealizationPlan,
         credential: Option<&str>,
@@ -110,7 +111,7 @@ pub trait RepositoryRealizer: Send + Sync {
     /// Publish Agent-authored commits from the current working branch. The caller
     /// decides whether publishing is allowed/required; this adapter owns only Git
     /// transport mechanics. Returns false when there is nothing to publish.
-    fn publish_repository(
+    async fn publish_repository(
         &self,
         plan: &RepositoryRealizationPlan,
         credential: Option<&str>,

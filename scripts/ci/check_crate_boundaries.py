@@ -1200,6 +1200,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # (TCP dial + reverse dial); tokio provides the net stack. Both optional.
         "awaken-connection",
         "tokio",
+        # Bounded tar decoding for backend-neutral file harvesting over exec stdio.
+        "tar",
         # feature `docker`: real Docker backend over the Engine API (SDK, not CLI).
         "bollard",
         "futures-util",

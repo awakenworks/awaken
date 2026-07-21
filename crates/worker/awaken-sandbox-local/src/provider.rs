@@ -654,8 +654,9 @@ impl LocalSandbox {
     }
 }
 
+#[async_trait]
 impl pc::RepositoryRealizer for LocalSandbox {
-    fn realize_repository(
+    async fn realize_repository(
         &self,
         plan: &pc::RepositoryRealizationPlan,
         credential: Option<&str>,
@@ -670,7 +671,7 @@ impl pc::RepositoryRealizer for LocalSandbox {
         .map_err(err)
     }
 
-    fn publish_repository(
+    async fn publish_repository(
         &self,
         plan: &pc::RepositoryRealizationPlan,
         credential: Option<&str>,
@@ -1243,7 +1244,9 @@ mod workdir_helper_tests {
             access: pc::MountAccess::ReadWrite,
         };
 
-        pc::RepositoryRealizer::realize_repository(&sandbox, &plan, None).unwrap();
+        pc::RepositoryRealizer::realize_repository(&sandbox, &plan, None)
+            .await
+            .unwrap();
         let repo_dir = root.join("workspace/repo");
         assert_eq!(
             std::fs::read_to_string(repo_dir.join("README.md")).unwrap(),
@@ -1261,7 +1264,11 @@ mod workdir_helper_tests {
         );
 
         // Nothing authored yet → the host push is a no-op (agent committed nothing).
-        assert!(!pc::RepositoryRealizer::publish_repository(&sandbox, &plan, None).unwrap());
+        assert!(
+            !pc::RepositoryRealizer::publish_repository(&sandbox, &plan, None)
+                .await
+                .unwrap()
+        );
 
         // The AGENT configures its own identity and authors a commit in the jail — a clean
         // working tree afterwards (it committed everything), which the OLD harvest would have
@@ -1273,8 +1280,16 @@ mod workdir_helper_tests {
         git(&repo_dir, &["commit", "-q", "-m", "agent: add NEW.txt"]);
 
         // Host push reports true (the branch was ahead) and re-pushing is an idempotent no-op.
-        assert!(pc::RepositoryRealizer::publish_repository(&sandbox, &plan, None).unwrap());
-        assert!(!pc::RepositoryRealizer::publish_repository(&sandbox, &plan, None).unwrap());
+        assert!(
+            pc::RepositoryRealizer::publish_repository(&sandbox, &plan, None)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !pc::RepositoryRealizer::publish_repository(&sandbox, &plan, None)
+                .await
+                .unwrap()
+        );
 
         // The bare remote carries the AGENT's commit — its own message and author, not a
         // canned harvest commit by a fake user.
@@ -1307,7 +1322,11 @@ mod workdir_helper_tests {
             initial_branch: None,
             access: pc::MountAccess::ReadOnly,
         };
-        assert!(pc::RepositoryRealizer::realize_repository(&sandbox, &plan, None).is_err());
+        assert!(
+            pc::RepositoryRealizer::realize_repository(&sandbox, &plan, None)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

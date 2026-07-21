@@ -16,10 +16,10 @@ async-trait.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["process", "rt", "sync", "io-util"] }
+tempfile = "3"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util"] }
-tempfile = "3"
 # Tests wire a real content-addressed store behind the `BlobSource` port via a small
 # adapter — the store stays a dev-only dependency (dev-deps are boundary-exempt).
 awaken-file-store.workspace = true

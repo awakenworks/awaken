@@ -31,12 +31,14 @@ mod artifacts;
 mod blob_cache;
 mod namespace;
 mod provider;
+mod repo_bundle;
 // The provider resolves mount bytes from an injected [`pc::BlobSource`] port
 // (ADR-0038 D6, dependency-inverted) — this worker-tier crate links no durable
 // store; the composition root adapts the content-addressed store to the port.
 pub use blob_cache::{BlobLru, WorkspaceBlobCache};
 pub use namespace::{NamespaceProvider, NamespaceSandbox, bubblewrap_argv, sandbox_exec_argv};
 pub use provider::{LocalProcess, LocalProvider, LocalSandbox};
+pub use repo_bundle::{clone_repo_bundle, push_repo_bundle};
 
 /// A logical path escaped its environment root.
 #[derive(Debug, thiserror::Error)]
@@ -412,6 +414,33 @@ pub(crate) fn push_repo_at(
     Ok(true)
 }
 
+/// Push to an explicit host-known remote, comparing the branch tip against the
+/// actual remote rather than a possibly bundled/stale tracking ref.
+pub(crate) fn push_repo_to_at(
+    root: &IsolatedRoot,
+    logical: &str,
+    remote_url: &str,
+    token: Option<&str>,
+) -> Result<bool, SandboxError> {
+    let dest = jailed_at(root, logical)?;
+    let branch = git_stdout(Some(&dest), &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    let branch = branch.trim();
+    if branch.is_empty() || branch == "HEAD" {
+        return Err(SandboxError(
+            "cannot push a repository with detached HEAD".into(),
+        ));
+    }
+    let head = git_stdout(Some(&dest), &["rev-parse", "HEAD"])?;
+    let remote_ref = format!("refs/heads/{branch}");
+    let authed = authed_url(remote_url, token);
+    let remote = git_stdout(None, &["ls-remote", &authed, &remote_ref])?;
+    if remote.split_whitespace().next() == Some(head.trim()) {
+        return Ok(false);
+    }
+    run_git(Some(&dest), &["push", &authed, "HEAD"])?;
+    Ok(true)
+}
+
 /// List regular files under `<root>/<subdir>` (recursively) as `(logical_path, bytes)`
 /// sorted by path — a session's output artifacts / memory harvest. Paths are logical
 /// (never a host path, G3). Shared with the Workdir tier.
@@ -567,6 +596,26 @@ fn run_git(cwd: Option<&Path>, args: &[impl AsRef<str>]) -> Result<(), SandboxEr
 /// Run a git command and return its trimmed stdout.
 fn git_stdout(cwd: Option<&Path>, args: &[&str]) -> Result<String, SandboxError> {
     Ok(String::from_utf8_lossy(&git_run(cwd, args)?.stdout).into_owned())
+}
+
+fn git_bytes(cwd: Option<&Path>, args: &[&str]) -> Result<Vec<u8>, SandboxError> {
+    let mut command = std::process::Command::new("git");
+    command.args(args);
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
+    let output = command
+        .output()
+        .map_err(|error| SandboxError(error.to_string()))?;
+    if output.status.success() {
+        Ok(output.stdout)
+    } else {
+        Err(SandboxError(format!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )))
+    }
 }
 
 #[cfg(test)]
