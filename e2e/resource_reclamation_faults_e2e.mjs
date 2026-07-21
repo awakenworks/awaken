@@ -29,8 +29,8 @@ function binary() {
   throw new Error('awaken binary was not produced');
 }
 
-function start(bin, directory) {
-  return spawn(bin, {
+function start(bin, directory, { captureStderr = false } = {}) {
+  const child = spawn(bin, {
     env: {
       ...process.env,
       AWAKEN_HTTP_ADDR: `127.0.0.1:${PORT}`,
@@ -39,8 +39,17 @@ function start(bin, directory) {
       AWAKEN_DEPLOYMENT_DATA_DIR: directory,
       AWAKEN_MGMT_SEAL_KEY: '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff',
     },
-    stdio: ['ignore', 'ignore', 'inherit'],
+    stdio: ['ignore', 'ignore', captureStderr ? 'pipe' : 'inherit'],
   });
+  child.stderrText = '';
+  if (captureStderr) {
+    child.stderr.on('data', (chunk) => {
+      const text = chunk.toString();
+      child.stderrText += text;
+      process.stderr.write(text);
+    });
+  }
+  return child;
 }
 
 async function ready(child) {
@@ -117,6 +126,16 @@ async function waitFor(directory, resourceIds, predicate, timeoutMs = 20_000) {
     await sleep(200);
   }
   throw new Error(`resource intents did not converge: ${JSON.stringify(intents(directory))}`);
+}
+
+async function waitForStderr(child, pattern, timeoutMs = 8_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (pattern.test(child.stderrText)) return;
+    if (child.exitCode !== null) throw new Error(`awaken exited with ${child.exitCode}`);
+    await sleep(100);
+  }
+  throw new Error(`stderr did not match ${pattern}: ${child.stderrText}`);
 }
 
 function encoded(value) {
@@ -272,6 +291,55 @@ async function main() {
     assert.equal(byResource.get(releaseFailure).attempts + 1, intentFor(directory, releaseFailure).attempts);
     assert.equal(intentFor(directory, releaseFailure).receipt.evidence.blob_deleted, false);
     assert.equal(intentFor(directory, skillId).receipt.evidence.versions_deleted, 1);
+
+    // A durable adapter must not deserialize malformed-but-well-typed lifecycle
+    // state and continue reclaiming. Exercise each invariant through the real
+    // recurring reconciler (no test endpoint): the row remains pending and the
+    // process reports the precise fail-closed reason. Restore the completed row
+    // afterwards so this fault campaign itself leaves a converged catalog.
+    const completedIntent = intentFor(directory, releaseFailure);
+    await stop(server, 'SIGKILL');
+    const pending = {
+      ...completedIntent,
+      status: 'pending',
+      receipt: null,
+      claim_owner: null,
+      lease_expires_at_unix_ms: null,
+      blockers: [],
+    };
+    const corruptions = [
+      [{ ...pending, target: { ...pending.target, workspace_id: ' ' } }, /target workspace_id must not be empty/u],
+      [{ ...pending, intent_id: ' ' }, /intent_id must not be empty/u],
+      [{ ...pending, config_version: 0 }, /config_version must be positive/u],
+      [{ ...pending, not_before_unix_ms: pending.requested_at_unix_ms - 1 }, /not_before_unix_ms precedes/u],
+      [{
+        ...pending,
+        blockers: [{ kind: 'artifact', reference_id: ' ' }],
+      }, /reference_id must not be empty/u],
+    ];
+    server = start(bin, directory, { captureStderr: true });
+    await ready(server);
+    for (const [corrupt, expected] of corruptions) {
+      server.stderrText = '';
+      sqlite(
+        lifecycle,
+        `UPDATE resource_purge_intents
+           SET status = 'pending', not_before_unix_ms = 0,
+               lease_expires_at_unix_ms = NULL, data = ${sqlQuote(JSON.stringify(corrupt))}
+         WHERE intent_id = ${sqlQuote(completedIntent.intent_id)};`,
+      );
+      await waitForStderr(server, expected);
+      assert.equal(intentFor(directory, releaseFailure).status, 'pending');
+    }
+    sqlite(
+      lifecycle,
+      `UPDATE resource_purge_intents
+         SET status = 'completed',
+             not_before_unix_ms = ${completedIntent.not_before_unix_ms},
+             lease_expires_at_unix_ms = NULL,
+             data = ${sqlQuote(JSON.stringify(completedIntent))}
+       WHERE intent_id = ${sqlQuote(completedIntent.intent_id)};`,
+    );
 
     console.log('E2E PASS: reclaimer faults remain fenced, retryable, and idempotently convergent.');
   } finally {
