@@ -105,6 +105,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok("acp") => awaken_scenario_host::build_acp_router(),
         Ok("acp-jsonrpc") => awaken_scenario_host::build_acp_jsonrpc_router(),
         Ok("acp-permission") => awaken_scenario_host::build_acp_permission_router(),
+        Ok("acp-control") => awaken_scenario_host::build_acp_control_router(),
+        Ok("acp-relaunch-failure") => awaken_scenario_host::build_acp_relaunch_failure_router(),
         Ok("acp-sandboxed") => awaken_scenario_host::build_acp_sandboxed_router(),
         Ok("acp-container") => awaken_scenario_host::build_acp_container_router().await,
         Ok("acp-gateway") => awaken_scenario_host::build_acp_gateway_router(),

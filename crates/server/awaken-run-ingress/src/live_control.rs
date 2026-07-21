@@ -1,4 +1,4 @@
-//! Fail-closed live run control: cancel and wake by correlation-id (G5/G18).
+//! Fail-closed live run control: cancel, pause and wake by correlation-id (G5/G18).
 //!
 //! [`LiveRunControlService`] is the `LiveRunControl` seam described in G18:
 //! it owns active-run steering and nothing else. It never starts runs, publishes
@@ -36,7 +36,7 @@ pub enum Error {
 
 /// Fail-closed live-control service (G18).
 ///
-/// Routes `Cancel` and `Wake` to the run identified by a correlation identifier
+/// Routes `Cancel`, `Pause` and `Wake` to the run identified by a correlation identifier
 /// (treated as a `RunId` in this MVP). Cancellation is fail-closed: if no live
 /// or queued run matches, [`Error::NotFound`] is returned. Wake is live-only and
 /// fail-closed: [`Error::NoSubscriber`] is returned when no active run exists,
@@ -111,6 +111,18 @@ impl<S: Dispatch + 'static> LiveRunControlService<S> {
         {
             Ok(()) => Ok(()),
             Err(ControlError::NotActive) => Err(Error::NotFound(correlation_id.to_owned())),
+            Err(error) => Err(Error::Dispatch(error.to_string())),
+        }
+    }
+
+    /// Cooperatively pause the active run identified by `correlation_id` at its
+    /// next safe boundary. Pause is live-only: once accepted, the executor commits
+    /// a durable `ManualPause` ticket that may be resumed after process replacement.
+    pub fn pause(&self, correlation_id: &str) -> Result<(), Error> {
+        let run_id = RunId(correlation_id.to_owned());
+        match self.worker.runtime().deliver(LiveCommand::Pause { run_id }) {
+            Ok(()) => Ok(()),
+            Err(ControlError::NotActive) => Err(Error::NoSubscriber(correlation_id.to_owned())),
             Err(error) => Err(Error::Dispatch(error.to_string())),
         }
     }
@@ -306,5 +318,37 @@ mod tests {
             matches!(err, Error::NoSubscriber(_)),
             "wake must be fail-closed when no live subscriber: got {err}"
         );
+    }
+
+    #[test]
+    fn pause_reaches_the_single_runtime_attempt_registry_and_fails_closed_after_deregister() {
+        use awaken_runtime_contract::pause::PauseSignal;
+
+        let runtime = Arc::new(Runtime::new());
+        let store = Arc::new(MemoryDispatchStore::new());
+        let commit = Arc::new(MemoryCommitCoordinator::new());
+        let worker = Arc::new(DispatchWorker::new(
+            runtime.clone(),
+            store,
+            commit,
+            "pause-control-test",
+        ));
+        let service = LiveRunControlService::new(worker);
+        let run_id = RunId("external-attempt".into());
+        let pause = PauseSignal::new();
+        let context = RuntimeRunContext::new().with_pause(pause.clone());
+        runtime.register_attempt_controls(&run_id, &context);
+
+        service.pause(&run_id.0).expect("active pause is accepted");
+        assert!(
+            pause.requested(),
+            "the executor context observes the request"
+        );
+
+        runtime.deregister_attempt_controls(&run_id);
+        assert!(matches!(
+            service.pause(&run_id.0),
+            Err(Error::NoSubscriber(_))
+        ));
     }
 }

@@ -56,6 +56,31 @@ impl SharedHost {
             .map_err(|e| HostError::bad_request(e.to_string()))
     }
 
+    /// Pause an active run at its next safe boundary. Acceptance is live-only;
+    /// the resulting `ManualPause` ticket is committed durably by the executor.
+    pub(crate) async fn pause_durable(
+        &self,
+        thread: &str,
+        requested_run_id: Option<&str>,
+    ) -> Result<String, HostError> {
+        let ctx = self.ctx_for(thread, None).await?;
+        let run_id = requested_run_id.map(str::to_string).or_else(|| {
+            ctx.active_run
+                .lock()
+                .expect("active run mutex poisoned")
+                .as_ref()
+                .map(|run_id| run_id.0.clone())
+        });
+        let run_id = run_id.ok_or_else(|| HostError::bad_request("thread has no active run"))?;
+        ctx.durable_ingress
+            .as_ref()
+            .ok_or_else(|| HostError::bad_request("pause requires durable ingress"))?
+            .live_control()
+            .pause(&run_id)
+            .map_err(|e| HostError::bad_request(e.to_string()))?;
+        Ok(run_id)
+    }
+
     /// Stage a durable cross-thread delivery answering `thread`'s awaiting run, then
     /// let the daemon relay it (ADR-0017, slice E follow-up). Resolves the awaiting
     /// run's awaiting ticket from committed truth, stages a decision into the outbox
@@ -86,6 +111,39 @@ impl SharedHost {
             .map_err(|e| HostError::internal(e.to_string()))?;
         Ok(run_id.0)
     }
+
+    /// Resume the thread's durable operator pause with text. The committed ticket
+    /// is the authority: tool/auth waits are rejected here and must use their
+    /// protocol-specific result/decision surface.
+    pub(crate) async fn stage_manual_resume(
+        &self,
+        thread: &str,
+        text: String,
+    ) -> Result<String, HostError> {
+        let ctx = self.ctx_for(thread, None).await?;
+        let pool = self.dispatch_pool_or_err()?;
+        let thread_id = ThreadId(thread.to_string());
+        let (run_id, ticket) = ctx
+            .commit
+            .open_wait_for_thread(&thread_id)
+            .ok_or_else(|| HostError::bad_request("no awaiting run on this thread to resume"))?;
+        if ticket.reason != awaken_agent_contract::agent::awaiting::AwaitReason::ManualPause {
+            return Err(HostError::bad_request(
+                "durable text resume requires a manual-pause ticket",
+            ));
+        }
+        pool.send(awaken_run_ingress::PendingInput {
+            message_id: format!("manual-resume-{}", BASE_SEQ.fetch_add(1, Ordering::SeqCst)),
+            run_id: run_id.clone(),
+            thread_id,
+            correlation_id: ticket.correlation_id,
+            available_at_ms: None,
+            result: ResumeResult::Input(text),
+        })
+        .await
+        .map_err(|e| HostError::internal(e.to_string()))?;
+        Ok(run_id.0)
+    }
 }
 
 /// The durable operations router. Mounted on every server; each route fails
@@ -97,6 +155,8 @@ pub fn durable_ops_router(host: Arc<SharedHost>) -> Router {
             post(submit_background),
         )
         .route("/v1/durable/threads/{thread}/cancel", post(cancel))
+        .route("/v1/durable/threads/{thread}/pause", post(pause))
+        .route("/v1/durable/threads/{thread}/resume", post(resume))
         .route("/v1/durable/threads/{thread}/wake", post(wake))
         .route("/v1/durable/threads/{thread}/deliver", post(deliver))
         .route("/v1/durable/threads/{thread}/supersede", post(supersede))
@@ -162,6 +222,45 @@ async fn cancel(
                 .ok_or_else(|| HostError::bad_request("`run_id` is required"))?;
             host.cancel_durable(&thread, run_id).await?;
             Ok(json!({ "cancelled": true, "run_id": run_id }))
+        }
+        .await,
+    )
+}
+
+/// Cooperatively pause an active run by id. The request fails closed when the
+/// run has no live owner; an accepted pause becomes a durable awaiting ticket.
+async fn pause(
+    State(host): State<Arc<SharedHost>>,
+    Path(thread): Path<String>,
+    Json(body): Json<Value>,
+) -> (StatusCode, Json<Value>) {
+    respond(
+        async {
+            let run_id = host
+                .pause_durable(&thread, body.get("run_id").and_then(|v| v.as_str()))
+                .await?;
+            Ok(json!({ "paused": true, "run_id": run_id }))
+        }
+        .await,
+    )
+}
+
+/// Resume exactly a committed `ManualPause` ticket with `{ text }`.
+async fn resume(
+    State(host): State<Arc<SharedHost>>,
+    Path(thread): Path<String>,
+    Json(body): Json<Value>,
+) -> (StatusCode, Json<Value>) {
+    respond(
+        async {
+            let text = body
+                .get("text")
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| HostError::bad_request("`text` is required"))?
+                .to_string();
+            let run_id = host.stage_manual_resume(&thread, text).await?;
+            Ok(json!({ "resumed": true, "run_id": run_id }))
         }
         .await,
     )

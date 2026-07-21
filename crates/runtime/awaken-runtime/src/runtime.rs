@@ -327,6 +327,30 @@ impl Runtime {
         self.active_pauses.lock().remove(run_id);
     }
 
+    /// Register the neutral control handles for an attempt driven by an external
+    /// [`RunAttemptExecutor`](awaken_runtime_contract::execution::RunAttemptExecutor).
+    /// Native execution registers the same handles inside `Runtime::execute`; the
+    /// durable worker uses this boundary so ACP/A2A attempts participate in the
+    /// one live-control registry instead of growing an executor-specific channel.
+    pub fn register_attempt_controls(
+        &self,
+        run_id: &RunId,
+        context: &awaken_runtime_contract::runtime_context::RuntimeRunContext,
+    ) {
+        if let Some(token) = &context.cancellation {
+            self.register_run(run_id, token.clone());
+        }
+        if let Some(pause) = &context.pause {
+            self.register_pause(run_id, pause.clone());
+        }
+    }
+
+    /// Remove attempt controls after any executor return path.
+    pub fn deregister_attempt_controls(&self, run_id: &RunId) {
+        self.deregister_run(run_id);
+        self.deregister_pause(run_id);
+    }
+
     /// Register an executable snapshot for by-id resolution. Returns the id so
     /// callers can submit `AgentSnapshotInput::ById`.
     pub fn register_snapshot(
