@@ -88,6 +88,24 @@ async function startPeer(): Promise<{
         json(response, 200, {
           task: task('cancel-task', 'cancel-context', 'input-required', 'approve?'),
         });
+      } else if (text.includes('active remote cancel')) {
+        json(response, 200, {
+          task: task('active-cancel-task', 'active-cancel-context', 'working'),
+        });
+      } else if (text.includes('poll remote failure')) {
+        json(response, 200, {
+          task: task('poll-failure-task', 'poll-failure-context', 'working'),
+        });
+      } else if (text.includes('resume remote failure')) {
+        json(response, 200, {
+          task: task('resume-failure-task', 'resume-failure-context', 'input-required', 'continue?'),
+        });
+      } else if (message.contextId === 'resume-failure-context') {
+        json(response, 503, { error: { message: 'resume transport unavailable' } });
+      } else if (text.includes('cancel terminal remote')) {
+        json(response, 200, {
+          task: task('cancel-terminal-task', 'cancel-terminal-context', 'input-required', 'continue?'),
+        });
       } else if (text.includes('need remote auth')) {
         json(response, 200, {
           task: task('auth-task', 'auth-context', 'auth-required', 'supply delegated auth'),
@@ -141,6 +159,18 @@ async function startPeer(): Promise<{
       }
       if (get[1] === 'cancel-task') {
         json(response, 200, task('cancel-task', 'cancel-context', 'input-required'));
+        return;
+      }
+      if (get[1] === 'active-cancel-task') {
+        json(response, 200, task('active-cancel-task', 'active-cancel-context', 'working'));
+        return;
+      }
+      if (get[1] === 'poll-failure-task') {
+        json(response, 503, { error: { message: 'poll transport unavailable' } });
+        return;
+      }
+      if (get[1] === 'cancel-terminal-task') {
+        json(response, 200, task('cancel-terminal-task', 'cancel-terminal-context', 'completed', 'already done'));
         return;
       }
       json(response, 404, { error: { message: `unknown task ${get[1]}` } });
@@ -408,7 +438,37 @@ async function main(): Promise<void> {
     await waitForDispatchGone(cancelThread, cancelSubmit.body.run_id);
     await publishRemote(peer.endpoint);
 
-    // 4) Every terminal A2A state and every reply carrier is projected without
+    // 4) Cancellation while a root remote attempt is actively polling uses the
+    // same task driver as cold/awaiting cancellation and aborts the pinned task.
+    const activeCancelThread = await createSession();
+    const activeTurn = sendText(activeCancelThread, 'active remote cancel');
+    const activeDeadline = Date.now() + 20_000;
+    while (!peer.reads.includes('active-cancel-task') && Date.now() <= activeDeadline) await sleep(25);
+    assert.ok(peer.reads.includes('active-cancel-task'), 'active remote task reached the poll boundary');
+    const interrupted = await api('POST', `/v1/sessions/${activeCancelThread}/events`, {
+      events: [{ type: 'user.interrupt' }],
+    });
+    assert.equal(interrupted.status, 200, `active remote interrupt accepted: ${JSON.stringify(interrupted.body)}`);
+    await activeTurn.catch(() => {});
+    await waitForRemoteCancel(peer.cancels, 'active-cancel-task');
+
+    // Cancellation observes an already-terminal task and remains idempotent at
+    // the remote boundary (no unnecessary tasks/cancel request).
+    const terminalCancelThread = await createSession();
+    const terminalSubmit = await api('POST', `/v1/durable/threads/${terminalCancelThread}/submit_background`, {
+      agent: AGENT,
+      text: 'cancel terminal remote',
+    });
+    assert.equal(terminalSubmit.status, 200);
+    await waitForAwaiting(terminalCancelThread, terminalSubmit.body.run_id);
+    const terminalCancel = await api('POST', `/v1/durable/threads/${terminalCancelThread}/cancel`, {
+      run_id: terminalSubmit.body.run_id,
+    });
+    assert.equal(terminalCancel.status, 200, JSON.stringify(terminalCancel.body));
+    await waitForDispatchGone(terminalCancelThread, terminalSubmit.body.run_id);
+    assert.ok(!peer.cancels.includes('cancel-terminal-task'));
+
+    // 5) Every terminal A2A state and every reply carrier is projected without
     // being collapsed to a false success. These are separate Sessions so their
     // committed run causes remain independently observable.
     for (const [prompt, marker] of [
@@ -426,7 +486,7 @@ async function main(): Promise<void> {
       );
     }
 
-    // 5) auth-required is a first-class await boundary (distinct from user input)
+    // 6) auth-required is a first-class await boundary (distinct from user input)
     // and resumes on the exact committed context/task identity.
     const authThread = await createSession();
     await sendText(authThread, 'need remote auth');
@@ -445,11 +505,34 @@ async function main(): Promise<void> {
     const authMessage = peer.sent.find((message) => message.text === 'delegated-auth-ready');
     assert.equal(authMessage?.contextId, 'auth-context', 'auth resume retained remote context');
 
-    // 6) A remote send rejection is committed as an error outcome and never
+    // 7) A remote send rejection is committed as an error outcome and never
     // fabricated into a successful answer.
     const errorThread = await createSession();
     await sendText(errorThread, 'trigger remote send rejection');
     await waitForMessage(errorThread, 'remote agent error');
+
+    // A direct-ingress process makes transport error disposition immediately
+    // observable (the durable process above intentionally retries such failures).
+    await stopServer(server);
+    server = spawnServer('config', PORT, {}).server;
+    await waitForPort(PORT, 180_000, server);
+    await publishRemote(peer.endpoint);
+    const pollFailureThread = await createSession();
+    const pollFailure = await api('POST', `/v1/sessions/${pollFailureThread}/events`, {
+      events: [{ type: 'user.message', content: [{ type: 'text', text: 'poll remote failure' }] }],
+    });
+    assert.equal(pollFailure.status, 500, JSON.stringify(pollFailure.body));
+    const resumeFailureThread = await createSession();
+    await sendText(resumeFailureThread, 'resume remote failure');
+    const resumeFailure = await api('POST', `/v1/sessions/${resumeFailureThread}/events`, {
+      events: [{
+        type: 'user.custom_tool_result',
+        custom_tool_use_id: 'resume-failure-task',
+        content: [{ type: 'text', text: 'continue' }],
+        is_error: false,
+      }],
+    });
+    assert.equal(resumeFailure.status, 500, JSON.stringify(resumeFailure.body));
 
     console.log(
       'REMOTE ATTEMPT TS API E2E PASS: crash reattach, input/auth resume, terminal states, send failure, and pinned-task cancellation.',
