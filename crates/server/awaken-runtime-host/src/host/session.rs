@@ -588,6 +588,7 @@ impl SharedHost {
             Arc::new(crate::run_exec::SessionAttemptExecutor::new(
                 runtime.clone(),
                 acp_executor,
+                self.remote_attempt_executor.clone(),
             ));
         // The foreground delivery seam (slice C/D): a turn's execution goes through
         // `RunIngress` rather than calling `runtime.start_run` directly. Direct

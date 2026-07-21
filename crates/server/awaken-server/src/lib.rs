@@ -65,6 +65,13 @@ pub fn install_platform_memory_data_plane(host: &SharedHost) {
     )));
 }
 
+/// Build the production A2A attempt adapter behind the runtime's neutral port.
+/// Composition roots inject it into [`SharedHost`], keeping protocol knowledge
+/// out of the session substrate.
+pub fn a2a_attempt_executor() -> Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor> {
+    Arc::new(awaken_run_executor_a2a::A2aRunExecutor::over_http())
+}
+
 /// An [`InferenceExecutorMaterializer`] mapping a model ref to a labeled executor, so a
 /// session bound to `fast`/`slow` resolves a distinct model — the R1/R2/R5 demo
 /// surface.

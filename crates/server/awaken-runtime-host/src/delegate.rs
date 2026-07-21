@@ -299,9 +299,10 @@ impl RunDelegationService for HostRunDelegationService {
                 }
             };
             return remote
-                .run(
+                .resume(
                     agent_id,
                     &request.child_run_id.0,
+                    &request.continuation,
                     &input,
                     request.context.cancellation.as_ref(),
                 )

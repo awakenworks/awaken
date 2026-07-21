@@ -494,6 +494,35 @@ impl SharedHost {
             .resume_ticket(&run_id)
             .ok_or_else(|| HostError::internal("awaiting run has no awaiting ticket"))?;
 
+        if matches!(
+            ticket.reason,
+            AwaitReason::UserInput | AwaitReason::ExternalEvent
+        ) && ticket.pending_tool.is_none()
+        {
+            if ticket.call_id.as_deref() != Some(tool_use_id) {
+                return Err(HostError::bad_request(format!(
+                    "tool_use_id {tool_use_id:?} does not match the pending remote input"
+                )));
+            }
+            let HostResume::ClientResult { content, .. } = resume else {
+                return Err(HostError::bad_request(
+                    "awaiting remote input requires a client result",
+                ));
+            };
+            let before = ctx.commit.committed_messages(&ctx.thread_id).len();
+            let activation = ctx.resume_activation(&ticket);
+            let command = ResumeCommand::from_ticket(&ticket, ResumeResult::Input(content), 0);
+            let state = ctx
+                .ingress
+                .resume(activation, command, ctx.context())
+                .await
+                .map_err(|e| HostError::internal(e.to_string()))?;
+            let result = self.finish_step(&ctx, &mut st, run_id, state, before, thread)?;
+            drop(st);
+            self.run_aux_after_step(&ctx, thread, &result.state).await;
+            return Ok(result);
+        }
+
         // A awaiting delegation resumes through the kernel resolver with the user's
         // typed answer; the kernel routes it through the parent relationship to the
         // child's own Run service. The user never resumes the child directly.
@@ -849,7 +878,20 @@ fn pending_from_ticket(
     client_tools: &HashSet<String>,
 ) -> Option<PendingTool> {
     let tool_use_id = ticket.call_id.clone()?;
-    let tool = ticket.pending_tool.clone()?;
+    let Some(tool) = ticket.pending_tool.clone() else {
+        if matches!(
+            ticket.reason,
+            AwaitReason::UserInput | AwaitReason::ExternalEvent
+        ) {
+            return Some(PendingTool {
+                tool_use_id,
+                name: "agent_input".to_string(),
+                input: serde_json::json!({ "reason": ticket.reason.as_stream_str() }),
+                client_executed: true,
+            });
+        }
+        return None;
+    };
     let client_executed = client_tools.contains(&tool.tool_id);
     Some(PendingTool {
         tool_use_id,
@@ -857,4 +899,31 @@ fn pending_from_ticket(
         input: tool.arguments,
         client_executed,
     })
+}
+
+#[cfg(test)]
+mod ticket_projection_tests {
+    use super::*;
+
+    #[test]
+    fn remote_input_wait_projects_as_a_client_executed_agent_input() {
+        let ticket = ResumeTicket {
+            correlation_id: "a2a:remote-7:InputRequired".into(),
+            run_id: RunId("run-7".into()),
+            thread_id: ThreadId("thread-7".into()),
+            snapshot_id: "snapshot-7".into(),
+            catalog_fingerprint: "fingerprint-7".into(),
+            delegation_origin: None,
+            reason: AwaitReason::UserInput,
+            call_id: Some("remote-7".into()),
+            pending_tool: None,
+            deadline_ms: None,
+        };
+
+        let pending = pending_from_ticket(&ticket, &HashSet::new()).expect("visible input");
+        assert_eq!(pending.tool_use_id, "remote-7");
+        assert_eq!(pending.name, "agent_input");
+        assert!(pending.client_executed);
+        assert_eq!(pending.input["reason"], "user_input");
+    }
 }
