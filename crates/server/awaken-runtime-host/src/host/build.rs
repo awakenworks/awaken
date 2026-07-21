@@ -42,9 +42,25 @@ impl SharedHost {
         // per-process otherwise). Resource identity/configuration is injected into
         // the server composition root through `ResourceCatalog`.
         let memory_stores = crate::memory_stores::MemoryStores::open(store_dir.as_deref());
+        let model_ref = model_ref.into();
+        let memory_catalog = Arc::new(AgentCatalog::new().with_agent(default_memory_agent(
+            &model_ref,
+            DEFAULT_MEMORY_INSTRUCTIONS,
+        )));
+        let memory = Arc::new(crate::memory::MemoryRuntime::new(
+            llm.clone(),
+            Arc::new(LocalProvider::new(sub_base("mem"))),
+            memory_catalog,
+            Arc::new(BackgroundRuns::new()),
+            model_ref.clone(),
+        ));
+        let memory_selector = Some(Arc::new(crate::memory::AgentSelector::new(
+            llm.clone(),
+            &model_ref,
+        )) as Arc<dyn awaken_ext_memory::RecallSelector>);
         Self {
             llm,
-            model_ref: model_ref.into(),
+            model_ref,
             inference_routing: crate::inference_routing::InferenceRouting::new(),
             acp: None,
             provider: LocalProvider::new(sandbox_root),
@@ -70,9 +86,9 @@ impl SharedHost {
                 .map(PathBuf::from),
             upstream: None,
             deployment,
-            memory: None,
+            memory,
             thread_memory: std::sync::Mutex::new(HashMap::new()),
-            memory_selector: None,
+            memory_selector,
             compaction: None,
             config_service: None,
             thread_mcp: std::sync::Mutex::new(HashMap::new()),
@@ -235,12 +251,6 @@ impl SharedHost {
         self
     }
 
-    /// Enable out-of-band memory extraction, writing memories under `mem_dir`. After
-    /// each turn that reaches a natural end, a background `memory-extractor` sub-agent
-    /// reads the conversation and saves durable memories via `write_memory` (scoped
-    /// to `mem_dir`), without blocking the turn. The extractor runs the default
-    /// memory agent over this host's model; drain it before shutdown with
-    /// [`drain_memory`](Self::drain_memory).
     /// Make this host a database-less **worker** of the cell server at `url`: every
     /// thread's commit posts facts to the server's commit ingest instead of a local
     /// store (paired with an `HttpDispatchQueue` for claim/settle). The worker holds
@@ -262,38 +272,10 @@ impl SharedHost {
         self
     }
 
-    pub fn with_memory(mut self, mem_dir: impl Into<PathBuf>) -> Self {
-        let catalog = Arc::new(AgentCatalog::new().with_agent(default_memory_agent(
-            &self.model_ref,
-            DEFAULT_MEMORY_INSTRUCTIONS,
-        )));
-        let extraction = MemoryExtraction::new(
-            self.llm.clone(),
-            Arc::new(LocalProvider::new(sub_base("mem"))),
-            catalog,
-            Arc::new(BackgroundRuns::new()),
-            mem_dir.into(),
-            self.model_ref.clone(),
-        );
-        self.memory = Some(Arc::new(extraction));
-        // The recall plugin uses this selector once the store grows: a single-step
-        // `memory-selector` sub-agent picks the memories relevant to the user's
-        // message.
-        self.memory_selector = Some(Arc::new(crate::memory::AgentSelector::new(
-            self.llm.clone(),
-            &self.model_ref,
-        )));
-        self
-    }
-
     /// Await in-flight background memory extractions up to `timeout` (shutdown
-    /// flush). Returns `true` if all finished. A no-op returning `true` when memory
-    /// is disabled.
+    /// flush). Returns `true` if all finished.
     pub async fn drain_memory(&self, timeout: std::time::Duration) -> bool {
-        match &self.memory {
-            Some(mem) => mem.drain(timeout).await,
-            None => true,
-        }
+        self.memory.drain(timeout).await
     }
 
     /// Replace the default authorization gate on every thread with `gate` (slice

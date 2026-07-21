@@ -189,6 +189,13 @@ FUSE is one realization. A host without FUSE may materialize path-addressed
 entries and apply CAS changes through the same `MemoryRepository`; it may not
 fall back to a second blob truth.
 
+The Runtime Host therefore owns a store-less `MemoryRuntime` capability and a
+Session-scoped `BoundMemory`. The latter contains only the already-resolved store
+handle, pinned config policy, and maximum read/write access. A Session without a
+MemoryStore binding has no recall or extraction. The removed
+`with_memory(mem_dir)`/`memory_scope_root` path is not a fallback in local mode;
+local mode provisions and binds a normal store under its hidden default Workspace.
+
 ### D8: Anthropic compatibility is an adapter concern
 
 The Managed adapter continues to accept and project Anthropic File, MemoryStore,

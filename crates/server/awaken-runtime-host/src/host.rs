@@ -59,7 +59,7 @@ use crate::config::{build_runtime, config_permission_ruleset, server_config, ser
 use crate::delegate::HostRunDelegationService;
 use crate::hub::{ThreadEvent, ThreadEventHub};
 use crate::judge::{DEFAULT_JUDGE_INSTRUCTIONS, default_judge_agent};
-use crate::memory::{DEFAULT_MEMORY_INSTRUCTIONS, MemoryExtraction, default_memory_agent};
+use crate::memory::{DEFAULT_MEMORY_INSTRUCTIONS, default_memory_agent};
 use crate::store::HostCommit;
 
 pub(crate) static BASE_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -166,13 +166,13 @@ pub struct SharedHost {
     /// worker. Point it at a **shared** location for cross-machine recovery; leave
     /// `None` on a single machine (the per-thread config home is already stable).
     pub(crate) session_blob_root: Option<PathBuf>,
-    /// Out-of-band memory extraction, when enabled with [`with_memory`]. After a
-    /// turn reaches a natural end it fires a background `memory-extractor` sub-run.
-    pub(crate) memory: Option<Arc<MemoryExtraction>>,
-    /// Per-thread governed MemoryStore selection. Managed sessions always insert
-    /// an entry (including `None`), so they never fall back to the standalone
-    /// host directory configured by legacy direct-runtime callers.
-    pub(crate) thread_memory: std::sync::Mutex<HashMap<String, Option<Arc<MemoryExtraction>>>>,
+    /// Host-level memory auxiliary-agent capability. It owns no store: every
+    /// recall/extraction operation requires a Session-scoped governed binding.
+    pub(crate) memory: Arc<crate::memory::MemoryRuntime>,
+    /// Per-thread governed MemoryStore selection. `None` means the Session has no
+    /// memory binding; there is deliberately no Host-global fallback.
+    pub(crate) thread_memory:
+        std::sync::Mutex<HashMap<String, Option<Arc<crate::memory::BoundMemory>>>>,
     /// The relevance selector for recall (a `memory-selector` sub-agent), wired
     /// into the memory recall plugin when memory is enabled.
     memory_selector: Option<Arc<dyn awaken_ext_memory::RecallSelector>>,

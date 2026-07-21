@@ -490,14 +490,11 @@ impl ManagedHost {
                     ));
                 }
                 memory_seen = true;
-                if let Some(engine) = &self.host.memory {
-                    let writable =
-                        input.access == awaken_resource_contract::ResourceAccess::ReadWrite;
-                    let handle = self
-                        .host
-                        .platform_memory_handle(memory_store_id.to_string(), writable);
-                    bound_memory = Some(Arc::new(engine.for_binding(handle, config, writable)));
-                }
+                let writable = input.access == awaken_resource_contract::ResourceAccess::ReadWrite;
+                let handle = self
+                    .host
+                    .platform_memory_handle(memory_store_id.to_string(), writable);
+                bound_memory = Some(Arc::new(self.host.memory.bind(handle, config, writable)));
             }
         }
 
@@ -516,8 +513,8 @@ impl ManagedHost {
         // The complete manifest replaces the prior projection. Register an empty
         // value too, so deleting the final input cannot leave a stale mount behind.
         self.host.register_thread_resources(thread, all);
-        // Managed sessions always record an explicit selection (including none),
-        // preventing fallback to a host-global standalone memory directory.
+        // Every Session records an explicit selection (including none). There is
+        // no Host-global or directory fallback.
         self.host.register_thread_memory(thread, bound_memory);
         Ok(repository_mcp)
     }

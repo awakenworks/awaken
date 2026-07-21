@@ -215,6 +215,8 @@ reclamation. It stores neither a secret nor a process-local handle.
 | `SessionResourceCoordinator` | Target evolution of Host preparation | Session application/host | activation state, ordered provision/release, recovery handoff | Agent config loading, IAM policy language |
 | `FileStore` | Existing | File data plane | immutable content-addressed bytes | Workspace authorization; mutable overwrite |
 | `MemoryRepository` | Existing behavior behind `MemoryFs`; naming evolution remains | Memory data plane | scoped entries, CAS, atomic history, redaction, retention hooks | Agent/Session binding and IAM policy |
+| `MemoryRuntime` | Existing | Runtime Host | store-less recall selector/extractor capability and background-run drain | resource identity, default store, IAM policy |
+| `BoundMemory` | Existing | Session Runtime | one resolved store handle + pinned policy + maximum access shared by recall/extraction | workspace lookup, current-config resolution, authorization |
 | `RepositoryRealizer` | Target evolution of repo staging | Environment/host adapter | clone current remote config, construct working tree, mediate Git credentials | remote repository ownership or commit pinning |
 | `CredentialResolver`/Vault | Existing | Credential product domain | turn a credential binding into a short-lived lease and rotate/revoke it | Agent prompt, persisted Session secret material |
 | `SandboxProvider` | Existing | Environment provisioning | realize validated mounts/working trees and dispose them | product resource authoring and policy |
@@ -601,7 +603,10 @@ internal config version remains an awaken governance detail.
 ### Delete after migration
 
 - `MemoryBlobStore` and all blob backends;
-- single-file Memory materialization and `harvest_thread_memory`;
+- legacy single-file Memory materialization and Host-global extraction directory;
+- `with_memory(mem_dir)` and `memory_scope_root` (removed); the path-addressed
+  copy fallback may retain `harvest_thread_memory` only as a CAS realizer over the
+  same aggregate repository;
 - `StagedResources.memory_mounts` and last-writer-wins Memory write-back;
 - API-local independent `VersionRepository` (removed; legacy rows are imported
   once into the aggregate repository without continued dual reads/writes);

@@ -53,10 +53,14 @@ async function turn(sessionId, text) {
 // Poll fresh sessions until the recall plugin injects the marker memory (the
 // extractor is fire-and-forget). The recall prompt carries no `fact-` token, so it
 // never re-extracts the marker — a positive can only come from the persisted store.
-async function recallsMarker(tries = 24) {
+async function recallsMarker(storeId, tries = 24) {
   for (let i = 0; i < tries; i += 1) {
     await sleep(500);
-    const b = await client.beta.sessions.create({ agent: 'assistant', betas: BETAS });
+    const b = await client.beta.sessions.create({
+      agent: 'assistant',
+      betas: BETAS,
+      resources: [{ type: 'memory_store', memory_store_id: storeId, mount_path: '/memory' }],
+    });
     if ((await turn(b.id, 'please recall what you know')).includes(MARKER)) return true;
   }
   return false;
@@ -73,9 +77,14 @@ async function main() {
     servers.push(a.server);
     await waitForPort(PORT);
 
-    const s = await client.beta.sessions.create({ agent: 'assistant', betas: BETAS });
+    const store = await client.post('/v1/memory_stores', { body: { name: 'durable-extraction' } });
+    const s = await client.beta.sessions.create({
+      agent: 'assistant',
+      betas: BETAS,
+      resources: [{ type: 'memory_store', memory_store_id: store.id, mount_path: '/memory' }],
+    });
     assert.ok((await turn(s.id, `remember ${MARKER}`)).includes(`echo:remember ${MARKER}`), 'turn A ran');
-    assert.ok(await recallsMarker(), 'a later session recalled the marker memory in-process (sanity)');
+    assert.ok(await recallsMarker(store.id), 'a later session recalled the marker memory in-process (sanity)');
     pass('extraction memory saved and recalled within server A');
 
     // ---- restart: kill A, start B over the SAME storage dir ----
@@ -87,7 +96,7 @@ async function main() {
     client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
 
     assert.ok(
-      await recallsMarker(),
+      await recallsMarker(store.id),
       'a new session AFTER restart still recalls the extracted memory (durable under AWAKEN_STORAGE_DIR)',
     );
     pass('extraction memory survived a real process restart');

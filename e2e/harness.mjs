@@ -151,7 +151,7 @@ export function startUpstream(behavior) {
 // bare real-model router. A scenario with host config (custom tools, delegate
 // roster, skills, state machine, compaction, memory, config plane) keeps its
 // `AWAKEN_MODEL_MODE=<mode>` router and sets `AWAKEN_MODEL_SOURCE=http` so only its
-// MODEL swaps to the real wire. `opts.extraEnv` layers on (e.g. `AWAKEN_MEMORY_DIR`).
+// MODEL swaps to the real wire. `opts.extraEnv` layers on scenario-specific settings.
 export function realServerEnv(behavior, upstream, { mode = 'real', extraEnv = {} } = {}) {
   return {
     AWAKEN_MODEL_MODE: mode,

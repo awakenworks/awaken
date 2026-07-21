@@ -20,6 +20,21 @@ struct TestInput {
 
 use awaken_resource_contract::ResourceAccess;
 
+fn bind_test_memory(host: &SharedHost, thread: &str, store_id: &str, writable: bool) {
+    let config = awaken_resource_contract::MemoryStoreConfigVersion {
+        memory_store_id: store_id.to_string(),
+        version: awaken_resource_contract::ConfigVersion::INITIAL,
+        recall_policy: Default::default(),
+        extraction_policy: Default::default(),
+        retention_policy: Default::default(),
+    };
+    let handle = host.platform_memory_handle(store_id.to_string(), writable);
+    host.register_thread_memory(
+        thread,
+        Some(Arc::new(host.memory.bind(handle, &config, writable))),
+    );
+}
+
 struct TestResourceConfigSource;
 
 impl awaken_resource_contract::ResourceConfigSource for TestResourceConfigSource {
@@ -557,9 +572,10 @@ impl LlmExecutor for MemLoopModel {
 
 #[tokio::test]
 async fn memory_written_in_one_thread_is_recalled_and_used_in_another() {
-    let stamp = BASE_SEQ.fetch_add(1, Ordering::SeqCst);
-    let mem_dir = std::env::temp_dir().join(format!("awaken-loop-mem-{stamp}"));
-    let host = SharedHost::new(Arc::new(MemLoopModel), "stub").with_memory(&mem_dir);
+    let host = SharedHost::new(Arc::new(MemLoopModel), "stub");
+    let store = test_memory_store_id();
+    bind_test_memory(&host, "thread-1", &store, true);
+    bind_test_memory(&host, "thread-2", &store, true);
     let user = |t: &str| vec![Message::text(MessageId(t.into()), Role::User, t)];
 
     // Thread 1: the user states a preference; extraction saves it.
@@ -568,8 +584,13 @@ async fn memory_written_in_one_thread_is_recalled_and_used_in_another() {
         .expect("thread 1 turn");
     assert!(host.drain_memory(std::time::Duration::from_secs(10)).await);
     assert!(
-        mem_dir.join("beverage-preference.md").exists(),
-        "the preference should be saved"
+        host.memory_stores
+            .fs()
+            .get_by_path(&store, "/beverage-preference.md")
+            .await
+            .unwrap()
+            .is_some(),
+        "the preference should be saved in the bound store"
     );
 
     // Thread 2 (a fresh conversation): the saved memory is recalled into context
@@ -591,18 +612,19 @@ async fn memory_written_in_one_thread_is_recalled_and_used_in_another() {
     );
 }
 
-/// Managed Memory never falls back to the standalone host directory: the frozen
-/// Session input chooses one store, and that same handle serves extraction + recall.
+/// Managed Memory is selected only by the frozen Session input; that same handle
+/// serves extraction + recall and an unbound Session sees no store.
 #[tokio::test]
 async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memory() {
     use awaken_protocol_managed::{ResolvedInputSource, SessionInit, SessionRuntime};
 
-    let stamp = BASE_SEQ.fetch_add(1, Ordering::SeqCst);
-    let global = std::env::temp_dir().join(format!("awaken-managed-global-{stamp}"));
-    std::fs::create_dir_all(&global).unwrap();
-    std::fs::write(global.join("must-not-leak.md"), "the user prefers tea").unwrap();
-
-    let host = Arc::new(SharedHost::new(Arc::new(MemLoopModel), "stub").with_memory(&global));
+    let host = Arc::new(SharedHost::new(Arc::new(MemLoopModel), "stub"));
+    let unbound_store = test_memory_store_id();
+    host.memory_stores
+        .fs()
+        .create(&unbound_store, "/must-not-leak.md", "the user prefers tea")
+        .await
+        .unwrap();
     install_test_memory_mounter(&host);
     let store_a = test_memory_store_id();
     let store_b = test_memory_store_id();
@@ -725,7 +747,7 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
     assert_eq!(
         reply(&unbound),
         "ok",
-        "Managed explicitly records no binding and never sees host-global memory"
+        "a Session with no binding cannot see another governed store"
     );
 }
 
@@ -733,9 +755,7 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
 async fn pinned_memory_policy_can_disable_recall_and_extraction() {
     use awaken_protocol_managed::{ResolvedInputSource, SessionRuntime};
 
-    let stamp = BASE_SEQ.fetch_add(1, Ordering::SeqCst);
-    let global = std::env::temp_dir().join(format!("awaken-managed-policy-{stamp}"));
-    let host = Arc::new(SharedHost::new(Arc::new(MemLoopModel), "stub").with_memory(global));
+    let host = Arc::new(SharedHost::new(Arc::new(MemLoopModel), "stub"));
     install_test_memory_mounter(&host);
     let store = test_memory_store_id();
     host.memory_stores
@@ -851,9 +871,9 @@ impl LlmExecutor for ResumeMemModel {
 
 #[tokio::test]
 async fn resume_ended_turn_triggers_memory_extraction() {
-    let stamp = BASE_SEQ.fetch_add(1, Ordering::SeqCst);
-    let mem_dir = std::env::temp_dir().join(format!("awaken-resume-mem-{stamp}"));
-    let host = SharedHost::new(Arc::new(ResumeMemModel), "stub").with_memory(&mem_dir);
+    let host = SharedHost::new(Arc::new(ResumeMemModel), "stub");
+    let store = test_memory_store_id();
+    bind_test_memory(&host, "t-res", &store, true);
 
     // Turn 1 awaits on the Ask-gated `write`.
     let r1 = host
@@ -888,7 +908,15 @@ async fn resume_ended_turn_triggers_memory_extraction() {
     );
 
     assert!(host.drain_memory(std::time::Duration::from_secs(10)).await);
-    let saved = std::fs::read_to_string(mem_dir.join("resumed.md")).expect("memory file");
+    let saved = host
+        .memory_stores
+        .fs()
+        .get_by_path(&store, "/resumed.md")
+        .await
+        .unwrap()
+        .unwrap()
+        .content
+        .unwrap();
     assert_eq!(saved, "after-resume");
 }
 
@@ -946,9 +974,9 @@ impl LlmExecutor for CursorModel {
 
 #[tokio::test]
 async fn extraction_cursor_only_processes_new_messages() {
-    let stamp = BASE_SEQ.fetch_add(1, Ordering::SeqCst);
-    let mem_dir = std::env::temp_dir().join(format!("awaken-cursor-mem-{stamp}"));
-    let host = SharedHost::new(Arc::new(CursorModel), "stub").with_memory(&mem_dir);
+    let host = SharedHost::new(Arc::new(CursorModel), "stub");
+    let store = test_memory_store_id();
+    bind_test_memory(&host, "t-cur", &store, true);
     let user = |t: &str| vec![Message::text(MessageId(t.into()), Role::User, t)];
 
     host.run(None, "t-cur", user("alpha"))
@@ -959,7 +987,15 @@ async fn extraction_cursor_only_processes_new_messages() {
     assert!(host.drain_memory(std::time::Duration::from_secs(10)).await);
 
     // The second extraction saw only "beta" — turn 1's "alpha" was past the cursor.
-    let seen = std::fs::read_to_string(mem_dir.join("seen.md")).expect("seen file");
+    let seen = host
+        .memory_stores
+        .fs()
+        .get_by_path(&store, "/seen.md")
+        .await
+        .unwrap()
+        .unwrap()
+        .content
+        .unwrap();
     assert_eq!(
         seen, "beta",
         "cursor should exclude already-extracted messages"
@@ -968,9 +1004,9 @@ async fn extraction_cursor_only_processes_new_messages() {
 
 #[tokio::test]
 async fn turn_end_fires_background_memory_extraction() {
-    let stamp = BASE_SEQ.fetch_add(1, Ordering::SeqCst);
-    let mem_dir = std::env::temp_dir().join(format!("awaken-host-mem-{stamp}"));
-    let host = SharedHost::new(Arc::new(MemoryHostModel), "stub").with_memory(&mem_dir);
+    let host = SharedHost::new(Arc::new(MemoryHostModel), "stub");
+    let store = test_memory_store_id();
+    bind_test_memory(&host, "t-mem", &store, true);
 
     let input = vec![Message::text(
         MessageId("u1".into()),
@@ -986,8 +1022,15 @@ async fn turn_end_fires_background_memory_extraction() {
     let drained = host.drain_memory(std::time::Duration::from_secs(10)).await;
     assert!(drained, "memory extraction should drain");
 
-    let saved =
-        std::fs::read_to_string(mem_dir.join("user-prefs.md")).expect("memory file written");
+    let saved = host
+        .memory_stores
+        .fs()
+        .get_by_path(&store, "/user-prefs.md")
+        .await
+        .unwrap()
+        .unwrap()
+        .content
+        .unwrap();
     assert_eq!(saved, "user likes rust");
 }
 

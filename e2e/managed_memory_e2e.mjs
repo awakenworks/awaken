@@ -30,10 +30,16 @@ async function turn(client, sessionId, text) {
 async function main() {
   await withScenarioServer('memory', 'memory', 38197, async (baseUrl) => {
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
+    const store = await client.post('/v1/memory_stores', { body: { name: 'cross-session-memory' } });
+    const session = () => client.beta.sessions.create({
+      agent: 'assistant',
+      betas: BETAS,
+      resources: [{ type: 'memory_store', memory_store_id: store.id, mount_path: '/memory' }],
+    });
 
     // Session A: the first turn has nothing to recall; its natural end fires
     // the background extractor, which saves the fixed memory.
-    const a = await client.beta.sessions.create({ agent: 'assistant', betas: BETAS });
+    const a = await session();
     const first = await turn(client, a.id, 'remember the sky');
     assert.ok(first.includes('echo:remember the sky'), `probe echoes the turn: ${first}`);
     pass('session A turn completed (extractor fired in the background)');
@@ -44,7 +50,7 @@ async function main() {
     let recalled = '';
     for (let i = 0; i < 20; i += 1) {
       await new Promise((r) => setTimeout(r, 500));
-      const b = await client.beta.sessions.create({ agent: 'assistant', betas: BETAS });
+      const b = await session();
       recalled = await turn(client, b.id, 'what color is the sky?');
       if (recalled.includes('sky is green')) break;
     }
@@ -58,13 +64,13 @@ async function main() {
     // threshold (default 12): each session saves a `fact-<n>` memory, then a
     // later recall runs the relevance selector over the grown store.
     for (let n = 0; n < 14; n += 1) {
-      const s = await client.beta.sessions.create({ agent: 'assistant', betas: BETAS });
+      const s = await session();
       await turn(client, s.id, `remember fact-${n}`);
     }
     let selected = '';
     for (let i = 0; i < 20; i += 1) {
       await new Promise((r) => setTimeout(r, 500));
-      const b = await client.beta.sessions.create({ agent: 'assistant', betas: BETAS });
+      const b = await session();
       selected = await turn(client, b.id, 'what facts do you recall about fact-13?');
       if (selected.includes('fact-')) break;
     }

@@ -5,11 +5,8 @@
 //! ownership and authorization deliberately remain outside this storage adapter in
 //! the resource catalog and authorization edge respectively.
 //!
-//! [`memory_scope_root`] (the extraction-memory directory) stays a filesystem helper
-//! here — a separate, directory-shaped store the runtime's memory extension writes to
-//! directly, out of scope for the id-keyed blob port.
-
-use std::path::{Path, PathBuf};
+//! Recall, extraction, API history, and mounts all use this same store-scoped
+//! aggregate; there is no Host-global extraction directory.
 
 /// Path-addressed, CAS memory model (ADR-0053): the `MemoryFs` port a write-through
 /// FUSE mount projects.
@@ -53,13 +50,4 @@ pub fn sanitize_stem(name: &str) -> String {
     } else {
         trimmed
     }
-}
-
-/// The durable root an out-of-band extraction memory store writes its `<slug>.md`
-/// files under, given the process's durable `storage_dir`. Keeping this here (not a
-/// per-process temp dir) is what makes extraction memory survive a restart: the same
-/// `storage_dir` on a later run yields the same memory directory. (Directory-shaped
-/// store; not part of the id-keyed blob port.)
-pub fn memory_scope_root(storage_dir: impl AsRef<Path>) -> PathBuf {
-    storage_dir.as_ref().join("memory")
 }
