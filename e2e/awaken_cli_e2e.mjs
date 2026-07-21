@@ -178,6 +178,31 @@ async function main() {
     const credentialId = r.json.id;
     console.log('ok: authored provider/endpoint/offering + credential in the console DB');
 
+    // The managed projection accepts both SDK-shaped tool objects and string ids,
+    // filters non-string metadata, and rejects malformed typed policy extensions.
+    const projectionAgent = 'managed-projection-edge';
+    r = await req(base, 'PUT', `/v1/config/agents/${projectionAgent}`, {
+      name: projectionAgent,
+      model: { id: MODEL },
+      tools: [{ id: 'glob' }, { name: 'bash' }, 42],
+      metadata: { owner: 'platform', ignored_number: 7 },
+    });
+    assert.equal(r.status, 200, `managed projection draft: ${JSON.stringify(r.json)}`);
+    r = await req(base, 'GET', `/v1/config/agents/${projectionAgent}`, undefined);
+    assert.equal(r.status, 200, `managed projection read: ${JSON.stringify(r.json)}`);
+    assert.deepEqual(r.json.tools, ['glob', 'bash']);
+    assert.deepEqual(r.json.metadata, { owner: 'platform' });
+
+    for (const malformed of [{ context_policy: 123 }, { tool_overrides: 123 }]) {
+      r = await req(base, 'PUT', `/v1/config/agents/${projectionAgent}`, {
+        name: projectionAgent,
+        model: { id: MODEL },
+        ...malformed,
+      });
+      assert.equal(r.status, 400, `malformed managed extension fails closed: ${JSON.stringify(r.json)}`);
+    }
+    console.log('ok: managed agent object/tool/metadata projection is lossless and typed extensions fail closed');
+
     // ---- publish an agent bound to that model --------------------------------
     // The console agent object is the managed `/v1/agents` shape: the model is
     // `model: { id }`, which the config plane maps to a Pinned selection — so a
