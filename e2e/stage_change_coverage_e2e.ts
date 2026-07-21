@@ -55,6 +55,7 @@ const scenarios: Scenario[] = [
   { id: 'mcp_http', file: 'e2e/mcp_streamable_http_e2e.ts' },
   { id: 'resource_plane_postgres', file: 'e2e/resource_plane_postgres_e2e.ts', postgres: true },
   { id: 'remote_attempt', file: 'e2e/remote_attempt_lifecycle_e2e.ts' },
+  { id: 'remote_child_lifecycle', file: 'e2e/delegated_remote_lifecycle_e2e.ts' },
   { id: 'acp_permission', file: 'e2e/acp_permission_resume_e2e.mjs' },
 ];
 
@@ -152,10 +153,14 @@ const obligations: Obligation[] = [
   { id: 'D7-A06', stage: '7 remote A2A attempt', behavior: 'resume preserves the committed remote context and stable message identity', scenario: 'remote_attempt' },
   { id: 'D7-A07', stage: '7 remote A2A attempt', behavior: 'durable cancellation addresses the pinned remote task exactly once', scenario: 'remote_attempt' },
   { id: 'D7-A08', stage: '7 remote A2A attempt', behavior: 'cancelled remote attempt is no longer dispatchable', scenario: 'remote_attempt' },
+  { id: 'D7-A09', stage: '7 remote A2A attempt', behavior: 'remote child input-required resumes through the parent agent_run ticket', scenario: 'remote_child_lifecycle' },
+  { id: 'D7-A10', stage: '7 remote A2A attempt', behavior: 'remote child working state is polled to a terminal result', scenario: 'remote_child_lifecycle' },
+  { id: 'D7-A11', stage: '7 remote A2A attempt', behavior: 'parent interrupt cancels the pinned remote child task exactly once', scenario: 'remote_child_lifecycle' },
+  { id: 'D7-A12', stage: '7 remote A2A attempt', behavior: 'remote child 5xx fails closed without a fabricated result', scenario: 'remote_child_lifecycle' },
 
-  { id: 'D7-09', stage: '7 governed ACP attempt', behavior: 'ACP permission asks use the Session policy and commit a durable resume ticket', scenario: 'acp_permission' },
-  { id: 'D7-10', stage: '7 governed ACP attempt', behavior: 'Managed approval resumes only the exact pending ACP tool call', scenario: 'acp_permission' },
-  { id: 'D7-11', stage: '7 governed ACP attempt', behavior: 'Managed denial selects the ACP agent reject option and terminates cleanly', scenario: 'acp_permission' },
+  { id: 'D7-13', stage: '7 governed ACP attempt', behavior: 'ACP permission asks use the Session policy and commit a durable resume ticket', scenario: 'acp_permission' },
+  { id: 'D7-14', stage: '7 governed ACP attempt', behavior: 'Managed approval resumes only the exact pending ACP tool call', scenario: 'acp_permission' },
+  { id: 'D7-15', stage: '7 governed ACP attempt', behavior: 'Managed denial selects the ACP agent reject option and terminates cleanly', scenario: 'acp_permission' },
 
   { id: 'D8-01', stage: '8 neutral MCP server core', behavior: 'newest and older protocol versions negotiate', scenario: 'mcp_stdio' },
   { id: 'D8-02', stage: '8 neutral MCP server core', behavior: 'unsupported version returns invalid params', scenario: 'mcp_stdio' },
