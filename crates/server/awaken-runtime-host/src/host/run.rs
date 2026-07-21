@@ -177,49 +177,29 @@ impl SharedHost {
         // resume) so it spans an awaiting→resumed turn.
         st.compactions_before =
             awaken_ext_compact::compaction_count(&ctx.commit.committed_state(&ctx.thread_id));
-        // Prepare the activation (register snapshot + mint ids),
-        // then deliver it through the ingress seam. Direct ingress executes inline,
-        // so this is behavior-identical to the former `start_run` call.
-        let (mut run_id, mut activation) =
-            ctx.runtime
-                .prepare(&ctx.config, thread.to_string(), messages);
-        // Stamp the thread's per-turn model override (R2/R5) onto the activation, OFF
-        // the fingerprinted snapshot, so the resolve seam (here or on a claiming
-        // worker) picks the effective model without a session-level registry.
-        activation.model_ref_override = self.inference_routing.override_for(thread);
-        if ctx.durable {
-            // The durable path needs a run id that is unique across a restart: the
-            // runtime's in-process id counter resets to 1 on restart and would
-            // collide with an already-committed terminal run, which the dispatch
-            // worker's terminal-run guard then skips (never re-running a finished
-            // run) — silently dropping the turn. A wall-clock + sequence id cannot
-            // collide with a prior process's ids.
-            let uid = RunId(format!(
-                "run-{}-{}",
-                now_ms(),
-                BASE_SEQ.fetch_add(1, Ordering::SeqCst)
-            ));
-            activation.run_id = uid.clone();
-            run_id = uid;
-        }
-        // Durable ingress queues the run through the dispatch store and drives it
-        // via the worker (`submit_background`); a superseding submit first marks the
-        // thread's stale pending/awaiting dispatches superseded (ADR-0022); direct
-        // ingress runs it inline (`submit`). All drive to the same terminal/awaiting
-        // state and commit through the same boundary, so `finish_step` is identical.
-        // R3/R4: route to the ACP executor for acp:* threads, else the native
-        // ingress (direct / durable / superseding). See `crate::run_exec`.
-        *ctx.active_run.lock().expect("active run mutex poisoned") = Some(run_id.clone());
-        let state = self
-            .execute_activation(&ctx, activation, supersede, sink)
-            .await;
-        {
-            let mut active_run = ctx.active_run.lock().expect("active run mutex poisoned");
-            if active_run.as_ref() == Some(&run_id) {
-                *active_run = None;
-            }
-        }
-        let state = state?;
+        let executed = self
+            .execute_snapshot(
+                &ctx,
+                crate::run_exec::SnapshotRunRequest {
+                    run_id: None,
+                    thread_id: ctx.thread_id.clone(),
+                    snapshot: ctx.config.clone(),
+                    input: messages,
+                    continuity: crate::run_exec::Continuity::Continue,
+                    purpose: crate::run_exec::RunPurpose::UserTurn,
+                    model_ref_override: self.inference_routing.override_for(thread),
+                    supersede,
+                    sink,
+                },
+            )
+            .await?;
+        let run_id = executed.run_id;
+        let state = executed.state;
+        debug_assert_eq!(executed.before, before);
+        debug_assert_eq!(
+            executed.new_messages,
+            ctx.commit.committed_messages(&ctx.thread_id)[before..]
+        );
         let terminal_commit_id = run_id.0.clone();
         let result = self.finish_step(&ctx, &mut st, run_id, state, before, thread)?;
         drop(st);

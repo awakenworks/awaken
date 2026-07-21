@@ -8,8 +8,11 @@
 use std::sync::Arc;
 
 use crate::host::{HostError, SessionCtx, SharedHost};
-use awaken_agent_contract::agent::run::RunState;
+use awaken_agent_contract::agent::message::Message;
+use awaken_agent_contract::agent::run::{Id as RunId, RunState};
+use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
+use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::{
     Error as ExecutionError, Result as ExecutionResult, RunAttemptExecutor, RunExecutor,
@@ -17,6 +20,44 @@ use awaken_runtime_contract::execution::{
 use awaken_runtime_contract::resolved::Backend;
 use awaken_runtime_contract::resume::ResumeCommand;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
+use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum RunPurpose {
+    UserTurn,
+    OutcomeWorker,
+    OutcomeGrader,
+    Memory,
+    Compact,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum Continuity {
+    Continue,
+    Fresh,
+}
+
+pub(crate) struct SnapshotRunRequest {
+    pub(crate) run_id: Option<RunId>,
+    pub(crate) thread_id: ThreadId,
+    pub(crate) snapshot: ExecutableAgentSnapshot,
+    pub(crate) input: Vec<Message>,
+    pub(crate) continuity: Continuity,
+    pub(crate) purpose: RunPurpose,
+    pub(crate) model_ref_override: Option<String>,
+    pub(crate) supersede: bool,
+    pub(crate) sink: Option<Arc<dyn StreamSink>>,
+}
+
+#[derive(Debug)]
+pub(crate) struct SnapshotRunResult {
+    pub(crate) run_id: RunId,
+    pub(crate) state: RunState,
+    pub(crate) new_messages: Vec<Message>,
+    pub(crate) before: usize,
+}
 
 /// The one executor router owned by a Session. Backend identity comes only from
 /// the immutable activation snapshot, so foreground, durable, recovery, and a
@@ -101,6 +142,99 @@ impl RunAttemptExecutor for SessionAttemptExecutor {
 }
 
 impl SharedHost {
+    pub(crate) async fn execute_snapshot(
+        &self,
+        ctx: &Arc<SessionCtx>,
+        request: SnapshotRunRequest,
+    ) -> Result<SnapshotRunResult, HostError> {
+        if request.thread_id != ctx.thread_id {
+            return Err(HostError::bad_request(
+                "snapshot Run thread does not match its Session context",
+            ));
+        }
+        self.enforce_purpose_policy(request.purpose, &request.snapshot)?;
+        let _ = self.snapshot_capabilities(&request.snapshot)?;
+
+        let before = ctx.commit.committed_messages(&ctx.thread_id).len();
+        let (generated_run_id, mut activation) = ctx.runtime.prepare(
+            &request.snapshot,
+            request.thread_id.0.clone(),
+            request.input,
+        );
+        let run_id = request.run_id.unwrap_or_else(|| {
+            if ctx.durable {
+                RunId(format!(
+                    "run-{}-{}",
+                    crate::host::now_ms(),
+                    crate::host::BASE_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                ))
+            } else {
+                generated_run_id
+            }
+        });
+        activation.run_id = run_id.clone();
+        activation.model_ref_override = request.model_ref_override;
+        match request.continuity {
+            Continuity::Continue | Continuity::Fresh => {}
+        }
+
+        *ctx.active_run.lock().expect("active run mutex poisoned") = Some(run_id.clone());
+        let state = self
+            .execute_activation(ctx, activation, request.supersede, request.sink)
+            .await;
+        {
+            let mut active_run = ctx.active_run.lock().expect("active run mutex poisoned");
+            if active_run.as_ref() == Some(&run_id) {
+                *active_run = None;
+            }
+        }
+        let state = state?;
+        let all = ctx.commit.committed_messages(&ctx.thread_id);
+        Ok(SnapshotRunResult {
+            run_id,
+            state,
+            new_messages: all[before.min(all.len())..].to_vec(),
+            before,
+        })
+    }
+
+    pub(crate) fn snapshot_capabilities(
+        &self,
+        snapshot: &ExecutableAgentSnapshot,
+    ) -> Result<awaken_runtime_contract::execution::ExecutorCapabilities, HostError> {
+        match Backend::from_ref(&snapshot.resolved_spec.model_binding.backend_ref) {
+            Backend::Native => Ok(awaken_runtime_contract::execution::ExecutorCapabilities::NATIVE),
+            Backend::Acp { .. } => self
+                .acp
+                .as_ref()
+                .map(
+                    |_| awaken_runtime_contract::execution::ExecutorCapabilities {
+                        cancellation: awaken_runtime_contract::execution::Cancellation::RemoteAbort,
+                        wait: awaken_runtime_contract::execution::Wait::Auth,
+                    },
+                )
+                .ok_or_else(|| HostError::bad_request("ACP backend is not configured")),
+            Backend::Remote { .. } => Err(HostError::bad_request(
+                "root A2A snapshot execution is not configured on this host",
+            )),
+        }
+    }
+
+    fn enforce_purpose_policy(
+        &self,
+        purpose: RunPurpose,
+        snapshot: &ExecutableAgentSnapshot,
+    ) -> Result<(), HostError> {
+        if purpose == RunPurpose::OutcomeGrader
+            && !snapshot.resolved_spec.tool_descriptors.is_empty()
+        {
+            return Err(HostError::bad_request(
+                "Outcome Grader snapshots must not declare tools",
+            ));
+        }
+        Ok(())
+    }
+
     /// Execute `activation`: the ACP executor when the session chose
     /// an ACP runtime, else the native ingress (direct / durable / superseding).
     ///
