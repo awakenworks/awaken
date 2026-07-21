@@ -68,8 +68,17 @@ async function main() {
     const recoveryBody = await recovery.text();
     assert.equal(recovery.status, 200, recoveryBody);
     const recovered = JSON.parse(recoveryBody) as { recovered?: string[] };
-    assert.equal(recovered.recovered?.length, 1, JSON.stringify(recovered));
+    const recoveredByRequest = recovered.recovered ?? [];
+    assert.ok(
+      recoveredByRequest.length <= 1,
+      `one expired dispatch cannot produce multiple reconcile winners: ${recoveryBody}`,
+    );
 
+    // The process-level pool and the operator reconcile endpoint are deliberately
+    // allowed to race for the same expired lease. Either may win the epoch bump;
+    // an empty response therefore means the pool already claimed attempt B, not
+    // that recovery failed. The externally observable proof is the second provider
+    // attempt followed by a fenced settlement from attempt A.
     await waitUntil('replacement attempt B to call the provider', () => upstream.received >= 2);
     await run;
     await waitUntil(
