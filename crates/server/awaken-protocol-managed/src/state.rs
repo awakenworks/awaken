@@ -541,6 +541,7 @@ mod tests {
             mcp_servers: vec![
                 serde_json::json!({"name": "calc", "type": "url", "url": "https://x"}),
             ],
+            effective_inputs: Default::default(),
             status: "idle".into(),
             archived_at: None,
         }

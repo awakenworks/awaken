@@ -8,9 +8,13 @@ license.workspace = true
 # Agent-domain vocabulary in the port signatures (e.g. `RedactedString` on the MCP
 # probe). A contract/ leaf itself — dependencies point inward.
 awaken-agent-contract.workspace = true
+# Secret-free resources-plane identity/configuration port used once while a
+# Session freezes its effective inputs. It contains no IAM policy or principal.
+awaken-resource-contract.workspace = true
 # The opaque tenancy `ScopeId` bound on the scoped session-repository decorator.
 awaken-tenancy.workspace = true
 async-trait.workspace = true
+serde.workspace = true
 # `serde_json::Value` types the free-form tool input/schema on the neutral vocab
 # (Pending.input, CustomTool.input_schema); thiserror derives the port error enums.
 serde_json.workspace = true

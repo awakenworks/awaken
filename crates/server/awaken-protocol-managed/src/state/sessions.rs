@@ -158,7 +158,7 @@ impl ManagedState {
             .collect::<Result<Vec<_>, _>>()?;
         // This is the one composition point. Runtime receives this exact effective
         // list and never re-opens the Agent binding repository.
-        let effective_resources = awaken_session_contract::SessionInputResolver::resolve(
+        let effective_resources = awaken_session_contract::SessionInputResolver::resolve_legacy(
             config_view
                 .as_ref()
                 .map(|view| view.resources.as_slice())
@@ -293,6 +293,7 @@ impl ManagedState {
                     metadata: session.metadata.clone(),
                     environment_id: session.environment_id.clone(),
                     mcp_servers: session.agent.mcp_servers.clone(),
+                    effective_inputs: Default::default(),
                     status: "idle".to_string(),
                     archived_at: None,
                 },

@@ -273,6 +273,7 @@ mod tests {
             environment_id: "env".into(),
             // The wire-echo shape the agent object reports — never a credential.
             mcp_servers: vec![json!({"name": "gh", "type": "url", "url": "https://mcp.example"})],
+            effective_inputs: Default::default(),
             status: "idle".into(),
             archived_at: None,
         }
@@ -347,6 +348,7 @@ mod scoped_tests {
             metadata: BTreeMap::new(),
             environment_id: "env".into(),
             mcp_servers: Vec::new(),
+            effective_inputs: Default::default(),
             status: "idle".into(),
             archived_at: None,
         }
