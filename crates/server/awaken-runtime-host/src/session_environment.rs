@@ -768,6 +768,52 @@ mod tests {
         adopted.dispose().await.unwrap();
     }
 
+    #[tokio::test]
+    async fn provider_rebasing_adoption_and_container_mount_jail_cover_every_tier() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+
+        let workdir = SessionEnvironmentProvider::workdir(first.path()).at_root(second.path());
+        assert!(matches!(workdir, SessionEnvironmentProvider::Workdir(_)));
+
+        let namespace = SessionEnvironmentProvider::namespace(first.path()).at_root(second.path());
+        assert!(matches!(
+            namespace,
+            SessionEnvironmentProvider::Namespace(_)
+        ));
+        let mut namespace_spec = spec();
+        namespace_spec.scope = "provider-namespace-adopt".into();
+        let created = namespace.create(&namespace_spec).await.unwrap();
+        let handle = created.handle();
+        drop(created);
+        let adopted = namespace.adopt(&handle).await.unwrap();
+        assert_eq!(adopted.handle(), handle);
+        adopted.dispose().await.unwrap();
+
+        let provider = Arc::new(FakeContainerProvider::default());
+        let unsafe_mount = pc::MountRequirement {
+            mount_id: "unsafe".into(),
+            source: pc::MountSource::Inline {
+                contents: "value".into(),
+            },
+            mount_path: "../escape".into(),
+            access: pc::MountAccess::ReadOnly,
+            lifetime: pc::MountLifetime::PerRun,
+            required: true,
+        };
+        let container = SessionEnvironmentProvider::container(
+            provider,
+            vec![unsafe_mount],
+            Arc::new(FakeHandExecutorFactory),
+        )
+        .at_root(second.path());
+        assert!(matches!(
+            container,
+            SessionEnvironmentProvider::Container { .. }
+        ));
+        assert!(container.create(&spec()).await.is_err());
+    }
+
     #[cfg(feature = "container-docker")]
     #[tokio::test]
     async fn docker_environment_transfers_repo_and_harvests_files_without_exposing_token() {
