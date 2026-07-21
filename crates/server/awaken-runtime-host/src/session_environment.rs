@@ -102,6 +102,14 @@ pub(crate) enum SessionEnvironment {
 }
 
 impl SessionEnvironment {
+    fn sandbox(&self) -> &dyn pc::Sandbox {
+        match self {
+            Self::Workdir(sandbox) => sandbox.as_ref(),
+            Self::Namespace(sandbox) => sandbox.as_ref(),
+            Self::Container { sandbox, .. } => sandbox.as_ref(),
+        }
+    }
+
     #[must_use]
     pub(crate) fn workdir(sandbox: LocalSandbox) -> Self {
         Self::Workdir(Arc::new(sandbox))
@@ -374,92 +382,52 @@ impl AgentSandbox for SessionEnvironment {
 #[async_trait]
 impl pc::Sandbox for SessionEnvironment {
     fn id(&self) -> &str {
-        match self {
-            Self::Workdir(sandbox) => pc::Sandbox::id(sandbox.as_ref()),
-            Self::Namespace(sandbox) => pc::Sandbox::id(sandbox.as_ref()),
-            Self::Container { sandbox, .. } => sandbox.id(),
-        }
+        self.sandbox().id()
     }
 
     fn handle(&self) -> pc::SandboxHandle {
-        match self {
-            Self::Workdir(sandbox) => pc::Sandbox::handle(sandbox.as_ref()),
-            Self::Namespace(sandbox) => pc::Sandbox::handle(sandbox.as_ref()),
-            Self::Container { sandbox, .. } => sandbox.handle(),
-        }
+        self.sandbox().handle()
     }
 
     async fn spawn(
         &self,
         command: pc::Command,
     ) -> Result<Box<dyn pc::ProcessHandle>, pc::SandboxError> {
-        match self {
-            Self::Workdir(sandbox) => pc::Sandbox::spawn(sandbox.as_ref(), command).await,
-            Self::Namespace(sandbox) => pc::Sandbox::spawn(sandbox.as_ref(), command).await,
-            Self::Container { sandbox, .. } => sandbox.spawn(command).await,
-        }
+        self.sandbox().spawn(command).await
     }
 
     async fn attach(
         &self,
         requirement: pc::MountRequirement,
     ) -> Result<pc::RealizedMount, pc::SandboxError> {
-        match self {
-            Self::Workdir(sandbox) => pc::Sandbox::attach(sandbox.as_ref(), requirement).await,
-            Self::Namespace(sandbox) => pc::Sandbox::attach(sandbox.as_ref(), requirement).await,
-            Self::Container { sandbox, .. } => sandbox.attach(requirement).await,
-        }
+        self.sandbox().attach(requirement).await
     }
 
     async fn artifacts(&self) -> Result<Vec<pc::Artifact>, pc::SandboxError> {
-        match self {
-            Self::Workdir(sandbox) => pc::Sandbox::artifacts(sandbox.as_ref()).await,
-            Self::Namespace(sandbox) => pc::Sandbox::artifacts(sandbox.as_ref()).await,
-            Self::Container { sandbox, .. } => sandbox.artifacts().await,
-        }
+        self.sandbox().artifacts().await
     }
 
     async fn read_artifact(&self, id: &str) -> Result<Vec<u8>, pc::SandboxError> {
-        match self {
-            Self::Workdir(sandbox) => pc::Sandbox::read_artifact(sandbox.as_ref(), id).await,
-            Self::Namespace(sandbox) => pc::Sandbox::read_artifact(sandbox.as_ref(), id).await,
-            Self::Container { sandbox, .. } => sandbox.read_artifact(id).await,
-        }
+        self.sandbox().read_artifact(id).await
     }
 
     fn realized(&self) -> &[pc::RealizedMount] {
-        match self {
-            Self::Workdir(sandbox) => pc::Sandbox::realized(sandbox.as_ref()),
-            Self::Namespace(sandbox) => pc::Sandbox::realized(sandbox.as_ref()),
-            Self::Container { sandbox, .. } => sandbox.realized(),
-        }
+        self.sandbox().realized()
     }
 
     async fn process(
         &self,
         process_id: &str,
     ) -> Result<Box<dyn pc::ProcessHandle>, pc::SandboxError> {
-        match self {
-            Self::Workdir(sandbox) => pc::Sandbox::process(sandbox.as_ref(), process_id).await,
-            Self::Namespace(sandbox) => pc::Sandbox::process(sandbox.as_ref(), process_id).await,
-            Self::Container { sandbox, .. } => sandbox.process(process_id).await,
-        }
+        self.sandbox().process(process_id).await
     }
 
     async fn status(&self) -> Result<pc::SandboxStatus, pc::SandboxError> {
-        match self {
-            Self::Workdir(sandbox) => pc::Sandbox::status(sandbox.as_ref()).await,
-            Self::Namespace(sandbox) => pc::Sandbox::status(sandbox.as_ref()).await,
-            Self::Container { sandbox, .. } => sandbox.status().await,
-        }
+        self.sandbox().status().await
     }
 
     async fn renew_lease(&self) -> Result<(), pc::SandboxError> {
-        match self {
-            Self::Workdir(sandbox) => pc::Sandbox::renew_lease(sandbox.as_ref()).await,
-            Self::Namespace(sandbox) => pc::Sandbox::renew_lease(sandbox.as_ref()).await,
-            Self::Container { sandbox, .. } => sandbox.renew_lease().await,
-        }
+        self.sandbox().renew_lease().await
     }
 
     async fn dispose(&self) -> Result<(), pc::SandboxError> {
