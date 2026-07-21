@@ -28,7 +28,7 @@ fn compile(
     config: &AgentConfig,
     tools: &[ToolDescriptor],
 ) -> Result<awaken_config_store::ExecutableAgentSnapshot, awaken_config_store::CompileError> {
-    compile_resolved(config, tools, &[], AgentSnapshotMetadata::default())
+    compile_resolved(config, tools, AgentSnapshotMetadata::default())
 }
 
 struct TextLlm;

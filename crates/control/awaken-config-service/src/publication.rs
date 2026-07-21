@@ -30,7 +30,6 @@ pub struct ValidationIssue {
 pub(crate) struct ResolvedAgentConfig {
     pub(crate) source: awaken_runtime_contract::AgentConfigRevisionRef,
     pub(crate) config: AgentConfig,
-    pub(crate) resource_prompts: Vec<String>,
     pub(crate) manifest: ResolutionManifest,
     pub(crate) inference_access: Option<InferenceAccess>,
 }

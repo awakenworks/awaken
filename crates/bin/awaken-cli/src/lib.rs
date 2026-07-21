@@ -898,22 +898,16 @@ async fn management_router_over(
     };
     let host = Arc::new(host_builder);
     let managed_state = Arc::new(
-        ManagedState::new(
-            ManagedHost::new(host.clone())
-                .with_mcp(credentials, secrets, mcp_store)
-                // Share the SAME binding store the config service uses, so a published
-                // agent's bound memory store is actually mounted at session-create.
-                .with_resources(resource_store.clone()),
-        )
-        .with_vaults(vault_state)
-        .with_environments(env_state)
-        // Share the SAME config plane `/v1/agents` reads, so a session inheriting a
-        // published agent's model sees the authoritative config-plane truth (M2).
-        .with_config_source(Arc::new(awaken_runtime_host::ConfigServiceAgentSource(
-            config_service.clone(),
-        )))
-        .with_session_repo(sessions)
-        .with_lifecycle_sink(webhook_sink),
+        ManagedState::new(ManagedHost::new(host.clone()).with_mcp(credentials, secrets, mcp_store))
+            .with_vaults(vault_state)
+            .with_environments(env_state)
+            // Share the SAME config plane `/v1/agents` reads, so a session inheriting a
+            // published agent's model sees the authoritative config-plane truth (M2).
+            .with_config_source(Arc::new(awaken_runtime_host::ConfigServiceAgentSource(
+                config_service.clone(),
+            )))
+            .with_session_repo(sessions)
+            .with_lifecycle_sink(webhook_sink),
     );
     deployment_state.bind_launcher(managed_state.clone());
     // Drive cron Deployments in production. The state mints due runs and launches

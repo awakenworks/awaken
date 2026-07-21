@@ -6,7 +6,23 @@ use super::*;
 // The neutral [`SessionResource`] now lives in `awaken-session-contract`; this module
 // keeps the Managed wire parse form + the DTO projection over it. Re-exported so
 // existing `crate::state::SessionResource` paths keep resolving.
-pub use awaken_session_contract::SessionResource;
+pub use awaken_session_contract::{ResourceAccess, SessionResource};
+
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum WireAccess {
+    ReadOnly,
+    ReadWrite,
+}
+
+impl From<WireAccess> for ResourceAccess {
+    fn from(value: WireAccess) -> Self {
+        match value {
+            WireAccess::ReadOnly => Self::ReadOnly,
+            WireAccess::ReadWrite => Self::ReadWrite,
+        }
+    }
+}
 
 /// The repo name for a default mount path: the URL's last path segment, minus a
 /// trailing `.git`. Falls back to `repo` when the URL has no usable segment.
@@ -45,6 +61,8 @@ enum WireResource {
         mount_path: Option<String>,
         #[serde(default)]
         instructions: Option<String>,
+        #[serde(default)]
+        access: Option<WireAccess>,
     },
     GithubRepository {
         url: String,
@@ -89,6 +107,7 @@ impl WireResource {
                 kind: "file".into(),
                 mount_path: mount_path.unwrap_or_else(|| format!("/mnt/session/uploads/{file_id}")),
                 id: file_id,
+                access: ResourceAccess::ReadOnly,
                 instructions,
                 auth_token: None,
                 git_ref: None,
@@ -97,10 +116,12 @@ impl WireResource {
                 memory_store_id,
                 mount_path,
                 instructions,
+                access,
             } => SessionResource {
                 kind: "memory_store".into(),
                 mount_path: mount_path.unwrap_or_else(|| "/mnt/memory/store".into()),
                 id: memory_store_id,
+                access: access.unwrap_or(WireAccess::ReadWrite).into(),
                 instructions,
                 auth_token: None,
                 git_ref: None,
@@ -116,6 +137,7 @@ impl WireResource {
                 mount_path: mount_path.unwrap_or_else(|| format!("/workspace/{}", repo_name(&url))),
                 kind: "github_repository".into(),
                 id: url,
+                access: ResourceAccess::ReadWrite,
                 instructions,
                 auth_token: authorization_token,
                 git_ref: match checkout {
@@ -154,6 +176,13 @@ pub(crate) fn resource_dto(session_id: &str, n: usize, res: &SessionResource) ->
         }
         "memory_store" => {
             obj.insert("memory_store_id".into(), json!(res.id));
+            obj.insert(
+                "access".into(),
+                json!(match res.access {
+                    ResourceAccess::ReadOnly => "read_only",
+                    ResourceAccess::ReadWrite => "read_write",
+                }),
+            );
             if let Some(i) = &res.instructions {
                 obj.insert("instructions".into(), json!(i));
             }

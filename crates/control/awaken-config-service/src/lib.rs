@@ -10,6 +10,7 @@
 //! The data-plane host re-exports these types for the single-machine composition
 //! root; `awaken-control` depends on this crate directly.
 
+mod agent_projection;
 mod binding_resolver;
 mod capabilities;
 mod compaction;
@@ -17,12 +18,13 @@ mod config_plane;
 mod publication;
 mod tool_catalog;
 
+pub use agent_projection::ConfigServiceAgentSource;
 pub use binding_resolver::{
     AssistantBindingReconciler, ConfigServiceReconciler, ModelResolver, ResolvedModel,
     needs_resolution,
 };
 pub use capabilities::{capabilities_router, runtime_catalog, sandbox_capability};
-pub use config_plane::{ConfigPlane, ConfigService, ConfigServiceAgentSource, config_router};
+pub use config_plane::{ConfigPlane, ConfigService, config_router};
 pub use publication::{PublishError, ValidationIssue};
 pub use tool_catalog::{
     RESERVED_ADMIN_SCOPE, ScopedToolCatalog, StaticToolCatalog, ToolCatalogSource,

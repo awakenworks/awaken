@@ -588,6 +588,7 @@ async fn attach_resource_stages_the_mount_and_evicts_the_cached_sandbox() {
         kind: "file".into(),
         id: file_id,
         mount_path: "/data.txt".into(),
+        access: awaken_protocol_managed::ResourceAccess::ReadOnly,
         instructions: None,
         auth_token: None,
         git_ref: None,
@@ -737,21 +738,15 @@ async fn prepare_session_overlays_the_environment_sandbox_onto_the_spec() {
     assert!(!host.sandbox_spec("t-bare").limits.is_set());
 }
 
-/// A published agent's bound memory store (ADR-0038) is mounted in EVERY session it
-/// runs — not only sessions that pass it as a wire `resource`. With the binding store
-/// shared (`with_resources`), a BARE `prepare_session` for the agent stages the store's
-/// mount, carrying its bytes, at the binding's path. This is the seam that makes the
-/// build→bind→use loop real: the config plane injects the prompt, this injects the mount.
+/// Runtime stages the effective resources supplied by the Session control plane. It
+/// does not need the Agent binding repository, which keeps remote workers stateless.
 #[tokio::test]
-async fn prepare_session_mounts_the_agents_bound_memory_store() {
-    use awaken_config_resolver::{
-        AgentResourceConfig, InMemoryResourceStore, ResourceAccess, ResourceBinding, ResourceKind,
-        ResourceStore,
-    };
-    use awaken_protocol_managed::{SessionInit, SessionRuntime};
+async fn prepare_session_mounts_an_effective_memory_resource() {
+    use awaken_protocol_managed::{ResourceAccess, SessionInit, SessionResource, SessionRuntime};
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
 
-    // Seed a memory store with a known secret, and bind it to agent `a` at /mnt/memory.
+    // Seed a memory store with known bytes. The control plane has already resolved
+    // this resource into the SessionInit passed across the runtime boundary.
     let store_id = host.create_memory_store().await;
     host.memory_stores
         .blob()
@@ -762,35 +757,31 @@ async fn prepare_session_mounts_the_agents_bound_memory_store() {
         )
         .await
         .expect("seed memory bytes");
-    let bindings: Arc<dyn ResourceStore> = Arc::new(InMemoryResourceStore::new());
-    bindings.put_agent_resource_in(
-        host.local_workspace(),
-        AgentResourceConfig {
-            agent_id: "a".into(),
-            resources: vec![ResourceBinding {
-                kind: ResourceKind::MemoryStore,
-                resource_id: store_id.clone(),
-                mount_path: "/mnt/memory".into(),
-                access: ResourceAccess::ReadWrite,
-                instructions: None,
-            }],
-            version: 1,
-        },
-    );
-    let managed = crate::ManagedHost::new(host.clone()).with_resources(bindings);
+    let managed = crate::ManagedHost::new(host.clone());
 
     let bare = |agent: &str| SessionInit {
         workspace_id: host.local_workspace().into(),
         agent_id: agent.into(),
         mcp_servers: Vec::new(),
-        resources: Vec::new(),
+        resources: (agent == "a")
+            .then(|| SessionResource {
+                kind: "memory_store".into(),
+                id: store_id.clone(),
+                mount_path: "/mnt/memory".into(),
+                access: ResourceAccess::ReadWrite,
+                instructions: None,
+                auth_token: None,
+                git_ref: None,
+            })
+            .into_iter()
+            .collect(),
         model: None,
         runtime: None,
         deny_egress: false,
         sandbox: None,
     };
 
-    // A BARE session for the bound agent — no wire resources at all — still mounts it.
+    // An effective Session input mounts without a ResourceStore on the host.
     managed.prepare_session("t-bound", bare("a")).await.unwrap();
     let dump = serde_json::to_string(&host.sandbox_spec("t-bound").mounts).unwrap();
     assert!(
@@ -802,7 +793,7 @@ async fn prepare_session_mounts_the_agents_bound_memory_store() {
         "the mount carries the store's bytes: {dump}"
     );
 
-    // An agent with NO binding gets nothing extra — the loop is opt-in per binding.
+    // An empty effective input set mounts nothing.
     managed
         .prepare_session("t-unbound", bare("no-bindings"))
         .await
@@ -814,51 +805,21 @@ async fn prepare_session_mounts_the_agents_bound_memory_store() {
     );
 }
 
-/// The same auto-attach realizes an agent's other bound resource kinds (ADR-0038): a
-/// bound FILE is mounted from the blob store carrying its bytes, and a bound
-/// github_repository is staged for the host-side clone (a repo is not a byte mount, so
-/// it's observed via the repo stage rather than `sandbox_spec`).
+/// The same effective input contract realizes File and Repository resources without
+/// exposing their authoring repository to Runtime.
 #[tokio::test]
-async fn prepare_session_mounts_bound_file_and_stages_bound_repo() {
-    use awaken_config_resolver::{
-        AgentResourceConfig, InMemoryResourceStore, ResourceAccess, ResourceBinding, ResourceKind,
-        ResourceStore,
-    };
-    use awaken_protocol_managed::{SessionInit, SessionRuntime};
+async fn prepare_session_mounts_effective_file_and_stages_effective_repo() {
+    use awaken_protocol_managed::{ResourceAccess, SessionInit, SessionResource, SessionRuntime};
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
 
-    // Seed a file blob, and bind BOTH a file and a repo to agent `a`.
+    // Seed a file blob and pass the already-resolved File and Repository inputs.
     let file_id = host
         .file_store()
         .put(b"port is 8080")
         .await
         .expect("put blob");
     host.grant_file(host.local_workspace(), &file_id);
-    let bindings: Arc<dyn ResourceStore> = Arc::new(InMemoryResourceStore::new());
-    bindings.put_agent_resource_in(
-        host.local_workspace(),
-        AgentResourceConfig {
-            agent_id: "a".into(),
-            resources: vec![
-                ResourceBinding {
-                    kind: ResourceKind::File,
-                    resource_id: file_id.clone(),
-                    mount_path: "/mnt/files/notes.txt".into(),
-                    access: ResourceAccess::ReadOnly,
-                    instructions: None,
-                },
-                ResourceBinding {
-                    kind: ResourceKind::GithubRepository,
-                    resource_id: "https://github.com/awaken/example.git".into(),
-                    mount_path: "/mnt/repo".into(),
-                    access: ResourceAccess::ReadOnly,
-                    instructions: None,
-                },
-            ],
-            version: 1,
-        },
-    );
-    let managed = crate::ManagedHost::new(host.clone()).with_resources(bindings);
+    let managed = crate::ManagedHost::new(host.clone());
 
     managed
         .prepare_session(
@@ -867,7 +828,26 @@ async fn prepare_session_mounts_bound_file_and_stages_bound_repo() {
                 workspace_id: host.local_workspace().into(),
                 agent_id: "a".into(),
                 mcp_servers: Vec::new(),
-                resources: Vec::new(),
+                resources: vec![
+                    SessionResource {
+                        kind: "file".into(),
+                        id: file_id.clone(),
+                        mount_path: "/mnt/files/notes.txt".into(),
+                        access: ResourceAccess::ReadOnly,
+                        instructions: None,
+                        auth_token: None,
+                        git_ref: None,
+                    },
+                    SessionResource {
+                        kind: "github_repository".into(),
+                        id: "https://github.com/awaken/example.git".into(),
+                        mount_path: "/mnt/repo".into(),
+                        access: ResourceAccess::ReadOnly,
+                        instructions: None,
+                        auth_token: None,
+                        git_ref: None,
+                    },
+                ],
                 model: None,
                 runtime: None,
                 deny_egress: false,
@@ -919,6 +899,7 @@ async fn a_github_repository_resource_injects_a_scoped_github_mcp_server() {
                     kind: "github_repository".into(),
                     id: "https://github.com/awaken/example.git".into(),
                     mount_path: "/workspace/repo".into(),
+                    access: awaken_protocol_managed::ResourceAccess::ReadWrite,
                     instructions: None,
                     auth_token: Some("ghp_secret_token".into()),
                     git_ref: None,
@@ -982,6 +963,7 @@ async fn rotating_a_github_repository_token_re_keys_the_clone_and_mcp_bearer() {
         kind: "github_repository".into(),
         id: "https://github.com/awaken/example.git".into(),
         mount_path: "/workspace/repo".into(),
+        access: awaken_protocol_managed::ResourceAccess::ReadWrite,
         instructions: None,
         auth_token: Some(token.into()),
         git_ref: None,
@@ -1038,11 +1020,10 @@ async fn rotating_a_github_repository_token_re_keys_the_clone_and_mcp_bearer() {
 }
 
 // ---------------------------------------------------------------------------
-// Resource-plane seam coverage (ADR-0038): the gaps a per-layer test misses.
-//   G1 consistency  — what the config plane TELLS the agent == what the host MOUNTS
-//   G3 decision     — a per-session wire resource overrides the agent binding
-//   G4 fail-closed  — a bound resource with a missing backing aborts session prep
-//   G5 gap          — without the binding store (a db-less worker) nothing mounts
+// Resource-plane seam coverage: Runtime consumes one effective Session manifest.
+//   G1 consistency  — prompt path/access == realized mount path/access
+//   G4 fail-closed  — an effective resource with missing backing aborts preparation
+//   G5 distribution — a worker activates carried inputs without an authoring DB
 // ---------------------------------------------------------------------------
 
 /// A bare session for `agent` with no wire resources — the common "just run the agent"
@@ -1061,18 +1042,11 @@ fn bare_session(agent: &str, workspace: &str) -> awaken_protocol_managed::Sessio
     }
 }
 
-/// G1 — the "told == mounted" invariant. The SAME `ResourceStore` the config plane
-/// renders into the agent's prompt is what the host mounts, so the realized path the
-/// agent is TOLD to read (`resource_prompts_for`, the compile side) is exactly where
-/// the bytes are MOUNTED (`sandbox_spec`, the run side), and the access agrees. Both
-/// sides are tested in isolation elsewhere; this pins that they agree from one binding.
+/// G1 — prompt and mount are derived from the same effective input, including access.
 #[tokio::test]
 async fn told_equals_mounted_the_prompt_path_and_access_match_the_realized_mount() {
-    use awaken_config_resolver::{
-        AgentResourceConfig, InMemoryResourceStore, ResourceAccess, ResourceBinding, ResourceKind,
-        ResourceStore, realized_mount_path, resource_prompts_for,
-    };
-    use awaken_protocol_managed::SessionRuntime;
+    use awaken_protocol_managed::{ResourceAccess, SessionResource, SessionRuntime};
+    use awaken_provisioning_contract::MountAccess;
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let store_id = host.create_memory_store().await;
     host.memory_stores
@@ -1081,98 +1055,56 @@ async fn told_equals_mounted_the_prompt_path_and_access_match_the_realized_mount
         .await
         .expect("seed memory bytes");
 
-    let cfg = AgentResourceConfig {
-        agent_id: "a".into(),
-        resources: vec![ResourceBinding {
-            kind: ResourceKind::MemoryStore,
-            resource_id: store_id.clone(),
-            mount_path: "/mnt/memory".into(),
-            access: ResourceAccess::ReadWrite,
-            instructions: None,
-        }],
-        version: 1,
+    let resource = SessionResource {
+        kind: "memory_store".into(),
+        id: store_id,
+        mount_path: "/mnt/memory".into(),
+        access: ResourceAccess::ReadOnly,
+        instructions: None,
+        auth_token: None,
+        git_ref: None,
     };
-    let bindings: Arc<dyn ResourceStore> = Arc::new(InMemoryResourceStore::new());
-    bindings.put_agent_resource_in(host.local_workspace(), cfg.clone());
-    let managed = crate::ManagedHost::new(host.clone()).with_resources(bindings);
-    managed
-        .prepare_session("t-g1", bare_session("a", host.local_workspace()))
-        .await
-        .unwrap();
+    let managed = crate::ManagedHost::new(host.clone());
+    let mut init = bare_session("a", host.local_workspace());
+    init.resources = vec![resource];
+    managed.prepare_session("t-g1", init).await.unwrap();
 
-    let binding = &cfg.resources[0];
-    // The realized path the config plane names in the prompt.
-    let realized = realized_mount_path(binding.kind, &binding.mount_path); // ".mnt/mnt/memory"
-    let prompts = resource_prompts_for(&cfg);
+    let realized = ".mnt/mnt/memory";
+    let prompts = host.thread_resource_prompts("t-g1");
     assert!(
-        prompts.iter().any(|p| p.contains(&realized)),
+        prompts.iter().any(|p| p.contains(realized)),
         "the compiled prompt names the realized path {realized}: {prompts:?}"
     );
     assert!(
-        prompts.iter().any(|p| p.contains("read/write")),
-        "a read/write binding is described read/write: {prompts:?}"
+        prompts.iter().any(|p| p.contains("read-only")),
+        "a read-only binding is described read-only: {prompts:?}"
     );
-    // The mount the host realizes: its logical_path, under `.mnt/`, is that same path.
-    let logical = binding.mount_path.trim_start_matches('/'); // "mnt/memory"
-    assert_eq!(
-        realized,
-        format!(".mnt/{logical}"),
-        "realized-path contract"
-    );
-    let dump = serde_json::to_string(&host.sandbox_spec("t-g1").mounts).unwrap();
-    assert!(
-        dump.contains(&format!("\"mount_path\":\"{realized}\"")),
-        "the host mounts at exactly the path the prompt named: {dump}"
-    );
+    let mount = &host.sandbox_spec("t-g1").mounts[0];
+    assert_eq!(mount.mount_path, realized);
+    assert_eq!(mount.access, MountAccess::ReadOnly);
 }
 
-/// G3 — the staging decision table: a per-session wire resource on the SAME mount_path
-/// as an agent binding WINS (an explicit override beats the default binding). Cause:
-/// agent-bound store S1 @ /mnt/memory AND wire store S2 @ /mnt/memory. Effect: exactly
-/// one memory mount at that path, carrying S2's bytes, never S1's.
+/// Runtime stages exactly the effective resource list it receives and adds no hidden
+/// Agent defaults of its own. Replacement is a Session-control-plane decision.
 #[tokio::test]
-async fn a_wire_resource_overrides_the_agent_binding_at_the_same_path() {
-    use awaken_config_resolver::{
-        AgentResourceConfig, InMemoryResourceStore, ResourceAccess, ResourceBinding, ResourceKind,
-        ResourceStore,
-    };
+async fn runtime_stages_exactly_the_effective_resource_list() {
     use awaken_protocol_managed::{SessionResource, SessionRuntime};
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
-    let s1 = host.create_memory_store().await; // agent-bound
-    let s2 = host.create_memory_store().await; // wire override
-    host.memory_stores
-        .blob()
-        .put(host.local_workspace(), &s1, b"AGENT-BYTES")
-        .await
-        .unwrap();
+    let s2 = host.create_memory_store().await;
     host.memory_stores
         .blob()
         .put(host.local_workspace(), &s2, b"WIRE-BYTES")
         .await
         .unwrap();
 
-    let bindings: Arc<dyn ResourceStore> = Arc::new(InMemoryResourceStore::new());
-    bindings.put_agent_resource_in(
-        host.local_workspace(),
-        AgentResourceConfig {
-            agent_id: "a".into(),
-            resources: vec![ResourceBinding {
-                kind: ResourceKind::MemoryStore,
-                resource_id: s1.clone(),
-                mount_path: "/mnt/memory".into(),
-                access: ResourceAccess::ReadWrite,
-                instructions: None,
-            }],
-            version: 1,
-        },
-    );
-    let managed = crate::ManagedHost::new(host.clone()).with_resources(bindings);
+    let managed = crate::ManagedHost::new(host.clone());
 
     let mut init = bare_session("a", host.local_workspace());
     init.resources = vec![SessionResource {
         kind: "memory_store".into(),
         id: s2.clone(),
-        mount_path: "/mnt/memory".into(), // SAME path as the agent binding
+        mount_path: "/mnt/memory".into(),
+        access: awaken_protocol_managed::ResourceAccess::ReadWrite,
         instructions: None,
         auth_token: None,
         git_ref: None,
@@ -1192,7 +1124,7 @@ async fn a_wire_resource_overrides_the_agent_binding_at_the_same_path() {
     );
     assert_eq!(
         at_path[0].0, s2,
-        "the wire store overrides the agent binding"
+        "the carried effective store is the only staged store"
     );
 
     let dump = serde_json::to_string(&host.sandbox_spec("t-g3").mounts).unwrap();
@@ -1200,128 +1132,68 @@ async fn a_wire_resource_overrides_the_agent_binding_at_the_same_path() {
         dump.contains("WIRE-BYTES"),
         "the wire bytes are mounted: {dump}"
     );
-    assert!(
-        !dump.contains("AGENT-BYTES"),
-        "the overridden binding is not mounted: {dump}"
-    );
 }
 
-/// G4 — fail-closed. An agent bound to a memory_store whose backing store does NOT
-/// exist must abort session prep, never run believing an absent mount is real
-/// (symmetric to the file / no-mounter fail-closed already covered at other layers).
+/// G4 — an effective Memory input whose backing store is absent fails closed.
 #[tokio::test]
 async fn a_bound_resource_with_a_missing_backing_store_fails_the_session_closed() {
-    use awaken_config_resolver::{
-        AgentResourceConfig, InMemoryResourceStore, ResourceAccess, ResourceBinding, ResourceKind,
-        ResourceStore,
-    };
-    use awaken_protocol_managed::SessionRuntime;
+    use awaken_protocol_managed::{ResourceAccess, SessionResource, SessionRuntime};
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
-    let bindings: Arc<dyn ResourceStore> = Arc::new(InMemoryResourceStore::new());
-    bindings.put_agent_resource_in(
-        host.local_workspace(),
-        AgentResourceConfig {
-            agent_id: "a".into(),
-            resources: vec![ResourceBinding {
-                kind: ResourceKind::MemoryStore,
-                resource_id: "never-seeded-store".into(), // no backing bytes exist
-                mount_path: "/mnt/memory".into(),
-                access: ResourceAccess::ReadWrite,
-                instructions: None,
-            }],
-            version: 1,
-        },
-    );
-    let managed = crate::ManagedHost::new(host.clone()).with_resources(bindings);
+    let managed = crate::ManagedHost::new(host.clone());
+    let mut init = bare_session("a", host.local_workspace());
+    init.resources = vec![SessionResource {
+        kind: "memory_store".into(),
+        id: "never-seeded-store".into(),
+        mount_path: "/mnt/memory".into(),
+        access: ResourceAccess::ReadWrite,
+        instructions: None,
+        auth_token: None,
+        git_ref: None,
+    }];
 
-    let result = managed
-        .prepare_session("t-g4", bare_session("a", host.local_workspace()))
-        .await;
+    let result = managed.prepare_session("t-g4", init).await;
     assert!(
         result.is_err(),
         "a binding to a missing backing store must fail closed, not mount empty"
     );
 }
 
-/// G5 — characterization of the known cross-node gap, as a CONTRAST that isolates the
-/// gap to one variable. The SAME agent binding (same seeded memory store, same
-/// `AgentResourceConfig`) mounts on a host that HAS the `ResourceStore` (the all-in-one
-/// / co-located case) but NOT on a host without it (a database-less remote worker —
-/// which drives from a snapshot carrying only rendered instructions, never the binding
-/// store or structured mounts). The only difference between the two is whether the
-/// `ResourceStore` crossed the node boundary, so this pins the gap precisely: it is
-/// "the store is not carried cross-node", not "no binding exists". When resources ARE
-/// carried to a worker, the second half flips and this test must be updated.
+/// G5 — the effective resource reference crosses the node boundary, so a worker needs
+/// access to the resource data plane but not to the Agent authoring repository.
 #[tokio::test]
-async fn an_agents_bound_resource_mounts_with_the_store_but_not_on_a_db_less_worker() {
-    use awaken_config_resolver::{
-        AgentResourceConfig, InMemoryResourceStore, ResourceAccess, ResourceBinding, ResourceKind,
-        ResourceStore,
-    };
-    use awaken_protocol_managed::SessionRuntime;
-
-    // Author ONE binding: agent `a` → a seeded memory store at /mnt/memory. Shared
-    // verbatim by both hosts so the ONLY variable is whether the store is present.
-    async fn bind(host: &Arc<SharedHost>) -> Arc<dyn ResourceStore> {
-        let store_id = host.create_memory_store().await;
-        host.memory_stores
-            .blob()
-            .put(host.local_workspace(), &store_id, b"CARRIED-BYTES")
-            .await
-            .expect("seed");
-        let bindings: Arc<dyn ResourceStore> = Arc::new(InMemoryResourceStore::new());
-        bindings.put_agent_resource_in(
-            host.local_workspace(),
-            AgentResourceConfig {
-                agent_id: "a".into(),
-                resources: vec![ResourceBinding {
-                    kind: ResourceKind::MemoryStore,
-                    resource_id: store_id,
-                    mount_path: "/mnt/memory".into(),
-                    access: ResourceAccess::ReadWrite,
-                    instructions: None,
-                }],
-                version: 1,
-            },
-        );
-        bindings
-    }
-
-    // Positive control: a host that HAS the ResourceStore mounts the bound resource.
-    let with_store = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
-    let bindings = bind(&with_store).await;
-    let managed_with = crate::ManagedHost::new(with_store.clone()).with_resources(bindings);
-    managed_with
-        .prepare_session("t-g5-with", bare_session("a", with_store.local_workspace()))
-        .await
-        .unwrap();
-    let with_dump = serde_json::to_string(&with_store.sandbox_spec("t-g5-with").mounts).unwrap();
-    assert!(
-        with_dump.contains("CARRIED-BYTES"),
-        "with the store, the agent's bound resource mounts: {with_dump}"
-    );
-    assert!(
-        !with_store.thread_memory_mounts("t-g5-with").is_empty(),
-        "with the store, a memory mount is staged"
-    );
-
-    // The gap: a db-less worker (same agent, but NO ResourceStore crossed the boundary)
-    // mounts nothing — the binding is invisible to it.
+async fn an_effective_resource_mounts_on_a_worker_without_the_binding_repository() {
+    use awaken_protocol_managed::{ResourceAccess, SessionResource, SessionRuntime};
     let db_less = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
-    bind(&db_less).await; // seed the store's *bytes*, but do NOT wire the binding store
-    let managed_worker = crate::ManagedHost::new(db_less.clone()); // no .with_resources(...)
+    let store_id = db_less.create_memory_store().await;
+    db_less
+        .memory_stores
+        .blob()
+        .put(db_less.local_workspace(), &store_id, b"CARRIED-BYTES")
+        .await
+        .expect("seed");
+    let managed_worker = crate::ManagedHost::new(db_less.clone());
+    let mut init = bare_session("a", db_less.local_workspace());
+    init.resources = vec![SessionResource {
+        kind: "memory_store".into(),
+        id: store_id,
+        mount_path: "/mnt/memory".into(),
+        access: ResourceAccess::ReadOnly,
+        instructions: None,
+        auth_token: None,
+        git_ref: None,
+    }];
     managed_worker
-        .prepare_session("t-g5-worker", bare_session("a", db_less.local_workspace()))
+        .prepare_session("t-g5-worker", init)
         .await
         .unwrap();
     let worker_dump = serde_json::to_string(&db_less.sandbox_spec("t-g5-worker").mounts).unwrap();
-    assert_eq!(
-        worker_dump, "[]",
-        "the same binding is invisible to a db-less worker (gap): {worker_dump}"
+    assert!(
+        worker_dump.contains("CARRIED-BYTES"),
+        "the effective input is sufficient for a DB-less worker: {worker_dump}"
     );
     assert!(
-        db_less.thread_memory_mounts("t-g5-worker").is_empty(),
-        "no memory mount is staged without the resource store crossing the boundary"
+        !db_less.thread_memory_mounts("t-g5-worker").is_empty(),
+        "the worker stages the carried Memory input without an Agent binding repository"
     );
 }
 

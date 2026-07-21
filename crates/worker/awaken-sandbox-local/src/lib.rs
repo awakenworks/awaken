@@ -22,6 +22,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_ext_builtin_tools::executable_hand_tools;
+use awaken_provisioning_contract as pc;
 use awaken_runtime_contract::llm::ToolCall;
 use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
 use serde_json::Value;
@@ -496,6 +497,10 @@ impl Mount {
                 "content_hash": r.content_hash,
                 "logical_path": r.logical_path,
                 "content": r.content,
+                "access": match r.access {
+                    pc::MountAccess::ReadOnly => "read_only",
+                    pc::MountAccess::ReadWrite => "read_write",
+                },
             }),
         }
     }
@@ -510,6 +515,11 @@ impl Mount {
                 content_hash: field("content_hash").unwrap_or_default(),
                 logical_path: field("logical_path")?,
                 content: field("content")?,
+                access: match v.get("access").and_then(Value::as_str) {
+                    Some("read_only") => pc::MountAccess::ReadOnly,
+                    Some("read_write") | None => pc::MountAccess::ReadWrite,
+                    Some(_) => return None,
+                },
             })),
             _ => None,
         }
@@ -524,6 +534,7 @@ pub struct ResourceMount {
     pub content_hash: String,
     pub logical_path: String,
     pub content: String,
+    pub access: pc::MountAccess,
 }
 
 /// A `SKILL.md`-bearing directory discovered under the environment. Neutral file
@@ -768,6 +779,7 @@ mod tests {
                 content_hash: String::new(),
                 logical_path: "a.txt".into(),
                 content: "hi".into(),
+                access: pc::MountAccess::ReadWrite,
             })
         );
         // Round-trip: to_value → from_value is the identity on a full resource.
@@ -776,6 +788,7 @@ mod tests {
             content_hash: "h".into(),
             logical_path: "dir/a.txt".into(),
             content: "bytes".into(),
+            access: pc::MountAccess::ReadOnly,
         });
         assert_eq!(Mount::from_value(&full.to_value()), Some(full));
     }

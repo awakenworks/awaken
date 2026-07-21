@@ -1333,6 +1333,7 @@ mod tests {
                     content_hash: String::new(),
                     logical_path: "data.csv".into(),
                     content: "a,b\n".into(),
+                    access: awaken_provisioning_contract::MountAccess::ReadWrite,
                 })],
                 ..Default::default()
             },
@@ -1432,6 +1433,7 @@ mod tests {
                     content_hash: String::new(),
                     logical_path: "data.csv".into(),
                     content: "a,b\n".into(),
+                    access: awaken_provisioning_contract::MountAccess::ReadWrite,
                 })],
                 ..Default::default()
             },

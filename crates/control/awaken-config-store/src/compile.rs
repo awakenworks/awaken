@@ -71,7 +71,6 @@ impl CompileError {
 pub fn compile_resolved(
     config: &AgentConfig,
     tools: &[ToolDescriptor],
-    resource_prompts: &[String],
     mut metadata: AgentSnapshotMetadata,
 ) -> Result<ExecutableAgentSnapshot, CompileError> {
     let mut descriptors = Vec::with_capacity(config.tool_ids.len());
@@ -235,9 +234,9 @@ pub fn compile_resolved(
     let mut plugin_config = config.plugin_config.clone();
     bindings.insert_into(&mut plugin_config);
 
-    let fingerprint = fingerprint_of(config, resource_prompts, &descriptors, &metadata)?;
+    let fingerprint = fingerprint_of(config, &descriptors, &metadata)?;
     Ok(ExecutableAgentSnapshot::builder(&config.id)
-        .instructions(compose_instructions(&config.instructions, resource_prompts))
+        .instructions(config.instructions.clone())
         .model(model)
         .model_candidates(config.model_candidates.clone())
         .max_steps(config.max_steps)
@@ -337,28 +336,9 @@ fn glob_match(pattern: &str, id: &str) -> bool {
     go(pattern.as_bytes(), id.as_bytes())
 }
 
-/// The agent's **effective** system prompt: its base `instructions` followed by one
-/// block per bound-resource prompt, blank-line separated. Empty `resource_prompts`
-/// returns the base verbatim (byte-identical to pre-resource behavior).
-#[must_use]
-pub fn compose_instructions(base: &str, resource_prompts: &[String]) -> String {
-    if resource_prompts.is_empty() {
-        return base.to_string();
-    }
-    let mut out = String::from(base);
-    for fragment in resource_prompts {
-        out.push_str("\n\n");
-        out.push_str(fragment);
-    }
-    out
-}
-
 /// The canonical fingerprint: sha256 of the **behavioral** config serialization,
-/// extended by the resource prompts when present. Empty prompts hash exactly the
-/// behavioral config bytes, so a bare compile keeps its prior content address; a
-/// non-empty prompt set changes it (a different effective system prompt is a
-/// different snapshot). The config has no maps in its behavioral subset, so
-/// serialization is deterministic across runs.
+/// tool descriptors, and resolved publication metadata. Session resources are not
+/// Agent publication inputs; they are composed later by `SessionInputResolver`.
 ///
 /// The Managed-Agent wire-identity metadata (`name` / `description` / `metadata`) is
 /// **excluded**: it is authoring metadata the runtime never consumes (the snapshot is
@@ -369,7 +349,6 @@ pub fn compose_instructions(base: &str, resource_prompts: &[String]) -> String {
 /// these fields hashes byte-identically to before (they `skip_serializing_if`-empty).
 fn fingerprint_of(
     config: &AgentConfig,
-    resource_prompts: &[String],
     tools: &[ToolDescriptor],
     metadata: &AgentSnapshotMetadata,
 ) -> Result<String, CompileError> {
@@ -379,11 +358,6 @@ fn fingerprint_of(
     behavioral.metadata.clear();
     let mut bytes =
         serde_json::to_vec(&behavioral).map_err(|err| CompileError::Serialize(err.to_string()))?;
-    if !resource_prompts.is_empty() {
-        let extra = serde_json::to_vec(resource_prompts)
-            .map_err(|err| CompileError::Serialize(err.to_string()))?;
-        bytes.extend_from_slice(&extra);
-    }
     if !metadata.is_legacy_default() {
         bytes.extend_from_slice(
             &serde_json::to_vec(tools).map_err(|err| CompileError::Serialize(err.to_string()))?,
@@ -408,20 +382,7 @@ mod tests {
         config: &AgentConfig,
         tools: &[ToolDescriptor],
     ) -> Result<ExecutableAgentSnapshot, CompileError> {
-        compile_resolved(config, tools, &[], AgentSnapshotMetadata::default())
-    }
-
-    fn compile_with_resource_prompts(
-        config: &AgentConfig,
-        tools: &[ToolDescriptor],
-        resource_prompts: &[String],
-    ) -> Result<ExecutableAgentSnapshot, CompileError> {
-        compile_resolved(
-            config,
-            tools,
-            resource_prompts,
-            AgentSnapshotMetadata::default(),
-        )
+        compile_resolved(config, tools, AgentSnapshotMetadata::default())
     }
 
     fn config(tools: &[&str]) -> AgentConfig {
@@ -757,32 +718,6 @@ mod tests {
     }
 
     #[test]
-    fn compose_instructions_appends_fragments_and_preserves_base() {
-        assert_eq!(compose_instructions("base", &[]), "base");
-        let out = compose_instructions("base", &["r1".to_string(), "r2".to_string()]);
-        assert_eq!(out, "base\n\nr1\n\nr2");
-    }
-
-    #[test]
-    fn resource_prompts_flow_into_effective_instructions_and_change_the_fingerprint() {
-        // ADR-0038 A3a: a bound resource's prompt is injected at compile time into the
-        // agent's effective system prompt, and enters the content-address fingerprint.
-        let cfg = config(&[]);
-        // Fragments are opaque strings here; the resolve-side templates (per
-        // ResourceKind) live in awaken-config-resolver.
-        let frag = "Outputs are collected under `/mnt/session/outputs`.".to_string();
-        let with = compile_with_resource_prompts(&cfg, &[], std::slice::from_ref(&frag)).unwrap();
-        let spec = &with.resolved_spec;
-        assert!(spec.instructions.starts_with("be helpful"));
-        assert!(spec.instructions.contains("/mnt/session/outputs"));
-        // The prompt changes the snapshot's content address (no stale cache hit).
-        assert_ne!(
-            with.fingerprint.0,
-            compile(&cfg, &[]).unwrap().fingerprint.0
-        );
-    }
-
-    #[test]
     fn publication_pinned_inference_access_is_part_of_the_fingerprint() {
         let cfg = config(&[]);
         let metadata = |credential: &str| AgentSnapshotMetadata {
@@ -806,8 +741,8 @@ mod tests {
             ),
             ..Default::default()
         };
-        let first = compile_resolved(&cfg, &[], &[], metadata("credential-a")).unwrap();
-        let second = compile_resolved(&cfg, &[], &[], metadata("credential-b")).unwrap();
+        let first = compile_resolved(&cfg, &[], metadata("credential-a")).unwrap();
+        let second = compile_resolved(&cfg, &[], metadata("credential-b")).unwrap();
         assert_ne!(first.fingerprint, second.fingerprint);
         assert_eq!(
             first.metadata.inference_access.unwrap().reference,
@@ -844,19 +779,6 @@ mod tests {
             base_fp, rebehaved_fp,
             "instructions still enter the fingerprint"
         );
-    }
-
-    #[test]
-    fn empty_resource_prompts_are_byte_identical_to_bare_compile() {
-        let cfg = config(&["echo"]);
-        let tools = vec![tool("echo")];
-        let bare = compile(&cfg, &tools).unwrap();
-        let with_empty = compile_with_resource_prompts(&cfg, &tools, &[]).unwrap();
-        assert_eq!(
-            bare.resolved_spec.instructions,
-            with_empty.resolved_spec.instructions
-        );
-        assert_eq!(bare.fingerprint.0, with_empty.fingerprint.0);
     }
 
     #[test]

@@ -136,7 +136,7 @@ fn render(message: &Message) -> Option<Line<'static>> {
     if text.trim().is_empty() {
         return None;
     }
-    Some(line(message.role.clone(), &text))
+    Some(line(message.role, &text))
 }
 
 fn line(role: Role, text: &str) -> Line<'static> {

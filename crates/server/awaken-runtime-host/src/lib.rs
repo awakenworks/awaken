@@ -227,11 +227,6 @@ fn to_step_outcome(result: RunResult) -> Result<StepOutcome, RunError> {
 pub struct ManagedHost {
     host: Arc<SharedHost>,
     mcp: Option<ManagedMcp>,
-    /// The agent↔resource binding store (ADR-0038), shared with the config service.
-    /// When wired, `prepare_session` also mounts the *agent's* bound resources — not
-    /// just the session's wire `resources[]` — so a published agent's memory store is
-    /// actually realized in the sandbox, closing the build→bind→use loop.
-    resources: Option<Arc<dyn awaken_config_resolver::ResourceStore>>,
 }
 
 /// The session-ingress MCP wiring (ADR-0043 Phase 3): the stores
@@ -267,60 +262,21 @@ fn resource_prompt(res: &awaken_protocol_managed::SessionResource) -> String {
         kind,
         resource_id: res.id.clone(),
         mount_path,
-        access: awaken_config_resolver::ResourceAccess::ReadWrite,
+        access: match res.access {
+            awaken_protocol_managed::ResourceAccess::ReadOnly => {
+                awaken_config_resolver::ResourceAccess::ReadOnly
+            }
+            awaken_protocol_managed::ResourceAccess::ReadWrite => {
+                awaken_config_resolver::ResourceAccess::ReadWrite
+            }
+        },
         instructions: res.instructions.clone(),
     })
 }
 
-/// Map an agent's bound resource (ADR-0038 [`ResourceBinding`]) to the neutral
-/// [`SessionResource`] the sandbox stages — so a *published agent's* bindings mount
-/// exactly the way a session's wire `resources[]` do. Access isn't carried on the wire
-/// type (a memory mount realizes read-write; a read-only binding is advisory via its
-/// already-compiled prompt), and a private resource's credential stays a vault
-/// reference, never material here.
-///
-/// [`ResourceBinding`]: awaken_config_resolver::ResourceBinding
-fn binding_as_session_resource(
-    b: &awaken_config_resolver::ResourceBinding,
-) -> awaken_protocol_managed::SessionResource {
-    use awaken_config_resolver::ResourceKind as K;
-    let kind = match b.kind {
-        K::MemoryStore => "memory_store",
-        K::File => "file",
-        K::GithubRepository => "github_repository",
-        K::Skill => "skill",
-        K::Outputs => "outputs",
-    };
-    awaken_protocol_managed::SessionResource {
-        kind: kind.to_string(),
-        id: b.resource_id.clone(),
-        mount_path: b.mount_path.clone(),
-        instructions: b.instructions.clone(),
-        auth_token: None,
-        git_ref: None,
-    }
-}
-
 impl ManagedHost {
     pub fn new(host: Arc<SharedHost>) -> Self {
-        Self {
-            host,
-            mcp: None,
-            resources: None,
-        }
-    }
-
-    /// Share the agent↔resource binding store (ADR-0038) so `prepare_session` mounts
-    /// a published agent's bound resources (memory stores, files) — not only the
-    /// session's wire `resources[]`. The same store instance backs the config service's
-    /// prompt injection, so what the agent is *told* it has is what actually gets mounted.
-    #[must_use]
-    pub fn with_resources(
-        mut self,
-        resources: Arc<dyn awaken_config_resolver::ResourceStore>,
-    ) -> Self {
-        self.resources = Some(resources);
-        self
+        Self { host, mcp: None }
     }
 
     /// Stage ONE resource (ADR-0038) into a partial [`StagedResources`]: resolve its
@@ -348,6 +304,14 @@ impl ManagedHost {
                     .auth_token
                     .clone()
                     .map(awaken_agent_contract::RedactedString::from),
+                access: match res.access {
+                    awaken_protocol_managed::ResourceAccess::ReadOnly => {
+                        awaken_provisioning_contract::MountAccess::ReadOnly
+                    }
+                    awaken_protocol_managed::ResourceAccess::ReadWrite => {
+                        awaken_provisioning_contract::MountAccess::ReadWrite
+                    }
+                },
             });
             return Ok(staged);
         }
@@ -389,6 +353,14 @@ impl ManagedHost {
             content_hash: String::new(),
             logical_path: logical,
             content,
+            access: match res.access {
+                awaken_protocol_managed::ResourceAccess::ReadOnly => {
+                    awaken_provisioning_contract::MountAccess::ReadOnly
+                }
+                awaken_protocol_managed::ResourceAccess::ReadWrite => {
+                    awaken_provisioning_contract::MountAccess::ReadWrite
+                }
+            },
         }));
         Ok(staged)
     }
@@ -795,11 +767,8 @@ impl SessionRuntime for ManagedHost {
         {
             self.host.register_thread_sandbox(thread, over);
         }
-        // Stage the effective resource set (ADR-0038): the session's wire `resources[]`
-        // PLUS the *agent's* bound resources when the binding store is shared. Both
-        // resolve to a sandbox mount via `stage_one_resource`, folded and registered
-        // (replace — correct at create, before the first turn). Independent of MCP, so
-        // it runs before the MCP gate.
+        // Stage the effective resource set resolved once by the Session control plane.
+        // Runtime never reads the Agent binding repository or composes defaults again.
         let mut all = crate::provisioning::StagedResources::default();
         // Wire session resources carry their own prompt (no compile-time fragment
         // exists for an ad-hoc session mount), so we keep `one.prompts`.
@@ -809,31 +778,6 @@ impl SessionRuntime for ManagedHost {
             all.prompts.extend(one.prompts);
             all.memory_mounts.extend(one.memory_mounts);
             all.repos.extend(one.repos);
-        }
-        // Agent-bound resources: MOUNT only. The prompt fragment is already in the
-        // compiled system prompt (config service `resource_prompts`), so re-staging it
-        // would duplicate the description — we drop `one.prompts` and keep the mount.
-        // This is the seam that actually realizes a published agent's memory store:
-        // config injects the prompt, this injects the mount. Skip a mount path the
-        // wire set already claimed (an explicit per-session override wins).
-        if let Some(store) = &self.resources
-            && let Some(cfg) = store.get_agent_resource_in(&init.workspace_id, &init.agent_id)
-        {
-            let taken: std::collections::HashSet<String> = init
-                .resources
-                .iter()
-                .map(|r| r.mount_path.trim_start_matches('/').to_string())
-                .collect();
-            for b in &cfg.resources {
-                if taken.contains(b.mount_path.trim_start_matches('/')) {
-                    continue;
-                }
-                let res = binding_as_session_resource(b);
-                let one = self.stage_one_resource(&init.workspace_id, &res).await?;
-                all.mounts.extend(one.mounts);
-                all.memory_mounts.extend(one.memory_mounts);
-                all.repos.extend(one.repos);
-            }
         }
         // Bridge github_repository resources to a GitHub MCP server (Anthropic Managed Agents
         // model): each cloned repo whose token is held host-side also gets a `github:<logical>`

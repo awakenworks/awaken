@@ -630,11 +630,10 @@ pub enum ResourceAccess {
     ReadWrite,
 }
 
-/// Render a bound resource into the prompt fragment appended to the agent's system
-/// prompt at compile time (ADR-0038 A3a): one blurb per kind naming its mount path
-/// and access, plus any per-binding `instructions`. This is the resolve-side
-/// template layer; the config-store's `compose_instructions` does the join and the
-/// runtime never re-renders it per turn.
+/// Render one final Session binding into a prompt fragment, naming its realized
+/// mount path and effective access plus any per-binding instructions. Callers use
+/// this only after `SessionInputResolver` has composed defaults and attachments;
+/// Agent publication deliberately does not bake resource prompts into snapshots.
 #[must_use]
 pub fn resource_binding_prompt(binding: &ResourceBinding) -> String {
     let path = &binding.mount_path;
@@ -664,43 +663,6 @@ pub fn resource_binding_prompt(binding: &ResourceBinding) -> String {
         Some(extra) if !extra.is_empty() => format!("{base}\n{extra}"),
         _ => base,
     }
-}
-
-/// The path a bound resource is *realized* at in the sandbox — the string the agent is
-/// told to read, matching how the local sandbox actually mounts it: file / memory /
-/// skill land under the read-only `.mnt/` root (`.mnt/<logical>`), while a repo working
-/// tree and the outputs mount keep their own path. Used so the compiled prompt names the
-/// same path the bytes are at — a binding authored as `/mnt/memory` is described (and
-/// read) at `.mnt/mnt/memory`, never the bare `/mnt/memory` the file isn't at.
-#[must_use]
-pub fn realized_mount_path(kind: ResourceKind, mount_path: &str) -> String {
-    let logical = mount_path.trim_start_matches('/');
-    match kind {
-        ResourceKind::File | ResourceKind::MemoryStore | ResourceKind::Skill => {
-            format!(".mnt/{logical}")
-        }
-        ResourceKind::GithubRepository => logical.to_string(),
-        ResourceKind::Outputs => mount_path.to_string(),
-    }
-}
-
-/// The ordered prompt fragments for an agent's bound resources — the bridge from the
-/// [`AgentResourceConfig`] aggregate to the configuration publication compiler
-/// (which appends them to the agent's effective system prompt, ADR-0038 A3a). One
-/// fragment per binding, in binding order; empty when the agent binds no resources
-/// (so compilation stays byte-identical to an unbound agent). Each fragment names the
-/// [`realized_mount_path`], so what the agent is told matches where the sandbox mounts it.
-#[must_use]
-pub fn resource_prompts_for(config: &AgentResourceConfig) -> Vec<String> {
-    config
-        .resources
-        .iter()
-        .map(|b| {
-            let mut b = b.clone();
-            b.mount_path = realized_mount_path(b.kind, &b.mount_path);
-            resource_binding_prompt(&b)
-        })
-        .collect()
 }
 
 /// The injection-ready MCP server the resolver hands the runtime: the display
@@ -849,33 +811,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn resource_prompts_for_maps_each_binding_in_order() {
-        // Empty bindings → empty fragments (unbound agent compiles byte-identically).
-        let empty = AgentResourceConfig {
-            agent_id: "a".into(),
-            resources: vec![],
-            version: 1,
-        };
-        assert!(resource_prompts_for(&empty).is_empty());
-
-        let cfg = AgentResourceConfig {
-            agent_id: "a".into(),
-            resources: vec![
-                binding(ResourceKind::File, "/w/a.csv", ResourceAccess::ReadOnly),
-                binding(
-                    ResourceKind::Outputs,
-                    "/mnt/session/outputs",
-                    ResourceAccess::ReadWrite,
-                ),
-            ],
-            version: 1,
-        };
-        let prompts = resource_prompts_for(&cfg);
-        assert_eq!(prompts.len(), 2);
-        assert!(prompts[0].contains("/w/a.csv"));
-        assert!(prompts[1].contains("/mnt/session/outputs"));
-    }
     use awaken_model_catalog::{
         Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
     };
@@ -1748,35 +1683,6 @@ mod tests {
         assert!(ep(&[]).wants("run.completed")); // empty = every type
         assert!(ep(&["run.completed", "run.failed"]).wants("run.failed"));
         assert!(!ep(&["run.completed"]).wants("run.failed"));
-    }
-
-    // ---- CEG 02: realized_mount_path (A8 c/d/e) ----
-
-    #[test]
-    fn realized_mount_path_roots_mnt_kinds_and_leaves_repo_and_outputs() {
-        // c: file/memory/skill land under .mnt/<logical> (leading slash stripped).
-        assert_eq!(
-            realized_mount_path(ResourceKind::File, "/mnt/data"),
-            ".mnt/mnt/data"
-        );
-        assert_eq!(
-            realized_mount_path(ResourceKind::MemoryStore, "/mem"),
-            ".mnt/mem"
-        );
-        assert_eq!(
-            realized_mount_path(ResourceKind::Skill, "skills/x"),
-            ".mnt/skills/x"
-        );
-        // d: a repo working tree keeps its bare logical path (no .mnt root).
-        assert_eq!(
-            realized_mount_path(ResourceKind::GithubRepository, "/workspace/repo"),
-            "workspace/repo"
-        );
-        // e: outputs keep the mount_path verbatim (leading slash preserved).
-        assert_eq!(
-            realized_mount_path(ResourceKind::Outputs, "/mnt/session/outputs"),
-            "/mnt/session/outputs"
-        );
     }
 
     // ---- CEG 02: resource_binding_prompt empty instructions (A8f) ----

@@ -44,7 +44,7 @@ pub(crate) fn mount_to_requirement(mount: &Mount) -> pc::MountRequirement {
             mount_id: r.id.clone(),
             source: pc::MountSource::Other(serde_json::json!({ "content": r.content })),
             mount_path: format!(".mnt/{}", r.logical_path),
-            access: pc::MountAccess::ReadWrite,
+            access: r.access,
             lifetime: pc::MountLifetime::PerRun,
             required: true,
         },
@@ -76,6 +76,7 @@ pub(crate) struct RepoStage {
     pub url: String,
     pub git_ref: Option<String>,
     pub token: Option<awaken_agent_contract::RedactedString>,
+    pub access: pc::MountAccess,
 }
 
 impl SharedHost {
@@ -385,6 +386,9 @@ impl SharedHost {
             .filter_map(|s| s.name.strip_prefix("github:").map(String::from))
             .collect();
         for repo in repos {
+            if repo.access == pc::MountAccess::ReadOnly {
+                continue;
+            }
             if mcp_owned.contains(&repo.logical) {
                 continue;
             }
@@ -629,6 +633,7 @@ mod provisioning_registry_tests {
             content_hash: String::new(),
             logical_path: logical.to_string(),
             content: format!("content of {logical}"),
+            access: pc::MountAccess::ReadOnly,
         })
     }
 
@@ -638,6 +643,7 @@ mod provisioning_registry_tests {
             url: "https://example.invalid/x.git".to_string(),
             git_ref: None,
             token: None,
+            access: pc::MountAccess::ReadWrite,
         }
     }
 
@@ -784,6 +790,7 @@ mod provisioning_registry_tests {
                     url: "https://example.invalid/x.git".into(),
                     git_ref: None,
                     token: None,
+                    access: pc::MountAccess::ReadWrite,
                 }],
                 ..Default::default()
             },

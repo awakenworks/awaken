@@ -73,10 +73,13 @@ impl ManagedState {
             }
         };
         let agent_id = req.agent.id().to_string();
+        let owner_scope = workspace_id
+            .clone()
+            .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
         let config_view = self
             .config_source
             .as_ref()
-            .and_then(|source| source.agent_view(&agent_id));
+            .and_then(|source| source.agent_view_in(&owner_scope, &agent_id));
         // Resolve the session's effective model. Precedence: the official
         // `agent_with_overrides.model` (a per-session replace) wins; then the legacy
         // `metadata.awaken.model` selection; then the referenced agent's authoritative
@@ -142,27 +145,27 @@ impl ManagedState {
         // Parse the wire `resources[]` (ADR-0038) into staged mounts, and project each
         // into a DTO entry so the created session echoes its create-time resources —
         // list/get/delete then address these and any later-attached ones uniformly.
-        let resources: Vec<SessionResource> = req
+        let resources = req
             .resources
             .iter()
-            .filter_map(parse_session_resource)
-            .collect();
-        // The Session view describes the effective mounted inputs. Explicit
-        // Session resources win by mount path; the runtime host applies the same
-        // precedence when it adds the published Agent's bindings.
-        let explicit_paths: std::collections::HashSet<&str> = resources
-            .iter()
-            .map(|resource| resource.mount_path.as_str())
-            .collect();
-        let mut effective_resources = resources.clone();
-        if let Some(view) = &config_view {
-            effective_resources.extend(
-                view.resources
-                    .iter()
-                    .filter(|resource| !explicit_paths.contains(resource.mount_path.as_str()))
-                    .cloned(),
-            );
-        }
+            .map(|resource| {
+                parse_session_resource(resource).ok_or_else(|| {
+                    StateError::Run(RunError::bad_request(
+                        "invalid resource: unsupported type or malformed fields",
+                    ))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        // This is the one composition point. Runtime receives this exact effective
+        // list and never re-opens the Agent binding repository.
+        let effective_resources = awaken_session_contract::SessionInputResolver::resolve(
+            config_view
+                .as_ref()
+                .map(|view| view.resources.as_slice())
+                .unwrap_or_default(),
+            &resources,
+        )
+        .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
         let resource_dtos: Vec<serde_json::Value> = effective_resources
             .iter()
             .enumerate()
@@ -182,9 +185,6 @@ impl ManagedState {
             ),
             None => (false, None),
         };
-        let owner_scope = workspace_id
-            .clone()
-            .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
         self.runtime
             .prepare_session(
                 &id,
@@ -192,7 +192,7 @@ impl ManagedState {
                     workspace_id: owner_scope.clone(),
                     agent_id: agent_id.clone(),
                     mcp_servers: bindings,
-                    resources,
+                    resources: effective_resources,
                     model: selected_model.as_ref().map(|m| m.id.clone()),
                     runtime: req.awaken_runtime().map(str::to_string),
                     deny_egress,
