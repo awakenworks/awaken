@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail when executable Rust lines changed from a Git base lack E2E coverage."""
+"""Fail when changed production Rust lines lack served-process API E2E coverage."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+TEST_MODULE = re.compile(r"^\s*#\s*\[\s*cfg\s*\([^]]*\btest\b[^]]*\)\s*\]")
 
 
 def run(*args: str) -> str:
@@ -21,8 +22,46 @@ def run(*args: str) -> str:
     ).stdout
 
 
+def diff_base(base: str) -> str:
+    """Resolve the branch point while retaining uncommitted production edits."""
+
+    return run("git", "merge-base", base, "HEAD").strip()
+
+
+def test_only_lines(relative: str) -> set[int]:
+    """Return source lines owned by Rust's compile-time test surface.
+
+    Separate ``src/tests.rs`` modules are wholly test-only. Inline test modules
+    conventionally sit at the end of their production module; once their
+    ``#[cfg(test)]`` attribute begins, no later item is part of a shipped binary.
+    Keeping these lines out of the denominator prevents adding tests from making
+    production coverage regress by construction.
+    """
+
+    path = pathlib.PurePosixPath(relative)
+    source = (ROOT / relative).read_text(encoding="utf-8").splitlines()
+    if path.name == "tests.rs" or "tests" in path.parts:
+        return set(range(1, len(source) + 1))
+    for number, line in enumerate(source, 1):
+        if TEST_MODULE.match(line):
+            following = source[number : min(number + 5, len(source))]
+            item = next(
+                (
+                    candidate
+                    for candidate in following
+                    if candidate.strip()
+                    and not candidate.lstrip().startswith(("#", "//"))
+                ),
+                "",
+            )
+            if re.match(r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+\w+\s*\{", item):
+                return set(range(number, len(source) + 1))
+    return set()
+
+
 def changed_lines(base: str, ignore: re.Pattern[str] | None) -> dict[str, set[int]]:
-    names = run("git", "diff", "--name-only", "--diff-filter=AMR", base, "--")
+    baseline = diff_base(base)
+    names = run("git", "diff", "--name-only", "--diff-filter=ACMR", baseline, "--")
     result: dict[str, set[int]] = {}
     for relative in names.splitlines():
         if not (
@@ -34,7 +73,7 @@ def changed_lines(base: str, ignore: re.Pattern[str] | None) -> dict[str, set[in
         if ignore is not None and ignore.search(relative):
             continue
         lines: set[int] = set()
-        diff = run("git", "diff", "--unified=0", base, "--", relative)
+        diff = run("git", "diff", "--unified=0", baseline, "--", relative)
         for line in diff.splitlines():
             match = HUNK.match(line)
             if not match:
@@ -43,7 +82,9 @@ def changed_lines(base: str, ignore: re.Pattern[str] | None) -> dict[str, set[in
             count = int(match.group(2) or "1")
             lines.update(range(start, start + count))
         if lines:
-            result[relative] = lines
+            production = lines - test_only_lines(relative)
+            if production:
+                result[relative] = production
     return result
 
 
@@ -75,10 +116,15 @@ def main() -> None:
     parser.add_argument("--minimum", type=float, default=0.95)
     parser.add_argument(
         "--ignore-filename-regex",
-        help="apply the served-binary reachability exclusions used by the coverage report",
+        help="apply the production reachability exclusions used by the coverage report",
     )
     parser.add_argument("--show-missing", type=int, default=80)
     parser.add_argument("--show-files", type=int, default=30)
+    parser.add_argument(
+        "--label",
+        default="changed API E2E line coverage",
+        help="human-readable authority name printed in the report and failures",
+    )
     args = parser.parse_args()
     if not 0.0 < args.minimum < 1.0:
         parser.error("--minimum must be between zero and one")
@@ -101,13 +147,13 @@ def main() -> None:
             for number in sorted(lines & measured.keys())
         )
     if not executable:
-        raise SystemExit("changed E2E line coverage: no changed executable Rust lines found")
+        raise SystemExit(f"{args.label}: no changed executable Rust lines found")
 
     covered = [(path, line, count) for path, line, count in executable if count > 0]
     missing = [(path, line) for path, line, count in executable if count == 0]
     ratio = len(covered) / len(executable)
     print(
-        f"changed E2E line coverage: {len(covered)}/{len(executable)} = {ratio:.2%} "
+        f"{args.label}: {len(covered)}/{len(executable)} = {ratio:.2%} "
         f"(required > {args.minimum:.0%}, base {args.base})"
     )
     by_file: dict[str, list[int]] = collections.defaultdict(lambda: [0, 0])
@@ -129,12 +175,12 @@ def main() -> None:
     if len(missing) > args.show_missing:
         print(f"  ... and {len(missing) - args.show_missing} more")
     if ratio <= args.minimum:
-        raise SystemExit("changed E2E line coverage is below the strict threshold")
+        raise SystemExit(f"{args.label} is below the strict threshold")
 
 
 if __name__ == "__main__":
     try:
         main()
     except subprocess.CalledProcessError as error:
-        print(f"changed E2E line coverage command failed: {error}", file=sys.stderr)
+        print(f"changed line coverage command failed: {error}", file=sys.stderr)
         raise SystemExit(error.returncode) from error

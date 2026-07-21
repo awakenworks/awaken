@@ -1,23 +1,23 @@
 #!/usr/bin/env bash
-# E2E line coverage of the served Rust binary (`awaken-server`).
+# Changed production line coverage driven only through TypeScript/JavaScript API
+# scenarios against served Rust processes.
 #
 # Instruments the workspace with cargo-llvm-cov (continuous mode, so profiles
 # survive SIGINT/SIGKILL of spawned servers), drives every DETERMINISTIC e2e
-# chain against the instrumented binary, and reports line coverage. The
+# chain against the instrumented binary and reports line coverage. The
 # real-model chain (`test:real`) is additionally run when ANTHROPIC_API_KEY /
 # KIMI_API_KEY is set.
 #
 # Scope: coverage is measured over the code REACHABLE from the served binary.
-# Files excluded below are unreachable BY DESIGN from any e2e run — each with
-# the reason; revisit an exclusion when its wiring changes:
+# Files excluded below are unreachable BY DESIGN from a hermetic API E2E run — each
+# with the reason; revisit an exclusion when its wiring changes. The MCP server,
+# file store, local/namespace providers, and container providers are intentionally
+# included: all are linked into and selected by the production composition.
 #   - awaken-run-ingress/src/memory.rs    in-memory reference implementation
 #     ("executable specification" per its module doc); the server always uses
 #     the SQLite dispatch store.
-#   - awaken-run-ingress/src/postgres.rs  requires a live PostgreSQL.
 #   - awaken-ext-mcp/src/stdio.rs         the server wires the HTTP MCP
 #     transport only; stdio is covered by the crate's own Rust tests.
-#   - awaken-sandbox-local/src/namespace.rs  no product wiring selects the
-#     namespace sandbox tier yet (ADR-0041 later slice).
 #
 # Usage: scripts/ci/e2e-coverage.sh [--open]   (from the repo root)
 set -euo pipefail
@@ -28,12 +28,8 @@ cd "$(dirname "$0")/../.."
 #
 # (1) Workspace crates NOT linked into the binary — no e2e can execute them
 #     (verified with `cargo tree -p awaken-server -i <crate>`):
-#       protocol-mcp   the MCP *server* surface (awaken exposing its tools);
-#                      the binary is an MCP *client* only.
-#       store-postgres / run-ingress postgres paths — need a live PostgreSQL.
 #       store-conformance — the trait test harness, not production code.
-#       runtime-examples / sandbox-container — examples / an alt sandbox tier
-#                      with no product wiring.
+#       runtime-examples — examples, not production composition.
 # (2) Alternate-backend / reference / real-provider modules inside LINKED crates,
 #     unreachable from a deterministic e2e by design:
 #       run-ingress/memory.rs   in-memory reference impl (the server uses SQLite).
@@ -44,36 +40,26 @@ cd "$(dirname "$0")/../.."
 #                      composition API, the sensitive-field marking (a plugin
 #                      concern), or the JSON-RPC peer (stdio + sampling). All are
 #                      covered by ext-mcp's own unit tests.
-#       sandbox-local/{namespace,provider}.rs  the ADR-0041 provisioning-contract
-#                      tiers; the served host uses the pre-contract
-#                      LocalSandboxProvider, so neither is reached (verified).
 #       protocol-acp/error.rs   the provider-error taxonomy (auth/rate-limit/…)
 #                      only fires on a REAL CLI's output; the fake CLI cannot
 #                      inject provider text, so it is unit-tested, not e2e.
+# The stage gate provisions a disposable PostgreSQL and drives the Postgres
+# dispatch, history, wake, and resource-plane paths. The extended gate drives
+# ACP JSON-RPC, so neither surface is excluded from changed-line evidence.
 # Revisit an exclusion when its wiring changes.
 # Additional exclusions (same "unreachable from a deterministic e2e by design"
 # rationale as the block above; added when the extended chain landed):
-#   - config-plane postgres backends (admin-config-api/config-store/credential-vault/
-#     model-catalog src/postgres.rs) — like store-postgres/run-ingress/postgres.rs,
-#     they need a live PostgreSQL; the deterministic e2e uses the SQLite backends.
-#   - credential-vault/oauth.rs — the OAuth authorization-code exchange needs an
-#     external IdP; unit-tested, never reached by a hermetic e2e.
-#   - ext-builtin-tools/web.rs — web_fetch/web_search make real network egress; the
-#     deterministic suite has no outbound network, so they are unit-tested only.
-#   - protocol-acp/{jsonrpc,real_acp}.rs — the real ACP CLI codec (like the already
-#     excluded protocol-acp/error.rs); the fake CLI drives the neutral bridge, not
-#     these real-transport paths.
-#   - connection-plan/plan.rs — the ConnectionPlan value object is exercised by the
-#     crate's own topology.rs unit tests (like runtime-examples), not the served e2e.
+#   - protocol-acp/real_acp.rs — the real external ACP CLI transport; the API E2E
+#     drives the same neutral bridge through the deterministic JSON-RPC fixture.
 #   - server-local/models.rs — the deterministic scenario MODEL ZOO: e2e test
 #     fixtures compiled into the served binary (only the active scenario's model
 #     runs per e2e). Test scaffolding, not shipped product logic.
-#   - awaken-scope/, awaken-tool-pattern/ — foundation value objects (tenancy tree)
-#     and the tool-call pattern DSL; both carry comprehensive crate-level unit
-#     tests (like awaken-store-conformance), and the e2e exercises only their
-#     common paths, not every parser/validator branch.
-IGNORE='(awaken-protocol-mcp|awaken-store-postgres|awaken-store-conformance|awaken-runtime-examples|awaken-sandbox-container|awaken-scope|awaken-tool-pattern)/|awaken-run-ingress/src/(memory|postgres)\.rs|awaken-ext-mcp/src/(stdio|plugin|sensitive)\.rs|awaken-mcp-wire/src/jsonrpc\.rs|awaken-sandbox-local/src/(namespace|provider)\.rs|awaken-protocol-acp/src/(error|jsonrpc|real_acp)\.rs|awaken-(admin-config-api|config-store|credential-vault|model-catalog)/src/postgres\.rs|awaken-credential-vault/src/oauth\.rs|awaken-ext-builtin-tools/src/web\.rs|awaken-connection-plan/src/plan\.rs|awaken-server/src/models\.rs'
+# Reachable production modules are deliberately not excluded merely because they
+# need PostgreSQL, a local OAuth/HTTP fixture, or uncommon validation input.
+IGNORE='(awaken-store-conformance|awaken-runtime-examples)/|awaken-run-ingress/src/memory\.rs|awaken-ext-mcp/src/(stdio|plugin|sensitive)\.rs|awaken-mcp-wire/src/jsonrpc\.rs|awaken-protocol-acp/src/(error|real_acp)\.rs|awaken-server/src/models\.rs'
 
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/tmp/awaken-e2e-coverage}"
+export CARGO_LLVM_COV_TARGET_DIR="${CARGO_LLVM_COV_TARGET_DIR:-$CARGO_TARGET_DIR}"
 eval "$(cargo llvm-cov show-env --sh)"
 export RUSTFLAGS="${RUSTFLAGS:-} -C llvm-args=-runtime-counter-relocation"
 export LLVM_PROFILE_FILE="$CARGO_LLVM_COV_TARGET_DIR/awaken-%p%c.profraw"
