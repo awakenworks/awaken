@@ -75,12 +75,19 @@ async function main() {
 
     // Cancel the awaiting run by id.
     const cancel = await post(`/v1/durable/threads/${THREAD}/cancel`, { run_id: runId });
-    assert.equal(cancel.status, 200, 'cancel accepted');
+    assert.equal(cancel.status, 200, `cancel accepted: ${JSON.stringify(cancel.body)}`);
     assert.equal(cancel.body.cancelled, true, 'cancel reported the run cancelled');
     pass('cancelled the awaiting durable run by id');
 
-    // The dispatch row is gone — the run is no longer claimable/runnable.
-    const afterRows = (await get(`/v1/durable/threads/${THREAD}/dispatches`)).body.dispatches;
+    // The API acknowledges the durable cancellation intent. A process-pool worker
+    // may already own its claim, so terminal settlement is asynchronously observable
+    // even though the intent itself was accepted synchronously.
+    let afterRows = [];
+    for (let i = 0; i < 200; i++) {
+      afterRows = (await get(`/v1/durable/threads/${THREAD}/dispatches`)).body.dispatches;
+      if (!afterRows.some((d) => d.run_id === runId)) break;
+      await sleep(25);
+    }
     assert.ok(!afterRows.some((d) => d.run_id === runId), 'the cancelled run is removed from the dispatch queue');
     pass('cancelled run removed from the dispatch queue (not runnable)');
 
