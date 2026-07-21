@@ -130,7 +130,7 @@ async function exercisePodmanRootfsMatrix(client) {
   }, false);
   const remaining = testContainerNames({ all: true });
   assert.ok(
-    remaining.every((name) => name.startsWith('awaken-warmpool-')),
+    remaining.every((name) => name.includes('-warmpool_')),
     `every rootfs matrix Session must be released; only unused warm capacity may remain: ${remaining}`,
   );
 }
