@@ -28,13 +28,8 @@ pub struct AgentConfigView {
 /// over its `ConfigService` (the managed crate cannot depend on the host), so the
 /// managed adapter reads the neutral config truth without naming it.
 pub trait AgentConfigSource: Send + Sync {
-    /// The config-plane view of `agent_id`, if it is published there.
-    fn agent_view(&self, agent_id: &str) -> Option<AgentConfigView>;
-
-    /// Workspace-scoped projection used when creating a Session. Implementors
-    /// backed by a scoped repository must override this method; the default keeps
-    /// scope-free registries source-compatible while they migrate.
-    fn agent_view_in(&self, _workspace_id: &str, agent_id: &str) -> Option<AgentConfigView> {
-        self.agent_view(agent_id)
-    }
+    /// The config-plane view of `agent_id` installed in `workspace_id`. There is no
+    /// scope-free fallback: a projection missing its trusted Workspace must fail
+    /// closed instead of searching another tenant's installed catalog.
+    fn agent_view_in(&self, workspace_id: &str, agent_id: &str) -> Option<AgentConfigView>;
 }

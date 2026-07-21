@@ -15,6 +15,7 @@ mod binding_resolver;
 mod capabilities;
 mod compaction;
 mod config_plane;
+mod installed_catalog;
 mod publication;
 mod tool_catalog;
 

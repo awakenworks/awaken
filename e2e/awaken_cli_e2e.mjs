@@ -270,6 +270,59 @@ async function main() {
     assert.ok(warmEvents.some((event) => event.type === 'agent.message'), 'warm-installed snapshot executes');
     console.log('ok: durable publication warm-installed after restart without re-resolution');
 
+    // Restore the live catalog endpoint after proving the ordinary Agent retained
+    // its older pin. The catalog-write reconciler republishes the reserved Admin
+    // Assistant against this current endpoint; then drive its six real management
+    // adapters through the ordinary Sessions API in the production composition.
+    r = await req(base, 'PUT', '/v1/config/endpoints/ep1', {
+      id: 'ep1', provider_id: 'anthropic', dialect: 'anthropic_messages',
+      base_url: `${upstream.url}/v1/`, timeout_secs: 300, display_name: 'restored', version: 3,
+    });
+    assert.equal(r.status, 200, `restore endpoint: ${JSON.stringify(r.json)}`);
+    const adminDeadline = Date.now() + 10_000;
+    let projectedAdmin;
+    do {
+      projectedAdmin = await req(base, 'GET', '/v1/agents/__admin_assistant');
+      if (projectedAdmin.status === 200) break;
+      await sleep(100);
+    } while (Date.now() < adminDeadline);
+    assert.equal(projectedAdmin.status, 200, `admin assistant projection: ${JSON.stringify(projectedAdmin.json)}`);
+    const adminSession = await client.beta.sessions.create({
+      agent: '__admin_assistant', environment_id: 'env_local', betas: BETAS,
+    });
+    await client.beta.sessions.events.send(adminSession.id, {
+      events: [{ type: 'user.message', content: [{ type: 'text', text: 'author an agent and environment' }] }],
+      betas: BETAS,
+    });
+    const adminEvents = [];
+    for await (const event of client.beta.sessions.events.list(adminSession.id, { betas: BETAS })) {
+      adminEvents.push(event);
+    }
+    const adminTranscript = JSON.stringify(adminEvents);
+    for (const toolId of [
+      'admin_get_platform_capabilities',
+      'admin_draft_agent',
+      'admin_patch_agent',
+      'admin_validate_agent',
+      'admin_draft_environment',
+      'admin_explain_console',
+    ]) assert.ok(adminTranscript.includes(toolId), `production Admin Assistant invoked ${toolId}`);
+    assert.ok(adminTranscript.includes('ADMIN-RUN-DONE'), 'production Admin Assistant completed its tool loop');
+    const draftedResources = await req(base, 'GET', '/v1/config/agents/drafted-agent/resources');
+    assert.equal(draftedResources.status, 200, JSON.stringify(draftedResources.json));
+    assert.equal(draftedResources.json.inputs.length, 1);
+    assert.deepEqual(draftedResources.json.inputs[0].target, {
+      kind: 'file', id: 'replacement-file',
+    });
+    assert.equal(draftedResources.json.inputs[0].access, 'read_only', 'File access is monotonically narrowed');
+    const environments = await req(base, 'GET', '/v1/environments');
+    assert.equal(environments.status, 200, JSON.stringify(environments.json));
+    assert.ok(
+      environments.json.data.some((environment) => environment.name === 'admin-authored-environment'),
+      'Admin Assistant persisted the Environment through the production registry',
+    );
+    console.log('ok: production Admin Assistant drove all six management adapters');
+
     const callsBeforeRevocation = upstream.requests.length;
     r = await req(base, 'POST', `/v1/config/credentials/${credentialId}/archive`, undefined);
     assert.equal(r.status, 200, `archive credential: ${JSON.stringify(r.json)}`);

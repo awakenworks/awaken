@@ -251,6 +251,7 @@ async fn create_agent(
 async fn retrieve_agent(
     State(state): State<Arc<AgentRegistryState>>,
     Path(id): Path<String>,
+    scope: Option<Extension<WorkspaceScope>>,
 ) -> Result<Json<Agent>, WireError> {
     // A registry record (an agent created via this API) wins.
     {
@@ -261,7 +262,12 @@ async fn retrieve_agent(
     }
     // Otherwise an agent published on the config plane is retrievable here as a pure
     // projection of that single truth (never created via this registry).
-    if let Some(view) = state.config_source.as_ref().and_then(|s| s.agent_view(&id)) {
+    let workspace = request_scope(&scope);
+    if let Some(view) = state
+        .config_source
+        .as_ref()
+        .and_then(|source| source.agent_view_in(&workspace, &id))
+    {
         return Ok(Json(project_config_view(&id, &view)));
     }
     Err(not_found())
@@ -383,8 +389,8 @@ mod tests {
     /// A config plane that has published exactly one agent, `assistant`.
     struct OneAgent;
     impl AgentConfigSource for OneAgent {
-        fn agent_view(&self, agent_id: &str) -> Option<AgentConfigView> {
-            (agent_id == "assistant").then(|| AgentConfigView {
+        fn agent_view_in(&self, workspace_id: &str, agent_id: &str) -> Option<AgentConfigView> {
+            (workspace_id == DEFAULT_SCOPE && agent_id == "assistant").then(|| AgentConfigView {
                 model: Some("kimi-k2".to_string()),
                 system: Some("be helpful".to_string()),
                 tool_ids: vec!["fs_read".to_string()],
@@ -429,6 +435,12 @@ mod tests {
         // An id in neither the registry nor the config plane is still 404.
         let (status, _) = get(&app, "/v1/agents/ghost").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+
+        assert_eq!(
+            call_scoped(&app, "GET", "/v1/agents/assistant", Some("workspace-b")).await,
+            StatusCode::NOT_FOUND,
+            "a projected Agent must not fall back to another Workspace"
+        );
     }
 
     // --- Tenant isolation (ADR-0051) -----------------------------------------
@@ -614,22 +626,24 @@ mod tests {
         );
     }
 
-    /// A config-plane projection (an agent published on the config plane, never
+    /// A config-plane projection (an Agent published on the config plane, never
     /// created via this registry) has no registry owner, so the ownership guard
-    /// passes it through: it is retrievable under ANY scope. Its tenant scoping
-    /// lives in the config store, not this aspect layer — this characterizes the
-    /// deliberate pass-through so a regression that either over- or under-fences it
-    /// is caught.
+    /// passes it through to the scoped projection source. The source remains the
+    /// ownership truth and must fail closed outside the installed Workspace.
     #[tokio::test]
-    async fn a_config_plane_projection_is_not_fenced_by_this_guard() {
+    async fn a_config_plane_projection_is_fenced_by_its_scoped_source() {
         let state = Arc::new(AgentRegistryState::new().with_config_source(Arc::new(OneAgent)));
         let app = agents_router(state);
-        for scope in [Some("ws_a"), Some("ws_b"), None] {
+        for scope in [Some("ws_a"), Some("ws_b")] {
             assert_eq!(
                 call_scoped(&app, "GET", "/v1/agents/assistant", scope).await,
-                StatusCode::OK,
-                "config-plane projection passes the ownership guard for {scope:?}"
+                StatusCode::NOT_FOUND,
+                "the scoped source denies a foreign projection for {scope:?}"
             );
         }
+        assert_eq!(
+            call_scoped(&app, "GET", "/v1/agents/assistant", None).await,
+            StatusCode::OK
+        );
     }
 }
