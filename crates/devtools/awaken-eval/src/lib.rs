@@ -8,9 +8,12 @@
 //! JSON through [`store`]. `Purpose::EvalRecording` is the consent purpose a
 //! record-from-real-run path attributes captures to (see `awaken-data-subject`).
 
+pub mod outcome_acp;
+pub mod outcome_judge;
 pub mod record;
 pub mod replay;
 pub mod store;
+pub mod transcript_corpus;
 
 use serde::{Deserialize, Serialize};
 

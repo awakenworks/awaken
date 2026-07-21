@@ -30,8 +30,14 @@ use crate::run_exec::{Continuity, RunPurpose, SnapshotRunRequest};
 pub const DEFAULT_JUDGE_INSTRUCTIONS: &str = "\
 You are a strict evaluator. You are given a goal, its rubric, and a deliverable. \
 Judge whether the deliverable satisfies the rubric. Reply with ONLY a JSON object \
-of the form {\"result\": \"satisfied\" | \"needs_revision\", \"explanation\": \"...\"} \
-and nothing else.";
+of the form {\"result\": \"satisfied\" | \"needs_revision\" | \"failed\", \
+\"explanation\": \"...\"} and nothing else. Use satisfied only when the rubric is \
+fully met. Use needs_revision when another Worker revision could improve an incomplete \
+deliverable. Use failed only for an explicit unrecoverable business failure or policy \
+prohibition, never for ordinary incompleteness. Judge whether the requested Outcome was \
+actually achieved, not whether the Worker accurately reported its status: an accurate report \
+of a permanent blocker is failed, not satisfied. When evidence is present, cite its decisive \
+stable token or locator in the explanation.";
 
 /// A default judge agent config registered under `agent_id`: no tools, a fresh
 /// grading window. A host may override by registering its own config for the id.
@@ -238,6 +244,26 @@ mod tests {
         assert!(cfg.resolved_spec.instructions.contains("strict evaluator"));
         // A judge is pure reasoning: no tools.
         assert!(cfg.resolved_spec.tool_descriptors.is_empty());
+    }
+
+    #[test]
+    fn default_judge_contract_is_domain_neutral() {
+        let instructions = DEFAULT_JUDGE_INSTRUCTIONS.to_ascii_lowercase();
+        for required in [
+            "satisfied",
+            "needs_revision",
+            "failed",
+            "rubric",
+            "evidence",
+        ] {
+            assert!(instructions.contains(required), "missing `{required}`");
+        }
+        for domain_term in ["coverage", "commit", "git", "test log", "compiler"] {
+            assert!(
+                !instructions.contains(domain_term),
+                "default Judge prompt leaked domain term `{domain_term}`"
+            );
+        }
     }
 
     #[tokio::test]

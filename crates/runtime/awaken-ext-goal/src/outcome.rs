@@ -921,6 +921,7 @@ mod tests {
             r#"{"result":"satisfied"}"#,
             r#"{"result":"satisfied","explanation":""}"#,
             r#"{"result":"satisfied","explanation":"x","extra":true}"#,
+            r#"{"result":"satisfied","result":"needs_revision","explanation":"x"}"#,
         ] {
             assert!(
                 parse_grade(reply).is_err(),

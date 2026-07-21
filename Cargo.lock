@@ -543,10 +543,14 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-ext-goal",
+ "awaken-run-executor-acp",
  "awaken-runtime",
  "awaken-runtime-contract",
+ "rusqlite",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
  "tokio",
 ]
 

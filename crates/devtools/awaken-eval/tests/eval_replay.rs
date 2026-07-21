@@ -1,8 +1,12 @@
 //! End-to-end: a dataset replays through the REAL runtime and scores correctly,
 //! and datasets round-trip through the JSON store.
 
+use awaken_eval::outcome_judge::{
+    JudgeCase, JudgeDataset, JudgeObservation, SCHEMA_VERSION, SourceKind, score,
+};
 use awaken_eval::store::{load_dataset, save_dataset};
 use awaken_eval::{Case, Dataset, Expectation, ScriptedToolCall, ScriptedTurn, replay};
+use awaken_ext_goal::outcome::GradeDecision;
 
 fn dataset() -> Dataset {
     Dataset {
@@ -143,4 +147,64 @@ fn datasets_round_trip_through_the_json_store() {
     assert_eq!(loaded.cases[0].expectations.len(), 2);
 
     std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn outcome_judge_report_uses_the_production_wire_parser() {
+    let dataset = JudgeDataset {
+        schema_version: SCHEMA_VERSION,
+        name: "outcome-smoke".into(),
+        cases: vec![JudgeCase {
+            id: "regression".into(),
+            source: SourceKind::CodexTranscriptDerived,
+            tags: vec!["test_failure".into()],
+            description: "ship a regression-free change".into(),
+            rubric: "all regression tests pass".into(),
+            deliverable: "implementation is complete".into(),
+            worker_state: serde_json::json!({ "phase": "ended" }),
+            evidence: vec![],
+            expected: GradeDecision::NeedsRevision,
+            required_reason_terms: vec!["TST-FAIL-17".into()],
+        }],
+    };
+    let report = score(
+        &dataset,
+        &[JudgeObservation {
+            case_id: "regression".into(),
+            output: r#"{"result":"needs_revision","explanation":"TST-FAIL-17 must be fixed"}"#
+                .into(),
+            latency_ms: Some(12),
+        }],
+    );
+    assert_eq!(report.metrics.decision_correct, 1);
+    assert_eq!(report.metrics.schema_valid, 1);
+    assert_eq!(report.metrics.explanation_grounded, 1);
+}
+
+#[test]
+fn committed_outcome_judge_gold_fixture_is_valid_and_label_balanced() {
+    let dataset: JudgeDataset =
+        serde_json::from_str(include_str!("../fixtures/outcome-judge-gold-v1.json")).unwrap();
+    dataset.validate().unwrap();
+    assert_eq!(dataset.cases.len(), 15);
+    for decision in [
+        GradeDecision::Satisfied,
+        GradeDecision::NeedsRevision,
+        GradeDecision::Failed,
+    ] {
+        assert_eq!(
+            dataset
+                .cases
+                .iter()
+                .filter(|case| case.expected == decision)
+                .count(),
+            5
+        );
+    }
+    assert!(
+        dataset
+            .cases
+            .iter()
+            .all(|case| !case.required_reason_terms.is_empty())
+    );
 }
