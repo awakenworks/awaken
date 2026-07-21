@@ -15,6 +15,7 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import Anthropic from '@anthropic-ai/sdk';
 import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
 
@@ -80,6 +81,41 @@ async function main() {
     });
     assert.equal(up.content, 'second');
     assert.notEqual(up.memory_version_id, mem.memory_version_id, 'an update mints a new version');
+    const staleReplay = await c.beta.memoryStores.memories.update(mem.id, {
+      memory_store_id: store.id,
+      content: 'second',
+      precondition: { type: 'content_sha256', content_sha256: mem.content_sha256 },
+      betas: BETAS,
+    });
+    assert.equal(staleReplay.memory_version_id, up.memory_version_id);
+    const freshReplay = await c.beta.memoryStores.memories.update(mem.id, {
+      memory_store_id: store.id,
+      content: 'second',
+      precondition: { type: 'content_sha256', content_sha256: up.content_sha256 },
+      betas: BETAS,
+    });
+    assert.equal(freshReplay.memory_version_id, up.memory_version_id);
+    const displaced = await c.beta.memoryStores.memories.create(store.id, {
+      path: '/notes/replaced.md',
+      content: 'displaced',
+      betas: BETAS,
+    });
+    const moved = await c.beta.memoryStores.memories.update(mem.id, {
+      memory_store_id: store.id,
+      path: '/notes/replaced.md',
+      content: 'second',
+      precondition: { type: 'content_sha256', content_sha256: up.content_sha256 },
+      betas: BETAS,
+    });
+    assert.equal(moved.path, '/notes/replaced.md');
+    await assert.rejects(
+      () => c.beta.memoryStores.memories.retrieve(displaced.id, {
+        memory_store_id: store.id,
+        betas: BETAS,
+      }),
+      (error) => error.status === 404,
+      'moving onto an occupied path records deletion of the displaced head',
+    );
     pass('compare-and-swap update: stale 409, fresh ok, version bumped');
 
     // -- path_prefix drills into a subtree ------------------------------------
@@ -140,9 +176,65 @@ async function main() {
     // record, not an in-memory registry.
     const after = await drain(c.beta.memoryStores.memories.list(store.id, { betas: BETAS }));
     const byPath = Object.fromEntries(after.map((m) => [m.path, m.content]));
-    assert.equal(byPath['/notes/a.md'], 'second', 'the CAS-updated memory survived the restart');
+    assert.equal(
+      byPath['/notes/replaced.md'],
+      'second',
+      'the moved CAS-updated memory survived the restart',
+    );
     assert.equal(byPath['/archive/old.md'], 'kept', 'the second memory survived the restart');
     pass('path-addressed memories are durable across a process restart');
+
+    // Persistence corruption must fail closed through the public resource API.
+    // These mutations emulate damaged durable rows; no test-only service route is
+    // involved, and each row is restored before checking the next decoder arm.
+    const database = `${STORE_DIR}/memory_fs.db`;
+    const modifiedVersion = execFileSync('sqlite3', [
+      database,
+      `SELECT id FROM memory_store_versions WHERE store_id='${store.id}' AND operation='modified' ORDER BY ordinal DESC LIMIT 1`,
+    ], { encoding: 'utf8' }).trim();
+    execFileSync('sqlite3', [
+      database,
+      `UPDATE memory_store_versions SET operation='corrupt-operation' WHERE id='${modifiedVersion}'`,
+    ]);
+    await assert.rejects(
+      () => drain(c.beta.memoryStores.memoryVersions.list(store.id, { betas: BETAS })),
+      (error) => error.status === 500,
+      'an unknown durable operation is never projected as a valid version',
+    );
+    execFileSync('sqlite3', [
+      database,
+      `UPDATE memory_store_versions SET operation='modified' WHERE id='${modifiedVersion}'`,
+    ]);
+    execFileSync('sqlite3', [
+      database,
+      `UPDATE memory_store_memories SET content=X'FFFE' WHERE id='${mem.id}'`,
+    ]);
+    await assert.rejects(
+      () => c.beta.memoryStores.memories.retrieve(mem.id, {
+        memory_store_id: store.id,
+        betas: BETAS,
+      }),
+      (error) => error.status === 404 || error.status === 500,
+      'non-UTF8 Memory content fails closed',
+    );
+    execFileSync('sqlite3', [
+      database,
+      `UPDATE memory_store_memories SET content=CAST('second' AS BLOB) WHERE id='${mem.id}'`,
+    ]);
+    execFileSync('sqlite3', [
+      database,
+      `UPDATE memory_store_versions SET content=X'FFFE' WHERE id='${modifiedVersion}'`,
+    ]);
+    await assert.rejects(
+      () => drain(c.beta.memoryStores.memoryVersions.list(store.id, { betas: BETAS })),
+      (error) => error.status === 500,
+      'non-UTF8 version content fails closed',
+    );
+    execFileSync('sqlite3', [
+      database,
+      `UPDATE memory_store_versions SET content=CAST('second' AS BLOB) WHERE id='${modifiedVersion}'`,
+    ]);
+    pass('corrupt durable Memory/version rows fail closed without fabricating state');
 
     console.log('E2E PASS: durable path-addressed memory store (create + retrieve + CAS + restart).');
   } finally {
