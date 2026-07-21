@@ -16,6 +16,7 @@ type Scenario = {
   id: string;
   file: string;
   postgres?: boolean;
+  environment?: Record<string, string>;
 };
 
 type Obligation = {
@@ -53,6 +54,16 @@ const scenarios: Scenario[] = [
   { id: 'resource_ephemeral', file: 'e2e/resource_ephemeral_e2e.mjs' },
   { id: 'resource_scope_boundary', file: 'e2e/resource_scope_boundary_e2e.mjs' },
   { id: 'container_provider_config', file: 'e2e/container_provider_configuration_e2e.ts' },
+  {
+    id: 'container_docker',
+    file: 'e2e/managed_container_agent_e2e.mjs',
+    environment: { AWAKEN_E2E_CONTAINER_ENGINE: 'docker', AWAKEN_E2E_REQUIRE_CONTAINER: '1' },
+  },
+  {
+    id: 'container_podman',
+    file: 'e2e/managed_container_agent_e2e.mjs',
+    environment: { AWAKEN_E2E_CONTAINER_ENGINE: 'podman', AWAKEN_E2E_REQUIRE_CONTAINER: '1' },
+  },
   { id: 'file_workspace_ownership', file: 'e2e/file_workspace_ownership_e2e.ts' },
   { id: 'mcp_stdio', file: 'e2e/mcp_server_core_e2e.ts' },
   { id: 'mcp_http', file: 'e2e/mcp_streamable_http_e2e.ts' },
@@ -127,6 +138,8 @@ const obligations: Obligation[] = [
   { id: 'D6-16', stage: '6 sandbox/recovery/metrics', behavior: 'a docker-only build still rejects unsupported podman and Kubernetes tiers', scenario: 'container_provider_config' },
   { id: 'D6-17', stage: '6 sandbox/recovery/metrics', behavior: 'one workspace revoke preserves a content-addressed blob owned by another workspace', scenario: 'file_workspace_ownership' },
   { id: 'D6-18', stage: '6 sandbox/recovery/metrics', behavior: 'last-owner deletion removes the blob and duplicate revoke fails closed', scenario: 'file_workspace_ownership' },
+  { id: 'D6-19', stage: '6 sandbox/recovery/metrics', behavior: 'the managed API drives one Session-owned Docker environment across ACP, hand, resources, artifacts, and release', scenario: 'container_docker' },
+  { id: 'D6-20', stage: '6 sandbox/recovery/metrics', behavior: 'the same managed lifecycle runs through the replaceable Podman provider without a parallel runtime path', scenario: 'container_podman' },
 
   { id: 'D7-01', stage: '7 resource persistence', behavior: 'File, Memory, Skill, and lifecycle adapters select one shared backend family', scenario: 'resource_plane_postgres' },
   { id: 'D7-02', stage: '7 resource persistence', behavior: 'resource data survives process and local-directory replacement', scenario: 'resource_plane_postgres' },
@@ -296,6 +309,7 @@ async function main(): Promise<void> {
               AWAKEN_E2E_POSTGRES_CONTAINER: postgres.container,
             }
           : {}),
+        ...scenario.environment,
       };
       const result = spawnSync(process.execPath, [scenario.file], {
         cwd: ROOT,

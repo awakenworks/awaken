@@ -1,18 +1,20 @@
-// Full external SDK -> managed -> CONTAINER agent, against a REAL Docker daemon.
+// Full external SDK -> managed -> CONTAINER agent, against a real Docker or Podman daemon.
 //
 // The deepest sandbox seam: an ACP agent running as a **process-as-container** in a
-// real Docker container, driven end-to-end through the managed protocol. The brain
-// (scenario-host, `AWAKEN_MODEL_MODE=acp-container`, built `--features container-docker`)
+// real container, driven end-to-end through the managed protocol. The brain
+// (scenario-host, `AWAKEN_MODEL_MODE=acp-container`, built with the selected backend)
 // creates one Session-owned environment, starts the production hand in it, and execs
 // a deterministic newline ACP fixture in that SAME environment. Seeing the fixture's
 // marker proves: external SDK -> managed session -> environment create -> bound ACP
 // exec -> response; inspecting the container proves no per-attempt environment exists.
 //
 // The k8s POD mechanics of the same seam are covered by the k8s adapter e2e
-// (`awaken-sandbox-container/tests/k8s_e2e.rs`) + the k3d topology e2e; Docker keeps
-// this managed-protocol proof to a single daemon (no cluster).
+// (`awaken-sandbox-container/tests/k8s_e2e.rs`) + the k3d topology e2e; Docker and
+// Podman keep this managed-protocol proof to a single daemon (no cluster).
 //
-// Self-skips when Docker is unreachable. Run: (from e2e/) node managed_container_agent_e2e.mjs
+// Select Podman with `AWAKEN_E2E_CONTAINER_ENGINE=podman`. The standalone npm suite
+// self-skips when the selected engine is unavailable; the stage gate sets
+// `AWAKEN_E2E_REQUIRE_CONTAINER=1` and fails closed instead.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -24,8 +26,10 @@ import { REPO_ROOT } from './harness.mjs';
 const PORT = Number(process.env.E2E_PORT ?? 38143);
 const BETAS = ['managed-agents-2026-04-01', 'files-api-2025-04-14'];
 const MARKER = 'CONTAINER-AGENT-OK';
+const ENGINE = process.env.AWAKEN_E2E_CONTAINER_ENGINE ?? 'docker';
+assert.ok(['docker', 'podman'].includes(ENGINE), `unsupported container engine ${ENGINE}`);
 const IMAGE = process.env.AWAKEN_TEST_SESSION_IMAGE ?? 'awaken-sandbox:session-e2e';
-const TMP = `/tmp/awaken-container-agent-e2e-${process.pid}`;
+const TMP = `/tmp/awaken-container-agent-${ENGINE}-e2e-${process.pid}`;
 const ACP_FIXTURE = `process.stdin.once('data',()=>{console.log(JSON.stringify({type:'message',text:'${MARKER}'}));console.log(JSON.stringify({type:'turn_end',reason:'natural_end'}))})`;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -64,39 +68,39 @@ function seedSkillRepository() {
   return bare;
 }
 
-function dockerAvailable() {
-  return spawnSync('docker', ['version'], { stdio: 'ignore' }).status === 0;
+function containerAvailable() {
+  return spawnSync(ENGINE, ['version'], { stdio: 'ignore' }).status === 0;
 }
 
 function testContainers({ all = false } = {}) {
   const args = ['ps'];
   if (all) args.push('-a');
   args.push('-q', '--filter', 'label=awaken.sandbox=1', '--filter', `ancestor=${IMAGE}`);
-  return execFileSync('docker', args, { encoding: 'utf8' }).trim().split(/\s+/).filter(Boolean);
+  return execFileSync(ENGINE, args, { encoding: 'utf8' }).trim().split(/\s+/).filter(Boolean);
 }
 
 function cleanupTestContainers() {
   const containers = testContainers({ all: true });
-  if (containers.length > 0) spawnSync('docker', ['rm', '-f', ...containers], { stdio: 'ignore' });
+  if (containers.length > 0) spawnSync(ENGINE, ['rm', '-f', ...containers], { stdio: 'ignore' });
 }
 
 // Build the canonical production image, but omit network-fetched ACP packages: this
 // hermetic scenario supplies a tiny Node newline fixture through AWAKEN_ACP_ARGV.
 // The image still contains the real `awaken-sandbox hand --stdio` binary.
 function ensureSessionImage() {
-  if (spawnSync('docker', ['image', 'inspect', IMAGE], { stdio: 'ignore' }).status === 0) return;
+  if (spawnSync(ENGINE, ['image', 'inspect', IMAGE], { stdio: 'ignore' }).status === 0) return;
   execFileSync('deploy/images/sandbox/build.sh', [IMAGE, ''], {
     cwd: REPO_ROOT,
-    env: process.env,
+    env: { ...process.env, CONTAINER_ENGINE: ENGINE },
     stdio: 'inherit',
   });
 }
 
-// Build the brain WITH the container-docker feature (the shared harness builds default
-// features only), and resolve the binary path from cargo's JSON output.
+// Build the brain with the selected container feature (the shared harness builds
+// default features only), and resolve the binary path from cargo's JSON output.
 function buildBrain() {
   const out = execSync(
-    'cargo build --quiet --message-format=json -p awaken-scenario-host --bin awaken-scenario-host --features container-docker',
+    `cargo build --quiet --message-format=json -p awaken-scenario-host --bin awaken-scenario-host --features container-${ENGINE}`,
     { cwd: REPO_ROOT, maxBuffer: 128 * 1024 * 1024 },
   ).toString();
   for (const line of out.split('\n')) {
@@ -132,8 +136,11 @@ function waitForPort(port, timeoutMs = 60_000) {
 }
 
 async function main() {
-  if (!dockerAvailable()) {
-    console.log('E2E SKIP: no reachable Docker daemon.');
+  if (!containerAvailable()) {
+    if (process.env.AWAKEN_E2E_REQUIRE_CONTAINER === '1') {
+      throw new Error(`required ${ENGINE} runtime is unavailable`);
+    }
+    console.log(`E2E SKIP: no reachable ${ENGINE} runtime.`);
     return;
   }
   ensureSessionImage();
@@ -149,7 +156,7 @@ async function main() {
       AWAKEN_HTTP_ADDR: addr,
       AWAKEN_MODEL_MODE: 'acp-container',
       AWAKEN_CONTAINER_IMAGE: IMAGE,
-      AWAKEN_SANDBOX_TIER: 'docker',
+      AWAKEN_SANDBOX_TIER: ENGINE,
       AWAKEN_STORAGE_DIR: `${TMP}/storage`,
       AWAKEN_ACP_ARGV: `node -e ${ACP_FIXTURE}`,
       // Exercise the production pool wrapper. Resource-bearing environments are
@@ -212,14 +219,14 @@ async function main() {
     assert.equal(containers.length, 1, 'the Session must own one shared container, not one per attempt');
     const container = containers[0];
     assert.equal(
-      execFileSync('docker', ['exec', container, 'cat', '/workspace/.mnt/workspace/input.txt'], {
+      execFileSync(ENGINE, ['exec', container, 'cat', '/workspace/.mnt/workspace/input.txt'], {
         encoding: 'utf8',
       }),
       'CONTAINER-FILE-OK',
       'the uploaded file must be materialized into the Session container',
     );
     assert.match(
-      execFileSync('docker', ['exec', container, 'cat', '/workspace/skills/greet/SKILL.md'], {
+      execFileSync(ENGINE, ['exec', container, 'cat', '/workspace/skills/greet/SKILL.md'], {
         encoding: 'utf8',
       }),
       /CONTAINER-SKILL-OK/,
@@ -227,11 +234,11 @@ async function main() {
     );
     const deliveredSkill = '/workspace/.skills/delivered-container/SKILL.md';
     assert.match(
-      execFileSync('docker', ['exec', container, 'cat', deliveredSkill], { encoding: 'utf8' }),
+      execFileSync(ENGINE, ['exec', container, 'cat', deliveredSkill], { encoding: 'utf8' }),
       /CONTAINER-DELIVERED-SKILL-OK/,
       'the durable delivered-skill bundle must be materialized into the Session container',
     );
-    execFileSync('docker', [
+    execFileSync(ENGINE, [
       'exec',
       container,
       'sh',
@@ -241,7 +248,7 @@ async function main() {
       deliveredSkill,
     ]);
     assert.equal(
-      execFileSync('docker', ['exec', container, 'cat', '/workspace/.mnt/notes/seed.txt'], {
+      execFileSync(ENGINE, ['exec', container, 'cat', '/workspace/.mnt/notes/seed.txt'], {
         encoding: 'utf8',
       }),
       'CONTAINER-MEMORY-SEED',
@@ -265,14 +272,14 @@ async function main() {
       betas: BETAS,
     }));
     assert.equal(
-      execFileSync('docker', ['exec', container, 'cat', '/workspace/.mnt/workspace/live.txt'], {
+      execFileSync(ENGINE, ['exec', container, 'cat', '/workspace/.mnt/workspace/live.txt'], {
         encoding: 'utf8',
       }),
       'CONTAINER-LIVE-FILE-OK',
       'a live file attach must update the resident container workspace',
     );
     assert.match(
-      execFileSync('docker', ['exec', container, 'cat', '/workspace/live-repo/greet/SKILL.md'], {
+      execFileSync(ENGINE, ['exec', container, 'cat', '/workspace/live-repo/greet/SKILL.md'], {
         encoding: 'utf8',
       }),
       /CONTAINER-SKILL-OK/,
@@ -289,7 +296,7 @@ async function main() {
       mount_path: '/workspace/renamed-repo',
       betas: BETAS,
     }));
-    execFileSync('docker', [
+    execFileSync(ENGINE, [
       'exec',
       container,
       'sh',
@@ -297,14 +304,14 @@ async function main() {
       'test ! -e /workspace/.mnt/workspace/live.txt && test ! -e /workspace/live-repo',
     ]);
     assert.equal(
-      execFileSync('docker', ['exec', container, 'cat', '/workspace/.mnt/workspace/renamed.txt'], {
+      execFileSync(ENGINE, ['exec', container, 'cat', '/workspace/.mnt/workspace/renamed.txt'], {
         encoding: 'utf8',
       }),
       'CONTAINER-LIVE-FILE-OK',
       'a live file rename must revoke the old path and materialize the replacement',
     );
     assert.match(
-      execFileSync('docker', ['exec', container, 'cat', '/workspace/renamed-repo/greet/SKILL.md'], {
+      execFileSync(ENGINE, ['exec', container, 'cat', '/workspace/renamed-repo/greet/SKILL.md'], {
         encoding: 'utf8',
       }),
       /CONTAINER-SKILL-OK/,
@@ -319,7 +326,7 @@ async function main() {
       session_id: session.id,
       betas: BETAS,
     }));
-    execFileSync('docker', [
+    execFileSync(ENGINE, [
       'exec',
       container,
       'sh',
@@ -327,7 +334,7 @@ async function main() {
       'test ! -e /workspace/.mnt/workspace/renamed.txt && test ! -e /workspace/renamed-repo',
     ]);
 
-    execFileSync('docker', [
+    execFileSync(ENGINE, [
       'exec',
       container,
       'sh',
@@ -340,7 +347,7 @@ async function main() {
     const artifactContent = await client.beta.files.download(artifact.id, { betas: BETAS });
     assert.equal(await artifactContent.text(), 'CONTAINER-ARTIFACT-OK');
 
-    execFileSync('docker', [
+    execFileSync(ENGINE, [
       'exec',
       container,
       'sh',
@@ -359,7 +366,7 @@ async function main() {
     );
 
     console.log(
-      'E2E PASS: container agent — ACP, hand, file, memory, repository, workspace skill and immutable delivered skill shared one Session-owned Docker environment.',
+      `E2E PASS: container agent — ACP, hand, file, memory, repository, workspace skill and immutable delivered skill shared one Session-owned ${ENGINE} environment.`,
     );
   } finally {
     brain.kill('SIGINT');
