@@ -11,7 +11,9 @@ use std::time::Duration;
 
 use awaken_provisioning_contract as pc;
 use awaken_sandbox_container::docker::DockerRuntime;
-use awaken_sandbox_container::{AgentContainerProvider, ContainerProvider, WarmContainerPool};
+use awaken_sandbox_container::{
+    AgentContainerProvider, ContainerEnvironmentProvider, ContainerProvider, WarmContainerPool,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const AGENT_PORT: u16 = 8080;
@@ -151,20 +153,21 @@ async fn a_session_with_a_mount_bypasses_the_pool() {
         lifetime: pc::MountLifetime::PerRun,
         required: true,
     }];
-    // Open a mounted session. Its channel dial may race the freshly-created
-    // container's port bind (a pre-existing cold-create property `open_agent`
-    // shares with the no-pool path — a warm container avoids it by being bound
-    // ahead of time); that outcome is irrelevant here. What must hold is that the
-    // pool was BYPASSED: the shape-matched warm base capacity is untouched.
-    if let Ok(session) = AgentContainerProvider::open_agent(&pool, &mounted).await {
-        let _ = session.process.signal(pc::Signal::Kill).await;
-        let _ = session.process.wait().await;
-    }
+    // Create the mounted Session environment through the same provider seam used
+    // by the runtime. This proves the pool decision directly without coupling the
+    // test to an agent protocol endpoint that busybox intentionally does not expose.
+    let environment = ContainerEnvironmentProvider::create_environment(&pool, &mounted)
+        .await
+        .expect("create mounted environment outside the pool");
     assert_eq!(
         pool.ready_len(&base),
         1,
         "a mounted session did NOT consume the shape-matched warm agent (it bypassed the pool)"
     );
 
+    environment
+        .dispose()
+        .await
+        .expect("dispose mounted environment");
     pool.shutdown().await;
 }
