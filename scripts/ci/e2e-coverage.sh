@@ -75,7 +75,7 @@ cd "$(dirname "$0")/../.."
 #     common paths, not every parser/validator branch.
 IGNORE='(awaken-protocol-mcp|awaken-store-postgres|awaken-store-conformance|awaken-runtime-examples|awaken-sandbox-container|awaken-file-store|awaken-scope|awaken-tool-pattern)/|awaken-run-ingress/src/(memory|postgres)\.rs|awaken-ext-mcp/src/(stdio|plugin|sensitive)\.rs|awaken-mcp-wire/src/jsonrpc\.rs|awaken-sandbox-local/src/(namespace|provider)\.rs|awaken-protocol-acp/src/(error|jsonrpc|real_acp)\.rs|awaken-(admin-config-api|config-store|credential-vault|model-catalog)/src/postgres\.rs|awaken-credential-vault/src/oauth\.rs|awaken-ext-builtin-tools/src/web\.rs|awaken-connection-plan/src/plan\.rs|awaken-server/src/models\.rs'
 
-eval "$(cargo llvm-cov show-env --export-prefix)"
+eval "$(cargo llvm-cov show-env --sh)"
 export RUSTFLAGS="${RUSTFLAGS:-} -C llvm-args=-runtime-counter-relocation"
 export LLVM_PROFILE_FILE="$CARGO_LLVM_COV_TARGET_DIR/awaken-%p%c.profraw"
 cargo llvm-cov clean --workspace
@@ -124,7 +124,8 @@ popd >/dev/null
 cargo llvm-cov report --ignore-filename-regex "$IGNORE" --summary-only
 python3 scripts/ci/check_changed_e2e_line_coverage.py \
   --base "${AWAKEN_COVERAGE_BASE:-origin/1.0.0-dev}" \
-  --minimum "${AWAKEN_CHANGED_E2E_MINIMUM:-0.95}"
+  --minimum "${AWAKEN_CHANGED_E2E_MINIMUM:-0.95}" \
+  --ignore-filename-regex "$IGNORE"
 if [ "${1:-}" = "--open" ]; then
   cargo llvm-cov report --ignore-filename-regex "$IGNORE" --html --open
 fi
