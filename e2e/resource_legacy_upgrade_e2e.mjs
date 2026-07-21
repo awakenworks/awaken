@@ -228,6 +228,15 @@ async function main() {
       'legacy Memory ordinal advances the canonical version high-water mark',
     );
 
+    // A replacement that still sees the retired registry must recognize the
+    // already-imported canonical aggregate and avoid rewriting its history.
+    const idempotent = spawnServer('skills-durable', PORT, environment);
+    servers.push(idempotent.server);
+    await waitForPort(PORT);
+    await assertImportedSkill();
+    await stopServer(idempotent.server);
+    servers.pop();
+
     // The old sidecar is no longer a runtime dependency after import.
     fs.rmSync(legacy);
     const second = spawnServer('skills-durable', PORT, environment);
@@ -253,6 +262,22 @@ async function main() {
       [42, 43, 44],
       'replacement process continues from the canonical Memory counter',
     );
+
+    // Fail closed on a corrupt canonical Skill aggregate. An empty retired
+    // database also proves a missing legacy table is treated as "nothing to
+    // import", never as a fallback source that masks canonical corruption.
+    sqlite(legacy, 'CREATE TABLE unrelated(id TEXT);');
+    const encoded = (value) => Buffer.from(value).toString('hex');
+    fs.writeFileSync(
+      path.join(storage, 'skills_catalog', encoded('default'), `${encoded('legacy-file')}.json`),
+      '{broken-json',
+    );
+    const corrupt = spawnServer('skills-durable', PORT, environment);
+    servers.push(corrupt.server);
+    await waitForPort(PORT);
+    assert.equal((await raw('/v1/skills/legacy-file')).status, 500);
+    await stopServer(corrupt.server);
+    servers.pop();
 
     console.log(
       'E2E PASS: legacy resource registry upgraded once into canonical Memory and Skill stores.',
