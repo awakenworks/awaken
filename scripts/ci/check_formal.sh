@@ -176,6 +176,9 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -metadir "$tlc_state_root/remote-tool" \
     -config formal/tla/RemoteTool.cfg formal/tla/RemoteTool.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/remote-attempt" \
+    -config formal/tla/RemoteAttempt.cfg formal/tla/RemoteAttempt.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/authz-kernel" \
     -config formal/tla/AuthzKernel.cfg formal/tla/AuthzKernel.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
