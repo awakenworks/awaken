@@ -16,18 +16,18 @@ use awaken_memory_store::{MAX_MEMORY_BYTES, MemErr, MemoryEntry};
 
 pub mod coordinator;
 pub mod copy;
-#[cfg(feature = "fuse")]
+#[cfg(all(feature = "fuse", target_os = "linux"))]
 pub mod fuse;
 pub mod invalidate;
 pub mod mounter;
 
-#[cfg(feature = "fuse")]
+#[cfg(all(feature = "fuse", target_os = "linux"))]
 pub use coordinator::FuseMountFactory;
 pub use coordinator::{Mount, MountCoordinator, MountFactory};
 pub use copy::{
     CopySnapshot, HarvestConflict, HarvestReport, fuse_available, harvest, materialize,
 };
-#[cfg(feature = "fuse")]
+#[cfg(all(feature = "fuse", target_os = "linux"))]
 pub use fuse::{spawn_mount, spawn_mount_with_invalidations};
 pub use invalidate::{InvalidatingMemoryRepository, Invalidation, Invalidator, LocalInvalidator};
 pub use mounter::MemoryStoreMounter;

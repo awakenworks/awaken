@@ -7,6 +7,8 @@
 //! when it is absent the test prints why and returns — the copy path is the fallback
 //! where FUSE cannot run (CI/macOS).
 
+#![cfg(all(feature = "fuse", target_os = "linux"))]
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
