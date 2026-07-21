@@ -1,8 +1,8 @@
 //! Slice 5 coverage: pure planners (container/pod) and the provider lifecycle over
-//! an in-memory fake [`ContainerRuntime`] — process-as-container, no daemon required.
+//! an in-memory fake [`ContainerRuntime`] — Session environment plus attempt execs,
+//! no daemon required.
 
 use super::*;
-use awaken_agent_channel::AgentTransport;
 use awaken_provisioning_contract::SandboxProvider;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -632,26 +632,6 @@ async fn a_second_node_adopts_a_running_container_over_the_shared_runtime() {
         sandbox_b.status().await.unwrap(),
         pc::SandboxStatus::Terminated
     ));
-}
-
-#[tokio::test]
-async fn open_channel_is_the_agent_transport_capability() {
-    let rt = Arc::new(FakeRuntime::default());
-    let sandbox = ContainerSandbox {
-        runtime: rt.clone(),
-        id: "run-x".into(),
-        container_id: "cid-x".into(),
-        outputs_path: "/mnt/session/outputs".into(),
-        realized: Vec::new(),
-        lifecycle: Arc::new(ContainerLifecycle::completed()),
-    };
-    rt.st.lock().unwrap().alive.insert("cid-x".into(), true);
-    // Drive it through the neutral AgentTransport port.
-    let transport: &dyn AgentTransport = &sandbox;
-    assert!(transport.open_channel().await.is_ok());
-    // A gone container fails closed.
-    rt.st.lock().unwrap().alive.remove("cid-x");
-    assert!(sandbox.open_channel().await.is_err());
 }
 
 #[tokio::test]
