@@ -260,6 +260,76 @@ async fn memory_repository_not_found(fs: &dyn MemoryRepository) {
     ));
 }
 
+#[allow(dead_code)] // postgres-feature only
+async fn atomic_head_update_conformance(fs: &dyn MemoryRepository) {
+    let store = "atomic-head";
+    let source = fs.create(store, "/source.md", "v1").await.unwrap();
+    let destination = fs.create(store, "/destination.md", "old").await.unwrap();
+    let before = fs.list_versions(store).await.unwrap().len();
+
+    assert!(matches!(
+        fs.update_head(
+            store,
+            &source.id,
+            "not-committed",
+            &source.content_sha256,
+            Some("relative.md"),
+        )
+        .await,
+        Err(MemErr::InvalidPath(_))
+    ));
+    assert_eq!(
+        fs.get_by_path(store, "/source.md")
+            .await
+            .unwrap()
+            .unwrap()
+            .content
+            .as_deref(),
+        Some("v1")
+    );
+    assert_eq!(fs.list_versions(store).await.unwrap().len(), before);
+
+    assert!(matches!(
+        fs.update_head(store, &source.id, "v1", "stale", Some("/moved.md"))
+            .await,
+        Err(MemErr::Conflict { .. })
+    ));
+    assert!(fs.get_by_path(store, "/source.md").await.unwrap().is_some());
+    assert!(fs.get_by_path(store, "/moved.md").await.unwrap().is_none());
+
+    let updated = fs
+        .update_head(
+            store,
+            &source.id,
+            "v2",
+            &source.content_sha256,
+            Some("/destination.md"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated.id, source.id);
+    assert_eq!(updated.path, "/destination.md");
+    assert_eq!(updated.content.as_deref(), Some("v2"));
+    assert!(fs.get_by_path(store, "/source.md").await.unwrap().is_none());
+    let versions = fs.list_versions(store).await.unwrap();
+    assert_eq!(versions.len(), before + 2);
+    assert_eq!(versions[before].memory_id, destination.id);
+    assert_eq!(versions[before + 1].memory_id, source.id);
+
+    let idempotent = fs
+        .update_head(
+            store,
+            &source.id,
+            "v2",
+            "stale-after-success",
+            Some("/destination.md"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(idempotent.version, updated.version);
+    assert_eq!(fs.list_versions(store).await.unwrap().len(), versions.len());
+}
+
 // --- Concurrency (ADR-0053 P2.5), extended from the in-memory-only unit tests to the
 //     durable backends so the real write_lock (fs) / connection-mutex (sqlite)
 //     serialize concurrent writers exactly one winner deep. ---
@@ -443,6 +513,7 @@ mod postgres {
         memory_repository_conformance(&fs).await;
         memory_repository_extended(&fs).await;
         memory_repository_not_found(&fs).await;
+        atomic_head_update_conformance(&fs).await;
         conditional_delete_never_removes_a_changed_or_recreated_head(&fs).await;
     }
 

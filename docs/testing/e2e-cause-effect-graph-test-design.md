@@ -227,6 +227,7 @@
 ### 3.12 安全
 - **F98** 密钥不泄漏:sentinel 在 SDK 视图 / 原始 HTTP / stdout·stderr / OTel trace 文件**均无**,仅允许 masked `preview()`
 - **F99** managed egress OS 强制(net=DOWN)
+- **F100** 资源执行绑定:Session 冻结 MemoryStore 配置 v1 后 current 发布 v2 仍按 v1 运行；资源归档后同一 Session 的下一次使用 fail-closed；资源域仅校验可信 Workspace、生命周期和冻结配置完整性，不接收授权主体或策略决策
 
 ---
 
@@ -264,6 +265,7 @@
 | E28 ERASURE | `POST …/erasure`→200 `{records_removed}`;幂等 |
 | E29 TRACE-TREE | 32-hex tid/16-hex sid、连通无悬挂、路由覆盖、GenAI 链、传播续接 |
 | E30 METRIC-EXPORT | fake collector 收 OTLP `gen_ai.client.operation.count`;关停不挂 |
+| E31 RESOURCE-BINDING | current v2 不替换已冻结 v1；archive 后下一次事件→400/not active 且无新 agent.message |
 
 ---
 
@@ -290,6 +292,7 @@ MCP:           F77/F79 → E4(工具注入) ; F78 → 工具列表 version bump
 模型:          F87 → E4 ; F88 → E4(切换后仍成功) ; F90 → oauth 铸 token ; F91 → E9
 可观测:        F92/F93/F94 → E29 ; F95/F96 → E30
 安全:          F98 → E26 (贯穿所有 F,作横切断言)
+资源绑定:      F100 → E19/E31 [配置版本冻结；实时生命周期失效；资源/授权平面正交]
 ```
 
 ### 门控与遮蔽约束(F×D)
@@ -374,6 +377,7 @@ MCP:           F77/F79 → E4(工具注入) ; F78 → 工具列表 version bump
 | **F92–F94 trace 捕获/传播/派工** | ✓ | ● | — | ✓ | ✓ | — | — | ✓ | — | — | — | — | — | — |
 | **F95/F96 metrics/usage 导出** | ● | ✓ | — | ✓ | ✓ | — | — | ✓ | — | — | — | — | — | — |
 | **F98 密钥不泄漏(横切)** | ✓ | ● | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| **F100 冻结配置+实时生命周期** | ● | ✓ | — | — | — | — | — | — | — | ✓ | — | — | — | — |
 
 > `●` 列合计 ≈ 每功能域的**主用例**;`✓` 为**参数化重跑**用例。矩阵非空单元合计 **约 180 个 e2e 测试用例**。
 
@@ -460,8 +464,8 @@ MCP:           F77/F79 → E4(工具注入) ; F78 → 工具列表 version bump
 
 ## 8. 覆盖与使用说明
 
-1. **测试用例 = 主矩阵非空单元**:每个 `●`/`✓` 是一个可执行 e2e 用例,骨架照 `harness.mjs`——`spawnServer(mode, port, extraEnv)` 起真实二进制、SDK 或裸 fetch 驱动、`stopServer` 等进程真退出、按 §4 效果类断言。约 **180 个用例**覆盖 99 条功能流 × 14 部署场景的有效交集。
-2. **参数化压制组合爆炸**:14 场景 × 99 流 = 1386 理论格,由 R(可观察性要求)/M(部署不变遮蔽)约束压到 ~180 有效用例。`✓` 列是"同断言跨后端重跑"(部署不变),`●` 列是"仅此可观察"(部署特有)。
+1. **测试用例 = 主矩阵非空单元**:每个 `●`/`✓` 是一个可执行 e2e 用例,骨架照 `harness.mjs`——`spawnServer(mode, port, extraEnv)` 起真实二进制、SDK 或裸 fetch 驱动、`stopServer` 等进程真退出、按 §4 效果类断言。约 **182 个用例**覆盖 100 条功能流 × 14 部署场景的有效交集。
+2. **参数化压制组合爆炸**:14 场景 × 100 流 = 1400 理论格,由 R(可观察性要求)/M(部署不变遮蔽)约束压到 ~182 有效用例。`✓` 列是"同断言跨后端重跑"(部署不变),`●` 列是"仅此可观察"(部署特有)。
 3. **每条约束边配否定用例**:§2 的 N1–N10 是**部署级 fail-closed 用例**——违规组合必须拒启/panic/403/400,专测"配置错误不 fail-open"。这是分布式系统最易腐的面。
 4. **横切断言**:`F98 密钥不泄漏`在**每个** durable 场景重跑(SENTINEL 扫 SDK+HTTP+stdout+stderr+trace);`F92 trace 连通`在任何跑真轮的场景可附加。
 5. **自跳过是覆盖声明而非通过**:`E21/E22`(bwrap/docker 缺失自跳过)必须在 CI 打印"skipped: no bwrap/docker",否则被误读为"已覆盖"——按 e2e 铁律,未跑真依赖就是没覆盖。
@@ -492,6 +496,7 @@ MCP:           F77/F79 → E4(工具注入) ; F78 → 工具列表 version bump
 | F47/F48/F54 沙箱供给+反向通道+fail-closed | E19/E20 | `node sandbox_provisioning_e2e.mjs` | ✓ |
 | F50 容器 agent 往返 | E22 MARKER | `node managed_container_agent_e2e.mjs` | ✓ 真 Docker |
 | F52 FUSE 内核挂载机制 | E19 | `cargo test -p awaken-sandbox-memoryd`(`kernel_vfs.rs` 有 /dev/fuse 时真挂载) | ✓ 3+44 绿 |
+| F100 冻结配置+实时生命周期 | E19/E31 | `node managed_resource_mount_e2e.mjs` | ✓ v1 冻结、current v2、archive 后复用拒绝 |
 
 > 教训:**"自跳过"必须在 CI 打印 `skipped: no bwrap/docker/fuse`**。本轮在装备了 bwrap+docker+/dev/fuse+k3d 的机器上真跑,证实这些路径确实工作——在缺依赖的 CI 上它们只是声明覆盖,不等于验证。
 

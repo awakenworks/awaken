@@ -73,8 +73,7 @@ impl SharedHost {
     ) -> Self {
         // Composition root: the deployment axes are parsed once from the environment
         // into one typed config. `AWAKEN_STORAGE_DIR` set → durable SQLite commit
-        // store + a durable memory blob store under it (both survive a restart);
-        // unset → ephemeral.
+        // and resource adapters (all survive a restart); unset → ephemeral adapters.
         let deployment = crate::deployment_config::DeploymentConfig::from_env();
         let store_dir = deployment.storage_dir.clone();
         let local_workspace = resolve_local_workspace(store_dir.as_deref());

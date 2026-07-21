@@ -237,7 +237,8 @@ process-local handle.
 
 | Component | Status | Owner | Responsibility | Must not own |
 |---|---|---|---|---|
-| `ResourceCatalog` | Existing | Resource Catalog | Memory/Repository definitions, immutable config versions, current version, lifecycle state | content bytes, IAM policy, sandbox paths |
+| `ResourceCatalog` / `ResourceConfigSource` / `ResourceCatalogRules` | Existing | Resource Catalog | Memory/Repository definitions, immutable config versions, current version and lifecycle state; the narrow resolution port returns only the selected config version; one backend-neutral rules object defines creation, publication, lifecycle, and config-identity invariants for every adapter | content bytes, IAM policy/decision/envelope, principal, sandbox paths |
+| `ResourceBindingValidator` | Existing | Resource Catalog | at activation/use validate trusted Workspace ownership, live state, and the exact frozen config version without returning or re-selecting configuration | authorization decisions, current-version substitution, secret material |
 | `AgentInputBindingRepository` | Existing | Agent Configuration | Workspace-scoped Agent default bindings and authoring revision; every operation requires Workspace | Session merge, content resolution, authorization |
 | Managed Session adapter | Existing | Protocol/product ACL | parse/project Anthropic resources; accept temporary attachments | raw DTO leakage into neutral/resource services |
 | `SessionInputResolver` | Existing | Session control plane | merge once, replace explicitly, validate mount paths, select current config versions, create `ResolvedSessionResources` and prompts | secret material, runtime loop, physical mounts |
@@ -386,6 +387,17 @@ The Resource Catalog creates a Workspace-owned `MemoryStore`, publishes config
 v1, and ensures the Memory data plane recognizes the logical store id. Config
 updates append an immutable version and atomically advance
 `current_config_version`. They do not copy or version the store's content.
+The Workspace-scoped management boundary exposes current/historical config reads
+and publishes the next policy version only with `expected_config_version` CAS;
+descriptive metadata updates remain separate, so a failed config CAS cannot
+partially mutate the resource definition.
+
+A Memory head update is likewise one resource-aggregate command. The public API
+passes content, optional target path, and the head SHA precondition to
+`MemoryRepository.update_head`; validation, CAS, rename-replace, and history are
+one transaction. The API never sequences a content write followed by a second
+rename. This invariant belongs to the resource plane and contains no principal,
+role, policy, API key, or authorization decision.
 
 ### Bind and resolve
 
@@ -550,6 +562,12 @@ request + credential/path selection
   -> ownership/lifecycle lookup
   -> content operation / CAS / safe materialization
 ```
+
+The resource routers implement the last boundary with one shared
+`RequiredWorkspaceScope` extractor. It accepts only the `WorkspaceScope` already
+stamped by the composition edge and returns not found for a missing or empty
+value. File, MemoryStore, Skill, and ownership handlers therefore have no local
+Workspace fallback and no dependency on authentication or authorization values.
 
 The route-to-action map is PEP configuration: File uses `file.read/write`, Skill
 uses `skill.read/write`, and awaken's deliberately coarse MemoryStore governance

@@ -111,6 +111,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok("acp-real-mcp") => awaken_scenario_host::build_acp_real_mcp_router().await,
         Ok("memory") => awaken_scenario_host::build_memory_router(),
         Ok("memory-resource") => awaken_scenario_host::build_memory_resource_router(),
+        Ok("resource-scope-boundary") => awaken_scenario_host::build_unscoped_resource_router(),
         Ok("git-repo") => awaken_scenario_host::build_git_repo_router(),
         Ok("compaction") => awaken_scenario_host::build_compaction_router(),
         Ok("error") => awaken_scenario_host::build_error_router(),
@@ -269,6 +270,20 @@ mod dispatch_tests {
                 "AWAKEN_MODEL_MODE={mode} must map to a factory that mounts the shared surface"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn resource_scope_boundary_mode_intentionally_mounts_only_raw_resource_routes() {
+        let response = sh::build_unscoped_resource_router()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/files")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     // Multi-thread: `build_config_router`'s admin-assistant seeding resolves a model

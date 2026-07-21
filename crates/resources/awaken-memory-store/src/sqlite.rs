@@ -473,26 +473,31 @@ impl MemoryRepository for SqliteMemoryRepository {
         .await
     }
 
-    async fn update(
+    async fn update_head(
         &self,
         store: &str,
         id: &str,
         content: &str,
         base_sha: &str,
+        target_path: Option<&str>,
     ) -> Result<Memory, MemErr> {
         validate_size(content)?;
-        let (store, id, content, base_sha) = (
+        if let Some(path) = target_path {
+            validate_path(path)?;
+        }
+        let (store, id, content, base_sha, target_path) = (
             store.to_string(),
             id.to_string(),
             content.to_string(),
             base_sha.to_string(),
+            target_path.map(str::to_string),
         );
         with_conn_mem(&self.conn, move |conn| {
             let tx = conn.unchecked_transaction().map_err(mem_err)?;
             let row = tx
                 .query_row(
                     &format!(
-                        "SELECT path, sha, content, version, created FROM {NS}_memories \
+                        "SELECT path, sha, content, version, created, updated FROM {NS}_memories \
                          WHERE store_id = ?1 AND id = ?2"
                     ),
                     params![store, id],
@@ -503,39 +508,74 @@ impl MemoryRepository for SqliteMemoryRepository {
                             r.get::<_, Vec<u8>>(2)?,
                             r.get::<_, i64>(3)?,
                             r.get::<_, i64>(4)?,
+                            r.get::<_, i64>(5)?,
                         ))
                     },
                 )
                 .optional()
                 .map_err(mem_err)?;
-            let (path, cur_sha, cur_content, version, created) =
+            let (path, cur_sha, cur_content, version, created, updated) =
                 row.ok_or_else(|| MemErr::NotFound(id.clone()))?;
+            let requested_path = target_path.unwrap_or_else(|| path.clone());
             let new_sha = sha256_hex(&content);
+            let already_current = cur_sha == new_sha && path == requested_path;
             if cur_sha != base_sha {
-                if cur_sha == new_sha {
-                    return row_memory(id, path, cur_content, cur_sha, version, created, created);
+                if already_current {
+                    return row_memory(id, path, cur_content, cur_sha, version, created, updated);
                 }
                 let current =
-                    row_memory(id, path, cur_content, cur_sha, version, created, created)?;
+                    row_memory(id, path, cur_content, cur_sha, version, created, updated)?;
                 return Err(MemErr::Conflict {
                     current: Box::new(current),
                 });
             }
+            if already_current {
+                return row_memory(id, path, cur_content, cur_sha, version, created, updated);
+            }
             let now = now_nanos() as i64;
+            let displaced_id = if requested_path == path {
+                None
+            } else {
+                tx.query_row(
+                    &format!("SELECT id FROM {NS}_memories WHERE store_id = ?1 AND path = ?2"),
+                    params![store, requested_path],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(mem_err)?
+            };
+            if displaced_id.is_some() {
+                tx.execute(
+                    &format!("DELETE FROM {NS}_memories WHERE store_id = ?1 AND path = ?2"),
+                    params![store, requested_path],
+                )
+                .map_err(mem_err)?;
+            }
             tx.execute(
                 &format!(
-                    "UPDATE {NS}_memories SET content = ?1, sha = ?2, version = version + 1, \
-                     updated = ?3 WHERE store_id = ?4 AND id = ?5"
+                    "UPDATE {NS}_memories SET path = ?1, content = ?2, sha = ?3, \
+                     version = version + 1, updated = ?4 WHERE store_id = ?5 AND id = ?6"
                 ),
-                params![content.as_bytes(), new_sha, now, store, id],
+                params![requested_path, content.as_bytes(), new_sha, now, store, id],
             )
             .map_err(mem_err)?;
+            if let Some(displaced_id) = displaced_id {
+                append_version(
+                    &tx,
+                    &store,
+                    &displaced_id,
+                    MemoryVersionOperation::Deleted,
+                    &requested_path,
+                    None,
+                    now,
+                )?;
+            }
             append_version(
                 &tx,
                 &store,
                 &id,
                 MemoryVersionOperation::Modified,
-                &path,
+                &requested_path,
                 Some(&content),
                 now,
             )?;
@@ -544,7 +584,7 @@ impl MemoryRepository for SqliteMemoryRepository {
                 content_size: content.len() as u64,
                 content: Some(content),
                 id,
-                path,
+                path: requested_path,
                 content_sha256: new_sha,
                 version: (version + 1) as u64,
                 created_unix_nanos: created as u128,
@@ -1075,6 +1115,63 @@ mod memory_repository_tests {
         fs.delete_by_path("never_created_store", "/x.md")
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn sqlite_head_update_is_one_atomic_transaction() {
+        let fs = SqliteMemoryRepository::open_in_memory().unwrap();
+        let source = fs.create("s", "/source.md", "v1").await.unwrap();
+        let destination = fs.create("s", "/destination.md", "old").await.unwrap();
+        let initial_versions = fs.list_versions("s").await.unwrap().len();
+
+        assert!(matches!(
+            fs.update_head(
+                "s",
+                &source.id,
+                "not-committed",
+                &source.content_sha256,
+                Some("relative.md"),
+            )
+            .await,
+            Err(MemErr::InvalidPath(_))
+        ));
+        assert_eq!(
+            fs.get_by_path("s", "/source.md")
+                .await
+                .unwrap()
+                .unwrap()
+                .content
+                .as_deref(),
+            Some("v1")
+        );
+
+        let updated = fs
+            .update_head(
+                "s",
+                &source.id,
+                "v2",
+                &source.content_sha256,
+                Some("/destination.md"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated.id, source.id);
+        assert_eq!(updated.path, "/destination.md");
+        assert_eq!(updated.content.as_deref(), Some("v2"));
+        assert!(fs.get_by_path("s", "/source.md").await.unwrap().is_none());
+        assert_ne!(updated.id, destination.id);
+        let versions = fs.list_versions("s").await.unwrap();
+        assert_eq!(versions.len(), initial_versions + 2);
+        assert_eq!(versions[initial_versions].memory_id, destination.id);
+        assert_eq!(
+            versions[initial_versions].operation,
+            MemoryVersionOperation::Deleted
+        );
+        assert_eq!(versions[initial_versions + 1].memory_id, source.id);
+        assert_eq!(
+            versions[initial_versions + 1].operation,
+            MemoryVersionOperation::Modified
+        );
     }
 
     /// The same "who masks whom" edge as `repository::tests`: a rename-replace over SQLite
