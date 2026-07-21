@@ -37,13 +37,21 @@ pub(crate) fn agent_run_sandbox_spec(thread: &str) -> pc::SandboxSpec {
 pub(crate) struct StagedResources {
     pub mounts: Vec<pc::MountRequirement>,
     pub prompts: Vec<String>,
-    /// The `(memory_store_id, logical_path)` of each read-write memory mount, so
-    /// `harvest_thread_memory` can read the realized file back into the store after a
-    /// turn (ADR-0038 MemoryStore write-back). Empty for file/repo mounts.
-    pub memory_mounts: Vec<(String, String)>,
+    /// Each read-write memory mount together with the path versions observed while
+    /// staging. `harvest_thread_memory` uses those versions as CAS bases. Empty for
+    /// file/repository mounts.
+    pub memory_mounts: Vec<MemoryMount>,
     /// github_repository resources (ADR-0038). Provisioned by a host-side `git clone`
     /// after the environment is created (not a byte mount) and pushed back on harvest.
     pub repos: Vec<RepoStage>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct MemoryMount {
+    pub store_id: String,
+    pub logical: String,
+    /// Path → content SHA observed while staging. Harvest uses these as CAS bases.
+    pub versions: std::collections::BTreeMap<String, String>,
 }
 
 /// A staged github_repository: cloned host-side into the jailed `logical` path and
@@ -150,11 +158,10 @@ impl SharedHost {
             .unwrap_or_default()
     }
 
-    /// The `(memory_store_id, logical_path)` memory mounts staged for `thread`
-    /// (test-only observability, mirrors [`Self::thread_repos`]): a memory mount is
-    /// harvested host-side via `harvest_thread_memory`, not carried in `sandbox_spec`.
+    /// The memory mounts staged for `thread` (test-only observability, mirrors
+    /// [`Self::thread_repos`]).
     #[cfg(test)]
-    pub(crate) fn thread_memory_mounts(&self, thread: &str) -> Vec<(String, String)> {
+    pub(crate) fn thread_memory_mounts(&self, thread: &str) -> Vec<MemoryMount> {
         self.thread_resources
             .lock()
             .unwrap()
@@ -224,11 +231,8 @@ impl SharedHost {
             .unwrap_or(None)
     }
 
-    /// Harvest a thread's read-write memory mounts back into their stores (ADR-0038):
-    /// read each realized `.mnt/<logical>` file and persist it under the store id, so a
-    /// memory write in this session is visible to the next one that mounts the same id.
-    /// The reverse channel behind memory persistence; a no-op for a thread with no
-    /// memory mounts or no live environment.
+    /// Harvest a thread's read-write MemoryStore directory back through the same
+    /// path-addressed CAS store used by recall, extraction, and the Memory API.
     pub async fn harvest_thread_memory(&self, thread: &str) {
         let (env, mounts) = {
             let sessions = self.sessions.lock().await;
@@ -248,16 +252,43 @@ impl SharedHost {
         if mounts.is_empty() {
             return;
         }
-        // Realized memory mounts live under `.mnt/<logical>`; `list_files(".mnt")` keys
-        // each by its path relative to `.mnt/`, i.e. exactly the mount's logical path.
         let realized = env.list_files(".mnt");
-        let workspace = self.thread_workspace(thread);
-        for (store_id, bytes) in select_memory_writebacks(&mounts, &realized) {
-            self.memory_stores
-                .blob()
-                .put(&workspace, &store_id, &bytes)
-                .await
-                .expect("persist harvested memory write-back");
+        for mount in mounts {
+            let prefix = format!("{}/", mount.logical.trim_end_matches('/'));
+            for (realized_path, bytes) in realized
+                .iter()
+                .filter(|(path, _)| path.starts_with(&prefix))
+            {
+                let Ok(content) = std::str::from_utf8(bytes) else {
+                    continue;
+                };
+                let path = format!("/{}", realized_path[prefix.len()..].trim_start_matches('/'));
+                let current = self
+                    .memory_stores
+                    .fs()
+                    .get_by_path(&mount.store_id, &path)
+                    .await
+                    .unwrap_or(None);
+                match (current, mount.versions.get(&path)) {
+                    (Some(current), Some(base_sha)) => {
+                        let _ = self
+                            .memory_stores
+                            .fs()
+                            .update(&mount.store_id, &current.id, content, base_sha)
+                            .await;
+                    }
+                    (None, None) => {
+                        let _ = self
+                            .memory_stores
+                            .fs()
+                            .create(&mount.store_id, &path, content)
+                            .await;
+                    }
+                    // Created/changed concurrently after staging: fail closed by
+                    // preserving current truth rather than clobbering it.
+                    _ => {}
+                }
+            }
         }
     }
 
@@ -423,77 +454,6 @@ impl SharedHost {
     }
 }
 
-/// Correlate a thread's read-write memory mounts (`(store_id, logical_path)`) with the
-/// files realized under `.mnt/` (`(logical_path, bytes)`), yielding the `(store_id,
-/// bytes)` write-backs `harvest_thread_memory` persists. Only a mount whose logical
-/// path was actually realized contributes — a mount that produced no file yields
-/// nothing, so harvest never overwrites a store with emptiness it did not observe.
-/// Extracted pure so the host-side correlation is tested without a live sandbox
-/// environment (the realize→edit→persist round-trip itself is covered at the sandbox
-/// layer by `awaken-sandbox-local`'s `memory_mount` test).
-fn select_memory_writebacks(
-    mounts: &[(String, String)],
-    realized: &[(String, Vec<u8>)],
-) -> Vec<(String, Vec<u8>)> {
-    mounts
-        .iter()
-        .filter_map(|(store_id, logical)| {
-            realized
-                .iter()
-                .find(|(path, _)| path == logical)
-                .map(|(_, bytes)| (store_id.clone(), bytes.clone()))
-        })
-        .collect()
-}
-
-/// G2 — the host-side harvest correlation (`harvest_thread_memory`'s core). Metamorphic:
-/// what a session realizes under `.mnt/<logical>` is exactly what is written back to the
-/// mount's store id, and a mount that realized nothing writes nothing.
-#[cfg(test)]
-mod memory_writeback_tests {
-    use super::select_memory_writebacks;
-
-    fn m(store: &str, logical: &str) -> (String, String) {
-        (store.into(), logical.into())
-    }
-    fn f(logical: &str, bytes: &str) -> (String, Vec<u8>) {
-        (logical.into(), bytes.as_bytes().to_vec())
-    }
-
-    #[test]
-    fn a_realized_mounts_edited_bytes_are_written_back_to_its_store() {
-        // The round-trip: store `s` mounted at `mem.md`, edited in-session to "v2",
-        // realizes as (`mem.md`, "v2") → write-back is (`s`, "v2").
-        let backs = select_memory_writebacks(&[m("s", "mem.md")], &[f("mem.md", "v2")]);
-        assert_eq!(backs, vec![("s".to_string(), b"v2".to_vec())]);
-    }
-
-    #[test]
-    fn a_mount_that_realized_no_file_writes_nothing() {
-        // The mount's logical path is absent from the realized set (never written), so
-        // harvest must NOT clobber the store with emptiness — it writes nothing.
-        let backs = select_memory_writebacks(&[m("s", "mem.md")], &[f("other.md", "x")]);
-        assert!(backs.is_empty(), "an unrealized mount is not written back");
-    }
-
-    #[test]
-    fn each_mount_maps_to_its_own_store_by_logical_path() {
-        // Two stores, two files: each write-back carries the bytes of ITS logical path,
-        // never crossed — the correlation is keyed by logical path, not order.
-        let backs = select_memory_writebacks(
-            &[m("s1", "a.md"), m("s2", "b.md")],
-            &[f("b.md", "BB"), f("a.md", "AA")], // realized in a different order
-        );
-        assert_eq!(
-            backs,
-            vec![
-                ("s1".to_string(), b"AA".to_vec()),
-                ("s2".to_string(), b"BB".to_vec()),
-            ]
-        );
-    }
-}
-
 #[cfg(test)]
 mod memory_store_tests {
     use super::*;
@@ -600,7 +560,11 @@ mod provisioning_registry_tests {
             StagedResources {
                 mounts: vec![resource_mount("a.md"), resource_mount("b.md")],
                 prompts: vec!["first".into()],
-                memory_mounts: vec![("s1".into(), "mem-a".into())],
+                memory_mounts: vec![MemoryMount {
+                    store_id: "s1".into(),
+                    logical: "mem-a".into(),
+                    versions: Default::default(),
+                }],
                 repos: vec![repo_stage("repo-a")],
             },
         );
@@ -686,7 +650,11 @@ mod provisioning_registry_tests {
         host.register_thread_resources(
             "t",
             StagedResources {
-                memory_mounts: vec![("s1".into(), "mem.md".into())],
+                memory_mounts: vec![MemoryMount {
+                    store_id: "s1".into(),
+                    logical: "mem.md".into(),
+                    versions: Default::default(),
+                }],
                 repos: vec![repo_stage("r")],
                 ..Default::default()
             },

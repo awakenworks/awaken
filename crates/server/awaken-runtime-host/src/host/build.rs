@@ -71,6 +71,7 @@ impl SharedHost {
             upstream: None,
             deployment,
             memory: None,
+            thread_memory: std::sync::Mutex::new(HashMap::new()),
             memory_selector: None,
             compaction: None,
             config_service: None,
@@ -92,6 +93,7 @@ impl SharedHost {
                 store_dir.as_deref(),
             ),
             memory_stores,
+            memory_mounter: std::sync::RwLock::new(None),
             gate_override: None,
             dispatch_pool: std::sync::OnceLock::new(),
             completion: Arc::new(CompletionRegistry::default()),
@@ -420,7 +422,16 @@ impl SharedHost {
         // A durable host must place its Workdir sandboxes under a stable root too;
         // otherwise the dispatch row survives restart but its persisted handle
         // points into the previous process's random temp directory.
-        self.provider = LocalProvider::new(dir.join("sandboxes"));
+        let provider = LocalProvider::new(dir.join("sandboxes"));
+        if let Some(mounter) = self
+            .memory_mounter
+            .read()
+            .expect("memory mounter lock poisoned")
+            .clone()
+        {
+            provider.install_memory_mounter(mounter);
+        }
+        self.provider = provider;
         self.store_dir = Some(dir);
         self
     }

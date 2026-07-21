@@ -175,6 +175,78 @@ fn carried_mount_bytes(mount: &awaken_provisioning_contract::MountRequirement) -
     contents.clone()
 }
 
+fn memory_mount_store_id(mount: &awaken_provisioning_contract::MountRequirement) -> &str {
+    let awaken_provisioning_contract::MountSource::MemoryStore { store_id } = &mount.source else {
+        panic!("expected a governed memory-store source")
+    };
+    store_id
+}
+
+/// Test composition adapter for runtime-host's dependency-inverted MemoryMounter
+/// port. Production installs `awaken-sandbox-memoryd` from awaken-server.
+struct TestMemoryMounter {
+    fs: Arc<dyn awaken_memory_store::MemoryFs>,
+}
+
+struct TestMemoryMount;
+
+#[async_trait::async_trait]
+impl awaken_provisioning_contract::MemoryMount for TestMemoryMount {
+    fn realization(&self) -> awaken_provisioning_contract::Realization {
+        awaken_provisioning_contract::Realization::Copy
+    }
+
+    async fn teardown(self: Box<Self>) {}
+}
+
+#[async_trait::async_trait]
+impl awaken_provisioning_contract::MemoryMounter for TestMemoryMounter {
+    async fn mount(
+        &self,
+        store_id: &str,
+        host_path: &std::path::Path,
+        _access: awaken_provisioning_contract::MountAccess,
+    ) -> Result<
+        Box<dyn awaken_provisioning_contract::MemoryMount>,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        std::fs::create_dir_all(host_path)
+            .map_err(|error| awaken_provisioning_contract::SandboxError::new(error.to_string()))?;
+        for entry in
+            self.fs.list(store_id, "/").await.map_err(|error| {
+                awaken_provisioning_contract::SandboxError::new(error.to_string())
+            })?
+        {
+            let Some(memory) =
+                self.fs
+                    .get_by_path(store_id, &entry.path)
+                    .await
+                    .map_err(|error| {
+                        awaken_provisioning_contract::SandboxError::new(error.to_string())
+                    })?
+            else {
+                continue;
+            };
+            let path = host_path.join(memory.path.trim_start_matches('/'));
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).map_err(|error| {
+                    awaken_provisioning_contract::SandboxError::new(error.to_string())
+                })?;
+            }
+            std::fs::write(path, memory.content.unwrap_or_default()).map_err(|error| {
+                awaken_provisioning_contract::SandboxError::new(error.to_string())
+            })?;
+        }
+        Ok(Box::new(TestMemoryMount))
+    }
+}
+
+fn install_test_memory_mounter(host: &SharedHost) {
+    host.install_memory_mounter(Arc::new(TestMemoryMounter {
+        fs: host.memory_fs(),
+    }));
+}
+
 /// A model that blocks on its second inference (the first revision round) until
 /// a gate is released, so a concurrent `interrupt` can land while the outcome
 /// loop is mid-run. Its reply never contains the rubric, so the guard steers.
@@ -509,6 +581,207 @@ async fn memory_written_in_one_thread_is_recalled_and_used_in_another() {
     assert_eq!(
         reply, "tea",
         "the fresh thread should recall and use the saved memory"
+    );
+}
+
+/// Managed Memory never falls back to the standalone host directory: the frozen
+/// Session input chooses one store, and that same handle serves extraction + recall.
+#[tokio::test]
+async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memory() {
+    use awaken_protocol_managed::{ResolvedInputSource, SessionInit, SessionRuntime};
+
+    let stamp = BASE_SEQ.fetch_add(1, Ordering::SeqCst);
+    let global = std::env::temp_dir().join(format!("awaken-managed-global-{stamp}"));
+    std::fs::create_dir_all(&global).unwrap();
+    std::fs::write(global.join("must-not-leak.md"), "the user prefers tea").unwrap();
+
+    let host = Arc::new(SharedHost::new(Arc::new(MemLoopModel), "stub").with_memory(&global));
+    install_test_memory_mounter(&host);
+    let store_a = host.create_memory_store().await;
+    let store_b = host.create_memory_store().await;
+    let managed = managed_with_resource_source(host.clone());
+    let init = |store: Option<&str>, extraction_enabled: bool| {
+        let mut init = SessionInit {
+            workspace_id: host.local_workspace().into(),
+            agent_id: "agent".into(),
+            mcp_servers: Vec::new(),
+            resources: effective_resources(
+                store
+                    .map(|id| TestInput {
+                        kind: "memory_store".into(),
+                        id: id.into(),
+                        mount_path: "/memory".into(),
+                        // Workdir cannot OS-enforce read-only mounts, so this integration
+                        // path uses a writable mount with extraction disabled. The
+                        // handle-level read-only invariant is covered separately.
+                        access: ResourceAccess::ReadWrite,
+                        instructions: None,
+                        git_ref: None,
+                    })
+                    .into_iter()
+                    .collect(),
+            ),
+            model: None,
+            runtime: None,
+            deny_egress: false,
+            sandbox: None,
+        };
+        if let Some(input) = init.resources.inputs.first_mut()
+            && let ResolvedInputSource::MemoryStore { config, .. } = &mut input.source
+        {
+            config.extraction_policy.enabled = extraction_enabled;
+        }
+        init
+    };
+
+    managed
+        .prepare_session("managed-write-a", init(Some(&store_a), true))
+        .await
+        .unwrap();
+    managed
+        .run(
+            "agent",
+            "managed-write-a",
+            vec![ContentBlock::text("I enjoy tea")],
+        )
+        .await
+        .unwrap();
+    assert!(host.drain_memory(std::time::Duration::from_secs(10)).await);
+    assert!(
+        host.memory_stores
+            .fs()
+            .get_by_path(&store_a, "/beverage-preference.md")
+            .await
+            .unwrap()
+            .is_some(),
+        "extraction writes the bound platform store"
+    );
+    assert!(
+        host.memory_stores
+            .fs()
+            .list(&store_b, "/")
+            .await
+            .unwrap()
+            .is_empty(),
+        "a different store remains untouched"
+    );
+
+    let reply = |outcome: &awaken_protocol_managed::StepOutcome| {
+        outcome
+            .messages
+            .iter()
+            .rev()
+            .find(|message| message.role == Role::Assistant)
+            .map(|message| block_text(&message.content))
+            .unwrap_or_default()
+    };
+    managed
+        .prepare_session("managed-read-a", init(Some(&store_a), false))
+        .await
+        .unwrap();
+    let same = managed
+        .run(
+            "agent",
+            "managed-read-a",
+            vec![ContentBlock::text("What do I prefer?")],
+        )
+        .await
+        .unwrap();
+    assert_eq!(reply(&same), "tea", "recall reads the same bound store");
+
+    managed
+        .prepare_session("managed-read-b", init(Some(&store_b), false))
+        .await
+        .unwrap();
+    let other = managed
+        .run(
+            "agent",
+            "managed-read-b",
+            vec![ContentBlock::text("What do I prefer?")],
+        )
+        .await
+        .unwrap();
+    assert_eq!(reply(&other), "ok", "store B cannot recall store A");
+
+    managed
+        .prepare_session("managed-unbound", init(None, false))
+        .await
+        .unwrap();
+    let unbound = managed
+        .run(
+            "agent",
+            "managed-unbound",
+            vec![ContentBlock::text("What do I prefer?")],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        reply(&unbound),
+        "ok",
+        "Managed explicitly records no binding and never sees host-global memory"
+    );
+}
+
+#[tokio::test]
+async fn pinned_memory_policy_can_disable_recall_and_extraction() {
+    use awaken_protocol_managed::{ResolvedInputSource, SessionRuntime};
+
+    let stamp = BASE_SEQ.fetch_add(1, Ordering::SeqCst);
+    let global = std::env::temp_dir().join(format!("awaken-managed-policy-{stamp}"));
+    let host = Arc::new(SharedHost::new(Arc::new(MemLoopModel), "stub").with_memory(global));
+    install_test_memory_mounter(&host);
+    let store = host.create_memory_store().await;
+    host.memory_stores
+        .fs()
+        .create(&store, "/existing.md", "the user prefers tea")
+        .await
+        .unwrap();
+    let managed = managed_with_resource_source(host.clone());
+    let mut init = bare_session("agent", host.local_workspace());
+    init.resources = effective_resources(vec![TestInput {
+        kind: "memory_store".into(),
+        id: store.clone(),
+        mount_path: "/memory".into(),
+        access: ResourceAccess::ReadWrite,
+        instructions: None,
+        git_ref: None,
+    }]);
+    let ResolvedInputSource::MemoryStore { config, .. } = &mut init.resources.inputs[0].source
+    else {
+        unreachable!()
+    };
+    config.recall_policy.enabled = false;
+    config.extraction_policy.enabled = false;
+
+    managed
+        .prepare_session("managed-policy", init)
+        .await
+        .unwrap();
+    let outcome = managed
+        .run(
+            "agent",
+            "managed-policy",
+            vec![ContentBlock::text("What do I prefer?")],
+        )
+        .await
+        .unwrap();
+    let reply = outcome
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.role == Role::Assistant)
+        .map(|message| block_text(&message.content))
+        .unwrap_or_default();
+    assert_eq!(reply, "ok", "disabled recall does not inject store content");
+    assert!(host.drain_memory(std::time::Duration::from_secs(1)).await);
+    assert!(
+        host.memory_stores
+            .fs()
+            .get_by_path(&store, "/beverage-preference.md")
+            .await
+            .unwrap()
+            .is_none(),
+        "disabled extraction does not mutate the store"
     );
 }
 
@@ -923,14 +1196,10 @@ async fn prepare_session_mounts_an_effective_memory_resource() {
     // this resource into the SessionInit passed across the runtime boundary.
     let store_id = host.create_memory_store().await;
     host.memory_stores
-        .blob()
-        .put(
-            host.local_workspace(),
-            &store_id,
-            b"the secret code is BANANA-42",
-        )
+        .fs()
+        .create(&store_id, "/facts.md", "the secret code is BANANA-42")
         .await
-        .expect("seed memory bytes");
+        .expect("seed memory");
     let managed = managed_with_resource_source(host.clone());
 
     let bare = |agent: &str| SessionInit {
@@ -964,8 +1233,8 @@ async fn prepare_session_mounts_an_effective_memory_resource() {
         "the bound memory store is mounted at its path: {dump}"
     );
     assert_eq!(
-        carried_mount_bytes(&host.sandbox_spec("t-bound").mounts[0]),
-        b"the secret code is BANANA-42"
+        memory_mount_store_id(&host.sandbox_spec("t-bound").mounts[0]),
+        store_id
     );
     assert_eq!(host.thread_memory_mounts("t-bound").len(), 1);
 
@@ -1006,11 +1275,6 @@ async fn activation_applies_current_resource_state_as_a_deny_only_overlay() {
 
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let store_id = host.create_memory_store().await;
-    host.memory_stores
-        .blob()
-        .put(host.local_workspace(), &store_id, b"memory")
-        .await
-        .unwrap();
     let catalog = Arc::new(awaken_config_resolver::InMemoryResourceCatalog::new());
     catalog
         .create_memory_store(
@@ -1054,6 +1318,57 @@ async fn activation_applies_current_resource_state_as_a_deny_only_overlay() {
 
     assert!(error.message.contains("not active"));
     assert!(host.sandbox_spec("t-suspended").mounts.is_empty());
+}
+
+#[tokio::test]
+async fn memory_activation_enforces_catalog_workspace_without_iam_policy_logic() {
+    use awaken_protocol_managed::SessionRuntime;
+    use awaken_resource_contract::{
+        ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, ResourceCatalog,
+        ResourceState,
+    };
+
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let store_id = host.create_memory_store().await;
+    let catalog = Arc::new(awaken_config_resolver::InMemoryResourceCatalog::new());
+    catalog
+        .create_memory_store(
+            MemoryStoreDefinition {
+                id: store_id.clone(),
+                workspace_id: "workspace-a".into(),
+                name: "private-memory".into(),
+                description: String::new(),
+                metadata: Default::default(),
+                state: ResourceState::Active,
+                current_config_version: ConfigVersion::INITIAL,
+            },
+            MemoryStoreConfigVersion {
+                memory_store_id: store_id.clone(),
+                version: ConfigVersion::INITIAL,
+                recall_policy: Default::default(),
+                extraction_policy: Default::default(),
+                retention_policy: Default::default(),
+            },
+        )
+        .unwrap();
+    let managed = crate::ManagedHost::new(host.clone()).with_resource_configs(catalog);
+    let mut init = bare_session("agent", "workspace-b");
+    init.resources = effective_resources(vec![TestInput {
+        kind: "memory_store".into(),
+        id: store_id,
+        mount_path: "/memory".into(),
+        access: ResourceAccess::ReadWrite,
+        instructions: None,
+        git_ref: None,
+    }]);
+
+    let error = managed
+        .prepare_session("wrong-workspace", init)
+        .await
+        .unwrap_err();
+    assert!(error.message.contains("not found"));
+    assert!(host.sandbox_spec("wrong-workspace").mounts.is_empty());
+    assert!(host.memory_for_thread("wrong-workspace").is_none());
 }
 
 /// The same effective input contract realizes File and Repository resources without
@@ -1431,14 +1746,14 @@ async fn told_equals_mounted_the_prompt_path_and_access_match_the_realized_mount
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let store_id = host.create_memory_store().await;
     host.memory_stores
-        .blob()
-        .put(host.local_workspace(), &store_id, b"seed")
+        .fs()
+        .create(&store_id, "/seed.md", "seed")
         .await
-        .expect("seed memory bytes");
+        .expect("seed memory");
 
     let resource = TestInput {
         kind: "memory_store".into(),
-        id: store_id,
+        id: store_id.clone(),
         mount_path: "/mnt/memory".into(),
         access: ResourceAccess::ReadOnly,
         instructions: None,
@@ -1472,8 +1787,8 @@ async fn runtime_stages_exactly_the_effective_resource_list() {
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let s2 = host.create_memory_store().await;
     host.memory_stores
-        .blob()
-        .put(host.local_workspace(), &s2, b"WIRE-BYTES")
+        .fs()
+        .create(&s2, "/wire.md", "WIRE-BYTES")
         .await
         .unwrap();
 
@@ -1494,7 +1809,7 @@ async fn runtime_stages_exactly_the_effective_resource_list() {
     let mounts = host.thread_memory_mounts("t-g3");
     let at_path: Vec<_> = mounts
         .iter()
-        .filter(|(_, logical)| logical == "mnt/memory")
+        .filter(|mount| mount.logical == "mnt/memory")
         .collect();
     assert_eq!(
         at_path.len(),
@@ -1502,13 +1817,13 @@ async fn runtime_stages_exactly_the_effective_resource_list() {
         "one mount wins the path, not both: {mounts:?}"
     );
     assert_eq!(
-        at_path[0].0, s2,
+        at_path[0].store_id, s2,
         "the carried effective store is the only staged store"
     );
 
     assert_eq!(
-        carried_mount_bytes(&host.sandbox_spec("t-g3").mounts[0]),
-        b"WIRE-BYTES"
+        memory_mount_store_id(&host.sandbox_spec("t-g3").mounts[0]),
+        s2
     );
 }
 
@@ -1517,7 +1832,9 @@ async fn runtime_stages_exactly_the_effective_resource_list() {
 async fn a_bound_resource_with_a_missing_backing_store_fails_the_session_closed() {
     use awaken_protocol_managed::SessionRuntime;
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
-    let managed = managed_with_resource_source(host.clone());
+    let managed = crate::ManagedHost::new(host.clone()).with_resource_configs(Arc::new(
+        awaken_config_resolver::InMemoryResourceCatalog::new(),
+    ));
     let mut init = bare_session("a", host.local_workspace());
     init.resources = effective_resources(vec![TestInput {
         kind: "memory_store".into(),
@@ -1544,15 +1861,15 @@ async fn an_effective_resource_mounts_on_a_worker_without_the_binding_repository
     let store_id = db_less.create_memory_store().await;
     db_less
         .memory_stores
-        .blob()
-        .put(db_less.local_workspace(), &store_id, b"CARRIED-BYTES")
+        .fs()
+        .create(&store_id, "/carried.md", "CARRIED-BYTES")
         .await
         .expect("seed");
     let managed_worker = managed_with_resource_source(db_less.clone());
     let mut init = bare_session("a", db_less.local_workspace());
     init.resources = effective_resources(vec![TestInput {
         kind: "memory_store".into(),
-        id: store_id,
+        id: store_id.clone(),
         mount_path: "/mnt/memory".into(),
         access: ResourceAccess::ReadOnly,
         instructions: None,
@@ -1563,8 +1880,8 @@ async fn an_effective_resource_mounts_on_a_worker_without_the_binding_repository
         .await
         .unwrap();
     assert_eq!(
-        carried_mount_bytes(&db_less.sandbox_spec("t-g5-worker").mounts[0]),
-        b"CARRIED-BYTES",
+        memory_mount_store_id(&db_less.sandbox_spec("t-g5-worker").mounts[0]),
+        store_id,
         "the effective input is sufficient for a DB-less worker"
     );
     assert!(
@@ -2007,6 +2324,24 @@ async fn end_session_disposes_the_threads_sandbox() {
         "the sandbox workspace exists while the session is live"
     );
 
+    // Stage representative resource/config projections after the sandbox is live;
+    // terminal cleanup must erase all of them so reusing the opaque thread id cannot
+    // inherit stale scope, capability, model, or credential-bearing MCP state.
+    host.register_thread_workspace("t-end", "workspace-a");
+    host.register_thread_memory("t-end", None);
+    host.register_thread_resources("t-end", crate::provisioning::StagedResources::default());
+    host.register_thread_mcp(
+        "t-end",
+        vec![PreparedMcpServer {
+            name: "private".into(),
+            url: "https://example.invalid/mcp".into(),
+            bearer: None,
+            refresh: None,
+        }],
+    );
+    host.register_thread_model("t-end", "private-model");
+    host.register_thread_egress("t-end", true);
+
     // End the session at the terminal edge.
     managed.end_session("t-end").await.expect("end_session");
 
@@ -2022,6 +2357,12 @@ async fn end_session_disposes_the_threads_sandbox() {
         SandboxStatus::Terminated,
         "end_session disposes the sandbox (workspace reaped), unlike an evict-rebuild"
     );
+    assert!(host.registered_thread_workspace("t-end").is_none());
+    assert!(!host.thread_memory.lock().unwrap().contains_key("t-end"));
+    assert!(!host.thread_resources.lock().unwrap().contains_key("t-end"));
+    assert!(!host.thread_mcp.lock().unwrap().contains_key("t-end"));
+    assert!(host.inference_routing.override_for("t-end").is_none());
+    assert!(!host.thread_egress().denies("t-end"));
 
     // Idempotent: ending an already-ended or never-created session is a clean no-op.
     managed

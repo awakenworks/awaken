@@ -77,4 +77,8 @@ impl MemoryStores {
     pub(crate) fn fs(&self) -> &Arc<dyn MemoryFs> {
         &self.fs
     }
+
+    pub(crate) fn fs_handle(&self) -> Arc<dyn MemoryFs> {
+        self.fs.clone()
+    }
 }

@@ -115,6 +115,7 @@ async fn run_configured(
     if let Some(materializer) = materializer {
         host = host.with_inference_materializer(materializer);
     }
+    awaken_server::install_platform_memory_data_plane(&host);
 
     // Serve `acp:*` runs this worker claims on the config-selected CLI, realized in the
     // worker's configured sandbox tier — the SAME env wiring the server root uses, so

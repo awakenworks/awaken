@@ -1413,6 +1413,10 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-protocol-transport",
         "awaken-provider-genai",
         "awaken-memory-store",
+        # Composition-only adapter: runtime-host exposes MemoryFs + MemoryMounter
+        # ports; awaken-server installs the FUSE/copy implementation without
+        # coupling the host substrate to the worker implementation crate.
+        "awaken-sandbox-memoryd",
         "awaken-config-store",
         "awaken-config-resolver",
         "awaken-admin-config-api",

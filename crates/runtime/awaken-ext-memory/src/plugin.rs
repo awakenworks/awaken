@@ -24,7 +24,7 @@ use awaken_runtime_contract::plugin::{
     PhaseHook, PhaseHookPoint, Plugin, PluginConfigError, PluginManifest,
 };
 
-use crate::localfs::MemoryDir;
+use crate::localfs::{MemoryDir, MemoryStoreHandle};
 use crate::recall::{RecallBounds, render};
 use crate::select::{RecallSelector, manifest, query_from};
 
@@ -59,13 +59,21 @@ pub const MEMORY_PLUGIN_ID: &str = "memory";
 /// store (shared with extraction), the recall bounds, and — optionally — a
 /// relevance selector.
 pub struct MemoryPlugin {
-    store: MemoryDir,
+    store: Arc<dyn MemoryStoreHandle>,
     bounds: RecallBounds,
     selector: Option<Arc<dyn RecallSelector>>,
 }
 
 impl MemoryPlugin {
     pub fn new(store: MemoryDir, bounds: RecallBounds) -> Self {
+        Self {
+            store: Arc::new(store),
+            bounds,
+            selector: None,
+        }
+    }
+
+    pub fn from_handle(store: Arc<dyn MemoryStoreHandle>, bounds: RecallBounds) -> Self {
         Self {
             store,
             bounds,
@@ -209,7 +217,7 @@ mod config_tests {
 /// hook fires every step), gated on the run-scoped [`ContextMessages`] state so the
 /// block replays across steps and a resumed run rather than recomputing.
 struct RecallHook {
-    store: MemoryDir,
+    store: Arc<dyn MemoryStoreHandle>,
     bounds: RecallBounds,
     selector: Option<Arc<dyn RecallSelector>>,
 }
@@ -224,7 +232,7 @@ impl RecallHook {
     }
 
     async fn compute(&self, conversation: &[Message]) -> Vec<Message> {
-        let entries = self.store.entries();
+        let entries = self.store.entries().await.unwrap_or_default();
         if entries.is_empty() {
             return Vec::new();
         }

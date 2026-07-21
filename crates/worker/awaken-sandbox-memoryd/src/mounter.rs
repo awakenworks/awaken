@@ -75,6 +75,16 @@ impl MemoryMounter for MemoryStoreMounter {
         host_path: &Path,
         access: MountAccess,
     ) -> Result<Box<dyn MemoryMount>, SandboxError> {
+        // Every realization is a fresh projection. In particular, a deleted
+        // memory from the durable store must not reappear from stale copy bytes
+        // left by an evicted Session context. Never follow a replaced symlink.
+        if let Ok(metadata) = std::fs::symlink_metadata(host_path) {
+            if metadata.file_type().is_symlink() || metadata.is_file() {
+                std::fs::remove_file(host_path).map_err(sandbox_err)?;
+            } else {
+                std::fs::remove_dir_all(host_path).map_err(sandbox_err)?;
+            }
+        }
         std::fs::create_dir_all(host_path).map_err(sandbox_err)?;
 
         #[cfg(feature = "fuse")]
@@ -332,6 +342,33 @@ mod tests {
             Some("v2"),
             "copy_only mount harvested the edit back"
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn remount_starts_from_store_truth_and_drops_stale_projection_bytes() {
+        use awaken_provisioning_contract::{MemoryMounter, MountAccess};
+
+        let durable = Arc::new(InMemoryFs::new());
+        durable.create("s", "/live.md", "truth").await.unwrap();
+        let mounter = MemoryStoreMounter::copy_only(durable);
+        let dir = temp("fresh-projection");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("deleted.md"), "stale").unwrap();
+
+        let guard = mounter
+            .mount("s", &dir, MountAccess::ReadOnly)
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("live.md")).unwrap(),
+            "truth"
+        );
+        assert!(
+            !dir.join("deleted.md").exists(),
+            "a memory deleted from store truth cannot resurrect on remount"
+        );
+        guard.teardown().await;
         std::fs::remove_dir_all(&dir).ok();
     }
 }

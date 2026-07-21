@@ -16,9 +16,9 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_ext_builtin_tools::{AgentRunArgs, erase, invoke_agent_tool};
 use awaken_ext_memory::{
-    DEFAULT_SELECTOR_INSTRUCTIONS, EXTRACT_PROMPT, MEMORY_AGENT_ID, MemoryDir, RecallBounds,
-    RecallSelector, SELECTOR_AGENT_ID, WriteMemoryTool, default_selector_agent, parse_indices,
-    select_input,
+    DEFAULT_SELECTOR_INSTRUCTIONS, EXTRACT_PROMPT, MEMORY_AGENT_ID, MemoryDir, MemoryStoreHandle,
+    RecallBounds, RecallSelector, SELECTOR_AGENT_ID, WriteMemoryTool, default_selector_agent,
+    parse_indices, sanitize_stem, select_input,
 };
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::tool::RawTool;
@@ -95,6 +95,97 @@ impl RecallSelector for AgentSelector {
 /// extraction filters it (recall is context, not a conversation fact).
 pub const RECALL_MSG_PREFIX: &str = "mem-recall-";
 
+/// Runtime adapter over one already-authorized platform MemoryStore. It carries
+/// only data-plane identity and maximum access; authorization policy remains at
+/// the edge that constructs it.
+pub(crate) struct PlatformMemoryHandle {
+    fs: Arc<dyn awaken_memory_store::MemoryFs>,
+    store_id: String,
+    writable: bool,
+}
+
+impl PlatformMemoryHandle {
+    pub(crate) fn new(
+        fs: Arc<dyn awaken_memory_store::MemoryFs>,
+        store_id: String,
+        writable: bool,
+    ) -> Self {
+        Self {
+            fs,
+            store_id,
+            writable,
+        }
+    }
+}
+
+#[async_trait]
+impl MemoryStoreHandle for PlatformMemoryHandle {
+    async fn write(&self, name: &str, content: &str) -> Result<String, String> {
+        if !self.writable {
+            return Err("memory store binding is read-only".into());
+        }
+        let path = format!("/{}.md", sanitize_stem(name));
+        match self
+            .fs
+            .get_by_path(&self.store_id, &path)
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            Some(current) => self
+                .fs
+                .update(
+                    &self.store_id,
+                    &current.id,
+                    content,
+                    &current.content_sha256,
+                )
+                .await
+                .map_err(|error| error.to_string())?,
+            None => self
+                .fs
+                .create(&self.store_id, &path, content)
+                .await
+                .map_err(|error| error.to_string())?,
+        };
+        Ok(path)
+    }
+
+    async fn entries(&self) -> Result<Vec<awaken_ext_memory::Entry>, String> {
+        let mut entries = Vec::new();
+        for item in self
+            .fs
+            .list(&self.store_id, "/")
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            let Some(memory) = self
+                .fs
+                .get_by_path(&self.store_id, &item.path)
+                .await
+                .map_err(|error| error.to_string())?
+            else {
+                continue;
+            };
+            let Some(content) = memory.content.filter(|content| !content.trim().is_empty()) else {
+                continue;
+            };
+            let nanos = u64::try_from(memory.updated_unix_nanos).unwrap_or(u64::MAX);
+            entries.push(awaken_ext_memory::Entry {
+                path: std::path::PathBuf::from(memory.path),
+                content: content.trim().to_string(),
+                modified: std::time::UNIX_EPOCH + std::time::Duration::from_nanos(nanos),
+            });
+        }
+        entries.sort_by(|left, right| {
+            right
+                .modified
+                .cmp(&left.modified)
+                .then_with(|| left.path.cmp(&right.path))
+        });
+        Ok(entries)
+    }
+}
+
 /// Triggers out-of-band memory extraction after a main turn, and reads memories
 /// back for recall. Owns no memory logic itself — it delegates to
 /// `awaken-ext-memory` and only orchestrates the sub-run.
@@ -103,8 +194,10 @@ pub struct MemoryExtraction {
     provider: Arc<LocalProvider>,
     catalog: Arc<AgentCatalog>,
     background: Arc<BackgroundRuns>,
-    store: MemoryDir,
+    store: Arc<dyn MemoryStoreHandle>,
     bounds: RecallBounds,
+    recall_enabled: bool,
+    extraction_enabled: bool,
     model_ref: String,
 }
 
@@ -122,10 +215,49 @@ impl MemoryExtraction {
             provider,
             catalog,
             background,
-            store: MemoryDir::new(root),
+            store: Arc::new(MemoryDir::new(root)),
             bounds: RecallBounds::default(),
+            recall_enabled: true,
+            extraction_enabled: true,
             model_ref: model_ref.into(),
         }
+    }
+
+    pub(crate) fn for_store(&self, store: Arc<dyn MemoryStoreHandle>) -> Self {
+        Self {
+            llm: self.llm.clone(),
+            provider: self.provider.clone(),
+            catalog: self.catalog.clone(),
+            background: self.background.clone(),
+            store,
+            bounds: self.bounds.clone(),
+            recall_enabled: self.recall_enabled,
+            extraction_enabled: self.extraction_enabled,
+            model_ref: self.model_ref.clone(),
+        }
+    }
+
+    pub(crate) fn for_binding(
+        &self,
+        store: Arc<dyn MemoryStoreHandle>,
+        config: &awaken_protocol_managed::resource_plane::MemoryStoreConfigVersion,
+        writable: bool,
+    ) -> Self {
+        let mut bound = self.for_store(store);
+        bound.recall_enabled = config.recall_policy.enabled;
+        bound.bounds.max_entries = usize::try_from(config.recall_policy.max_results)
+            .unwrap_or(usize::MAX)
+            .max(1);
+        bound.extraction_enabled = writable && config.extraction_policy.enabled;
+        bound
+    }
+
+    pub(crate) fn recall_enabled(&self) -> bool {
+        self.recall_enabled
+    }
+
+    pub(crate) fn extraction_enabled(&self) -> bool {
+        self.extraction_enabled
     }
 
     /// Fire-and-forget: seed the extractor with `committed` (the finished turn's
@@ -174,7 +306,7 @@ impl MemoryExtraction {
 
         self.background
             .spawn(async move {
-                let tool = erase(WriteMemoryTool::new(store));
+                let tool = erase(WriteMemoryTool::from_handle(store));
                 // The extractor injects a per-run `write_memory` tool scoped to this
                 // store, which the ordinary Agent tool deliberately does not
                 // carry — so it runs on the substrate directly. Fire-and-forget, and
@@ -200,7 +332,7 @@ impl MemoryExtraction {
 
     /// The memory store (shared with the recall plugin, which reads it at
     /// `BeforeInference`).
-    pub fn store(&self) -> MemoryDir {
+    pub fn store(&self) -> Arc<dyn MemoryStoreHandle> {
         self.store.clone()
     }
 
@@ -215,10 +347,77 @@ impl MemoryExtraction {
     }
 }
 
+impl crate::host::SharedHost {
+    /// The Memory content data-plane port used by an outer composition root to
+    /// construct a worker-side mounter. It carries no principal or policy state.
+    pub fn memory_fs(&self) -> Arc<dyn awaken_memory_store::MemoryFs> {
+        self.memory_stores.fs_handle()
+    }
+
+    /// Install the worker adapter behind the neutral provisioning port. This is
+    /// intentionally separate from [`SharedHost::new`](crate::SharedHost::new):
+    /// runtime-host must not depend on a FUSE/copy implementation crate.
+    pub fn install_memory_mounter(
+        &self,
+        mounter: Arc<dyn awaken_provisioning_contract::MemoryMounter>,
+    ) {
+        self.provider.install_memory_mounter(mounter.clone());
+        *self
+            .memory_mounter
+            .write()
+            .expect("memory mounter lock poisoned") = Some(mounter);
+    }
+
+    pub(crate) fn memory_mounter(
+        &self,
+    ) -> Option<Arc<dyn awaken_provisioning_contract::MemoryMounter>> {
+        self.memory_mounter
+            .read()
+            .expect("memory mounter lock poisoned")
+            .clone()
+    }
+
+    pub(crate) fn register_thread_memory(
+        &self,
+        thread: &str,
+        memory: Option<Arc<MemoryExtraction>>,
+    ) {
+        self.thread_memory
+            .lock()
+            .expect("thread memory mutex poisoned")
+            .insert(thread.to_string(), memory);
+    }
+
+    pub(crate) fn memory_for_thread(&self, thread: &str) -> Option<Arc<MemoryExtraction>> {
+        match self
+            .thread_memory
+            .lock()
+            .expect("thread memory mutex poisoned")
+            .get(thread)
+        {
+            Some(memory) => memory.clone(),
+            None => self.memory.clone(),
+        }
+    }
+
+    pub(crate) fn platform_memory_handle(
+        &self,
+        store_id: String,
+        writable: bool,
+    ) -> Arc<dyn MemoryStoreHandle> {
+        Arc::new(PlatformMemoryHandle::new(
+            self.memory_stores.fs_handle(),
+            store_id,
+            writable,
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use async_trait::async_trait;
+    use awaken_memory_store::MemoryFs as _;
     use awaken_runtime_contract::llm::{
         AssistantOutput, ChatRequest, ChatResponse, Result as LlmResult, ToolCall,
     };
@@ -318,9 +517,30 @@ mod tests {
             "user likes rust"
         );
         // The read side surfaces it through bounded recall.
-        let block = awaken_ext_memory::recall_block(&extraction.store(), &extraction.bounds())
+        let entries = extraction.store().entries().await.unwrap();
+        let block = awaken_ext_memory::recall::render(&entries, &extraction.bounds())
             .expect("recall block");
         assert!(block.contains("user likes rust"), "got: {block}");
+    }
+
+    #[tokio::test]
+    async fn platform_handle_enforces_read_only_at_the_data_plane_boundary() {
+        let fs = Arc::new(awaken_memory_store::InMemoryFs::new());
+        fs.create("store-a", "/existing.md", "safe").await.unwrap();
+        let read_only = PlatformMemoryHandle::new(fs.clone(), "store-a".into(), false);
+
+        let error = read_only
+            .write("new", "must not persist")
+            .await
+            .unwrap_err();
+        assert!(error.contains("read-only"));
+        assert!(
+            fs.get_by_path("store-a", "/new.md")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(read_only.entries().await.unwrap().len(), 1);
     }
 
     /// An extractor that saves whatever non-prompt text it was seeded with, so the

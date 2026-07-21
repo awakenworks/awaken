@@ -65,6 +65,13 @@ impl InferenceRouting {
             .insert(thread.to_string(), model_ref.into());
     }
 
+    pub(crate) fn remove(&self, thread: &str) {
+        self.thread_model
+            .lock()
+            .expect("thread model mutex poisoned")
+            .remove(thread);
+    }
+
     /// The model ref bound to `thread`, or `default_ref`.
     pub(crate) fn model_ref(&self, thread: &str, default_ref: &str) -> String {
         self.thread_model

@@ -168,7 +168,11 @@ pub struct SharedHost {
     pub(crate) session_blob_root: Option<PathBuf>,
     /// Out-of-band memory extraction, when enabled with [`with_memory`]. After a
     /// turn reaches a natural end it fires a background `memory-extractor` sub-run.
-    memory: Option<Arc<MemoryExtraction>>,
+    pub(crate) memory: Option<Arc<MemoryExtraction>>,
+    /// Per-thread governed MemoryStore selection. Managed sessions always insert
+    /// an entry (including `None`), so they never fall back to the standalone
+    /// host directory configured by legacy direct-runtime callers.
+    pub(crate) thread_memory: std::sync::Mutex<HashMap<String, Option<Arc<MemoryExtraction>>>>,
     /// The relevance selector for recall (a `memory-selector` sub-agent), wired
     /// into the memory recall plugin when memory is enabled.
     memory_selector: Option<Arc<dyn awaken_ext_memory::RecallSelector>>,
@@ -218,6 +222,11 @@ pub struct SharedHost {
     /// by one storage-dir durability rule and grouped behind one type that owns that
     /// construction invariant. See [`crate::memory_stores`].
     pub(crate) memory_stores: crate::memory_stores::MemoryStores,
+    /// Worker-side realization port for governed MemoryStore mounts. The runtime
+    /// host stores only the neutral port; the outer server composition installs
+    /// the FUSE/copy adapter.
+    pub(crate) memory_mounter:
+        std::sync::RwLock<Option<Arc<dyn awaken_provisioning_contract::MemoryMounter>>>,
     /// An optional tool gate that replaces the default authorization gate on every
     /// thread's runtime. Used to exercise scheduled actions (ADR-0020, slice E): a
     /// gate that defers tool calls as `ScheduledAction`s so the durable dispatch

@@ -94,8 +94,8 @@ pub use crate::hub::{ThreadEvent, ThreadEventHub};
 pub use crate::memory_store_api::{memory_stores_router, memory_stores_router_with_catalog};
 pub use crate::redact::PiiRedactor;
 pub use crate::sandbox_source::{
-    ContainerChannelSource, LaunchSource, SandboxChannelSource, ThreadEgress, ThreadResources,
-    ThreadSandbox, build_acp_channel_source, resolve_sandbox_tier,
+    AcpSandboxBindings, ContainerChannelSource, LaunchSource, SandboxChannelSource, ThreadEgress,
+    ThreadResources, ThreadSandbox, build_acp_channel_source, resolve_sandbox_tier,
 };
 pub use crate::skills_api::skills_router;
 // The config data plane (ADR-0036/slice A): the service + its router + the
@@ -360,33 +360,42 @@ impl ManagedHost {
                 source
                     .resolve_memory_store(workspace, memory_store_id.as_str())
                     .map_err(|error| RunError::bad_request(error.to_string()))?;
-                let bytes = self
-                    .host
-                    .memory_get_in(workspace, memory_store_id.as_str())
-                    .await
-                    .ok_or_else(|| {
-                        RunError::bad_request(format!(
-                            "memory_store resource `{memory_store_id}` does not exist"
-                        ))
-                    })?;
+                let mut versions = std::collections::BTreeMap::new();
                 if input.access == ResourceAccess::ReadWrite {
-                    staged
-                        .memory_mounts
-                        .push((memory_store_id.to_string(), logical.clone()));
+                    for entry in self
+                        .host
+                        .memory_stores
+                        .fs()
+                        .list(memory_store_id.as_str(), "/")
+                        .await
+                        .map_err(|error| RunError::bad_request(error.to_string()))?
+                    {
+                        versions.insert(entry.path, entry.content_sha256);
+                    }
                 }
+                // The worker realizes one governed store directory through its
+                // MemoryMounter. The resource plane never receives a principal,
+                // role, API key, or policy: the outer authorization/ACL seam has
+                // already selected workspace, store, and maximum access.
                 staged
                     .mounts
                     .push(awaken_provisioning_contract::MountRequirement {
-                        mount_id: memory_store_id.to_string(),
-                        source: awaken_provisioning_contract::MountSource::InlineBytes {
-                            contents: bytes,
-                            content_hash: None,
+                        mount_id: input.binding_id.to_string(),
+                        source: awaken_provisioning_contract::MountSource::MemoryStore {
+                            store_id: memory_store_id.to_string(),
                         },
                         mount_path: format!(".mnt/{logical}"),
                         access: mount_access,
                         lifetime: awaken_provisioning_contract::MountLifetime::PerRun,
                         required: true,
                     });
+                if input.access == ResourceAccess::ReadWrite {
+                    staged.memory_mounts.push(crate::provisioning::MemoryMount {
+                        store_id: memory_store_id.to_string(),
+                        logical: logical.clone(),
+                        versions,
+                    });
+                }
             }
             ResolvedInputSource::Repository {
                 repository_id,
@@ -457,12 +466,34 @@ impl ManagedHost {
         inputs: &awaken_protocol_managed::EffectiveSessionInputs,
     ) -> Result<Vec<crate::host::PreparedMcpServer>, RunError> {
         let mut all = crate::provisioning::StagedResources::default();
+        let mut bound_memory = None;
+        let mut memory_seen = false;
         for input in &inputs.inputs {
             let one = self.stage_resolved_input(workspace, input).await?;
             all.mounts.extend(one.mounts);
             all.prompts.extend(one.prompts);
             all.memory_mounts.extend(one.memory_mounts);
             all.repos.extend(one.repos);
+            if let awaken_protocol_managed::ResolvedInputSource::MemoryStore {
+                memory_store_id,
+                config,
+            } = &input.source
+            {
+                if memory_seen {
+                    return Err(RunError::bad_request(
+                        "automatic recall/extraction supports one MemoryStore binding per Session",
+                    ));
+                }
+                memory_seen = true;
+                if let Some(engine) = &self.host.memory {
+                    let writable =
+                        input.access == awaken_resource_contract::ResourceAccess::ReadWrite;
+                    let handle = self
+                        .host
+                        .platform_memory_handle(memory_store_id.to_string(), writable);
+                    bound_memory = Some(Arc::new(engine.for_binding(handle, config, writable)));
+                }
+            }
         }
 
         const GITHUB_MCP_URL: &str = "https://api.githubcopilot.com/mcp/";
@@ -480,6 +511,9 @@ impl ManagedHost {
         // The complete manifest replaces the prior projection. Register an empty
         // value too, so deleting the final input cannot leave a stale mount behind.
         self.host.register_thread_resources(thread, all);
+        // Managed sessions always record an explicit selection (including none),
+        // preventing fallback to a host-global standalone memory directory.
+        self.host.register_thread_memory(thread, bound_memory);
         Ok(repository_mcp)
     }
 
@@ -806,8 +840,10 @@ impl SessionRuntime for ManagedHost {
         // turn rebuilds with the newly resolved executor (native switch is O(1); an
         // ACP thread's cached context relaunches its CLI on rebuild).
         self.host.register_thread_model(thread, model);
-        self.host.sessions.lock().await.remove(thread);
-        Ok(())
+        self.host
+            .evict_session_for_rebuild(thread, false)
+            .await
+            .map_err(to_run_error)
     }
 
     async fn apply_session_inputs(
@@ -819,13 +855,16 @@ impl SessionRuntime for ManagedHost {
         self.host.register_thread_workspace(thread, workspace_id);
         self.host.harvest_thread_memory(thread).await;
         self.host.harvest_thread_skills(thread).await;
+        self.host.harvest_thread_repo(thread).await;
         let repository_mcp = self
             .stage_effective_inputs(thread, workspace_id, inputs)
             .await?;
         self.host
             .replace_thread_repository_mcp(thread, repository_mcp);
-        self.host.sessions.lock().await.remove(thread);
-        Ok(())
+        self.host
+            .evict_session_for_rebuild(thread, true)
+            .await
+            .map_err(to_run_error)
     }
 
     async fn prepare_session(

@@ -642,9 +642,11 @@ pub async fn build_acp_container_router() -> Router {
         awaken_runtime_host::SandboxTier::Docker,
         Some(&image),
         awaken_runtime_host::LaunchSource::Fixed(launch),
-        host.thread_egress(),
-        host.thread_resources_handle(),
-        host.thread_sandbox(),
+        awaken_runtime_host::AcpSandboxBindings::new(
+            host.thread_egress(),
+            host.thread_resources_handle(),
+            host.thread_sandbox(),
+        ),
         base,
     )
     .await

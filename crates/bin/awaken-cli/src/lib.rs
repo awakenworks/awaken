@@ -879,6 +879,7 @@ async fn management_router_over(
         // Resolve a session's model to a real executor from the config plane (M2):
         // an unconfigured/unresolvable model falls back to the scenario model above.
         .with_inference_materializer(inference_materializer);
+    awaken_server::install_platform_memory_data_plane(&host_builder);
     // Production ACP wiring (`acp:*` threads): `AWAKEN_ACP_CLI` / `AWAKEN_ACP_ARGV`
     // realized in `AWAKEN_SANDBOX_TIER`. The one shared helper both the server and
     // worker roots call, so they never drift (ADR-0057).

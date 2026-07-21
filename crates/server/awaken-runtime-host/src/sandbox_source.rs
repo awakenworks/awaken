@@ -117,6 +117,13 @@ impl ThreadEgress {
             .copied()
             .unwrap_or(false)
     }
+
+    pub(crate) fn remove(&self, thread: &str) {
+        self.0
+            .lock()
+            .expect("thread egress mutex poisoned")
+            .remove(thread);
+    }
 }
 
 /// Shared per-thread sandbox overlays (isolation/network/limits), sourced from the
@@ -154,6 +161,13 @@ impl ThreadSandbox {
             Some(over) => over.apply(spec),
             None => spec,
         }
+    }
+
+    pub(crate) fn remove(&self, thread: &str) {
+        self.0
+            .lock()
+            .expect("thread sandbox mutex poisoned")
+            .remove(thread);
     }
 }
 
@@ -455,6 +469,15 @@ pub struct SandboxChannelSource {
 }
 
 impl SandboxChannelSource {
+    #[must_use]
+    pub fn with_memory_mounter(mut self, mounter: Arc<dyn pc::MemoryMounter>) -> Self {
+        match &mut self.provider {
+            SandboxBackend::Namespace(provider) => provider.install_memory_mounter(mounter),
+            SandboxBackend::Workdir(provider) => provider.install_memory_mounter(mounter),
+        }
+        self
+    }
+
     /// A source realizing its sandboxes under `base` (one root per thread scope).
     /// The provider is constructed here so a composition root names only this
     /// crate, not the sandbox tier. Defaults to the newline stand-in wire (the
@@ -967,32 +990,71 @@ const CONTAINER_AGENT_PORT: u16 = 8080;
 /// runtime (podman / docker / k8s). This is the composition seam behind
 /// `AWAKEN_SANDBOX_TIER` — different workers pick different backends. A container tier
 /// whose backend feature is not compiled in, or with no image configured, fails closed.
+pub struct AcpSandboxBindings {
+    egress: ThreadEgress,
+    resources: ThreadResources,
+    sandbox: ThreadSandbox,
+    memory_mounter: Option<Arc<dyn pc::MemoryMounter>>,
+}
+
+impl AcpSandboxBindings {
+    pub fn new(egress: ThreadEgress, resources: ThreadResources, sandbox: ThreadSandbox) -> Self {
+        Self {
+            egress,
+            resources,
+            sandbox,
+            memory_mounter: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_memory_mounter(
+        mut self,
+        memory_mounter: Option<Arc<dyn pc::MemoryMounter>>,
+    ) -> Self {
+        self.memory_mounter = memory_mounter;
+        self
+    }
+}
+
 pub async fn build_acp_channel_source(
     tier: crate::deployment_config::SandboxTier,
     image: Option<&str>,
     source: LaunchSource,
-    egress: ThreadEgress,
-    resources: ThreadResources,
-    sandbox: ThreadSandbox,
+    bindings: AcpSandboxBindings,
     namespace_base: std::path::PathBuf,
 ) -> Result<Arc<dyn AgentChannelSource>, String> {
     use crate::deployment_config::SandboxTier;
+    let AcpSandboxBindings {
+        egress,
+        resources,
+        sandbox,
+        memory_mounter,
+    } = bindings;
     match tier {
         // No OS isolation, but full injection: the Workdir backend runs the CLI as a
         // plain child yet still materializes the session's staged resource mounts + the
         // codex config into a per-thread workdir (ADR-0057). The no-bwrap path.
-        SandboxTier::Local => Ok(Arc::new(
-            SandboxChannelSource::workdir(namespace_base, source)
+        SandboxTier::Local => {
+            let mut channel = SandboxChannelSource::workdir(namespace_base, source)
                 .with_thread_egress(egress)
                 .with_thread_resources(resources)
-                .with_thread_sandbox(sandbox),
-        )),
-        SandboxTier::Namespace => Ok(Arc::new(
-            SandboxChannelSource::from_source(namespace_base, source)
+                .with_thread_sandbox(sandbox);
+            if let Some(mounter) = memory_mounter {
+                channel = channel.with_memory_mounter(mounter);
+            }
+            Ok(Arc::new(channel))
+        }
+        SandboxTier::Namespace => {
+            let mut channel = SandboxChannelSource::from_source(namespace_base, source)
                 .with_thread_egress(egress)
                 .with_thread_resources(resources)
-                .with_thread_sandbox(sandbox),
-        )),
+                .with_thread_sandbox(sandbox);
+            if let Some(mounter) = memory_mounter {
+                channel = channel.with_memory_mounter(mounter);
+            }
+            Ok(Arc::new(channel))
+        }
         SandboxTier::Docker => build_docker_source(image, source, egress, resources, sandbox),
         SandboxTier::Podman => build_podman_source(image, source, egress, resources, sandbox),
         SandboxTier::K8s => build_k8s_source(image, source, egress, resources, sandbox).await,
@@ -1795,9 +1857,11 @@ mod tests {
             SandboxTier::Namespace,
             None,
             LaunchSource::Fixed(AcpLaunch::custom(vec!["claude".into()], vec![])),
-            ThreadEgress::new(),
-            ThreadResources::default(),
-            ThreadSandbox::new(),
+            AcpSandboxBindings::new(
+                ThreadEgress::new(),
+                ThreadResources::default(),
+                ThreadSandbox::new(),
+            ),
             base(),
         )
         .await;
@@ -1813,9 +1877,11 @@ mod tests {
             SandboxTier::Local,
             None,
             LaunchSource::Fixed(AcpLaunch::custom(vec!["claude".into()], vec![])),
-            ThreadEgress::new(),
-            ThreadResources::default(),
-            ThreadSandbox::new(),
+            AcpSandboxBindings::new(
+                ThreadEgress::new(),
+                ThreadResources::default(),
+                ThreadSandbox::new(),
+            ),
             base(),
         )
         .await;
@@ -1890,9 +1956,11 @@ mod tests {
                 tier,
                 Some("ghcr.io/x/agent:1"),
                 LaunchSource::Fixed(AcpLaunch::custom(vec!["claude".into()], vec![])),
-                ThreadEgress::new(),
-                ThreadResources::default(),
-                ThreadSandbox::new(),
+                AcpSandboxBindings::new(
+                    ThreadEgress::new(),
+                    ThreadResources::default(),
+                    ThreadSandbox::new(),
+                ),
                 base(),
             )
             .await;

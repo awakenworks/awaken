@@ -1439,6 +1439,7 @@ dependencies = [
  "awaken-runtime",
  "awaken-runtime-contract",
  "awaken-runtime-host",
+ "awaken-sandbox-memoryd",
  "awaken-scenario-host",
  "awaken-tenancy",
  "awaken-webhook",
