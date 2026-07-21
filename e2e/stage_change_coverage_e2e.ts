@@ -140,6 +140,9 @@ const obligations: Obligation[] = [
   { id: 'D6-18', stage: '6 sandbox/recovery/metrics', behavior: 'last-owner deletion removes the blob and duplicate revoke fails closed', scenario: 'file_workspace_ownership' },
   { id: 'D6-19', stage: '6 sandbox/recovery/metrics', behavior: 'the managed API drives one Session-owned Docker environment across ACP, hand, resources, artifacts, and release', scenario: 'container_docker' },
   { id: 'D6-20', stage: '6 sandbox/recovery/metrics', behavior: 'the same managed lifecycle runs through the replaceable Podman provider without a parallel runtime path', scenario: 'container_podman' },
+  { id: 'D6-21', stage: '6 sandbox/recovery/metrics', behavior: 'a Managed environment declaration selects Podman host-userland or an explicit image through the canonical SandboxSpec', scenario: 'container_podman' },
+  { id: 'D6-22', stage: '6 sandbox/recovery/metrics', behavior: 'Managed network and resource-limit declarations reach the Podman run plan', scenario: 'container_podman' },
+  { id: 'D6-23', stage: '6 sandbox/recovery/metrics', behavior: 'missing private-root directory and tarball declarations fail closed without falling back to the default image', scenario: 'container_podman' },
 
   { id: 'D7-01', stage: '7 resource persistence', behavior: 'File, Memory, Skill, and lifecycle adapters select one shared backend family', scenario: 'resource_plane_postgres' },
   { id: 'D7-02', stage: '7 resource persistence', behavior: 'resource data survives process and local-directory replacement', scenario: 'resource_plane_postgres' },

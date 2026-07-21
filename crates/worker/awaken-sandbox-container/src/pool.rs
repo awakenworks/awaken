@@ -41,19 +41,29 @@ fn next_warm_scope() -> String {
 
 /// The container shape two sessions must share for a warm container to be
 /// substitutable, or `None` when the spec is not poolable (it declares mounts). The
-/// key excludes `scope` (the per-session logical id) and the attempt command, and
-/// includes everything the environment is realized from: network policy, resource
-/// limits, base env, and outputs path. A mount-less environment of the same shape is
-/// reusable; anything with a mount is not.
+/// key excludes only `scope` (the per-session logical id) and `extra.command` (the
+/// attempt process, spawned after the environment exists). Every other current and
+/// future field participates through the serialized normalized spec — including the
+/// rootfs/image declaration in `extra.environment`, provider-specific `extra` fields,
+/// isolation, network, limits, base env, outputs, and lease policy. This deliberately
+/// defaults new fields to **not reusable** until two requests are exactly equivalent,
+/// instead of maintaining an allowlist that can silently miss a creation-time field.
+/// A mount-less environment of the same shape is reusable; anything with a mount is
+/// not.
 #[must_use]
 pub fn pool_key(spec: &pc::SandboxSpec) -> Option<String> {
     if !spec.mounts.is_empty() {
         return None;
     }
-    Some(format!(
-        "{:?}|{:?}|{:?}|{}",
-        spec.network, spec.limits, spec.env, spec.outputs_path
-    ))
+    let mut normalized = spec.clone();
+    normalized.scope.clear();
+    if let Some(serde_json::Value::Object(extra)) = normalized.extra.as_mut() {
+        extra.remove("command");
+        if extra.is_empty() {
+            normalized.extra = None;
+        }
+    }
+    serde_json::to_string(&normalized).ok()
 }
 
 /// One shape's warm capacity: the template spec to replenish from and the ready set.
@@ -315,6 +325,70 @@ mod tests {
             ..Default::default()
         };
         assert_ne!(pool_key(&base), pool_key(&lim));
+
+        // Different base environment.
+        let mut env = base.clone();
+        env.env.push(pc::EnvVar {
+            name: "MODE".into(),
+            value: pc::EnvValue::Inline {
+                value: "strict".into(),
+            },
+            visibility: pc::EnvVisibility::Process,
+        });
+        assert_ne!(pool_key(&base), pool_key(&env));
+
+        // Different artifact root, isolation requirement, or lease policy.
+        let mut outputs = base.clone();
+        outputs.outputs_path = "/different/outputs".into();
+        assert_ne!(pool_key(&base), pool_key(&outputs));
+        let mut isolation = base.clone();
+        isolation.isolation = pc::IsolationClass::Namespace;
+        assert_ne!(pool_key(&base), pool_key(&isolation));
+        let mut lease = base.clone();
+        lease.lease_ttl_secs = Some(60);
+        assert_ne!(pool_key(&base), pool_key(&lease));
+    }
+
+    #[test]
+    fn rootfs_and_every_provider_extra_field_partition_warm_capacity() {
+        let base = spec("thread-a", &["agent", "--acp"]);
+
+        let mut image = spec("thread-b", &["different-attempt"]);
+        image.extra = Some(serde_json::json!({
+            "command": ["different-attempt"],
+            "environment": { "kind": "image", "reference": "agent:v2" }
+        }));
+        assert_ne!(pool_key(&base), pool_key(&image));
+
+        let mut other_image = image.clone();
+        other_image.extra.as_mut().unwrap()["environment"]["reference"] =
+            serde_json::json!("agent:v3");
+        assert_ne!(pool_key(&image), pool_key(&other_image));
+
+        let mut private_root = image.clone();
+        private_root.extra = Some(serde_json::json!({
+            "environment": {
+                "kind": "isolated_root",
+                "base": { "source": "dir", "path_template": "/roots/agent" },
+                "writable_base": false
+            }
+        }));
+        assert_ne!(pool_key(&image), pool_key(&private_root));
+
+        let mut seccomp = image.clone();
+        seccomp.extra.as_mut().unwrap()["seccomp_profile"] = serde_json::json!("strict-v1");
+        assert_ne!(pool_key(&image), pool_key(&seccomp));
+    }
+
+    #[test]
+    fn scope_and_attempt_command_are_the_only_ignored_fields() {
+        let mut a = spec("thread-a", &["agent", "--acp"]);
+        a.extra.as_mut().unwrap()["environment"] =
+            serde_json::json!({ "kind": "image", "reference": "agent:v2" });
+        let mut b = a.clone();
+        b.scope = "thread-b".into();
+        b.extra.as_mut().unwrap()["command"] = serde_json::json!(["other", "attempt"]);
+        assert_eq!(pool_key(&a), pool_key(&b));
     }
 
     #[test]

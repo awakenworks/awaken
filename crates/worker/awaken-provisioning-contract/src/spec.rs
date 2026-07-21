@@ -194,14 +194,17 @@ mod tests {
 
 /// A per-session overlay onto a synthesized [`SandboxSpec`], sourced from an
 /// environment's UI-authored `config.sandbox`. It carries only the fields a
-/// declarative environment can *enforce* — `isolation`, `network`, `limits` — each
-/// optional so a partial blob overrides just what it sets and leaves the rest at the
-/// host default. Content mounts are deliberately NOT here: those are the ADR-0038
+/// declarative environment can *enforce* — execution root, `isolation`, `network`,
+/// and `limits` — each optional so a partial blob overrides just what it sets and
+/// leaves the rest at the host default. Content mounts are deliberately NOT here:
+/// those are the ADR-0038
 /// resource plane (files/memory/repos), realized as [`MountRequirement`]s from a
 /// content source; a bare UI mount path has no source to realize.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SandboxOverride {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub environment: Option<EnvironmentKind>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub isolation: Option<IsolationClass>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -221,6 +224,7 @@ impl SandboxOverride {
     pub fn from_config_value(sandbox: &Value) -> Option<Self> {
         let get = |k: &str| sandbox.get(k).cloned();
         let over = SandboxOverride {
+            environment: get("environment").and_then(|v| serde_json::from_value(v).ok()),
             isolation: get("isolation").and_then(|v| serde_json::from_value(v).ok()),
             network: get("network").and_then(|v| serde_json::from_value(v).ok()),
             limits: get("limits")
@@ -233,13 +237,27 @@ impl SandboxOverride {
     /// Whether this overlay changes anything.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.isolation.is_none() && self.network.is_none() && !self.limits.is_set()
+        self.environment.is_none()
+            && self.isolation.is_none()
+            && self.network.is_none()
+            && !self.limits.is_set()
     }
 
     /// Overlay onto a base spec: each set field wins; unset fields keep the base's
     /// synthesized value. Mounts/scope/outputs are the host's to decide, untouched.
     #[must_use]
     pub fn apply(&self, mut spec: SandboxSpec) -> SandboxSpec {
+        if let Some(environment) = &self.environment {
+            let extra = spec
+                .extra
+                .get_or_insert_with(|| Value::Object(serde_json::Map::new()));
+            if !extra.is_object() {
+                *extra = Value::Object(serde_json::Map::new());
+            }
+            if let (Value::Object(fields), Ok(value)) = (extra, serde_json::to_value(environment)) {
+                fields.insert("environment".to_string(), value);
+            }
+        }
         if let Some(isolation) = self.isolation {
             spec.isolation = isolation;
         }
@@ -273,9 +291,10 @@ mod sandbox_override_tests {
     }
 
     #[test]
-    fn parses_the_console_blob_and_overlays_the_enforceable_trio() {
+    fn parses_the_console_blob_and_overlays_every_enforceable_field() {
         // Exactly the shape the console's SandboxEditor / capabilities preset emit.
         let blob = serde_json::json!({
+            "environment": { "kind": "image", "reference": "registry.example/agent:v2" },
             "isolation": "namespace",
             "mounts": [{ "mount_path": "/work", "access": "read_write" }], // ignored (no source)
             "network": { "mode": "allowlist", "hosts": ["api.github.com"] },
@@ -283,6 +302,12 @@ mod sandbox_override_tests {
         });
         let over = SandboxOverride::from_config_value(&blob).expect("blob contributes");
         let spec = over.apply(base());
+        assert_eq!(
+            spec.extra,
+            Some(serde_json::json!({
+                "environment": { "kind": "image", "reference": "registry.example/agent:v2" }
+            }))
+        );
         assert_eq!(spec.isolation, IsolationClass::Namespace);
         assert_eq!(
             spec.network,
@@ -302,7 +327,7 @@ mod sandbox_override_tests {
             &serde_json::json!({ "network": { "mode": "none" } }),
         )
         .expect("contributes");
-        assert!(over.isolation.is_none() && !over.limits.is_set());
+        assert!(over.environment.is_none() && over.isolation.is_none() && !over.limits.is_set());
         let spec = over.apply(base());
         assert_eq!(spec.network, NetworkPolicy::None);
         assert_eq!(
@@ -319,6 +344,30 @@ mod sandbox_override_tests {
         assert!(
             SandboxOverride::from_config_value(&serde_json::json!({ "isolation": "bogus" }))
                 .is_none()
+        );
+        assert!(
+            SandboxOverride::from_config_value(&serde_json::json!({
+                "environment": { "kind": "not-real" }
+            }))
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn environment_overlay_preserves_other_provider_extra_fields() {
+        let over = SandboxOverride::from_config_value(&serde_json::json!({
+            "environment": { "kind": "sandbox" }
+        }))
+        .expect("environment contributes");
+        let mut spec = base();
+        spec.extra = Some(serde_json::json!({ "image": "fallback:v1" }));
+        let spec = over.apply(spec);
+        assert_eq!(
+            spec.extra,
+            Some(serde_json::json!({
+                "image": "fallback:v1",
+                "environment": { "kind": "sandbox" }
+            }))
         );
     }
 }
