@@ -14,7 +14,16 @@ use awaken_resource_contract::{
     ResourcePurgeIntent, ResourcePurgeRepository, ResourceReclamationFence, ResourceReference,
     ResourceReferenceIndex, ResourceReferenceKind, ResourceReferenceRecord, ResourceTarget,
 };
+#[cfg(feature = "sqlite")]
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+
+#[cfg(feature = "postgres")]
+mod postgres;
+#[cfg(feature = "postgres")]
+mod schema;
+
+#[cfg(feature = "postgres")]
+pub use postgres::PostgresResourceStore;
 
 #[derive(Default)]
 struct ResourceConsistencyState {
@@ -251,10 +260,12 @@ impl ResourceReferenceIndex for InMemoryResourceStore {
 }
 
 /// SQLite adapter used by the durable single-machine composition.
+#[cfg(feature = "sqlite")]
 pub struct SqliteResourceStore {
     connection: Mutex<Connection>,
 }
 
+#[cfg(feature = "sqlite")]
 impl SqliteResourceStore {
     pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self, ResourcePurgeError> {
         let connection = Connection::open(path).map_err(|error| storage(error.to_string()))?;
@@ -304,6 +315,7 @@ impl SqliteResourceStore {
 }
 
 #[async_trait]
+#[cfg(feature = "sqlite")]
 impl ResourceReclamationFence for SqliteResourceStore {
     async fn acquire_reclamation(
         &self,
@@ -390,6 +402,7 @@ impl ResourceReclamationFence for SqliteResourceStore {
 }
 
 #[async_trait]
+#[cfg(feature = "sqlite")]
 impl ResourcePurgeRepository for SqliteResourceStore {
     async fn put(
         &self,
@@ -522,6 +535,7 @@ impl ResourcePurgeRepository for SqliteResourceStore {
 }
 
 #[async_trait]
+#[cfg(feature = "sqlite")]
 impl ResourceReferenceIndex for SqliteResourceStore {
     async fn add_reference(
         &self,
@@ -715,6 +729,7 @@ fn validate_fence_request(
     }
 }
 
+#[cfg(feature = "sqlite")]
 fn sqlite_ensure_unfenced(
     connection: &Connection,
     target: &ResourceTarget,
@@ -739,6 +754,7 @@ fn sqlite_ensure_unfenced(
     }
 }
 
+#[cfg(feature = "sqlite")]
 fn sqlite_references_for_identity(
     connection: &Connection,
     kind: ResourceKind,
@@ -782,7 +798,9 @@ fn recoverable(intent: &ResourcePurgeIntent, now_unix_ms: u64) -> bool {
             .is_none_or(|expires| expires <= now_unix_ms)
 }
 
-fn validate_reference(record: &ResourceReferenceRecord) -> Result<(), ResourcePurgeError> {
+pub(crate) fn validate_reference(
+    record: &ResourceReferenceRecord,
+) -> Result<(), ResourcePurgeError> {
     if record.target.workspace_id.trim().is_empty()
         || record.target.resource_id.trim().is_empty()
         || record.reference.reference_id.trim().is_empty()
@@ -794,7 +812,7 @@ fn validate_reference(record: &ResourceReferenceRecord) -> Result<(), ResourcePu
     Ok(())
 }
 
-fn validate_replacement(
+pub(crate) fn validate_replacement(
     kind: ResourceReferenceKind,
     reference_id: &str,
     records: &[ResourceReferenceRecord],
@@ -815,26 +833,30 @@ fn validate_replacement(
     Ok(())
 }
 
-fn encode_intent(intent: &ResourcePurgeIntent) -> Result<String, ResourcePurgeError> {
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+pub(crate) fn encode_intent(intent: &ResourcePurgeIntent) -> Result<String, ResourcePurgeError> {
     serde_json::to_string(intent).map_err(|error| storage(error.to_string()))
 }
 
-fn decode_intent(data: &str) -> Result<ResourcePurgeIntent, ResourcePurgeError> {
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+pub(crate) fn decode_intent(data: &str) -> Result<ResourcePurgeIntent, ResourcePurgeError> {
     let intent: ResourcePurgeIntent =
         serde_json::from_str(data).map_err(|error| storage(error.to_string()))?;
     intent.validate()?;
     Ok(intent)
 }
 
-fn storage(error: impl Into<String>) -> ResourcePurgeError {
-    ResourcePurgeError::Storage(error.into())
+pub(crate) fn storage(error: impl ToString) -> ResourcePurgeError {
+    ResourcePurgeError::Storage(error.to_string())
 }
 
-fn to_i64(value: u64) -> Result<i64, ResourcePurgeError> {
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+pub(crate) fn to_i64(value: u64) -> Result<i64, ResourcePurgeError> {
     i64::try_from(value).map_err(|_| ResourcePurgeError::Invalid("integer exceeds i64".into()))
 }
 
-fn kind_name(kind: ResourceKind) -> &'static str {
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+pub(crate) fn kind_name(kind: ResourceKind) -> &'static str {
     match kind {
         ResourceKind::File => "file",
         ResourceKind::MemoryStore => "memory_store",
@@ -843,7 +865,8 @@ fn kind_name(kind: ResourceKind) -> &'static str {
     }
 }
 
-fn status_name(status: awaken_resource_contract::ResourcePurgeStatus) -> &'static str {
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+pub(crate) fn status_name(status: awaken_resource_contract::ResourcePurgeStatus) -> &'static str {
     use awaken_resource_contract::ResourcePurgeStatus;
     match status {
         ResourcePurgeStatus::Pending => "pending",
@@ -853,7 +876,8 @@ fn status_name(status: awaken_resource_contract::ResourcePurgeStatus) -> &'stati
     }
 }
 
-fn reference_kind_name(kind: ResourceReferenceKind) -> &'static str {
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+pub(crate) fn reference_kind_name(kind: ResourceReferenceKind) -> &'static str {
     match kind {
         ResourceReferenceKind::LogicalLifecycle => "logical_lifecycle",
         ResourceReferenceKind::WorkspaceOwnership => "workspace_ownership",
@@ -866,7 +890,10 @@ fn reference_kind_name(kind: ResourceReferenceKind) -> &'static str {
     }
 }
 
-fn parse_reference_kind(value: &str) -> Result<ResourceReferenceKind, ResourcePurgeError> {
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+pub(crate) fn parse_reference_kind(
+    value: &str,
+) -> Result<ResourceReferenceKind, ResourcePurgeError> {
     match value {
         "logical_lifecycle" => Ok(ResourceReferenceKind::LogicalLifecycle),
         // Read the pre-separation spelling so an upgrade cannot make an existing
@@ -884,6 +911,7 @@ fn parse_reference_kind(value: &str) -> Result<ResourceReferenceKind, ResourcePu
     }
 }
 
+#[cfg(feature = "sqlite")]
 fn reference_params(record: &ResourceReferenceRecord) -> [String; 5] {
     [
         record.target.workspace_id.clone(),
@@ -897,6 +925,7 @@ fn reference_params(record: &ResourceReferenceRecord) -> [String; 5] {
 #[cfg(test)]
 mod tests {
     use awaken_resource_contract::{ResourcePurgeStatus, ResourceReferenceKind};
+    use proptest::prelude::*;
 
     use super::*;
 
@@ -1059,6 +1088,84 @@ mod tests {
     #[tokio::test]
     async fn in_memory_conforms() {
         repository_spec(&InMemoryResourceStore::new()).await;
+    }
+
+    proptest! {
+        #[test]
+        fn in_memory_reference_and_fence_protocol_matches_the_small_model(
+            actions in proptest::collection::vec(0u8..6, 0..128)
+        ) {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(async move {
+                let store = InMemoryResourceStore::new();
+                let row = reference("workspace-a", "ownership-a");
+                let mut referenced = false;
+                let mut fence: Option<&str> = None;
+                for action in actions {
+                    match action {
+                        0 => {
+                            let actual = store.add_reference(row.clone()).await;
+                            let expected = if fence.is_some() {
+                                Err(ResourcePurgeError::ReclamationFenced {
+                                    kind: ResourceKind::File,
+                                    resource_id: "hash-1".into(),
+                                })
+                            } else {
+                                let inserted = !referenced;
+                                referenced = true;
+                                Ok(inserted)
+                            };
+                            prop_assert_eq!(actual, expected);
+                        }
+                        1 => {
+                            let actual = store.remove_reference(&row).await.unwrap();
+                            prop_assert_eq!(actual, referenced);
+                            referenced = false;
+                        }
+                        2 | 3 => {
+                            let owner = if action == 2 { "intent-a" } else { "intent-b" };
+                            let actual = store
+                                .acquire_reclamation(owner, &row.target)
+                                .await
+                                .unwrap();
+                            let expected = match fence {
+                                Some(current) if current == owner => {
+                                    AcquireResourceReclamationOutcome::AlreadyOwned
+                                }
+                                Some(_) => AcquireResourceReclamationOutcome::Contended,
+                                None if referenced => {
+                                    AcquireResourceReclamationOutcome::Blocked(vec![row.clone()])
+                                }
+                                None => {
+                                    fence = Some(owner);
+                                    AcquireResourceReclamationOutcome::Acquired
+                                }
+                            };
+                            prop_assert_eq!(actual, expected);
+                        }
+                        4 | 5 => {
+                            let owner = if action == 4 { "intent-a" } else { "intent-b" };
+                            let actual = store.release_reclamation(owner, &row.target).await;
+                            let expected = match fence {
+                                Some(current) if current == owner => {
+                                    fence = None;
+                                    Ok(true)
+                                }
+                                Some(_) => Err(ResourcePurgeError::StaleReclamationFence),
+                                None => Ok(false),
+                            };
+                            prop_assert_eq!(actual, expected);
+                        }
+                        _ => unreachable!(),
+                    }
+                    prop_assert!(!(referenced && fence.is_some()));
+                }
+                Ok(())
+            })?;
+        }
     }
 
     #[test]

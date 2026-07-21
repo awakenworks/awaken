@@ -1072,8 +1072,11 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-resource-contract",
+ "awaken-scoped-migration",
+ "proptest",
  "rusqlite",
  "serde_json",
+ "sqlx",
  "tempfile",
  "tokio",
 ]

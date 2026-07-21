@@ -490,4 +490,96 @@ mod tests {
             Err(ResourcePurgeError::StaleClaim)
         );
     }
+
+    struct LateGuard(Mutex<usize>);
+
+    #[async_trait]
+    impl ResourcePurgeGuard for LateGuard {
+        async fn blockers(
+            &self,
+            _target: &ResourceTarget,
+            _config_version: Option<u64>,
+            _now_unix_ms: u64,
+        ) -> Result<Vec<ResourceReference>, ResourcePurgeError> {
+            let mut calls = self.0.lock().unwrap();
+            *calls += 1;
+            Ok(if *calls == 1 {
+                Vec::new()
+            } else {
+                vec![ResourceReference {
+                    kind: ResourceReferenceKind::RuntimeHandle,
+                    reference_id: "late-handle".into(),
+                }]
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_late_guard_blocker_releases_the_physical_fence_before_deferring() {
+        let repository = Arc::new(MemoryRepository::default());
+        let physical = Arc::new(Physical::default());
+        let service = ResourceReclaimer::new("worker-a", 100, repository.clone(), physical.clone())
+            .unwrap()
+            .with_guard(Arc::new(LateGuard(Mutex::new(0))));
+        service.enqueue(intent()).await.unwrap();
+
+        assert_eq!(
+            service.reconcile(10, 1).await.unwrap(),
+            ReconcileSummary {
+                deferred: 1,
+                ..Default::default()
+            }
+        );
+        assert_eq!(*physical.0.lock().unwrap(), 0);
+        assert!(repository.fences.lock().unwrap().is_empty());
+        assert_eq!(
+            repository.get("purge-1").await.unwrap().unwrap().blockers[0].reference_id,
+            "late-handle"
+        );
+    }
+
+    struct FailingPhysical;
+
+    #[async_trait]
+    impl ResourcePhysicalReclaimer for FailingPhysical {
+        async fn purge(
+            &self,
+            _target: &ResourceTarget,
+            _config_version: Option<u64>,
+        ) -> Result<ResourcePurgeEvidence, ResourcePurgeError> {
+            Err(ResourcePurgeError::Storage(
+                "injected delete failure".into(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_physical_failure_releases_the_fence_and_remains_retryable() {
+        let repository = Arc::new(MemoryRepository::default());
+        let service = ResourceReclaimer::new(
+            "worker-a",
+            100,
+            repository.clone(),
+            Arc::new(FailingPhysical),
+        )
+        .unwrap();
+        service.enqueue(intent()).await.unwrap();
+
+        assert_eq!(
+            service.reconcile(10, 1).await.unwrap(),
+            ReconcileSummary {
+                retryable_failures: 1,
+                ..Default::default()
+            }
+        );
+        assert!(repository.fences.lock().unwrap().is_empty());
+        let stored = repository.get("purge-1").await.unwrap().unwrap();
+        assert_eq!(stored.status, ResourcePurgeStatus::Pending);
+        assert!(
+            stored
+                .last_error
+                .as_deref()
+                .is_some_and(|error| error.contains("injected delete failure"))
+        );
+    }
 }
