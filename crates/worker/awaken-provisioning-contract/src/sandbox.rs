@@ -67,6 +67,22 @@ pub trait MemoryMounter: Send + Sync {
         host_path: &Path,
         access: MountAccess,
     ) -> Result<Box<dyn MemoryMount>, SandboxError>;
+
+    /// Reconcile the current files read from an adopted copy-backed sandbox.
+    /// A hard process crash loses the original in-process [`MemoryMount`] guard,
+    /// while the long-lived sandbox and its files remain. Providers call this only
+    /// at the recovered Session's terminal edge; implementations retain the same
+    /// conflict-safe durable-head rules as ordinary copy teardown.
+    async fn reconcile_recovered_copy(
+        &self,
+        _store_id: &str,
+        _files: &[(String, Vec<u8>)],
+        _access: MountAccess,
+    ) -> Result<(), SandboxError> {
+        Err(SandboxError::new(
+            "recovered Memory copy reconciliation is unsupported",
+        ))
+    }
 }
 
 /// A live memory-store mount, held for the sandbox's lifetime.

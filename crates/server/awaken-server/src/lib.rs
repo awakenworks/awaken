@@ -69,6 +69,42 @@ pub fn install_platform_memory_data_plane(host: &SharedHost) {
     ));
 }
 
+/// Open one embedded resource persistence family for a durable local composition.
+/// Keeping this factory at the data-plane composition edge prevents the runtime
+/// substrate from depending on concrete resource stores and prevents independent
+/// roots from drifting on filenames or backend selection.
+pub fn embedded_resource_plane(root: &std::path::Path) -> awaken_runtime_host::ResourcePlanePorts {
+    std::fs::create_dir_all(root).expect("create resource-plane directory");
+    let memory = awaken_memory_store::SqliteMemoryRepository::open(
+        root.join("memory_fs.db")
+            .to_str()
+            .expect("resource memory path is valid UTF-8"),
+    )
+    .expect("open resource memory sqlite");
+    memory
+        .import_legacy_versions(&root.join("resource-api.db"))
+        .expect("import legacy resource memory versions");
+    awaken_runtime_host::ResourcePlanePorts::new(
+        Arc::new(
+            awaken_file_store::sqlite::SqliteFileStore::open(
+                root.join("files.db")
+                    .to_str()
+                    .expect("resource file path is valid UTF-8"),
+            )
+            .expect("open resource file sqlite"),
+        ),
+        Arc::new(memory),
+        Arc::new(
+            awaken_skill_store::FsSkillStore::open(root.join("skills"))
+                .expect("open resource skill filesystem store"),
+        ),
+        Arc::new(
+            awaken_resource_store::SqliteResourceStore::open(root.join("resource-lifecycle.db"))
+                .expect("open resource lifecycle sqlite"),
+        ),
+    )
+}
+
 /// Build the production A2A attempt adapter behind the runtime's neutral port.
 /// Composition roots inject it into [`SharedHost`], keeping protocol knowledge
 /// out of the session substrate.

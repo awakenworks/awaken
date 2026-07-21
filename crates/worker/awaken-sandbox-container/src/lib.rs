@@ -1548,6 +1548,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             container_id,
             outputs_path: spec.outputs_path.clone(),
             realized,
+            recovered: false,
             lifecycle: Arc::new(ContainerLifecycle {
                 staging: std::sync::Mutex::new(staging.guard),
                 secret_writebacks: staging.secret_writebacks,
@@ -1585,6 +1586,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             container_id,
             outputs_path,
             realized: Vec::new(),
+            recovered: true,
             lifecycle: Arc::new(ContainerLifecycle::completed()),
         })
     }
@@ -1695,6 +1697,7 @@ pub struct ContainerSandbox<R: ContainerRuntime> {
     container_id: String,
     outputs_path: String,
     realized: Vec<pc::RealizedMount>,
+    recovered: bool,
     /// Host staging dir for materialized inline-mount content, held for the container's
     /// lifetime and removed on drop (after the container is gone). `None` when the run
     /// staged nothing.
@@ -1734,6 +1737,12 @@ pub trait ContainerEnvironment: pc::Sandbox {
         "/outputs"
     }
 
+    /// Whether this wrapper adopted an environment whose original in-process
+    /// lifecycle guards were lost with the prior owner.
+    fn is_recovered(&self) -> bool {
+        false
+    }
+
     async fn spawn_agent_process(
         &self,
         command: pc::Command,
@@ -1755,6 +1764,10 @@ pub struct EnvironmentFile {
 impl<R: ContainerRuntime + 'static> ContainerEnvironment for ContainerSandbox<R> {
     fn outputs_path(&self) -> &str {
         &self.outputs_path
+    }
+
+    fn is_recovered(&self) -> bool {
+        self.recovered
     }
 
     async fn spawn_agent_process(

@@ -102,6 +102,27 @@ pub async fn materialize(
     Ok(snapshot)
 }
 
+/// Capture only the durable heads, without writing a projection. Recovery uses
+/// this after reading the surviving sandbox copy so the subsequent harvest keeps
+/// the same compare-and-swap and concurrent-writer behavior as a live guard.
+pub async fn snapshot(fs: &dyn MemoryRepository, store: &str) -> Result<CopySnapshot, FuseError> {
+    let entries = fs.list(store, "/").await?;
+    let mut snapshot = CopySnapshot::default();
+    for entry in entries {
+        let Some(memory) = fs.get_by_path(store, &entry.path).await? else {
+            continue;
+        };
+        snapshot.heads.insert(
+            entry.path,
+            CopyHead {
+                id: memory.id,
+                sha256: memory.content_sha256,
+            },
+        );
+    }
+    Ok(snapshot)
+}
+
 /// Walk `root` and reconcile it against the heads captured by [`materialize`]. New
 /// files are created, changed files update against the captured id+sha, unchanged
 /// files are skipped, and removed files use an atomic delete-if-match. A concurrent

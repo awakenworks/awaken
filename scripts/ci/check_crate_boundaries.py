@@ -1388,12 +1388,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-scenario-host",
         # dev-only: transport conformance assembles the real dispatch service over
         # the in-memory queue while exercising the server's worker registry.
-        "awaken-run-ingress",
-        "awaken-runtime-host",
+        "awaken-run-ingress", "awaken-runtime-host",
         # Outer composition owns the hand relay; runtime-host exposes only its port.
-        "awaken-tool-relay",
-        "awaken-worker-registry",
-        "awaken-managed-routers",
+        "awaken-tool-relay", "awaken-worker-registry", "awaken-managed-routers",
         # dev-only: the a2a-loopback e2e wraps its mock transports in the A2A
         # remote-Agent adapter (the host now holds the neutral RemoteAgent interface).
         "awaken-run-executor-a2a",
@@ -1403,14 +1400,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # ADR-0051/0052: the opaque scope id the reserved-scope seeding is keyed by.
         "awaken-tenancy",
         # ADR-0050: the data-subject consent/erasure store backing the erasure endpoint.
-        "awaken-data-subject",
-        "awaken-observability",
-        "awaken-authz-enforce",
-        "awaken-run-executor-acp",
-        "awaken-protocol-managed",
-        "awaken-protocol-ai-sdk",
-        "awaken-protocol-ag-ui",
-        "awaken-protocol-a2a",
+        "awaken-data-subject", "awaken-observability", "awaken-authz-enforce",
+        "awaken-run-executor-acp", "awaken-protocol-managed",
+        "awaken-protocol-ai-sdk", "awaken-protocol-ag-ui", "awaken-protocol-a2a",
         # Explicit MCP egress adapter, mounted by the data plane only when a
         # dedicated bearer is configured. Same protocol-adapter direction as
         # AI SDK / AG-UI / A2A; it never reaches into the control plane.
@@ -1418,6 +1410,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-protocol-transport",
         "awaken-provider-genai",
         "awaken-memory-store",
+        # The data-plane composition root opens the embedded File/Memory/Skill/
+        # lifecycle family once and injects only its ports into runtime-host.
+        "awaken-file-store", "awaken-skill-store", "awaken-resource-store",
         # Composition-only adapter: runtime-host exposes MemoryRepository + MemoryMounter
         # ports; awaken-server installs the FUSE/copy implementation without
         # coupling the host substrate to the worker implementation crate.

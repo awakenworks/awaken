@@ -245,30 +245,32 @@ async function main() {
   const skillRepository = seedSkillRepository();
   const bin = buildBrain();
   const addr = `127.0.0.1:${PORT}`;
-  const brain = spawn(bin, {
-    env: {
-      ...process.env,
-      AWAKEN_HTTP_ADDR: addr,
-      AWAKEN_MODEL_MODE: 'acp-container',
-      AWAKEN_CONTAINER_IMAGE: IMAGE,
-      AWAKEN_SANDBOX_TIER: ENGINE,
-      AWAKEN_STORAGE_DIR: `${TMP}/storage`,
-      AWAKEN_ACP_ARGV: `node -e ${ACP_FIXTURE}`,
-      // Exercise the production pool wrapper. Resource-bearing environments are
-      // deliberately non-poolable, so this changes composition without creating a
-      // second Session container or weakening the one-environment assertion below.
-      AWAKEN_SANDBOX_WARM_POOL: '1',
-      // Disable the reaper's periodic sweep noise during the short test; the startup
-      // sweep still runs (proving it is harmless with no leaked containers present).
-      AWAKEN_SANDBOX_REAP_INTERVAL: '3600',
-      AWAKEN_CONTAINER_EGRESS_PROXY: 'http://127.0.0.1:9',
-    },
+  const brainEnv = {
+    ...process.env,
+    AWAKEN_HTTP_ADDR: addr,
+    AWAKEN_MODEL_MODE: 'acp-container',
+    AWAKEN_CONTAINER_IMAGE: IMAGE,
+    AWAKEN_SANDBOX_TIER: ENGINE,
+    AWAKEN_STORAGE_DIR: `${TMP}/storage`,
+    AWAKEN_ACP_ARGV: `node -e ${ACP_FIXTURE}`,
+    // Exercise the production pool wrapper. Resource-bearing environments are
+    // deliberately non-poolable, so this changes composition without creating a
+    // second Session container or weakening the one-environment assertion below.
+    AWAKEN_SANDBOX_WARM_POOL: '1',
+    // Disable the reaper's periodic sweep noise during the short test; the startup
+    // sweep still runs (proving it is harmless with no leaked containers present).
+    AWAKEN_SANDBOX_REAP_INTERVAL: '3600',
+    AWAKEN_CONTAINER_EGRESS_PROXY: 'http://127.0.0.1:9',
+  };
+  const spawnBrain = () => spawn(bin, {
+    env: brainEnv,
     stdio: ['ignore', 'inherit', 'inherit'],
   });
+  let brain = spawnBrain();
 
   try {
     await waitForPort(PORT);
-    const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://${addr}` });
+    let client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://${addr}` });
     const file = await client.beta.files.upload({
       file: await toFile(Buffer.from('CONTAINER-FILE-OK'), 'input.txt'),
       betas: BETAS,
@@ -429,6 +431,37 @@ async function main() {
       '-c',
       'test ! -e /workspace/.mnt/workspace/renamed.txt && test ! -e /workspace/renamed-repo',
     ]);
+
+    // A hard brain crash must retain the Session-owned environment. The replacement
+    // process restores the durable binding, adopts the exact same container, renews
+    // its lease and reconnects both the hand and ACP process before another turn.
+    const crashed = new Promise((resolve) => brain.once('exit', resolve));
+    brain.kill('SIGKILL');
+    await crashed;
+    assert.deepEqual(testContainers(), [container], 'a brain crash must not reap the Session container');
+    brain = spawnBrain();
+    await waitForPort(PORT);
+    client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://${addr}` });
+    await client.beta.sessions.events.send(session.id, {
+      events: [{ type: 'user.message', content: [{ type: 'text', text: 'resume the adopted container' }] }],
+      betas: BETAS,
+    });
+    const resumedEvents = [];
+    for await (const event of client.beta.sessions.events.list(session.id, { betas: BETAS })) {
+      resumedEvents.push(event);
+    }
+    assert.ok(
+      resumedEvents.some(
+        (event) => event.type === 'agent.message'
+          && (event.content ?? []).some((content) => String(content.text ?? '').includes(MARKER)),
+      ),
+      `the replacement brain must resume through the adopted container: ${JSON.stringify(resumedEvents)}`,
+    );
+    assert.deepEqual(
+      testContainers(),
+      [container],
+      'replacement must adopt the same container instead of creating an attempt-local duplicate',
+    );
 
     execFileSync(ENGINE, [
       'exec',

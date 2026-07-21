@@ -809,6 +809,25 @@ impl SharedHost {
         let ctx = self.sessions.lock().await.remove(thread);
         let env = self.session_environments.lock().await.remove(thread);
         let dispose_result = if let Some(env) = env.or_else(|| ctx.map(|ctx| ctx.env.clone())) {
+            if env.needs_recovered_memory_reconciliation() {
+                let mounter = self.memory_mounter().ok_or_else(|| {
+                    HostError::internal("recovered Memory copy has no MemoryMounter")
+                })?;
+                for mount in self.thread_resources_snapshot(thread).mounts {
+                    if let awaken_provisioning_contract::MountSource::MemoryStore { store_id } =
+                        &mount.source
+                    {
+                        let files = env
+                            .list_files(&mount.mount_path)
+                            .await
+                            .map_err(|error| HostError::internal(error.to_string()))?;
+                        mounter
+                            .reconcile_recovered_copy(store_id, &files, mount.access)
+                            .await
+                            .map_err(|error| HostError::internal(error.to_string()))?;
+                    }
+                }
+            }
             env.dispose()
                 .await
                 .map_err(|e| HostError::internal(e.to_string()))
