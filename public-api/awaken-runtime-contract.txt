@@ -751,6 +751,7 @@ pub awaken_runtime_contract::runtime_context::RuntimeRunContext::reschedules: co
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::stream_checkpoint: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::stream_sink: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::tool_executor: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolExecutor>>
+pub awaken_runtime_contract::runtime_context::RuntimeRunContext::tool_permission_policy: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy>>
 impl awaken_runtime_contract::runtime_context::RuntimeRunContext
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::content_sink(&self) -> core::option::Option<(&alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::CaptureSink>, &awaken_runtime_contract::data_subject::DataSubjectId)>
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::for_child_run(&self) -> Self
@@ -769,6 +770,7 @@ pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_resched
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_stream_checkpoint(self, alloc::sync::Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_stream_sink(self, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_tool_executor(self, alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolExecutor>) -> Self
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_tool_permission_policy(self, alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy>) -> Self
 pub mod awaken_runtime_contract::snapshot
 pub enum awaken_runtime_contract::snapshot::AgentSnapshotInput
 pub awaken_runtime_contract::snapshot::AgentSnapshotInput::ById(awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId)
@@ -1352,6 +1354,7 @@ pub awaken_runtime_contract::RuntimeRunContext::reschedules: core::option::Optio
 pub awaken_runtime_contract::RuntimeRunContext::stream_checkpoint: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>>
 pub awaken_runtime_contract::RuntimeRunContext::stream_sink: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>
 pub awaken_runtime_contract::RuntimeRunContext::tool_executor: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolExecutor>>
+pub awaken_runtime_contract::RuntimeRunContext::tool_permission_policy: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy>>
 impl awaken_runtime_contract::runtime_context::RuntimeRunContext
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::content_sink(&self) -> core::option::Option<(&alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::CaptureSink>, &awaken_runtime_contract::data_subject::DataSubjectId)>
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::for_child_run(&self) -> Self
@@ -1370,6 +1373,7 @@ pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_resched
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_stream_checkpoint(self, alloc::sync::Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_stream_sink(self, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_tool_executor(self, alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolExecutor>) -> Self
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_tool_permission_policy(self, alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy>) -> Self
 pub struct awaken_runtime_contract::ToolBatch
 pub awaken_runtime_contract::ToolBatch::calls: alloc::vec::Vec<awaken_runtime_contract::tool_batch::DurableToolCall>
 pub awaken_runtime_contract::ToolBatch::id: awaken_runtime_contract::tool_batch::ToolBatchId

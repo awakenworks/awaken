@@ -239,7 +239,6 @@ pub fn awaken_runtime_host::SharedHost::with_projected_acp(self, awaken_run_exec
 impl awaken_runtime_host::SharedHost
 pub async fn awaken_runtime_host::SharedHost::add_system(&self, &str, &str) -> core::result::Result<(), awaken_runtime_host::host::types::HostError>
 pub async fn awaken_runtime_host::SharedHost::committed_messages(&self, &str) -> alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
-pub async fn awaken_runtime_host::SharedHost::define_outcome(&self, &str, &str, &str, u32) -> core::result::Result<awaken_runtime_host::host::types::HostOutcomeReport, awaken_runtime_host::host::types::HostError>
 pub fn awaken_runtime_host::SharedHost::has_durable_thread(&self, &str) -> bool
 pub async fn awaken_runtime_host::SharedHost::interrupt(&self, &str) -> core::result::Result<(), awaken_runtime_host::host::types::HostError>
 pub async fn awaken_runtime_host::SharedHost::is_awaiting(&self, &str) -> bool
@@ -284,6 +283,7 @@ pub fn awaken_runtime_host::SharedHost::with_delegates(self, std::collections::h
 pub fn awaken_runtime_host::SharedHost::with_gate_override(self, alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolGateHook>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_inference_materializer(self, alloc::sync::Arc<dyn awaken_runtime_host::InferenceExecutorMaterializer>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_judge(self, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_runtime_host::SharedHost::with_judge_snapshot(self, awaken_runtime_contract::snapshot::ExecutableAgentSnapshot) -> Self
 pub fn awaken_runtime_host::SharedHost::with_local_workspace(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_remote_agent(self, impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_runtime_contract::delegation::RemoteAgent>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_remote_attempt_executor(self, alloc::sync::Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>) -> Self
@@ -319,6 +319,8 @@ pub async fn awaken_runtime_host::SharedHost::request_file_purge(&self, &str, &s
 pub async fn awaken_runtime_host::SharedHost::request_resource_purge(&self, awaken_resource_contract::lifecycle::ResourceTarget, core::option::Option<u64>, u64, u64) -> core::result::Result<awaken_resource_contract::lifecycle::PutResourcePurgeOutcome, awaken_resource_contract::lifecycle::ResourcePurgeError>
 pub async fn awaken_runtime_host::SharedHost::session_artifacts(&self, &str) -> alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
 pub fn awaken_runtime_host::SharedHost::thread_resources_handle(&self) -> awaken_runtime_host::ThreadResources
+impl awaken_runtime_host::SharedHost
+pub async fn awaken_runtime_host::SharedHost::define_outcome(&self, &str, &str, &str, u32) -> core::result::Result<awaken_runtime_host::host::types::HostOutcomeReport, awaken_runtime_host::host::types::HostError>
 impl awaken_runtime_host::SharedHost
 pub async fn awaken_runtime_host::SharedHost::live_inbox(&self, &str) -> core::option::Option<awaken_runtime_contract::live_inbox::LiveInbox>
 impl awaken_runtime_host::SharedHost
