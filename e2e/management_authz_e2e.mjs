@@ -172,6 +172,12 @@ async function main() {
     assert.equal(r.json.error.type, 'authentication_error');
     r = await req(base, 'GET', '/v1/config/catalog', undefined, opToken);
     assert.equal(r.status, 200, 'the successor token keeps working');
+    r = await req(base, 'GET', '/v1/files', undefined, token);
+    assert.equal(r.status, 401, 'revoked bootstrap token is refused by the resource PEP too');
+    r = await req(base, 'GET', '/v1/files', undefined, 'sk-ant-bogus.bogus');
+    assert.equal(r.status, 401, 'invalid credentials fail closed at the resource PEP');
+    r = await req(base, 'GET', '/v1/workspaces/not-the-token-workspace/files', undefined, opToken);
+    assert.equal(r.status, 403, 'a resource path cannot select a workspace outside token scope');
     pass('bootstrap token revoked over HTTP: old 401s, minted successor still passes');
 
     // An expiring token: valid before its expiry, refused after (the expired
@@ -187,6 +193,8 @@ async function main() {
     await new Promise((resolve) => setTimeout(resolve, 3000));
     r = await req(base, 'GET', '/v1/config/catalog', undefined, shortLived);
     assert.equal(r.status, 401, 'expired token is refused');
+    r = await req(base, 'GET', '/v1/files', undefined, shortLived);
+    assert.equal(r.status, 401, 'expired token is refused by the resource PEP too');
     pass('expiring token: 200 before expiry, 401 after');
 
     // ---- second restart: rotation and mint both persisted -----------------
