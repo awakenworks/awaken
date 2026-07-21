@@ -390,7 +390,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn empty_binding_is_the_identity_without_a_repository() {
+    async fn empty_skill_set_needs_no_repository_but_real_references_fail_closed() {
         let catalog = SkillCatalog::new();
         assert!(
             catalog
@@ -400,6 +400,25 @@ mod tests {
                 .is_empty()
         );
         assert!(catalog.load_pinned("ws-a", &[]).await.unwrap().is_empty());
+        assert!(
+            catalog
+                .resolve_latest("ws-a", &["missing".into()])
+                .await
+                .is_err()
+        );
+        assert!(
+            catalog
+                .load_pinned(
+                    "ws-a",
+                    &[ResolvedSkillBinding {
+                        skill_id: "missing".into(),
+                        version: 1,
+                        bundle_sha256: "sha256".into(),
+                    }],
+                )
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
