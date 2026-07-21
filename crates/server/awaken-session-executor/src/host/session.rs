@@ -266,7 +266,7 @@ impl SharedHost {
             // Clone staged repositories only for a physically new environment.
             // Rebuilding SessionCtx must not re-clone over a live Session workspace.
             if let Err(error) = self.realize_thread_repositories(thread, env.as_ref()).await {
-                let _ = awaken_provisioning_contract::Sandbox::dispose(env.as_ref()).await;
+                let _ = env.dispose().await;
                 return Err(error);
             }
         }
@@ -724,7 +724,7 @@ impl SharedHost {
         let ctx = self.sessions.lock().await.remove(thread);
         let env = self.session_environments.lock().await.remove(thread);
         let dispose_result = if let Some(env) = env.or_else(|| ctx.map(|ctx| ctx.env.clone())) {
-            awaken_provisioning_contract::Sandbox::dispose(&*env)
+            env.dispose()
                 .await
                 .map_err(|e| HostError::internal(e.to_string()))
         } else {

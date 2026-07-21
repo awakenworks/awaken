@@ -2710,7 +2710,7 @@ async fn supersede_run_without_durable_ingress_fails_closed() {
 #[tokio::test]
 async fn end_session_disposes_the_threads_sandbox() {
     use awaken_protocol_managed::SessionRuntime;
-    use awaken_provisioning_contract::{Sandbox, SandboxStatus};
+    use awaken_provisioning_contract::SandboxStatus;
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let managed = crate::ManagedHost::new(host.clone());
 
@@ -2733,7 +2733,7 @@ async fn end_session_disposes_the_threads_sandbox() {
         .env
         .clone();
     assert_eq!(
-        Sandbox::status(&*env).await.expect("status"),
+        env.status().await.expect("status"),
         SandboxStatus::Ready,
         "the sandbox workspace exists while the session is live"
     );
@@ -2771,7 +2771,7 @@ async fn end_session_disposes_the_threads_sandbox() {
     // ... and the sandbox is ACTUALLY disposed: its workspace dir was reaped, so a
     // subsequent status reports Terminated (proving dispose ran, not just an evict).
     assert_eq!(
-        Sandbox::status(&*env).await.expect("status"),
+        env.status().await.expect("status"),
         SandboxStatus::Terminated,
         "end_session disposes the sandbox (workspace reaped), unlike an evict-rebuild"
     );

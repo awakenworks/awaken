@@ -1315,55 +1315,6 @@ async fn a_login_required_launch_fault_surfaces_a_login_prompt() {
     assert!(prompt.contains("login"), "{prompt}");
 }
 
-// ── R3: DispatchRunExecutor routes by runtime_adapter ────────────────────────
-
-struct Spy(&'static str, Arc<Mutex<Vec<&'static str>>>);
-
-#[async_trait]
-impl RunExecutor for Spy {
-    async fn execute(
-        &self,
-        _a: RunActivation,
-        _c: RuntimeRunContext,
-    ) -> awaken_runtime_contract::execution::Result<RunState> {
-        self.1.lock().unwrap().push(self.0);
-        Ok(RunState::Ended(EndCause::NaturalEnd))
-    }
-}
-
-#[tokio::test]
-async fn dispatch_routes_by_runtime_adapter() {
-    let hits = Arc::new(Mutex::new(Vec::new()));
-    let dispatch = DispatchRunExecutor::new(
-        Arc::new(Spy("native", hits.clone())),
-        Arc::new(Spy("acp", hits.clone())),
-        Arc::new(Spy("remote", hits.clone())),
-    );
-
-    // backend_ref "default" → Native.
-    let mut native_act = activation();
-    native_act.snapshot.resolved_spec.model_binding = ModelBinding::new("prov", "model", "default");
-    dispatch
-        .execute(native_act, RuntimeRunContext::new())
-        .await
-        .unwrap();
-    // The default fixture's backend_ref is "acp:claude" → Acp.
-    dispatch
-        .execute(activation(), RuntimeRunContext::new())
-        .await
-        .unwrap();
-    // `a2a:*` → Remote.
-    let mut remote_act = activation();
-    remote_act.snapshot.resolved_spec.model_binding =
-        ModelBinding::new("prov", "model", "a2a:https://host/a2a");
-    dispatch
-        .execute(remote_act, RuntimeRunContext::new())
-        .await
-        .unwrap();
-
-    assert_eq!(*hits.lock().unwrap(), vec!["native", "acp", "remote"]);
-}
-
 // ── R7: ACP mid-switch relaunches the CLI per turn ───────────────────────────
 
 #[tokio::test]

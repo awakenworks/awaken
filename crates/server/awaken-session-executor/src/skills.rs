@@ -266,7 +266,6 @@ fn skill_descriptor() -> ToolDescriptor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_provisioning_contract::Sandbox as _;
 
     #[tokio::test]
     async fn durable_store_snapshot_scans_the_catalog_as_delivered_skill_files() {

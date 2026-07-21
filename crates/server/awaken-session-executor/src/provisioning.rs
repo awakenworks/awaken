@@ -768,7 +768,7 @@ mod provisioning_registry_tests {
             "the authored skill must be persisted to the durable catalog: {ids:?}"
         );
 
-        pc::Sandbox::dispose(&env).await.unwrap();
+        env.dispose().await.unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 
