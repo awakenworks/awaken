@@ -7,17 +7,13 @@ use std::collections::BTreeMap;
 use awaken_resource_contract::{
     ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, RepositoryConfigVersion,
     RepositoryDefinition, ResourceBindingValidator, ResourceCatalog, ResourceCatalogError,
-    ResourceConfigSource, ResourceState,
+    ResourceCatalogRules, ResourceConfigSource, ResourceState,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use sqlx::types::Json;
 
 use crate::postgres::{NS, PostgresAdminStore, block};
-use crate::resource_catalog_validation::{
-    validate_initial, validate_live_definition, validate_memory_config, validate_publish,
-    validate_repository_config,
-};
 
 const MEMORY: &str = "memory_store";
 const REPOSITORY: &str = "repository";
@@ -213,14 +209,14 @@ impl ResourceConfigSource for PostgresAdminStore {
             .catalog_record::<MemoryRecord>(MEMORY, id)
             .filter(|record| record.definition.workspace_id == workspace_id)
             .ok_or_else(|| ResourceCatalogError::NotFound(id.into()))?;
-        validate_live_definition(id, record.definition.state)?;
+        ResourceCatalogRules::validate_live_definition(id, record.definition.state)?;
         let version = record.definition.current_config_version;
         let config = record.configs.get(&version).cloned().ok_or_else(|| {
             ResourceCatalogError::Storage(format!(
                 "MemoryStore `{id}` current config version is missing"
             ))
         })?;
-        validate_memory_config(id, version, &config)?;
+        ResourceCatalogRules::validate_memory_config(id, version, &config)?;
         Ok(config)
     }
 
@@ -233,14 +229,14 @@ impl ResourceConfigSource for PostgresAdminStore {
             .catalog_record::<RepositoryRecord>(REPOSITORY, id)
             .filter(|record| record.definition.workspace_id == workspace_id)
             .ok_or_else(|| ResourceCatalogError::NotFound(id.into()))?;
-        validate_live_definition(id, record.definition.state)?;
+        ResourceCatalogRules::validate_live_definition(id, record.definition.state)?;
         let version = record.definition.current_config_version;
         let config = record.configs.get(&version).cloned().ok_or_else(|| {
             ResourceCatalogError::Storage(format!(
                 "Repository `{id}` current config version is missing"
             ))
         })?;
-        validate_repository_config(id, version, &config)?;
+        ResourceCatalogRules::validate_repository_config(id, version, &config)?;
         Ok(config)
     }
 }
@@ -256,7 +252,7 @@ impl ResourceBindingValidator for PostgresAdminStore {
             .catalog_record::<MemoryRecord>(MEMORY, id)
             .filter(|record| record.definition.workspace_id == workspace_id)
             .ok_or_else(|| ResourceCatalogError::NotFound(id.into()))?;
-        validate_live_definition(id, record.definition.state)?;
+        ResourceCatalogRules::validate_live_definition(id, record.definition.state)?;
         let config =
             record
                 .configs
@@ -265,7 +261,7 @@ impl ResourceBindingValidator for PostgresAdminStore {
                     id: id.into(),
                     version,
                 })?;
-        validate_memory_config(id, version, config)
+        ResourceCatalogRules::validate_memory_config(id, version, config)
     }
 
     fn validate_repository_binding(
@@ -278,7 +274,7 @@ impl ResourceBindingValidator for PostgresAdminStore {
             .catalog_record::<RepositoryRecord>(REPOSITORY, id)
             .filter(|record| record.definition.workspace_id == workspace_id)
             .ok_or_else(|| ResourceCatalogError::NotFound(id.into()))?;
-        validate_live_definition(id, record.definition.state)?;
+        ResourceCatalogRules::validate_live_definition(id, record.definition.state)?;
         let config =
             record
                 .configs
@@ -287,7 +283,7 @@ impl ResourceBindingValidator for PostgresAdminStore {
                     id: id.into(),
                     version,
                 })?;
-        validate_repository_config(id, version, config)
+        ResourceCatalogRules::validate_repository_config(id, version, config)
     }
 }
 
@@ -297,7 +293,7 @@ impl ResourceCatalog for PostgresAdminStore {
         definition: MemoryStoreDefinition,
         initial_config: MemoryStoreConfigVersion,
     ) -> Result<(), ResourceCatalogError> {
-        validate_initial(
+        ResourceCatalogRules::validate_initial(
             &definition.id,
             &definition.workspace_id,
             definition.current_config_version,
@@ -397,7 +393,7 @@ impl ResourceCatalog for PostgresAdminStore {
             if record.definition.workspace_id != workspace_id {
                 return Err(ResourceCatalogError::NotFound(update_id));
             }
-            validate_publish(
+            ResourceCatalogRules::validate_publish(
                 &record.definition.id,
                 record.definition.current_config_version,
                 expected_current,
@@ -437,7 +433,7 @@ impl ResourceCatalog for PostgresAdminStore {
         definition: RepositoryDefinition,
         initial_config: RepositoryConfigVersion,
     ) -> Result<(), ResourceCatalogError> {
-        validate_initial(
+        ResourceCatalogRules::validate_initial(
             &definition.id,
             &definition.workspace_id,
             definition.current_config_version,
@@ -485,7 +481,7 @@ impl ResourceCatalog for PostgresAdminStore {
             if record.definition.workspace_id != workspace_id {
                 return Err(ResourceCatalogError::NotFound(update_id));
             }
-            validate_publish(
+            ResourceCatalogRules::validate_publish(
                 &record.definition.id,
                 record.definition.current_config_version,
                 expected_current,

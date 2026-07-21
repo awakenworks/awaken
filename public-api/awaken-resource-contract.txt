@@ -236,6 +236,13 @@ impl core::convert::From<alloc::string::String> for awaken_resource_contract::Re
 pub fn awaken_resource_contract::RepositoryId::from(alloc::string::String) -> Self
 impl core::fmt::Display for awaken_resource_contract::RepositoryId
 pub fn awaken_resource_contract::RepositoryId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct awaken_resource_contract::ResourceCatalogRules
+impl awaken_resource_contract::ResourceCatalogRules
+pub fn awaken_resource_contract::ResourceCatalogRules::validate_initial(&str, &str, awaken_resource_contract::ConfigVersion, &str, awaken_resource_contract::ConfigVersion) -> core::result::Result<(), awaken_resource_contract::ResourceCatalogError>
+pub fn awaken_resource_contract::ResourceCatalogRules::validate_live_definition(&str, awaken_resource_contract::ResourceState) -> core::result::Result<(), awaken_resource_contract::ResourceCatalogError>
+pub fn awaken_resource_contract::ResourceCatalogRules::validate_memory_config(&str, awaken_resource_contract::ConfigVersion, &awaken_resource_contract::MemoryStoreConfigVersion) -> core::result::Result<(), awaken_resource_contract::ResourceCatalogError>
+pub fn awaken_resource_contract::ResourceCatalogRules::validate_publish(&str, awaken_resource_contract::ConfigVersion, awaken_resource_contract::ConfigVersion, awaken_resource_contract::ConfigVersion) -> core::result::Result<(), awaken_resource_contract::ResourceCatalogError>
+pub fn awaken_resource_contract::ResourceCatalogRules::validate_repository_config(&str, awaken_resource_contract::ConfigVersion, &awaken_resource_contract::RepositoryConfigVersion) -> core::result::Result<(), awaken_resource_contract::ResourceCatalogError>
 pub struct awaken_resource_contract::ResourcePurgeIntent
 pub awaken_resource_contract::ResourcePurgeIntent::attempts: u32
 pub awaken_resource_contract::ResourcePurgeIntent::blockers: alloc::vec::Vec<awaken_resource_contract::ResourceReference>

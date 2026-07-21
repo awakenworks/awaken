@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use awaken_resource_contract::{
     ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, RepositoryConfigVersion,
     RepositoryDefinition, ResourceBindingValidator, ResourceCatalog, ResourceCatalogError,
-    ResourceConfigSource, ResourceState,
+    ResourceCatalogRules, ResourceConfigSource, ResourceState,
 };
 
 #[derive(Default)]
@@ -27,40 +27,6 @@ impl InMemoryResourceCatalog {
     }
 }
 
-fn validate_identity(id: &str, workspace_id: &str) -> Result<(), ResourceCatalogError> {
-    if id.trim().is_empty() || workspace_id.trim().is_empty() {
-        return Err(ResourceCatalogError::Invalid(
-            "resource id and workspace id must be non-empty".into(),
-        ));
-    }
-    Ok(())
-}
-
-fn check_publish(
-    id: &str,
-    current: ConfigVersion,
-    expected: ConfigVersion,
-    next: ConfigVersion,
-) -> Result<(), ResourceCatalogError> {
-    if current != expected {
-        return Err(ResourceCatalogError::ConfigConflict {
-            id: id.into(),
-            expected,
-            current,
-        });
-    }
-    let required_next = current.checked_next().ok_or_else(|| {
-        ResourceCatalogError::Invalid(format!("resource `{id}` exhausted config versions"))
-    })?;
-    if next != required_next {
-        return Err(ResourceCatalogError::Invalid(format!(
-            "resource `{id}` config version must advance from {} to {}",
-            current.0, required_next.0
-        )));
-    }
-    Ok(())
-}
-
 impl ResourceConfigSource for InMemoryResourceCatalog {
     fn resolve_memory_store(
         &self,
@@ -74,12 +40,7 @@ impl ResourceConfigSource for InMemoryResourceCatalog {
             .filter(|definition| definition.workspace_id == workspace_id)
             .cloned()
             .ok_or_else(|| ResourceCatalogError::NotFound(id.into()))?;
-        if definition.state != ResourceState::Active {
-            return Err(ResourceCatalogError::NotActive {
-                id: id.into(),
-                state: definition.state,
-            });
-        }
+        ResourceCatalogRules::validate_live_definition(id, definition.state)?;
         let config = state
             .memory_configs
             .get(&(id.into(), definition.current_config_version))
@@ -89,11 +50,11 @@ impl ResourceConfigSource for InMemoryResourceCatalog {
                     "MemoryStore `{id}` current config version is missing"
                 ))
             })?;
-        if config.memory_store_id != id || config.version != definition.current_config_version {
-            return Err(ResourceCatalogError::Storage(format!(
-                "MemoryStore `{id}` current config version is corrupt"
-            )));
-        }
+        ResourceCatalogRules::validate_memory_config(
+            id,
+            definition.current_config_version,
+            &config,
+        )?;
         Ok(config)
     }
 
@@ -109,12 +70,7 @@ impl ResourceConfigSource for InMemoryResourceCatalog {
             .filter(|definition| definition.workspace_id == workspace_id)
             .cloned()
             .ok_or_else(|| ResourceCatalogError::NotFound(id.into()))?;
-        if definition.state != ResourceState::Active {
-            return Err(ResourceCatalogError::NotActive {
-                id: id.into(),
-                state: definition.state,
-            });
-        }
+        ResourceCatalogRules::validate_live_definition(id, definition.state)?;
         let config = state
             .repository_configs
             .get(&(id.into(), definition.current_config_version))
@@ -124,11 +80,11 @@ impl ResourceConfigSource for InMemoryResourceCatalog {
                     "Repository `{id}` current config version is missing"
                 ))
             })?;
-        if config.repository_id != id || config.version != definition.current_config_version {
-            return Err(ResourceCatalogError::Storage(format!(
-                "Repository `{id}` current config version is corrupt"
-            )));
-        }
+        ResourceCatalogRules::validate_repository_config(
+            id,
+            definition.current_config_version,
+            &config,
+        )?;
         Ok(config)
     }
 }
@@ -146,12 +102,7 @@ impl ResourceBindingValidator for InMemoryResourceCatalog {
             .get(id)
             .filter(|definition| definition.workspace_id == workspace_id)
             .ok_or_else(|| ResourceCatalogError::NotFound(id.into()))?;
-        if definition.state != ResourceState::Active {
-            return Err(ResourceCatalogError::NotActive {
-                id: id.into(),
-                state: definition.state,
-            });
-        }
+        ResourceCatalogRules::validate_live_definition(id, definition.state)?;
         let config = state
             .memory_configs
             .get(&(id.into(), version))
@@ -159,13 +110,7 @@ impl ResourceBindingValidator for InMemoryResourceCatalog {
                 id: id.into(),
                 version,
             })?;
-        if config.memory_store_id != id || config.version != version {
-            return Err(ResourceCatalogError::Storage(format!(
-                "MemoryStore `{id}` config version {} is corrupt",
-                version.0
-            )));
-        }
-        Ok(())
+        ResourceCatalogRules::validate_memory_config(id, version, config)
     }
 
     fn validate_repository_binding(
@@ -180,12 +125,7 @@ impl ResourceBindingValidator for InMemoryResourceCatalog {
             .get(id)
             .filter(|definition| definition.workspace_id == workspace_id)
             .ok_or_else(|| ResourceCatalogError::NotFound(id.into()))?;
-        if definition.state != ResourceState::Active {
-            return Err(ResourceCatalogError::NotActive {
-                id: id.into(),
-                state: definition.state,
-            });
-        }
+        ResourceCatalogRules::validate_live_definition(id, definition.state)?;
         let config = state
             .repository_configs
             .get(&(id.into(), version))
@@ -193,13 +133,7 @@ impl ResourceBindingValidator for InMemoryResourceCatalog {
                 id: id.into(),
                 version,
             })?;
-        if config.repository_id != id || config.version != version {
-            return Err(ResourceCatalogError::Storage(format!(
-                "Repository `{id}` config version {} is corrupt",
-                version.0
-            )));
-        }
-        Ok(())
+        ResourceCatalogRules::validate_repository_config(id, version, config)
     }
 }
 
@@ -209,15 +143,13 @@ impl ResourceCatalog for InMemoryResourceCatalog {
         definition: MemoryStoreDefinition,
         initial_config: MemoryStoreConfigVersion,
     ) -> Result<(), ResourceCatalogError> {
-        validate_identity(&definition.id, &definition.workspace_id)?;
-        if definition.current_config_version != ConfigVersion::INITIAL
-            || initial_config.version != ConfigVersion::INITIAL
-            || initial_config.memory_store_id != definition.id
-        {
-            return Err(ResourceCatalogError::Invalid(
-                "initial MemoryStore definition/config must agree at version 1".into(),
-            ));
-        }
+        ResourceCatalogRules::validate_initial(
+            &definition.id,
+            &definition.workspace_id,
+            definition.current_config_version,
+            &initial_config.memory_store_id,
+            initial_config.version,
+        )?;
         let mut state = self.0.lock().expect("resource catalog");
         if state.memories.contains_key(&definition.id) {
             return Err(ResourceCatalogError::AlreadyExists(definition.id));
@@ -306,7 +238,7 @@ impl ResourceCatalog for InMemoryResourceCatalog {
             .get_mut(&config.memory_store_id)
             .filter(|definition| definition.workspace_id == workspace_id)
             .ok_or_else(|| ResourceCatalogError::NotFound(config.memory_store_id.clone()))?;
-        check_publish(
+        ResourceCatalogRules::validate_publish(
             &definition.id,
             definition.current_config_version,
             expected_current,
@@ -346,15 +278,13 @@ impl ResourceCatalog for InMemoryResourceCatalog {
         definition: RepositoryDefinition,
         initial_config: RepositoryConfigVersion,
     ) -> Result<(), ResourceCatalogError> {
-        validate_identity(&definition.id, &definition.workspace_id)?;
-        if definition.current_config_version != ConfigVersion::INITIAL
-            || initial_config.version != ConfigVersion::INITIAL
-            || initial_config.repository_id != definition.id
-        {
-            return Err(ResourceCatalogError::Invalid(
-                "initial Repository definition/config must agree at version 1".into(),
-            ));
-        }
+        ResourceCatalogRules::validate_initial(
+            &definition.id,
+            &definition.workspace_id,
+            definition.current_config_version,
+            &initial_config.repository_id,
+            initial_config.version,
+        )?;
         let mut state = self.0.lock().expect("resource catalog");
         if state.repositories.contains_key(&definition.id) {
             return Err(ResourceCatalogError::AlreadyExists(definition.id));
@@ -403,7 +333,7 @@ impl ResourceCatalog for InMemoryResourceCatalog {
             .get_mut(&config.repository_id)
             .filter(|definition| definition.workspace_id == workspace_id)
             .ok_or_else(|| ResourceCatalogError::NotFound(config.repository_id.clone()))?;
-        check_publish(
+        ResourceCatalogRules::validate_publish(
             &definition.id,
             definition.current_config_version,
             expected_current,

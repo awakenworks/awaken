@@ -237,7 +237,7 @@ process-local handle.
 
 | Component | Status | Owner | Responsibility | Must not own |
 |---|---|---|---|---|
-| `ResourceCatalog` / `ResourceConfigSource` | Existing | Resource Catalog | Memory/Repository definitions, immutable config versions, current version and lifecycle state; the narrow resolution port validates trusted Workspace ownership/state and returns only the selected config version | content bytes, IAM policy/decision/envelope, principal, sandbox paths |
+| `ResourceCatalog` / `ResourceConfigSource` / `ResourceCatalogRules` | Existing | Resource Catalog | Memory/Repository definitions, immutable config versions, current version and lifecycle state; the narrow resolution port returns only the selected config version; one backend-neutral rules object defines creation, publication, lifecycle, and config-identity invariants for every adapter | content bytes, IAM policy/decision/envelope, principal, sandbox paths |
 | `ResourceBindingValidator` | Existing | Resource Catalog | at activation/use validate trusted Workspace ownership, live state, and the exact frozen config version without returning or re-selecting configuration | authorization decisions, current-version substitution, secret material |
 | `AgentInputBindingRepository` | Existing | Agent Configuration | Workspace-scoped Agent default bindings and authoring revision; every operation requires Workspace | Session merge, content resolution, authorization |
 | Managed Session adapter | Existing | Protocol/product ACL | parse/project Anthropic resources; accept temporary attachments | raw DTO leakage into neutral/resource services |

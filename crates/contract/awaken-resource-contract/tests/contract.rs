@@ -21,8 +21,9 @@
 //! | R8| `MAX_PATH_BYTES`                        | bare constant, no contract predicate (gap)    |
 
 use awaken_resource_contract::{
-    FileStoreError, MAX_MEMORY_BYTES, MAX_PATH_BYTES, MemErr, Memory, MemoryEntry, SkillStoreError,
-    validate_path_len,
+    ConfigVersion, FileStoreError, MAX_MEMORY_BYTES, MAX_PATH_BYTES, MemErr, Memory, MemoryEntry,
+    MemoryStoreConfigVersion, RepositoryConfigVersion, ResourceCatalogError, ResourceCatalogRules,
+    ResourceState, SkillStoreError, validate_path_len,
 };
 
 fn sample_memory(content: Option<&str>) -> Memory {
@@ -36,6 +37,125 @@ fn sample_memory(content: Option<&str>) -> Memory {
         updated_unix_nanos: 20,
         content: content.map(|s| s.to_string()),
     }
+}
+
+#[test]
+fn resource_catalog_rules_define_one_backend_neutral_decision_table() {
+    let config = MemoryStoreConfigVersion {
+        memory_store_id: "memory-1".into(),
+        version: ConfigVersion::INITIAL,
+        recall_policy: Default::default(),
+        extraction_policy: Default::default(),
+        retention_policy: Default::default(),
+    };
+
+    assert!(
+        ResourceCatalogRules::validate_initial(
+            "memory-1",
+            "workspace-a",
+            ConfigVersion::INITIAL,
+            &config.memory_store_id,
+            config.version,
+        )
+        .is_ok()
+    );
+    assert!(matches!(
+        ResourceCatalogRules::validate_initial(
+            "memory-1",
+            "",
+            ConfigVersion::INITIAL,
+            &config.memory_store_id,
+            config.version,
+        ),
+        Err(ResourceCatalogError::Invalid(_))
+    ));
+    assert!(matches!(
+        ResourceCatalogRules::validate_initial(
+            "memory-1",
+            "workspace-a",
+            ConfigVersion(2),
+            &config.memory_store_id,
+            config.version,
+        ),
+        Err(ResourceCatalogError::Invalid(_))
+    ));
+
+    assert!(
+        ResourceCatalogRules::validate_live_definition("memory-1", ResourceState::Active).is_ok()
+    );
+    assert!(matches!(
+        ResourceCatalogRules::validate_live_definition("memory-1", ResourceState::Suspended),
+        Err(ResourceCatalogError::NotActive { .. })
+    ));
+    assert!(
+        ResourceCatalogRules::validate_memory_config("memory-1", ConfigVersion::INITIAL, &config,)
+            .is_ok()
+    );
+    assert!(matches!(
+        ResourceCatalogRules::validate_memory_config("memory-2", ConfigVersion::INITIAL, &config),
+        Err(ResourceCatalogError::Storage(_))
+    ));
+    let repository_config = RepositoryConfigVersion {
+        repository_id: "repo-1".into(),
+        version: ConfigVersion::INITIAL,
+        remote_url: "https://example.invalid/repo.git".into(),
+        credential_binding: None,
+        initial_branch: None,
+        clone_policy: Default::default(),
+    };
+    assert!(
+        ResourceCatalogRules::validate_repository_config(
+            "repo-1",
+            ConfigVersion::INITIAL,
+            &repository_config,
+        )
+        .is_ok()
+    );
+    assert!(matches!(
+        ResourceCatalogRules::validate_repository_config(
+            "repo-2",
+            ConfigVersion::INITIAL,
+            &repository_config,
+        ),
+        Err(ResourceCatalogError::Storage(_))
+    ));
+
+    assert!(
+        ResourceCatalogRules::validate_publish(
+            "memory-1",
+            ConfigVersion::INITIAL,
+            ConfigVersion::INITIAL,
+            ConfigVersion(2),
+        )
+        .is_ok()
+    );
+    assert!(matches!(
+        ResourceCatalogRules::validate_publish(
+            "memory-1",
+            ConfigVersion::INITIAL,
+            ConfigVersion(2),
+            ConfigVersion(2),
+        ),
+        Err(ResourceCatalogError::ConfigConflict { .. })
+    ));
+    assert!(matches!(
+        ResourceCatalogRules::validate_publish(
+            "memory-1",
+            ConfigVersion::INITIAL,
+            ConfigVersion::INITIAL,
+            ConfigVersion(3),
+        ),
+        Err(ResourceCatalogError::Invalid(_))
+    ));
+    assert!(matches!(
+        ResourceCatalogRules::validate_publish(
+            "memory-1",
+            ConfigVersion(u64::MAX),
+            ConfigVersion(u64::MAX),
+            ConfigVersion(u64::MAX),
+        ),
+        Err(ResourceCatalogError::Invalid(_))
+    ));
 }
 
 // R1: content present → key present, and full round-trip is lossless.

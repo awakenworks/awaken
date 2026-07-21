@@ -26,7 +26,8 @@ mod lifecycle;
 pub use catalog::{
     ClonePolicy, ConfigVersion, ExtractionPolicy, MemoryStoreConfigVersion, MemoryStoreDefinition,
     RecallPolicy, RepositoryConfigVersion, RepositoryDefinition, ResourceBindingValidator,
-    ResourceCatalog, ResourceCatalogError, ResourceConfigSource, ResourceState, RetentionPolicy,
+    ResourceCatalog, ResourceCatalogError, ResourceCatalogRules, ResourceConfigSource,
+    ResourceState, RetentionPolicy,
 };
 pub use input::{
     BindingId, FileId, InputBinding, InputResourceId, MemoryStoreId, RepositoryId, ResourceAccess,
