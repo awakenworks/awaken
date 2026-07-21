@@ -14,13 +14,12 @@ impl SharedHost {
         clear_resources: bool,
     ) -> Result<(), HostError> {
         let ctx = self.sessions.lock().await.remove(thread);
-        if let Some(ctx) = ctx {
+        if clear_resources && let Some(ctx) = ctx {
             ctx.env.release_memory_mounts().await;
-            if clear_resources {
-                ctx.env
-                    .clear_resource_projection()
-                    .map_err(|error| HostError::internal(error.to_string()))?;
-            }
+            ctx.env
+                .clear_resource_projection()
+                .await
+                .map_err(|error| HostError::internal(error.to_string()))?;
         }
         Ok(())
     }
@@ -657,13 +656,6 @@ impl SharedHost {
             Box::pin(self.maybe_extract_memory(&ctx, thread, &run.id.0, &run.state)).await;
         }
         Ok(ctx)
-    }
-
-    /// Evict only the rebuildable runtime context. The independently-owned
-    /// SessionEnvironment remains live, so model/token/file projection changes do
-    /// not fork or discard the workspace.
-    pub(crate) async fn evict_session_runtime(&self, thread: &str) {
-        self.sessions.lock().await.remove(thread);
     }
 
     pub(crate) async fn session_environment(

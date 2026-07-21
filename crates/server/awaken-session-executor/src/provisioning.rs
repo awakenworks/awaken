@@ -159,6 +159,15 @@ impl SharedHost {
             .insert(thread.to_string(), staged);
     }
 
+    pub(crate) fn thread_resources_snapshot(&self, thread: &str) -> StagedResources {
+        self.thread_resources
+            .lock()
+            .expect("thread resources mutex poisoned")
+            .get(thread)
+            .cloned()
+            .unwrap_or_default()
+    }
+
     /// Replace only the repository-derived MCP projections, preserving authored
     /// and Session-inline MCP servers owned by the independent MCP plane.
     pub(crate) fn replace_thread_repository_mcp(
