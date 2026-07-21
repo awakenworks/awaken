@@ -375,6 +375,10 @@ impl InferenceAccessPublisher for CatalogInferenceAccessPublisher {
 }
 
 impl InferenceExecutorMaterializer for CredentialInferenceMaterializer {
+    fn supported_access_schemes(&self) -> &'static [&'static str] {
+        &["credential-source/v1"]
+    }
+
     fn materialize(
         &self,
         activation: &awaken_runtime_contract::activation::RunActivation,
