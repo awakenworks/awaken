@@ -111,6 +111,48 @@ async function main() {
     const createdStore = await json('POST', WORKSPACE, 'memory_stores', { name: 'volatile' });
     assert.equal(createdStore.status, 200);
     const store = createdStore.body.id;
+    assert.equal((await json('GET', WORKSPACE, 'memory_stores/missing/config')).status, 404);
+    assert.equal(
+      (await json('GET', WORKSPACE, `memory_stores/${store}/config_versions/not-a-number`)).status,
+      400,
+    );
+    assert.equal(
+      (await json('GET', WORKSPACE, `memory_stores/${store}/config_versions/99`)).status,
+      404,
+    );
+    assert.equal(
+      (await json('POST', WORKSPACE, `memory_stores/${store}/config`, {
+        recall_policy: { enabled: true },
+      })).status,
+      400,
+    );
+    assert.equal(
+      (await json('POST', WORKSPACE, `memory_stores/${store}/config`, {
+        expected_config_version: 1,
+      })).status,
+      400,
+    );
+    for (const invalidPolicy of [
+      { recall_policy: 'invalid' },
+      { extraction_policy: 'invalid' },
+      { retention_policy: 'invalid' },
+    ]) {
+      assert.equal(
+        (await json('POST', WORKSPACE, `memory_stores/${store}/config`, {
+          expected_config_version: 1,
+          ...invalidPolicy,
+        })).status,
+        400,
+      );
+    }
+    assert.equal(
+      (await json('POST', WORKSPACE, `memory_stores/${store}/config`, {
+        expected_config_version: Number.MAX_SAFE_INTEGER,
+        recall_policy: { enabled: true },
+      })).status,
+      409,
+      'a stale large CAS base conflicts without changing configuration',
+    );
     for (const invalid of ['relative.md', '/', '/a/../b.md', '/a//b.md', '/a/./b.md']) {
       assert.equal(
         (await json('POST', WORKSPACE, `memory_stores/${store}/memories`, {
@@ -169,6 +211,12 @@ async function main() {
       409,
     );
     assert.equal(
+      (await json('POST', WORKSPACE, `memory_stores/${store}/memories/missing-memory`, {
+        content: 'cannot update an absent head',
+      })).status,
+      404,
+    );
+    assert.equal(
       (await json('GET', WORKSPACE, `memory_stores/${store}/memories/${first.body.id}`)).body.path,
       '/notes/a.md',
       'matching content cannot make a stale path mutation idempotent',
@@ -196,6 +244,14 @@ async function main() {
     assert.equal((await json('GET', OTHER, `memory_stores/${store}`)).status, 404);
     assert.equal((await json('DELETE', WORKSPACE, `memory_stores/${store}/memories/${first.body.id}`)).status, 200);
     assert.equal((await json('DELETE', WORKSPACE, `memory_stores/${store}`)).status, 200);
+    assert.equal(
+      (await json('POST', WORKSPACE, `memory_stores/${store}/config`, {
+        expected_config_version: 1,
+        recall_policy: { enabled: false },
+      })).status,
+      409,
+      'an archived store cannot publish another behavior version',
+    );
 
     const skillId = `volatile-skill-${process.pid}`;
     const skill = await json('POST', WORKSPACE, 'skills', {
