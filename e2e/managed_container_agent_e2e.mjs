@@ -152,6 +152,10 @@ async function main() {
       AWAKEN_SANDBOX_TIER: 'docker',
       AWAKEN_STORAGE_DIR: `${TMP}/storage`,
       AWAKEN_ACP_ARGV: `node -e ${ACP_FIXTURE}`,
+      // Exercise the production pool wrapper. Resource-bearing environments are
+      // deliberately non-poolable, so this changes composition without creating a
+      // second Session container or weakening the one-environment assertion below.
+      AWAKEN_SANDBOX_WARM_POOL: '1',
       // Disable the reaper's periodic sweep noise during the short test; the startup
       // sweep still runs (proving it is harmless with no leaked containers present).
       AWAKEN_SANDBOX_REAP_INTERVAL: '3600',
