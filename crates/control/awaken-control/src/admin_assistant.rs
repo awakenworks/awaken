@@ -18,7 +18,7 @@ use awaken_config_resolver::{
     InputResourceId, McpStore, MemoryStoreId, RepositoryId, ResourceAccess,
 };
 use awaken_config_service::{ConfigPlane, RESERVED_ADMIN_SCOPE};
-use awaken_config_store::{AgentConfig, DEFAULT_SCOPE, ManagementEffect};
+use awaken_config_store::{AgentConfig, ManagementEffect};
 use awaken_model_catalog::repo::CatalogRepo;
 use awaken_runtime_contract::capability::PluginCapability;
 use awaken_runtime_contract::resolved::ToolDescriptor;
@@ -73,6 +73,7 @@ impl CatalogCapabilityReader {
         plugins: &[PluginCapability],
         mcp: Arc<dyn McpStore>,
         plane: ConfigPlane,
+        workspace: impl Into<ScopeId>,
         inventory: Option<Arc<dyn ResourceInventory>>,
     ) -> Self {
         Self {
@@ -90,7 +91,7 @@ impl CatalogCapabilityReader {
                 .collect(),
             mcp,
             plane,
-            scope: ScopeId::from(DEFAULT_SCOPE),
+            scope: workspace.into(),
             inventory,
         }
     }
@@ -714,8 +715,15 @@ mod tests {
             Arc::new(SqliteConfigStore::open_in_memory().unwrap()),
             Arc::new(StaticToolCatalog(vec![tool("read")])),
         );
-        let reader =
-            CatalogCapabilityReader::new(repo("m-1").await, &[tool("read")], &[], mcp, plane, None);
+        let reader = CatalogCapabilityReader::new(
+            repo("m-1").await,
+            &[tool("read")],
+            &[],
+            mcp,
+            plane,
+            DEFAULT_SCOPE,
+            None,
+        );
         let caps = reader.capabilities().await;
         // LIVE model catalog → real model id + provider key.
         assert_eq!(caps.models, vec!["m-1"]);
@@ -825,6 +833,7 @@ mod tests {
             &[],
             Arc::new(InMemoryMcpStore::new()),
             plane,
+            DEFAULT_SCOPE,
             None,
         );
         let caps = reader.capabilities().await;

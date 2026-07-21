@@ -1402,6 +1402,7 @@ pub async fn build_config_router() -> Router {
     // pointed at the fake upstream when `AWAKEN_MODEL_SOURCE=http`); the fake upstream
     // is what drives the seeded assistant through its admin tools in the run e2e.
     let (model, model_ref) = scenario_model(Arc::new(InstructionEchoModel), "config");
+    let platform_workspace = SharedHost::provision_local_workspace();
     let store = Arc::new(
         awaken_config_store::SqliteConfigStore::open_in_memory().expect("open config store"),
     );
@@ -1457,12 +1458,6 @@ pub async fn build_config_router() -> Router {
         awaken_server::model_resolver::CatalogModelResolver::from_repo(catalog_repo.clone()),
     )));
     let plane = awaken_runtime_host::ConfigPlane::new(service.clone(), store, tools);
-    // Seed the management assistant as an ordinary published agent in the reserved
-    // scope (ADR-0052 D1/D2): it becomes a compiled ExecutableAgentSnapshot via the same path
-    // as any agent, projectable on `/v1/agents`.
-    awaken_control::seed_admin_assistant(&plane, awaken_config_store::DEFAULT_SCOPE)
-        .await
-        .expect("seed admin assistant");
     // The management tool executables, backed by real ports (D3/D4): the capability
     // reader reads the shared catalog + advertised tools; the validator runs the same
     // compile check as `/v1/config/agents/validate` on drafts (in the tenant scope).
@@ -1474,12 +1469,13 @@ pub async fn build_config_router() -> Router {
         Arc::new(awaken_config_resolver::InMemoryMcpStore::new()),
         // The config plane, to list existing agent ids in the tenant scope.
         plane.clone(),
+        platform_workspace.clone(),
         // No data-plane inventory wired here (scenario host); memory/skills stay empty.
         None,
     ));
     let validator = Arc::new(awaken_control::ConfigServiceDraftValidator::new(
         plane.clone(),
-        awaken_config_store::DEFAULT_SCOPE,
+        platform_workspace.clone(),
     ));
     let admin_execs = awaken_admin_assistant::admin_tools(
         reader,
@@ -1488,7 +1484,7 @@ pub async fn build_config_router() -> Router {
         // editor's Save uses, in the tenant/default scope (ADR-0052).
         Arc::new(awaken_control::ConfigServiceDraftStore::new(
             plane.clone(),
-            awaken_config_store::DEFAULT_SCOPE,
+            platform_workspace.clone(),
             // The scenario host has no durable resource store in scope; an in-memory one
             // satisfies the port so the assistant can bind resources onto a draft.
             Arc::new(awaken_config_resolver::InMemoryAgentInputBindingRepository::new()),
@@ -1501,8 +1497,15 @@ pub async fn build_config_router() -> Router {
         Arc::new(awaken_admin_assistant::TracingAuditSink),
     );
     let host = SharedHost::new(model, model_ref)
+        .with_local_workspace(platform_workspace.clone())
         .with_config_service(service.clone())
         .with_admin_tools(admin_execs);
+    // The reserved value owns only configuration/tool visibility. Install the
+    // executable in the Host's real platform Workspace so Sessions, resources,
+    // credentials, and runtime lookup share one coordinate.
+    awaken_control::seed_admin_assistant(&plane, &platform_workspace)
+        .await
+        .expect("seed admin assistant");
     // `/v1/agents` over this server projects the config plane it hosts: an agent
     // published via `/v1/config/agents` is retrievable as a managed-wire projection
     // of that single truth (no second store).
@@ -1527,6 +1530,7 @@ pub async fn build_config_router() -> Router {
     let flat = mount_with_managed(host, managed_state)
         .merge(config_router(plane))
         .merge(agents);
+    let flat = awaken_server::workspace_path::with_platform_workspace(flat, platform_workspace);
     awaken_server::workspace_path::with_workspace_path_addressing(flat)
 }
 struct AllowAllGate;

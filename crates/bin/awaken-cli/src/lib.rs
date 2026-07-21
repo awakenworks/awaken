@@ -941,6 +941,7 @@ async fn management_router_over(
             mcp_store.clone(),
             // The config plane, to list existing agent ids in the tenant scope.
             plane.clone(),
+            platform_workspace.clone(),
             // LIVE data-plane inventory: memory-store ids (durable registry) + skill ids
             // (shared skill store). Both handles are assembled by this composition root
             // before the host, so the assistant enumerates real memory stores + skills.
