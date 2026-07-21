@@ -6,6 +6,21 @@ use awaken_protocol_managed::resource_plane as awaken_resource_contract;
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse};
 use std::sync::atomic::AtomicUsize;
 
+/// Authoring shorthand used only by tests. Production crosses the runtime port
+/// exclusively as `EffectiveSessionInputs`.
+#[derive(Clone)]
+struct TestInput {
+    kind: String,
+    id: String,
+    mount_path: String,
+    access: awaken_resource_contract::ResourceAccess,
+    instructions: Option<String>,
+    auth_token: Option<String>,
+    git_ref: Option<String>,
+}
+
+use awaken_resource_contract::ResourceAccess;
+
 struct TestResourceConfigSource;
 
 impl awaken_resource_contract::ResourceConfigSource for TestResourceConfigSource {
@@ -72,9 +87,8 @@ fn managed_with_resource_source(host: Arc<SharedHost>) -> crate::ManagedHost {
 }
 
 fn effective_resources(
-    resources: Vec<awaken_protocol_managed::SessionResource>,
+    resources: Vec<TestInput>,
 ) -> awaken_protocol_managed::EffectiveSessionInputs {
-    use awaken_protocol_managed::ResourceAccess as LegacyAccess;
     use awaken_protocol_managed::{ResolvedInput, ResolvedInputSource};
     use awaken_resource_contract::{
         BindingId, FileId, MemoryStoreId, RepositoryId, ResourceAccess,
@@ -121,8 +135,8 @@ fn effective_resources(
                     source,
                     mount_path: resource.mount_path,
                     access: match (resource.kind.as_str(), resource.access) {
-                        ("file", _) | (_, LegacyAccess::ReadOnly) => ResourceAccess::ReadOnly,
-                        (_, LegacyAccess::ReadWrite) => ResourceAccess::ReadWrite,
+                        ("file", _) | (_, ResourceAccess::ReadOnly) => ResourceAccess::ReadOnly,
+                        (_, ResourceAccess::ReadWrite) => ResourceAccess::ReadWrite,
                     },
                     instructions: resource.instructions,
                 }
@@ -722,7 +736,7 @@ impl LlmExecutor for OkModel {
 /// session stages its mount AND evicts the cached sandbox, so the NEXT turn
 /// rebuilds with the file mounted; detaching reverses it.
 #[tokio::test]
-async fn attach_resource_stages_the_mount_and_evicts_the_cached_sandbox() {
+async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_sandbox() {
     use awaken_protocol_managed::SessionRuntime;
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let managed = managed_with_resource_source(host.clone());
@@ -745,17 +759,18 @@ async fn attach_resource_stages_the_mount_and_evicts_the_cached_sandbox() {
     let before = host.sandbox_spec("t-attach").mounts.len();
 
     // Attach a file resource on the LIVE session.
-    let res = awaken_protocol_managed::SessionResource {
+    let res = TestInput {
         kind: "file".into(),
         id: file_id,
         mount_path: "/data.txt".into(),
-        access: awaken_protocol_managed::ResourceAccess::ReadOnly,
+        access: ResourceAccess::ReadOnly,
         instructions: None,
         auth_token: None,
         git_ref: None,
     };
+    let attached = effective_resources(vec![res.clone()]);
     managed
-        .attach_resource("t-attach", res.clone())
+        .apply_session_inputs("t-attach", host.local_workspace(), &attached)
         .await
         .expect("attach");
 
@@ -779,7 +794,11 @@ async fn attach_resource_stages_the_mount_and_evicts_the_cached_sandbox() {
 
     // Detach removes exactly that mount again.
     managed
-        .detach_resource("t-attach", res)
+        .apply_session_inputs(
+            "t-attach",
+            host.local_workspace(),
+            &awaken_protocol_managed::EffectiveSessionInputs::default(),
+        )
         .await
         .expect("detach");
     let spec = host.sandbox_spec("t-attach");
@@ -903,7 +922,7 @@ async fn prepare_session_overlays_the_environment_sandbox_onto_the_spec() {
 /// does not need the Agent binding repository, which keeps remote workers stateless.
 #[tokio::test]
 async fn prepare_session_mounts_an_effective_memory_resource() {
-    use awaken_protocol_managed::{ResourceAccess, SessionInit, SessionResource, SessionRuntime};
+    use awaken_protocol_managed::{SessionInit, SessionRuntime};
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
 
     // Seed a memory store with known bytes. The control plane has already resolved
@@ -926,7 +945,7 @@ async fn prepare_session_mounts_an_effective_memory_resource() {
         mcp_servers: Vec::new(),
         resources: effective_resources(
             (agent == "a")
-                .then(|| SessionResource {
+                .then(|| TestInput {
                     kind: "memory_store".into(),
                     id: store_id.clone(),
                     mount_path: "/mnt/memory".into(),
@@ -986,7 +1005,7 @@ async fn prepare_session_mounts_an_effective_memory_resource() {
 
 #[tokio::test]
 async fn activation_applies_current_resource_state_as_a_deny_only_overlay() {
-    use awaken_protocol_managed::{ResourceAccess, SessionResource, SessionRuntime};
+    use awaken_protocol_managed::SessionRuntime;
     use awaken_resource_contract::{
         ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, ResourceCatalog,
         ResourceState,
@@ -1020,7 +1039,7 @@ async fn activation_applies_current_resource_state_as_a_deny_only_overlay() {
             },
         )
         .unwrap();
-    let manifest = effective_resources(vec![SessionResource {
+    let manifest = effective_resources(vec![TestInput {
         kind: "memory_store".into(),
         id: store_id.clone(),
         mount_path: "/mnt/memory".into(),
@@ -1049,7 +1068,7 @@ async fn activation_applies_current_resource_state_as_a_deny_only_overlay() {
 /// exposing their authoring repository to Runtime.
 #[tokio::test]
 async fn prepare_session_mounts_effective_file_and_stages_effective_repo() {
-    use awaken_protocol_managed::{ResourceAccess, SessionInit, SessionResource, SessionRuntime};
+    use awaken_protocol_managed::{SessionInit, SessionRuntime};
     use awaken_provisioning_contract::{MountAccess, MountSource};
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
 
@@ -1067,7 +1086,7 @@ async fn prepare_session_mounts_effective_file_and_stages_effective_repo() {
                 agent_id: "a".into(),
                 mcp_servers: Vec::new(),
                 resources: effective_resources(vec![
-                    SessionResource {
+                    TestInput {
                         kind: "file".into(),
                         id: file_id.clone(),
                         mount_path: "/mnt/files/notes.txt".into(),
@@ -1076,7 +1095,7 @@ async fn prepare_session_mounts_effective_file_and_stages_effective_repo() {
                         auth_token: None,
                         git_ref: None,
                     },
-                    SessionResource {
+                    TestInput {
                         kind: "github_repository".into(),
                         id: "https://github.com/awaken/example.git".into(),
                         mount_path: "/mnt/repo".into(),
@@ -1120,7 +1139,7 @@ async fn prepare_session_mounts_effective_file_and_stages_effective_repo() {
 #[tokio::test]
 async fn file_activation_rejects_bytes_that_do_not_match_the_file_id() {
     use awaken_file_store::{FileStore, FileStoreError};
-    use awaken_protocol_managed::{ResourceAccess, SessionResource, SessionRuntime};
+    use awaken_protocol_managed::SessionRuntime;
 
     struct CorruptFileStore;
 
@@ -1150,7 +1169,7 @@ async fn file_activation_rejects_bytes_that_do_not_match_the_file_id() {
     host.grant_file(host.local_workspace(), &declared_id);
     let managed = crate::ManagedHost::new(host.clone());
     let mut init = bare_session("a", host.local_workspace());
-    init.resources = effective_resources(vec![SessionResource {
+    init.resources = effective_resources(vec![TestInput {
         kind: "file".into(),
         id: declared_id,
         mount_path: "/mnt/input.bin".into(),
@@ -1170,14 +1189,14 @@ async fn file_activation_rejects_bytes_that_do_not_match_the_file_id() {
 
 #[tokio::test]
 async fn file_activation_enforces_workspace_ownership_without_iam_policy_logic() {
-    use awaken_protocol_managed::{ResourceAccess, SessionResource, SessionRuntime};
+    use awaken_protocol_managed::SessionRuntime;
 
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let file_id = host.file_store().put(b"workspace-a").await.unwrap();
     host.grant_file("workspace-a", &file_id);
     let managed = crate::ManagedHost::new(host);
     let mut init = bare_session("a", "workspace-b");
-    init.resources = effective_resources(vec![SessionResource {
+    init.resources = effective_resources(vec![TestInput {
         kind: "file".into(),
         id: file_id,
         mount_path: "/mnt/input.txt".into(),
@@ -1287,11 +1306,11 @@ async fn a_github_repository_resource_injects_a_scoped_github_mcp_server() {
     }
 }
 
-/// Managed-Agents `resources.update`: rotating a github_repository's authorization token
-/// re-keys BOTH the staged clone token and the injected GitHub MCP bearer, host-side.
+/// Applying a repository manifest with a new credential reference re-keys both
+/// the staged clone token and the injected GitHub MCP bearer, host-side.
 #[tokio::test]
 async fn rotating_a_github_repository_token_re_keys_the_clone_and_mcp_bearer() {
-    use awaken_protocol_managed::{SessionInit, SessionResource, SessionRuntime};
+    use awaken_protocol_managed::{SessionInit, SessionRuntime};
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
     let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
@@ -1312,19 +1331,10 @@ async fn rotating_a_github_repository_token_re_keys_the_clone_and_mcp_bearer() {
     .await
     .unwrap();
     let managed = managed_with_resource_source(host.clone()).with_mcp(
-        credentials,
-        secrets,
+        credentials.clone(),
+        secrets.clone(),
         Arc::new(awaken_config_resolver::InMemoryMcpStore::new()),
     );
-    let gh_res = |token: &str| SessionResource {
-        kind: "github_repository".into(),
-        id: "https://github.com/awaken/example.git".into(),
-        mount_path: "/workspace/repo".into(),
-        access: awaken_protocol_managed::ResourceAccess::ReadWrite,
-        instructions: None,
-        auth_token: Some(token.into()),
-        git_ref: None,
-    };
     managed
         .prepare_session(
             "t-rot",
@@ -1362,9 +1372,33 @@ async fn rotating_a_github_repository_token_re_keys_the_clone_and_mcp_bearer() {
     assert_eq!(mcp_bearer(&host).as_deref(), Some("ghp_old"));
     assert_eq!(clone_token(&host).as_deref(), Some("ghp_old"));
 
-    // Rotate the token (POST /v1/sessions/{id}/resources/{rid} with a new authorization_token).
+    let next_credential = awaken_credential_vault::repo::enter_credential(
+        awaken_credential_vault::CredentialCreateParams {
+            workspace_id: host.local_workspace().into(),
+            kind: awaken_credential_vault::CredentialKind::Vault,
+            provider_id: Some("git".into()),
+            env_key: None,
+            secret: Some(awaken_agent_contract::RedactedString::from(
+                "ghp_new".to_string(),
+            )),
+            oauth_command: None,
+        },
+        secrets.as_ref(),
+        credentials.as_ref(),
+    )
+    .await
+    .unwrap();
+    let next = effective_repository(
+        "repo-1",
+        "https://github.com/awaken/example.git",
+        "/workspace/repo",
+        Some(next_credential.id.0),
+    );
+
+    // The Managed adapter stores the supplied token in the Vault and publishes a
+    // new Repository config before invoking this complete-manifest runtime port.
     managed
-        .rotate_resource_token("t-rot", gh_res("ghp_new"))
+        .apply_session_inputs("t-rot", host.local_workspace(), &next)
         .await
         .unwrap();
 
@@ -1407,7 +1441,7 @@ fn bare_session(agent: &str, workspace: &str) -> awaken_protocol_managed::Sessio
 /// G1 — prompt and mount are derived from the same effective input, including access.
 #[tokio::test]
 async fn told_equals_mounted_the_prompt_path_and_access_match_the_realized_mount() {
-    use awaken_protocol_managed::{ResourceAccess, SessionResource, SessionRuntime};
+    use awaken_protocol_managed::SessionRuntime;
     use awaken_provisioning_contract::MountAccess;
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let store_id = host.create_memory_store().await;
@@ -1417,7 +1451,7 @@ async fn told_equals_mounted_the_prompt_path_and_access_match_the_realized_mount
         .await
         .expect("seed memory bytes");
 
-    let resource = SessionResource {
+    let resource = TestInput {
         kind: "memory_store".into(),
         id: store_id,
         mount_path: "/mnt/memory".into(),
@@ -1450,7 +1484,7 @@ async fn told_equals_mounted_the_prompt_path_and_access_match_the_realized_mount
 /// Agent defaults of its own. Replacement is a Session-control-plane decision.
 #[tokio::test]
 async fn runtime_stages_exactly_the_effective_resource_list() {
-    use awaken_protocol_managed::{SessionResource, SessionRuntime};
+    use awaken_protocol_managed::SessionRuntime;
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let s2 = host.create_memory_store().await;
     host.memory_stores
@@ -1462,11 +1496,11 @@ async fn runtime_stages_exactly_the_effective_resource_list() {
     let managed = managed_with_resource_source(host.clone());
 
     let mut init = bare_session("a", host.local_workspace());
-    init.resources = effective_resources(vec![SessionResource {
+    init.resources = effective_resources(vec![TestInput {
         kind: "memory_store".into(),
         id: s2.clone(),
         mount_path: "/mnt/memory".into(),
-        access: awaken_protocol_managed::ResourceAccess::ReadWrite,
+        access: ResourceAccess::ReadWrite,
         instructions: None,
         auth_token: None,
         git_ref: None,
@@ -1498,11 +1532,11 @@ async fn runtime_stages_exactly_the_effective_resource_list() {
 /// G4 — an effective Memory input whose backing store is absent fails closed.
 #[tokio::test]
 async fn a_bound_resource_with_a_missing_backing_store_fails_the_session_closed() {
-    use awaken_protocol_managed::{ResourceAccess, SessionResource, SessionRuntime};
+    use awaken_protocol_managed::SessionRuntime;
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let managed = managed_with_resource_source(host.clone());
     let mut init = bare_session("a", host.local_workspace());
-    init.resources = effective_resources(vec![SessionResource {
+    init.resources = effective_resources(vec![TestInput {
         kind: "memory_store".into(),
         id: "never-seeded-store".into(),
         mount_path: "/mnt/memory".into(),
@@ -1523,7 +1557,7 @@ async fn a_bound_resource_with_a_missing_backing_store_fails_the_session_closed(
 /// access to the resource data plane but not to the Agent authoring repository.
 #[tokio::test]
 async fn an_effective_resource_mounts_on_a_worker_without_the_binding_repository() {
-    use awaken_protocol_managed::{ResourceAccess, SessionResource, SessionRuntime};
+    use awaken_protocol_managed::SessionRuntime;
     let db_less = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let store_id = db_less.create_memory_store().await;
     db_less
@@ -1534,7 +1568,7 @@ async fn an_effective_resource_mounts_on_a_worker_without_the_binding_repository
         .expect("seed");
     let managed_worker = managed_with_resource_source(db_less.clone());
     let mut init = bare_session("a", db_less.local_workspace());
-    init.resources = effective_resources(vec![SessionResource {
+    init.resources = effective_resources(vec![TestInput {
         kind: "memory_store".into(),
         id: store_id,
         mount_path: "/mnt/memory".into(),

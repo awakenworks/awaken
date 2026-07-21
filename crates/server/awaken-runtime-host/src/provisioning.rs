@@ -112,32 +112,17 @@ impl SharedHost {
             .insert(thread.to_string(), staged);
     }
 
-    /// Append one resource's staging to `thread`'s existing set (the live
-    /// `resources.add` path). Unlike the create-time replace, this preserves the
-    /// resources already staged, so the next rebuilt sandbox carries all of them.
-    pub(crate) fn merge_thread_resources(&self, thread: &str, staged: StagedResources) {
-        let mut all = self.thread_resources.lock().unwrap();
-        let entry = all.entry(thread.to_string()).or_default();
-        entry.mounts.extend(staged.mounts);
-        entry.prompts.extend(staged.prompts);
-        entry.memory_mounts.extend(staged.memory_mounts);
-        entry.repos.extend(staged.repos);
-    }
-
-    /// Drop one resource from `thread`'s staged set by its realized `logical` path
-    /// and its exact prompt fragment (the live `resources.delete` path). The rest
-    /// stay staged, so the next rebuilt sandbox carries everything but this one.
-    pub(crate) fn remove_thread_resource(&self, thread: &str, logical: &str, prompt: &str) {
-        let mut all = self.thread_resources.lock().unwrap();
-        if let Some(entry) = all.get_mut(thread) {
-            let realized_path = format!(".mnt/{logical}");
-            entry
-                .mounts
-                .retain(|mount| mount.mount_path != realized_path);
-            entry.repos.retain(|r| r.logical != logical);
-            entry.memory_mounts.retain(|(_, l)| l != logical);
-            entry.prompts.retain(|p| p != prompt);
-        }
+    /// Replace only the repository-derived MCP projections, preserving authored
+    /// and Session-inline MCP servers owned by the independent MCP plane.
+    pub(crate) fn replace_thread_repository_mcp(
+        &self,
+        thread: &str,
+        repository_mcp: Vec<crate::host::PreparedMcpServer>,
+    ) {
+        let mut all = self.thread_mcp.lock().unwrap();
+        let servers = all.entry(thread.to_string()).or_default();
+        servers.retain(|server| !server.name.starts_with("github:"));
+        servers.extend(repository_mcp);
     }
 
     /// The github_repository stages queued for `thread` (test-only observability: a
@@ -150,30 +135,6 @@ impl SharedHost {
             .get(thread)
             .map(|s| s.repos.clone())
             .unwrap_or_default()
-    }
-
-    /// Rotate a staged github_repository's authorization token (Managed Agents
-    /// `resources.update`): re-key BOTH the staged clone token and the injected
-    /// `github:<logical>` MCP server's bearer, so future clones and MCP push/PR use the new
-    /// token. A no-op for a thread/logical with no staged repo. The caller evicts the cached
-    /// sandbox so the next turn rebuilds with the rotated credential.
-    pub(crate) fn rotate_thread_repo_token(
-        &self,
-        thread: &str,
-        logical: &str,
-        new_token: Option<awaken_agent_contract::RedactedString>,
-    ) {
-        if let Some(staged) = self.thread_resources.lock().unwrap().get_mut(thread) {
-            for repo in staged.repos.iter_mut().filter(|r| r.logical == logical) {
-                repo.token = new_token.clone();
-            }
-        }
-        let name = format!("github:{logical}");
-        if let Some(servers) = self.thread_mcp.lock().unwrap().get_mut(thread) {
-            for server in servers.iter_mut().filter(|s| s.name == name) {
-                server.bearer = new_token.clone();
-            }
-        }
     }
 
     /// The MCP servers staged for `thread` (test-only observability, mirrors
@@ -661,75 +622,6 @@ mod provisioning_registry_tests {
         );
         assert!(host.thread_repos("t").is_empty(), "old repo dropped");
         assert!(host.thread_memory_mounts("t").is_empty());
-    }
-
-    #[test]
-    fn merge_accumulates_onto_the_staged_set() {
-        let host = host();
-        host.register_thread_resources(
-            "t",
-            StagedResources {
-                mounts: vec![resource_mount("a.md")],
-                prompts: vec!["P1".into()],
-                memory_mounts: vec![("s1".into(), "mem-a".into())],
-                repos: vec![repo_stage("repo-a")],
-            },
-        );
-        // The live `resources.add` path preserves what was already staged.
-        host.merge_thread_resources(
-            "t",
-            StagedResources {
-                mounts: vec![resource_mount("b.md")],
-                prompts: vec!["P2".into()],
-                memory_mounts: vec![("s2".into(), "mem-b".into())],
-                repos: vec![repo_stage("repo-b")],
-            },
-        );
-
-        assert_eq!(host.sandbox_spec("t").mounts.len(), 2, "both mounts kept");
-        assert_eq!(host.thread_resource_prompts("t"), vec!["P1", "P2"]);
-        assert_eq!(host.thread_repos("t").len(), 2);
-        assert_eq!(host.thread_memory_mounts("t").len(), 2);
-    }
-
-    #[test]
-    fn remove_drops_only_the_named_logical_across_every_vector() {
-        let host = host();
-        host.register_thread_resources(
-            "t",
-            StagedResources {
-                mounts: vec![resource_mount("keep.md"), resource_mount("drop.md")],
-                prompts: vec!["keep-prompt".into(), "drop-prompt".into()],
-                memory_mounts: vec![
-                    ("s-keep".into(), "keep.md".into()),
-                    ("s-drop".into(), "drop.md".into()),
-                ],
-                repos: vec![repo_stage("keep.md"), repo_stage("drop.md")],
-            },
-        );
-
-        // The live `resources.delete` path: drop by realized logical + exact prompt.
-        host.remove_thread_resource("t", "drop.md", "drop-prompt");
-
-        let mount_paths: Vec<String> = host
-            .sandbox_spec("t")
-            .mounts
-            .iter()
-            .map(|m| logical_of(m).to_string())
-            .collect();
-        assert_eq!(mount_paths, vec!["keep.md".to_string()]);
-        assert_eq!(host.thread_resource_prompts("t"), vec!["keep-prompt"]);
-        assert_eq!(
-            host.thread_repos("t")
-                .iter()
-                .map(|r| r.logical.clone())
-                .collect::<Vec<_>>(),
-            vec!["keep.md".to_string()]
-        );
-        assert_eq!(
-            host.thread_memory_mounts("t"),
-            vec![("s-keep".to_string(), "keep.md".to_string())]
-        );
     }
 
     #[test]

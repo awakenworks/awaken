@@ -64,10 +64,35 @@ pub fn mount(host: Arc<SharedHost>) -> Router {
     // plane. The plain mount has neither, so it wires no sink — a bare host emits no
     // webhooks (identical to an unconfigured plane before).
     let catalog = Arc::new(awaken_config_resolver::InMemoryResourceCatalog::new());
-    let state =
-        ManagedState::new(ManagedHost::new(host.clone()).with_resource_configs(catalog.clone()))
-            .with_resource_catalog(catalog.clone());
-    mount_with_managed_and_resource_catalog(host, Arc::new(state), catalog)
+    let state = local_managed_state(host.clone(), catalog.clone());
+    mount_with_managed_and_resource_catalog(host, state, catalog)
+}
+
+/// Assemble the local/single-process Managed adapter with one shared ephemeral
+/// credential plane. Repository tokens are sealed immediately and runtime receives
+/// only a credential reference. Production composition roots replace these
+/// in-memory adapters with their durable equivalents; resource services remain
+/// unaware of principals, API keys, roles, or authorization policy.
+pub fn local_managed_state(
+    host: Arc<SharedHost>,
+    catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
+) -> Arc<ManagedState> {
+    let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
+    let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
+    let mcp_store = Arc::new(awaken_config_resolver::InMemoryMcpStore::new());
+    let vaults = Arc::new(awaken_protocol_managed::VaultState::new(
+        secrets.clone(),
+        credentials.clone(),
+    ));
+    Arc::new(
+        ManagedState::new(
+            ManagedHost::new(host)
+                .with_resource_configs(catalog.clone())
+                .with_mcp(credentials, secrets, mcp_store),
+        )
+        .with_vaults(vaults)
+        .with_resource_catalog(catalog),
+    )
 }
 
 /// The deployment role this process runs as — the single role axis, selected by

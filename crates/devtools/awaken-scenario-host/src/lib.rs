@@ -47,10 +47,7 @@ use awaken_server::{ResolvedExecutorError, executor_from_resolved, mount_with_ma
 /// activation. Authorization remains outside this helper.
 fn mount(host: Arc<SharedHost>) -> Router {
     let catalog = scenario_resource_catalog();
-    let managed = Arc::new(
-        ManagedState::new(ManagedHost::new(host.clone()).with_resource_configs(catalog.clone()))
-            .with_resource_catalog(catalog.clone()),
-    );
+    let managed = awaken_server::local_managed_state(host.clone(), catalog.clone());
     awaken_server::mount_with_managed_and_resource_catalog(host, managed, catalog)
 }
 struct RouteProvider;

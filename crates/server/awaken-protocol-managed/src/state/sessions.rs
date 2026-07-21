@@ -179,7 +179,7 @@ impl ManagedState {
             .resources
             .iter()
             .map(|resource| {
-                parse_session_resource(resource).ok_or_else(|| {
+                parse_session_input(resource).ok_or_else(|| {
                     StateError::Run(RunError::bad_request(
                         "invalid resource: unsupported type or malformed fields",
                     ))
@@ -195,14 +195,19 @@ impl ManagedState {
             .unwrap_or_default();
         let mut attachments = Vec::with_capacity(resources.len());
         for (index, resource) in resources.iter().enumerate() {
-            let repository_id = if resource.kind == "github_repository" {
+            let repository_id = if let ParsedInputTarget::Repository {
+                remote_url,
+                authorization_token,
+                initial_branch,
+            } = &resource.target
+            {
                 let catalog = self.resource_catalog.as_ref().ok_or_else(|| {
                     StateError::Run(RunError::bad_request(
                         "repository resources require a configured Resource Catalog",
                     ))
                 })?;
                 let repository_id = format!("managed:{id}:repository:{index}");
-                let credential_binding = match &resource.auth_token {
+                let credential_binding = match authorization_token {
                     Some(token) => {
                         let vaults = self.vaults.as_ref().ok_or_else(|| {
                             StateError::Run(RunError::bad_request(
@@ -238,9 +243,9 @@ impl ManagedState {
                         awaken_resource_contract::RepositoryConfigVersion {
                             repository_id: repository_id.clone(),
                             version: awaken_resource_contract::ConfigVersion::INITIAL,
-                            remote_url: resource.id.clone(),
+                            remote_url: remote_url.clone(),
                             credential_binding,
-                            initial_branch: resource.git_ref.clone(),
+                            initial_branch: initial_branch.clone(),
                             clone_policy: awaken_resource_contract::ClonePolicy::default(),
                         },
                     )
@@ -285,8 +290,7 @@ impl ManagedState {
         let resource_dtos: Vec<serde_json::Value> = effective_inputs
             .inputs
             .iter()
-            .enumerate()
-            .map(|(n, input)| resolved_resource_dto(&id, n, input))
+            .map(|input| resolved_resource_dto(&id, input))
             .collect();
         // Resolve the session's environment (defaulting to the local one) and its
         // networking policy once, for both the SessionInit (staged before the first
@@ -410,7 +414,7 @@ impl ManagedState {
                     metadata: session.metadata.clone(),
                     environment_id: session.environment_id.clone(),
                     mcp_servers: session.agent.mcp_servers.clone(),
-                    effective_inputs,
+                    effective_inputs: effective_inputs.clone(),
                     status: "idle".to_string(),
                     archived_at: None,
                 },
@@ -423,6 +427,7 @@ impl ManagedState {
             SessionRecord {
                 agent_id,
                 session: session.clone(),
+                effective_inputs: effective_inputs.clone(),
                 events: Vec::new(),
                 child_threads: Vec::new(),
             },
@@ -540,8 +545,7 @@ impl ManagedState {
             resources: effective_inputs
                 .inputs
                 .iter()
-                .enumerate()
-                .map(|(index, input)| resolved_resource_dto(id, index, input))
+                .map(|input| resolved_resource_dto(id, input))
                 .collect(),
             outcome_evaluations: Vec::new(),
             status,
@@ -587,15 +591,20 @@ impl ManagedState {
             .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
         if let Some(session) = &persisted {
             self.runtime
-                .restore_session_inputs(id, &owner_scope, &session.effective_inputs)
+                .apply_session_inputs(id, &owner_scope, &session.effective_inputs)
                 .await?;
         }
         let agent_id = persisted
             .as_ref()
             .map_or_else(|| "assistant".to_string(), |p| p.agent_id.clone());
+        let effective_inputs = persisted
+            .as_ref()
+            .map(|session| session.effective_inputs.clone())
+            .unwrap_or_default();
         let record = SessionRecord {
             agent_id,
             session: self.rehydrated_session(id, persisted),
+            effective_inputs,
             events,
             child_threads: Vec::new(),
         };

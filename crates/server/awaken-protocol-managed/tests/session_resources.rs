@@ -68,6 +68,7 @@ fn resource_catalog() -> std::sync::Arc<InMemoryResourceCatalog> {
 #[derive(Clone, Default)]
 struct AcceptingFake {
     prepared: std::sync::Arc<std::sync::Mutex<Vec<SessionInit>>>,
+    applied: std::sync::Arc<std::sync::Mutex<Vec<awaken_session_contract::EffectiveSessionInputs>>>,
 }
 
 struct AgentWithResources;
@@ -174,6 +175,15 @@ impl SessionRuntime for AcceptingFake {
     async fn add_system(&self, _t: &str, _x: &str) -> Result<(), RunError> {
         Ok(())
     }
+    async fn apply_session_inputs(
+        &self,
+        _thread: &str,
+        _workspace_id: &str,
+        inputs: &awaken_session_contract::EffectiveSessionInputs,
+    ) -> Result<(), RunError> {
+        self.applied.lock().unwrap().push(inputs.clone());
+        Ok(())
+    }
     async fn define_outcome(
         &self,
         _t: &str,
@@ -226,8 +236,14 @@ async fn session_inherits_published_agent_integrations_and_echoes_the_effective_
 }
 
 async fn app_with_session() -> (Router, String) {
+    let vaults = std::sync::Arc::new(awaken_protocol_managed::VaultState::new(
+        std::sync::Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
+        std::sync::Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new()),
+    ));
     let app = router(std::sync::Arc::new(
-        ManagedState::new(AcceptingFake::default()).with_resource_catalog(resource_catalog()),
+        ManagedState::new(AcceptingFake::default())
+            .with_vaults(vaults)
+            .with_resource_catalog(resource_catalog()),
     ));
     let (s, session) = call(&app, "POST", "/v1/sessions", Some(json!({ "agent": "a" }))).await;
     assert_eq!(s, StatusCode::OK);
@@ -515,6 +531,73 @@ async fn github_repository_attaches_to_a_live_session() {
     let (s, listed) = call(&app, "GET", &format!("/v1/sessions/{id}/resources"), None).await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(listed["data"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn live_repository_credentials_are_references_and_config_versions_are_frozen() {
+    let runtime = AcceptingFake::default();
+    let applied = runtime.applied.clone();
+    let vaults = std::sync::Arc::new(awaken_protocol_managed::VaultState::new(
+        std::sync::Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
+        std::sync::Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new()),
+    ));
+    let app = router(std::sync::Arc::new(
+        ManagedState::new(runtime)
+            .with_vaults(vaults)
+            .with_resource_catalog(resource_catalog()),
+    ));
+    let (_, session) = call(&app, "POST", "/v1/sessions", Some(json!({"agent": "a"}))).await;
+    let session_id = session["id"].as_str().unwrap();
+    let first_secret = "ghp_live_first_must_not_persist"; // awaken-allow: secret
+    let (status, resource) = call(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{session_id}/resources"),
+        Some(json!({
+            "type": "github_repository",
+            "url": "https://github.com/owner/repo",
+            "authorization_token": first_secret
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let resource_id = resource["id"].as_str().unwrap();
+
+    let second_secret = "ghp_live_second_must_not_persist"; // awaken-allow: secret
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{session_id}/resources/{resource_id}"),
+        Some(json!({"authorization_token": second_secret})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let calls = applied.lock().unwrap();
+    assert_eq!(calls.len(), 2);
+    let awaken_session_contract::ResolvedInputSource::Repository {
+        config: first_config,
+        ..
+    } = &calls[0].inputs[0].source
+    else {
+        panic!("expected first repository input")
+    };
+    let awaken_session_contract::ResolvedInputSource::Repository {
+        config: second_config,
+        ..
+    } = &calls[1].inputs[0].source
+    else {
+        panic!("expected second repository input")
+    };
+    assert_eq!(first_config.version, ConfigVersion::INITIAL);
+    assert_eq!(second_config.version, ConfigVersion(2));
+    assert_ne!(
+        first_config.credential_binding,
+        second_config.credential_binding
+    );
+    let encoded = serde_json::to_string(&*calls).unwrap();
+    assert!(!encoded.contains(first_secret));
+    assert!(!encoded.contains(second_secret));
 }
 
 #[tokio::test]

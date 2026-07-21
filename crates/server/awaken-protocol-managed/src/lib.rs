@@ -71,7 +71,7 @@ pub use awaken_session_store::{InMemoryScopedSessionStore, InMemorySessionReposi
 pub use state::{
     AgentCapabilities, BuiltinTool, CustomTool, DelegatedRun, LiveInboxEntry, LiveInboxError,
     LiveInboxSnapshot, ManagedState, McpServerBinding, OutcomeIteration, OutcomeReport, Pending,
-    ResourceAccess, RunError, RunErrorKind, SessionInit, SessionLifecycleSink, SessionResource,
-    SessionRuntime, SessionUsage, StateError, StepOutcome, ToolPermissionDecision,
+    RunError, RunErrorKind, SessionInit, SessionLifecycleSink, SessionRuntime, SessionUsage,
+    StateError, StepOutcome, ToolPermissionDecision,
 };
 pub use work_queue::{WorkItem, WorkQueue, WorkState};

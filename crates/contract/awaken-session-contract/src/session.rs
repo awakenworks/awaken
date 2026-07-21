@@ -10,7 +10,6 @@ use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, RunState};
 
 use crate::mcp_binding::McpRefreshBinding;
-use crate::resource::SessionResource;
 
 /// The tool a run awaits: its id, model-visible name/input, and whether it is
 /// client-executed (projected as `agent.custom_tool_use`) or a built-in awaiting
@@ -327,20 +326,6 @@ pub trait SessionRuntime: Send + Sync {
         Ok(())
     }
 
-    /// Re-stage the exact, persisted resource manifest after a process restart.
-    /// This is deliberately narrower than [`prepare_session`](Self::prepare_session):
-    /// it must not resolve Agent defaults or current resource configuration again.
-    /// Implementations may consult current ownership/lifecycle state only as a
-    /// fail-closed deny overlay.
-    async fn restore_session_inputs(
-        &self,
-        _thread: &str,
-        _workspace_id: &str,
-        _inputs: &crate::EffectiveSessionInputs,
-    ) -> Result<(), RunError> {
-        Ok(())
-    }
-
     /// Rebind `thread` to `model` for its subsequent turns (R5, per-turn override).
     /// The default is a no-op, so a host without per-thread model routing is
     /// unaffected; the server impl re-stages the thread's model and evicts the
@@ -349,39 +334,14 @@ pub trait SessionRuntime: Send + Sync {
         Ok(())
     }
 
-    /// Attach a resource to a LIVE session: stage its mount and make it take effect
-    /// on the thread's next turn (the server impl merges it into the thread's staged
-    /// resources and evicts the cached sandbox so the next turn rebuilds with it).
-    /// The default is a no-op, so a host without resource staging is unaffected.
-    async fn attach_resource(
+    /// Apply the complete, already-resolved input manifest. Live add/update/delete
+    /// and restart restoration converge here; runtime never re-resolves Agent
+    /// defaults or current resource configuration.
+    async fn apply_session_inputs(
         &self,
         _thread: &str,
-        _resource: SessionResource,
-    ) -> Result<(), RunError> {
-        Ok(())
-    }
-
-    /// Detach a resource from a LIVE session: flush any write-back (memory) while the
-    /// old sandbox is still live, drop this resource's mount, and evict the cached
-    /// sandbox so the next turn rebuilds without it. Takes the resolved resource (not
-    /// just an id) so the host has its mount path and kind. The default is a no-op.
-    async fn detach_resource(
-        &self,
-        _thread: &str,
-        _resource: SessionResource,
-    ) -> Result<(), RunError> {
-        Ok(())
-    }
-
-    /// Rotate a LIVE session resource's authorization token (Managed Agents
-    /// `resources.update`): re-key the host-held credential so future operations use the
-    /// new token — for a `github_repository`, both the clone token and the injected GitHub
-    /// MCP server's bearer — then evict the cached sandbox so the next turn rebuilds with it.
-    /// `resource.auth_token` carries the NEW token. The default is a no-op.
-    async fn rotate_resource_token(
-        &self,
-        _thread: &str,
-        _resource: SessionResource,
+        _workspace_id: &str,
+        _inputs: &crate::EffectiveSessionInputs,
     ) -> Result<(), RunError> {
         Ok(())
     }
@@ -417,7 +377,7 @@ pub trait SessionRuntime: Send + Sync {
     /// its sandbox at the OS boundary — flush memory/skills back to durable truth
     /// while it is still live, then shred any materialized secrets and reap the
     /// workspace — and drop the cached context. Distinct from the evict-to-rebuild
-    /// edges ([`attach_resource`](Self::attach_resource) etc.), which deliberately
+    /// edges such as [`apply_session_inputs`](Self::apply_session_inputs), which deliberately
     /// keep the per-thread workspace so the next turn reuses it. Idempotent: a
     /// thread with no live session is a no-op. The default is a no-op, so a host
     /// without sandbox lifecycle is unaffected.

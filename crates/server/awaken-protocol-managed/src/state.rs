@@ -50,9 +50,9 @@ mod threads;
 mod types;
 
 pub(crate) use helpers::{content_text, rubric_text, session_usage_value};
-pub use resource::{ResourceAccess, SessionResource};
 pub(crate) use resource::{
-    input_binding, parse_session_resource, resolved_resource_dto, resource_dto,
+    ParsedInputTarget, ParsedSessionInput, input_binding, parse_session_input,
+    resolved_resource_dto,
 };
 pub use types::{
     AgentCapabilities, BuiltinTool, CustomTool, DelegatedRun, LiveInboxEntry, LiveInboxError,
@@ -63,6 +63,8 @@ pub use types::{
 struct SessionRecord {
     agent_id: String,
     session: Session,
+    /// Durable source of truth for the runtime's currently applied input projection.
+    effective_inputs: awaken_session_contract::EffectiveSessionInputs,
     events: Vec<Event>,
     /// Subagent (multiagent delegate) child threads spawned in the session, each a
     /// projected `session_thread` object (parent = the primary thread). Enumerated
@@ -94,6 +96,9 @@ pub struct ManagedState {
     /// no principal or authorization policy.
     resource_catalog: Option<Arc<dyn awaken_resource_contract::ResourceCatalog>>,
     sessions: Mutex<HashMap<String, SessionRecord>>,
+    /// Serializes manifest mutations so runtime projection and durable aggregate
+    /// updates cannot lose a concurrent resources.add/update/delete operation.
+    resource_mutations: tokio::sync::Mutex<()>,
     /// The aspect-layer session→owner index (ADR-0051): the [`ScopeId`] that
     /// created each session, keyed by the tenancy-agnostic session id. It is NOT
     /// on the core session aggregate (which stays tenancy-agnostic) — it lives
@@ -191,6 +196,7 @@ impl ManagedState {
             config_source: None,
             resource_catalog: None,
             sessions: Mutex::new(HashMap::new()),
+            resource_mutations: tokio::sync::Mutex::new(()),
             owners: Mutex::new(HashMap::new()),
             sessions_repo: Arc::new(InMemorySessionRepository::default()),
             lifecycle_sink: None,
@@ -379,7 +385,7 @@ mod tests {
         fn model(&self) -> String {
             "host-default-model".to_string()
         }
-        async fn restore_session_inputs(
+        async fn apply_session_inputs(
             &self,
             thread: &str,
             workspace_id: &str,
@@ -664,6 +670,64 @@ mod tests {
             )],
             "restart replays the persisted manifest once without re-resolving it"
         );
+    }
+
+    #[tokio::test]
+    async fn live_input_mutations_survive_restart_without_changing_resource_identity() {
+        let repo: Arc<dyn ManagedSessionRepository> =
+            Arc::new(InMemorySessionRepository::default());
+        let catalog = Arc::new(awaken_config_resolver::InMemoryResourceCatalog::new());
+        let state = ManagedState::new(RehydrateFake::default())
+            .with_session_repo(repo.clone())
+            .with_resource_catalog(catalog.clone());
+        let id = state
+            .create_session(bare_create_params(), None)
+            .await
+            .expect("create")
+            .id;
+
+        let resource = state
+            .create_resource(
+                &id,
+                serde_json::json!({
+                    "type": "file",
+                    "file_id": "immutable-file-hash",
+                    "mount_path": "/input.txt"
+                }),
+            )
+            .await
+            .expect("attach");
+        let resource_id = resource["id"].as_str().unwrap().to_string();
+        state
+            .update_resource(
+                &id,
+                &resource_id,
+                serde_json::json!({"mount_path": "/renamed/input.txt"}),
+            )
+            .await
+            .expect("update");
+
+        let restarted = ManagedState::new(RehydrateFake::default())
+            .with_session_repo(repo.clone())
+            .with_resource_catalog(catalog.clone());
+        restarted.ensure_session(&id).await.expect("rehydrate");
+        let restored = restarted.list_resources(&id).expect("list restored");
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0]["id"], resource_id);
+        assert_eq!(restored[0]["mount_path"], "/renamed/input.txt");
+
+        restarted
+            .delete_resource(&id, &resource_id)
+            .await
+            .expect("detach");
+        let second_restart = ManagedState::new(RehydrateFake::default())
+            .with_session_repo(repo)
+            .with_resource_catalog(catalog);
+        second_restart
+            .ensure_session(&id)
+            .await
+            .expect("rehydrate after delete");
+        assert!(second_restart.list_resources(&id).unwrap().is_empty());
     }
 
     /// The only required create field is the agent; every other field defaults.
