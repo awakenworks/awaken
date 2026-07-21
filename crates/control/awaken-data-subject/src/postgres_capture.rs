@@ -120,6 +120,11 @@ impl PgCapturedContentStore {
             .map(|n| n as usize)
             .unwrap_or(0)
     }
+
+    /// Whether the capture repository currently contains no records.
+    pub async fn is_empty(&self) -> bool {
+        self.len().await == 0
+    }
 }
 
 #[async_trait]
