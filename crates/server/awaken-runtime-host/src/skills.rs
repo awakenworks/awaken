@@ -192,6 +192,7 @@ pub(crate) async fn wire_skills(
                 .map(|file| (file.path.clone(), file.content.clone()))
                 .collect::<Vec<_>>();
             env.materialize_read_only_tree(&directory, &materialized)
+                .await
                 .map_err(|error| error.to_string())?;
             let content = version
                 .skill_md()
