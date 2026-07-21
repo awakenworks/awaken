@@ -622,7 +622,16 @@ pub fn build_acp_sandboxed_router() -> Router {
 /// sandbox image, and a reachable Docker daemon. Misconfiguration fails closed while
 /// building the host rather than falling back to a local process.
 pub async fn build_acp_container_router() -> Router {
+    let skill_store = std::env::var("AWAKEN_STORAGE_DIR")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::temp_dir().join(format!("awaken-acp-container-{}", std::process::id()))
+        })
+        .join("skills_catalog");
     let host = SharedHost::new(Arc::new(EchoModel), "awaken")
+        .with_skill_store(skill_store)
         .with_acp_from_env(awaken_server::relay_hand_executor_factory())
         .await;
     let host = Arc::new(host);
