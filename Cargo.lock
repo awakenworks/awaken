@@ -1065,6 +1065,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-resource-store"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "awaken-resource-contract",
+ "rusqlite",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "awaken-run-executor-a2a"
 version = "1.0.0-dev"
 dependencies = [

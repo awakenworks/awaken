@@ -12,7 +12,6 @@ import _arch_fitness
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 CRATES = REPO_ROOT / "crates"
-
 # Async runtime infrastructure (not domain or provider types) is permitted in
 # neutral crates: async-trait makes the ports dyn-safe, tokio drives execution,
 # tokio-util carries the cancellation token. A model/provider SDK such as genai
@@ -1320,6 +1319,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tracing",
     },
     "awaken-resource-reclaimer": {"awaken-resource-contract", "async-trait", "tokio"},
+    "awaken-resource-store": {"awaken-resource-contract", "async-trait", "rusqlite", "serde_json", "tempfile", "tokio"},
     # Single-machine assembly binary: the composition root. Since the service
     # layer moved to awaken-runtime-host; this bin composes host/protocol/management routers.
     # modes; it names no runtime/ext/store crate directly. Nothing depends on it.

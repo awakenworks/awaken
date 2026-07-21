@@ -1,0 +1,18 @@
+[package]
+name = "awaken-resource-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+awaken-resource-contract.workspace = true
+async-trait.workspace = true
+rusqlite.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints]
+workspace = true

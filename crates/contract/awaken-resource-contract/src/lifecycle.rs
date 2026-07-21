@@ -80,6 +80,15 @@ pub struct ResourceReference {
     pub reference_id: String,
 }
 
+/// Workspace-scoped reference row. This is an internal resource-lifecycle fact,
+/// not an IAM grant: `WorkspaceGrant` means a Files ownership/reference edge and
+/// never carries the principal that was authorized to create it.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct ResourceReferenceRecord {
+    pub target: ResourceTarget,
+    pub reference: ResourceReference,
+}
+
 /// Per-kind, immutable proof returned by the physical adapter.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -443,6 +452,35 @@ pub trait ResourcePurgeRepository: Send + Sync {
         expected_revision: u64,
         intent: ResourcePurgeIntent,
     ) -> Result<(), ResourcePurgeError>;
+}
+
+/// Durable reverse-reference index used by deletion safety predicates.
+///
+/// Writers are the application services which own the corresponding binding or
+/// activation lifecycle. A stale extra row leaks storage safely; an omitted row
+/// would be unsafe, so adapters must commit reference creation before exposing
+/// the referencing aggregate.
+#[async_trait]
+pub trait ResourceReferenceIndex: Send + Sync {
+    async fn add_reference(
+        &self,
+        record: ResourceReferenceRecord,
+    ) -> Result<bool, ResourcePurgeError>;
+    async fn remove_reference(
+        &self,
+        record: &ResourceReferenceRecord,
+    ) -> Result<bool, ResourcePurgeError>;
+    async fn references(
+        &self,
+        target: &ResourceTarget,
+    ) -> Result<Vec<ResourceReference>, ResourcePurgeError>;
+    /// Cross-Workspace lookup is internal to physical GC. It is required for a
+    /// globally content-addressed File blob shared by multiple Workspace grants.
+    async fn references_for_resource(
+        &self,
+        kind: ResourceKind,
+        resource_id: &str,
+    ) -> Result<Vec<ResourceReferenceRecord>, ResourcePurgeError>;
 }
 
 /// One independently replaceable safety predicate. Composition can combine

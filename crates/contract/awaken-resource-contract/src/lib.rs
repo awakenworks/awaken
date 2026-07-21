@@ -35,8 +35,8 @@ pub use input::{
 pub use lifecycle::{
     PutResourcePurgeOutcome, ResourceKind, ResourcePhysicalReclaimer, ResourcePurgeError,
     ResourcePurgeEvidence, ResourcePurgeGuard, ResourcePurgeIntent, ResourcePurgeReceipt,
-    ResourcePurgeRepository, ResourcePurgeStatus, ResourceReference, ResourceReferenceKind,
-    ResourceTarget,
+    ResourcePurgeRepository, ResourcePurgeStatus, ResourceReference, ResourceReferenceIndex,
+    ResourceReferenceKind, ResourceReferenceRecord, ResourceTarget,
 };
 
 // ---------------------------------------------------------------------------
