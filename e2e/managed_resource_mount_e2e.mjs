@@ -28,7 +28,7 @@ async function main() {
       agent: 'assistant',
       resources: [
         { type: 'file', file_id: file.id, mount_path: '/workspace/doc.txt' },
-        { type: 'memory_store', memory_store_id: mem.id, mount_path: '/workspace/notes.txt' },
+        { type: 'memory_store', memory_store_id: mem.id, mount_path: '/workspace/memory' },
       ],
       betas: BETAS,
     });

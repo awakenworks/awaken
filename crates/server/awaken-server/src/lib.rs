@@ -54,6 +54,15 @@ pub use worker_registry::{
     init_postgres as init_postgres_worker_registry, inject as init_worker_registry,
 };
 
+/// Assemble the governed MemoryFs data plane with its worker-side mount adapter.
+/// Authorization has already selected workspace/store/access before this adapter
+/// sees an opaque store id; no IAM vocabulary crosses this seam.
+pub fn install_platform_memory_data_plane(host: &SharedHost) {
+    host.install_memory_mounter(Arc::new(awaken_sandbox_memoryd::MemoryStoreMounter::new(
+        host.memory_fs(),
+    )));
+}
+
 /// An [`InferenceExecutorMaterializer`] mapping a model ref to a labeled executor, so a
 /// session bound to `fast`/`slow` resolves a distinct model — the R1/R2/R5 demo
 /// surface.
@@ -186,6 +195,7 @@ fn mount_with_managed_over(
     managed_state: Arc<ManagedState>,
     resource_catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
 ) -> Router {
+    install_platform_memory_data_plane(&host);
     // Spawn the process-level dispatch pool once when durable ingress is enabled
     // (O2): it is the sole claimer of the shared queue and drives every session's
     // runs. This is the single seam that owns an `Arc<SharedHost>`, which the pool's

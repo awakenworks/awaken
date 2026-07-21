@@ -4,6 +4,27 @@
 use super::*;
 
 impl SharedHost {
+    /// Evict a cached runtime context while retaining the Session workspace.
+    /// Memory mount guards must be released explicitly; dropping their trait
+    /// objects cannot run async unmount/harvest. When inputs changed, clear the
+    /// runtime-owned `.mnt` projection as well so detach is an actual revocation.
+    pub(crate) async fn evict_session_for_rebuild(
+        &self,
+        thread: &str,
+        clear_resources: bool,
+    ) -> Result<(), HostError> {
+        let ctx = self.sessions.lock().await.remove(thread);
+        if let Some(ctx) = ctx {
+            ctx.env.release_memory_mounts().await;
+            if clear_resources {
+                ctx.env
+                    .clear_resource_projection()
+                    .map_err(|error| HostError::internal(error.to_string()))?;
+            }
+        }
+        Ok(())
+    }
+
     /// Build a thread's commit boundary under the configured store directory: a
     /// durable SQLite database (default) or the filesystem append-log backend when
     /// `AWAKEN_STORE=fs`, or an in-memory coordinator when no store dir is set.
@@ -419,8 +440,12 @@ impl SharedHost {
         // Seed with host-registered plugins (e.g. the tool state machine via
         // `with_state_machine`), then append the per-run memory/compact plugins.
         let mut plugin_ids: Vec<String> = self.plugin_ids.clone();
-        if let Some(mem) = &self.memory {
-            let mut plugin = awaken_ext_memory::MemoryPlugin::new(mem.store(), mem.bounds());
+        if let Some(mem) = self
+            .memory_for_thread(thread)
+            .filter(|memory| memory.recall_enabled())
+        {
+            let mut plugin =
+                awaken_ext_memory::MemoryPlugin::from_handle(mem.store(), mem.bounds());
             if let Some(selector) = &self.memory_selector {
                 plugin = plugin.with_selector(selector.clone());
             }
@@ -575,11 +600,41 @@ impl SharedHost {
     /// harvested by the caller BEFORE this runs.
     pub(crate) async fn end_session(&self, thread: &str) -> Result<(), HostError> {
         let ctx = self.sessions.lock().await.remove(thread);
-        if let Some(ctx) = ctx {
+        let dispose_result = if let Some(ctx) = ctx {
             awaken_provisioning_contract::Sandbox::dispose(&*ctx.env)
                 .await
-                .map_err(|e| HostError::internal(e.to_string()))?;
+                .map_err(|e| HostError::internal(e.to_string()))
+        } else {
+            Ok(())
+        };
+
+        // Terminal cleanup removes every thread-scoped projection, including
+        // credential-bearing MCP relay routes. A future Session reusing the opaque
+        // thread id must start from an empty projection and be authorized/staged
+        // again; resource state never outlives its Session boundary in these maps.
+        self.thread_workspaces
+            .lock()
+            .expect("thread workspaces")
+            .remove(thread);
+        self.thread_memory
+            .lock()
+            .expect("thread memory mutex poisoned")
+            .remove(thread);
+        self.thread_mcp
+            .lock()
+            .expect("thread MCP mutex poisoned")
+            .remove(thread);
+        self.thread_resources
+            .lock()
+            .expect("thread resources mutex poisoned")
+            .remove(thread);
+        self.thread_egress.remove(thread);
+        self.thread_sandbox.remove(thread);
+        self.inference_routing.remove(thread);
+        if let Some(relay) = self.mcp_relay.get() {
+            relay.remove_routes(thread);
         }
-        Ok(())
+
+        dispose_result
     }
 }

@@ -172,13 +172,13 @@ impl crate::host::SharedHost {
         let egress = self.thread_egress();
         let resources = self.thread_resources_handle();
         let sandbox = self.thread_sandbox();
+        let bindings = crate::AcpSandboxBindings::new(egress, resources, sandbox)
+            .with_memory_mounter(self.memory_mounter());
         let channel = crate::build_acp_channel_source(
             tier,
             dep.container_image.as_deref(),
             source,
-            egress,
-            resources,
-            sandbox,
+            bindings,
             base,
         )
         .await

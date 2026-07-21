@@ -5,16 +5,23 @@ use async_trait::async_trait;
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_runtime_contract::tool::{Tool, ToolError};
 
-use crate::localfs::MemoryDir;
+use crate::localfs::{MemoryDir, MemoryStoreHandle};
+use std::sync::Arc;
 
 /// Writes one memory to a stable store. Constructed with the store so the write
 /// lands in the persistent memory directory, not the sub-run's sandbox.
 pub struct WriteMemoryTool {
-    store: MemoryDir,
+    store: Arc<dyn MemoryStoreHandle>,
 }
 
 impl WriteMemoryTool {
     pub fn new(store: MemoryDir) -> Self {
+        Self {
+            store: Arc::new(store),
+        }
+    }
+
+    pub fn from_handle(store: Arc<dyn MemoryStoreHandle>) -> Self {
         Self { store }
     }
 }
@@ -52,8 +59,9 @@ impl Tool for WriteMemoryTool {
         let path = self
             .store
             .write(name, content)
+            .await
             .map_err(|e| ToolError::Execution(format!("write memory: {e}")))?;
-        Ok(format!("saved memory {}", path.display()))
+        Ok(format!("saved memory {path}"))
     }
 }
 
@@ -270,7 +278,7 @@ mod tests {
 
         // Exactly one file was written, its stem clamped to the 120-char bound, and
         // it holds the full oversized content unchanged.
-        let entries = tool.store.entries();
+        let entries = tool.store.entries().await.unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].content.len(), 200_000);
         let stem = entries[0].path.file_stem().unwrap().to_string_lossy();

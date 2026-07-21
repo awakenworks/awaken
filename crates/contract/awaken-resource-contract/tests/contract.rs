@@ -21,8 +21,8 @@
 //! | R8| `MAX_PATH_BYTES`                        | bare constant, no contract predicate (gap)    |
 
 use awaken_resource_contract::{
-    FileStoreError, MAX_MEMORY_BYTES, MAX_PATH_BYTES, MemErr, Memory, MemoryEntry,
-    MemoryStoreError, SkillStoreError, validate_path_len,
+    FileStoreError, MAX_MEMORY_BYTES, MAX_PATH_BYTES, MemErr, Memory, MemoryEntry, SkillStoreError,
+    validate_path_len,
 };
 
 fn sample_memory(content: Option<&str>) -> Memory {
@@ -121,11 +121,6 @@ fn error_display_prefixes_are_stable() {
     assert_eq!(SkillStoreError::Io("io".into()).to_string(), "io: io");
     assert_eq!(
         SkillStoreError::Storage("s".into()).to_string(),
-        "storage: s"
-    );
-    assert_eq!(MemoryStoreError::Io("io".into()).to_string(), "io: io");
-    assert_eq!(
-        MemoryStoreError::Storage("s".into()).to_string(),
         "storage: s"
     );
 }

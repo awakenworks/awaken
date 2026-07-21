@@ -10,6 +10,8 @@
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use async_trait::async_trait;
+
 /// Reduce `name` to a safe single file stem: keep alphanumerics, `-`, `_`; map
 /// everything else to `-`; never empty; bounded length.
 pub fn sanitize_stem(name: &str) -> String {
@@ -37,6 +39,15 @@ pub struct Entry {
     pub path: PathBuf,
     pub content: String,
     pub modified: SystemTime,
+}
+
+/// A handle already scoped to one governed MemoryStore. Authorization and
+/// workspace lookup happen before construction; recall and extraction only use
+/// the selected store's content operations.
+#[async_trait]
+pub trait MemoryStoreHandle: Send + Sync {
+    async fn write(&self, name: &str, content: &str) -> Result<String, String>;
+    async fn entries(&self) -> Result<Vec<Entry>, String>;
 }
 
 /// A handle to a local directory of memory files, rooted at `root`. Reads and
@@ -97,6 +108,19 @@ impl MemoryDir {
                 .then_with(|| a.path.cmp(&b.path))
         });
         entries
+    }
+}
+
+#[async_trait]
+impl MemoryStoreHandle for MemoryDir {
+    async fn write(&self, name: &str, content: &str) -> Result<String, String> {
+        MemoryDir::write(self, name, content)
+            .map(|path| path.display().to_string())
+            .map_err(|error| error.to_string())
+    }
+
+    async fn entries(&self) -> Result<Vec<Entry>, String> {
+        Ok(MemoryDir::entries(self))
     }
 }
 

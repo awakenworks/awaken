@@ -222,7 +222,10 @@ impl SharedHost {
         if matches!(state, RunState::Awaiting) {
             return;
         }
-        let Some(mem) = &self.memory else {
+        let Some(mem) = self
+            .memory_for_thread(thread)
+            .filter(|memory| memory.extraction_enabled())
+        else {
             return;
         };
         let snapshot = &ctx.config;

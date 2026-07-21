@@ -62,6 +62,7 @@ impl McpRelay {
     /// registered or rotated.
     pub(crate) fn set_routes(&self, thread: &str, servers: &[PreparedMcpServer]) {
         let mut routes = self.routes.lock().unwrap();
+        routes.retain(|(route_thread, _), _| route_thread != thread);
         for s in servers {
             routes.insert(
                 (thread.to_string(), s.name.clone()),
@@ -71,6 +72,14 @@ impl McpRelay {
                 },
             );
         }
+    }
+
+    /// Remove every bearer-bearing route for a terminal Session.
+    pub(crate) fn remove_routes(&self, thread: &str) {
+        self.routes
+            .lock()
+            .expect("MCP relay routes mutex poisoned")
+            .retain(|(route_thread, _), _| route_thread != thread);
     }
 
     /// The loopback URL a sandboxed CLI dials for `(thread, name)` — the value written into
@@ -162,6 +171,26 @@ mod tests {
             let _ = axum::serve(listener, app).await;
         });
         addr
+    }
+
+    #[tokio::test]
+    async fn replacing_thread_routes_revokes_names_absent_from_the_new_set() {
+        let relay = McpRelay::start().await.unwrap();
+        let server = |name: &str| PreparedMcpServer {
+            name: name.into(),
+            url: "https://example.invalid/mcp".into(),
+            bearer: None,
+            refresh: None,
+        };
+        relay.set_routes("thread", &[server("old"), server("kept")]);
+        relay.set_routes("other", &[server("unrelated")]);
+        relay.set_routes("thread", &[server("new")]);
+
+        let routes = relay.routes.lock().unwrap();
+        assert!(!routes.contains_key(&("thread".into(), "old".into())));
+        assert!(!routes.contains_key(&("thread".into(), "kept".into())));
+        assert!(routes.contains_key(&("thread".into(), "new".into())));
+        assert!(routes.contains_key(&("other".into(), "unrelated".into())));
     }
 
     #[tokio::test]

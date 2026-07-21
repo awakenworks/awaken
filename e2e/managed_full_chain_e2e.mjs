@@ -100,7 +100,7 @@ async function main() {
       agent: 'assistant',
       environment_id: 'env_local',
       resources: [
-        { type: 'memory_store', memory_store_id: mem.id, mount_path: '/notes.txt' },
+        { type: 'memory_store', memory_store_id: mem.id, mount_path: '/memory' },
         { type: 'github_repository', url: bare, mount_path: '/workspace/repo' },
       ],
       betas: BETAS,
@@ -127,7 +127,8 @@ async function main() {
       await approveGated(c, session.id, evs, approved);
       files = await harvest(c, session.id);
       try {
-        memContent = (await c.get(`/v1/memory_stores/${mem.id}`))?.content ?? '';
+        const page = await c.get(`/v1/memory_stores/${mem.id}/memories`);
+        memContent = (page?.data ?? []).map((memory) => memory.content ?? '').join('\n');
       } catch {
         memContent = '';
       }
