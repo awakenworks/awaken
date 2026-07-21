@@ -1521,6 +1521,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-worker",
         "awaken-runtime-host",
         "awaken-resource-store",
+        "awaken-resource-reclaimer",
         # The ACP executor: the composition root wires an `acp:*` backend into the Serve
         # host by config (AWAKEN_ACP_ARGV), which the runtime-host plane does not do itself.
         "awaken-run-executor-acp",

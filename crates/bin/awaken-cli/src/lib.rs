@@ -925,6 +925,45 @@ async fn management_router_over(
         None => host_builder,
     };
     let host = Arc::new(host_builder);
+    let resource_reclamation = Arc::new(awaken_runtime_host::HostResourceReclamation::new(
+        host.clone(),
+        resource_catalog.clone(),
+    ));
+    let resource_reclaimer = Arc::new(
+        awaken_resource_reclaimer::ResourceReclaimer::new(
+            format!("awaken-resource-reclaimer:{}", std::process::id()),
+            30_000,
+            host.resource_lifecycle(),
+            resource_reclamation.clone(),
+        )
+        .expect("construct resource reclaimer")
+        .with_guard(resource_reclamation),
+    );
+    let now_ms = || {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as u64)
+            .unwrap_or_default()
+    };
+    if let Ok(summary) = resource_reclaimer.reconcile(now_ms(), 256).await
+        && summary.completed > 0
+    {
+        eprintln!("reclaimed {} durable resource(s)", summary.completed);
+    }
+    let recurring_resource_reclaimer = resource_reclaimer.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+        loop {
+            interval.tick().await;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_millis() as u64)
+                .unwrap_or_default();
+            if let Err(error) = recurring_resource_reclaimer.reconcile(now, 256).await {
+                eprintln!("resource reclamation retry remains pending: {error}");
+            }
+        }
+    });
     let managed_state = Arc::new(
         ManagedState::new(
             ManagedHost::new(host.clone())

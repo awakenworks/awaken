@@ -224,6 +224,7 @@ pub struct SharedHost {
     /// Workspace/resource edges only and is independent of the IAM deployment.
     pub(crate) resource_lifecycle:
         Arc<dyn awaken_protocol_managed::resource_plane::ResourceLifecycleRepository>,
+    pub(crate) resource_lifecycle_gate: tokio::sync::Mutex<()>,
     /// The memory resource plane's path-addressed content backend shared by API,
     /// mounts, recall, and extraction. See [`crate::memory_stores`].
     pub(crate) memory_stores: crate::memory_stores::MemoryStores,

@@ -271,8 +271,6 @@ impl ResourcePurgeIntent {
             && self.idempotency_key == other.idempotency_key
             && self.target == other.target
             && self.config_version == other.config_version
-            && self.requested_at_unix_ms == other.requested_at_unix_ms
-            && self.not_before_unix_ms == other.not_before_unix_ms
     }
 
     pub fn claim(

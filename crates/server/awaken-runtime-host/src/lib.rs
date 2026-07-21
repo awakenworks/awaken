@@ -41,6 +41,8 @@ mod memory_stores;
 mod provisioning;
 mod redact;
 mod resource_lifecycle;
+mod resource_reclamation;
+pub use resource_reclamation::HostResourceReclamation;
 mod run_exec;
 mod sandbox_source;
 mod skill_catalog;

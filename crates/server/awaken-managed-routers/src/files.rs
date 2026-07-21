@@ -161,19 +161,24 @@ async fn get_file(
     }
 }
 
-/// `DELETE /v1/files/{id}` — drop the blob (what `client.beta.files.delete`
-/// calls). Returns the `DeletedFile` receipt (`{id, type:"file_deleted"}`) when
-/// the blob existed, `404` when the id is unknown. The store is content-addressed,
-/// so this removes the bytes for that id; a later re-upload of equal bytes mints
-/// the same id afresh.
+/// `DELETE /v1/files/{id}` — commit logical denial and durable reclamation work.
+/// Physical deletion is asynchronous and occurs only after every Workspace grant
+/// and binding/reference is gone.
 async fn delete_file(
     State(host): State<Arc<SharedHost>>,
     scope: Option<Extension<ResourceWorkspace>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let workspace = request_workspace(&host, scope);
-    let revoked = match host.revoke_file(&workspace, &id).await {
-        Ok(revoked) => revoked,
+    match host.owns_file(&workspace, &id).await {
+        Ok(true) => {}
+        Ok(false) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "file not found" })),
+            )
+                .into_response();
+        }
         Err(error) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -181,27 +186,32 @@ async fn delete_file(
             )
                 .into_response();
         }
-    };
-    if !revoked {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "file not found" })),
-        )
-            .into_response();
     }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or_default();
-    match host.request_file_purge(&workspace, &id, now).await {
-        Ok(_) => (
+    if let Err(error) = host.request_file_purge(&workspace, &id, now).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": error.to_string() })),
+        )
+            .into_response();
+    }
+    match host.revoke_file(&workspace, &id).await {
+        Ok(true) => (
             StatusCode::OK,
             Json(json!({ "id": id, "type": "file_deleted" })),
         )
             .into_response(),
-        Err(e) => (
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "file not found" })),
+        )
+            .into_response(),
+        Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": e.to_string() })),
+            Json(json!({ "error": error.to_string() })),
         )
             .into_response(),
     }

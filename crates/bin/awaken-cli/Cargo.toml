@@ -27,6 +27,7 @@ awaken-worker = { workspace = true }
 # durable session repositories the composition opens.
 awaken-runtime-host = { workspace = true }
 awaken-resource-store = { workspace = true }
+awaken-resource-reclaimer = { workspace = true }
 # The ACP executor (AcpLaunch/AcpRunExecutor) for `acp:*` threads — wired by config
 # (AWAKEN_ACP_ARGV) into the worker's configured sandbox tier.
 awaken-run-executor-acp = { workspace = true }

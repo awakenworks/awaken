@@ -123,6 +123,7 @@ impl SharedHost {
             resource_lifecycle: Arc::new(
                 crate::resource_lifecycle::EphemeralResourceLifecycle::default(),
             ),
+            resource_lifecycle_gate: tokio::sync::Mutex::new(()),
             memory_stores,
             memory_mounter: std::sync::RwLock::new(None),
             gate_override: None,

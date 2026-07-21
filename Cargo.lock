@@ -336,6 +336,7 @@ dependencies = [
  "awaken-observability",
  "awaken-protocol-managed",
  "awaken-provider-genai",
+ "awaken-resource-reclaimer",
  "awaken-resource-store",
  "awaken-run-executor-acp",
  "awaken-runtime-contract",

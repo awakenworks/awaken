@@ -176,6 +176,7 @@ impl SharedHost {
     }
 
     pub async fn grant_file(&self, workspace: &str, id: &str) -> Result<bool, ResourcePurgeError> {
+        let _guard = self.resource_lifecycle_gate.lock().await;
         self.resource_lifecycle
             .add_reference(file_grant(workspace, id))
             .await
@@ -191,6 +192,7 @@ impl SharedHost {
     }
 
     pub async fn revoke_file(&self, workspace: &str, id: &str) -> Result<bool, ResourcePurgeError> {
+        let _guard = self.resource_lifecycle_gate.lock().await;
         self.resource_lifecycle
             .remove_reference(&file_grant(workspace, id))
             .await
@@ -213,8 +215,8 @@ impl SharedHost {
         not_before_unix_ms: u64,
     ) -> Result<PutResourcePurgeOutcome, ResourcePurgeError> {
         let key = format!(
-            "{}:{}:{}:{:?}",
-            target.workspace_id, target.resource_id, requested_at_unix_ms, config_version
+            "{}:{:?}:{}:{:?}",
+            target.workspace_id, target.kind, target.resource_id, config_version
         );
         let intent = ResourcePurgeIntent::new(
             format!("purge:{:?}:{key}", target.kind),
