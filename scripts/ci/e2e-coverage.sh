@@ -34,7 +34,6 @@ cd "$(dirname "$0")/../.."
 #       store-conformance — the trait test harness, not production code.
 #       runtime-examples / sandbox-container — examples / an alt sandbox tier
 #                      with no product wiring.
-#       file-store     not wired into the served composition yet.
 # (2) Alternate-backend / reference / real-provider modules inside LINKED crates,
 #     unreachable from a deterministic e2e by design:
 #       run-ingress/memory.rs   in-memory reference impl (the server uses SQLite).
@@ -73,7 +72,7 @@ cd "$(dirname "$0")/../.."
 #     and the tool-call pattern DSL; both carry comprehensive crate-level unit
 #     tests (like awaken-store-conformance), and the e2e exercises only their
 #     common paths, not every parser/validator branch.
-IGNORE='(awaken-protocol-mcp|awaken-store-postgres|awaken-store-conformance|awaken-runtime-examples|awaken-sandbox-container|awaken-file-store|awaken-scope|awaken-tool-pattern)/|awaken-run-ingress/src/(memory|postgres)\.rs|awaken-ext-mcp/src/(stdio|plugin|sensitive)\.rs|awaken-mcp-wire/src/jsonrpc\.rs|awaken-sandbox-local/src/(namespace|provider)\.rs|awaken-protocol-acp/src/(error|jsonrpc|real_acp)\.rs|awaken-(admin-config-api|config-store|credential-vault|model-catalog)/src/postgres\.rs|awaken-credential-vault/src/oauth\.rs|awaken-ext-builtin-tools/src/web\.rs|awaken-connection-plan/src/plan\.rs|awaken-server/src/models\.rs'
+IGNORE='(awaken-protocol-mcp|awaken-store-postgres|awaken-store-conformance|awaken-runtime-examples|awaken-sandbox-container|awaken-scope|awaken-tool-pattern)/|awaken-run-ingress/src/(memory|postgres)\.rs|awaken-ext-mcp/src/(stdio|plugin|sensitive)\.rs|awaken-mcp-wire/src/jsonrpc\.rs|awaken-sandbox-local/src/(namespace|provider)\.rs|awaken-protocol-acp/src/(error|jsonrpc|real_acp)\.rs|awaken-(admin-config-api|config-store|credential-vault|model-catalog)/src/postgres\.rs|awaken-credential-vault/src/oauth\.rs|awaken-ext-builtin-tools/src/web\.rs|awaken-connection-plan/src/plan\.rs|awaken-server/src/models\.rs'
 
 eval "$(cargo llvm-cov show-env --sh)"
 export RUSTFLAGS="${RUSTFLAGS:-} -C llvm-args=-runtime-counter-relocation"

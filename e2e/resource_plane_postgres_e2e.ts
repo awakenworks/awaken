@@ -73,9 +73,14 @@ function binary(): string {
 }
 
 function start(bin: string, directory: string, databaseUrl: string): ChildProcess {
+  const inherited = { ...process.env };
+  delete inherited.AWAKEN_DATABASE_URL;
+  delete inherited.AWAKEN_RUNTIME_DISPATCH_DATABASE_URL;
+  delete inherited.AWAKEN_STORE;
+  delete inherited.AWAKEN_DISPATCH_BACKEND;
   return spawn(bin, {
     env: {
-      ...process.env,
+      ...inherited,
       AWAKEN_HTTP_ADDR: `127.0.0.1:${PORT}`,
       AWAKEN_LOCAL_WORKSPACE_ID: WORKSPACE,
       AWAKEN_STORAGE_DIR: directory,
