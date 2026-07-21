@@ -175,6 +175,40 @@ function psql(container: string, sql: string): string {
   return docker('exec', container, 'psql', '-U', 'postgres', '-d', 'awaken', '-At', '-c', sql);
 }
 
+function sqlLiteral(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
+}
+
+function seedLegacyMemoryIdentities(container: string, canonicalId: string): void {
+  const rows = [
+    {
+      id: `legacy-pg-owned-${process.pid}`,
+      workspace_id: WORKSPACE,
+      name: 'Postgres legacy governed memory',
+      description: 'owned v6 row',
+      metadata: { source: 'admin-v6' },
+      archived: false,
+    },
+    {
+      id: `legacy-pg-unowned-${process.pid}`,
+      name: 'Must remain quarantined',
+      archived: false,
+    },
+    {
+      id: canonicalId,
+      workspace_id: WORKSPACE,
+      name: 'Must not replace canonical Postgres history',
+      archived: false,
+    },
+  ];
+  psql(
+    container,
+    rows.map((row) =>
+      `INSERT INTO admin_memory_store(id, data) VALUES (${sqlLiteral(row.id)}, ${sqlLiteral(JSON.stringify(row))}::jsonb);`,
+    ).join(' '),
+  );
+}
+
 function seedRepository(root: string): string {
   const work = path.join(root, 'repository-work');
   const remote = path.join(root, 'repository.git');
@@ -350,6 +384,11 @@ async function main(): Promise<void> {
     await stop(server);
     assertNoLocalResourceTruth(firstDirectory);
 
+    // Exercise the Postgres v6 identity migration through process replacement:
+    // owned rows become catalog aggregates; unowned rows are quarantined; a
+    // duplicate cannot replace the already-published canonical config history.
+    seedLegacyMemoryIdentities(pg.container, memoryId);
+
     server = start(bin, secondDirectory, pg.url);
     await ready();
     const fileResponse = await fetch(scoped(WORKSPACE, `files/${fileId}/content`));
@@ -368,6 +407,25 @@ async function main(): Promise<void> {
     );
     assert.equal(restoredMemoryConfig.body.version, 2);
     assert.equal(restoredMemoryConfig.body.recall_policy.max_results, 19);
+    const legacyPgId = `legacy-pg-owned-${process.pid}`;
+    const migratedLegacy = await json('GET', scoped(WORKSPACE, `memory_stores/${legacyPgId}`));
+    assert.equal(migratedLegacy.status, 200);
+    assert.equal(migratedLegacy.body.name, 'Postgres legacy governed memory');
+    assert.equal(
+      (await json('GET', scoped(WORKSPACE, `memory_stores/${legacyPgId}/config`))).body.version,
+      1,
+    );
+    assert.equal(
+      (await json('GET', scoped(WORKSPACE, `memory_stores/legacy-pg-unowned-${process.pid}`))).status,
+      404,
+    );
+    assert.notEqual(restoredStore.body.name, 'Must not replace canonical Postgres history');
+    const patchedLegacy = await json('POST', scoped(WORKSPACE, `memory_stores/${legacyPgId}`), {
+      description: 'updated after Postgres migration',
+      metadata: { source: 'catalog-v8' },
+    });
+    assert.equal(patchedLegacy.status, 200);
+    assert.equal(patchedLegacy.body.description, 'updated after Postgres migration');
     assert.equal(
       (await json('GET', scoped(WORKSPACE, `memory_stores/${memoryId}/config_versions/1`))).body.version,
       1,

@@ -112,6 +112,42 @@ function seedLegacyDatabase(database) {
   );
 }
 
+function seedLegacyResourceCatalog(database, existingId) {
+  const rows = [
+    {
+      id: 'legacy-catalog-owned',
+      workspace_id: 'default',
+      name: 'Legacy governed memory',
+      description: 'owned v6 identity',
+      metadata: { source: 'admin-v6' },
+      archived: false,
+    },
+    {
+      id: 'legacy-catalog-archived',
+      workspace_id: 'default',
+      name: 'Legacy archived memory',
+      archived: true,
+    },
+    {
+      id: 'legacy-catalog-unowned',
+      name: 'Must remain quarantined',
+      archived: false,
+    },
+    {
+      id: existingId,
+      workspace_id: 'default',
+      name: 'Must not overwrite the canonical aggregate',
+      archived: false,
+    },
+  ];
+  sqlite(
+    database,
+    rows.map((row) =>
+      `INSERT INTO admin_memory_store(id, data) VALUES (${sqlQuote(row.id)}, ${sqlQuote(JSON.stringify(row))});`,
+    ).join('\n'),
+  );
+}
+
 function client() {
   return new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
 }
@@ -228,12 +264,45 @@ async function main() {
       'legacy Memory ordinal advances the canonical version high-water mark',
     );
 
+    // V6 kept only a MemoryStore identity row. Seed it after the first process
+    // has installed migrations, then let the replacement import it into the
+    // versioned Resource Catalog. Missing ownership is never guessed, and an old
+    // duplicate cannot overwrite an aggregate already governed by the catalog.
+    seedLegacyResourceCatalog(path.join(storage, 'admin.db'), configuredStore);
+
     // A replacement that still sees the retired registry must recognize the
     // already-imported canonical aggregate and avoid rewriting its history.
     const idempotent = spawnServer('skills-durable', PORT, environment);
     servers.push(idempotent.server);
     await waitForPort(PORT);
     await assertImportedSkill();
+    const importedCatalog = await raw('/v1/memory_stores/legacy-catalog-owned');
+    assert.equal(importedCatalog.status, 200);
+    assert.equal((await importedCatalog.json()).name, 'Legacy governed memory');
+    assert.equal(
+      (await raw('/v1/memory_stores/legacy-catalog-owned/config')).status,
+      200,
+      'an imported identity receives the initial immutable behavior config',
+    );
+    const archivedCatalog = await raw('/v1/memory_stores/legacy-catalog-archived');
+    assert.equal(archivedCatalog.status, 200);
+    assert.notEqual((await archivedCatalog.json()).archived_at, null);
+    assert.equal((await raw('/v1/memory_stores/legacy-catalog-unowned')).status, 404);
+    const canonical = await raw(`/v1/memory_stores/${configuredStore}`);
+    assert.equal(canonical.status, 200);
+    assert.notEqual(
+      (await canonical.json()).name,
+      'Must not overwrite the canonical aggregate',
+      'legacy duplicate cannot replace canonical configuration history',
+    );
+    const patchedLegacy = await rawJson(
+      'POST',
+      '/v1/memory_stores/legacy-catalog-owned',
+      { description: 'updated after one-time import', metadata: { source: 'catalog-v8' } },
+    );
+    assert.equal(patchedLegacy.status, 200);
+    assert.equal(patchedLegacy.body.description, 'updated after one-time import');
+    assert.deepEqual(patchedLegacy.body.metadata, { source: 'catalog-v8' });
     await stopServer(idempotent.server);
     servers.pop();
 
@@ -249,6 +318,8 @@ async function main() {
     assert.equal(restoredConfigBody.version, 2);
     assert.equal(restoredConfigBody.recall_policy.max_results, 17);
     assert.equal(restoredConfigBody.extraction_policy.enabled, false);
+    const restoredLegacy = await raw('/v1/memory_stores/legacy-catalog-owned');
+    assert.equal((await restoredLegacy.json()).description, 'updated after one-time import');
     await createMemory();
     pass('replacement process rebuilt neither resource from the removed legacy database');
 
