@@ -15,8 +15,7 @@ CRATES = REPO_ROOT / "crates"
 # Async runtime infrastructure (not domain or provider types) is permitted in
 # neutral crates: async-trait makes the ports dyn-safe, tokio drives execution,
 # tokio-util carries the cancellation token. A model/provider SDK such as genai
-# is deliberately NOT in this set for any neutral crate; it lives only in the
-# provider adapter so G2/G10 hold.
+# is deliberately NOT in this set for any neutral crate; only provider adapters use it.
 ALLOWED_DEPS: dict[str, set[str]] = {
     # zeroize backs RedactedString's zero-on-drop (ADR-0043); a leaf crypto-hygiene
     # primitive, not a model/provider SDK.
@@ -38,8 +37,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # dev-only: property-based (formal) verification (ADR-0059).
         "proptest",
     },
-    # Webhooks (ADR-0048 / S10): a protocol-neutral projection sink. Signing +
-    # Signing, the event shape, and HTTP delivery only — storage-neutral. No dep on
+    # Webhooks (ADR-0048 / S10): signing, event shape, and HTTP delivery only. No dep on
     # the Managed wire crate (it takes event type / id / tenancy as data) and no
     # subscription store: subscriptions live in the config plane, reached through the
     # SubscriptionSource port with secrets already resolved.
@@ -1965,8 +1963,7 @@ def check_runtime_is_secret_resolution_free() -> list[str]:
 
 
 def _arch_fitness_specs() -> list[_arch_fitness.CrateSpec]:
-    """Parse every workspace crate into the (name, normal-deps, bucket) spec the
-    architecture fitness rules consume, so those rules stay filesystem-free and testable."""
+    """Build filesystem-free architecture-fitness specs for every workspace crate."""
     specs: list[_arch_fitness.CrateSpec] = []
     for manifest_path in iter_crate_manifests():
         manifest = load_manifest(manifest_path)
