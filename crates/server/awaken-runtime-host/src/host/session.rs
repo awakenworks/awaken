@@ -4,24 +4,11 @@
 use super::*;
 
 impl SharedHost {
-    /// Evict a cached runtime context while retaining the Session workspace.
-    /// Memory mount guards must be released explicitly; dropping their trait
-    /// objects cannot run async unmount/harvest. When inputs changed, clear the
-    /// runtime-owned `.mnt` projection as well so detach is an actual revocation.
-    pub(crate) async fn evict_session_for_rebuild(
-        &self,
-        thread: &str,
-        clear_resources: bool,
-    ) -> Result<(), HostError> {
-        let ctx = self.sessions.lock().await.remove(thread);
-        if clear_resources && let Some(ctx) = ctx {
-            ctx.env.release_memory_mounts().await;
-            ctx.env
-                .clear_resource_projection()
-                .await
-                .map_err(|error| HostError::internal(error.to_string()))?;
-        }
-        Ok(())
+    /// Evict only the rebuildable runtime context while retaining the
+    /// independently-owned Session environment and its live resource projection.
+    /// Terminal cleanup remains the single responsibility of [`Self::end_session`].
+    pub(crate) async fn evict_session_for_rebuild(&self, thread: &str) {
+        self.sessions.lock().await.remove(thread);
     }
 
     /// Build a thread's commit boundary under the configured store directory: a

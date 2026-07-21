@@ -630,8 +630,9 @@ pub async fn build_acp_container_router() -> Router {
             std::env::temp_dir().join(format!("awaken-acp-container-{}", std::process::id()))
         })
         .join("skills_catalog");
-    let host = SharedHost::new(Arc::new(EchoModel), "awaken")
-        .with_skill_store(skill_store)
+    let host = SharedHost::new(Arc::new(EchoModel), "awaken").with_skill_store(skill_store);
+    awaken_server::install_platform_memory_data_plane(&host);
+    let host = host
         .with_acp_from_env(awaken_server::relay_hand_executor_factory())
         .await;
     // Use the same shared Resource Catalog + Managed ACL assembly as every other

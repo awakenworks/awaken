@@ -87,6 +87,37 @@ fn s(v: impl Into<String>) -> String {
     v.into()
 }
 
+fn sandbox_mount_destination(dest: &str) -> String {
+    if dest.starts_with('/') {
+        dest.to_string()
+    } else {
+        format!("/workspace/{dest}")
+    }
+}
+
+fn workspace_relative(logical: &str) -> &str {
+    logical
+        .strip_prefix("/workspace/")
+        .or_else(|| logical.strip_prefix("workspace/"))
+        .or_else(|| (logical == "/workspace").then_some(""))
+        .or_else(|| (logical == "workspace").then_some(""))
+        .unwrap_or_else(|| logical.trim_start_matches('/'))
+}
+
+fn host_projection_path(
+    root: &IsolatedRoot,
+    host_workspace: &std::path::Path,
+    logical: &str,
+) -> Result<PathBuf, pc::SandboxError> {
+    if !logical.starts_with('/') || logical == "/workspace" || logical.starts_with("/workspace/") {
+        IsolatedRoot::new(host_workspace)
+            .resolve(workspace_relative(logical))
+            .map_err(err)
+    } else {
+        root.resolve(logical).map_err(err)
+    }
+}
+
 /// Render a `bwrap` command line (unprivileged, Linux). Deterministic and pure.
 /// Layout: unshare namespaces, mount `/proc` `/dev` `/tmp`, read-only-bind the
 /// host userland (so interpreters exist), bind the workspace and outputs, bind
@@ -127,7 +158,7 @@ pub fn bubblewrap_argv(input: &RenderInput) -> Vec<String> {
     for m in input.mounts {
         a.push(s(if m.read_only { "--ro-bind" } else { "--bind" }));
         a.push(m.host.to_string_lossy().into_owned());
-        a.push(m.dest.clone());
+        a.push(sandbox_mount_destination(&m.dest));
     }
     a.extend(
         ["--setenv", "AWAKEN_OUTPUTS_DIR", input.outputs_path]
@@ -246,6 +277,7 @@ impl NamespaceProvider {
     async fn realize_layout(
         &self,
         root: &IsolatedRoot,
+        host_workspace: &std::path::Path,
         spec: &pc::SandboxSpec,
     ) -> Result<
         (
@@ -262,7 +294,7 @@ impl NamespaceProvider {
         // Host paths of realized secrets — shredded at dispose (ADR-0023).
         let mut secret_paths: Vec<PathBuf> = Vec::new();
         for req in &spec.mounts {
-            let host = root.resolve(&req.mount_path).map_err(err)?;
+            let host = host_projection_path(root, host_workspace, &req.mount_path)?;
             // memory_store is a keyed store, not a byte blob (ADR-0038/0053): the mounter
             // realizes it at `host` (a live FUSE mount with a FUSE-preferring mounter, or
             // materialized files on the copy fallback) which then binds into the namespace
@@ -416,7 +448,7 @@ impl NamespaceProvider {
         }
 
         let (layout, realized, memory_mounts, secret_paths) =
-            match self.realize_layout(&root, spec).await {
+            match self.realize_layout(&root, &host_workspace, spec).await {
                 Ok(v) => v,
                 Err(e) => {
                     // On a failed layout, `realize_layout`'s already-realized guards drop
@@ -501,13 +533,17 @@ pub struct NamespaceSandbox {
 }
 
 impl NamespaceSandbox {
+    fn workspace_root(&self) -> IsolatedRoot {
+        IsolatedRoot::new(self.host_workspace.clone())
+    }
+
     /// Materialize an immutable runtime-owned tree through the shared lexical jail.
     pub fn materialize_read_only_tree(
         &self,
         subdir: &str,
         files: &[(String, Vec<u8>)],
     ) -> Result<(), pc::SandboxError> {
-        materialize_read_only_tree_at(&self.root, subdir, files)
+        materialize_read_only_tree_at(&self.workspace_root(), workspace_relative(subdir), files)
     }
 
     /// Tear down every live memory mount (harvest a copy / unmount a FUSE), draining
@@ -550,19 +586,30 @@ impl NamespaceSandbox {
         git_ref: Option<&str>,
         token: Option<&str>,
     ) -> Result<(), pc::SandboxError> {
-        provision_repo_at(&self.root, logical, url, git_ref, token).map_err(err)
+        provision_repo_at(
+            &self.workspace_root(),
+            workspace_relative(logical),
+            url,
+            git_ref,
+            token,
+        )
+        .map_err(err)
     }
 
     pub fn push_repo(&self, logical: &str, token: Option<&str>) -> Result<bool, pc::SandboxError> {
-        push_repo_at(&self.root, logical, token).map_err(err)
+        push_repo_at(&self.workspace_root(), workspace_relative(logical), token).map_err(err)
     }
 
     pub fn list_files(&self, subdir: &str) -> Vec<(String, Vec<u8>)> {
-        list_files_at(&self.root, subdir)
+        if subdir.starts_with('/') && !subdir.starts_with("/workspace") {
+            list_files_at(&self.root, subdir)
+        } else {
+            list_files_at(&self.workspace_root(), workspace_relative(subdir))
+        }
     }
 
     pub fn scan_skill_dir(&self, subdir: &str) -> Vec<DiscoveredSkillFile> {
-        scan_skill_dir_at(&self.root, subdir)
+        scan_skill_dir_at(&self.workspace_root(), workspace_relative(subdir))
     }
 
     pub fn materialize_inline(
@@ -570,7 +617,7 @@ impl NamespaceSandbox {
         logical: &str,
         contents: &[u8],
     ) -> Result<(), pc::SandboxError> {
-        let path = jailed_at(&self.root, logical).map_err(err)?;
+        let path = jailed_at(&self.workspace_root(), workspace_relative(logical)).map_err(err)?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(err)?;
         }
@@ -581,7 +628,10 @@ impl NamespaceSandbox {
     /// Remove one dynamically projected workspace path. Missing paths are an
     /// idempotent success and lexical traversal is rejected by the shared jail.
     pub fn remove_inline(&self, logical: &str) -> Result<(), pc::SandboxError> {
-        let path = self.root.resolve(logical).map_err(err)?;
+        let path = self
+            .workspace_root()
+            .resolve(workspace_relative(logical))
+            .map_err(err)?;
         match std::fs::symlink_metadata(&path) {
             Ok(metadata) if metadata.is_dir() => std::fs::remove_dir_all(path).map_err(err),
             Ok(_) => std::fs::remove_file(path).map_err(err),
@@ -939,7 +989,7 @@ mod tests {
             },
             RenderMount {
                 host: PathBuf::from("/h/rw"),
-                dest: "/data".into(),
+                dest: ".mnt/data".into(),
                 read_only: false,
             },
         ];
@@ -955,8 +1005,28 @@ mod tests {
         ));
         let j = a.join(" ");
         assert!(j.contains("--ro-bind /h/in /workspace/in.txt"));
-        assert!(j.contains("--bind /h/rw /data"));
+        assert!(j.contains("--bind /h/rw /workspace/.mnt/data"));
         assert!(j.contains("--setenv TZ UTC"));
+    }
+
+    #[test]
+    fn relative_and_workspace_prefixed_projections_share_the_workspace_root() {
+        let root_dir = tempfile::tempdir().unwrap();
+        let root = IsolatedRoot::new(root_dir.path());
+        let workspace = root_dir.path().join("workspace");
+        assert_eq!(
+            host_projection_path(&root, &workspace, ".mnt/notes").unwrap(),
+            workspace.join(".mnt/notes")
+        );
+        assert_eq!(
+            host_projection_path(&root, &workspace, "/workspace/repo").unwrap(),
+            workspace.join("repo")
+        );
+        assert_eq!(workspace_relative("workspace/repo"), "repo");
+        assert_eq!(
+            host_projection_path(&root, &workspace, "/outputs/result").unwrap(),
+            root_dir.path().join("outputs/result")
+        );
     }
 
     #[test]
