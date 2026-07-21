@@ -410,18 +410,14 @@ impl SharedHost {
     /// remains only the fallback for a repo with no GitHub MCP (e.g. a non-MCP CLI). A no-op
     /// for a thread with no repos, no live env, or nothing the agent committed. Best-effort.
     pub async fn publish_thread_repositories(&self, thread: &str) {
-        let (env, repositories) = {
-            let sessions = self.sessions.lock().await;
-            let env = sessions.get(thread).map(|ctx| ctx.env.clone());
-            let repositories = self
-                .thread_resources
-                .lock()
-                .unwrap()
-                .get(thread)
-                .map(|s| s.repositories.clone())
-                .unwrap_or_default();
-            (env, repositories)
-        };
+        let env = self.session_environment(thread).await;
+        let repositories = self
+            .thread_resources
+            .lock()
+            .unwrap()
+            .get(thread)
+            .map(|s| s.repositories.clone())
+            .unwrap_or_default();
         let Some(env) = env else {
             return;
         };
@@ -465,10 +461,7 @@ impl SharedHost {
         if !self.skills.has_store() {
             return;
         }
-        let env = {
-            let sessions = self.sessions.lock().await;
-            sessions.get(thread).map(|ctx| ctx.env.clone())
-        };
+        let env = self.session_environment(thread).await;
         let Some(env) = env else {
             return;
         };
@@ -498,10 +491,7 @@ impl SharedHost {
     /// belong to release/replacement. Empty when the Session has no environment or
     /// wrote nothing.
     pub async fn session_artifacts(&self, thread: &str) -> Vec<(String, String)> {
-        let env = {
-            let sessions = self.sessions.lock().await;
-            sessions.get(thread).map(|ctx| ctx.env.clone())
-        };
+        let env = self.session_environment(thread).await;
         let Some(env) = env else {
             return Vec::new();
         };

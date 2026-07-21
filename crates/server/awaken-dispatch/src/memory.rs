@@ -49,6 +49,9 @@ impl RowState {
 struct Row {
     request: RunDispatch,
     state: RowState,
+    /// Set before signalling a live attempt. It remains true across lease expiry
+    /// and recovery until the worker commits Cancelled and settles Done.
+    cancellation_requested: bool,
     lease: Option<Lease>,
     /// Consecutive crash-recoveries without a settle; reset when the run awaits.
     attempt_count: u64,
@@ -173,6 +176,19 @@ fn select_where(
             .any(|r| r.state == RowState::Leased && r.request.thread_id() == thread)
     };
 
+    // Cancellation is terminal control, not ordinary work. Once its owning lease
+    // is free, claim it before wakes/fresh runs so a superseding run cannot overtake
+    // the durable intent on the same thread.
+    for run in &state.order {
+        if let Some(row) = state.rows.get(run)
+            && row.cancellation_requested
+            && matches!(row.state, RowState::Pending | RowState::Awaiting)
+            && !thread_running(row.request.thread_id())
+        {
+            return Some(run.clone());
+        }
+    }
+
     // Recovery: re-own an expired-lease running row (first-match in enqueue order).
     for run in &state.order {
         if let Some(row) = state.rows.get(run)
@@ -237,10 +253,11 @@ fn runnable(state: &State, run_id: &RunId, now_ms: u64) -> Option<bool> {
         return None;
     }
     if row.state == RowState::Awaiting
-        && state
-            .pending
-            .iter()
-            .any(|pending| pending.input.run_id == *run_id && is_due(&pending.input, now_ms))
+        && (row.cancellation_requested
+            || state
+                .pending
+                .iter()
+                .any(|pending| pending.input.run_id == *run_id && is_due(&pending.input, now_ms)))
     {
         return Some(false);
     }
@@ -257,7 +274,7 @@ fn claim_exact(
 ) -> Option<Claimed> {
     let was_recovery = runnable(state, requested_run, now_ms)?;
     let run_id = requested_run.clone();
-    let (request, sandbox, lease) = {
+    let (request, sandbox, cancellation_requested, lease) = {
         let row = state.rows.get_mut(&run_id).expect("runnable row exists");
         row.lease_epoch += 1;
         let lease = Lease {
@@ -272,7 +289,12 @@ fn claim_exact(
         if was_recovery {
             row.attempt_count += 1;
         }
-        (row.request.clone(), row.sandbox.clone(), lease)
+        (
+            row.request.clone(),
+            row.sandbox.clone(),
+            row.cancellation_requested,
+            lease,
+        )
     };
     let pending = state
         .pending
@@ -283,6 +305,7 @@ fn claim_exact(
     Some(Claimed {
         request,
         lease,
+        cancellation_requested,
         pending,
         recovered: was_recovery,
         sandbox,
@@ -350,6 +373,7 @@ impl DispatchQueue for MemoryDispatchStore {
             for row in state.rows.values_mut() {
                 if *row.request.thread_id() == thread
                     && matches!(row.state, RowState::Pending | RowState::Awaiting)
+                    && !row.cancellation_requested
                 {
                     row.state = RowState::Superseded;
                     row.lease = None;
@@ -361,6 +385,7 @@ impl DispatchQueue for MemoryDispatchStore {
             Row {
                 request,
                 state: RowState::Pending,
+                cancellation_requested: false,
                 lease: None,
                 attempt_count: 0,
                 priority: options.priority,
@@ -399,6 +424,7 @@ impl DispatchQueue for MemoryDispatchStore {
                 Row {
                     request,
                     state: RowState::Pending,
+                    cancellation_requested: false,
                     lease: None,
                     attempt_count: 0,
                     priority: 0,
@@ -443,6 +469,7 @@ impl DispatchQueue for MemoryDispatchStore {
                 Row {
                     request,
                     state: RowState::Pending,
+                    cancellation_requested: false,
                     lease: None,
                     attempt_count: 0,
                     priority: 0,
@@ -506,14 +533,15 @@ impl DispatchQueue for MemoryDispatchStore {
             state.pending.push(PendingRow { input, revision: 1 });
         }
         if state.rows.get(&run_id).is_none_or(|row| {
-            can_assign(
-                worker,
-                &row.request.placement,
-                row.assignment.as_ref(),
-                row.sandbox.is_some(),
-                now_ms,
-            )
-            .is_err()
+            !row.cancellation_requested
+                && can_assign(
+                    worker,
+                    &row.request.placement,
+                    row.assignment.as_ref(),
+                    row.sandbox.is_some(),
+                    now_ms,
+                )
+                .is_err()
         }) {
             return Ok(None);
         }
@@ -539,50 +567,9 @@ impl DispatchQueue for MemoryDispatchStore {
         let Some(run_id) = select(&state, now_ms) else {
             return Ok(None);
         };
-
-        // A recovery pick (an expired-lease running row) spends one crash-retry;
-        // a fresh or wake pick does not.
-        let was_recovery = matches!(
-            state.rows.get(&run_id).map(|r| r.state),
-            Some(RowState::Leased)
-        );
-        let (request, sandbox, lease) = {
-            let row = state.rows.get_mut(&run_id).expect("picked row exists");
-            // Bump the fence token on every claim; the lease carries the new epoch.
-            row.lease_epoch += 1;
-            let lease = Lease {
-                run_id: run_id.clone(),
-                owner: owner.to_string(),
-                expires_ms: now_ms + lease_ms,
-                epoch: row.lease_epoch,
-            };
-            row.state = RowState::Leased;
-            row.lease = Some(lease.clone());
-            row.assignment = None;
-            if was_recovery {
-                row.attempt_count += 1;
-            }
-            (row.request.clone(), row.sandbox.clone(), lease)
-        };
-
-        // Hand the run's current pending input to the worker. It is not removed
-        // here: settle removes exactly what the worker reports it consumed, so a
-        // crash before settle leaves the input to be re-derived (ADR-0010).
-        let pending = state
-            .pending
-            .iter()
-            .filter(|p| p.input.run_id == run_id && is_due(&p.input, now_ms))
-            .map(|p| p.input.clone())
-            .collect();
-
-        Ok(Some(Claimed {
-            request,
-            lease,
-            pending,
-            recovered: was_recovery,
-            sandbox,
-            assignment: None,
-        }))
+        Ok(claim_exact(
+            &mut state, &run_id, owner, lease_ms, now_ms, None,
+        ))
     }
 
     async fn claim_compatible(
@@ -594,14 +581,15 @@ impl DispatchQueue for MemoryDispatchStore {
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
         let Some(run_id) = select_where(&state, now_ms, |row| {
-            can_assign(
-                worker,
-                &row.request.placement,
-                row.assignment.as_ref(),
-                row.sandbox.is_some(),
-                now_ms,
-            )
-            .is_ok()
+            row.cancellation_requested
+                || can_assign(
+                    worker,
+                    &row.request.placement,
+                    row.assignment.as_ref(),
+                    row.sandbox.is_some(),
+                    now_ms,
+                )
+                .is_ok()
         }) else {
             return Ok(None);
         };
@@ -627,6 +615,9 @@ impl DispatchQueue for MemoryDispatchStore {
         let mut state = lock(&self.state)?;
         let mut policy_error = None;
         let run_id = select_where(&state, now_ms, |row| {
+            if row.cancellation_requested {
+                return true;
+            }
             match policy_selects_requester(
                 &row.request,
                 policy.as_ref(),
@@ -691,14 +682,15 @@ impl DispatchQueue for MemoryDispatchStore {
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
         if state.rows.get(requested_run).is_none_or(|row| {
-            can_assign(
-                worker,
-                &row.request.placement,
-                row.assignment.as_ref(),
-                row.sandbox.is_some(),
-                now_ms,
-            )
-            .is_err()
+            !row.cancellation_requested
+                && can_assign(
+                    worker,
+                    &row.request.placement,
+                    row.assignment.as_ref(),
+                    row.sandbox.is_some(),
+                    now_ms,
+                )
+                .is_err()
         }) {
             return Ok(None);
         }
@@ -911,6 +903,7 @@ impl DispatchQueue for MemoryDispatchStore {
                     run_id: run.clone(),
                     thread_id: row.request.thread_id().clone(),
                     state: row.state.public(),
+                    cancellation_requested: row.cancellation_requested,
                     attempt_count: row.attempt_count,
                 })
             })
@@ -935,15 +928,22 @@ impl DispatchQueue for MemoryDispatchStore {
         let mut state = lock(&self.state)?;
         let cancellable = matches!(
             state.rows.get(run_id).map(|r| r.state),
-            Some(RowState::Pending | RowState::Awaiting)
+            Some(RowState::Pending | RowState::Awaiting | RowState::Leased)
         );
         if !cancellable {
             return Ok(None);
         }
-        let thread = state.rows[run_id].request.thread_id().clone();
-        state.rows.remove(run_id);
-        state.order.retain(|r| r != run_id);
-        state.pending.retain(|p| &p.input.run_id != run_id);
+        let row = state.rows.get_mut(run_id).expect("cancellable row exists");
+        let thread = row.request.thread_id().clone();
+        row.cancellation_requested = true;
+        if row.state == RowState::Leased {
+            // Revoke the in-flight authority immediately. The stale owner keeps its
+            // local cancellation token, but every later commit/settle under its old
+            // epoch is fenced while cancellation becomes claimable now.
+            row.state = RowState::Pending;
+            row.lease = None;
+            row.lease_epoch += 1;
+        }
         Ok(Some(thread))
     }
 
@@ -954,7 +954,9 @@ impl DispatchQueue for MemoryDispatchStore {
             .iter()
             .find(|run| {
                 state.rows.get(*run).is_some_and(|row| {
-                    row.state == RowState::Awaiting && row.request.thread_id() == thread_id
+                    row.state == RowState::Awaiting
+                        && !row.cancellation_requested
+                        && row.request.thread_id() == thread_id
                 })
             })
             .cloned())

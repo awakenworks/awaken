@@ -36,6 +36,50 @@ async fn adopt_bound_sandbox(
         return Ok((None, false));
     };
     let handle = decode_binding(encoded, expected_sandbox_id, run_id)?;
+    if let Some(environment) = host.session_environment(expected_sandbox_id).await {
+        let resident = environment.handle();
+        if resident != handle {
+            return Err(HostWorkerResolver::execution_error(format!(
+                "run {} is bound to sandbox {}, but resident session {} uses {}",
+                run_id.0, handle.sandbox_id, expected_sandbox_id, resident.sandbox_id
+            )));
+        }
+        match environment.status().await {
+            Ok(awaken_provisioning_contract::SandboxStatus::Ready) => {
+                // The environment registry, not SessionCtx, is the Session lifecycle
+                // owner. A runtime-context rebuild therefore reuses the live object
+                // and must not provider-adopt (which would spawn a second hand).
+                return Ok((None, false));
+            }
+            Ok(_) | Err(_)
+                if recovery
+                    == awaken_dispatch::WorkerRecoveryMode::RebuildFromCommittedTruth =>
+            {
+                if !host
+                    .discard_session_environment(expected_sandbox_id, &environment)
+                    .await
+                {
+                    return Err(HostWorkerResolver::execution_error(format!(
+                        "run {} lost the sandbox recovery fence for thread {}",
+                        run_id.0, expected_sandbox_id
+                    )));
+                }
+                return Ok((None, true));
+            }
+            Ok(status) => {
+                return Err(HostWorkerResolver::execution_error(format!(
+                    "run {} sandbox {} is not ready ({status:?})",
+                    run_id.0, handle.sandbox_id
+                )));
+            }
+            Err(error) => {
+                return Err(HostWorkerResolver::execution_error(format!(
+                    "run {} could not inspect sandbox {}: {error}",
+                    run_id.0, handle.sandbox_id
+                )));
+            }
+        }
+    }
     let adoption = async {
         let sandbox = host
             .session_provider
@@ -107,6 +151,53 @@ impl HostWorkerResolver {
                 Self::execution_error(format!("thread {} has no durable ingress", thread_id.0))
             })
     }
+
+    /// Resolve the terminal-control path without creating, adopting, or probing a
+    /// Session environment. Cancellation only needs the dispatch fence and the
+    /// thread commit boundary; making it depend on the run's model, credentials,
+    /// placement capabilities, or sandbox would let the failed dependency prevent
+    /// its own termination.
+    async fn cancellation_worker(
+        &self,
+        host: &SharedHost,
+        claimed: &awaken_dispatch::Claimed,
+    ) -> Result<Arc<awaken_dispatch::DispatchWorker<AnyDispatchStore>>, awaken_dispatch::Error>
+    {
+        let thread_id = claimed.request.session_thread_id();
+        if let Some(worker) = host
+            .sessions
+            .lock()
+            .await
+            .get(&thread_id.0)
+            .and_then(|ctx| ctx.durable_ingress.as_ref())
+            .map(|ingress| ingress.worker_handle())
+        {
+            return Ok(worker);
+        }
+
+        let commit = Arc::new(
+            host.build_commit(&thread_id.0)
+                .await
+                .map_err(|error| Self::execution_error(error.to_string()))?,
+        );
+        let store = crate::dispatch_backend::shared_durable_store(host.store_dir.as_deref())
+            .map_err(|error| Self::execution_error(error.to_string()))?;
+        let mut worker = awaken_dispatch::DispatchWorker::new(
+            Arc::new(awaken_runtime::Runtime::new()),
+            store,
+            commit,
+            claimed.lease.owner.clone(),
+        );
+        if let Some(upstream) = &host.upstream {
+            let mut remote = crate::commit_ingest::RemoteClaimedRunCommit::new(upstream.base_url())
+                .with_client(upstream.client().clone());
+            if let Some(identity) = upstream.worker_identity() {
+                remote = remote.with_worker_identity(identity.clone());
+            }
+            worker = worker.with_claimed_commit(Arc::new(remote));
+        }
+        Ok(Arc::new(worker))
+    }
 }
 
 #[async_trait::async_trait]
@@ -133,6 +224,9 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
     ) -> Result<Arc<awaken_dispatch::DispatchWorker<AnyDispatchStore>>, awaken_dispatch::Error>
     {
         let host = self.host()?;
+        if claimed.cancellation_requested {
+            return self.cancellation_worker(&host, claimed).await;
+        }
         let thread_id = claimed.request.session_thread_id();
         let agent_id = claimed.request.activation.snapshot.root_agent_id.0.as_str();
         let agent_id = (!agent_id.is_empty()).then_some(agent_id);
@@ -192,6 +286,10 @@ mod tests {
     use super::*;
     use awaken_runtime_contract::llm::{
         AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult,
+    };
+    use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
+    use awaken_runtime_contract::snapshot::{
+        AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
     };
 
     struct AdoptionModel;
@@ -283,5 +381,199 @@ mod tests {
             .is_err(),
             "continuity mode fails closed when the bound sandbox is gone"
         );
+    }
+
+    #[tokio::test]
+    async fn a_resident_environment_is_reused_without_a_second_adoption() {
+        let storage = tempfile::tempdir().expect("storage");
+        let thread = "thread-resident-adoption";
+        let host = SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
+        let ctx = host.ctx_for(thread, None).await.expect("resident session");
+        let handle = ctx.env.handle();
+        let encoded = serde_json::to_string(&handle).unwrap();
+
+        let (adopted, rebuild) = adopt_bound_sandbox(
+            &host,
+            Some(&encoded),
+            thread,
+            &RunId("resident-run".into()),
+            awaken_dispatch::WorkerRecoveryMode::RequireSandboxContinuity,
+        )
+        .await
+        .expect("resident handle is already adopted");
+
+        assert!(adopted.is_none(), "no duplicate environment wrapper");
+        assert!(!rebuild);
+        assert_eq!(host.session_environment_handle(thread).await, Some(handle));
+    }
+
+    #[tokio::test]
+    async fn a_dead_resident_environment_fails_continuity_and_is_fenced_before_rebuild() {
+        let storage = tempfile::tempdir().expect("storage");
+        let thread = "thread-dead-resident";
+        let host = SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
+        let ctx = host.ctx_for(thread, None).await.expect("resident session");
+        let handle = ctx.env.handle();
+        let encoded = serde_json::to_string(&handle).unwrap();
+        std::fs::remove_dir_all(storage.path().join("sandboxes").join(thread))
+            .expect("terminate local sandbox out of band");
+
+        let run = RunId("dead-resident-run".into());
+        assert!(
+            adopt_bound_sandbox(
+                &host,
+                Some(&encoded),
+                thread,
+                &run,
+                awaken_dispatch::WorkerRecoveryMode::RequireSandboxContinuity,
+            )
+            .await
+            .is_err(),
+            "continuity never silently replaces a dead resident sandbox"
+        );
+        assert_eq!(
+            host.session_environment_handle(thread).await,
+            Some(handle.clone()),
+            "a failed continuity check does not mutate the owner registry"
+        );
+
+        let (adopted, rebuild) = adopt_bound_sandbox(
+            &host,
+            Some(&encoded),
+            thread,
+            &run,
+            awaken_dispatch::WorkerRecoveryMode::RebuildFromCommittedTruth,
+        )
+        .await
+        .expect("explicit rebuild may discard the dead resident environment");
+        assert!(adopted.is_none());
+        assert!(rebuild);
+        assert!(host.session_environment(thread).await.is_none());
+        assert!(host.sessions.lock().await.get(thread).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_stale_binding_cannot_evict_a_different_resident_environment() {
+        let storage = tempfile::tempdir().expect("storage");
+        let thread = "thread-binding-fence";
+        let host = SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
+        let ctx = host.ctx_for(thread, None).await.expect("resident session");
+        let resident = ctx.env.handle();
+        let mut stale = resident.clone();
+        stale.extra = Some(serde_json::json!({"generation": "stale"}));
+        let encoded = serde_json::to_string(&stale).unwrap();
+
+        assert!(
+            adopt_bound_sandbox(
+                &host,
+                Some(&encoded),
+                thread,
+                &RunId("stale-binding-run".into()),
+                awaken_dispatch::WorkerRecoveryMode::RebuildFromCommittedTruth,
+            )
+            .await
+            .is_err(),
+            "rebuild mode cannot override the full-handle fence"
+        );
+        assert_eq!(
+            host.session_environment_handle(thread).await,
+            Some(resident)
+        );
+        assert!(host.sessions.lock().await.contains_key(thread));
+    }
+
+    #[tokio::test]
+    async fn an_aba_replacement_with_the_same_handle_survives_stale_discard() {
+        let storage = tempfile::tempdir().expect("storage");
+        let thread = "thread-environment-aba";
+        let host = SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
+        host.ctx_for(thread, None).await.expect("resident session");
+        let observed = host
+            .session_environment(thread)
+            .await
+            .expect("observed owner");
+        let replacement = Arc::new(
+            host.session_provider
+                .adopt(&observed.handle())
+                .await
+                .expect("same-handle replacement"),
+        );
+        assert_eq!(observed.handle(), replacement.handle());
+        assert!(!Arc::ptr_eq(&observed, &replacement));
+
+        host.sessions.lock().await.remove(thread);
+        host.session_environments
+            .lock()
+            .await
+            .insert(thread.into(), replacement.clone());
+
+        assert!(
+            !host.discard_session_environment(thread, &observed).await,
+            "object identity fences a stale observer even when the handle is reused"
+        );
+        let current = host
+            .session_environment(thread)
+            .await
+            .expect("replacement kept");
+        assert!(Arc::ptr_eq(&current, &replacement));
+    }
+
+    #[tokio::test]
+    async fn cancellation_resolution_does_not_touch_an_invalid_sandbox_binding() {
+        let storage = tempfile::tempdir().expect("storage");
+        let host = Arc::new(
+            SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()),
+        );
+        let thread = ThreadId("thread-control-only".to_string());
+        let run = RunId("run-control-only".to_string());
+        let fingerprint = CatalogFingerprint("control-only-catalog".to_string());
+        let activation = RunActivation::new(
+            run.clone(),
+            thread.clone(),
+            ExecutableAgentSnapshot {
+                id: ExecutableAgentSnapshotId("control-only-snapshot".to_string()),
+                metadata: Default::default(),
+                root_agent_id: AgentId("control-only-agent".to_string()),
+                resolved_spec: ResolvedSpec {
+                    model_candidates: Vec::new(),
+                    catalog_fingerprint: fingerprint.clone(),
+                    instructions: "test".to_string(),
+                    max_steps: 1,
+                    delegation_limits: Default::default(),
+                    model_binding: ModelBinding::new("provider", "model", "backend"),
+                    tool_descriptors: Vec::new(),
+                    plugin_ids: Vec::new(),
+                    plugin_config: Default::default(),
+                    context_policy: Default::default(),
+                    tool_presentation: Default::default(),
+                },
+                fingerprint,
+            },
+            Vec::new(),
+        );
+        let claimed = awaken_dispatch::Claimed {
+            request: awaken_dispatch::RunDispatch::new(activation),
+            lease: awaken_dispatch::Lease {
+                run_id: run,
+                owner: "control-owner".to_string(),
+                expires_ms: 100,
+                epoch: 2,
+            },
+            cancellation_requested: true,
+            pending: Vec::new(),
+            recovered: false,
+            sandbox: Some("this is deliberately not a sandbox handle".to_string()),
+            assignment: None,
+        };
+        let resolver = HostWorkerResolver {
+            host: Arc::downgrade(&host),
+        };
+
+        resolver
+            .worker_for_claimed(&claimed)
+            .await
+            .expect("terminal control bypasses sandbox decoding/adoption");
+        assert!(host.session_environment(&thread.0).await.is_none());
+        assert!(host.sessions.lock().await.get(&thread.0).is_none());
     }
 }

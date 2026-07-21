@@ -21,7 +21,7 @@ use awaken_agent_channel::AgentChannel;
 // Re-exported so a host composing an [`AgentSession`] can name the channel type without
 // a direct dependency on the foundational channel crate (crate-boundary compliant).
 pub use awaken_agent_channel::AgentChannel as AgentChannelType;
-use awaken_agent_contract::agent::awaiting::{AwaitReason, ResumeTicket};
+use awaken_agent_contract::agent::awaiting::{AwaitReason, PendingTool, ResumeTicket};
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::run::{EndCause, Failure, RunState};
@@ -307,6 +307,24 @@ impl RunExecutor for AcpRunExecutor {
         activation: RunActivation,
         context: RuntimeRunContext,
     ) -> Result<RunState> {
+        self.execute_with_permission_resume(activation, context, None)
+            .await
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PermissionResume {
+    call_id: String,
+    allow: bool,
+}
+
+impl AcpRunExecutor {
+    async fn execute_with_permission_resume(
+        &self,
+        activation: RunActivation,
+        context: RuntimeRunContext,
+        permission_resume: Option<PermissionResume>,
+    ) -> Result<RunState> {
         // Restore the CLI's portable session-home before launch and harvest it after,
         // so a local-dir CLI's session recovers across directories/machines. A
         // Gateway (server-side) or stateless adapter has no local session-home → the
@@ -315,7 +333,7 @@ impl RunExecutor for AcpRunExecutor {
         if let Some((key, plan)) = &home {
             self.session_home.restore(key, plan).await;
         }
-        let result = self.drive(activation, context).await;
+        let result = self.drive(activation, context, permission_resume).await;
         if let Some((key, plan)) = &home {
             self.session_home.harvest(key, plan).await;
         }
@@ -344,17 +362,53 @@ impl RunAttemptExecutor for AcpRunExecutor {
                 "ACP activation does not match the resumed Run".to_string(),
             ));
         }
-        let ResumeResult::Input(input) = command.result else {
-            return Err(Error::Execution(
-                "ACP currently resumes only operator/input waits".to_string(),
-            ));
-        };
-        activation.input = vec![Message::text(
-            MessageId(format!("acp-resume-{}", command.correlation_id)),
-            Role::User,
-            input,
-        )];
-        self.execute(activation, context).await
+        match command.result {
+            ResumeResult::Input(input) if ticket.reason == AwaitReason::ManualPause => {
+                activation.input = vec![Message::text(
+                    MessageId(format!("acp-resume-{}", command.correlation_id)),
+                    Role::User,
+                    input,
+                )];
+                self.execute_with_permission_resume(activation, context, None)
+                    .await
+            }
+            ResumeResult::Decision { allow, note }
+                if ticket.reason == AwaitReason::ToolPermission =>
+            {
+                let call_id = ticket.call_id.clone().ok_or_else(|| {
+                    Error::Execution("ACP permission ticket has no tool call id".to_string())
+                })?;
+                let pending = ticket.pending_tool.as_ref().ok_or_else(|| {
+                    Error::Execution("ACP permission ticket has no pending tool".to_string())
+                })?;
+                let decision = if allow { "approved" } else { "denied" };
+                let suffix = note
+                    .filter(|value| !value.trim().is_empty())
+                    .map(|value| format!(" Reason: {value}"))
+                    .unwrap_or_default();
+                // Resume the loaded ACP session with a new, explicit continuation
+                // turn. Replaying the original user prompt could duplicate all work
+                // before the permission boundary; this asks the agent to continue
+                // and the one-shot resolver below answers the repeated tool ask.
+                activation.input = vec![Message::text(
+                    MessageId(format!("acp-permission-{}", command.correlation_id)),
+                    Role::User,
+                    format!(
+                        "The pending {} request ({call_id}) was {decision}.{suffix} Continue from the permission boundary.",
+                        pending.tool_id
+                    ),
+                )];
+                self.execute_with_permission_resume(
+                    activation,
+                    context,
+                    Some(PermissionResume { call_id, allow }),
+                )
+                .await
+            }
+            _ => Err(Error::Execution(
+                "ACP resume result does not match the committed wait reason".to_string(),
+            )),
+        }
     }
 }
 
@@ -401,6 +455,7 @@ impl AcpRunExecutor {
         &self,
         activation: RunActivation,
         context: RuntimeRunContext,
+        permission_resume: Option<PermissionResume>,
     ) -> Result<RunState> {
         // Lifecycle bring-up (observed for UI progress): an npx-wrapped adapter may
         // dynamically install on a cold cache (the slow step) before it launches.
@@ -464,6 +519,9 @@ impl AcpRunExecutor {
         // handshake. One relaunch is safe only before `session/new` returned an id:
         // the user prompt has not been sent and no agent fact can have happened.
         let mut handshake_retry_used = false;
+        let resumed_permission = permission_resume
+            .as_ref()
+            .map(|decision| ResumedPermissionResolver::new(self.permission.as_ref(), decision));
 
         loop {
             let mut appender = CollectingAppender::default();
@@ -488,7 +546,12 @@ impl AcpRunExecutor {
             };
 
             let process = session.process.clone();
-            let mut config = TurnConfig::new(self.permission.as_ref());
+            let permission = resumed_permission
+                .as_ref()
+                .map_or(self.permission.as_ref(), |resolver| {
+                    resolver as &dyn PermissionResolver
+                });
+            let mut config = TurnConfig::new(permission);
             config.mcp_servers = session.mcp_session_servers.clone();
             config.session_id = acp_session_id.take();
             config.session_mode = self.session_mode.clone();
@@ -558,6 +621,43 @@ impl AcpRunExecutor {
                         }
                     };
                     continue;
+                }
+                Err(AcpError::PermissionAwait {
+                    correlation_id,
+                    ask,
+                }) => {
+                    committed.extend(appender.messages);
+                    let ticket = ResumeTicket {
+                        correlation_id,
+                        run_id: run_id.clone(),
+                        thread_id: activation.thread_id.clone(),
+                        snapshot_id: activation.snapshot.id.0.clone(),
+                        catalog_fingerprint: activation.snapshot.fingerprint.0.clone(),
+                        delegation_origin: activation.delegation_origin.clone(),
+                        reason: AwaitReason::ToolPermission,
+                        call_id: Some(ask.call_id.clone()),
+                        pending_tool: Some(PendingTool {
+                            tool_id: ask.tool,
+                            arguments: ask.arguments,
+                        }),
+                        deadline_ms: None,
+                    };
+                    let disposition = RunDisposition::awaiting(ticket);
+                    let state = disposition.state();
+                    commit(
+                        &context,
+                        &activation.thread_id,
+                        disposition,
+                        committed,
+                        run_state(
+                            &run_usage,
+                            &model_ref,
+                            &backend_ref,
+                            acp_session_id.as_deref(),
+                        ),
+                    )
+                    .await?;
+                    return Ok(state);
                 }
                 // A driver error mid-turn: classify it (oversight taxonomy), surface
                 // its prompt, commit everything so far + the error turn, and end. No
@@ -858,9 +958,48 @@ impl PermissionResolver for NeutralPermissionResolver {
         };
         match self.policy.evaluate(&ctx).await {
             ToolPermissionVerdict::Allow => PermissionVerdict::Allow,
-            ToolPermissionVerdict::Deny { .. }
-            | ToolPermissionVerdict::RequireConfirmation { .. } => PermissionVerdict::Deny,
+            ToolPermissionVerdict::Deny { .. } => PermissionVerdict::Deny,
+            ToolPermissionVerdict::RequireConfirmation { correlation_id } => {
+                PermissionVerdict::Await { correlation_id }
+            }
         }
+    }
+}
+
+/// One resumed durable decision, scoped to the exact ACP tool call held by the
+/// committed ticket. Any different request still goes through current policy, so
+/// a resume cannot widen authority to later calls.
+struct ResumedPermissionResolver<'a> {
+    base: &'a dyn PermissionResolver,
+    decision: &'a PermissionResume,
+    consumed: std::sync::atomic::AtomicBool,
+}
+
+impl<'a> ResumedPermissionResolver<'a> {
+    fn new(base: &'a dyn PermissionResolver, decision: &'a PermissionResume) -> Self {
+        Self {
+            base,
+            decision,
+            consumed: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+}
+
+#[async_trait]
+impl PermissionResolver for ResumedPermissionResolver<'_> {
+    async fn resolve(&self, ask: &PermissionAsk) -> PermissionVerdict {
+        if ask.call_id == self.decision.call_id
+            && !self
+                .consumed
+                .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            return if self.decision.allow {
+                PermissionVerdict::Allow
+            } else {
+                PermissionVerdict::Deny
+            };
+        }
+        self.base.resolve(ask).await
     }
 }
 

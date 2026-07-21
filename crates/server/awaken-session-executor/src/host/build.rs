@@ -163,6 +163,7 @@ impl SharedHost {
             plugin_ids: Vec::new(),
             plugin_config: std::collections::BTreeMap::new(),
             sessions: tokio::sync::Mutex::new(HashMap::new()),
+            session_environments: tokio::sync::Mutex::new(HashMap::new()),
             hub: Arc::new(ThreadEventHub::new()),
             // `with_store_dir` still overrides this environment-derived default.
             store_dir: store_dir.clone(),

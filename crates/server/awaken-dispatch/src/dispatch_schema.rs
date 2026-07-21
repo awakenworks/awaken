@@ -101,6 +101,10 @@ const FILES: &[(&str, &str)] = &[
         "V0019__stream_checkpoint.sql",
         include_str!("migrations/V0019__stream_checkpoint.sql"),
     ),
+    (
+        "V0020__durable_cancellation_intent.sql",
+        include_str!("migrations/V0020__durable_cancellation_intent.sql"),
+    ),
 ];
 
 /// Parse the version from a `Vnnnn__slug.sql` file name (`V0004__…` ⇒ 4). A name
@@ -161,7 +165,7 @@ mod tests {
         // Historical migrations remain immutable. V0016 removes V0015's obsolete
         // standalone delegation table after state ownership moved into ThreadCommit.
         let versions: Vec<i64> = bundle.migrations().iter().map(|m| m.version()).collect();
-        assert_eq!(versions, (1..=19).collect::<Vec<_>>());
+        assert_eq!(versions, (1..=20).collect::<Vec<_>>());
     }
 
     #[test]

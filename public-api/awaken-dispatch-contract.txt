@@ -49,6 +49,7 @@ impl awaken_dispatch_contract::dispatch::SettleOutcome
 pub fn awaken_dispatch_contract::dispatch::SettleOutcome::applied(self) -> bool
 pub struct awaken_dispatch_contract::dispatch::Claimed
 pub awaken_dispatch_contract::dispatch::Claimed::assignment: core::option::Option<awaken_worker_contract::WorkerAssignment>
+pub awaken_dispatch_contract::dispatch::Claimed::cancellation_requested: bool
 pub awaken_dispatch_contract::dispatch::Claimed::lease: awaken_dispatch_contract::dispatch::Lease
 pub awaken_dispatch_contract::dispatch::Claimed::pending: alloc::vec::Vec<awaken_dispatch_contract::dispatch::PendingInput>
 pub awaken_dispatch_contract::dispatch::Claimed::recovered: bool
@@ -62,6 +63,7 @@ pub awaken_dispatch_contract::dispatch::DispatchCompletion::run_id: awaken_agent
 pub awaken_dispatch_contract::dispatch::DispatchCompletion::sequence: u64
 pub struct awaken_dispatch_contract::dispatch::DispatchSummary
 pub awaken_dispatch_contract::dispatch::DispatchSummary::attempt_count: u64
+pub awaken_dispatch_contract::dispatch::DispatchSummary::cancellation_requested: bool
 pub awaken_dispatch_contract::dispatch::DispatchSummary::run_id: awaken_agent_contract::agent::run::Id
 pub awaken_dispatch_contract::dispatch::DispatchSummary::state: awaken_dispatch_contract::dispatch::DispatchState
 pub awaken_dispatch_contract::dispatch::DispatchSummary::thread_id: awaken_agent_contract::agent::thread::Id
@@ -175,6 +177,7 @@ impl awaken_dispatch_contract::dispatch::SettleOutcome
 pub fn awaken_dispatch_contract::dispatch::SettleOutcome::applied(self) -> bool
 pub struct awaken_dispatch_contract::Claimed
 pub awaken_dispatch_contract::Claimed::assignment: core::option::Option<awaken_worker_contract::WorkerAssignment>
+pub awaken_dispatch_contract::Claimed::cancellation_requested: bool
 pub awaken_dispatch_contract::Claimed::lease: awaken_dispatch_contract::dispatch::Lease
 pub awaken_dispatch_contract::Claimed::pending: alloc::vec::Vec<awaken_dispatch_contract::dispatch::PendingInput>
 pub awaken_dispatch_contract::Claimed::recovered: bool
@@ -188,6 +191,7 @@ pub awaken_dispatch_contract::DispatchCompletion::run_id: awaken_agent_contract:
 pub awaken_dispatch_contract::DispatchCompletion::sequence: u64
 pub struct awaken_dispatch_contract::DispatchSummary
 pub awaken_dispatch_contract::DispatchSummary::attempt_count: u64
+pub awaken_dispatch_contract::DispatchSummary::cancellation_requested: bool
 pub awaken_dispatch_contract::DispatchSummary::run_id: awaken_agent_contract::agent::run::Id
 pub awaken_dispatch_contract::DispatchSummary::state: awaken_dispatch_contract::dispatch::DispatchState
 pub awaken_dispatch_contract::DispatchSummary::thread_id: awaken_agent_contract::agent::thread::Id

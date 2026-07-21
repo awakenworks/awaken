@@ -211,6 +211,52 @@ async fn sqlite_dispatch_opens_a_file_and_persists() {
     let _ = std::fs::remove_file(&path);
 }
 
+#[tokio::test]
+async fn cancellation_intent_survives_restart_and_reconciles_to_terminal() {
+    let base = std::env::temp_dir().join(format!(
+        "awaken_sqlite_cancel_recovery_{}_{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let dispatch_path = base.with_extension("dispatch.db");
+    let commit_path = base.with_extension("commit.db");
+    let dispatch_path = dispatch_path.to_string_lossy().into_owned();
+    let commit_path = commit_path.to_string_lossy().into_owned();
+    let _ = std::fs::remove_file(&dispatch_path);
+    let _ = std::fs::remove_file(&commit_path);
+    let run = RunId("cancel-after-restart".to_string());
+
+    {
+        let store = SqliteDispatchStore::open(&dispatch_path).expect("first process store");
+        store
+            .enqueue(RunDispatch::new(activation("cancel-after-restart")))
+            .await
+            .unwrap();
+        assert!(store.cancel(&run).await.unwrap().is_some());
+        // Process crashes here: no terminal commit and no settlement.
+    }
+
+    let store = Arc::new(SqliteDispatchStore::open(&dispatch_path).expect("restarted store"));
+    let commit = Arc::new(SqliteCommitCoordinator::open(&commit_path).expect("commit store"));
+    let ingress = DurableRunIngress::new(harness::text_runtime(), store.clone(), commit.clone());
+    assert_eq!(
+        ingress.recover(0).await.expect("reconcile cancellation"),
+        vec![(run.clone(), RunState::Ended(EndCause::Cancelled))]
+    );
+    assert!(store.list_dispatches().await.unwrap().is_empty());
+    assert_eq!(
+        RunStore::get(commit.as_ref(), &run)
+            .expect("terminal record")
+            .state,
+        RunState::Ended(EndCause::Cancelled)
+    );
+    drop(ingress);
+    drop(store);
+    drop(commit);
+    let _ = std::fs::remove_file(&dispatch_path);
+    let _ = std::fs::remove_file(&commit_path);
+}
+
 #[test]
 fn latest_schema_removes_the_obsolete_delegation_table() {
     use rusqlite::OptionalExtension as _;

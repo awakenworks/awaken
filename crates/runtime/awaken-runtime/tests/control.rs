@@ -281,7 +281,7 @@ async fn direct_ingress_cancel_on_unknown_run_is_not_active() {
     let runtime = Arc::new(Runtime::new().with_llm(Arc::new(TextLlm)));
     let ingress = DirectRunIngress::new(runtime);
     assert_eq!(
-        ingress.cancel(&RunId("ghost".to_string())),
+        ingress.cancel(&RunId("ghost".to_string())).await,
         Err(ControlError::NotActive)
     );
 }
