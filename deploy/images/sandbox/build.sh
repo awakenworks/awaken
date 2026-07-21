@@ -6,7 +6,9 @@ set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/../../.." && pwd)
 image=${1:-awaken-sandbox:local}
-packages=${2:-"@agentclientprotocol/claude-agent-acp@0.44 @agentclientprotocol/codex-acp@1.1 @google/gemini-cli@0.11 opencode-ai@0.6"}
+# `${2-...}` intentionally distinguishes an omitted package list (production
+# defaults) from an explicitly empty one (hermetic transport/E2E fixture image).
+packages=${2-"@agentclientprotocol/claude-agent-acp@0.44 @agentclientprotocol/codex-acp@1.1 @google/gemini-cli@0.11 opencode-ai@0.6"}
 engine=${CONTAINER_ENGINE:-docker}
 staged="$repo/deploy/images/sandbox/.awaken-sandbox.bin"
 cleanup() { rm -f "$staged"; }

@@ -26,7 +26,9 @@ RUN apt-get update \
 # these in lockstep with acp_cli.rs. A worker image may deliberately narrow this list
 # (for example a Codex-only pool) through the build arg; the default remains complete.
 ARG ACP_NPM_PACKAGES="@agentclientprotocol/claude-agent-acp@0.44 @agentclientprotocol/codex-acp@1.1 @google/gemini-cli@0.11 opencode-ai@0.6"
-RUN npm install -g --no-audit --no-fund ${ACP_NPM_PACKAGES} \
+RUN if [ -n "${ACP_NPM_PACKAGES}" ]; then \
+      npm install -g --no-audit --no-fund ${ACP_NPM_PACKAGES}; \
+    fi \
     && npm cache clean --force
 
 # The execution-plane binary (host-built with `hand`) supplies both the ACP bridge

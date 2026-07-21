@@ -3,11 +3,10 @@
 // The deepest sandbox seam: an ACP agent running as a **process-as-container** in a
 // real Docker container, driven end-to-end through the managed protocol. The brain
 // (scenario-host, `AWAKEN_MODEL_MODE=acp-container`, built `--features container-docker`)
-// realizes each turn's agent as a container running a deterministic busybox `nc`
-// fixture (the same newline-wire double the k8s adapter e2e bakes — no LLM/key needed),
-// publishes + dials its port, and round-trips the turn. Seeing the fixture's marker in
-// the agent's reply proves: external SDK -> managed session -> container create
-// (process-as-container) -> agent wire exchange -> response, all through real Docker.
+// creates one Session-owned environment, starts the production hand in it, and execs
+// a deterministic newline ACP fixture in that SAME environment. Seeing the fixture's
+// marker proves: external SDK -> managed session -> environment create -> bound ACP
+// exec -> response; inspecting the container proves no per-attempt environment exists.
 //
 // The k8s POD mechanics of the same seam are covered by the k8s adapter e2e
 // (`awaken-sandbox-container/tests/k8s_e2e.rs`) + the k3d topology e2e; Docker keeps
@@ -17,28 +16,42 @@
 
 import assert from 'node:assert/strict';
 import net from 'node:net';
-import { spawn, execSync, spawnSync } from 'node:child_process';
+import { spawn, execFileSync, execSync, spawnSync } from 'node:child_process';
 import Anthropic from '@anthropic-ai/sdk';
 import { REPO_ROOT } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38143);
 const BETAS = ['managed-agents-2026-04-01'];
-const MARKER = 'CONTAINER-AGENT-OK'; // must match build_acp_container_router's fixture
-const IMAGE = 'awaken-bb:1';
+const MARKER = 'CONTAINER-AGENT-OK';
+const IMAGE = process.env.AWAKEN_TEST_SESSION_IMAGE ?? 'awaken-sandbox:session-e2e';
+const ACP_FIXTURE = `process.stdin.once('data',()=>{console.log(JSON.stringify({type:'message',text:'${MARKER}'}));console.log(JSON.stringify({type:'turn_end',reason:'natural_end'}))})`;
 
 function dockerAvailable() {
   return spawnSync('docker', ['version'], { stdio: 'ignore' }).status === 0;
 }
 
-// The busybox fixture image the container agent runs in — busybox provides `nc`/`sh`.
-// Built by commit (no Dockerfile context needed), mirroring the k8s adapter e2e.
-function ensureFixtureImage() {
+function testContainers({ all = false } = {}) {
+  const args = ['ps'];
+  if (all) args.push('-a');
+  args.push('-q', '--filter', 'label=awaken.sandbox=1', '--filter', `ancestor=${IMAGE}`);
+  return execFileSync('docker', args, { encoding: 'utf8' }).trim().split(/\s+/).filter(Boolean);
+}
+
+function cleanupTestContainers() {
+  const containers = testContainers({ all: true });
+  if (containers.length > 0) spawnSync('docker', ['rm', '-f', ...containers], { stdio: 'ignore' });
+}
+
+// Build the canonical production image, but omit network-fetched ACP packages: this
+// hermetic scenario supplies a tiny Node newline fixture through AWAKEN_ACP_ARGV.
+// The image still contains the real `awaken-sandbox hand --stdio` binary.
+function ensureSessionImage() {
   if (spawnSync('docker', ['image', 'inspect', IMAGE], { stdio: 'ignore' }).status === 0) return;
-  execSync('docker pull -q busybox:1.36', { stdio: 'ignore' });
-  spawnSync('docker', ['rm', '-f', 'awaken-bb-tmp'], { stdio: 'ignore' });
-  execSync('docker create --name awaken-bb-tmp busybox:1.36 true', { stdio: 'ignore' });
-  execSync(`docker commit awaken-bb-tmp ${IMAGE}`, { stdio: 'ignore' });
-  spawnSync('docker', ['rm', '-f', 'awaken-bb-tmp'], { stdio: 'ignore' });
+  execFileSync('deploy/images/sandbox/build.sh', [IMAGE, ''], {
+    cwd: REPO_ROOT,
+    env: process.env,
+    stdio: 'inherit',
+  });
 }
 
 // Build the brain WITH the container-docker feature (the shared harness builds default
@@ -85,7 +98,8 @@ async function main() {
     console.log('E2E SKIP: no reachable Docker daemon.');
     return;
   }
-  ensureFixtureImage();
+  ensureSessionImage();
+  cleanupTestContainers();
   const bin = buildBrain();
   const addr = `127.0.0.1:${PORT}`;
   const brain = spawn(bin, {
@@ -93,7 +107,9 @@ async function main() {
       ...process.env,
       AWAKEN_HTTP_ADDR: addr,
       AWAKEN_MODEL_MODE: 'acp-container',
-      AWAKEN_SANDBOX_IMAGE: IMAGE,
+      AWAKEN_CONTAINER_IMAGE: IMAGE,
+      AWAKEN_SANDBOX_TIER: 'docker',
+      AWAKEN_ACP_ARGV: `node -e ${ACP_FIXTURE}`,
       // Disable the reaper's periodic sweep noise during the short test; the startup
       // sweep still runs (proving it is harmless with no leaked containers present).
       AWAKEN_SANDBOX_REAP_INTERVAL: '3600',
@@ -105,11 +121,9 @@ async function main() {
     await waitForPort(PORT);
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://${addr}` });
 
-    // No `awaken.runtime` metadata: the brain is a single-purpose ACP deployment
-    // (its default backend IS the containerized ACP agent), so the session routes
-    // there from the DEPLOYMENT config, not a client-supplied per-session knob.
     const session = await client.beta.sessions.create({
       agent: 'assistant',
+      metadata: { 'awaken.runtime': 'acp:custom' },
       environment_id: 'env_local',
       betas: BETAS,
     });
@@ -129,11 +143,15 @@ async function main() {
       `the containerized agent's reply must round-trip to the SDK: ${JSON.stringify(events)}`,
     );
 
+    const containers = testContainers();
+    assert.equal(containers.length, 1, 'the Session must own one shared container, not one per attempt');
+
     console.log(
-      'E2E PASS: container agent — a managed turn launched a process-as-container agent in real Docker and its newline-wire reply round-tripped to the external SDK.',
+      'E2E PASS: container agent — managed ACP and the hand shared one Session-owned Docker environment and the reply round-tripped to the external SDK.',
     );
   } finally {
     brain.kill('SIGINT');
+    cleanupTestContainers();
   }
 }
 
