@@ -242,6 +242,22 @@ fn in_memory_management_stores() -> ManagementStores {
     }
 }
 
+/// Keep the Managed Session aggregate durable whenever the runtime itself is
+/// durable, even when the rest of the management plane intentionally remains
+/// ephemeral. A restarted runtime can only rehydrate a governed Session when its
+/// configuration and owner fence survive beside the committed thread facts.
+fn management_stores_for_runtime_storage(
+    storage_dir: Option<&std::path::Path>,
+) -> ManagementStores {
+    let mut stores = in_memory_management_stores();
+    let Some(dir) = storage_dir else {
+        return stores;
+    };
+    stores.workspace_root = Some(dir.to_path_buf());
+    stores.sessions = awaken_runtime_host::local_managed_session_repository(Some(dir));
+    stores
+}
+
 /// Durable management stores under `dir` (created if absent), ADR-0043
 /// sqlite-repos: one SQLite file per domain bundle (`catalog.db` / `credential.db`
 /// / `admin.db` / `sessions.db` / `config.db`), secrets AEAD-sealed under `key`.
@@ -654,8 +670,9 @@ pub async fn build_management_router_with_fallback(
             .await
         }
         None => {
+            let deployment = awaken_runtime_host::DeploymentConfig::from_env();
             management_router_over(
-                in_memory_management_stores(),
+                management_stores_for_runtime_storage(deployment.storage_dir.as_deref()),
                 iam,
                 remote_iam,
                 fallback_model,
@@ -1195,3 +1212,51 @@ fn local_org_id() -> String {
 
 // The seal-key resolution tests moved to `awaken_credential_vault::sealed`, the
 // single home of `resolve_seal_key_hex` / `parse_seal_key`.
+
+#[cfg(test)]
+mod runtime_session_store_tests {
+    use super::*;
+    use awaken_protocol_managed::PersistedSession;
+
+    fn session(id: &str) -> PersistedSession {
+        PersistedSession {
+            session_id: id.to_string(),
+            agent_id: "assistant".to_string(),
+            model: "test-model".to_string(),
+            title: None,
+            metadata: Default::default(),
+            environment_id: "env_local".to_string(),
+            mcp_servers: Vec::new(),
+            effective_inputs: Default::default(),
+            status: "idle".to_string(),
+            archived_at: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_storage_reopens_the_session_and_its_owner_fence() {
+        let dir = tempfile::tempdir().expect("temporary runtime storage");
+        {
+            let stores = management_stores_for_runtime_storage(Some(dir.path()));
+            stores
+                .sessions
+                .save_owned("workspace-a", session("sesn-restart"))
+                .await;
+        }
+
+        let reopened = management_stores_for_runtime_storage(Some(dir.path()));
+        assert_eq!(
+            reopened.sessions.owner("sesn-restart").await.as_deref(),
+            Some("workspace-a")
+        );
+        assert_eq!(
+            reopened
+                .sessions
+                .get("sesn-restart")
+                .await
+                .expect("session survives restart")
+                .model,
+            "test-model"
+        );
+    }
+}

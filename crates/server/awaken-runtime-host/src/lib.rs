@@ -147,6 +147,24 @@ pub use awaken_env_store::{PostgresEnvRegistry, SqliteEnvRegistry};
 // stores/ leaf); re-exported so composition roots keep their import paths.
 pub use awaken_run_ingress::{HttpDispatchQueue, worker_dispatch_store};
 pub use awaken_session_store::{PostgresManagedSessionRepository, SqliteManagedSessionRepository};
+
+/// Select the local Managed Session repository from the runtime durability root.
+/// Session configuration and its owner fence must survive whenever committed Run
+/// facts survive; otherwise restart rehydration would recover execution without
+/// recovering the authority that governs it.
+pub fn local_managed_session_repository(
+    storage_dir: Option<&std::path::Path>,
+) -> Arc<dyn awaken_protocol_managed::ManagedSessionRepository> {
+    let Some(dir) = storage_dir else {
+        return Arc::new(awaken_session_store::InMemorySessionRepository::default());
+    };
+    std::fs::create_dir_all(dir).expect("create runtime storage directory");
+    let path = dir.join("sessions.db");
+    Arc::new(
+        SqliteManagedSessionRepository::open(&path.to_string_lossy())
+            .expect("open sessions.db under runtime storage directory"),
+    )
+}
 // The durable WorkQueue backends now live in `awaken-work-store` (a stores/ leaf);
 // re-exported so composition roots keep using `awaken_runtime_host::{Sqlite,Postgres}WorkQueue`.
 pub use awaken_work_store::{PostgresWorkQueue, SqliteWorkQueue};
