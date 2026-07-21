@@ -1131,6 +1131,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn exec_completion_join_failures_and_signal_transport_fail_closed() {
+        let aborted_wait = tokio::spawn(std::future::pending::<Option<Status>>());
+        aborted_wait.abort();
+        let process = exec_process(Some(aborted_wait));
+        assert!(process.wait().await.is_err());
+
+        let aborted_poll = tokio::spawn(std::future::pending::<Option<Status>>());
+        aborted_poll.abort();
+        tokio::task::yield_now().await;
+        let process = exec_process(Some(aborted_poll));
+        assert!(process.poll().await.is_err());
+
+        let process = exec_process(None);
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            process.signal(pc::Signal::Kill),
+        )
+        .await
+        .expect("unreachable test API must fail promptly");
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn exec_admission_and_argv_materialization_cover_all_command_boundaries() {
+        assert!(k8s_exec_argv("empty", pc::Command::new(Vec::<String>::new())).is_err());
+
+        let mut secret = pc::Command::new(["echo", "value"]);
+        secret.env.push(pc::EnvVar {
+            name: "TOKEN".into(),
+            value: pc::EnvValue::Secret {
+                reference: "credential://test".into(),
+            },
+            visibility: pc::EnvVisibility::Process,
+        });
+        assert!(k8s_exec_argv("secret", secret).is_err());
+
+        let mut inline = pc::Command::new(["echo", "value"]);
+        inline.cwd = "/workspace".into();
+        inline.env.push(pc::EnvVar {
+            name: "MODE".into(),
+            value: pc::EnvValue::Inline {
+                value: "test".into(),
+            },
+            visibility: pc::EnvVisibility::Process,
+        });
+        let (pid_file, argv) = k8s_exec_argv("inline", inline).unwrap();
+        assert_eq!(pid_file, "/tmp/inline.pid");
+        assert!(argv.iter().any(|value| value == "MODE=test"));
+        assert!(argv.iter().any(|value| value == "/workspace"));
+
+        let rt = K8sRuntime::for_test("127.0.0.1:9000".parse().unwrap());
+        let mut piped = pc::Command::new(["echo", "value"]);
+        piped.stdio = pc::Stdio::Piped;
+        assert!(rt.spawn("pod", piped).await.is_err());
+        assert!(
+            rt.spawn_agent("pod", pc::Command::new(Vec::<String>::new()))
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
     async fn builder_methods_set_every_field_and_pod_delegates_to_build_pod() {
         let rt = K8sRuntime::for_test("127.0.0.1:9000".parse().unwrap())
             .with_memoryd_fuse(true)
