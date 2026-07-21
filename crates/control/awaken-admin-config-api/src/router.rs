@@ -14,9 +14,9 @@ use std::sync::Arc;
 use awaken_agent_contract::RedactedString;
 use awaken_api_contract::{ApiError, PROBLEM_JSON_CONTENT_TYPE, REQUEST_ID_HEADER};
 use awaken_config_resolver::{
-    AgentMcpConfig, AgentResourceConfig, InferenceProfile, InferenceProfileStore, McpServerDef,
-    McpServerId, McpStore, ResolveError, ResolvedInference, ResourceStore, SourceLookup,
-    cooldown_deadline, resolve_inference, resolve_mcp_servers, resolve_profile,
+    AgentInputBindingRepository, AgentMcpConfig, AgentResourceConfig, InferenceProfile,
+    InferenceProfileStore, McpServerDef, McpServerId, McpStore, ResolveError, ResolvedInference,
+    SourceLookup, cooldown_deadline, resolve_inference, resolve_mcp_servers, resolve_profile,
     resolve_profile_candidates,
 };
 use awaken_credential_vault::repo::{CredentialRepo, enter_credential};
@@ -53,7 +53,7 @@ pub struct AdminState {
     /// Per-agent [`AgentResourceConfig`] bindings (ADR-0038): which resources an
     /// agent mounts. Rendered into the agent's system prompt at compile (A3a) and
     /// realized into the sandbox at run bind time.
-    pub resources: Arc<dyn ResourceStore>,
+    pub resources: Arc<dyn AgentInputBindingRepository>,
     /// Optional live credential validator. When wired (server-local injects a
     /// provider-genai probe), `POST /credentials/:id/validate` performs a real probe;
     /// otherwise it reports `unknown` (the model SDK never enters this CRUD crate —
@@ -915,10 +915,11 @@ async fn put_agent_resource(
     Json(mut config): Json<AgentResourceConfig>,
 ) -> Json<AgentResourceConfig> {
     config.agent_id = agent_id;
-    let workspace = scope.map_or_else(String::new, |Extension(scope)| scope.0);
-    state
-        .resources
-        .put_agent_resource_in(&workspace, config.clone());
+    let workspace = scope.map_or_else(
+        || awaken_tenancy::DEFAULT_WORKSPACE_ID.to_string(),
+        |Extension(scope)| scope.0,
+    );
+    state.resources.put_agent_inputs(&workspace, config.clone());
     Json(config)
 }
 
@@ -928,10 +929,13 @@ async fn get_agent_resource(
     Path(agent_id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<AgentResourceConfig>, Problem> {
-    let workspace = scope.map_or_else(String::new, |Extension(scope)| scope.0);
+    let workspace = scope.map_or_else(
+        || awaken_tenancy::DEFAULT_WORKSPACE_ID.to_string(),
+        |Extension(scope)| scope.0,
+    );
     state
         .resources
-        .get_agent_resource_in(&workspace, &agent_id)
+        .get_agent_inputs(&workspace, &agent_id)
         .map(Json)
         .ok_or_else(|| agent_resource_missing(&agent_id, &req_id(&headers)))
 }

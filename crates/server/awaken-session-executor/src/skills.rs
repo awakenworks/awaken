@@ -21,11 +21,13 @@ use awaken_runtime_contract::permission::ToolGateHook;
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
 use awaken_sandbox_local::{LocalProvider, LocalSandbox};
+use awaken_skill_store::SkillVersion;
 
 /// The default workspace subdir the agent authors skills under, scanned live so a
 /// skill written this run is discovered (ADR-0036 D8). A hand/agent definition can
 /// negotiate a different dir via its `plugin_config.skills_dir`; this is the fallback.
 pub(crate) const DEFAULT_SKILLS_SUBDIR: &str = "skills";
+const DELIVERED_SKILLS_SUBDIR: &str = ".skills";
 
 /// Bridges the sandbox [`LocalSandbox`] to the [`SkillSource`] port: scans the
 /// workspace skill dir live, returning neutral file data. The host owns this bridge
@@ -139,7 +141,7 @@ pub(crate) struct SkillWiring {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn wire_skills(
     configured: &[SkillSpec],
-    delivered: Option<Vec<(String, String)>>,
+    delivered: Option<Vec<SkillVersion>>,
     env: Arc<LocalSandbox>,
     llm: Arc<dyn LlmExecutor>,
     model_ref: &str,
@@ -148,13 +150,13 @@ pub(crate) fn wire_skills(
     fork_base: PathBuf,
     reuse_sandbox: bool,
     skills_subdir: &str,
-) -> Option<SkillWiring> {
+) -> Result<Option<SkillWiring>, String> {
     // Offer skills when either a static set is configured or a durable catalog is
     // wired — the workspace-authored source alone never opens the surface (a run with
     // no delivered skills shows nothing until the agent authors one it can re-read).
     // `delivered` is `Some` (possibly empty) exactly when a durable store is wired.
     if configured.is_empty() && delivered.is_none() {
-        return None;
+        return Ok(None);
     }
     // Delivered skills come from two trusted sources: the static configured set and —
     // when wired — the durable `/v1/skills` catalog snapshot (both `Delivered`
@@ -168,14 +170,41 @@ pub(crate) fn wire_skills(
         )));
     }
     if let Some(delivered) = delivered {
-        let files = delivered
-            .into_iter()
-            .map(|(id, content)| SkillFile {
-                id,
+        let mut files = Vec::with_capacity(delivered.len());
+        for version in delivered {
+            if awaken_skill_store::bundle_sha256(&version.files) != version.bundle_sha256 {
+                return Err(format!(
+                    "Skill {} version {} bundle hash mismatch",
+                    version.skill_id, version.version
+                ));
+            }
+            let directory = format!(
+                "{DELIVERED_SKILLS_SUBDIR}/{}",
+                awaken_skill_store::sanitize_stem(&version.skill_id)
+            );
+            let materialized = version
+                .files
+                .iter()
+                .map(|file| (file.path.clone(), file.content.clone()))
+                .collect::<Vec<_>>();
+            env.materialize_read_only_tree(&directory, &materialized)
+                .map_err(|error| error.to_string())?;
+            let content = version
+                .skill_md()
+                .and_then(|bytes| std::str::from_utf8(bytes).ok())
+                .ok_or_else(|| {
+                    format!(
+                        "Skill {} version {} has no UTF-8 SKILL.md",
+                        version.skill_id, version.version
+                    )
+                })?
+                .to_string();
+            files.push(SkillFile {
+                id: version.skill_id,
                 content,
-                dir: None,
-            })
-            .collect();
+                dir: Some(directory),
+            });
+        }
         registries.push(Arc::new(SourceSkillRegistry::new(
             Arc::new(SnapshotSkillSource { files }),
             SkillProvenance::Delivered,
@@ -212,13 +241,13 @@ pub(crate) fn wire_skills(
             .with_active_tools(active_tools),
     );
 
-    Some(SkillWiring {
+    Ok(Some(SkillWiring {
         descriptors: vec![list_skills_descriptor(), skill_descriptor()],
         list_tool: list,
         activate_tool: activate,
         gate,
         registry,
-    })
+    }))
 }
 
 fn list_skills_descriptor() -> ToolDescriptor {
@@ -239,25 +268,47 @@ mod tests {
         // The host loads a snapshot of the durable catalog (async) and the bridge
         // yields neutral SkillFiles the extension parses — so a skill persisted in the
         // store is offered as Delivered without awaken-ext-skills ever seeing the store.
-        use awaken_skill_store::{FsSkillStore, SkillStore};
+        use awaken_skill_store::{
+            FsSkillStore, SkillBundleFile, SkillDefinition, SkillStore, SkillVersion, bundle_sha256,
+        };
         let root = std::env::temp_dir().join(format!("awaken-skillsrc-{}", std::process::id()));
         std::fs::remove_dir_all(&root).ok();
         let store = FsSkillStore::open(&root).unwrap();
+        let body = b"---\ndescription: say hi\n---\nHELLO".to_vec();
+        let bundle = vec![SkillBundleFile {
+            path: "SKILL.md".into(),
+            content: body.clone(),
+        }];
         store
-            .put("ws", "greet", "---\ndescription: say hi\n---\nHELLO")
+            .create(
+                SkillDefinition {
+                    id: "greet".into(),
+                    workspace_id: "ws".into(),
+                    display_title: None,
+                    latest_version: 1,
+                    last_version: 1,
+                },
+                SkillVersion {
+                    id: "skver-greet-1".into(),
+                    skill_id: "greet".into(),
+                    version: 1,
+                    name: "greet".into(),
+                    description: "say hi".into(),
+                    directory: "/skills/greet".into(),
+                    bundle_sha256: bundle_sha256(&bundle),
+                    files: bundle,
+                },
+            )
             .await
             .unwrap();
 
         // The host's snapshot → SkillFiles.
-        let snapshot = store.list("ws").await.unwrap();
-        let files = snapshot
-            .into_iter()
-            .map(|(id, content)| SkillFile {
-                id,
-                content,
-                dir: None,
-            })
-            .collect();
+        let version = store.version("ws", "greet", 1).await.unwrap().unwrap();
+        let files = vec![SkillFile {
+            id: version.skill_id.clone(),
+            content: String::from_utf8(version.skill_md().unwrap().to_vec()).unwrap(),
+            dir: None,
+        }];
         let source = SnapshotSkillSource { files };
         let files = source.scan();
         assert_eq!(files.len(), 1);

@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use awaken_config_resolver::{InferenceAccessPublisher, ResourceStore};
+use awaken_config_resolver::{AgentInputBindingRepository, InferenceAccessPublisher};
 use awaken_config_store::{
     AgentConfig, AgentConfigRevision, AuditedConfigWrite, ConfigRegistry, ConfigWrite,
     DEFAULT_SCOPE, ExecutableAgentSnapshot, ManagementAuditEntry, ManagementAuditRecord,
@@ -58,7 +58,7 @@ pub struct ConfigService {
     /// Per-agent resource bindings (ADR-0038). When wired, the agent's bound-resource
     /// prompt fragments are appended to its effective system prompt at compile (A3a).
     /// `None` → compilation is byte-identical to an unbound agent.
-    pub(crate) resources: Option<Arc<dyn ResourceStore>>,
+    pub(crate) resources: Option<Arc<dyn AgentInputBindingRepository>>,
     /// Resolves an `Auto` model selection to a concrete binding at publish (ADR-0052
     /// D5). `None` → an `Auto` config cannot publish (fail-closed); a `Pinned` config
     /// is unaffected.
@@ -98,7 +98,7 @@ impl ConfigService {
     /// Resource inputs are deliberately not compiled into the Agent snapshot: the
     /// Session resolver composes current defaults with temporary attachments once.
     #[must_use]
-    pub fn with_resources(mut self, resources: Arc<dyn ResourceStore>) -> Self {
+    pub fn with_resources(mut self, resources: Arc<dyn AgentInputBindingRepository>) -> Self {
         self.resources = Some(resources);
         self
     }
@@ -984,7 +984,7 @@ mod resource_prompt_tests {
     fn plane_with(
         tools: Arc<dyn ToolCatalogSource>,
         resolver: Option<Arc<dyn ModelResolver>>,
-        resources: Option<Arc<dyn ResourceStore>>,
+        resources: Option<Arc<dyn AgentInputBindingRepository>>,
     ) -> ConfigPlane {
         let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
         let mut service = ConfigService::new();
@@ -1361,8 +1361,9 @@ mod resource_prompt_tests {
     async fn publish_does_not_bake_session_resource_prompts_into_agent_instructions() {
         // Agent defaults remain authoring data until Session resolution. Publishing
         // the Agent must not bake a stale pre-merge resource prompt into its snapshot.
-        let resources = Arc::new(awaken_config_resolver::InMemoryResourceStore::new());
-        resources.put_agent_resource_in(
+        let resources =
+            Arc::new(awaken_config_resolver::InMemoryAgentInputBindingRepository::new());
+        resources.put_agent_inputs(
             DEFAULT_SCOPE,
             AgentResourceConfig {
                 agent_id: "agent-1".into(),
@@ -1397,8 +1398,9 @@ mod resource_prompt_tests {
 
     #[tokio::test]
     async fn publish_pins_agent_model_and_catalog_but_not_session_resources() {
-        let resources = Arc::new(awaken_config_resolver::InMemoryResourceStore::new());
-        resources.put_agent_resource_in(
+        let resources =
+            Arc::new(awaken_config_resolver::InMemoryAgentInputBindingRepository::new());
+        resources.put_agent_inputs(
             DEFAULT_SCOPE,
             AgentResourceConfig {
                 agent_id: "pinned-inputs".into(),

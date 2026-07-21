@@ -14,7 +14,8 @@ use std::sync::Arc;
 
 use awaken_admin_config_api::openapi::openapi_document;
 use awaken_admin_config_api::{
-    AdminState, InMemoryMcpStore, InMemoryProfileStore, InMemoryResourceStore, admin_router,
+    AdminState, InMemoryAgentInputBindingRepository, InMemoryMcpStore, InMemoryProfileStore,
+    admin_router,
 };
 use awaken_credential_vault::InMemorySecretStore;
 use awaken_credential_vault::repo::InMemoryCredentialRepo;
@@ -30,7 +31,7 @@ fn state() -> AdminState {
         secrets: Arc::new(InMemorySecretStore::new()),
         profiles: Arc::new(InMemoryProfileStore::new()),
         mcp: Arc::new(InMemoryMcpStore::new()),
-        resources: Arc::new(InMemoryResourceStore::new()),
+        resources: Arc::new(InMemoryAgentInputBindingRepository::new()),
         probe: None,
         availability: Default::default(),
     }

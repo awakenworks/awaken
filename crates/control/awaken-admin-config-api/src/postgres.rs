@@ -2,7 +2,7 @@
 //! aggregates, over the crate's own `admin` migration scope ([`admin_bundle`]):
 //! one [`PostgresAdminStore`] serves the same four sync store ports the sqlite
 //! backend does — [`InferenceProfileStore`], [`McpStore`] and
-//! [`ResourceStore`] — from a single connection pool.
+//! [`AgentInputBindingRepository`] — from a single connection pool.
 //!
 //! The store ports are **sync and infallible** (a broken store is a
 //! panic-worthy invariant violation, not a recoverable condition — same contract
@@ -23,8 +23,8 @@ use sqlx::types::Json;
 use tokio::runtime::{Builder, Handle, Runtime};
 
 use awaken_config_resolver::{
-    AgentMcpConfig, AgentResourceConfig, InferenceProfile, InferenceProfileStore, McpServerDef,
-    McpStore, ResourceStore, WebhookEndpointDef, WebhookStore,
+    AgentInputBindingRepository, AgentMcpConfig, AgentResourceConfig, InferenceProfile,
+    InferenceProfileStore, McpServerDef, McpStore, WebhookEndpointDef, WebhookStore,
 };
 
 use crate::schema::admin_bundle;
@@ -161,22 +161,6 @@ impl PostgresAdminStore {
                 .collect()
         })
     }
-
-    /// Upsert an agent's resource binding (ADR-0038). Inherent counterpart of the
-    /// sqlite store's method, matching the [`ResourceStore`] port.
-    pub fn put_agent_resource(&self, config: AgentResourceConfig) {
-        self.put_json(
-            "agent_resource",
-            "agent_id",
-            &config.agent_id.clone(),
-            &config,
-        );
-    }
-
-    /// One agent's resource binding, `None` when the agent has none.
-    pub fn get_agent_resource(&self, agent_id: &str) -> Option<AgentResourceConfig> {
-        self.get_json("agent_resource", "agent_id", agent_id)
-    }
 }
 
 impl Drop for PostgresAdminStore {
@@ -203,24 +187,13 @@ async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
     Ok(())
 }
 
-impl ResourceStore for PostgresAdminStore {
-    fn put_agent_resource(&self, config: AgentResourceConfig) {
-        // Fully-qualified so this resolves to the inherent method, not the trait one.
-        PostgresAdminStore::put_agent_resource(self, config);
-    }
-    fn get_agent_resource(&self, agent_id: &str) -> Option<AgentResourceConfig> {
-        PostgresAdminStore::get_agent_resource(self, agent_id)
-    }
-    fn put_agent_resource_in(&self, workspace: &str, config: AgentResourceConfig) {
-        let key = format!("{workspace}\u{1f}{}", config.agent_id);
+impl AgentInputBindingRepository for PostgresAdminStore {
+    fn put_agent_inputs(&self, workspace_id: &str, config: AgentResourceConfig) {
+        let key = format!("{workspace_id}\u{1f}{}", config.agent_id);
         self.put_json("agent_resource", "agent_id", &key, &config);
     }
-    fn get_agent_resource_in(
-        &self,
-        workspace: &str,
-        agent_id: &str,
-    ) -> Option<AgentResourceConfig> {
-        let key = format!("{workspace}\u{1f}{agent_id}");
+    fn get_agent_inputs(&self, workspace_id: &str, agent_id: &str) -> Option<AgentResourceConfig> {
+        let key = format!("{workspace_id}\u{1f}{agent_id}");
         self.get_json("agent_resource", "agent_id", &key)
     }
 }

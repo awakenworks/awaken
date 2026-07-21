@@ -52,13 +52,28 @@ pub struct ResolvedInput {
     pub instructions: Option<String>,
 }
 
-/// Durable, secret-free result of the Session control plane's one resolution.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EffectiveSessionInputs {
-    pub inputs: Vec<ResolvedInput>,
+/// Exact immutable Skill version selected for a Session. Bundle bytes remain in
+/// the resource repository; this durable pin is secret-free and retry-safe.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedSkillBinding {
+    pub skill_id: String,
+    pub version: u64,
+    pub bundle_sha256: String,
 }
 
-impl EffectiveSessionInputs {
+/// Durable, secret-free result of the Session control plane's one resolution.
+/// Inputs and Skill capabilities remain distinct collections because Skills are
+/// executable capabilities, not mounted user inputs. `skills = None` means a
+/// legacy record whose selection was not frozen; `Some([])` explicitly selects no
+/// Skills.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedSessionResources {
+    pub inputs: Vec<ResolvedInput>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skills: Option<Vec<ResolvedSkillBinding>>,
+}
+
+impl ResolvedSessionResources {
     /// Validate identity and mount invariants before an adapter performs any
     /// resource-specific side effect such as sealing a credential or creating a
     /// catalog definition.
@@ -244,7 +259,7 @@ impl SessionInputResolver {
         catalog: &S,
         agent_defaults: &[InputBinding],
         session_attachments: &[SessionInputAttachment],
-    ) -> Result<EffectiveSessionInputs, SessionInputError> {
+    ) -> Result<ResolvedSessionResources, SessionInputError> {
         let inputs = Self::compose(agent_defaults, session_attachments)?
             .into_iter()
             .map(|binding| {
@@ -281,7 +296,10 @@ impl SessionInputResolver {
                 })
             })
             .collect::<Result<Vec<_>, SessionInputError>>()?;
-        Ok(EffectiveSessionInputs { inputs })
+        Ok(ResolvedSessionResources {
+            inputs,
+            skills: None,
+        })
     }
 }
 
@@ -502,7 +520,7 @@ mod tests {
 
     #[test]
     fn effective_manifest_mutations_preserve_identity_and_invariants() {
-        let initial = EffectiveSessionInputs::default()
+        let initial = ResolvedSessionResources::default()
             .attach(resolved_file("input-a", "file-a", "mnt/a"))
             .unwrap();
         assert_eq!(initial.inputs[0].mount_path, "/mnt/a");

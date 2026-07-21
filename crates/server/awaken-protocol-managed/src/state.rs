@@ -64,7 +64,7 @@ struct SessionRecord {
     agent_id: String,
     session: Session,
     /// Durable source of truth for the runtime's currently applied input projection.
-    effective_inputs: awaken_session_contract::EffectiveSessionInputs,
+    effective_inputs: awaken_session_contract::ResolvedSessionResources,
     events: Vec<Event>,
     /// Subagent (multiagent delegate) child threads spawned in the session, each a
     /// projected `session_thread` object (parent = the primary thread). Enumerated
@@ -330,10 +330,11 @@ mod tests {
                 Vec<(
                     String,
                     String,
-                    awaken_session_contract::EffectiveSessionInputs,
+                    awaken_session_contract::ResolvedSessionResources,
                 )>,
             >,
         >,
+        order: Arc<std::sync::Mutex<Vec<&'static str>>>,
     }
 
     #[async_trait]
@@ -376,6 +377,7 @@ mod tests {
             unreachable!()
         }
         async fn committed_messages(&self, thread: &str) -> Vec<Message> {
+            self.order.lock().unwrap().push("history");
             vec![Message::text(
                 awaken_agent_contract::agent::message::Id(format!("{thread}-m0")),
                 awaken_agent_contract::agent::message::Role::User,
@@ -389,8 +391,9 @@ mod tests {
             &self,
             thread: &str,
             workspace_id: &str,
-            inputs: &awaken_session_contract::EffectiveSessionInputs,
+            inputs: &awaken_session_contract::ResolvedSessionResources,
         ) -> Result<(), RunError> {
+            self.order.lock().unwrap().push("resources");
             self.restored.lock().unwrap().push((
                 thread.to_string(),
                 workspace_id.to_string(),
@@ -595,8 +598,8 @@ mod tests {
         }
     }
 
-    fn sample_inputs() -> awaken_session_contract::EffectiveSessionInputs {
-        awaken_session_contract::EffectiveSessionInputs {
+    fn sample_inputs() -> awaken_session_contract::ResolvedSessionResources {
+        awaken_session_contract::ResolvedSessionResources {
             inputs: vec![awaken_session_contract::ResolvedInput {
                 binding_id: awaken_resource_contract::BindingId::from("input-file"),
                 source: awaken_session_contract::ResolvedInputSource::File {
@@ -606,6 +609,7 @@ mod tests {
                 access: awaken_resource_contract::ResourceAccess::ReadOnly,
                 instructions: None,
             }],
+            skills: None,
         }
     }
 
@@ -650,6 +654,7 @@ mod tests {
         // Fresh state (empty cache) sharing the durable repo — simulates a restart.
         let runtime = RehydrateFake::default();
         let restored = runtime.restored.clone();
+        let order = runtime.order.clone();
         let restarted = ManagedState::new(runtime).with_session_repo(repo);
         restarted.ensure_session("sesn_1").await.expect("rehydrate");
         let session = restarted
@@ -669,6 +674,11 @@ mod tests {
                 sample_inputs(),
             )],
             "restart replays the persisted manifest once without re-resolving it"
+        );
+        assert_eq!(
+            order.lock().unwrap().as_slice(),
+            &["resources", "history"],
+            "the frozen manifest must be installed before opening runtime history"
         );
     }
 

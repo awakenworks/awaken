@@ -16,6 +16,9 @@ license.workspace = true
 # implements them and re-exports for backward-compatible paths.
 awaken-resource-contract.workspace = true
 async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "fs"] }
 # Feature `sqlite`: embedded durable SkillStore over the crate's own `skill_store`

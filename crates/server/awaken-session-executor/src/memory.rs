@@ -16,7 +16,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_ext_builtin_tools::{AgentRunArgs, erase, invoke_agent_tool};
 use awaken_ext_memory::{
-    DEFAULT_SELECTOR_INSTRUCTIONS, EXTRACT_PROMPT, MEMORY_AGENT_ID, MemoryDir, MemoryStoreHandle,
+    DEFAULT_SELECTOR_INSTRUCTIONS, EXTRACT_PROMPT, MEMORY_AGENT_ID, MemoryStoreHandle,
     RecallBounds, RecallSelector, SELECTOR_AGENT_ID, WriteMemoryTool, default_selector_agent,
     parse_indices, sanitize_stem, select_input,
 };
@@ -186,28 +186,32 @@ impl MemoryStoreHandle for PlatformMemoryHandle {
     }
 }
 
-/// Triggers out-of-band memory extraction after a main turn, and reads memories
-/// back for recall. Owns no memory logic itself — it delegates to
-/// `awaken-ext-memory` and only orchestrates the sub-run.
-pub struct MemoryExtraction {
+/// Host-level extraction/selection capability. It owns the auxiliary-agent
+/// machinery but deliberately owns no MemoryStore identity or content handle.
+/// A Session must create a [`BoundMemory`] from its resolved resource manifest.
+pub struct MemoryRuntime {
     llm: Arc<dyn LlmExecutor>,
     provider: Arc<LocalProvider>,
     catalog: Arc<AgentCatalog>,
     background: Arc<BackgroundRuns>,
+    model_ref: String,
+}
+
+/// One Session-scoped MemoryStore binding shared by recall and extraction.
+pub struct BoundMemory {
+    runtime: Arc<MemoryRuntime>,
     store: Arc<dyn MemoryStoreHandle>,
     bounds: RecallBounds,
     recall_enabled: bool,
     extraction_enabled: bool,
-    model_ref: String,
 }
 
-impl MemoryExtraction {
+impl MemoryRuntime {
     pub fn new(
         llm: Arc<dyn LlmExecutor>,
         provider: Arc<LocalProvider>,
         catalog: Arc<AgentCatalog>,
         background: Arc<BackgroundRuns>,
-        root: impl Into<std::path::PathBuf>,
         model_ref: impl Into<String>,
     ) -> Self {
         Self {
@@ -215,43 +219,38 @@ impl MemoryExtraction {
             provider,
             catalog,
             background,
-            store: Arc::new(MemoryDir::new(root)),
-            bounds: RecallBounds::default(),
-            recall_enabled: true,
-            extraction_enabled: true,
             model_ref: model_ref.into(),
         }
     }
 
-    pub(crate) fn for_store(&self, store: Arc<dyn MemoryStoreHandle>) -> Self {
-        Self {
-            llm: self.llm.clone(),
-            provider: self.provider.clone(),
-            catalog: self.catalog.clone(),
-            background: self.background.clone(),
-            store,
-            bounds: self.bounds.clone(),
-            recall_enabled: self.recall_enabled,
-            extraction_enabled: self.extraction_enabled,
-            model_ref: self.model_ref.clone(),
-        }
-    }
-
-    pub(crate) fn for_binding(
-        &self,
+    pub(crate) fn bind(
+        self: &Arc<Self>,
         store: Arc<dyn MemoryStoreHandle>,
         config: &awaken_protocol_managed::resource_plane::MemoryStoreConfigVersion,
         writable: bool,
-    ) -> Self {
-        let mut bound = self.for_store(store);
-        bound.recall_enabled = config.recall_policy.enabled;
-        bound.bounds.max_entries = usize::try_from(config.recall_policy.max_results)
-            .unwrap_or(usize::MAX)
-            .max(1);
-        bound.extraction_enabled = writable && config.extraction_policy.enabled;
-        bound
+    ) -> BoundMemory {
+        let bounds = RecallBounds {
+            max_entries: usize::try_from(config.recall_policy.max_results)
+                .unwrap_or(usize::MAX)
+                .max(1),
+            ..RecallBounds::default()
+        };
+        BoundMemory {
+            runtime: self.clone(),
+            store,
+            bounds,
+            recall_enabled: config.recall_policy.enabled,
+            extraction_enabled: writable && config.extraction_policy.enabled,
+        }
     }
 
+    /// Await every in-flight extraction started by any bound Session.
+    pub async fn drain(&self, timeout: Duration) -> bool {
+        self.background.drain(timeout).await
+    }
+}
+
+impl BoundMemory {
     pub(crate) fn recall_enabled(&self) -> bool {
         self.recall_enabled
     }
@@ -262,7 +261,7 @@ impl MemoryExtraction {
 
     /// Fire-and-forget: seed the extractor with `committed` (the finished turn's
     /// history) and let it save memories via `write_memory`, scoped to the store.
-    /// Returns immediately; the run is tracked for [`drain`](Self::drain).
+    /// Returns immediately; the run is tracked by the host [`MemoryRuntime`].
     pub async fn trigger(
         &self,
         thread: &str,
@@ -270,7 +269,7 @@ impl MemoryExtraction {
         instructions: Option<&str>,
         extraction_prompt: Option<&str>,
     ) {
-        if self.catalog.resolve(MEMORY_AGENT_ID).is_none() {
+        if self.runtime.catalog.resolve(MEMORY_AGENT_ID).is_none() {
             return;
         }
         // Drop recalled-memory messages from the seed: they are injected context,
@@ -290,21 +289,22 @@ impl MemoryExtraction {
             )],
         });
 
-        let llm = self.llm.clone();
-        let provider = self.provider.clone();
+        let llm = self.runtime.llm.clone();
+        let provider = self.runtime.provider.clone();
         let catalog = instructions
             .filter(|value| !value.trim().is_empty())
             .map(|instructions| {
                 Arc::new(
                     AgentCatalog::new()
-                        .with_agent(default_memory_agent(&self.model_ref, instructions)),
+                        .with_agent(default_memory_agent(&self.runtime.model_ref, instructions)),
                 )
             })
-            .unwrap_or_else(|| self.catalog.clone());
+            .unwrap_or_else(|| self.runtime.catalog.clone());
         let store = self.store.clone();
         let mem_thread = format!("{thread}::mem");
 
-        self.background
+        self.runtime
+            .background
             .spawn(async move {
                 let tool = erase(WriteMemoryTool::from_handle(store));
                 // The extractor injects a per-run `write_memory` tool scoped to this
@@ -340,11 +340,6 @@ impl MemoryExtraction {
     pub fn bounds(&self) -> RecallBounds {
         self.bounds.clone()
     }
-
-    /// Await in-flight extractions up to `timeout` (shutdown flush).
-    pub async fn drain(&self, timeout: Duration) -> bool {
-        self.background.drain(timeout).await
-    }
 }
 
 impl crate::host::SharedHost {
@@ -377,27 +372,20 @@ impl crate::host::SharedHost {
             .clone()
     }
 
-    pub(crate) fn register_thread_memory(
-        &self,
-        thread: &str,
-        memory: Option<Arc<MemoryExtraction>>,
-    ) {
+    pub(crate) fn register_thread_memory(&self, thread: &str, memory: Option<Arc<BoundMemory>>) {
         self.thread_memory
             .lock()
             .expect("thread memory mutex poisoned")
             .insert(thread.to_string(), memory);
     }
 
-    pub(crate) fn memory_for_thread(&self, thread: &str) -> Option<Arc<MemoryExtraction>> {
-        match self
-            .thread_memory
+    pub(crate) fn memory_for_thread(&self, thread: &str) -> Option<Arc<BoundMemory>> {
+        self.thread_memory
             .lock()
             .expect("thread memory mutex poisoned")
             .get(thread)
-        {
-            Some(memory) => memory.clone(),
-            None => self.memory.clone(),
-        }
+            .cloned()
+            .flatten()
     }
 
     pub(crate) fn platform_memory_handle(
@@ -411,12 +399,29 @@ impl crate::host::SharedHost {
             writable,
         ))
     }
+
+    /// Install one already-resolved MemoryStore binding for a thread. This is an
+    /// ACL/composition seam for embedders: ownership and authorization must have
+    /// completed before calling it; the Runtime Host receives only the opaque store
+    /// id, pinned config, and maximum access.
+    pub fn bind_resolved_memory(
+        &self,
+        thread: &str,
+        config: &awaken_protocol_managed::resource_plane::MemoryStoreConfigVersion,
+        access: awaken_protocol_managed::resource_plane::ResourceAccess,
+    ) {
+        let writable = access == awaken_protocol_managed::resource_plane::ResourceAccess::ReadWrite;
+        let handle = self.platform_memory_handle(config.memory_store_id.clone(), writable);
+        let bound = self.memory.bind(handle, config, writable);
+        self.register_thread_memory(thread, Some(Arc::new(bound)));
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use async_trait::async_trait;
+    use awaken_ext_memory::MemoryDir;
     use awaken_memory_store::MemoryFs as _;
     use awaken_runtime_contract::llm::{
         AssistantOutput, ChatRequest, ChatResponse, Result as LlmResult, ToolCall,
@@ -458,6 +463,33 @@ mod tests {
         }
     }
 
+    fn bound_test_memory(
+        llm: Arc<dyn LlmExecutor>,
+        sandbox_base: &std::path::Path,
+        memory_root: &std::path::Path,
+    ) -> (Arc<MemoryRuntime>, BoundMemory) {
+        let catalog = Arc::new(
+            AgentCatalog::new()
+                .with_agent(default_memory_agent("stub", DEFAULT_MEMORY_INSTRUCTIONS)),
+        );
+        let runtime = Arc::new(MemoryRuntime::new(
+            llm,
+            Arc::new(LocalProvider::new(sandbox_base)),
+            catalog,
+            Arc::new(BackgroundRuns::new()),
+            "stub",
+        ));
+        let config = awaken_protocol_managed::resource_plane::MemoryStoreConfigVersion {
+            memory_store_id: "test-store".into(),
+            version: awaken_protocol_managed::resource_plane::ConfigVersion::INITIAL,
+            recall_policy: Default::default(),
+            extraction_policy: Default::default(),
+            retention_policy: Default::default(),
+        };
+        let bound = runtime.bind(Arc::new(MemoryDir::new(memory_root)), &config, true);
+        (runtime, bound)
+    }
+
     /// A model that replies with fixed selection indices, standing in for the
     /// `memory-selector` sub-agent.
     struct IndexModel;
@@ -494,23 +526,13 @@ mod tests {
         let sandbox_base = std::env::temp_dir().join(format!("awaken-mem-sbx-{stamp}"));
         let mem_root = std::env::temp_dir().join(format!("awaken-mem-root-{stamp}"));
 
-        let catalog = Arc::new(
-            AgentCatalog::new()
-                .with_agent(default_memory_agent("stub", DEFAULT_MEMORY_INSTRUCTIONS)),
-        );
-        let extraction = MemoryExtraction::new(
-            Arc::new(ExtractorModel),
-            Arc::new(LocalProvider::new(&sandbox_base)),
-            catalog,
-            Arc::new(BackgroundRuns::new()),
-            &mem_root,
-            "stub",
-        );
+        let (runtime, extraction) =
+            bound_test_memory(Arc::new(ExtractorModel), &sandbox_base, &mem_root);
 
         extraction
             .trigger("thread-1", vec![user("I really like rust")], None, None)
             .await;
-        assert!(extraction.drain(Duration::from_secs(10)).await);
+        assert!(runtime.drain(Duration::from_secs(10)).await);
 
         assert_eq!(
             std::fs::read_to_string(mem_root.join("user-prefs.md")).expect("memory file"),
@@ -594,18 +616,8 @@ mod tests {
             .as_nanos();
         let sandbox_base = std::env::temp_dir().join(format!("awaken-mem2-sbx-{stamp}"));
         let mem_root = std::env::temp_dir().join(format!("awaken-mem2-root-{stamp}"));
-        let catalog = Arc::new(
-            AgentCatalog::new()
-                .with_agent(default_memory_agent("stub", DEFAULT_MEMORY_INSTRUCTIONS)),
-        );
-        let extraction = MemoryExtraction::new(
-            Arc::new(SeedEchoModel),
-            Arc::new(LocalProvider::new(&sandbox_base)),
-            catalog,
-            Arc::new(BackgroundRuns::new()),
-            &mem_root,
-            "stub",
-        );
+        let (runtime, extraction) =
+            bound_test_memory(Arc::new(SeedEchoModel), &sandbox_base, &mem_root);
 
         // A committed history with a recalled-memory system message + a real turn.
         let recall = Message::text(
@@ -616,7 +628,7 @@ mod tests {
         extraction
             .trigger("t", vec![recall, user("please note this")], None, None)
             .await;
-        assert!(extraction.drain(Duration::from_secs(10)).await);
+        assert!(runtime.drain(Duration::from_secs(10)).await);
 
         let seen = std::fs::read_to_string(mem_root.join("seen.md")).expect("seen file");
         assert!(seen.contains("please note this"), "real turn seen: {seen}");
@@ -634,18 +646,8 @@ mod tests {
             .as_nanos();
         let sandbox_base = std::env::temp_dir().join(format!("awaken-mem3-sbx-{stamp}"));
         let mem_root = std::env::temp_dir().join(format!("awaken-mem3-root-{stamp}"));
-        let catalog = Arc::new(
-            AgentCatalog::new()
-                .with_agent(default_memory_agent("stub", DEFAULT_MEMORY_INSTRUCTIONS)),
-        );
-        let extraction = MemoryExtraction::new(
-            Arc::new(SeedEchoModel),
-            Arc::new(LocalProvider::new(&sandbox_base)),
-            catalog,
-            Arc::new(BackgroundRuns::new()),
-            &mem_root,
-            "stub",
-        );
+        let (runtime, extraction) =
+            bound_test_memory(Arc::new(SeedEchoModel), &sandbox_base, &mem_root);
 
         extraction
             .trigger(
@@ -655,7 +657,7 @@ mod tests {
                 Some("CUSTOM EXTRACTION TASK"),
             )
             .await;
-        assert!(extraction.drain(Duration::from_secs(10)).await);
+        assert!(runtime.drain(Duration::from_secs(10)).await);
 
         let seen = std::fs::read_to_string(mem_root.join("seen.md")).expect("seen file");
         assert!(
