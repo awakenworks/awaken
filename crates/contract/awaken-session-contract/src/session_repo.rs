@@ -18,6 +18,17 @@ use std::collections::BTreeMap;
 
 use crate::SessionLifecycleFact;
 
+/// Secret-free execution pin needed to rebuild process-local runtime wiring
+/// around an adopted Session environment. Credential fields are durable row or
+/// sealed-secret references; raw material never crosses this value object.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PersistedSessionRuntime {
+    pub mcp_servers: Vec<crate::McpServerBinding>,
+    pub runtime: Option<String>,
+    pub deny_egress: bool,
+    pub sandbox: Option<Value>,
+}
+
 /// The durable, adapter-side configuration of one Managed session, keyed by its
 /// id (which is also its thread id). Everything here is what the wire `Session`
 /// object needs beyond the runtime's committed transcript.
@@ -31,6 +42,13 @@ pub struct PersistedSession {
     pub title: Option<String>,
     pub metadata: BTreeMap<String, String>,
     pub environment_id: String,
+    /// Opaque, secret-free binding to the runtime-owned Session environment.
+    /// The Session context persists the bytes but never interprets them; only the
+    /// runtime that produced the binding may validate and adopt it after restart.
+    pub environment_binding: Option<String>,
+    /// The create-time runtime selection and external-resource references needed
+    /// to restore process-local wiring around the durable environment.
+    pub runtime: PersistedSessionRuntime,
     /// The accepted MCP servers in the SDK wire shape (`{name, type, url}`) — the
     /// echo the agent object reports; never a credential.
     pub mcp_servers: Vec<Value>,
@@ -104,6 +122,12 @@ pub trait ManagedSessionRepository: Send + Sync {
 
     /// The stored configuration for `session_id`, if any.
     async fn get(&self, session_id: &str) -> Option<PersistedSession>;
+
+    /// Atomically attach the runtime's opaque environment binding to an existing
+    /// Session row. Returns `false` when the Session is unknown. This narrow
+    /// update avoids overwriting concurrent resource/lifecycle mutations with a
+    /// stale aggregate snapshot.
+    async fn bind_environment(&self, session_id: &str, binding: &str) -> bool;
 
     /// Sessions with a Prepared/Releasing resource transition. Implementations
     /// must preserve their ordinary tenancy fence; the coordinator obtains the

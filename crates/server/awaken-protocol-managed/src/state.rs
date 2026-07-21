@@ -355,11 +355,35 @@ mod tests {
                 )>,
             >,
         >,
+        restored_environments: Arc<std::sync::Mutex<Vec<(String, String, String)>>>,
+        restored_runtimes: Arc<
+            std::sync::Mutex<
+                Vec<(
+                    String,
+                    Option<String>,
+                    usize,
+                    bool,
+                    Option<serde_json::Value>,
+                )>,
+            >,
+        >,
         order: Arc<std::sync::Mutex<Vec<&'static str>>>,
     }
 
     #[async_trait]
     impl SessionRuntime for RehydrateFake {
+        async fn prepare_session(&self, thread: &str, init: SessionInit) -> Result<(), RunError> {
+            self.order.lock().unwrap().push("runtime");
+            self.restored_runtimes.lock().unwrap().push((
+                thread.to_string(),
+                init.runtime,
+                init.mcp_servers.len(),
+                init.deny_egress,
+                init.sandbox,
+            ));
+            Ok(())
+        }
+
         async fn run(
             &self,
             _agent: &str,
@@ -404,6 +428,20 @@ mod tests {
                 awaken_agent_contract::agent::message::Role::User,
                 "hello",
             )]
+        }
+        async fn restore_session_environment(
+            &self,
+            agent: &str,
+            thread: &str,
+            binding: &str,
+        ) -> Result<(), RunError> {
+            self.order.lock().unwrap().push("environment");
+            self.restored_environments.lock().unwrap().push((
+                agent.to_string(),
+                thread.to_string(),
+                binding.to_string(),
+            ));
+            Ok(())
         }
         fn model(&self) -> String {
             "host-default-model".to_string()
@@ -664,6 +702,8 @@ mod tests {
             title: Some("My session".to_string()),
             metadata,
             environment_id: "env_local".to_string(),
+            environment_binding: None,
+            runtime: Default::default(),
             mcp_servers: vec![
                 serde_json::json!({"name": "calc", "type": "url", "url": "https://x"}),
             ],
@@ -723,11 +763,18 @@ mod tests {
         // A session created in one process is gone from a fresh process's cache,
         // but the shared repo + committed transcript restore it faithfully.
         let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
-        repo.save(sample_persisted("sesn_1")).await;
+        let mut persisted = sample_persisted("sesn_1");
+        persisted.environment_binding = Some("opaque-runtime-binding".to_string());
+        persisted.runtime.runtime = Some("acp:custom".to_string());
+        persisted.runtime.deny_egress = true;
+        persisted.runtime.sandbox = Some(serde_json::json!({"isolation": "namespace"}));
+        repo.save(persisted).await;
 
         // Fresh state (empty cache) sharing the durable repo — simulates a restart.
         let runtime = RehydrateFake::default();
         let restored = runtime.restored.clone();
+        let restored_environments = runtime.restored_environments.clone();
+        let restored_runtimes = runtime.restored_runtimes.clone();
         let order = runtime.order.clone();
         let restarted = ManagedState::new(runtime).with_session_repo(repo.clone());
         restarted.ensure_session("sesn_1").await.expect("rehydrate");
@@ -751,8 +798,28 @@ mod tests {
         );
         assert_eq!(
             order.lock().unwrap().as_slice(),
-            &["resources", "history"],
-            "the frozen manifest must be installed before opening runtime history"
+            &["resources", "runtime", "environment", "history"],
+            "resources must be staged before environment adoption and history opening"
+        );
+        assert_eq!(
+            restored_runtimes.lock().unwrap().as_slice(),
+            &[((
+                "sesn_1".to_string(),
+                Some("acp:custom".to_string()),
+                0,
+                true,
+                Some(serde_json::json!({"isolation": "namespace"})),
+            ))],
+            "the complete secret-free runtime pin is restored"
+        );
+        assert_eq!(
+            restored_environments.lock().unwrap().as_slice(),
+            &[(
+                "coder".to_string(),
+                "sesn_1".to_string(),
+                "opaque-runtime-binding".to_string(),
+            )],
+            "the runtime alone receives and interprets the opaque binding"
         );
         let durable = repo.get("sesn_1").await.unwrap();
         assert_eq!(durable.resources.activations.len(), 1);

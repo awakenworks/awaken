@@ -17,6 +17,8 @@ fn session() -> PersistedSession {
         title: None,
         metadata: BTreeMap::new(),
         environment_id: "env".into(),
+        environment_binding: None,
+        runtime: Default::default(),
         mcp_servers: Vec::new(),
         resources: Default::default(),
         status: "idle".into(),
