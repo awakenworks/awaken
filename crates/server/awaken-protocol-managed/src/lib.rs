@@ -64,9 +64,11 @@ pub use routes::{WorkspaceScope, enforce_managed_beta, router};
 // re-exported so existing `awaken_protocol_managed::…` paths keep resolving.
 pub use awaken_resource_contract::ResourceCatalog;
 pub use awaken_session_contract::{
-    ManagedSessionRepository, PersistedSession, ResolvedInput, ResolvedInputSource,
-    ResolvedSessionResources, ResolvedSkillBinding, ScopedSessionRepo, ScopedSessionStore,
-    resource_plane,
+    ManagedSessionRepository, MemoryExtractionError, MemoryExtractionIntent,
+    MemoryExtractionMutation, MemoryExtractionReceipt, MemoryExtractionRepository,
+    MemoryExtractionStatus, MemoryExtractorSnapshot, MemoryMutationReceipt, PersistedSession,
+    PutMemoryExtractionOutcome, ResolvedInput, ResolvedInputSource, ResolvedSessionResources,
+    ResolvedSkillBinding, ScopedSessionRepo, ScopedSessionStore, resource_plane,
 };
 pub use awaken_session_store::{InMemoryScopedSessionStore, InMemorySessionRepository};
 pub use state::{

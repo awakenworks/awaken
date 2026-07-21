@@ -26,6 +26,8 @@ awaken-worker = { workspace = true }
 # The service layer: SharedHost / ManagedHost / ConfigService / ConfigPlane and the
 # durable session repositories the composition opens.
 awaken-session-executor = { workspace = true }
+awaken-resource-store = { workspace = true }
+awaken-resource-reclaimer = { workspace = true }
 # The ACP executor (AcpLaunch/AcpRunExecutor) for `acp:*` threads — wired by config
 # (AWAKEN_ACP_ARGV) into the worker's configured sandbox tier.
 awaken-run-executor-acp = { workspace = true }

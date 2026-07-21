@@ -174,8 +174,8 @@ PDP decision, or policy document into this state machine.
 
 ### D6: Each resource reclaims according to its own invariant
 
-- File deletion revokes a Workspace grant first. Physical blob GC requires no
-  remaining grants, Agent bindings, active/effective Session references,
+- File deletion removes a Workspace ownership edge first. Physical blob GC requires no
+  remaining ownership edges, Agent bindings, active/effective Session references,
   Artifacts, or retention hold.
 - Memory Session release closes the scoped handle but never deletes long-term
   content. Store deletion tombstones the aggregate, denies operations, drains
@@ -197,6 +197,14 @@ lifecycle. `Suspended` is a reversible live deny; `Archived` rejects new
 activation; `Deleted` is a tombstone; `Purged` is an asynchronous reclamation
 receipt rather than a reusable identity.
 
+The implemented reclamation workflow writes a durable, idempotent
+`ResourcePurgeIntent` before the logical File ownership removal or catalog/Skill
+tombstone. A lease-generation and revision fence prevents a stale worker from
+overwriting recovery. Physical adapters run only after the independently composed
+catalog, reverse-reference, Agent-binding, Session-binding, retention, runtime,
+and extraction guards report no blocker. These guards contain resource facts only;
+authentication, API keys, roles, policy and PDP decisions remain at the PEP edge.
+
 ### D7: Memory has one data truth
 
 Mount, recall, extraction, Memory API, version history, and redaction operate on
@@ -216,6 +224,16 @@ handle, pinned config policy, and maximum read/write access. A Session without a
 MemoryStore binding has no recall or extraction. The removed
 `with_memory(mem_dir)`/`memory_scope_root` path is not a fallback in local mode;
 local mode provisions and binds a normal store under its hidden default Workspace.
+
+Reliable extraction is Session application work, not part of the Memory resource
+aggregate and not an authorization decision. A durable `MemoryExtractionIntent`
+freezes the terminal commit, Workspace/store/config binding, transcript, and the
+secret-free inference access pin. The Session application repository owns its
+lease-fenced `Pending -> Claimed -> Extracted -> Stored -> Completed` convergence;
+`MemoryRepository` owns only CAS/idempotent mutation. Restart reconstructs a
+missing terminal outbox intent, reclaims an expired process lease, and remounts a
+dead FUSE realization before resuming. The resource stores never receive a
+principal, API key, role, policy document, or PDP result.
 
 ### D8: Anthropic compatibility is an adapter concern
 

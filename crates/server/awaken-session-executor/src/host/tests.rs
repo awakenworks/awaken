@@ -31,7 +31,13 @@ fn bind_test_memory(host: &SharedHost, thread: &str, store_id: &str, writable: b
     let handle = host.platform_memory_handle(store_id.to_string(), writable);
     host.register_thread_memory(
         thread,
-        Some(Arc::new(host.memory.bind(handle, &config, writable))),
+        Some(Arc::new(host.memory.bind(
+            "default",
+            handle,
+            Arc::new(TestResourceConfigSource),
+            &config,
+            writable,
+        ))),
     );
 }
 
@@ -614,6 +620,73 @@ async fn memory_written_in_one_thread_is_recalled_and_used_in_another() {
     );
 }
 
+#[tokio::test]
+async fn reopening_a_terminal_thread_recovers_a_missing_extraction_outbox_intent() {
+    use awaken_protocol_managed::MemoryExtractionRepository as _;
+
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("awaken-memory-outbox-{stamp}"));
+    let thread = "memory-outbox-thread";
+
+    // Commit the terminal run without a Memory binding, modeling a crash after
+    // terminal truth but before the auxiliary intent could be inserted.
+    let first = SharedHost::new(Arc::new(MemoryHostModel), "stub").with_store_dir(&dir);
+    first
+        .run(None, thread, user("remember rust"))
+        .await
+        .expect("terminal run");
+    drop(first);
+
+    // Rebind the frozen resource and reopen the committed thread. Context recovery
+    // derives the missing outbox identity from the latest terminal run and inserts
+    // the same durable intent normal after-commit delivery would have produced.
+    let second = SharedHost::new(Arc::new(MemoryHostModel), "stub").with_store_dir(&dir);
+    bind_test_memory(&second, thread, "outbox-store", true);
+    let ctx = second
+        .ctx_for(thread, None)
+        .await
+        .expect("rehydrate thread");
+    let run = ctx
+        .commit
+        .latest_run(&ctx.thread_id)
+        .expect("terminal run record");
+    assert!(
+        second
+            .drain_memory(std::time::Duration::from_secs(10))
+            .await
+    );
+
+    let repository = awaken_session_store::SqliteManagedSessionRepository::open(
+        &dir.join("sessions.db").to_string_lossy(),
+    )
+    .unwrap();
+    let intent = repository
+        .get_extraction(&format!("memory-extraction:{thread}:{}", run.id.0))
+        .await
+        .unwrap()
+        .expect("recovered extraction intent");
+    assert_eq!(
+        intent.status,
+        awaken_protocol_managed::MemoryExtractionStatus::Completed
+    );
+    assert!(
+        second
+            .memory_stores
+            .fs()
+            .get_by_path("outbox-store", "/user-prefs.md")
+            .await
+            .unwrap()
+            .is_some(),
+        "recovered outbox drives the same governed Memory store"
+    );
+
+    drop(second);
+    std::fs::remove_dir_all(dir).ok();
+}
+
 /// Managed Memory is selected only by the frozen Session input; that same handle
 /// serves extraction + recall and an unbound Session sees no store.
 #[tokio::test]
@@ -1068,7 +1141,9 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         .put(b"hello-attached")
         .await
         .expect("put blob");
-    host.grant_file(host.local_workspace(), &file_id);
+    host.register_file_ownership(host.local_workspace(), &file_id)
+        .await
+        .unwrap();
     host.run(None, "t-attach", user("hi"))
         .await
         .expect("first turn");
@@ -1429,7 +1504,9 @@ async fn prepare_session_mounts_effective_file_and_stages_effective_repo() {
     // Seed a file blob and pass the already-resolved File and Repository inputs.
     let binary = vec![0, 0xff, b'R', 0x80, b'\n'];
     let file_id = host.file_store().put(&binary).await.expect("put blob");
-    host.grant_file(host.local_workspace(), &file_id);
+    host.register_file_ownership(host.local_workspace(), &file_id)
+        .await
+        .unwrap();
     let managed = managed_with_resource_source(host.clone());
 
     managed
@@ -1530,7 +1607,9 @@ async fn file_activation_rejects_bytes_that_do_not_match_the_file_id() {
     let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub");
     raw_host.file_store = Arc::new(CorruptFileStore);
     let host = Arc::new(raw_host);
-    host.grant_file(host.local_workspace(), &declared_id);
+    host.register_file_ownership(host.local_workspace(), &declared_id)
+        .await
+        .unwrap();
     let managed = crate::ManagedHost::new(host.clone());
     let mut init = bare_session("a", host.local_workspace());
     init.resources = effective_resources(vec![TestInput {
@@ -1556,7 +1635,9 @@ async fn file_activation_enforces_workspace_ownership_without_iam_policy_logic()
 
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let file_id = host.file_store().put(b"workspace-a").await.unwrap();
-    host.grant_file("workspace-a", &file_id);
+    host.register_file_ownership("workspace-a", &file_id)
+        .await
+        .unwrap();
     let managed = crate::ManagedHost::new(host);
     let mut init = bare_session("a", "workspace-b");
     init.resources = effective_resources(vec![TestInput {

@@ -375,9 +375,9 @@ impl InferenceAccessPublisher for CatalogInferenceAccessPublisher {
 }
 
 impl InferenceExecutorMaterializer for CredentialInferenceMaterializer {
-    fn materialize(
+    fn materialize_pinned(
         &self,
-        activation: &awaken_runtime_contract::RunActivation,
+        model_ref: &str,
         access: &InferenceAccess,
     ) -> Option<Arc<dyn LlmExecutor>> {
         if !access.candidates.is_empty() {
@@ -386,7 +386,6 @@ impl InferenceExecutorMaterializer for CredentialInferenceMaterializer {
                 access: access.clone(),
             }));
         }
-        let model_ref = activation.effective_model_ref();
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(self.materialize(model_ref, access))
         })

@@ -16,7 +16,8 @@ use std::sync::Arc;
 
 use awaken_memory_store::{MemErr, MemoryVersion, MemoryVersionOperation};
 use awaken_protocol_managed::resource_plane::{
-    ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, ResourceState,
+    ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, ResourceKind, ResourceState,
+    ResourceTarget,
 };
 use awaken_tenancy::WorkspaceScope;
 use axum::body::Bytes;
@@ -316,8 +317,38 @@ async fn delete_store(
     Path(id): Path<String>,
 ) -> axum::response::Response {
     let workspace = request_workspace(&state, scope);
-    if state.catalog.memory_store(&workspace, &id).is_none() {
+    let Some(definition) = state.catalog.memory_store(&workspace, &id) else {
         return not_found("memory_store");
+    };
+    let Some(config) =
+        state
+            .catalog
+            .memory_config(&workspace, &id, definition.current_config_version)
+    else {
+        return err(
+            StatusCode::CONFLICT,
+            "current MemoryStore config is missing",
+        );
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default();
+    let retention_ms = config
+        .retention_policy
+        .retention_days
+        .map_or(0, |days| u64::from(days).saturating_mul(86_400_000));
+    if let Err(error) = state
+        .host
+        .request_resource_purge(
+            ResourceTarget::new(&workspace, ResourceKind::MemoryStore, &id),
+            Some(definition.current_config_version.0),
+            now,
+            now.saturating_add(retention_ms),
+        )
+        .await
+    {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
     }
     if let Err(error) = state
         .catalog

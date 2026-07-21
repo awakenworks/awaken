@@ -95,6 +95,7 @@ pub struct ManagedState {
     /// Repository URL/token input into catalog/vault references; the catalog owns
     /// no principal or authorization policy.
     resource_catalog: Option<Arc<dyn awaken_resource_contract::ResourceCatalog>>,
+    resource_purge_scheduler: Option<Arc<dyn awaken_resource_contract::ResourcePurgeScheduler>>,
     sessions: Mutex<HashMap<String, SessionRecord>>,
     /// Serializes manifest mutations so runtime projection and durable aggregate
     /// updates cannot lose a concurrent resources.add/update/delete operation.
@@ -195,6 +196,7 @@ impl ManagedState {
             environments: None,
             config_source: None,
             resource_catalog: None,
+            resource_purge_scheduler: None,
             sessions: Mutex::new(HashMap::new()),
             resource_mutations: tokio::sync::Mutex::new(()),
             owners: Mutex::new(HashMap::new()),
@@ -233,6 +235,17 @@ impl ManagedState {
     #[must_use]
     pub fn with_session_repo(mut self, repo: Arc<dyn ManagedSessionRepository>) -> Self {
         self.sessions_repo = repo;
+        self
+    }
+
+    /// Wire recoverable physical cleanup scheduling. Authorization has already
+    /// completed at the edge; this port receives resource identity only.
+    #[must_use]
+    pub fn with_resource_purge_scheduler(
+        mut self,
+        scheduler: Arc<dyn awaken_resource_contract::ResourcePurgeScheduler>,
+    ) -> Self {
+        self.resource_purge_scheduler = Some(scheduler);
         self
     }
 

@@ -37,8 +37,8 @@ fn migrate_guarded(conn: &Arc<Mutex<Connection>>) -> Result<(), StoreError> {
 
 use crate::repository::{now_nanos, under_prefix, validate_path, validate_size};
 use crate::{
-    MemErr, Memory, MemoryEntry, MemoryRepository, MemoryVersion, MemoryVersionOperation,
-    sha256_hex,
+    MemErr, Memory, MemoryEntry, MemoryPurgeSummary, MemoryRepository, MemoryVersion,
+    MemoryVersionOperation, sha256_hex,
 };
 
 fn mem_err(err: impl std::fmt::Display) -> MemErr {
@@ -804,6 +804,31 @@ impl MemoryRepository for SqliteMemoryRepository {
         })
         .await
     }
+
+    async fn purge_store(&self, store: &str) -> Result<MemoryPurgeSummary, MemErr> {
+        let store = store.to_string();
+        with_conn_mem(&self.conn, move |conn| {
+            let tx = conn.unchecked_transaction().map_err(mem_err)?;
+            let versions_deleted = tx
+                .execute(
+                    &format!("DELETE FROM {NS}_versions WHERE store_id = ?1"),
+                    params![store],
+                )
+                .map_err(mem_err)? as u64;
+            let heads_deleted = tx
+                .execute(
+                    &format!("DELETE FROM {NS}_memories WHERE store_id = ?1"),
+                    params![store],
+                )
+                .map_err(mem_err)? as u64;
+            tx.commit().map_err(mem_err)?;
+            Ok(MemoryPurgeSummary {
+                heads_deleted,
+                versions_deleted,
+            })
+        })
+        .await
+    }
 }
 
 #[cfg(test)]
@@ -829,7 +854,7 @@ mod migration_seam_tests {
 }
 
 #[cfg(test)]
-mod memfs_tests {
+mod memory_repository_tests {
     use super::*;
 
     #[tokio::test]
@@ -1096,7 +1121,7 @@ mod memfs_tests {
 
     #[tokio::test]
     async fn sqlite_memory_repository_survives_reopen() {
-        let dir = std::env::temp_dir().join(format!("awaken-sqlmemfs-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("awaken-sql-memory-{}", std::process::id()));
         std::fs::create_dir_all(&dir).ok();
         let path = dir.join("m.db");
         let path_str = path.to_str().unwrap();

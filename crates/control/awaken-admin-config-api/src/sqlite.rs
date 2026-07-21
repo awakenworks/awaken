@@ -153,6 +153,24 @@ impl AgentInputBindingRepository for SqliteAdminStore {
         let key = format!("{workspace_id}\u{1f}{agent_id}");
         self.get_row("agent_resource", "agent_id", &key)
     }
+    fn list_agent_inputs(&self, workspace_id: &str) -> Vec<AgentInputConfig> {
+        let prefix = format!("{workspace_id}\u{1f}");
+        let conn = self.conn.lock().expect("admin store");
+        let mut statement = conn
+            .prepare(&format!(
+                "SELECT agent_id, data FROM {NS}_agent_resource ORDER BY agent_id"
+            ))
+            .expect("list Agent input configs");
+        statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .expect("query Agent input configs")
+            .filter_map(Result::ok)
+            .filter(|(key, _)| key.starts_with(&prefix))
+            .filter_map(|(_, data)| serde_json::from_str(&data).ok())
+            .collect()
+    }
 }
 
 impl InferenceProfileStore for SqliteAdminStore {

@@ -12,7 +12,6 @@ import _arch_fitness
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 CRATES = REPO_ROOT / "crates"
-
 # Async runtime infrastructure (not domain or provider types) is permitted in
 # neutral crates: async-trait makes the ports dyn-safe, tokio drives execution,
 # tokio-util carries the cancellation token. A model/provider SDK such as genai
@@ -88,6 +87,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # adapter, never here.
     # dev-only: serde_json drives the ScopeId wire (scope_id column) round-trip test.
     "awaken-tenancy": {"serde", "serde_json"},
+    "awaken-inference-contract": {"serde", "serde_json"},
     # The neutral session-runtime ports + signature vocabulary (session runtime, work
     # queue, MCP probe, agent-config source, session repo), extracted from the Managed
     # wire adapter so the host + other implementors depend on a contract/ leaf, not on
@@ -95,6 +95,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # only; names no wire, store, or plane. Ports move here incrementally.
     "awaken-session-contract": {
         "awaken-agent-contract",
+        "awaken-inference-contract",
         # Session resolution consumes only the resources-plane identity/config
         # port. Authorization remains an edge/PDP concern.
         "awaken-resource-contract",
@@ -107,7 +108,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # dev-only: property-based verification of the WorkState wire bijection (ADR-0059).
         "proptest",
     },
-    # Resources-plane ports (FileStore / MemoryFs / SkillStore) +
+    # Resources-plane ports (FileStore / MemoryRepository / SkillStore) +
     # the value/error types in their signatures — mirrors awaken-provisioning-contract.
     # A foundation leaf: no backend, SQL driver, or filesystem, so an adapter reusing
     # these stores depends on the traits alone. The backends re-export it.
@@ -304,6 +305,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     },
     "awaken-runtime-contract": {
         "awaken-agent-contract",
+        "awaken-inference-contract",
         "serde",
         "serde_json",
         "sha2",
@@ -437,17 +439,17 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # no runtime, authorization, workspace, principal, role, or provider type.
     "awaken-memory-store": {
         # The port-only contract this crate implements and re-exports
-        # (MemoryFs + Memory/MemoryEntry/MemErr).
+        # (MemoryRepository + Memory/MemoryEntry/MemErr).
         "awaken-resource-contract",
         "async-trait",
         "thiserror",
         "tokio",
         "rusqlite",
-        # feature `postgres`: the multi-node MemoryFs backend.
+        # feature `postgres`: the multi-node MemoryRepository backend.
         "sqlx",
         "awaken-scoped-migration",
         "awaken-scoped-migration-sqlite",
-        # ADR-0053 path-addressed MemoryFs: content hashing + durable record format.
+        # ADR-0053 path-addressed MemoryRepository: content hashing + durable record format.
         "sha2",
         "serde",
         "serde_json",
@@ -455,7 +457,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tempfile",
     },
     # ADR-0053: the write-through memory-store FUSE server. A `server`-bucket crate
-    # (it depends on the resources-tier `MemoryFs` and links `fuser`), realizing the
+    # (it depends on the resources-tier `MemoryRepository` and links `fuser`), realizing the
     # provisioning-contract `MountSource::MemoryStore` → `Realization::Fuse`.
     "awaken-sandbox-memoryd": {
         "awaken-memory-store",
@@ -725,6 +727,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # from awaken-session-executor so the host stays lean (Step 3b).
     "awaken-session-store": {
         "awaken-session-contract",
+        "awaken-inference-contract",
         # The opaque tenancy ScopeId the in-memory scoped-session store keys its
         # isolation fence by (durable backends bind it as an opaque column).
         "awaken-tenancy",
@@ -1233,7 +1236,6 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-agent-contract",
         "awaken-runtime-contract",
         "awaken-runtime",
-        # Oneshot-forwarding + the worker-facing HTTP dispatch-transport middleware.
         "tower",
         # dev-only: the files/models routers were extracted to this sibling adapter;
         # runtime-host's files + resource-composition HTTP tests drive them.
@@ -1315,10 +1317,10 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tokio",
         "tracing",
     },
+    "awaken-resource-reclaimer": {"awaken-resource-contract", "async-trait", "tokio"},
+    "awaken-resource-store": {"awaken-resource-contract", "async-trait", "rusqlite", "serde_json", "tempfile", "tokio"},
     # Single-machine assembly binary: the composition root. Since the service
-    # layer moved to awaken-session-executor, this bin only composes that host + the
-    # protocol facades + the management plane (admin/vault/IAM) into router
-    # modes; it names no runtime/ext/store crate directly. Nothing depends on it.
+    # layer moved to awaken-session-executor; it composes host/protocol/management router modes.
     # Test-only scenario host (Stage A): the mock models + build_*_router scenario
     # assemblies extracted from awaken-server. Depends on the product crate
     # for its now-pub assembly helpers + production executors.
@@ -1414,7 +1416,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-protocol-transport",
         "awaken-provider-genai",
         "awaken-memory-store",
-        # Composition-only adapter: runtime-host exposes MemoryFs + MemoryMounter
+        # Composition-only adapter: runtime-host exposes MemoryRepository + MemoryMounter
         # ports; awaken-server installs the FUSE/copy implementation without
         # coupling the host substrate to the worker implementation crate.
         "awaken-sandbox-memoryd",
@@ -1518,6 +1520,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # Stage C: the Worker role delegates to the production database-less worker.
         "awaken-worker",
         "awaken-session-executor",
+        "awaken-resource-store",
+        "awaken-resource-reclaimer",
         # The ACP executor: the composition root wires an `acp:*` backend into the Serve
         # host by config (AWAKEN_ACP_ARGV), which the runtime-host plane does not do itself.
         "awaken-run-executor-acp",
