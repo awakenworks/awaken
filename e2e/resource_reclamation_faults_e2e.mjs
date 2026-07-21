@@ -142,6 +142,20 @@ function encoded(value) {
   return Buffer.from(value).toString('hex');
 }
 
+function seedRepository(root) {
+  const work = path.join(root, 'fenced-repository-work');
+  const remote = path.join(root, 'fenced-repository.git');
+  fs.mkdirSync(work, { recursive: true });
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: work });
+  execFileSync('git', ['config', 'user.email', 'reclamation@example.invalid'], { cwd: work });
+  execFileSync('git', ['config', 'user.name', 'reclamation-faults'], { cwd: work });
+  fs.writeFileSync(path.join(work, 'README.md'), 'fenced repository');
+  execFileSync('git', ['add', 'README.md'], { cwd: work });
+  execFileSync('git', ['commit', '-q', '-m', 'seed'], { cwd: work });
+  execFileSync('git', ['clone', '-q', '--bare', work, remote]);
+  return remote;
+}
+
 async function main() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-reclamation-faults-'));
   const lifecycle = path.join(directory, 'resource-lifecycle.db');
@@ -270,6 +284,44 @@ async function main() {
           AND intent_id = 'external-active-fence';`,
     );
 
+    // Repository creation publishes a governed config before activation. If the
+    // same intrinsic fence rejects its Session reference, compensation must retire
+    // that newly-created resource and durably schedule its purge.
+    const repositorySession = await json('POST', 'sessions', {
+      agent: 'assistant',
+      environment_id: 'env_local',
+    });
+    assert.equal(repositorySession.status, 200, JSON.stringify(repositorySession.body));
+    const repositoryBinding = `session:${repositorySession.body.id}:live:0`;
+    const fencedRepository = `managed:${repositorySession.body.id}:repository:${repositoryBinding}`;
+    sqlite(
+      lifecycle,
+      `INSERT INTO resource_reclamation_fences(resource_kind, resource_id, intent_id)
+         VALUES ('repository', ${sqlQuote(fencedRepository)}, 'external-repository-fence');`,
+    );
+    const repositoryActivation = await json(
+      'POST',
+      `sessions/${repositorySession.body.id}/resources`,
+      {
+        type: 'github_repository',
+        url: seedRepository(directory),
+        mount_path: '/workspace/fenced-repository',
+      },
+    );
+    assert.equal(repositoryActivation.status, 500, JSON.stringify(repositoryActivation.body));
+    assert.match(JSON.stringify(repositoryActivation.body), /fenced for physical reclamation/u);
+    assert.deepEqual(
+      (await json('GET', `sessions/${repositorySession.body.id}/resources`)).body.data,
+      [],
+    );
+    assert.equal(intentFor(directory, fencedRepository).status, 'pending');
+    sqlite(
+      lifecycle,
+      `DELETE FROM resource_reclamation_fences
+        WHERE resource_kind = 'repository' AND resource_id = ${sqlQuote(fencedRepository)}
+          AND intent_id = 'external-repository-fence';`,
+    );
+
     const failed = await waitFor(
       directory,
       [releaseFailure, contended, lateReference, durableBlockers, corruptReference, skillId],
@@ -325,6 +377,7 @@ async function main() {
         durableBlockers,
         corruptReference,
         alreadyOwned,
+        fencedRepository,
         skillId,
       ],
       (intent) => intent.status === 'completed',
@@ -333,6 +386,10 @@ async function main() {
     assert.equal(byResource.get(releaseFailure).attempts + 1, intentFor(directory, releaseFailure).attempts);
     assert.equal(intentFor(directory, releaseFailure).receipt.evidence.blob_deleted, false);
     assert.equal(intentFor(directory, skillId).receipt.evidence.versions_deleted, 1);
+    assert.equal(
+      intentFor(directory, fencedRepository).receipt.evidence.local_realizations_deleted,
+      0,
+    );
 
     // A durable adapter must not deserialize malformed-but-well-typed lifecycle
     // state and continue reclaiming. Exercise each invariant through the real
