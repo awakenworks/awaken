@@ -49,6 +49,69 @@ function ensureHandBin() {
   throw new Error('could not resolve the awaken-sandbox binary path');
 }
 
+function readLengthDelimitedJson(stream) {
+  return new Promise((resolve, reject) => {
+    let buffered = Buffer.alloc(0);
+    const onData = (chunk) => {
+      buffered = Buffer.concat([buffered, chunk]);
+      if (buffered.length < 4) return;
+      const length = buffered.readUInt32BE(0);
+      if (buffered.length < 4 + length) return;
+      cleanup();
+      try {
+        resolve(JSON.parse(buffered.subarray(4, 4 + length).toString('utf8')));
+      } catch (error) {
+        reject(error);
+      }
+    };
+    const onError = (error) => {
+      cleanup();
+      reject(error);
+    };
+    const onEnd = () => {
+      cleanup();
+      reject(new Error('stdio hand closed before returning a framed reply'));
+    };
+    const cleanup = () => {
+      stream.off('data', onData);
+      stream.off('error', onError);
+      stream.off('end', onEnd);
+    };
+    stream.on('data', onData);
+    stream.once('error', onError);
+    stream.once('end', onEnd);
+  });
+}
+
+async function exerciseStdioHand(handBin) {
+  const child = spawn(handBin, ['hand', '--stdio'], {
+    stdio: ['pipe', 'pipe', 'inherit'],
+  });
+  const request = Buffer.from(JSON.stringify({
+    correlation_id: 7,
+    operation_id: 'stdio-e2e-operation',
+    call: {
+      call_id: 'stdio-e2e-call',
+      tool_id: 'bash',
+      arguments: { command: 'printf STDIO-HAND-OK' },
+    },
+  }));
+  const frame = Buffer.alloc(4 + request.length);
+  frame.writeUInt32BE(request.length, 0);
+  request.copy(frame, 4);
+  child.stdin.write(frame);
+  const reply = await readLengthDelimitedJson(child.stdout);
+  child.stdin.end();
+  const exit = await new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('exit', (code, signal) => resolve({ code, signal }));
+  });
+  assert.equal(exit.code, 0, `stdio hand exit: ${JSON.stringify(exit)}`);
+  assert.equal(reply.correlation_id, 7);
+  assert.equal(reply.result.status, 'ok', JSON.stringify(reply));
+  assert.match(JSON.stringify(reply.result.output), /STDIO-HAND-OK/);
+}
+
 async function listEvents(client, sessionId) {
   const events = [];
   for await (const ev of client.beta.sessions.events.list(sessionId, { betas: BETAS })) events.push(ev);
@@ -114,6 +177,8 @@ async function main() {
         'E2E PASS: co-located hand — a served run executed bash on the real awaken-sandbox hand over a unix rendezvous and its output round-tripped (C5, ADR-0044).',
       );
     });
+    await exerciseStdioHand(handBin);
+    console.log('  ok: the same execution-plane hand served a framed tool call over stdio');
   } finally {
     delete process.env.AWAKEN_REMOTE_HAND_UNIX;
     hand.kill('SIGINT');
