@@ -77,6 +77,17 @@ impl AsRef<ExecutionScopeRef> for VerifiedExecutionScope {
 #[derive(Debug, Clone)]
 pub struct WorkspaceScope(pub String);
 
+/// The real Workspace into which a configuration publication is installed.
+///
+/// This request-local coordinate is supplied by trusted composition code. It is
+/// deliberately distinct from [`WorkspaceScope`]: a reserved configuration
+/// namespace may be the authoring scope while resources, credentials, and runtime
+/// lookup still belong to this real Workspace. It is neither an authorization
+/// grant nor a persisted resource field; the PEP must authorize the request before
+/// installing it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecutionWorkspace(pub String);
+
 impl ScopeId {
     /// Borrow the underlying id.
     #[must_use]
