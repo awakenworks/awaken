@@ -382,6 +382,17 @@ async function main(): Promise<void> {
       stateBeforeCancel.includes('__a2a_task') && stateBeforeCancel.includes('cancel-task'),
       `awaiting run durably committed its remote task reference: ${stateBeforeCancel}`,
     );
+    // Remove every resident Session/worker before cancellation. The replacement
+    // process must construct the minimal cancellation worker from the pinned
+    // dispatch snapshot; it may not reopen the process-local config registry.
+    const cancelKilled = new Promise<void>((resolve) => server.once('exit', () => resolve()));
+    server.kill('SIGKILL');
+    await cancelKilled;
+    for (const database of dispatchDatabases(storage)) {
+      execFileSync('sqlite3', [database, "UPDATE runtime_dispatch SET lease_until = 0 WHERE status IN ('running', 'awaiting')"]);
+    }
+    server = spawnServer('config', PORT, environment).server;
+    await waitForPort(PORT, 180_000, server);
     const cancelled = await api('POST', `/v1/durable/threads/${cancelThread}/cancel`, {
       run_id: cancelSubmit.body.run_id,
     });
@@ -395,6 +406,7 @@ async function main(): Promise<void> {
       `cancel addressed the pinned remote task exactly once; sent=${JSON.stringify(peer.sent)} reads=${JSON.stringify(peer.reads)}`,
     );
     await waitForDispatchGone(cancelThread, cancelSubmit.body.run_id);
+    await publishRemote(peer.endpoint);
 
     // 4) Every terminal A2A state and every reply carrier is projected without
     // being collapsed to a false success. These are separate Sessions so their
