@@ -1,7 +1,8 @@
-//! Managed Agent wire-object mapping for the configuration HTTP adapter.
+//! Managed Agent wire projection for the config authoring aggregate.
 //!
-//! The domain service owns [`AgentConfig`]; this module is the single seam that
-//! accepts and projects the SDK-compatible JSON shape plus Awaken extensions.
+//! This is the sole translation seam between the SDK-shaped Agent object and
+//! [`AgentConfig`]. Keeping it separate from CRUD/publication prevents protocol
+//! projection details from growing the config-plane orchestration module.
 
 use awaken_config_store::{AgentConfig, ModelSelection, ToolOverride};
 use serde_json::{Value, json};
@@ -21,14 +22,27 @@ fn managed_tool_id(value: &Value) -> Option<String> {
 /// Parse a managed-shaped Agent object into the domain compile input.
 pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig, String> {
     let string = |key: &str| body.get(key).and_then(Value::as_str).map(str::to_string);
-    let model_ref = match body.get("model") {
-        Some(Value::String(id)) => id.clone(),
-        Some(Value::Object(object)) => object
-            .get("id")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string(),
-        _ => String::new(),
+    let (provider_identity_ref, model_ref, backend_ref) = match body.get("model") {
+        Some(Value::String(model)) => (String::new(), model.clone(), String::new()),
+        Some(Value::Object(model)) => (
+            model
+                .get("provider_identity_ref")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            model
+                .get("model_ref")
+                .or_else(|| model.get("id"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            model
+                .get("backend_ref")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        ),
+        _ => (String::new(), String::new(), String::new()),
     };
     let array = |key: &str| {
         body.get(key)
@@ -61,7 +75,7 @@ pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig
         instructions: string("system").unwrap_or_default(),
         max_steps: body.get("max_steps").and_then(Value::as_u64).unwrap_or(8) as usize,
         delegation_limits: Default::default(),
-        model_binding: ModelSelection::pinned("", model_ref, ""),
+        model_binding: ModelSelection::pinned(provider_identity_ref, model_ref, backend_ref),
         tool_ids: array("tools").iter().filter_map(managed_tool_id).collect(),
         plugin_ids: array("plugins")
             .iter()
@@ -104,12 +118,18 @@ pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig
 
 /// Project a stored config into the managed-shaped object and its live state.
 pub fn managed_from_agent_config(config: &AgentConfig, published: bool) -> Value {
+    let binding = config.model_binding.resolved();
     json!({
         "id": config.id,
         "type": "agent",
         "name": config.name,
         "description": config.description,
-        "model": { "id": config.model_binding.resolved().map(|binding| binding.model_ref.clone()).unwrap_or_default() },
+        "model": {
+            "id": binding.map(|binding| binding.model_ref.clone()).unwrap_or_default(),
+            "model_ref": binding.map(|binding| binding.model_ref.clone()).unwrap_or_default(),
+            "provider_identity_ref": binding.map(|binding| binding.provider_identity_ref.clone()).unwrap_or_default(),
+            "backend_ref": binding.map(|binding| binding.backend_ref.clone()).unwrap_or_default(),
+        },
         "system": config.instructions,
         "metadata": config.metadata,
         "tools": config.tool_ids,
@@ -126,4 +146,83 @@ pub fn managed_from_agent_config(config: &AgentConfig, published: bool) -> Value
         "compaction": config.compaction,
         "published": published,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_every_managed_model_shape() {
+        let from_string = agent_config_from_managed("a".into(), &json!({ "model": "gpt-x" }))
+            .expect("string model");
+        assert_eq!(
+            from_string.model_binding.resolved().unwrap().model_ref,
+            "gpt-x"
+        );
+
+        let from_object =
+            agent_config_from_managed("a".into(), &json!({ "model": { "id": "claude" } }))
+                .expect("object model");
+        assert_eq!(
+            from_object.model_binding.resolved().unwrap().model_ref,
+            "claude"
+        );
+
+        let missing = agent_config_from_managed("a".into(), &json!({})).expect("absent model");
+        assert_eq!(missing.model_binding.resolved().unwrap().model_ref, "");
+    }
+
+    #[test]
+    fn complete_runtime_binding_round_trips_losslessly() {
+        let config = agent_config_from_managed(
+            "remote".into(),
+            &json!({
+                "model": {
+                    "id": "remote-model",
+                    "provider_identity_ref": "peer-a",
+                    "backend_ref": "a2a:https://peer.example/v1/a2a"
+                }
+            }),
+        )
+        .unwrap();
+        let binding = config.model_binding.resolved().unwrap();
+        assert_eq!(binding.provider_identity_ref, "peer-a");
+        assert_eq!(binding.model_ref, "remote-model");
+        assert_eq!(binding.backend_ref, "a2a:https://peer.example/v1/a2a");
+
+        let projected = managed_from_agent_config(&config, false);
+        assert_eq!(projected["model"]["id"], "remote-model");
+        assert_eq!(projected["model"]["model_ref"], "remote-model");
+        assert_eq!(projected["model"]["provider_identity_ref"], "peer-a");
+        assert_eq!(
+            projected["model"]["backend_ref"],
+            "a2a:https://peer.example/v1/a2a"
+        );
+    }
+
+    #[test]
+    fn malformed_context_policy_fails_closed() {
+        assert!(agent_config_from_managed("a".into(), &json!({ "context_policy": 123 })).is_err());
+    }
+
+    #[test]
+    fn malformed_tool_overrides_fail_closed() {
+        assert!(agent_config_from_managed("a".into(), &json!({ "tool_overrides": 123 })).is_err());
+    }
+
+    #[test]
+    fn compaction_round_trips_for_lossless_editing() {
+        let config = agent_config_from_managed(
+            "a".into(),
+            &json!({
+                "system": "compact carefully",
+                "compaction": { "window": 32000, "keep_recent": 12 }
+            }),
+        )
+        .unwrap();
+        let projected = managed_from_agent_config(&config, false);
+        assert_eq!(projected["compaction"]["window"], json!(32000));
+        assert_eq!(projected["compaction"]["keep_recent"], json!(12));
+    }
 }
