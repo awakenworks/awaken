@@ -8,7 +8,9 @@
 // Run: node e2e/deployment_config_e2e.mjs
 
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import net from 'node:net';
+import os from 'node:os';
 import { spawn, execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -152,6 +154,44 @@ async function main() {
     `the refusal names the missing dir: ${iamNoDir.stderr}`,
   );
   pass('the config gate refuses embedded IAM with no data dir (would run an ephemeral token store)');
+
+  // Resource storage is one independently resolved backend family. Embedded mode
+  // is selected by the deployment directory itself; a second SQLite/path-shaped
+  // resource setting is ambiguous and must not silently split File/Memory/Skill
+  // data from lifecycle/reference/fence state.
+  const resourceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-resource-config-e2e-'));
+  try {
+    const invalidResourceBackend = await runToExit(bin, {
+      AWAKEN_ROLE: 'serve',
+      AWAKEN_DEPLOYMENT_DATA_DIR: resourceDir,
+      AWAKEN_CONTROL_SEAL_KEY: '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff',
+      AWAKEN_RESOURCE_DATABASE_URL: `${resourceDir}/resources.sqlite`,
+    });
+    assert.notEqual(invalidResourceBackend.code, 0);
+    assert.match(invalidResourceBackend.stderr, /must be a postgres:\/\/ URL/u);
+    pass('resource backend rejects a second embedded path instead of splitting the plane');
+
+    // Transitional inference from the runtime Postgres DSN still chooses the one
+    // shared resource backend, but a local admin/resource catalog would make
+    // cross-node references inconsistent. Refuse before attempting any database
+    // connection, and tell the operator which explicit resource/catalog keys to set.
+    const splitSharedPlane = await runToExit(
+      bin,
+      {
+        AWAKEN_ROLE: 'serve',
+        AWAKEN_DEPLOYMENT_DATA_DIR: resourceDir,
+        AWAKEN_CONTROL_SEAL_KEY: '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff',
+        AWAKEN_RUNTIME_DISPATCH_DATABASE_URL: 'postgres://127.0.0.1:1/never-connect',
+      },
+      { unset: ['AWAKEN_RESOURCE_DATABASE_URL', 'AWAKEN_ADMIN_DB'] },
+    );
+    assert.notEqual(splitSharedPlane.code, 0);
+    assert.match(splitSharedPlane.stderr, /AWAKEN_RESOURCE_DATABASE_URL explicitly/u);
+    assert.match(splitSharedPlane.stderr, /AWAKEN_ADMIN_DB/u);
+    pass('shared runtime refuses a local resource catalog before opening adapters');
+  } finally {
+    fs.rmSync(resourceDir, { recursive: true, force: true });
+  }
 
   // ── 2. Legacy env names still read, with a deprecation warning ───────────
   // A worker with the LEGACY upstream name boots past the gate (valid config) but
