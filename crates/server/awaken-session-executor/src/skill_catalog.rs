@@ -200,9 +200,6 @@ impl SkillCatalog {
         workspace: &str,
         ids: &[String],
     ) -> Result<Vec<ResolvedSkillBinding>, SkillStoreError> {
-        if ids.is_empty() {
-            return Ok(Vec::new());
-        }
         let store = self
             .store
             .as_ref()
@@ -390,15 +387,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn empty_skill_set_needs_no_repository_but_real_references_fail_closed() {
+    async fn empty_pinned_skill_set_needs_no_repository_but_real_references_fail_closed() {
         let catalog = SkillCatalog::new();
-        assert!(
-            catalog
-                .resolve_latest("ws-a", &[])
-                .await
-                .unwrap()
-                .is_empty()
-        );
         assert!(catalog.load_pinned("ws-a", &[]).await.unwrap().is_empty());
         assert!(
             catalog

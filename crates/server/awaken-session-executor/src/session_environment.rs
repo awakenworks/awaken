@@ -258,29 +258,6 @@ impl SessionEnvironment {
         }
     }
 
-    /// Release live MemoryFs/FUSE guards before replacing the Session input
-    /// projection. Container mounts are owned by the container environment and
-    /// require no separate host-side guard teardown.
-    pub(crate) async fn release_memory_mounts(&self) {
-        match self {
-            Self::Workdir(sandbox) => sandbox.release_memory_mounts().await,
-            Self::Namespace(sandbox) => sandbox.release_memory_mounts().await,
-            Self::Container { .. } => {}
-        }
-    }
-
-    /// Revoke the complete runtime-owned resource projection without replacing
-    /// the Session environment itself.
-    pub(crate) async fn clear_resource_projection(&self) -> Result<(), pc::SandboxError> {
-        match self {
-            Self::Workdir(sandbox) => sandbox.clear_resource_projection(),
-            Self::Namespace(sandbox) => sandbox.clear_resource_projection(),
-            Self::Container { sandbox, .. } => {
-                container_files::remove(sandbox.as_ref(), ".mnt").await
-            }
-        }
-    }
-
     /// Stop only the process bindings created while constructing this wrapper.
     /// Used when an adoption races a resident environment with the same handle;
     /// disposing here would incorrectly destroy the shared underlying container.
@@ -938,7 +915,10 @@ mod tests {
             environment.list_files(".mnt").await.unwrap(),
             vec![("live.txt".into(), b"live".to_vec())]
         );
-        environment.clear_resource_projection().await.unwrap();
+        environment
+            .remove_workspace_path(".mnt/live.txt")
+            .await
+            .unwrap();
         assert!(environment.list_files(".mnt").await.unwrap().is_empty());
 
         let change = environment
