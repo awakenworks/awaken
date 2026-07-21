@@ -766,6 +766,10 @@ fn hardened_security_context() -> SecurityContext {
 
 #[async_trait]
 impl ContainerRuntime for K8sRuntime {
+    fn has_native_memory_mounts(&self) -> bool {
+        true
+    }
+
     fn supports_secret_writeback(&self) -> bool {
         true
     }

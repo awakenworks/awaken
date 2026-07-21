@@ -553,10 +553,25 @@ impl ContainerRuntime for DockerRuntime {
             )
             .await
             .map_err(backend)?;
-        self.docker
+        if let Err(error) = self
+            .docker
             .start_container(&created.id, None::<StartContainerOptions<String>>)
             .await
-            .map_err(backend)?;
+        {
+            // `create` succeeded but `start` did not. Remove the named container
+            // before returning so a retry can reuse the stable Session name.
+            let _ = self
+                .docker
+                .remove_container(
+                    &created.id,
+                    Some(RemoveContainerOptions {
+                        force: true,
+                        ..Default::default()
+                    }),
+                )
+                .await;
+            return Err(backend(error));
+        }
         Ok(created.id)
     }
 

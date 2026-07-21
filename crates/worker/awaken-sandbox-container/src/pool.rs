@@ -236,6 +236,10 @@ impl<R: ContainerRuntime + 'static> AgentContainerProvider for WarmContainerPool
 
 #[async_trait]
 impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for WarmContainerPool<R> {
+    fn install_memory_mounter(&self, mounter: Arc<dyn pc::MemoryMounter>) {
+        self.inner.install_memory_mounter(mounter);
+    }
+
     async fn create_environment(
         &self,
         spec: &pc::SandboxSpec,

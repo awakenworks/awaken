@@ -60,7 +60,7 @@ impl SessionEnvironmentProvider {
         match self {
             Self::Workdir(provider) => provider.install_memory_mounter(mounter),
             Self::Namespace(provider) => provider.install_memory_mounter(mounter),
-            Self::Container { .. } => {}
+            Self::Container { provider, .. } => provider.install_memory_mounter(mounter),
         }
     }
 
