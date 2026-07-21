@@ -92,5 +92,9 @@ async fn create_fails_closed_on_a_pids_limit_k8s_cannot_enforce() {
         "the error names the unenforceable limit: {err}"
     );
     // Fail-closed BEFORE the Pod: nothing was created to clean up.
-    assert!(rt.inspect("pids-reject").await.is_err());
+    assert_eq!(
+        rt.inspect("pids-reject").await.unwrap(),
+        ContainerState::Gone,
+        "the fail-closed admission path must leave no Pod behind"
+    );
 }

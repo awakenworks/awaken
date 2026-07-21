@@ -1,7 +1,7 @@
-//! Real Kubernetes end-to-end (k3d): launch a process-as-container agent Pod running a
-//! `busybox` newline-wire fixture, port-forward its agent port, and exchange the ACP
-//! wire — proving the `K8sRuntime` create/inspect/open_channel path against a live
-//! cluster (the multi-node cloud tier of ADR-0041/0056).
+//! Real Kubernetes end-to-end (k3d): launch a Session-owned Pod, exec a `busybox`
+//! newline-wire agent into that same environment, and exchange the ACP wire over the
+//! exec stdio channel. This proves the production `create`/`spawn_agent` path against
+//! a live cluster (the multi-node cloud tier of ADR-0041/0056).
 //!
 //! Gated on the `k8s` feature AND `AWAKEN_K8S_E2E=1` with a reachable cluster
 //! (KUBECONFIG pointing at it). It self-skips otherwise, so a machine without a
@@ -14,9 +14,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
-use awaken_provisioning_contract::SandboxProvider;
-use awaken_sandbox_container::ContainerProvider;
 use awaken_sandbox_container::k8s::K8sRuntime;
+use awaken_sandbox_container::{ContainerProvider, ContainerSandbox, command_of};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 struct CredentialBroker(Mutex<Vec<u8>>);
@@ -33,23 +32,13 @@ impl pc::SecretBroker for CredentialBroker {
     }
 }
 
-/// The busybox `nc` fixture: listen on 8080 and, per connection, read the prompt and
-/// reply with the newline-wire message + turn_end (the same stand-in the Docker e2e
-/// and the namespace-tier ACP e2e use).
+/// A stdio agent fixture. Session-owned Kubernetes environments execute an agent via
+/// the Pod exec subresource; they do not create a second, direct TCP control path.
 fn agent_argv() -> Vec<String> {
     let script = "read _p; \
         printf '%s\\n' '{\"type\":\"message\",\"text\":\"sandboxed reply\"}'; \
         printf '%s\\n' '{\"type\":\"turn_end\",\"reason\":\"natural_end\"}'";
-    vec![
-        "nc".into(),
-        "-lk".into(),
-        "-p".into(),
-        "8080".into(),
-        "-e".into(),
-        "sh".into(),
-        "-c".into(),
-        script.into(),
-    ]
+    vec!["sh".into(), "-c".into(), script.into()]
 }
 
 fn spec(scope: &str) -> pc::SandboxSpec {
@@ -74,16 +63,7 @@ fn cat_mount_argv() -> Vec<String> {
     let script = "read _p; \
         printf '{\"type\":\"message\",\"text\":\"%s\"}\\n' \"$(cat /acp-config/config.toml)\"; \
         printf '%s\\n' '{\"type\":\"turn_end\",\"reason\":\"natural_end\"}'";
-    vec![
-        "nc".into(),
-        "-lk".into(),
-        "-p".into(),
-        "8080".into(),
-        "-e".into(),
-        "sh".into(),
-        "-c".into(),
-        script.into(),
-    ]
+    vec!["sh".into(), "-c".into(), script.into()]
 }
 
 /// The e2e spec with one `Inline` mount the container tier realizes as a ConfigMap volume
@@ -144,16 +124,57 @@ fn grep_binary_argv() -> Vec<String> {
         if grep -q binary-marker-ok /acp-config/config.toml; then M=binary-ok; else M=binary-missing; fi; \
         printf '{\"type\":\"message\",\"text\":\"%s\"}\\n' \"$M\"; \
         printf '%s\\n' '{\"type\":\"turn_end\",\"reason\":\"natural_end\"}'";
-    vec![
-        "nc".into(),
-        "-lk".into(),
-        "-p".into(),
-        "8080".into(),
-        "-e".into(),
-        "sh".into(),
-        "-c".into(),
-        script.into(),
-    ]
+    vec!["sh".into(), "-c".into(), script.into()]
+}
+
+async fn exchange(
+    sandbox: &ContainerSandbox<K8sRuntime>,
+    argv: Vec<String>,
+) -> Result<String, pc::SandboxError> {
+    let process = sandbox
+        .spawn_agent(pc::Command {
+            argv,
+            cwd: String::new(),
+            env: Vec::new(),
+            stdio: pc::Stdio::Piped,
+        })
+        .await?;
+    let mut channel = process.channel;
+    channel.write_all(b"hello\n").await.map_err(|error| {
+        pc::SandboxError::new(format!("write to Kubernetes agent exec: {error}"))
+    })?;
+    channel
+        .flush()
+        .await
+        .map_err(|error| pc::SandboxError::new(format!("flush Kubernetes agent exec: {error}")))?;
+
+    let mut got = String::new();
+    let mut buf = [0_u8; 512];
+    for _ in 0..50 {
+        match tokio::time::timeout(Duration::from_secs(2), channel.read(&mut buf)).await {
+            Ok(Ok(0)) => break,
+            Ok(Ok(n)) => {
+                got.push_str(&String::from_utf8_lossy(&buf[..n]));
+                if got.contains("turn_end") {
+                    break;
+                }
+            }
+            Ok(Err(error)) => {
+                return Err(pc::SandboxError::new(format!(
+                    "read from Kubernetes agent exec: {error}"
+                )));
+            }
+            Err(_) => break,
+        }
+    }
+    let status = process.process.wait().await?;
+    if status.code != Some(0) {
+        return Err(pc::SandboxError::new(format!(
+            "Kubernetes agent exec exited with {:?}",
+            status.code
+        )));
+    }
+    Ok(got)
 }
 
 /// The e2e spec with a `File` whose bytes are NON-UTF-8 — the k8s tier must realize it as a
@@ -236,8 +257,9 @@ async fn a_k8s_pod_rotates_and_persists_a_native_credential_file() {
         .expect("connect to the cluster");
     let provider =
         ContainerProvider::new(Arc::new(runtime), "awaken-bb:1").with_secret_broker(broker.clone());
+    let spec = credential_spec(&scope, refreshed);
     let sandbox = provider
-        .create(&credential_spec(&scope, refreshed))
+        .create_container(&spec)
         .await
         .expect("create Pod with writable native credential");
     let mut ready = false;
@@ -253,8 +275,24 @@ async fn a_k8s_pod_rotates_and_persists_a_native_credential_file() {
         ready,
         "credential Pod reaches Running after its init container"
     );
-    let process = sandbox.spawn(pc::Command::new(["true"])).await.unwrap();
-    process.signal(pc::Signal::Term).await.unwrap();
+    let process = sandbox
+        .spawn_agent(pc::Command {
+            argv: command_of(&spec),
+            cwd: String::new(),
+            env: Vec::new(),
+            stdio: pc::Stdio::Piped,
+        })
+        .await
+        .expect("start the credential-writing agent exec");
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    process
+        .process
+        .signal(pc::Signal::Term)
+        .await
+        .expect("terminate the agent exec");
+    pc::Sandbox::dispose(&sandbox)
+        .await
+        .expect("harvest the credential before deleting the Pod");
     assert_eq!(broker.0.lock().unwrap().as_slice(), refreshed);
     let secret_after = kubectl(&["get", "secret", &secret, "--ignore-not-found"]);
     assert!(
@@ -266,7 +304,7 @@ async fn a_k8s_pod_rotates_and_persists_a_native_credential_file() {
 }
 
 #[tokio::test]
-async fn a_pod_agent_speaks_the_wire_over_a_port_forward() {
+async fn a_pod_agent_speaks_the_wire_over_the_exec_channel() {
     if std::env::var("AWAKEN_K8S_E2E").as_deref() != Ok("1") {
         eprintln!("skipping: set AWAKEN_K8S_E2E=1 with a reachable cluster to run");
         return;
@@ -277,16 +315,12 @@ async fn a_pod_agent_speaks_the_wire_over_a_port_forward() {
         return;
     }
 
-    // A fixed local port the runtime direct-dials; `kubectl port-forward` bridges it to
-    // the Pod's 8080 once the Pod is Running.
-    let local_port: u16 = 18080;
-    let addr = format!("127.0.0.1:{local_port}").parse().unwrap();
     let scope = format!("k8s-e2e-{}", std::process::id());
     let pod = format!("awaken-{scope}");
     // Reap any leftover Pod from an interrupted prior run.
     let _ = kubectl(&["delete", "pod", &pod, "--ignore-not-found", "--now"]);
 
-    let runtime = K8sRuntime::connect("default", addr)
+    let runtime = K8sRuntime::connect("default", "127.0.0.1:1".parse().unwrap())
         .await
         .expect("connect to the cluster");
     let provider = ContainerProvider::new(Arc::new(runtime), "awaken-bb:1");
@@ -296,7 +330,7 @@ async fn a_pod_agent_speaks_the_wire_over_a_port_forward() {
         .await
         .expect("create the agent Pod");
 
-    // Wait for the Pod to be Running before forwarding to it.
+    // The long-lived Session environment must be Running before its agent is exec'd.
     let ready = {
         let mut ok = false;
         for _ in 0..120 {
@@ -310,60 +344,16 @@ async fn a_pod_agent_speaks_the_wire_over_a_port_forward() {
         ok
     };
 
-    // Forward the Pod's agent port to the fixed local port the runtime dials.
-    let mut forward = std::process::Command::new("kubectl")
-        .args([
-            "port-forward",
-            &format!("pod/{pod}"),
-            &format!("{local_port}:8080"),
-        ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("spawn port-forward");
-
-    // Dial + exchange the wire (retry while the forward + nc come up).
-    let mut got = String::new();
-    if ready {
-        let mut channel = None;
-        for _ in 0..100 {
-            match awaken_agent_channel::AgentTransport::open_channel(&sandbox).await {
-                Ok(c) => {
-                    channel = Some(c);
-                    break;
-                }
-                Err(_) => tokio::time::sleep(Duration::from_millis(200)).await,
-            }
-        }
-        if let Some(mut channel) = channel {
-            let _ = channel.write_all(b"hello\n").await;
-            let _ = channel.flush().await;
-            let mut buf = vec![0u8; 512];
-            for _ in 0..50 {
-                match tokio::time::timeout(Duration::from_secs(2), channel.read(&mut buf)).await {
-                    Ok(Ok(0)) => break,
-                    Ok(Ok(n)) => {
-                        got.push_str(&String::from_utf8_lossy(&buf[..n]));
-                        if got.contains("turn_end") {
-                            break;
-                        }
-                    }
-                    _ => break,
-                }
-            }
-        }
-    }
-
-    // Clean up: stop the forward and reap the Pod before asserting.
-    let _ = forward.kill();
-    let _ = forward.wait();
+    assert!(ready, "the agent Pod must reach Running");
+    let got = exchange(&sandbox, agent_argv())
+        .await
+        .expect("exchange ACP frames over the Kubernetes exec channel");
     let _ = pc::Sandbox::dispose(&sandbox).await;
     let _ = kubectl(&["delete", "pod", &pod, "--ignore-not-found", "--now"]);
 
-    assert!(ready, "the agent Pod must reach Running");
     assert!(
         got.contains("sandboxed reply"),
-        "the Pod agent's reply must reach the host over the forwarded port: {got:?}"
+        "the Pod agent's reply must reach the host over exec stdio: {got:?}"
     );
     assert!(got.contains("turn_end"), "the turn completed: {got:?}");
 }
@@ -379,14 +369,12 @@ async fn inline_content_reaches_the_pod_as_a_configmap_volume() {
         return;
     }
 
-    let local_port: u16 = 18081;
-    let addr = format!("127.0.0.1:{local_port}").parse().unwrap();
     let scope = format!("k8s-cfg-{}", std::process::id());
     let pod = format!("awaken-{scope}");
     let marker = "inline-configmap-marker-42";
     let _ = kubectl(&["delete", "pod", &pod, "--ignore-not-found", "--now"]);
 
-    let runtime = K8sRuntime::connect("default", addr)
+    let runtime = K8sRuntime::connect("default", "127.0.0.1:1".parse().unwrap())
         .await
         .expect("connect to the cluster");
     let provider = ContainerProvider::new(Arc::new(runtime), "awaken-bb:1");
@@ -419,6 +407,7 @@ async fn inline_content_reaches_the_pod_as_a_configmap_volume() {
         ok
     };
 
+<<<<<<< HEAD
     let mut forward = std::process::Command::new("kubectl")
         .args([
             "port-forward",
@@ -463,6 +452,12 @@ async fn inline_content_reaches_the_pod_as_a_configmap_volume() {
 
     let _ = forward.kill();
     let _ = forward.wait();
+=======
+    assert!(ready, "the agent Pod must reach Running");
+    let got = exchange(&sandbox, cat_mount_argv())
+        .await
+        .expect("read the ConfigMap mount from the agent exec");
+>>>>>>> c458b9919 (🛡️ test(sandbox): prove worker replacement substrates)
     let _ = pc::Sandbox::dispose(&sandbox).await;
     let _ = kubectl(&["delete", "pod", &pod, "--ignore-not-found", "--now"]);
 
@@ -471,7 +466,6 @@ async fn inline_content_reaches_the_pod_as_a_configmap_volume() {
         cm_data, marker,
         "the ConfigMap must hold the inline content"
     );
-    assert!(ready, "the agent Pod must reach Running");
     // The Pod `cat`ed the ConfigMap-projected file and sent it back — proof the inline
     // content was materialized *inside the Pod*, at the exact mount_path, and readable.
     assert!(
@@ -503,14 +497,12 @@ async fn a_file_resolved_from_the_blob_source_reaches_the_pod() {
         return;
     }
 
-    let local_port: u16 = 18082;
-    let addr = format!("127.0.0.1:{local_port}").parse().unwrap();
     let scope = format!("k8s-file-{}", std::process::id());
     let pod = format!("awaken-{scope}");
     let marker = "file-via-blobsource-99";
     let _ = kubectl(&["delete", "pod", &pod, "--ignore-not-found", "--now"]);
 
-    let runtime = K8sRuntime::connect("default", addr)
+    let runtime = K8sRuntime::connect("default", "127.0.0.1:1".parse().unwrap())
         .await
         .expect("connect to the cluster");
     // The provider resolves the `File` id `blob-k8s` from its seeded BlobSource, then the
@@ -536,6 +528,7 @@ async fn a_file_resolved_from_the_blob_source_reaches_the_pod() {
         ok
     };
 
+<<<<<<< HEAD
     let mut forward = std::process::Command::new("kubectl")
         .args([
             "port-forward",
@@ -580,10 +573,15 @@ async fn a_file_resolved_from_the_blob_source_reaches_the_pod() {
 
     let _ = forward.kill();
     let _ = forward.wait();
+=======
+    assert!(ready, "the agent Pod must reach Running");
+    let got = exchange(&sandbox, cat_mount_argv())
+        .await
+        .expect("read the resolved File mount from the agent exec");
+>>>>>>> c458b9919 (🛡️ test(sandbox): prove worker replacement substrates)
     let _ = pc::Sandbox::dispose(&sandbox).await;
     let _ = kubectl(&["delete", "pod", &pod, "--ignore-not-found", "--now"]);
 
-    assert!(ready, "the agent Pod must reach Running");
     // The Pod read the ConfigMap-projected file whose bytes the provider resolved from the
     // BlobSource by the File's content id — the full by-reference → ConfigMap → pod path.
     assert!(
@@ -603,13 +601,11 @@ async fn a_binary_file_reaches_the_pod_via_configmap_binary_data() {
         return;
     }
 
-    let local_port: u16 = 18084;
-    let addr = format!("127.0.0.1:{local_port}").parse().unwrap();
     let scope = format!("k8s-bin-{}", std::process::id());
     let pod = format!("awaken-{scope}");
     let _ = kubectl(&["delete", "pod", &pod, "--ignore-not-found", "--now"]);
 
-    let runtime = K8sRuntime::connect("default", addr)
+    let runtime = K8sRuntime::connect("default", "127.0.0.1:1".parse().unwrap())
         .await
         .expect("connect to the cluster");
     // Non-UTF-8 bytes: a 0xff/0xfe prefix (so String::from_utf8 fails → binaryData) followed
@@ -637,6 +633,7 @@ async fn a_binary_file_reaches_the_pod_via_configmap_binary_data() {
         ok
     };
 
+<<<<<<< HEAD
     let mut forward = std::process::Command::new("kubectl")
         .args([
             "port-forward",
@@ -681,10 +678,15 @@ async fn a_binary_file_reaches_the_pod_via_configmap_binary_data() {
 
     let _ = forward.kill();
     let _ = forward.wait();
+=======
+    assert!(ready, "the agent Pod must reach Running");
+    let got = exchange(&sandbox, grep_binary_argv())
+        .await
+        .expect("read the binaryData mount from the agent exec");
+>>>>>>> c458b9919 (🛡️ test(sandbox): prove worker replacement substrates)
     let _ = pc::Sandbox::dispose(&sandbox).await;
     let _ = kubectl(&["delete", "pod", &pod, "--ignore-not-found", "--now"]);
 
-    assert!(ready, "the agent Pod must reach Running");
     // The binary file (non-UTF-8 prefix + ASCII marker) reached the Pod intact via binaryData.
     assert!(
         got.contains("binary-ok"),

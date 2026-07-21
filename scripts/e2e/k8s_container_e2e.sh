@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Real Kubernetes (k3d) end-to-end for the container ACP tier: stand up a cluster,
-# load the busybox `nc` fixture image into its node, and run the gated k8s e2e test
+# load the busybox fixture image into its node, and run the gated k8s e2e test
 # (crates/worker/awaken-sandbox-container/tests/k8s_e2e.rs) against it.
 #
-# Verified path: K8sRuntime::connect → create_container (real Pod via the kube API) →
-# Pod Running → kubectl port-forward → open_channel dial → newline ACP wire exchange.
+# Verified path: K8sRuntime::connect → create_container (real Session Pod via the kube
+# API) → Pod Running → exec subresource stdio → newline ACP wire exchange.
 #
 # Prereqs: docker (daemon up), k3d, kubectl, a rust toolchain. Idempotent; cleans up
 # the cluster on exit unless AWAKEN_K8S_KEEP=1.
