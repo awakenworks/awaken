@@ -94,6 +94,7 @@ fn jail_args(
     mut args: Value,
     root: &IsolatedRoot,
     deny_egress: bool,
+    force_namespace: bool,
 ) -> Result<Value, ToolError> {
     let escape = |e: EscapeError| ToolError::Execution(e.to_string());
     let rebase = |args: &mut Value, key: &str, root: &IsolatedRoot| -> Result<(), ToolError> {
@@ -108,11 +109,11 @@ fn jail_args(
         "glob" => rebase(&mut args, "pattern", root)?,
         "bash" => {
             if let Some(Value::String(cmd)) = args.get("command") {
-                let rooted = if deny_egress {
+                let rooted = if deny_egress || force_namespace {
                     // Egress denied: run the command inside a bwrap namespace with no
                     // network (`--unshare-net`), rooted at the environment dir. The
                     // shared bash tool still `sh -c`s this string, which execs bwrap.
-                    bwrap_no_egress(&root.root().to_string_lossy(), cmd)
+                    bwrap_rooted(&root.root().to_string_lossy(), cmd, deny_egress)
                 } else {
                     // Legacy lexical jail (host network shared): unchanged.
                     format!("cd '{}' && {}", root.root().display(), cmd)
@@ -137,8 +138,8 @@ fn sh_squote(s: &str) -> String {
 /// user command reaches the inner shell intact. The flag set is the one validated on
 /// the target host: read-only host userland, a private `/tmp`, `/dev` and `/proc`,
 /// and the environment dir bound read-write as the working directory.
-fn bwrap_no_egress(root: &str, cmd: &str) -> String {
-    let tokens: [&str; 20] = [
+fn bwrap_rooted(root: &str, cmd: &str, deny_egress: bool) -> String {
+    let mut tokens = vec![
         "bwrap",
         "--ro-bind",
         "/",
@@ -149,7 +150,6 @@ fn bwrap_no_egress(root: &str, cmd: &str) -> String {
         "/proc",
         "--tmpfs",
         "/tmp",
-        "--unshare-net",
         "--bind",
         root,
         root,
@@ -160,6 +160,9 @@ fn bwrap_no_egress(root: &str, cmd: &str) -> String {
         "-c",
         cmd,
     ];
+    if deny_egress {
+        tokens.insert(10, "--unshare-net");
+    }
     tokens
         .iter()
         .map(|t| sh_squote(t))
@@ -218,6 +221,8 @@ pub(crate) struct RootedTool {
     root: IsolatedRoot,
     /// Deny network egress for the `bash` tool (from the environment's spec).
     deny_egress: bool,
+    /// Always execute shell inside bwrap, even when network remains shared.
+    force_namespace: bool,
 }
 
 impl RootedTool {
@@ -226,6 +231,20 @@ impl RootedTool {
             inner,
             root,
             deny_egress,
+            force_namespace: false,
+        }
+    }
+
+    pub(crate) fn namespace(
+        inner: Arc<dyn RawTool>,
+        root: IsolatedRoot,
+        deny_egress: bool,
+    ) -> Self {
+        Self {
+            inner,
+            root,
+            deny_egress,
+            force_namespace: true,
         }
     }
 }
@@ -242,6 +261,7 @@ impl HandTool for RootedTool {
             call.arguments,
             &self.root,
             self.deny_egress,
+            self.force_namespace,
         )?;
         let out = self.inner.invoke(call).await?;
         // Narrow to content/error: an environment tool never authors runtime state.
@@ -464,6 +484,19 @@ pub(crate) fn rooted_raw_tools(root: IsolatedRoot, deny_egress: bool) -> Vec<Arc
         .collect()
 }
 
+pub(crate) fn namespace_raw_tools(root: IsolatedRoot, deny_egress: bool) -> Vec<Arc<dyn RawTool>> {
+    executable_hand_tools()
+        .into_iter()
+        .map(|inner| {
+            hand_tool_as_raw(Arc::new(RootedTool::namespace(
+                inner,
+                root.clone(),
+                deny_egress,
+            )))
+        })
+        .collect()
+}
+
 /// A stable content id over provisioning bytes — the pin identity a mount declares
 /// and the provider verifies. BLAKE3 (the same hash the content-addressed store
 /// assigns), so the id is identical to what that store computes and is
@@ -625,18 +658,33 @@ mod tests {
             serde_json::json!({ "pattern": "src/*.rs" }),
             &root,
             false,
+            false,
         )
         .unwrap();
         assert_eq!(g["pattern"], "/env/src/*.rs");
 
-        let b = jail_args("bash", serde_json::json!({ "command": "ls" }), &root, false).unwrap();
+        let b = jail_args(
+            "bash",
+            serde_json::json!({ "command": "ls" }),
+            &root,
+            false,
+            false,
+        )
+        .unwrap();
         assert_eq!(b["command"], "cd '/env' && ls");
     }
 
     #[test]
     fn jail_passes_unknown_tools_through_and_rejects_escapes() {
         let root = IsolatedRoot::new("/env");
-        let u = jail_args("weird", serde_json::json!({ "path": "../x" }), &root, false).unwrap();
+        let u = jail_args(
+            "weird",
+            serde_json::json!({ "path": "../x" }),
+            &root,
+            false,
+            false,
+        )
+        .unwrap();
         assert_eq!(u["path"], "../x"); // unknown tool: untouched
 
         assert!(
@@ -644,7 +692,8 @@ mod tests {
                 "read",
                 serde_json::json!({ "path": "../escape" }),
                 &root,
-                false
+                false,
+                false,
             )
             .is_err()
         );
@@ -658,7 +707,14 @@ mod tests {
         // token single-quoted so the outer `sh -c` hands bwrap a clean argv. This is the
         // deterministic construction the gated isolation e2e can only assert behaviorally.
         let root = IsolatedRoot::new("/env");
-        let out = jail_args("bash", serde_json::json!({ "command": "id" }), &root, true).unwrap();
+        let out = jail_args(
+            "bash",
+            serde_json::json!({ "command": "id" }),
+            &root,
+            true,
+            false,
+        )
+        .unwrap();
         let cmd = out["command"].as_str().unwrap();
         // Runs under bwrap with the network namespace unshared (egress denied).
         assert!(cmd.starts_with("'bwrap' '--ro-bind' '/' '/'"), "got: {cmd}");
@@ -675,12 +731,36 @@ mod tests {
     }
 
     #[test]
+    fn namespace_bash_is_wrapped_even_when_network_is_allowed() {
+        let root = IsolatedRoot::new("/tmp/session-namespace");
+        let out = jail_args(
+            "bash",
+            serde_json::json!({ "command": "pwd" }),
+            &root,
+            false,
+            true,
+        )
+        .unwrap();
+        let command = out["command"].as_str().unwrap();
+        assert!(command.starts_with("'bwrap'"));
+        assert!(command.contains("'/tmp/session-namespace'"));
+        assert!(!command.contains("'--unshare-net'"));
+    }
+
+    #[test]
     fn deny_egress_bash_escapes_an_embedded_quote_so_the_command_cannot_break_out() {
         // Injection safety: a single quote inside the user command must be escaped
         // (`'` → `'\''`) so it cannot terminate the outer `sh -c` quoting and smuggle
         // tokens past the bwrap wrapper.
         let root = IsolatedRoot::new("/env");
-        let out = jail_args("bash", serde_json::json!({ "command": "a'b" }), &root, true).unwrap();
+        let out = jail_args(
+            "bash",
+            serde_json::json!({ "command": "a'b" }),
+            &root,
+            true,
+            false,
+        )
+        .unwrap();
         let cmd = out["command"].as_str().unwrap();
         // The user command lands as a single fully-quoted token with the quote escaped.
         assert!(cmd.ends_with(r#"'-c' 'a'\''b'"#), "got: {cmd}");
