@@ -49,6 +49,19 @@ fn mount(host: Arc<SharedHost>) -> Router {
     let managed = awaken_server::local_managed_state(host.clone(), catalog.clone());
     awaken_server::mount_with_managed_and_resource_catalog(host, managed, catalog)
 }
+
+/// Resource HTTP adapters without the product composition root's local Workspace
+/// injector. This intentionally incomplete test composition proves that File,
+/// MemoryStore, and Skill routes fail closed instead of deriving a Workspace from
+/// the Host. Production always supplies either the local default-scope layer or an
+/// authenticated PEP before these routers.
+pub fn build_unscoped_resource_router() -> Router {
+    let host = Arc::new(SharedHost::new(Arc::new(EchoModel), "unscoped-resource"));
+    Router::new()
+        .merge(files_router(host.clone()))
+        .merge(memory_stores_router(host.clone()))
+        .merge(skills_router(host))
+}
 struct RouteProvider;
 
 impl InferenceExecutorMaterializer for RouteProvider {

@@ -5,12 +5,12 @@
 //! this middleware only applies that intrinsic invariant before subresource handlers.
 //!
 //! This is the data-plane sibling of the config-resource ownership guard, which lives
-//! in the authoring plane (`awaken-control`); the two guards are independent (each
-//! owns its own [`ResourceOwners`] instance).
+//! in the authoring plane (`awaken-control`). Scope selection belongs to the outer
+//! composition/PEP layer; this module only consumes the selected Workspace and
+//! checks the catalog invariant.
 
 use std::sync::Arc;
 
-use awaken_config_store::DEFAULT_SCOPE;
 use awaken_protocol_managed::{ResourceCatalog, WorkspaceScope};
 use axum::Json;
 use axum::extract::{Request, State};
@@ -22,9 +22,9 @@ use axum::response::{IntoResponse, Response};
 /// state, not middleware cache, so it survives restarts and is shared by every
 /// process using the same repository. This is not an authorization policy engine.
 #[derive(Clone)]
-pub struct ResourceOwners(Arc<dyn ResourceCatalog>);
+pub struct MemoryStoreOwnershipLookup(Arc<dyn ResourceCatalog>);
 
-impl ResourceOwners {
+impl MemoryStoreOwnershipLookup {
     #[must_use]
     pub fn over(catalog: Arc<dyn ResourceCatalog>) -> Self {
         Self(catalog)
@@ -49,22 +49,16 @@ fn not_found() -> Response {
 /// Fence cross-tenant access to a memory store. Collection create/list handlers
 /// receive the trusted Workspace and query/write the same Catalog directly.
 pub async fn memory_store_ownership_guard(
-    State(owners): State<ResourceOwners>,
-    mut request: Request,
+    State(owners): State<MemoryStoreOwnershipLookup>,
+    request: Request,
     next: Next,
 ) -> Response {
-    let scope = request_scope(&request);
-    if scope.is_empty() {
+    let Some(scope) = request_scope(&request) else {
         return not_found();
-    }
-    if request.extensions().get::<WorkspaceScope>().is_none() {
-        request
-            .extensions_mut()
-            .insert(WorkspaceScope(scope.clone()));
-    }
+    };
     let path = request.uri().path().to_string();
     if let Some(id) = memory_store_id(&path) {
-        if !owners.owns(&scope, &id) {
+        if !owners.owns(scope, &id) {
             return not_found();
         }
         return next.run(request).await;
@@ -72,12 +66,12 @@ pub async fn memory_store_ownership_guard(
     next.run(request).await
 }
 
-fn request_scope(request: &Request) -> String {
+fn request_scope(request: &Request) -> Option<&str> {
     request
         .extensions()
         .get::<WorkspaceScope>()
-        .map(|w| w.0.clone())
-        .unwrap_or_else(|| DEFAULT_SCOPE.to_string())
+        .map(|workspace| workspace.0.as_str())
+        .filter(|workspace| !workspace.trim().is_empty())
 }
 
 /// The store id in a `/v1/memory_stores/{id}...` path (covers the bare store and all
@@ -104,15 +98,21 @@ mod tests {
     use axum::body::Body;
 
     #[test]
-    fn absent_scope_uses_the_single_tenant_default_but_empty_scope_is_rejected() {
+    fn missing_and_empty_scope_are_rejected_without_a_local_fallback() {
         let request = Request::new(Body::empty());
-        assert_eq!(request_scope(&request), DEFAULT_SCOPE);
+        assert_eq!(request_scope(&request), None);
 
         let mut request = Request::new(Body::empty());
         request
             .extensions_mut()
             .insert(WorkspaceScope(String::new()));
-        assert!(request_scope(&request).is_empty());
+        assert_eq!(request_scope(&request), None);
+
+        let mut request = Request::new(Body::empty());
+        request
+            .extensions_mut()
+            .insert(WorkspaceScope("workspace-a".into()));
+        assert_eq!(request_scope(&request), Some("workspace-a"));
     }
 
     #[test]
@@ -161,7 +161,7 @@ mod tests {
                 },
             )
             .unwrap();
-        let owners = ResourceOwners::over(catalog);
+        let owners = MemoryStoreOwnershipLookup::over(catalog);
         assert!(owners.owns("tenant-a", "memstore_1"));
         assert!(!owners.owns("tenant-b", "memstore_1"));
         assert!(!owners.owns("tenant-a", "unknown"));

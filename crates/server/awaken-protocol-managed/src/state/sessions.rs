@@ -5,36 +5,6 @@ use super::*;
 use crate::types::McpServer;
 use serde_json::json;
 
-struct EmptyResourceConfigSource;
-
-impl awaken_resource_contract::ResourceConfigSource for EmptyResourceConfigSource {
-    fn resolve_memory_store(
-        &self,
-        _workspace_id: &str,
-        id: &str,
-    ) -> Result<
-        awaken_resource_contract::ResolvedMemoryStoreConfig,
-        awaken_resource_contract::ResourceCatalogError,
-    > {
-        Err(awaken_resource_contract::ResourceCatalogError::NotFound(
-            id.into(),
-        ))
-    }
-
-    fn resolve_repository(
-        &self,
-        _workspace_id: &str,
-        id: &str,
-    ) -> Result<
-        awaken_resource_contract::ResolvedRepositoryConfig,
-        awaken_resource_contract::ResourceCatalogError,
-    > {
-        Err(awaken_resource_contract::ResourceCatalogError::NotFound(
-            id.into(),
-        ))
-    }
-}
-
 fn lifecycle_fact(
     id: String,
     session_id: &str,
@@ -272,20 +242,14 @@ impl ManagedState {
         }
         // Sole composition/resolution point. Runtime receives this persisted,
         // secret-free manifest and never re-opens Agent or Resource config stores.
-        let mut resolved_resources = match self.resource_catalog.as_deref() {
-            Some(catalog) => awaken_session_contract::SessionInputResolver::resolve_inputs(
-                &owner_scope,
-                catalog,
-                agent_defaults,
-                &attachments,
-            ),
-            None => awaken_session_contract::SessionInputResolver::resolve_inputs(
-                &owner_scope,
-                &EmptyResourceConfigSource,
-                agent_defaults,
-                &attachments,
-            ),
-        }
+        let mut resolved_resources = awaken_session_contract::SessionInputResolver::resolve_inputs(
+            &owner_scope,
+            self.resource_catalog
+                .as_deref()
+                .map(|catalog| catalog as &dyn awaken_resource_contract::ResourceConfigSource),
+            agent_defaults,
+            &attachments,
+        )
         .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
         if let Some(view) = &config_view {
             resolved_resources.skills = Some(

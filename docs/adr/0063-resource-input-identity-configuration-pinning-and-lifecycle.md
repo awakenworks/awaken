@@ -147,6 +147,29 @@ stores never receive a principal, credential, role, decision, or policy object.
 No-login local mode omits the PEP and injects the platform-provisioned default
 Workspace, preserving the same resource contracts without a fake identity.
 
+All File, MemoryStore, and Skill HTTP adapters consume the shared
+`RequiredWorkspaceScope` extractor. Missing or empty scope fails as not found;
+an adapter never falls back to `Host.local_workspace`, parses an API key, or
+constructs a Workspace. The local composition root stamps its hidden default
+Workspace once, while authenticated compositions stamp the Workspace selected by
+their PEP. Catalog ownership middleware consumes that stamp without rewriting it.
+
+`ResourceConfigSource` is deliberately a narrow resource-domain port. Its
+implementations verify the trusted Workspace ownership edge, current lifecycle
+state, and current-version integrity internally, then return only the selected
+`MemoryStoreConfigVersion` or `RepositoryConfigVersion`. They do not return an
+authorization envelope or duplicate the resource definition into Session state.
+Consequently an API/composition PEP can be embedded locally or backed by a remote
+IAM service without changing the catalog, resolver, or data-plane contracts.
+
+Activation and later Memory writes use the separate `ResourceBindingValidator`.
+It receives the trusted Workspace, resource id, and already-frozen
+`ConfigVersion`; it verifies current ownership/lifecycle plus the existence and
+identity of that exact immutable version, returning no configuration. Runtime
+therefore never calls `resolve_*` a second time and never substitutes the current
+version for the Session pin. This validator is a resource-invariant port, not a
+PEP or PDP: it has no principal, role, API key, policy, or allow/deny decision.
+
 ### D5: Lifecycle stages have explicit component owners
 
 | Stage | Owning component | Responsibility |
@@ -155,7 +178,7 @@ Workspace, preserving the same resource contracts without a fake identity.
 | Bind | Agent configuration service / Managed Session adapter | persist Agent defaults or accept temporary Session attachments; carry identity, mount, access, instructions only |
 | Resolve | `SessionInputResolver` + Skill resource resolver in the Session control plane | merge inputs once; resolve current config/Skill versions; validate paths/collisions; produce secret-free `ResolvedSessionResources` |
 | Authorize | front-door PEP + authorization PDP/PIP | evaluate principal, action, Workspace, target facts, and active policy; return allow/deny/obligations |
-| Activate | `SessionResourceCoordinator` + `SandboxProvider` + per-kind realizer | create activation records; materialize File, open Memory, clone Repo; inject short-lived credentials |
+| Activate | `SessionResourceCoordinator` + `ResourceBindingValidator` + `SandboxProvider` + per-kind realizer | validate the exact frozen config without re-resolving current; create activation records; materialize File, open Memory, clone Repo; inject short-lived credentials |
 | Use | sandbox tools plus `FileStore`, `ScopedMemoryStore`, and Git/MCP adapters | enforce read/write capability and resource-specific consistency during the Session |
 | Release | `SessionResourceCoordinator` + sandbox manager | release handles and credentials, preserve governed outputs, dispose Session-local material |
 | Reclaim | `ResourceReclaimer` + per-kind repository/store | reconcile crashed activations; enforce retention; purge only after references and leases are gone |
@@ -231,12 +254,13 @@ mode or policy. Authentication and authorization remain independently deployable
 at the PEP/PDP edge.
 
 This separation is mechanically enforced by
-`check_resource_authorization_isolation`: every resource-plane crate is denied
-IAM/authz dependencies (including Cargo package aliases), authorization-domain
-types and fields are denied in production Rust, and the same fields are denied
-in resource SQL migrations. The check intentionally permits Workspace because it
-is the resource partition/ownership coordinate stamped by the PEP, not evidence
-that authorization was granted.
+`check_resource_authorization_isolation`: every dedicated resource-plane crate
+is denied IAM/authz dependencies (including Cargo package aliases); resource
+application modules living in mixed-role crates are scanned explicitly;
+authorization-domain types and fields are denied in production Rust; and the
+same fields are denied in resource SQL migrations. The check intentionally
+permits Workspace because it is the resource partition/ownership coordinate
+stamped by the PEP, not evidence that authorization was granted.
 
 `ResourcePlanePorts` injects the four neutral ports atomically when the Host is
 constructed. A shared deployment therefore never opens an unused local
@@ -264,6 +288,14 @@ handle, pinned config policy, and maximum read/write access. A Session without a
 MemoryStore binding has no recall or extraction. The removed
 `with_memory(mem_dir)`/`memory_scope_root` path is not a fallback in local mode;
 local mode provisions and binds a normal store under its hidden default Workspace.
+
+Memory behavior is mutable configuration, not mutable content and not IAM policy.
+The Workspace-scoped Memory management API reads current or historical config and
+publishes recall/extraction/retention changes with an explicit
+`expected_config_version` CAS. Publication appends one immutable config and moves
+the current pointer atomically; it never snapshots Memory entries. Descriptive
+definition updates remain a separate operation so a rejected CAS has no partial
+metadata side effect.
 
 Reliable extraction is Session application work, not part of the Memory resource
 aggregate and not an authorization decision. A durable `MemoryExtractionIntent`

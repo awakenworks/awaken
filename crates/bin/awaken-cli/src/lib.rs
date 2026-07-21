@@ -1076,7 +1076,7 @@ async fn management_router_over(
     let managed_state = Arc::new(
         ManagedState::new(
             ManagedHost::new(host.clone())
-                .with_resource_configs(resource_catalog.clone())
+                .with_resource_validator(resource_catalog.clone())
                 .with_mcp(credentials, secrets, mcp_store),
         )
         .with_vaults(vault_state)

@@ -226,39 +226,69 @@ impl MemoryRepository for VolatileMemoryRepository {
         Ok(memory)
     }
 
-    async fn update(
+    async fn update_head(
         &self,
         store: &str,
         id: &str,
         content: &str,
         base_sha: &str,
+        target_path: Option<&str>,
     ) -> Result<Memory, MemErr> {
         validate_size(content)?;
+        if let Some(path) = target_path {
+            validate_path(path)?;
+        }
         let new_sha = sha256_hex(content);
         let mut guard = self.inner.lock().unwrap();
         let store_map = guard
             .records
             .get_mut(store)
             .ok_or_else(|| MemErr::NotFound(id.to_string()))?;
-        let record = store_map
-            .values_mut()
-            .find(|r| r.id == id)
+        let source_path = store_map
+            .iter()
+            .find_map(|(path, record)| (record.id == id).then(|| path.clone()))
             .ok_or_else(|| MemErr::NotFound(id.to_string()))?;
-        if record.sha != base_sha {
-            // Idempotent: the caller's write already matches the live content.
-            if record.sha == new_sha {
-                return Ok(record.to_memory(true));
+        let requested_path = target_path.unwrap_or(&source_path);
+        let current = store_map
+            .get(&source_path)
+            .expect("source path was discovered under the same lock");
+        let already_current = current.sha == new_sha && source_path == requested_path;
+        if current.sha != base_sha {
+            if already_current {
+                return Ok(current.to_memory(true));
             }
             return Err(MemErr::Conflict {
-                current: Box::new(record.to_memory(true)),
+                current: Box::new(current.to_memory(true)),
             });
         }
+        if already_current {
+            return Ok(current.to_memory(true));
+        }
+
+        let mut record = store_map
+            .remove(&source_path)
+            .expect("source path was discovered under the same lock");
+        let displaced = if requested_path == source_path {
+            None
+        } else {
+            store_map.remove(requested_path)
+        };
+        record.path = requested_path.to_string();
         record.content = content.to_string();
         record.sha = new_sha;
         record.version += 1;
         record.updated = now_nanos();
-        let record = record.clone();
         let memory = record.to_memory(true);
+        store_map.insert(record.path.clone(), record.clone());
+        if let Some(displaced) = displaced {
+            self.append_version(
+                &mut guard,
+                store,
+                &displaced,
+                MemoryVersionOperation::Deleted,
+                None,
+            );
+        }
         self.append_version(
             &mut guard,
             store,
@@ -764,6 +794,94 @@ mod tests {
         );
     }
 
+    /// A public API head update is one aggregate transaction: path validation and
+    /// CAS happen before any write; content + rename-replace + history commit once.
+    async fn atomic_head_update_conformance(fs: &dyn MemoryRepository) {
+        let store = "atomic-head";
+        let source = fs.create(store, "/source.md", "v1").await.unwrap();
+        let destination = fs.create(store, "/destination.md", "old").await.unwrap();
+        let initial_versions = fs.list_versions(store).await.unwrap().len();
+
+        assert!(matches!(
+            fs.update_head(
+                store,
+                &source.id,
+                "must-not-commit",
+                &source.content_sha256,
+                Some("relative.md"),
+            )
+            .await,
+            Err(MemErr::InvalidPath(_))
+        ));
+        assert_eq!(
+            fs.get_by_path(store, "/source.md")
+                .await
+                .unwrap()
+                .unwrap()
+                .content
+                .as_deref(),
+            Some("v1")
+        );
+        assert_eq!(
+            fs.list_versions(store).await.unwrap().len(),
+            initial_versions
+        );
+
+        assert!(matches!(
+            fs.update_head(store, &source.id, "v1", "stale", Some("/moved.md"),)
+                .await,
+            Err(MemErr::Conflict { .. })
+        ));
+        assert!(fs.get_by_path(store, "/source.md").await.unwrap().is_some());
+        assert!(fs.get_by_path(store, "/moved.md").await.unwrap().is_none());
+        assert_eq!(
+            fs.list_versions(store).await.unwrap().len(),
+            initial_versions
+        );
+
+        let updated = fs
+            .update_head(
+                store,
+                &source.id,
+                "v2",
+                &source.content_sha256,
+                Some("/destination.md"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated.id, source.id);
+        assert_eq!(updated.path, "/destination.md");
+        assert_eq!(updated.content.as_deref(), Some("v2"));
+        assert_eq!(updated.version, source.version + 1);
+        assert!(fs.get_by_path(store, "/source.md").await.unwrap().is_none());
+        assert_ne!(updated.id, destination.id);
+        let versions = fs.list_versions(store).await.unwrap();
+        assert_eq!(versions.len(), initial_versions + 2);
+        assert_eq!(
+            versions[initial_versions].operation,
+            MemoryVersionOperation::Deleted
+        );
+        assert_eq!(versions[initial_versions].memory_id, destination.id);
+        assert_eq!(
+            versions[initial_versions + 1].operation,
+            MemoryVersionOperation::Modified
+        );
+        assert_eq!(versions[initial_versions + 1].memory_id, source.id);
+
+        let idempotent = fs
+            .update_head(
+                store,
+                &source.id,
+                "v2",
+                "stale-after-success",
+                Some("/destination.md"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(idempotent.version, updated.version);
+        assert_eq!(fs.list_versions(store).await.unwrap().len(), versions.len());
+    }
+
     #[tokio::test]
     async fn in_memory_extended_conformance() {
         extended_conformance(&VolatileMemoryRepository::new()).await;
@@ -777,6 +895,11 @@ mod tests {
     #[tokio::test]
     async fn in_memory_purge_conformance() {
         purge_conformance(&VolatileMemoryRepository::new()).await;
+    }
+
+    #[tokio::test]
+    async fn in_memory_atomic_head_update_conformance() {
+        atomic_head_update_conformance(&VolatileMemoryRepository::new()).await;
     }
 
     /// The `NotFound` paths of `update`/`rename`, over any backend.

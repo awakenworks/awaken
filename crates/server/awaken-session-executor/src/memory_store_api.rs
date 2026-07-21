@@ -16,12 +16,11 @@ use std::sync::Arc;
 
 use awaken_memory_store::{MemErr, MemoryVersion, MemoryVersionOperation};
 use awaken_protocol_managed::resource_plane::{
-    ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, ResourceKind, ResourceState,
-    ResourceTarget,
+    ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, ResourceCatalogError,
+    ResourceKind, ResourceState, ResourceTarget,
 };
-use awaken_tenancy::WorkspaceScope;
 use axum::body::Bytes;
-use axum::extract::{Extension, Path, Query, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
@@ -29,6 +28,7 @@ use axum::{Json, Router};
 use serde_json::{Value, json};
 
 use crate::host::SharedHost;
+use crate::resource_scope::RequiredWorkspaceScope;
 
 const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
 
@@ -100,6 +100,16 @@ fn project_def(def: &MemoryStoreDefinition) -> Value {
     })
 }
 
+fn project_config(config: &MemoryStoreConfigVersion) -> Value {
+    json!({
+        "memory_store_id": config.memory_store_id,
+        "version": config.version.0,
+        "recall_policy": config.recall_policy,
+        "extraction_policy": config.extraction_policy,
+        "retention_policy": config.retention_policy,
+    })
+}
+
 struct MemoryStoreApi {
     host: Arc<SharedHost>,
     /// Unified resource definition/configuration/lifecycle repository consumed by
@@ -131,6 +141,14 @@ pub fn memory_stores_router_with_catalog(
             "/v1/memory_stores/{id}",
             get(get_store).post(update_store).delete(delete_store),
         )
+        .route(
+            "/v1/memory_stores/{id}/config",
+            get(get_store_config).post(publish_store_config),
+        )
+        .route(
+            "/v1/memory_stores/{id}/config_versions/{version}",
+            get(get_store_config_version),
+        )
         .route("/v1/memory_stores/{id}/archive", post(archive_store))
         .route(
             "/v1/memory_stores/{id}/memories",
@@ -160,11 +178,19 @@ fn not_found(what: &str) -> axum::response::Response {
     err(StatusCode::NOT_FOUND, format!("{what} not found"))
 }
 
-fn request_workspace(state: &MemoryStoreApi, scope: Option<Extension<WorkspaceScope>>) -> String {
-    scope.map_or_else(
-        || state.host.local_workspace().to_string(),
-        |Extension(scope)| scope.0,
-    )
+fn catalog_error(error: ResourceCatalogError) -> axum::response::Response {
+    let status = match error {
+        ResourceCatalogError::AlreadyExists(_) | ResourceCatalogError::ConfigConflict { .. } => {
+            StatusCode::CONFLICT
+        }
+        ResourceCatalogError::NotFound(_) | ResourceCatalogError::ConfigNotFound { .. } => {
+            StatusCode::NOT_FOUND
+        }
+        ResourceCatalogError::NotActive { .. } => StatusCode::CONFLICT,
+        ResourceCatalogError::Invalid(_) => StatusCode::BAD_REQUEST,
+        ResourceCatalogError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    err(status, error.to_string())
 }
 
 fn active_store_exists(state: &MemoryStoreApi, workspace: &str, id: &str) -> bool {
@@ -191,7 +217,7 @@ fn mint_memory_store_id() -> String {
 /// identity/existence while MemoryRepository owns only path-addressed content.
 async fn create_store(
     State(state): State<Arc<MemoryStoreApi>>,
-    scope: Option<Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     body: Bytes,
 ) -> impl IntoResponse {
     let parsed: Value = if body.is_empty() {
@@ -199,7 +225,6 @@ async fn create_store(
     } else {
         serde_json::from_slice(&body).unwrap_or(Value::Null)
     };
-    let workspace = request_workspace(&state, scope);
     let id = mint_memory_store_id();
     let def = MemoryStoreDefinition {
         id: id.clone(),
@@ -249,10 +274,9 @@ async fn create_store(
 /// is exposed only through `/memories`, the same MemoryRepository used by execution.
 async fn get_store(
     State(state): State<Arc<MemoryStoreApi>>,
-    scope: Option<Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
 ) -> axum::response::Response {
-    let workspace = request_workspace(&state, scope);
     let Some(def) = state.catalog.memory_store(&workspace, &id) else {
         return not_found("memory_store");
     };
@@ -261,9 +285,8 @@ async fn get_store(
 
 async fn list_stores(
     State(state): State<Arc<MemoryStoreApi>>,
-    scope: Option<Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
 ) -> impl IntoResponse {
-    let workspace = request_workspace(&state, scope);
     let data: Vec<Value> = state
         .catalog
         .list_memory_stores(&workspace)
@@ -278,11 +301,10 @@ async fn list_stores(
 
 async fn update_store(
     State(state): State<Arc<MemoryStoreApi>>,
-    scope: Option<Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
     Json(body): Json<Value>,
 ) -> axum::response::Response {
-    let workspace = request_workspace(&state, scope);
     let Some(mut def) = state.catalog.memory_store(&workspace, &id) else {
         return not_found("memory_store");
     };
@@ -311,12 +333,125 @@ async fn update_store(
     (StatusCode::OK, Json(projected)).into_response()
 }
 
-async fn delete_store(
+/// Return the currently selected immutable MemoryStore configuration. Mutable
+/// Memory entries are deliberately absent: only recall/extraction/retention
+/// behavior is versioned here.
+async fn get_store_config(
     State(state): State<Arc<MemoryStoreApi>>,
-    scope: Option<Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
 ) -> axum::response::Response {
-    let workspace = request_workspace(&state, scope);
+    let Some(definition) = state.catalog.memory_store(&workspace, &id) else {
+        return not_found("memory_store");
+    };
+    let Some(config) =
+        state
+            .catalog
+            .memory_config(&workspace, &id, definition.current_config_version)
+    else {
+        return err(
+            StatusCode::CONFLICT,
+            "current MemoryStore config is missing",
+        );
+    };
+    (StatusCode::OK, Json(project_config(&config))).into_response()
+}
+
+/// Read an immutable historical configuration by ordinal. This is configuration
+/// audit/retry data, not a snapshot of mutable Memory content.
+async fn get_store_config_version(
+    State(state): State<Arc<MemoryStoreApi>>,
+    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
+    Path((id, version)): Path<(String, String)>,
+) -> axum::response::Response {
+    let Ok(version) = version.parse::<u64>() else {
+        return err(StatusCode::BAD_REQUEST, "config version must be an integer");
+    };
+    let Some(config) = state
+        .catalog
+        .memory_config(&workspace, &id, ConfigVersion(version))
+    else {
+        return not_found("memory_store config");
+    };
+    (StatusCode::OK, Json(project_config(&config))).into_response()
+}
+
+/// Publish the next immutable MemoryStore configuration with an explicit CAS
+/// fence. Policy values are resource behavior, not authorization policy.
+async fn publish_store_config(
+    State(state): State<Arc<MemoryStoreApi>>,
+    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
+    Path(id): Path<String>,
+    Json(body): Json<Value>,
+) -> axum::response::Response {
+    let Some(definition) = state.catalog.memory_store(&workspace, &id) else {
+        return not_found("memory_store");
+    };
+    let Some(expected) = body
+        .get("expected_config_version")
+        .and_then(Value::as_u64)
+        .map(ConfigVersion)
+    else {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "expected_config_version must be an integer",
+        );
+    };
+    let Some(mut config) =
+        state
+            .catalog
+            .memory_config(&workspace, &id, definition.current_config_version)
+    else {
+        return err(
+            StatusCode::CONFLICT,
+            "current MemoryStore config is missing",
+        );
+    };
+    if !["recall_policy", "extraction_policy", "retention_policy"]
+        .iter()
+        .any(|key| body.get(key).is_some())
+    {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "config update has no policy fields",
+        );
+    }
+    if let Some(value) = body.get("recall_policy") {
+        config.recall_policy = match serde_json::from_value(value.clone()) {
+            Ok(policy) => policy,
+            Err(error) => return err(StatusCode::BAD_REQUEST, error.to_string()),
+        };
+    }
+    if let Some(value) = body.get("extraction_policy") {
+        config.extraction_policy = match serde_json::from_value(value.clone()) {
+            Ok(policy) => policy,
+            Err(error) => return err(StatusCode::BAD_REQUEST, error.to_string()),
+        };
+    }
+    if let Some(value) = body.get("retention_policy") {
+        config.retention_policy = match serde_json::from_value(value.clone()) {
+            Ok(policy) => policy,
+            Err(error) => return err(StatusCode::BAD_REQUEST, error.to_string()),
+        };
+    }
+    let Some(next) = expected.checked_next() else {
+        return err(StatusCode::BAD_REQUEST, "config version is exhausted");
+    };
+    config.version = next;
+    match state
+        .catalog
+        .publish_memory_config(&workspace, expected, config.clone())
+    {
+        Ok(()) => (StatusCode::OK, Json(project_config(&config))).into_response(),
+        Err(error) => catalog_error(error),
+    }
+}
+
+async fn delete_store(
+    State(state): State<Arc<MemoryStoreApi>>,
+    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
+    Path(id): Path<String>,
+) -> axum::response::Response {
     let Some(definition) = state.catalog.memory_store(&workspace, &id) else {
         return not_found("memory_store");
     };
@@ -365,10 +500,9 @@ async fn delete_store(
 
 async fn archive_store(
     State(state): State<Arc<MemoryStoreApi>>,
-    scope: Option<Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
 ) -> axum::response::Response {
-    let workspace = request_workspace(&state, scope);
     let Some(mut def) = state.catalog.memory_store(&workspace, &id) else {
         return not_found("memory_store");
     };
@@ -416,7 +550,7 @@ fn memory_conflict() -> axum::response::Response {
 
 async fn create_memory(
     State(state): State<Arc<MemoryStoreApi>>,
-    scope: Option<Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
     Json(body): Json<Value>,
 ) -> axum::response::Response {
@@ -427,7 +561,6 @@ async fn create_memory(
         .get("content")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let workspace = request_workspace(&state, scope);
     if !active_store_exists(&state, &workspace, &id) {
         return not_found("memory_store");
     }
@@ -449,11 +582,10 @@ async fn create_memory(
 
 async fn list_memories(
     State(state): State<Arc<MemoryStoreApi>>,
-    scope: Option<Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> axum::response::Response {
-    let workspace = request_workspace(&state, scope);
     if !active_store_exists(&state, &workspace, &id) {
         return not_found("memory_store");
     }
@@ -501,10 +633,9 @@ async fn list_memories(
 
 async fn get_memory(
     State(state): State<Arc<MemoryStoreApi>>,
-    scope: Option<Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path((id, mid)): Path<(String, String)>,
 ) -> axum::response::Response {
-    let workspace = request_workspace(&state, scope);
     if !active_store_exists(&state, &workspace, &id) {
         return not_found("memory_store");
     }
@@ -520,14 +651,14 @@ async fn get_memory(
 /// `POST /v1/memory_stores/:id/memories/:mid` — update a memory's content (and/or
 /// path). A `content_sha256` precondition that does not match the durable head is a
 /// `409` (the SDK's `memory_precondition_failed_error`), enforced as a compare-and-
-/// swap in the store. Appends a `modified` version.
+/// swap in the store. Content, optional rename-replace, and history are one atomic
+/// aggregate operation and append one `modified` version for the updated memory.
 async fn update_memory(
     State(state): State<Arc<MemoryStoreApi>>,
-    scope: Option<Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path((id, mid)): Path<(String, String)>,
     Json(body): Json<Value>,
 ) -> axum::response::Response {
-    let workspace = request_workspace(&state, scope);
     if !active_store_exists(&state, &workspace, &id) {
         return not_found("memory_store");
     }
@@ -549,44 +680,29 @@ async fn update_memory(
         .and_then(Value::as_str)
         .map(str::to_string)
         .unwrap_or_else(|| current.content.clone().unwrap_or_default());
+    let target_path = body.get("path").and_then(Value::as_str);
 
-    let updated = match state
+    match state
         .host
         .memory_stores
         .fs()
-        .update(&id, &mid, &new_content, &base_sha)
+        .update_head(&id, &mid, &new_content, &base_sha, target_path)
         .await
     {
-        Ok(updated) => updated,
-        Err(MemErr::Conflict { .. }) => return memory_conflict(),
-        Err(MemErr::TooLarge) => return err(StatusCode::BAD_REQUEST, "memory content too large"),
-        Err(_) => return not_found("memory"),
-    };
-    // An optional path change is a rename on the store (keeps the id + open fds).
-    let final_mem = match body.get("path").and_then(Value::as_str) {
-        Some(new_path) if new_path != path => {
-            match state
-                .host
-                .memory_stores
-                .fs()
-                .rename(&id, &path, new_path)
-                .await
-            {
-                Ok(m) => m,
-                Err(e) => return err(StatusCode::BAD_REQUEST, e.to_string()),
-            }
-        }
-        _ => updated,
-    };
-    (StatusCode::OK, Json(project_memory(&final_mem, &id))).into_response()
+        Ok(updated) => (StatusCode::OK, Json(project_memory(&updated, &id))).into_response(),
+        Err(MemErr::Conflict { .. }) => memory_conflict(),
+        Err(MemErr::TooLarge) => err(StatusCode::BAD_REQUEST, "memory content too large"),
+        Err(MemErr::InvalidPath(_)) => err(StatusCode::BAD_REQUEST, "invalid memory path"),
+        Err(MemErr::NotFound(_)) => not_found("memory"),
+        Err(error) => err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
 }
 
 async fn delete_memory(
     State(state): State<Arc<MemoryStoreApi>>,
-    scope: Option<Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path((id, mid)): Path<(String, String)>,
 ) -> axum::response::Response {
-    let workspace = request_workspace(&state, scope);
     if !active_store_exists(&state, &workspace, &id) {
         return not_found("memory_store");
     }
@@ -622,10 +738,9 @@ fn collect_versions(log: &[MemoryVersion]) -> Vec<MemoryVersion> {
 /// Whether the resource catalog contains this store in the trusted Workspace.
 async fn list_versions(
     State(state): State<Arc<MemoryStoreApi>>,
-    scope: Option<Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
 ) -> axum::response::Response {
-    let workspace = request_workspace(&state, scope);
     if !active_store_exists(&state, &workspace, &id) {
         return not_found("memory_store");
     }
@@ -646,10 +761,9 @@ async fn list_versions(
 
 async fn get_version(
     State(state): State<Arc<MemoryStoreApi>>,
-    scope: Option<Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path((id, vid)): Path<(String, String)>,
 ) -> axum::response::Response {
-    let workspace = request_workspace(&state, scope);
     if !active_store_exists(&state, &workspace, &id) {
         return not_found("memory_store");
     }
@@ -667,11 +781,10 @@ async fn get_version(
 /// stamp `redacted_at` and drop its content.
 async fn redact_version(
     State(state): State<Arc<MemoryStoreApi>>,
-    scope: Option<Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path((id, vid)): Path<(String, String)>,
     _query: Query<std::collections::HashMap<String, String>>,
 ) -> axum::response::Response {
-    let workspace = request_workspace(&state, scope);
     if !active_store_exists(&state, &workspace, &id) {
         return not_found("memory_store");
     }

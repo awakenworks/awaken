@@ -135,18 +135,6 @@ pub struct RepositoryConfigVersion {
     pub clone_policy: ClonePolicy,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResolvedMemoryStoreConfig {
-    pub definition: MemoryStoreDefinition,
-    pub config: MemoryStoreConfigVersion,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResolvedRepositoryConfig {
-    pub definition: RepositoryDefinition,
-    pub config: RepositoryConfigVersion,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ResourceCatalogError {
     #[error("resource `{0}` already exists")]
@@ -161,10 +149,113 @@ pub enum ResourceCatalogError {
         expected: ConfigVersion,
         current: ConfigVersion,
     },
+    #[error("resource `{id}` config version {version:?} was not found")]
+    ConfigNotFound { id: String, version: ConfigVersion },
     #[error("invalid resource catalog write: {0}")]
     Invalid(String),
     #[error("resource catalog storage failure: {0}")]
     Storage(String),
+}
+
+/// Backend-neutral invariants for the Resource Catalog aggregate.
+///
+/// Adapters persist records differently, but creation, publication, lifecycle,
+/// and immutable configuration identity must have one executable definition.
+/// These rules contain no authentication or authorization concepts.
+pub struct ResourceCatalogRules;
+
+impl ResourceCatalogRules {
+    pub fn validate_live_definition(
+        id: &str,
+        state: ResourceState,
+    ) -> Result<(), ResourceCatalogError> {
+        if state == ResourceState::Active {
+            Ok(())
+        } else {
+            Err(ResourceCatalogError::NotActive {
+                id: id.into(),
+                state,
+            })
+        }
+    }
+
+    pub fn validate_memory_config(
+        id: &str,
+        version: ConfigVersion,
+        config: &MemoryStoreConfigVersion,
+    ) -> Result<(), ResourceCatalogError> {
+        if config.memory_store_id == id && config.version == version {
+            Ok(())
+        } else {
+            Err(ResourceCatalogError::Storage(format!(
+                "MemoryStore `{id}` config version {} is corrupt",
+                version.0
+            )))
+        }
+    }
+
+    pub fn validate_repository_config(
+        id: &str,
+        version: ConfigVersion,
+        config: &RepositoryConfigVersion,
+    ) -> Result<(), ResourceCatalogError> {
+        if config.repository_id == id && config.version == version {
+            Ok(())
+        } else {
+            Err(ResourceCatalogError::Storage(format!(
+                "Repository `{id}` config version {} is corrupt",
+                version.0
+            )))
+        }
+    }
+
+    pub fn validate_initial(
+        id: &str,
+        workspace_id: &str,
+        current: ConfigVersion,
+        config_id: &str,
+        config_version: ConfigVersion,
+    ) -> Result<(), ResourceCatalogError> {
+        if id.trim().is_empty() || workspace_id.trim().is_empty() {
+            return Err(ResourceCatalogError::Invalid(
+                "resource id and workspace id must be non-empty".into(),
+            ));
+        }
+        if id != config_id
+            || current != ConfigVersion::INITIAL
+            || config_version != ConfigVersion::INITIAL
+        {
+            return Err(ResourceCatalogError::Invalid(
+                "initial resource definition/config must agree at version 1".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn validate_publish(
+        id: &str,
+        current: ConfigVersion,
+        expected: ConfigVersion,
+        next: ConfigVersion,
+    ) -> Result<(), ResourceCatalogError> {
+        if current != expected {
+            return Err(ResourceCatalogError::ConfigConflict {
+                id: id.into(),
+                expected,
+                current,
+            });
+        }
+        let required = current.checked_next().ok_or_else(|| {
+            ResourceCatalogError::Invalid(format!("resource `{id}` exhausted config versions"))
+        })?;
+        if next != required {
+            return Err(ResourceCatalogError::Invalid(format!(
+                "resource `{id}` config version must advance from {} to {}",
+                current.0, required.0
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// Narrow read port consumed by Session resolution. It deliberately exposes no
@@ -175,18 +266,40 @@ pub trait ResourceConfigSource: Send + Sync {
         &self,
         workspace_id: &str,
         id: &str,
-    ) -> Result<ResolvedMemoryStoreConfig, ResourceCatalogError>;
+    ) -> Result<MemoryStoreConfigVersion, ResourceCatalogError>;
 
     fn resolve_repository(
         &self,
         workspace_id: &str,
         id: &str,
-    ) -> Result<ResolvedRepositoryConfig, ResourceCatalogError>;
+    ) -> Result<RepositoryConfigVersion, ResourceCatalogError>;
+}
+
+/// Live resource-invariant check consumed at binding activation and use. This is
+/// intentionally separate from [`ResourceConfigSource`]: a Session selects a
+/// configuration exactly once, while the Runtime only verifies that the trusted
+/// Workspace still owns an active resource and that the frozen version remains
+/// intact. Authorization principals, policies, and decisions stay outside this
+/// port.
+pub trait ResourceBindingValidator: Send + Sync {
+    fn validate_memory_binding(
+        &self,
+        workspace_id: &str,
+        id: &str,
+        version: ConfigVersion,
+    ) -> Result<(), ResourceCatalogError>;
+
+    fn validate_repository_binding(
+        &self,
+        workspace_id: &str,
+        id: &str,
+        version: ConfigVersion,
+    ) -> Result<(), ResourceCatalogError>;
 }
 
 /// Secret-free Resource Catalog application port. Authorization decisions are made
 /// outside this boundary; Workspace ownership and lifecycle are intrinsic invariants.
-pub trait ResourceCatalog: ResourceConfigSource {
+pub trait ResourceCatalog: ResourceConfigSource + ResourceBindingValidator {
     fn create_memory_store(
         &self,
         definition: MemoryStoreDefinition,

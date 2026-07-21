@@ -41,8 +41,8 @@ awaken-ext-builtin-tools = { workspace = true }
 async-nats = "0.38"
 bytes = "1"
 futures = "0.3"
-# Durable memory persistence (resources plane): the memory-extraction mode roots its
-# store under AWAKEN_STORAGE_DIR via `memory_scope_root` so it survives a restart.
+# Canonical Memory data plane used by API, mount, recall, extraction, history, and
+# redaction. The composition root selects its durable or ephemeral adapter once.
 awaken-memory-store = { workspace = true }
 # ACP runtime (R3/R4): drive an external ACP CLI as a peer RunExecutor when a
 # session selects `runtime: "acp:*"`.
