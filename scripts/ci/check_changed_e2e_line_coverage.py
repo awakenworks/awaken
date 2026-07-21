@@ -21,7 +21,7 @@ def run(*args: str) -> str:
     ).stdout
 
 
-def changed_lines(base: str) -> dict[str, set[int]]:
+def changed_lines(base: str, ignore: re.Pattern[str] | None) -> dict[str, set[int]]:
     names = run("git", "diff", "--name-only", "--diff-filter=AMR", base, "--")
     result: dict[str, set[int]] = {}
     for relative in names.splitlines():
@@ -30,6 +30,8 @@ def changed_lines(base: str) -> dict[str, set[int]]:
             and "/src/" in relative
             and relative.endswith(".rs")
         ):
+            continue
+        if ignore is not None and ignore.search(relative):
             continue
         lines: set[int] = set()
         diff = run("git", "diff", "--unified=0", base, "--", relative)
@@ -81,7 +83,15 @@ def main() -> None:
     if not 0.0 < args.minimum < 1.0:
         parser.error("--minimum must be between zero and one")
 
-    changed = changed_lines(args.base)
+    try:
+        ignore = (
+            re.compile(args.ignore_filename_regex)
+            if args.ignore_filename_regex is not None
+            else None
+        )
+    except re.error as error:
+        parser.error(f"invalid --ignore-filename-regex: {error}")
+    changed = changed_lines(args.base, ignore)
     coverage = lcov_lines(args.ignore_filename_regex)
     executable: list[tuple[str, int, int]] = []
     for relative, lines in changed.items():
