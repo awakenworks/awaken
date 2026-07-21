@@ -8,17 +8,15 @@
 //! optimistic concurrency**: [`MemoryRepository::update`] is a compare-and-swap on the base
 //! sha, so two writers never silently clobber each other.
 //!
-//! Backends: [`VolatileMemoryRepository`], [`FilesystemMemoryRepository`] (one atomic aggregate document per
-//! store), and feature-gated SQLite/Postgres transactional repositories.
+//! Backends: [`VolatileMemoryRepository`] for ephemeral execution and
+//! feature-gated SQLite/Postgres transactional repositories for durable execution.
 //!
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 // The path-addressed memory port (`MemoryRepository`), its value types (`Memory`,
@@ -73,8 +71,8 @@ pub(crate) fn validate_size(content: &str) -> Result<(), MemErr> {
     }
 }
 
-/// The durable/in-memory record; also the on-disk JSON for [`FilesystemMemoryRepository`].
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// The in-memory aggregate record.
+#[derive(Debug, Clone)]
 struct Record {
     id: String,
     path: String,
@@ -416,321 +414,9 @@ impl MemoryRepository for VolatileMemoryRepository {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Filesystem backend
-// ---------------------------------------------------------------------------
-
-/// Durable local-development [`MemoryRepository`]: one aggregate document per store,
-/// replaced atomically after each serialized mutation. Production embedded and
-/// multi-node deployments use the SQLite/Postgres transactional adapters.
-pub struct FilesystemMemoryRepository {
-    root: PathBuf,
-    write_seq: AtomicU64,
-    write_lock: tokio::sync::Mutex<()>,
-}
-
-/// One crash-atomic document per store. Heads, id high-water marks, and history
-/// move together under a temp-file + rename, so this development adapter honors
-/// the same aggregate invariant as SQLite/Postgres instead of maintaining a
-/// second sidecar log.
-#[derive(Default, Serialize, Deserialize)]
-struct FsState {
-    records: BTreeMap<String, Record>,
-    versions: Vec<MemoryVersion>,
-    next_id: u64,
-    next_version: u64,
-}
-
-impl FilesystemMemoryRepository {
-    /// Open (creating if absent) the store rooted at `root`.
-    pub fn open(root: impl Into<PathBuf>) -> std::io::Result<Self> {
-        let root = root.into();
-        std::fs::create_dir_all(&root)?;
-        Ok(Self {
-            root,
-            write_seq: AtomicU64::new(0),
-            write_lock: tokio::sync::Mutex::new(()),
-        })
-    }
-
-    fn store_dir(&self, store: &str) -> PathBuf {
-        self.root.join(crate::sanitize_stem(store))
-    }
-    fn state_path(&self, store: &str) -> PathBuf {
-        self.store_dir(store).join("state.json")
-    }
-
-    async fn load_state(&self, store: &str) -> Result<FsState, MemErr> {
-        match tokio::fs::read(self.state_path(store)).await {
-            Ok(bytes) => {
-                serde_json::from_slice(&bytes).map_err(|error| MemErr::Storage(error.to_string()))
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(FsState::default()),
-            Err(error) => Err(MemErr::Storage(error.to_string())),
-        }
-    }
-
-    async fn write_state(&self, store: &str, state: &FsState) -> Result<(), MemErr> {
-        let dir = self.store_dir(store);
-        tokio::fs::create_dir_all(&dir)
-            .await
-            .map_err(|e| MemErr::Storage(e.to_string()))?;
-        let bytes = serde_json::to_vec(state).map_err(|e| MemErr::Storage(e.to_string()))?;
-        let final_path = self.state_path(store);
-        let tmp = dir.join(format!(
-            ".tmp.{}.{}",
-            std::process::id(),
-            self.write_seq.fetch_add(1, Ordering::SeqCst)
-        ));
-        tokio::fs::write(&tmp, &bytes)
-            .await
-            .map_err(|e| MemErr::Storage(e.to_string()))?;
-        tokio::fs::rename(&tmp, &final_path)
-            .await
-            .map_err(|e| MemErr::Storage(e.to_string()))
-    }
-
-    fn append_version(
-        state: &mut FsState,
-        record: &Record,
-        operation: MemoryVersionOperation,
-        content: Option<String>,
-    ) {
-        state.next_version += 1;
-        state.versions.push(MemoryVersion {
-            id: format!("memver_{}", state.next_version),
-            memory_id: record.id.clone(),
-            operation,
-            path: record.path.clone(),
-            content,
-            created_unix_nanos: record.updated,
-            redacted_unix_nanos: None,
-        });
-    }
-}
-
-#[async_trait]
-impl MemoryRepository for FilesystemMemoryRepository {
-    async fn list(&self, store: &str, prefix: &str) -> Result<Vec<MemoryEntry>, MemErr> {
-        Ok(self
-            .load_state(store)
-            .await?
-            .records
-            .values()
-            .filter(|r| under_prefix(&r.path, prefix))
-            .map(Record::to_entry)
-            .collect())
-    }
-
-    async fn get_by_path(&self, store: &str, path: &str) -> Result<Option<Memory>, MemErr> {
-        Ok(self
-            .load_state(store)
-            .await?
-            .records
-            .get(path)
-            .map(|record| record.to_memory(true)))
-    }
-
-    async fn create(&self, store: &str, path: &str, content: &str) -> Result<Memory, MemErr> {
-        validate_path(path)?;
-        validate_size(content)?;
-        let _guard = self.write_lock.lock().await;
-        let mut state = self.load_state(store).await?;
-        if state.records.contains_key(path) {
-            return Err(MemErr::PathConflict(path.to_string()));
-        }
-        let now = now_nanos();
-        state.next_id += 1;
-        let record = Record {
-            id: format!("mem_{}", state.next_id),
-            path: path.to_string(),
-            sha: sha256_hex(content),
-            content: content.to_string(),
-            version: 1,
-            created: now,
-            updated: now,
-        };
-        let memory = record.to_memory(true);
-        Self::append_version(
-            &mut state,
-            &record,
-            MemoryVersionOperation::Created,
-            Some(content.to_string()),
-        );
-        state.records.insert(path.to_string(), record);
-        self.write_state(store, &state).await?;
-        Ok(memory)
-    }
-
-    async fn update(
-        &self,
-        store: &str,
-        id: &str,
-        content: &str,
-        base_sha: &str,
-    ) -> Result<Memory, MemErr> {
-        validate_size(content)?;
-        let new_sha = sha256_hex(content);
-        let _guard = self.write_lock.lock().await;
-        let mut state = self.load_state(store).await?;
-        let path = state
-            .records
-            .iter()
-            .find_map(|(path, record)| (record.id == id).then(|| path.clone()))
-            .ok_or_else(|| MemErr::NotFound(id.to_string()))?;
-        let record = state
-            .records
-            .get_mut(&path)
-            .expect("path came from records");
-        if record.sha != base_sha {
-            if record.sha == new_sha {
-                return Ok(record.to_memory(true));
-            }
-            return Err(MemErr::Conflict {
-                current: Box::new(record.to_memory(true)),
-            });
-        }
-        record.content = content.to_string();
-        record.sha = new_sha;
-        record.version += 1;
-        record.updated = now_nanos();
-        let record = record.clone();
-        let memory = record.to_memory(true);
-        Self::append_version(
-            &mut state,
-            &record,
-            MemoryVersionOperation::Modified,
-            Some(content.to_string()),
-        );
-        self.write_state(store, &state).await?;
-        Ok(memory)
-    }
-
-    async fn rename(&self, store: &str, from: &str, to: &str) -> Result<Memory, MemErr> {
-        validate_path(to)?;
-        let _guard = self.write_lock.lock().await;
-        let mut state = self.load_state(store).await?;
-        let mut record = state
-            .records
-            .remove(from)
-            .ok_or_else(|| MemErr::NotFound(from.to_string()))?;
-        if from == to {
-            state.records.insert(from.to_string(), record.clone());
-            return Ok(record.to_memory(true));
-        }
-        let displaced = state.records.remove(to);
-        record.path = to.to_string();
-        record.version += 1;
-        record.updated = now_nanos();
-        let memory = record.to_memory(true);
-        if let Some(displaced) = displaced {
-            Self::append_version(
-                &mut state,
-                &displaced,
-                MemoryVersionOperation::Deleted,
-                None,
-            );
-        }
-        Self::append_version(
-            &mut state,
-            &record,
-            MemoryVersionOperation::Modified,
-            Some(record.content.clone()),
-        );
-        state.records.insert(to.to_string(), record);
-        self.write_state(store, &state).await?;
-        Ok(memory)
-    }
-
-    async fn delete_by_path(&self, store: &str, path: &str) -> Result<(), MemErr> {
-        let _guard = self.write_lock.lock().await;
-        let mut state = self.load_state(store).await?;
-        if let Some(record) = state.records.remove(path) {
-            Self::append_version(&mut state, &record, MemoryVersionOperation::Deleted, None);
-            self.write_state(store, &state).await?;
-        }
-        Ok(())
-    }
-
-    async fn delete_if_match(
-        &self,
-        store: &str,
-        path: &str,
-        base_id: &str,
-        base_sha: &str,
-    ) -> Result<bool, MemErr> {
-        let _guard = self.write_lock.lock().await;
-        let mut state = self.load_state(store).await?;
-        let Some(current) = state.records.get(path).cloned() else {
-            return Ok(false);
-        };
-        if current.id != base_id || current.sha != base_sha {
-            return Err(MemErr::Conflict {
-                current: Box::new(current.to_memory(true)),
-            });
-        }
-        state.records.remove(path);
-        Self::append_version(&mut state, &current, MemoryVersionOperation::Deleted, None);
-        self.write_state(store, &state).await?;
-        Ok(true)
-    }
-
-    async fn list_versions(&self, store: &str) -> Result<Vec<MemoryVersion>, MemErr> {
-        Ok(self.load_state(store).await?.versions)
-    }
-
-    async fn redact_version(
-        &self,
-        store: &str,
-        version_id: &str,
-    ) -> Result<Option<MemoryVersion>, MemErr> {
-        let _guard = self.write_lock.lock().await;
-        let mut state = self.load_state(store).await?;
-        let Some(version) = state
-            .versions
-            .iter_mut()
-            .find(|version| version.id == version_id)
-        else {
-            return Ok(None);
-        };
-        if version.redacted_unix_nanos.is_some() {
-            return Ok(Some(version.clone()));
-        }
-        version.content = None;
-        version.redacted_unix_nanos = Some(now_nanos());
-        let version = version.clone();
-        self.write_state(store, &state).await?;
-        Ok(Some(version))
-    }
-
-    async fn purge_store(&self, store: &str) -> Result<MemoryPurgeSummary, MemErr> {
-        let _guard = self.write_lock.lock().await;
-        let state = self.load_state(store).await?;
-        let summary = MemoryPurgeSummary {
-            heads_deleted: state.records.len() as u64,
-            versions_deleted: state.versions.len() as u64,
-        };
-        match tokio::fs::remove_dir_all(self.store_dir(store)).await {
-            Ok(()) => Ok(summary),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(summary),
-            Err(error) => Err(MemErr::Storage(error.to_string())),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn temp_root(tag: &str) -> PathBuf {
-        let p = std::env::temp_dir().join(format!(
-            "awaken-memory-repository-{tag}-{}-{}",
-            std::process::id(),
-            now_nanos()
-        ));
-        std::fs::remove_dir_all(&p).ok();
-        p
-    }
 
     /// Run the same conformance suite over any `MemoryRepository` backend.
     async fn conformance(fs: &dyn MemoryRepository) {
@@ -1093,36 +779,6 @@ mod tests {
         purge_conformance(&VolatileMemoryRepository::new()).await;
     }
 
-    #[tokio::test]
-    async fn fs_extended_conformance() {
-        let root = temp_root("ext");
-        extended_conformance(&FilesystemMemoryRepository::open(&root).unwrap()).await;
-        std::fs::remove_dir_all(&root).ok();
-    }
-
-    #[tokio::test]
-    async fn fs_purge_conformance() {
-        let root = temp_root("purge");
-        purge_conformance(&FilesystemMemoryRepository::open(&root).unwrap()).await;
-    }
-
-    #[tokio::test]
-    async fn fs_history_conformance_and_reopen() {
-        let root = temp_root("history");
-        let first_version_id;
-        {
-            let fs = FilesystemMemoryRepository::open(&root).unwrap();
-            history_conformance(&fs).await;
-            first_version_id = fs.list_versions("history").await.unwrap()[0].id.clone();
-        }
-        let reopened = FilesystemMemoryRepository::open(&root).unwrap();
-        let versions = reopened.list_versions("history").await.unwrap();
-        assert_eq!(versions.len(), 6);
-        assert_eq!(versions[0].id, first_version_id);
-        assert!(versions[0].redacted_unix_nanos.is_some());
-        std::fs::remove_dir_all(&root).ok();
-    }
-
     /// The `NotFound` paths of `update`/`rename`, over any backend.
     async fn not_found_paths(fs: &dyn MemoryRepository) {
         let store = "s";
@@ -1155,41 +811,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fs_not_found_paths() {
-        let root = temp_root("nf");
-        not_found_paths(&FilesystemMemoryRepository::open(&root).unwrap()).await;
-        std::fs::remove_dir_all(&root).ok();
-    }
-
-    #[tokio::test]
     async fn in_memory_backend_conforms() {
         conformance(&VolatileMemoryRepository::new()).await;
-    }
-
-    #[tokio::test]
-    async fn fs_backend_conforms() {
-        let root = temp_root("conf");
-        let fs = FilesystemMemoryRepository::open(&root).unwrap();
-        conformance(&fs).await;
-        std::fs::remove_dir_all(&root).ok();
-    }
-
-    /// Minted ids stay dense: N creates yield `mem_1..mem_N` regardless of how many
-    /// updates/renames (each a `write_record`) happen in between — a write must not
-    /// consume an id ordinal.
-    #[tokio::test]
-    async fn fs_mints_dense_ids() {
-        let root = temp_root("dense");
-        let fs = FilesystemMemoryRepository::open(&root).unwrap();
-        let a = fs.create("s", "/a.md", "a").await.unwrap();
-        assert_eq!(a.id, "mem_1");
-        // An update writes a record but must not advance the id counter.
-        fs.update("s", &a.id, "a2", &a.content_sha256)
-            .await
-            .unwrap();
-        let b = fs.create("s", "/b.md", "b").await.unwrap();
-        assert_eq!(b.id, "mem_2", "a write between creates does not skip an id");
-        std::fs::remove_dir_all(&root).ok();
     }
 
     /// Ids are monotonic across a delete: deleting the highest-ordinal memory and then
@@ -1212,13 +835,6 @@ mod tests {
     #[tokio::test]
     async fn in_memory_ids_stay_monotonic_across_delete() {
         ids_stay_monotonic_across_delete(&VolatileMemoryRepository::new()).await;
-    }
-
-    #[tokio::test]
-    async fn fs_ids_stay_monotonic_across_delete() {
-        let root = temp_root("mono");
-        ids_stay_monotonic_across_delete(&FilesystemMemoryRepository::open(&root).unwrap()).await;
-        std::fs::remove_dir_all(&root).ok();
     }
 
     /// A rename-replace masks the destination entirely: after moving `src` over `dst`,
@@ -1248,33 +864,6 @@ mod tests {
     #[tokio::test]
     async fn in_memory_rename_replace_orphans_destination_id() {
         rename_replace_orphans_the_destination_id(&VolatileMemoryRepository::new()).await;
-    }
-
-    #[tokio::test]
-    async fn fs_rename_replace_orphans_destination_id() {
-        let root = temp_root("orphan");
-        rename_replace_orphans_the_destination_id(
-            &FilesystemMemoryRepository::open(&root).unwrap(),
-        )
-        .await;
-        std::fs::remove_dir_all(&root).ok();
-    }
-
-    #[tokio::test]
-    async fn fs_backend_survives_reopen() {
-        let root = temp_root("reopen");
-        {
-            let fs = FilesystemMemoryRepository::open(&root).unwrap();
-            fs.create("s1", "/keep.md", "durable").await.unwrap();
-        }
-        // A fresh handle over the same root sees the persisted memory and does not
-        // re-mint its id.
-        let fs = FilesystemMemoryRepository::open(&root).unwrap();
-        let got = fs.get_by_path("s1", "/keep.md").await.unwrap().unwrap();
-        assert_eq!(got.content.as_deref(), Some("durable"));
-        let fresh = fs.create("s1", "/new.md", "n").await.unwrap();
-        assert_ne!(fresh.id, got.id, "reopened store mints a fresh id");
-        std::fs::remove_dir_all(&root).ok();
     }
 
     // --- Concurrency (ADR-0053 P2.5): the store is the shared source of truth

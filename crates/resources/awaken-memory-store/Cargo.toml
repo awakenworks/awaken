@@ -4,8 +4,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# Durable path-addressed memory persistence for the resources plane, with in-memory,
-# filesystem, SQLite, and Postgres backends. The adapter receives only opaque store
+# Durable path-addressed memory persistence for the resources plane, with ephemeral,
+# SQLite, and Postgres backends. The adapter receives only opaque store
 # ids; ownership and authorization stay in their respective outer planes.
 
 [dependencies]
@@ -18,7 +18,6 @@ tokio = { workspace = true, features = ["rt", "fs"] }
 # ADR-0053 path-addressed MemoryRepository: content-sha256 (Anthropic wire uses sha256) +
 # a durable JSON record per memory.
 sha2 = "0.10"
-serde = { workspace = true }
 serde_json = { workspace = true }
 # Feature `sqlite`: embedded durable MemoryRepository over the crate's migration scope.
 rusqlite = { workspace = true, optional = true }

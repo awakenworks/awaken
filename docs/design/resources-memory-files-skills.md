@@ -656,8 +656,9 @@ internal config version remains an awaken governance detail.
   projection and no longer triggers unrelated resource writes.
 - the misleading `MemoryFs` family and `memfs` module are removed rather than
   retained as aliases: the port is `MemoryRepository`, with
-  `VolatileMemoryRepository`, `FilesystemMemoryRepository`,
-  `SqliteMemoryRepository`, and `PostgresMemoryRepository` adapters.
+  `VolatileMemoryRepository`, `SqliteMemoryRepository`, and
+  `PostgresMemoryRepository` adapters. The unused JSON-filesystem adapter is also
+  removed so embedded deployments have exactly one durable implementation.
 - durable `MemoryExtractionIntent` application work replaces fire-and-forget
   extraction: terminal outbox recovery, process-unique lease fencing/heartbeat,
   staged mutation receipts, and idempotent CAS apply survive a real SIGKILL;

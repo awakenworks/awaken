@@ -846,7 +846,6 @@ dependencies = [
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
  "rusqlite",
- "serde",
  "serde_json",
  "sha2 0.10.9",
  "sqlx",

@@ -985,7 +985,7 @@ mod memory_repository_tests {
         ));
     }
 
-    /// The same cause-effect-graph edge cases the in-memory/fs backends get in
+    /// The same cause-effect-graph edge cases as the ephemeral backend, exercised in
     /// `repository::tests::extended_conformance`, run against SQLite so the
     /// CAS/rename **precedence** and prefix-boundary rules are pinned here too.
     #[tokio::test]
