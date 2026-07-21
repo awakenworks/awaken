@@ -687,6 +687,27 @@ mod tests {
             1
         );
         assert_eq!(environment.handle().provider_kind, "container");
+        assert!(AgentSandbox::is_container(&environment));
+        assert_eq!(AgentSandbox::config_home(&environment), "/acp-config");
+
+        AgentSandbox::materialize_inline(&environment, "/workspace/direct.bin", b"direct")
+            .await
+            .unwrap();
+        environment
+            .materialize_workspace_file("projected.bin", b"projected")
+            .await
+            .unwrap();
+        environment
+            .materialize_read_only_tree(
+                "generated-skills",
+                &[("skill/SKILL.md".into(), b"generated".to_vec())],
+            )
+            .await
+            .unwrap();
+        environment
+            .remove_workspace_path("projected.bin")
+            .await
+            .unwrap();
 
         let native = environment
             .sandbox()
@@ -722,6 +743,8 @@ mod tests {
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].id, "authored");
         assert_eq!(skills[0].dir, "skills/authored");
+        environment.refresh_skills().await.unwrap();
+        environment.stop_bound_processes().await;
         environment.dispose().await.unwrap();
     }
 
@@ -743,6 +766,52 @@ mod tests {
             "adoption refreshes ownership before starting the replacement hand"
         );
         adopted.dispose().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn provider_rebasing_adoption_and_container_mount_jail_cover_every_tier() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+
+        let workdir = SessionEnvironmentProvider::workdir(first.path()).at_root(second.path());
+        assert!(matches!(workdir, SessionEnvironmentProvider::Workdir(_)));
+
+        let namespace = SessionEnvironmentProvider::namespace(first.path()).at_root(second.path());
+        assert!(matches!(
+            namespace,
+            SessionEnvironmentProvider::Namespace(_)
+        ));
+        let mut namespace_spec = spec();
+        namespace_spec.scope = "provider-namespace-adopt".into();
+        let created = namespace.create(&namespace_spec).await.unwrap();
+        let handle = created.handle();
+        drop(created);
+        let adopted = namespace.adopt(&handle).await.unwrap();
+        assert_eq!(adopted.handle(), handle);
+        adopted.dispose().await.unwrap();
+
+        let provider = Arc::new(FakeContainerProvider::default());
+        let unsafe_mount = pc::MountRequirement {
+            mount_id: "unsafe".into(),
+            source: pc::MountSource::Inline {
+                contents: "value".into(),
+            },
+            mount_path: "../escape".into(),
+            access: pc::MountAccess::ReadOnly,
+            lifetime: pc::MountLifetime::PerRun,
+            required: true,
+        };
+        let container = SessionEnvironmentProvider::container(
+            provider,
+            vec![unsafe_mount],
+            Arc::new(FakeHandExecutorFactory),
+        )
+        .at_root(second.path());
+        assert!(matches!(
+            container,
+            SessionEnvironmentProvider::Container { .. }
+        ));
+        assert!(container.create(&spec()).await.is_err());
     }
 
     #[cfg(feature = "container-docker")]
