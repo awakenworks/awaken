@@ -209,6 +209,95 @@ function seedLegacyMemoryIdentities(container: string, canonicalId: string): voi
   );
 }
 
+function resourceIntent(container: string, resourceId: string): Record<string, any> | undefined {
+  const output = psql(
+    container,
+    `SELECT data FROM resource_lifecycle_purge_intents ` +
+      `WHERE data::jsonb->'target'->>'resource_id'=${sqlLiteral(resourceId)} ` +
+      `ORDER BY requested_at_unix_ms DESC LIMIT 1`,
+  );
+  return output ? JSON.parse(output) : undefined;
+}
+
+async function waitForResourceIntents(
+  container: string,
+  ids: string[],
+  predicate: (intent: Record<string, any>) => boolean,
+  timeoutMs = 30_000,
+): Promise<Record<string, any>[]> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const rows = ids.map((id) => resourceIntent(container, id));
+    if (rows.every((row) => row !== undefined && predicate(row))) {
+      return rows as Record<string, any>[];
+    }
+    await sleep(250);
+  }
+  throw new Error(`Postgres resource intents did not converge: ${JSON.stringify(ids.map((id) => resourceIntent(container, id)))}`);
+}
+
+function installReclamationFaults(
+  container: string,
+  ids: { contended: string; late: string; release: string; physical: string },
+): void {
+  const suffix = String(process.pid);
+  psql(container, `
+    INSERT INTO resource_lifecycle_reclamation_fences(resource_kind, resource_id, intent_id)
+      VALUES ('file', ${sqlLiteral(ids.contended)}, 'external-postgres-reclaimer');
+    CREATE FUNCTION inject_late_reference_${suffix}() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      IF NEW.resource_id = ${sqlLiteral(ids.late)} THEN
+        INSERT INTO resource_lifecycle_references(
+          workspace_id, resource_kind, resource_id, reference_kind, reference_id
+        ) VALUES (${sqlLiteral(WORKSPACE)}, 'file', NEW.resource_id, 'session_binding', 'late-postgres-reference');
+      END IF;
+      RETURN NEW;
+    END $$;
+    CREATE TRIGGER inject_late_reference_${suffix}
+      AFTER INSERT ON resource_lifecycle_reclamation_fences
+      FOR EACH ROW EXECUTE FUNCTION inject_late_reference_${suffix}();
+    CREATE FUNCTION reject_fence_release_${suffix}() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      IF OLD.resource_id = ${sqlLiteral(ids.release)} THEN
+        RAISE EXCEPTION 'injected postgres fence release failure';
+      END IF;
+      RETURN OLD;
+    END $$;
+    CREATE TRIGGER reject_fence_release_${suffix}
+      BEFORE DELETE ON resource_lifecycle_reclamation_fences
+      FOR EACH ROW EXECUTE FUNCTION reject_fence_release_${suffix}();
+    CREATE FUNCTION reject_blob_delete_${suffix}() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      IF OLD.id = ${sqlLiteral(ids.physical)} THEN
+        RAISE EXCEPTION 'injected postgres blob delete failure';
+      END IF;
+      RETURN OLD;
+    END $$;
+    CREATE TRIGGER reject_blob_delete_${suffix}
+      BEFORE DELETE ON file_store_blob
+      FOR EACH ROW EXECUTE FUNCTION reject_blob_delete_${suffix}();
+  `);
+}
+
+function removeReclamationFaults(
+  container: string,
+  ids: { contended: string; late: string },
+): void {
+  const suffix = String(process.pid);
+  psql(container, `
+    DROP TRIGGER inject_late_reference_${suffix} ON resource_lifecycle_reclamation_fences;
+    DROP FUNCTION inject_late_reference_${suffix}();
+    DROP TRIGGER reject_fence_release_${suffix} ON resource_lifecycle_reclamation_fences;
+    DROP FUNCTION reject_fence_release_${suffix}();
+    DROP TRIGGER reject_blob_delete_${suffix} ON file_store_blob;
+    DROP FUNCTION reject_blob_delete_${suffix}();
+    DELETE FROM resource_lifecycle_references
+      WHERE resource_id=${sqlLiteral(ids.late)} AND reference_id='late-postgres-reference';
+    DELETE FROM resource_lifecycle_reclamation_fences
+      WHERE resource_id=${sqlLiteral(ids.contended)} AND intent_id='external-postgres-reclaimer';
+  `);
+}
+
 function seedRepository(root: string): string {
   const work = path.join(root, 'repository-work');
   const remote = path.join(root, 'repository.git');
@@ -536,6 +625,46 @@ async function main(): Promise<void> {
     assert.equal((await json('GET', scoped(WORKSPACE, `skills/${skillId}/versions/1`))).status, 404);
     assert.equal((await json('DELETE', scoped(WORKSPACE, `skills/${skillId}`))).status, 200);
     assert.equal((await json('GET', scoped(WORKSPACE, `skills/${skillId}`))).status, 404);
+
+    // PostgreSQL distributed-reclaimer fault matrix. These are database-level
+    // crash/race injections against production tables, not test-only service APIs.
+    const reclamationIds = {
+      contended: await upload('postgres contended reclamation'),
+      late: await upload('postgres late reference'),
+      release: await upload('postgres release failure'),
+      physical: await upload('postgres physical failure'),
+    };
+    installReclamationFaults(pg.container, reclamationIds);
+    for (const id of Object.values(reclamationIds)) {
+      assert.equal((await json('DELETE', scoped(WORKSPACE, `files/${id}`))).status, 200);
+    }
+    const faulted = await waitForResourceIntents(
+      pg.container,
+      Object.values(reclamationIds),
+      (intent) => intent.status === 'pending' && intent.attempts >= 1,
+    );
+    const faultById = new Map(faulted.map((intent) => [intent.target.resource_id, intent]));
+    assert.match(faultById.get(reclamationIds.contended).last_error, /fenced by another/u);
+    assert.ok(
+      faultById.get(reclamationIds.late).blockers.some(
+        (blocker: { reference_id: string }) => blocker.reference_id === 'late-postgres-reference',
+      ),
+    );
+    assert.match(faultById.get(reclamationIds.release).last_error, /fence release failure/u);
+    assert.match(faultById.get(reclamationIds.physical).last_error, /blob delete failure/u);
+
+    removeReclamationFaults(pg.container, reclamationIds);
+    const recoveredFaults = await waitForResourceIntents(
+      pg.container,
+      Object.values(reclamationIds),
+      (intent) => intent.status === 'completed' && intent.receipt !== null,
+    );
+    assert.ok(recoveredFaults.every((intent) => intent.attempts >= 2));
+    assert.equal(
+      resourceIntent(pg.container, reclamationIds.release)?.receipt.evidence.blob_deleted,
+      false,
+      'retry after successful physical delete remains idempotent',
+    );
     assertNoLocalResourceTruth(secondDirectory);
 
     const tables = psql(

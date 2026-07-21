@@ -156,8 +156,25 @@ pub fn build_git_repo_router() -> Router {
 pub fn build_full_chain_router() -> Router {
     let greet = SkillSpec::new("greet", "Greet", "say hello", "GREETING-FROM-SKILL");
     let (model, model_ref) = scenario_model(Arc::new(EchoModel), "full-chain");
-    let host = SharedHost::new(model, model_ref).with_skills(vec![greet]);
+    let host = SharedHost::new(model, model_ref)
+        .with_skills(vec![greet])
+        .with_skill_store(scenario_skill_store_dir());
     mount(Arc::new(host))
+}
+
+/// Resolve the durable SkillStore once at the scenario composition edge. Both the
+/// Skill HTTP adapter and agent-authored harvest then operate on the same canonical
+/// repository; neither the resource store nor the runtime receives authorization
+/// concepts.
+fn scenario_skill_store_dir() -> std::path::PathBuf {
+    std::env::var("AWAKEN_STORAGE_DIR")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::temp_dir().join(format!("awaken-skills-durable-{}", std::process::id()))
+        })
+        .join("skills_catalog")
 }
 
 /// Give scenario compositions the same durable resource catalog the production
@@ -1384,17 +1401,9 @@ pub fn build_skills_router() -> Router {
 /// body, so an e2e proves a durably-configured skill reaches the model across a
 /// restart. `AWAKEN_MODEL_MODE=skills-durable`.
 pub fn build_skills_durable_router() -> Router {
-    let dir = std::env::var("AWAKEN_STORAGE_DIR")
-        .ok()
-        .filter(|v| !v.is_empty())
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::temp_dir().join(format!("awaken-skills-durable-{}", std::process::id()))
-        })
-        .join("skills_catalog");
     let (model, model_ref) = scenario_model(Arc::new(SkillDrivingModel), "skills-durable");
     mount(Arc::new(
-        SharedHost::new(model, model_ref).with_skill_store(dir),
+        SharedHost::new(model, model_ref).with_skill_store(scenario_skill_store_dir()),
     ))
 }
 pub async fn build_config_router() -> Router {
