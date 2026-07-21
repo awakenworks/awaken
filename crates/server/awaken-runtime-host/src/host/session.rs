@@ -622,6 +622,7 @@ impl SharedHost {
             env,
             skill_registry,
             cancel: std::sync::Mutex::new(None),
+            active_run: std::sync::Mutex::new(None),
             reschedule: std::sync::Mutex::new(None),
             live_inbox: std::sync::Mutex::new(crate::live_inbox::LiveInboxSlot::default()),
             state: tokio::sync::Mutex::new(state),

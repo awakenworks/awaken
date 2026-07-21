@@ -65,6 +65,10 @@ pub(crate) struct SessionCtx {
     /// held by neither the run loop nor the state lock, so interrupt never blocks
     /// on the loop that holds `state`.
     pub(crate) cancel: std::sync::Mutex<Option<CancellationToken>>,
+    /// Stable identity of the foreground Run currently being driven. Direct
+    /// execution uses `cancel`; durable execution uses this id to persist a
+    /// cancellation intent for whichever pool worker owns the claim.
+    pub(crate) active_run: std::sync::Mutex<Option<RunId>>,
     /// The in-flight run's transient-retry counter (incremented by the inference
     /// seam on each transparent retry), so `finish_step` can report whether the
     /// turn was auto-recovered (`session.status_rescheduled`). Same brief-lock
