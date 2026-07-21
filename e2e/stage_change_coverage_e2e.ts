@@ -38,6 +38,7 @@ const scenarios: Scenario[] = [
   { id: 'dispatch_metrics', file: 'e2e/dispatch_metrics_export_e2e.mjs' },
   { id: 'sandbox', file: 'e2e/sandbox_provisioning_e2e.mjs' },
   { id: 'memoryd_copy', file: 'e2e/memoryd_copy_lifecycle_e2e.mjs' },
+  { id: 'resource_legacy_upgrade', file: 'e2e/resource_legacy_upgrade_e2e.mjs' },
   { id: 'mcp_stdio', file: 'e2e/mcp_server_core_e2e.ts' },
   { id: 'mcp_http', file: 'e2e/mcp_streamable_http_e2e.ts' },
   { id: 'resource_plane_postgres', file: 'e2e/resource_plane_postgres_e2e.ts', postgres: true },
@@ -108,6 +109,9 @@ const obligations: Obligation[] = [
   { id: 'D7-05', stage: '7 resource persistence', behavior: 'copy realization reconciles update/delete/create through CAS-aware harvest', scenario: 'memoryd_copy' },
   { id: 'D7-06', stage: '7 resource persistence', behavior: 'copy realization survives process replacement over one durable SQLite store', scenario: 'memoryd_copy' },
   { id: 'D7-07', stage: '7 resource persistence', behavior: 'non-UTF-8 files never become mutable Memory content', scenario: 'memoryd_copy' },
+  { id: 'D7-08', stage: '7 resource persistence', behavior: 'legacy Memory history imports once and advances the canonical counter', scenario: 'resource_legacy_upgrade' },
+  { id: 'D7-09', stage: '7 resource persistence', behavior: 'legacy Skill versions and support files become one canonical aggregate', scenario: 'resource_legacy_upgrade' },
+  { id: 'D7-10', stage: '7 resource persistence', behavior: 'replacement process needs no legacy resource sidecar after upgrade', scenario: 'resource_legacy_upgrade' },
 
   { id: 'D8-01', stage: '8 neutral MCP server core', behavior: 'newest and older protocol versions negotiate', scenario: 'mcp_stdio' },
   { id: 'D8-02', stage: '8 neutral MCP server core', behavior: 'unsupported version returns invalid params', scenario: 'mcp_stdio' },

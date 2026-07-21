@@ -8,6 +8,7 @@
     "pretest": "node managed_skill_bundle_pin_e2e.mjs",
     "test:skill-pin": "node managed_skill_bundle_pin_e2e.mjs",
     "test:memoryd-copy": "node memoryd_copy_lifecycle_e2e.mjs",
+    "test:resource-upgrade": "node resource_legacy_upgrade_e2e.mjs",
     "test:resource-reclamation": "node resource_reclamation_e2e.mjs",
     "test:resource-plane-postgres": "node resource_plane_postgres_e2e.ts",
     "test:runtime-stages": "node stage_change_coverage_e2e.ts",
