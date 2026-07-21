@@ -1013,7 +1013,7 @@ mod tests {
     impl LlmExecutor for IndexModel {
         async fn infer(&self, _request: ChatRequest) -> LlmResult<ChatResponse> {
             Ok(ChatResponse {
-                output: AssistantOutput::text("relevant: [1], [2]"),
+                output: AssistantOutput::text("[1], [2]"),
                 usage: None,
                 stop_reason: None,
             })

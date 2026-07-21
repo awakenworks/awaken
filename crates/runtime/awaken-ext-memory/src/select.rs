@@ -58,31 +58,39 @@ fn gist(entry: &Entry) -> String {
         .collect()
 }
 
-/// Parse the bracketed/loose integers in `reply` that fall in `0..n`, de-duplicated
-/// and in first-seen order, capped at `max`. Empty when the model picked none.
-/// Exposed so an agent-based selector can parse its sub-agent's reply.
+/// Strictly parse `NONE` or comma-separated bracketed indices. Any prose,
+/// duplicate, out-of-range index, or count violation rejects the whole reply.
+/// Exposed so an agent-based selector uses the same fail-closed protocol.
 pub fn parse_indices(reply: &str, n: usize, max: usize) -> Vec<usize> {
-    let mut out: Vec<usize> = Vec::new();
-    let mut num = String::new();
-    let flush = |num: &mut String, out: &mut Vec<usize>| {
-        if let Ok(i) = num.parse::<usize>()
-            && i < n
-            && !out.contains(&i)
-        {
-            out.push(i);
-        }
-        num.clear();
-    };
-    for c in reply.chars() {
-        if c.is_ascii_digit() {
-            num.push(c);
-        } else {
-            flush(&mut num, &mut out);
-        }
+    let reply = reply.trim();
+    if reply == "NONE" {
+        return Vec::new();
     }
-    flush(&mut num, &mut out);
-    out.truncate(max);
-    out
+    let parsed = reply
+        .split(',')
+        .map(str::trim)
+        .map(|token| {
+            token
+                .strip_prefix('[')
+                .and_then(|token| token.strip_suffix(']'))
+                .filter(|token| !token.is_empty() && token.chars().all(|c| c.is_ascii_digit()))
+                .and_then(|token| token.parse::<usize>().ok())
+        })
+        .collect::<Option<Vec<_>>>();
+    let Some(indices) = parsed else {
+        return Vec::new();
+    };
+    if indices.is_empty()
+        || indices.len() > max
+        || indices.iter().any(|index| *index >= n)
+        || indices
+            .iter()
+            .enumerate()
+            .any(|(position, index)| indices[..position].iter().any(|previous| previous == index))
+    {
+        return Vec::new();
+    }
+    indices
 }
 
 /// The user-message body handed to a `memory-selector` sub-agent: the query plus
@@ -94,7 +102,7 @@ pub fn select_input(query: &str, manifest: &[(usize, String)], max: usize) -> St
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "User message:\n{query}\n\nSaved memories:\n{lines}\n\nReturn up to {max} relevant indices."
+        "User message:\n{query}\n\nSaved memories:\n{lines}\n\nReturn up to {max} relevant indices. Reply ONLY with NONE or comma-separated bracketed indices; no explanation."
     )
 }
 
@@ -117,12 +125,9 @@ pub async fn select_relevant(
     let manifest = entries
         .iter()
         .enumerate()
-        .map(|(i, e)| format!("[{i}] {}", gist(e)))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let prompt = format!(
-        "User message:\n{query}\n\nSaved memories:\n{manifest}\n\nReturn up to {max} relevant indices."
-    );
+        .map(|(i, e)| (i, gist(e)))
+        .collect::<Vec<_>>();
+    let prompt = select_input(query, &manifest, max);
     let request = ChatRequest {
         model_binding: model.clone(),
         messages: vec![
@@ -195,10 +200,21 @@ mod tests {
     }
 
     #[test]
-    fn parse_indices_extracts_in_range_deduped_capped() {
-        assert_eq!(parse_indices("[0], [3], [3], [9]", 5, 10), vec![0, 3]);
+    fn parse_indices_accepts_only_the_documented_wire_format() {
+        assert_eq!(parse_indices("[0], [3]", 5, 10), vec![0, 3]);
         assert_eq!(parse_indices("NONE", 5, 10), Vec::<usize>::new());
-        assert_eq!(parse_indices("1 2 3 4", 10, 2), vec![1, 2]);
+        for invalid in [
+            "none",
+            "relevant: [2]",
+            "[0], [0]",
+            "[0], [9]",
+            "[0], [1], [2]",
+            "0, 1",
+            "[x]",
+            "",
+        ] {
+            assert!(parse_indices(invalid, 5, 2).is_empty(), "{invalid:?}");
+        }
     }
 
     #[tokio::test]
@@ -211,7 +227,7 @@ mod tests {
     #[tokio::test]
     async fn model_choice_is_honored_when_over_threshold() {
         let e = entries(20);
-        let picked = select_relevant(&ReplyModel("relevant: [2], [7]"), &model(), "q", &e, 5).await;
+        let picked = select_relevant(&ReplyModel("[2], [7]"), &model(), "q", &e, 5).await;
         assert_eq!(picked, vec![2, 7]);
     }
 
@@ -228,7 +244,7 @@ mod tests {
         assert_eq!(parse_indices("[5]", 5, 10), Vec::<usize>::new());
         assert_eq!(parse_indices("[4]", 5, 10), vec![4]);
         // Multi-digit indices parse as whole numbers, not per-digit.
-        assert_eq!(parse_indices("10, 3", 20, 10), vec![10, 3]);
+        assert_eq!(parse_indices("[10], [3]", 20, 10), vec![10, 3]);
     }
 
     #[tokio::test]
