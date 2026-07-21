@@ -93,15 +93,29 @@ pub fn local_managed_state(
         secrets.clone(),
         credentials.clone(),
     ));
-    Arc::new(
-        ManagedState::new(
-            ManagedHost::new(host)
-                .with_resource_configs(catalog.clone())
-                .with_mcp(credentials, secrets, mcp_store),
-        )
-        .with_vaults(vaults)
-        .with_resource_catalog(catalog),
-    )
+    // Session identity, its intrinsic Workspace ownership, and its frozen resource
+    // manifest must survive with runtime truth. This is a resource repository at
+    // the composition root, not an authorization cache: PEP/PDP remain outside and
+    // only stamp/check the Workspace coordinate carried by the aggregate.
+    let session_repo = host.storage_dir().map(|root| {
+        std::fs::create_dir_all(root).expect("create durable session repository directory");
+        Arc::new(
+            awaken_runtime_host::SqliteManagedSessionRepository::open(
+                &root.join("sessions.db").to_string_lossy(),
+            )
+            .expect("open durable managed session repository"),
+        ) as Arc<dyn awaken_protocol_managed::ManagedSessionRepository>
+    });
+    let managed = ManagedState::new(
+        ManagedHost::new(host)
+            .with_resource_configs(catalog.clone())
+            .with_mcp(credentials, secrets, mcp_store),
+    );
+    let managed = match session_repo {
+        Some(repo) => managed.with_session_repo(repo),
+        None => managed,
+    };
+    Arc::new(managed.with_vaults(vaults).with_resource_catalog(catalog))
 }
 
 /// The deployment role this process runs as — the single role axis, selected by
