@@ -9,7 +9,7 @@ import tomllib
 from pathlib import Path
 
 import _arch_fitness
-
+import _resource_plane_fitness
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 CRATES = REPO_ROOT / "crates"
 # Async runtime infrastructure (not domain or provider types) is permitted in
@@ -1983,6 +1983,7 @@ def main() -> int:
         + check_builtin_tool_ownership()
         + check_tests_are_not_arch_owners()
         + check_bucket_direction()
+        + _resource_plane_fitness.check_all(REPO_ROOT, CRATES)
         + check_runtime_is_secret_resolution_free()
         + _arch_fitness.check_all(_arch_fitness_specs())
     )

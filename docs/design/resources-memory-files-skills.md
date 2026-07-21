@@ -772,5 +772,5 @@ release/reclamation.
 
 ## Guardrails
 
-G3, G4, G8, G9, G13, G14, G21, G27, G37, and G38 in
+G3, G4, G8, G9, G13, G14, G21, G27, G37, G38, and G39 in
 [INVARIANTS](../INVARIANTS.md).
