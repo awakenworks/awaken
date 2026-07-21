@@ -18,6 +18,8 @@ use awaken_provider_genai::GenaiExecutor;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
 };
+use awaken_runtime_contract::resolved::ModelBinding;
+use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 use axum::Router;
 
 // The managed-agents service layer (`awaken-runtime-host`): the neutral host,
@@ -135,6 +137,59 @@ const FAKE_ACP_SCRIPT: &str = "read _p; \
       *) printf '%s\\n' '{\"type\":\"message\",\"text\":\"acp-runtime reply\"}'; \
          printf '%s\\n' '{\"type\":\"turn_end\",\"reason\":\"natural_end\"}';; \
     esac";
+
+/// One tool-free ACP stand-in that can act as either Outcome Worker or Judge.
+/// Its prompt classification makes the Worker/Grader backend matrix observable
+/// without provider credentials.
+const FAKE_OUTCOME_ACP_SCRIPT: &str = "read _p; \
+    case \"$_p\" in \
+      *'Evaluate this Outcome input'*'FINAL answer'*) \
+        printf '%s\\n' '{\"type\":\"message\",\"text\":\"{\\\"result\\\":\\\"satisfied\\\",\\\"explanation\\\":\\\"ACP judge accepted evidence\\\"}\"}';; \
+      *'Evaluate this Outcome input'*) \
+        printf '%s\\n' '{\"type\":\"message\",\"text\":\"{\\\"result\\\":\\\"needs_revision\\\",\\\"explanation\\\":\\\"ACP judge requests FINAL\\\"}\"}';; \
+      *'Revise the deliverable'*) \
+        printf '%s\\n' '{\"type\":\"message\",\"text\":\"FINAL answer from ACP worker\"}';; \
+      *'iteration limit was reached'*) \
+        printf '%s\\n' '{\"type\":\"message\",\"text\":\"ACP worker acknowledged remaining feedback\"}';; \
+      *) printf '%s\\n' '{\"type\":\"message\",\"text\":\"a rough draft from ACP worker\"}';; \
+    esac; \
+    printf '%s\\n' '{\"type\":\"turn_end\",\"reason\":\"natural_end\"}'";
+
+/// Managed Outcome backend matrix: each Session independently selects a Native
+/// or ACP Worker, while `AWAKEN_OUTCOME_JUDGE_RUNTIME` pins the Judge snapshot.
+pub fn build_outcome_matrix_router() -> Router {
+    let launch = awaken_run_executor_acp::AcpLaunch::custom(
+        vec![
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            FAKE_OUTCOME_ACP_SCRIPT.to_string(),
+        ],
+        vec![],
+    );
+    let source = Arc::new(awaken_run_executor_acp::SubprocessChannelSource::new(
+        launch,
+    ));
+    let acp = Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(source));
+    let (model, model_ref) = scenario_model(Arc::new(ReviseModel), "outcome-native");
+    let judge_backend = match std::env::var("AWAKEN_OUTCOME_JUDGE_RUNTIME").as_deref() {
+        Ok("acp") => "acp:claude",
+        _ => "default",
+    };
+    let judge = ExecutableAgentSnapshot::builder("outcome-judge")
+        .instructions("Return only the required strict Outcome Grade JSON.")
+        .model(ModelBinding::new(
+            "outcome-test",
+            model_ref.clone(),
+            judge_backend,
+        ))
+        .max_steps(2)
+        .build();
+    mount(Arc::new(
+        SharedHost::new(model, model_ref)
+            .with_acp(acp)
+            .with_judge_snapshot(judge),
+    ))
+}
 
 /// A router with out-of-band memory extraction + bounded recall (the memory
 /// e2e): after each turn the extractor sub-run saves a memory, and later

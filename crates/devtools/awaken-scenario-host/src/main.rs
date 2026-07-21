@@ -77,6 +77,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Arc::new(awaken_scenario_host::ReviseModel),
             "revise",
         ),
+        Ok("outcome-matrix") => awaken_scenario_host::build_outcome_matrix_router(),
         Ok("custom") => awaken_scenario_host::build_custom_router(),
         Ok("remote-hand") => awaken_scenario_host::build_remote_hand_router(),
         Ok("delegate") => awaken_scenario_host::build_delegation_router(),

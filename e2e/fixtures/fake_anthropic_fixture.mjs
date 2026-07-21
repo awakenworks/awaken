@@ -149,8 +149,19 @@ export const BEHAVIORS = {
   label: (parsed) => text(`model=${parsed.model ?? 'fake-model'}: ${lastUserText(parsed)}`),
   // InstructionEchoModel: `instructions: <system prompt>`.
   instruction: (parsed) => text(`instructions: ${systemText(parsed)}`),
-  // ReviseModel: a draft, then FINAL once it sees the goal loop's feedback.
-  revise: (parsed) => text(allUserText(parsed).includes('did not meet the goal') ? 'FINAL answer' : 'a rough draft'),
+  // Outcome Worker + Judge behavior. Judge replies are strict JSON; Worker
+  // revisions produce FINAL after the runtime-owned feedback turn.
+  revise(parsed) {
+    const users = allUserText(parsed);
+    if (users.includes('Evaluate this Outcome input')) {
+      const satisfied = users.includes('FINAL answer');
+      return text(JSON.stringify({
+        result: satisfied ? 'satisfied' : 'needs_revision',
+        explanation: satisfied ? 'native judge accepted evidence' : 'native judge requests FINAL',
+      }));
+    }
+    return text(users.includes('Revise the deliverable') ? 'FINAL answer' : 'a rough draft');
+  },
   // VisionProbeModel: report the media types on the last user turn.
   vision(parsed) {
     const medias = lastUserImages(parsed);
