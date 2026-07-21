@@ -2385,6 +2385,100 @@ async fn replacement_host_adopts_the_dispatch_sandbox_from_a_stable_root() {
     assert_eq!(std::fs::read(marker).unwrap(), b"survived");
 }
 
+#[tokio::test]
+async fn resident_session_accepts_only_an_adoption_of_its_exact_sandbox() {
+    let storage = tempfile::tempdir().expect("storage dir");
+    let host = SharedHost::new(Arc::new(OkModel), "stub").with_store_dir(storage.path());
+    let resident = host
+        .ctx_for("t-resident-adoption", None)
+        .await
+        .expect("resident session");
+    let resident_handle = resident.env.handle();
+
+    let same = host
+        .session_provider
+        .adopt(&resident_handle)
+        .await
+        .expect("adopt resident sandbox");
+    let reused = host
+        .ctx_for_with_sandbox("t-resident-adoption", None, Some(same))
+        .await
+        .expect("the exact resident sandbox is idempotently accepted");
+    assert!(Arc::ptr_eq(&resident, &reused));
+
+    let foreign = host
+        .session_provider
+        .create(&host.sandbox_spec("t-foreign-resident"))
+        .await
+        .expect("foreign sandbox");
+    let error = match host
+        .ctx_for_with_sandbox("t-resident-adoption", None, Some(foreign))
+        .await
+    {
+        Ok(_) => panic!("a resident session must reject a different sandbox"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind, HostErrorKind::Internal);
+    assert_eq!(
+        error.message,
+        "thread t-resident-adoption is already bound to a different sandbox"
+    );
+    assert_eq!(resident.env.handle(), resident_handle);
+}
+
+#[tokio::test]
+async fn retained_session_accepts_only_an_adoption_of_its_exact_sandbox() {
+    let storage = tempfile::tempdir().expect("storage dir");
+    let host = SharedHost::new(Arc::new(OkModel), "stub").with_store_dir(storage.path());
+    let original = host
+        .ctx_for("t-retained-adoption", None)
+        .await
+        .expect("initial session");
+    let retained_handle = original.env.handle();
+    assert!(
+        host.sessions
+            .lock()
+            .await
+            .remove("t-retained-adoption")
+            .is_some(),
+        "only the runtime context is evicted"
+    );
+    drop(original);
+
+    let foreign = host
+        .session_provider
+        .create(&host.sandbox_spec("t-foreign-retained"))
+        .await
+        .expect("foreign sandbox");
+    let error = match host
+        .ctx_for_with_sandbox("t-retained-adoption", None, Some(foreign))
+        .await
+    {
+        Ok(_) => panic!("a retained session must reject a different sandbox"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind, HostErrorKind::Internal);
+    assert_eq!(
+        error.message,
+        "thread t-retained-adoption is already bound to a different sandbox"
+    );
+
+    let same = host
+        .session_provider
+        .adopt(&retained_handle)
+        .await
+        .expect("adopt retained sandbox");
+    let rebuilt = host
+        .ctx_for_with_sandbox("t-retained-adoption", None, Some(same))
+        .await
+        .expect("the exact retained sandbox rebuilds the runtime context");
+    assert_eq!(rebuilt.env.handle(), retained_handle);
+    assert_eq!(
+        host.session_environment_handle("t-retained-adoption").await,
+        Some(retained_handle)
+    );
+}
+
 // ---------------------------------------------------------------------------
 // run/resume fail-closed boundaries (ADR-0048 gap review)
 //
