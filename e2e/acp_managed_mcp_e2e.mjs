@@ -6,7 +6,7 @@
 // → host-owned loopback relay (never the raw token) → `plugin_config.acp`
 // → the ProjectingChannelSource's `session/new` injection over the REAL ACP JSON-RPC
 // codec. The fake CLI echoes what it saw on `session/new`, so the assertion is on the
-// bearer form that actually crossed to the agent. `AWAKEN_MODEL_MODE=acp-managed-mcp`.
+// secretless route that actually crossed to the agent. `AWAKEN_MODEL_MODE=acp-managed-mcp`.
 //
 // Run: (from e2e/)  node acp_managed_mcp_e2e.mjs
 
@@ -48,7 +48,7 @@ async function main() {
       // A session that BOTH selects the ACP CLI runtime and binds the MCP server.
       const session = await client.beta.sessions.create({
         agent: 'assistant',
-        metadata: { 'awaken.runtime': 'acp:claude' },
+        metadata: { 'awaken.runtime': 'acp:fake-mcp' },
         mcp_servers: [{ name: 'calc', type: 'url', url: fixture.url }],
         vault_ids: [vault.id],
         betas: BETAS,
