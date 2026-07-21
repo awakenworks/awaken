@@ -15,6 +15,7 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_runtime_contract::control::{Error as ControlError, LiveCommand, LiveRunControl};
 
+use crate::clock::{Clock, SystemClock};
 use crate::dispatch::Dispatch;
 use crate::worker::DispatchWorker;
 
@@ -81,7 +82,11 @@ impl<S: Dispatch + 'static> LiveRunControlService<S> {
             // the intent remains durable on that owner's lease.
             let driven = self
                 .worker
-                .tick_run(&run_id, 0)
+                // Lease timestamps are absolute epoch milliseconds. Using the
+                // deterministic-test origin `0` here made this cancellation claim
+                // instantly expired to the process pool, which could reclaim it at
+                // a newer epoch and fence the terminal cancellation commit.
+                .tick_run(&run_id, SystemClock.now_ms())
                 .await
                 .map_err(|error| Error::Dispatch(error.to_string()))?;
             return match driven {
@@ -138,8 +143,14 @@ mod tests {
     use awaken_runtime::Runtime;
     use awaken_runtime::memory::MemoryCommitCoordinator;
     use awaken_runtime_contract::activation::RunActivation;
+    use awaken_runtime_contract::execution::{
+        Result as ExecutionResult, RunAttemptExecutor, RunExecutor,
+    };
     use awaken_runtime_contract::resolved::ModelBinding;
+    use awaken_runtime_contract::resume::ResumeCommand;
+    use awaken_runtime_contract::runtime_context::RuntimeRunContext;
     use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
+    use tokio::sync::Notify;
 
     use crate::worker::DispatchWorker;
     use crate::{DispatchQueue, MemoryDispatchStore, RunDispatch};
@@ -166,6 +177,44 @@ mod tests {
                 .build(),
             Vec::new(),
         )
+    }
+
+    struct BlockingCancel {
+        entered: Arc<Notify>,
+        release: Arc<Notify>,
+    }
+
+    #[async_trait::async_trait]
+    impl RunExecutor for BlockingCancel {
+        async fn execute(
+            &self,
+            _activation: RunActivation,
+            _context: RuntimeRunContext,
+        ) -> ExecutionResult<awaken_agent_contract::agent::run::RunState> {
+            unreachable!("cancellation test never executes the run")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl RunAttemptExecutor for BlockingCancel {
+        async fn resume(
+            &self,
+            _activation: RunActivation,
+            _command: ResumeCommand,
+            _context: RuntimeRunContext,
+        ) -> ExecutionResult<awaken_agent_contract::agent::run::RunState> {
+            unreachable!("cancellation test never resumes the run")
+        }
+
+        async fn cancel(
+            &self,
+            _activation: RunActivation,
+            _context: RuntimeRunContext,
+        ) -> ExecutionResult<()> {
+            self.entered.notify_one();
+            self.release.notified().await;
+            Ok(())
+        }
     }
 
     #[tokio::test]
@@ -207,6 +256,46 @@ mod tests {
                 .state,
             RunState::Ended(EndCause::Cancelled)
         );
+    }
+
+    #[tokio::test]
+    async fn cancellation_claim_uses_wall_time_and_cannot_be_immediately_reclaimed() {
+        let runtime = Arc::new(Runtime::new());
+        let store = Arc::new(MemoryDispatchStore::new());
+        let commit = Arc::new(MemoryCommitCoordinator::new());
+        let worker = Arc::new(DispatchWorker::new(
+            runtime,
+            store.clone(),
+            commit,
+            "cancel-owner",
+        ));
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        worker.install_attempt_executor(Arc::new(BlockingCancel {
+            entered: entered.clone(),
+            release: release.clone(),
+        }));
+        let service = Arc::new(LiveRunControlService::new(worker));
+        store
+            .enqueue(RunDispatch::new(activation("wall-clock-cancel")))
+            .await
+            .unwrap();
+
+        let cancelling = {
+            let service = service.clone();
+            tokio::spawn(async move { service.cancel("wall-clock-cancel").await })
+        };
+        entered.notified().await;
+        assert!(
+            store
+                .claim("competing-pool", 30_000, SystemClock.now_ms())
+                .await
+                .unwrap()
+                .is_none(),
+            "the cancellation lease must not look expired to a wall-clock pool"
+        );
+        release.notify_one();
+        cancelling.await.unwrap().expect("cancellation settles");
     }
 
     #[test]
