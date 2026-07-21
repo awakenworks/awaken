@@ -487,6 +487,32 @@ visibility, hash knowledge, config selection, or mount realization never grants
 authority. Conversely, resource repositories do not embed IAM deployment mode,
 roles, or policy syntax.
 
+Static dependency direction:
+
+```text
+awaken-cli composition root
+  +-- local/cloud Resource PEP ---> awaken-iam PDP/PIP/PAP
+  +-- resource routers ----------> ResourceCatalog / FileStore / MemoryFs / SkillStore
+
+ResourceCatalog / stores -X-> IAM, principal, API key, role, policy
+```
+
+Dynamic request flow:
+
+```text
+request + credential/path selection
+  -> Resource PEP authenticates and asks PDP
+  -> deny/approval: stop at edge
+  -> allow: stamp trusted WorkspaceScope
+  -> ownership/lifecycle lookup
+  -> content operation / CAS / safe materialization
+```
+
+The route-to-action map is PEP configuration: File uses `file.read/write`, Skill
+uses `skill.read/write`, and awaken's deliberately coarse MemoryStore governance
+uses `workspace.read/write`. Replacing that map or policy does not change a
+resource port or storage schema.
+
 ## Recovery and Reclamation
 
 `EffectiveSessionInputs` and activation records are durable Session application

@@ -293,6 +293,32 @@ fn the_token_management_family_delegates_authorization_to_its_handlers() {
 }
 
 #[test]
+fn resource_pep_maps_only_resource_routes_and_is_total_by_method() {
+    for (path, read, write) in [
+        ("/v1/files", FILE_READ, FILE_WRITE),
+        ("/v1/files/file_1/content", FILE_READ, FILE_WRITE),
+        ("/v1/skills", SKILL_READ, SKILL_WRITE),
+        ("/v1/skills/skill_1/versions/1", SKILL_READ, SKILL_WRITE),
+        ("/v1/memory_stores", WORKSPACE_READ, WORKSPACE_WRITE),
+        (
+            "/v1/memory_stores/mem_1/memory_versions/ver_1/redact",
+            WORKSPACE_READ,
+            WORKSPACE_WRITE,
+        ),
+    ] {
+        assert_eq!(resource_action_for(&Method::GET, path), Some(read));
+        assert_eq!(resource_action_for(&Method::HEAD, path), Some(read));
+        assert_eq!(resource_action_for(&Method::POST, path), Some(write));
+        assert_eq!(resource_action_for(&Method::DELETE, path), Some(write));
+    }
+    assert_eq!(resource_action_for(&Method::GET, "/v1/sessions"), None);
+    assert_eq!(
+        resource_action_for(&Method::GET, "/v1/config/catalog"),
+        None
+    );
+}
+
+#[test]
 fn only_canonical_utc_timestamps_pass_the_expiry_shape_check() {
     assert!(canonical_timestamp_shape("2027-01-01T00:00:00Z"));
     assert!(!canonical_timestamp_shape("banana"));
