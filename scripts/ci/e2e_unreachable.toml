@@ -1,0 +1,137 @@
+version = 1
+
+# These ranges are not blanket source exclusions. The checker waives only lines
+# that are changed, executable, and still unhit; any E2E hit inside a range stays
+# in the numerator. Every range names the lower-level evidence that owns it.
+
+[[waiver]]
+path = "crates/server/awaken-run-executor-a2a/src/delegate.rs"
+ranges = ["60-80", "220-230"]
+reason = "Delegate construction rejects impossible registry/type combinations before a remote request can be emitted."
+evidence = "cargo test -p awaken-run-executor-a2a"
+
+[[waiver]]
+path = "crates/server/awaken-run-executor-a2a/src/lib.rs"
+ranges = ["176-199", "210-229", "240-250", "255-261", "288-294", "345-365", "391-410", "420-470"]
+reason = "These are missing-reader, mismatched-snapshot, impossible post-driver state, and transport seam guards not selectable by a valid A2A/Managed request."
+evidence = "cargo test -p awaken-run-executor-a2a; e2e/remote_attempt_lifecycle_e2e.ts"
+
+[[waiver]]
+path = "crates/server/awaken-run-executor-a2a/src/task_driver.rs"
+ranges = ["25-57"]
+reason = "Timer/cancellation tie outcomes are scheduler-controlled internal task-driver boundaries rather than request-selectable API behavior."
+evidence = "cargo test -p awaken-run-executor-a2a"
+
+[[waiver]]
+path = "crates/server/awaken-run-executor-acp/src/lib.rs"
+ranges = ["360-405", "907-932", "1140-1148"]
+reason = "Missing history, malformed internal tickets, stale backend session state, and duplicate projection guards require corrupted internal facts."
+evidence = "cargo test -p awaken-run-executor-acp; e2e/acp_permission_corruption_e2e.ts"
+
+[[waiver]]
+path = "crates/server/awaken-run-ingress/src/durable.rs"
+ranges = ["285-340"]
+reason = "The durable adapter guards impossible worker return variants and trait-level storage failures below the served transport."
+evidence = "cargo test -p awaken-run-ingress --test durable_memory"
+
+[[waiver]]
+path = "crates/server/awaken-run-ingress/src/sqlite.rs"
+ranges = ["315-325", "620-655", "730-740", "1155-1170"]
+reason = "SQLite codec corruption and transaction/row-count failures cannot be selected by a valid API and are injected at the repository layer."
+evidence = "cargo test -p awaken-run-ingress --test sqlite_dispatch"
+
+[[waiver]]
+path = "crates/server/awaken-runtime-host/src/agent_runner.rs"
+ranges = ["270-290", "335-345", "375-385", "445-455", "500-535"]
+reason = "Detached process handle failures and invalid launcher outputs are execution-provider faults below the Managed API contract."
+evidence = "cargo test -p awaken-runtime-host"
+
+[[waiver]]
+path = "crates/server/awaken-runtime-host/src/container_environment.rs"
+ranges = ["80-90", "135-150", "175-190"]
+reason = "Container runtime capability mismatches and daemon inspection failures are provider-boundary assumptions, not request choices."
+evidence = "cargo test -p awaken-runtime-host; cargo test -p awaken-sandbox-container"
+
+[[waiver]]
+path = "crates/server/awaken-runtime-host/src/host/session.rs"
+ranges = ["218-230", "239-250", "698-730", "732-756", "759-793", "805-825"]
+reason = "Resident adoption ABA races, lost internal fences, daemon inspection faults, and recovered-copy cleanup failures require scheduler or storage fault injection."
+evidence = "cargo test -p awaken-runtime-host; e2e/session_environment_recovery_fault_e2e.ts"
+
+[[waiver]]
+path = "crates/server/awaken-runtime-host/src/host/worker_resolver.rs"
+ranges = ["95-120"]
+reason = "Cancellation-worker reconstruction rejects impossible snapshot/backend combinations before any served worker action exists."
+evidence = "cargo test -p awaken-runtime-host"
+
+[[waiver]]
+path = "crates/server/awaken-runtime-host/src/run_exec.rs"
+ranges = ["45-65"]
+reason = "The composite executor's absent-backend arms represent host wiring defects that a published API snapshot cannot author."
+evidence = "cargo test -p awaken-runtime-host"
+
+[[waiver]]
+path = "crates/server/awaken-runtime-host/src/sandbox_source.rs"
+ranges = ["720-735", "750-775", "865-875", "900-915"]
+reason = "Trait-only sandbox source variants and poisoned/invalid internal capability combinations are below the served API surface."
+evidence = "cargo test -p awaken-runtime-host"
+
+[[waiver]]
+path = "crates/server/awaken-runtime-host/src/session_environment/container_files.rs"
+ranges = ["1-80", "115-130"]
+reason = "Container archive stream framing and daemon copy failures require corrupt tar/daemon fault injection outside a semantic API request."
+evidence = "cargo test -p awaken-runtime-host; cargo test -p awaken-sandbox-container"
+
+[[waiver]]
+path = "crates/server/awaken-runtime-host/src/session_environment/container_repositories.rs"
+ranges = ["20-35", "60-70", "95-112"]
+reason = "Repository archive/process I/O failures are container-engine boundary faults; API-visible invalid repositories are covered separately."
+evidence = "cargo test -p awaken-runtime-host; e2e/managed_container_agent_e2e.mjs"
+
+[[waiver]]
+path = "crates/server/awaken-runtime-host/src/session_environment/provider.rs"
+ranges = ["40-60", "90-100"]
+reason = "Provider downcast and unsupported capability arms are composition invariants rejected before the server accepts traffic."
+evidence = "cargo test -p awaken-runtime-host; e2e/container_provider_configuration_e2e.ts"
+
+[[waiver]]
+path = "crates/worker/awaken-sandbox-container/src/docker.rs"
+ranges = ["38-50", "60-100", "103-188"]
+reason = "Generic Docker ProcessHandle polling/signaling and daemon protocol failures are not invoked by the served attached-agent API path."
+evidence = "cargo test -p awaken-sandbox-container; cargo test -p awaken-sandbox-container --test docker_it"
+
+[[waiver]]
+path = "crates/worker/awaken-sandbox-container/src/environment_owned.rs"
+ranges = ["1-41"]
+reason = "EnvironmentOwned is a lower-level RAII adapter whose drop/error combinations are exercised only through provider tests."
+evidence = "cargo test -p awaken-sandbox-container"
+
+[[waiver]]
+path = "crates/worker/awaken-sandbox-container/src/files.rs"
+ranges = ["35-80", "95-115"]
+reason = "Tar stream corruption, daemon copy errors, and impossible archive entry types are engine boundary faults, not API request variants."
+evidence = "cargo test -p awaken-sandbox-container"
+
+[[waiver]]
+path = "crates/worker/awaken-sandbox-container/src/podman.rs"
+ranges = ["55-122", "244-315", "360-388"]
+reason = "Generic Podman ProcessHandle states, OS spawn failures, and missing stdio pipes sit below the attached-agent served path."
+evidence = "cargo test -p awaken-sandbox-container; cargo test -p awaken-sandbox-container --test podman_it"
+
+[[waiver]]
+path = "crates/worker/awaken-sandbox-local/src/lib.rs"
+ranges = ["110-125", "135-175", "420-450", "605-625"]
+reason = "Local process polling/signaling failures and host filesystem I/O faults are provider-level behavior outside request control."
+evidence = "cargo test -p awaken-sandbox-local"
+
+[[waiver]]
+path = "crates/worker/awaken-sandbox-local/src/namespace.rs"
+ranges = ["85-120", "240-255", "480-490", "555-575", "600-645"]
+reason = "Lexical jail edge failures, wrong-provider adoption, and host cleanup I/O races require direct provider or filesystem fault tests."
+evidence = "cargo test -p awaken-sandbox-local"
+
+[[waiver]]
+path = "crates/worker/awaken-sandbox-local/src/provider.rs"
+ranges = ["45-125", "645-675"]
+reason = "Child process handle errors, signal races, and poisoned host I/O are lower-level provider contracts not exposed as API inputs."
+evidence = "cargo test -p awaken-sandbox-local"
