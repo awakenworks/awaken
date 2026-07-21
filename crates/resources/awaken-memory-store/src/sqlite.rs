@@ -1,4 +1,4 @@
-//! SQLite [`MemoryFs`] over the crate's `memory_store` migration scope.
+//! SQLite [`MemoryRepository`] over the crate's `memory_store` migration scope.
 
 use std::sync::{Arc, Mutex};
 
@@ -35,9 +35,10 @@ fn migrate_guarded(conn: &Arc<Mutex<Connection>>) -> Result<(), StoreError> {
     migrate_conn(&guard)
 }
 
-use crate::memfs::{now_nanos, under_prefix, validate_path, validate_size};
+use crate::repository::{now_nanos, under_prefix, validate_path, validate_size};
 use crate::{
-    MemErr, Memory, MemoryEntry, MemoryFs, MemoryVersion, MemoryVersionOperation, sha256_hex,
+    MemErr, Memory, MemoryEntry, MemoryRepository, MemoryVersion, MemoryVersionOperation,
+    sha256_hex,
 };
 
 fn mem_err(err: impl std::fmt::Display) -> MemErr {
@@ -60,14 +61,14 @@ where
     .map_err(mem_err)?
 }
 
-/// A SQLite-backed [`MemoryFs`] (path-addressed, CAS). Each mutation holds the
+/// A SQLite-backed [`MemoryRepository`] (path-addressed, CAS). Each mutation holds the
 /// connection mutex, so a read-modify-write (compare-and-swap, rename-replace) is
 /// atomic within the process; a cross-node CAS is the postgres backend's job.
-pub struct SqliteMemoryFs {
+pub struct SqliteMemoryRepository {
     conn: Arc<Mutex<Connection>>,
 }
 
-impl SqliteMemoryFs {
+impl SqliteMemoryRepository {
     /// Open (or create) a database file and apply the memory-store migrations
     /// (one-step convenience for a store-owned database).
     pub fn open(path: &str) -> Result<Self, StoreError> {
@@ -339,7 +340,7 @@ fn append_version(
 }
 
 #[async_trait::async_trait]
-impl MemoryFs for SqliteMemoryFs {
+impl MemoryRepository for SqliteMemoryRepository {
     async fn list(&self, store: &str, prefix: &str) -> Result<Vec<MemoryEntry>, MemErr> {
         let (store, prefix) = (store.to_string(), prefix.to_string());
         with_conn_mem(&self.conn, move |conn| {
@@ -813,7 +814,7 @@ mod migration_seam_tests {
     /// caller opts into the `memory_store` scope via `ensure_schema`.
     #[tokio::test]
     async fn over_does_not_migrate_but_ensure_schema_does() {
-        let fs = SqliteMemoryFs::over(Connection::open_in_memory().unwrap());
+        let fs = SqliteMemoryRepository::over(Connection::open_in_memory().unwrap());
         assert!(fs.create("s", "/a.md", "alpha").await.is_err());
         fs.ensure_schema().unwrap();
         assert_eq!(
@@ -832,8 +833,8 @@ mod memfs_tests {
     use super::*;
 
     #[tokio::test]
-    async fn sqlite_memory_fs_conforms() {
-        let fs = SqliteMemoryFs::open_in_memory().unwrap();
+    async fn sqlite_memory_repository_conforms() {
+        let fs = SqliteMemoryRepository::open_in_memory().unwrap();
         let store = "memstore_1";
 
         // create → version 1, sha, content.
@@ -960,12 +961,12 @@ mod memfs_tests {
     }
 
     /// The same cause-effect-graph edge cases the in-memory/fs backends get in
-    /// `memfs::tests::extended_conformance`, run against the SQLite backend so the
+    /// `repository::tests::extended_conformance`, run against SQLite so the
     /// CAS/rename **precedence** and prefix-boundary rules are pinned here too.
     #[tokio::test]
-    async fn sqlite_memory_fs_extended_conformance() {
-        use crate::memfs::MAX_PATH_BYTES;
-        let fs = SqliteMemoryFs::open_in_memory().unwrap();
+    async fn sqlite_memory_repository_extended_conformance() {
+        use crate::repository::MAX_PATH_BYTES;
+        let fs = SqliteMemoryRepository::open_in_memory().unwrap();
         let store = "ext";
 
         // G-C1: the remaining validate_path rejections on create.
@@ -1051,12 +1052,12 @@ mod memfs_tests {
             .unwrap();
     }
 
-    /// The same "who masks whom" edge as `memfs::tests`: a rename-replace over SQLite
+    /// The same "who masks whom" edge as `repository::tests`: a rename-replace over SQLite
     /// drops the destination row entirely, so the replaced destination's id is
     /// `NotFound` and the destination path carries the source id + content.
     #[tokio::test]
     async fn sqlite_rename_replace_orphans_destination_id() {
-        let fs = SqliteMemoryFs::open_in_memory().unwrap();
+        let fs = SqliteMemoryRepository::open_in_memory().unwrap();
         let dst = fs.create("s", "/dst.md", "old-dst").await.unwrap();
         let src = fs.create("s", "/src.md", "src").await.unwrap();
         assert_ne!(dst.id, src.id);
@@ -1075,32 +1076,33 @@ mod memfs_tests {
     /// reissued. This must agree with the in-memory aggregate.
     #[tokio::test]
     async fn durable_ids_remain_monotonic_after_delete() {
-        use crate::memfs::InMemoryFs;
+        use crate::repository::VolatileMemoryRepository;
 
-        async fn top_delete_then_create(fs: &dyn MemoryFs) -> String {
+        async fn top_delete_then_create(fs: &dyn MemoryRepository) -> String {
             fs.create("s", "/a.md", "a").await.unwrap();
             fs.create("s", "/b.md", "b").await.unwrap(); // mem_2 (top ordinal)
             fs.delete_by_path("s", "/b.md").await.unwrap();
             fs.create("s", "/c.md", "c").await.unwrap().id
         }
 
-        let monotonic = top_delete_then_create(&InMemoryFs::new()).await;
+        let monotonic = top_delete_then_create(&VolatileMemoryRepository::new()).await;
         assert_eq!(monotonic, "mem_3", "in-memory never reuses a deleted id");
 
-        let sqlite = top_delete_then_create(&SqliteMemoryFs::open_in_memory().unwrap()).await;
+        let sqlite =
+            top_delete_then_create(&SqliteMemoryRepository::open_in_memory().unwrap()).await;
         assert_eq!(sqlite, "mem_3", "sqlite never reuses a deleted id");
         assert_eq!(monotonic, sqlite);
     }
 
     #[tokio::test]
-    async fn sqlite_memory_fs_survives_reopen() {
+    async fn sqlite_memory_repository_survives_reopen() {
         let dir = std::env::temp_dir().join(format!("awaken-sqlmemfs-{}", std::process::id()));
         std::fs::create_dir_all(&dir).ok();
         let path = dir.join("m.db");
         let path_str = path.to_str().unwrap();
         let version_id;
         {
-            let fs = SqliteMemoryFs::open(path_str).unwrap();
+            let fs = SqliteMemoryRepository::open(path_str).unwrap();
             let created = fs.create("s", "/keep.md", "durable").await.unwrap();
             fs.update("s", &created.id, "updated", &created.content_sha256)
                 .await
@@ -1108,7 +1110,7 @@ mod memfs_tests {
             version_id = fs.list_versions("s").await.unwrap()[0].id.clone();
             fs.redact_version("s", &version_id).await.unwrap().unwrap();
         }
-        let fs = SqliteMemoryFs::open(path_str).unwrap();
+        let fs = SqliteMemoryRepository::open(path_str).unwrap();
         assert_eq!(
             fs.get_by_path("s", "/keep.md")
                 .await
@@ -1161,7 +1163,8 @@ mod memfs_tests {
             .unwrap();
         drop(legacy);
 
-        let store = SqliteMemoryFs::open(dir.path().join("memory.db").to_str().unwrap()).unwrap();
+        let store =
+            SqliteMemoryRepository::open(dir.path().join("memory.db").to_str().unwrap()).unwrap();
         assert_eq!(store.import_legacy_versions(&legacy_path).unwrap(), 1);
         assert_eq!(store.import_legacy_versions(&legacy_path).unwrap(), 0);
         let versions = store.list_versions("s").await.unwrap();
@@ -1180,7 +1183,7 @@ mod memfs_tests {
     /// then assert both memories are intact.
     #[tokio::test]
     async fn rename_replace_is_crash_atomic() {
-        let fs = SqliteMemoryFs::open_in_memory().unwrap();
+        let fs = SqliteMemoryRepository::open_in_memory().unwrap();
         fs.create("s", "/from.md", "src").await.unwrap();
         fs.create("s", "/to.md", "dst").await.unwrap();
 

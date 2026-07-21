@@ -827,7 +827,7 @@ C105=Block/Suspend → is_error(遮蔽执行)     C106 → E91     C107=2xx → 
 | E97 | 内容寻址存储 + 去重(同哈希早返回);原子 temp+rename 发布 | file-store `put` |
 | E98 | 路径穿越写被夹在根下 `etc-passwd.bin`(`sanitize_stem`) | memory/skill store |
 | E99 | CAS 冲突返回活 head 且不覆写；幂等 update 保 version；stale conditional delete 保留 head、已缺失 delete 为 no-op；copy 只删除物化快照内路径 | memory repository + copy harvest |
-| E100 | 校验先于变更:`TooLarge`/`InvalidPath`/`PathConflict`(size 检查先于 id 查找) | memfs `validate_size` |
+| E100 | 校验先于变更:`TooLarge`/`InvalidPath`/`PathConflict`(size 检查先于 id 查找) | memory repository `validate_size` |
 | E101 | 仅呈现两技能工具 `Skill`+`list_skills`(catalog-free 稳定哈希) | ext-skills `tool.rs` |
 | E102 | 路径触发后在 catalog 浮现条件技能;`model_invocable=false` 遮蔽激活(披露≠授权) | ext-skills `is_surfaced` |
 | E103 | 以命名空间 id 注入 MCP 工具 `mcp__<server>__<tool>`;version bump 时重解析 | ext-mcp `resolve` |

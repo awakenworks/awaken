@@ -2,7 +2,7 @@
 //!
 //! A write-through FUSE mount is the live path, but it needs `/dev/fuse` — absent on
 //! macOS, in CI, and in unprivileged containers. There, the same path-addressed
-//! [`MemoryFs`] store is materialized the old way: [`materialize`] copies every
+//! [`MemoryRepository`] store is materialized the old way: [`materialize`] copies every
 //! memory out to plain files the agent reads/writes, and [`harvest`] walks those
 //! files back into the store after a turn (create new, CAS-update changed, skip
 //! unchanged). [`fuse_available`] is the capability check a provider gates on.
@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use awaken_memory_store::{MemErr, MemoryFs, sha256_hex};
+use awaken_memory_store::{MemErr, MemoryRepository, sha256_hex};
 
 use crate::FuseError;
 
@@ -75,7 +75,7 @@ pub struct HarvestReport {
 /// Nested paths create their parent directories. Returns the exact observed heads
 /// needed for conflict-safe teardown.
 pub async fn materialize(
-    fs: &dyn MemoryFs,
+    fs: &dyn MemoryRepository,
     store: &str,
     root: &Path,
 ) -> Result<CopySnapshot, FuseError> {
@@ -113,7 +113,7 @@ pub async fn materialize(
 /// but no longer present there is deleted from the store, so "rm note.md" sticks on
 /// both realization tiers.
 pub async fn harvest(
-    fs: &dyn MemoryFs,
+    fs: &dyn MemoryRepository,
     store: &str,
     root: &Path,
     snapshot: &mut CopySnapshot,
@@ -242,7 +242,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use awaken_memory_store::InMemoryFs;
+    use awaken_memory_store::VolatileMemoryRepository;
 
     fn temp(tag: &str) -> PathBuf {
         let n = SystemTime::now()
@@ -268,7 +268,7 @@ mod tests {
     #[test]
     fn materialize_writes_files_including_nested_paths() {
         let rt = rt();
-        let fs = Arc::new(InMemoryFs::new());
+        let fs = Arc::new(VolatileMemoryRepository::new());
         rt.block_on(fs.create("s", "/root.md", "top")).unwrap();
         rt.block_on(fs.create("s", "/notes/deep/a.md", "nested"))
             .unwrap();
@@ -287,7 +287,7 @@ mod tests {
     #[test]
     fn harvest_creates_new_updates_changed_and_skips_unchanged() {
         let rt = rt();
-        let fs = Arc::new(InMemoryFs::new());
+        let fs = Arc::new(VolatileMemoryRepository::new());
         // Seed one memory; a round-trip will modify it and add another.
         let seed = rt.block_on(fs.create("s", "/keep.md", "v1")).unwrap();
         let dir = temp("harv");
@@ -338,7 +338,7 @@ mod tests {
     #[test]
     fn harvest_skips_a_non_utf8_file_rather_than_failing() {
         let rt = rt();
-        let fs = Arc::new(InMemoryFs::new());
+        let fs = Arc::new(VolatileMemoryRepository::new());
         let dir = temp("harv-bin");
         let mut snapshot = CopySnapshot::default();
         std::fs::write(dir.join("ok.md"), "text").unwrap();
@@ -366,7 +366,7 @@ mod tests {
         // path (`unlink` → `delete_by_path`). So "rm note.md" sticks identically across
         // both realization tiers (FUSE and the no-FUSE bwrap / CI / macOS copy tier).
         let rt = rt();
-        let fs = Arc::new(InMemoryFs::new());
+        let fs = Arc::new(VolatileMemoryRepository::new());
         rt.block_on(fs.create("s", "/keep.md", "x")).unwrap();
         rt.block_on(fs.create("s", "/gone.md", "y")).unwrap();
         let dir = temp("del-parity");
@@ -402,7 +402,7 @@ mod tests {
     #[test]
     fn harvest_on_a_missing_root_is_empty() {
         let rt = rt();
-        let fs = Arc::new(InMemoryFs::new());
+        let fs = Arc::new(VolatileMemoryRepository::new());
         let missing = std::env::temp_dir().join("awaken-memcopy-does-not-exist-xyz");
         let mut snapshot = CopySnapshot::default();
         assert_eq!(
@@ -416,7 +416,7 @@ mod tests {
     #[test]
     fn concurrent_update_wins_over_a_stale_local_edit() {
         let rt = rt();
-        let fs = Arc::new(InMemoryFs::new());
+        let fs = Arc::new(VolatileMemoryRepository::new());
         let original = rt.block_on(fs.create("s", "/note.md", "v1")).unwrap();
         let dir = temp("concurrent-update");
         let mut snapshot = rt.block_on(materialize(&*fs, "s", &dir)).unwrap();
@@ -445,7 +445,7 @@ mod tests {
     #[test]
     fn concurrent_create_is_not_deleted_as_locally_absent() {
         let rt = rt();
-        let fs = Arc::new(InMemoryFs::new());
+        let fs = Arc::new(VolatileMemoryRepository::new());
         rt.block_on(fs.create("s", "/before.md", "before")).unwrap();
         let dir = temp("concurrent-create");
         let mut snapshot = rt.block_on(materialize(&*fs, "s", &dir)).unwrap();
@@ -468,7 +468,7 @@ mod tests {
     #[test]
     fn concurrent_update_blocks_a_stale_local_delete() {
         let rt = rt();
-        let fs = Arc::new(InMemoryFs::new());
+        let fs = Arc::new(VolatileMemoryRepository::new());
         let original = rt.block_on(fs.create("s", "/note.md", "v1")).unwrap();
         let dir = temp("concurrent-delete");
         let mut snapshot = rt.block_on(materialize(&*fs, "s", &dir)).unwrap();

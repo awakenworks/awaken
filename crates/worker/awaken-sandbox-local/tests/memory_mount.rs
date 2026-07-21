@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use awaken_memory_store::{InMemoryFs, MemoryFs};
+use awaken_memory_store::{MemoryRepository, VolatileMemoryRepository};
 use awaken_provisioning_contract as pc;
 use awaken_provisioning_contract::SandboxProvider;
 use awaken_sandbox_local::LocalProvider;
@@ -57,7 +57,7 @@ fn find_file(root: &Path, name: &str) -> Option<PathBuf> {
 
 #[tokio::test]
 async fn memory_store_mount_realizes_and_persists_an_edit() {
-    let fs = Arc::new(InMemoryFs::new());
+    let fs = Arc::new(VolatileMemoryRepository::new());
     fs.create("s", "/note.md", "v1").await.unwrap();
     let mounter = Arc::new(MemoryStoreMounter::new(fs.clone()));
 

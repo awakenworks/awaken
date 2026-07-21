@@ -9,20 +9,20 @@ license.workspace = true
 # ids; ownership and authorization stay in their respective outer planes.
 
 [dependencies]
-# Port-only contract: MemoryFs + Memory/MemoryEntry/MemErr live here; this crate
+# Port-only contract: MemoryRepository + Memory/MemoryEntry/MemErr live here; this crate
 # implements them and re-exports the contract types.
 awaken-resource-contract.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "fs"] }
-# ADR-0053 path-addressed MemoryFs: content-sha256 (Anthropic wire uses sha256) +
+# ADR-0053 path-addressed MemoryRepository: content-sha256 (Anthropic wire uses sha256) +
 # a durable JSON record per memory.
 sha2 = "0.10"
 serde = { workspace = true }
 serde_json = { workspace = true }
-# Feature `sqlite`: embedded durable MemoryFs over the crate's migration scope.
+# Feature `sqlite`: embedded durable MemoryRepository over the crate's migration scope.
 rusqlite = { workspace = true, optional = true }
-# Feature `postgres`: network-DB MemoryFs over the same scope (multi-node).
+# Feature `postgres`: network-DB MemoryRepository over the same scope (multi-node).
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"], optional = true }
 awaken-scoped-migration = { git = "https://github.com/awakenworks/awaken-foundation", rev = "dfa512edd2e5b7e34ad0b05db01b973845f0f9e9", features = ["postgres"], optional = true }
 awaken-scoped-migration-sqlite = { git = "https://github.com/awakenworks/awaken-foundation", rev = "dfa512edd2e5b7e34ad0b05db01b973845f0f9e9", optional = true }

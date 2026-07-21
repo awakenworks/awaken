@@ -1,24 +1,27 @@
-//! Backend-generic conformance for the path-addressed `MemoryFs` port (ADR-0053).
-//! The cross-node CAS backend (`PgMemoryFs`) keeps the same POSIX-replace and
+//! Backend-generic conformance for the path-addressed `MemoryRepository` port (ADR-0053).
+//! The cross-node CAS backend (`PostgresMemoryRepository`) keeps the same POSIX-replace and
 //! compare-and-swap semantics as the in-process backends.
 
-use awaken_memory_store::memfs::MAX_PATH_BYTES;
-use awaken_memory_store::{FsMemoryFs, InMemoryFs, MAX_MEMORY_BYTES, MemErr, MemoryFs, sha256_hex};
+use awaken_memory_store::repository::MAX_PATH_BYTES;
+use awaken_memory_store::{
+    FilesystemMemoryRepository, MAX_MEMORY_BYTES, MemErr, MemoryRepository,
+    VolatileMemoryRepository, sha256_hex,
+};
 use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
-// Path-addressed MemoryFs conformance (ADR-0053), backend-generic. The in-memory,
+// Path-addressed MemoryRepository conformance (ADR-0053), backend-generic. The in-memory,
 // filesystem, and sqlite backends already run these bodies in the crate's unit
 // tests; the suites are duplicated here (mirroring the blob-store shape above) so
-// the public `PgMemoryFs` — whose cross-node CAS raison d'être had zero coverage —
+// the public `PostgresMemoryRepository` — whose cross-node CAS raison d'être had zero coverage —
 // runs the SAME conformance / extended / not-found suites under skip-on-unreachable.
 // ---------------------------------------------------------------------------
 
 /// The core lifecycle: create/version/sha, PathConflict, get, CAS update (right +
 /// stale + idempotent base), list under a prefix, rename-replace, idempotent delete,
-/// path validation, and the size cap. (Ported from `memfs::tests::conformance`.)
-#[allow(dead_code)] // the MemoryFs conformance suite is wired only to the postgres-feature backend
-async fn memfs_conformance(fs: &dyn MemoryFs) {
+/// path validation, and the size cap. (Ported from `repository::tests::conformance`.)
+#[allow(dead_code)] // the MemoryRepository conformance suite is wired only to the postgres-feature backend
+async fn memfs_conformance(fs: &dyn MemoryRepository) {
     let store = "memstore_1";
 
     let m = fs.create(store, "/notes/today.md", "alpha").await.unwrap();
@@ -148,9 +151,9 @@ async fn memfs_conformance(fs: &dyn MemoryFs) {
 
 /// Cause-effect-graph edges beyond the core suite: remaining validation branches,
 /// CAS/rename precedence (validate-before-lookup, from==to), and prefix-boundary
-/// correctness. (Ported from `memfs::tests::extended_conformance`.)
+/// correctness. (Ported from `repository::tests::extended_conformance`.)
 #[allow(dead_code)] // postgres-feature only (see memfs_conformance)
-async fn memfs_extended(fs: &dyn MemoryFs) {
+async fn memfs_extended(fs: &dyn MemoryRepository) {
     let store = "ext";
 
     let over_cap = format!("/{}", "a".repeat(MAX_PATH_BYTES)); // len == cap + 1
@@ -235,9 +238,9 @@ async fn memfs_extended(fs: &dyn MemoryFs) {
 }
 
 /// The `NotFound` paths of `update`/`rename`. (Ported from
-/// `memfs::tests::not_found_paths`.)
+/// `repository::tests::not_found_paths`.)
 #[allow(dead_code)] // postgres-feature only (see memfs_conformance)
-async fn memfs_not_found(fs: &dyn MemoryFs) {
+async fn memfs_not_found(fs: &dyn MemoryRepository) {
     let store = "s";
     assert!(matches!(
         fs.update(store, "no_id", "x", "sha").await,
@@ -265,7 +268,7 @@ async fn memfs_not_found(fs: &dyn MemoryFs) {
 /// 8 concurrent creates of one path → exactly one winner, the rest `PathConflict`.
 async fn concurrent_create_one_winner<F>(fs: Arc<F>)
 where
-    F: MemoryFs + Send + Sync + 'static,
+    F: MemoryRepository + Send + Sync + 'static,
 {
     let mut handles = Vec::new();
     for i in 0..8u32 {
@@ -290,7 +293,7 @@ where
 /// (none clobbers).
 async fn concurrent_cas_one_winner<F>(fs: Arc<F>)
 where
-    F: MemoryFs + Send + Sync + 'static,
+    F: MemoryRepository + Send + Sync + 'static,
 {
     let m = fs.create("s", "/c.md", "v0").await.unwrap();
     let mut handles = Vec::new();
@@ -312,7 +315,7 @@ where
     assert_eq!(conflicts, 7);
 }
 
-async fn conditional_delete_never_removes_a_changed_or_recreated_head(fs: &dyn MemoryFs) {
+async fn conditional_delete_never_removes_a_changed_or_recreated_head(fs: &dyn MemoryRepository) {
     let first = fs.create("guarded", "/note.md", "v1").await.unwrap();
     let changed = fs
         .update("guarded", &first.id, "v2", &first.content_sha256)
@@ -355,14 +358,15 @@ async fn conditional_delete_never_removes_a_changed_or_recreated_head(fs: &dyn M
 
 #[tokio::test]
 async fn in_memory_conditional_delete_is_atomic() {
-    conditional_delete_never_removes_a_changed_or_recreated_head(&InMemoryFs::new()).await;
+    conditional_delete_never_removes_a_changed_or_recreated_head(&VolatileMemoryRepository::new())
+        .await;
 }
 
 #[tokio::test]
 async fn fs_conditional_delete_is_atomic() {
     let dir = tempfile::tempdir().unwrap();
     conditional_delete_never_removes_a_changed_or_recreated_head(
-        &FsMemoryFs::open(dir.path()).unwrap(),
+        &FilesystemMemoryRepository::open(dir.path()).unwrap(),
     )
     .await;
 }
@@ -370,9 +374,9 @@ async fn fs_conditional_delete_is_atomic() {
 #[cfg(feature = "sqlite")]
 #[tokio::test]
 async fn sqlite_conditional_delete_is_atomic() {
-    use awaken_memory_store::SqliteMemoryFs;
+    use awaken_memory_store::SqliteMemoryRepository;
     conditional_delete_never_removes_a_changed_or_recreated_head(
-        &SqliteMemoryFs::open_in_memory().unwrap(),
+        &SqliteMemoryRepository::open_in_memory().unwrap(),
     )
     .await;
 }
@@ -380,27 +384,33 @@ async fn sqlite_conditional_delete_is_atomic() {
 #[tokio::test]
 async fn fs_concurrent_create_has_exactly_one_winner() {
     let dir = tempfile::tempdir().unwrap();
-    concurrent_create_one_winner(Arc::new(FsMemoryFs::open(dir.path()).unwrap())).await;
+    concurrent_create_one_winner(Arc::new(
+        FilesystemMemoryRepository::open(dir.path()).unwrap(),
+    ))
+    .await;
 }
 
 #[tokio::test]
 async fn fs_concurrent_cas_has_exactly_one_winner() {
     let dir = tempfile::tempdir().unwrap();
-    concurrent_cas_one_winner(Arc::new(FsMemoryFs::open(dir.path()).unwrap())).await;
+    concurrent_cas_one_winner(Arc::new(
+        FilesystemMemoryRepository::open(dir.path()).unwrap(),
+    ))
+    .await;
 }
 
 #[cfg(feature = "sqlite")]
 #[tokio::test]
 async fn sqlite_concurrent_create_has_exactly_one_winner() {
-    use awaken_memory_store::SqliteMemoryFs;
-    concurrent_create_one_winner(Arc::new(SqliteMemoryFs::open_in_memory().unwrap())).await;
+    use awaken_memory_store::SqliteMemoryRepository;
+    concurrent_create_one_winner(Arc::new(SqliteMemoryRepository::open_in_memory().unwrap())).await;
 }
 
 #[cfg(feature = "sqlite")]
 #[tokio::test]
 async fn sqlite_concurrent_cas_has_exactly_one_winner() {
-    use awaken_memory_store::SqliteMemoryFs;
-    concurrent_cas_one_winner(Arc::new(SqliteMemoryFs::open_in_memory().unwrap())).await;
+    use awaken_memory_store::SqliteMemoryRepository;
+    concurrent_cas_one_winner(Arc::new(SqliteMemoryRepository::open_in_memory().unwrap())).await;
 }
 
 /// Live Postgres conformance on a fresh schema. Skips when no Postgres is reachable
@@ -408,7 +418,7 @@ async fn sqlite_concurrent_cas_has_exactly_one_winner() {
 #[cfg(feature = "postgres")]
 mod postgres {
     use super::*;
-    use awaken_memory_store::PgMemoryFs;
+    use awaken_memory_store::PostgresMemoryRepository;
     use sqlx::Executor;
     use sqlx::postgres::{PgPool, PgPoolOptions};
 
@@ -447,16 +457,16 @@ mod postgres {
             .ok()
     }
 
-    /// The FULL path-addressed `MemoryFs` conformance + extended + not-found suites
-    /// against `PgMemoryFs` — the cross-node CAS backend whose `FOR UPDATE` row locks,
+    /// The FULL path-addressed `MemoryRepository` conformance + extended + not-found suites
+    /// against `PostgresMemoryRepository` — the cross-node CAS backend whose `FOR UPDATE` row locks,
     /// transactional POSIX-replace, and `MemErr::Conflict`-on-stale-base are its whole
     /// reason to exist and previously had zero coverage.
     #[tokio::test]
-    async fn postgres_memory_fs_conforms() {
+    async fn postgres_memory_repository_conforms() {
         let Some(pool) = schema_pool("t_memoryfs").await else {
             return;
         };
-        let fs = PgMemoryFs::with_pool(pool);
+        let fs = PostgresMemoryRepository::with_pool(pool);
         fs.ensure_schema().await.unwrap();
         memfs_conformance(&fs).await;
         memfs_extended(&fs).await;
@@ -464,7 +474,7 @@ mod postgres {
         conditional_delete_never_removes_a_changed_or_recreated_head(&fs).await;
     }
 
-    /// `PgMemoryFs::create` reads existence with an unlocked `SELECT 1` and mints its
+    /// `PostgresMemoryRepository::create` reads existence with an unlocked `SELECT 1` and mints its
     /// ordinal with `SELECT MAX(ordinal)+1` — neither `FOR UPDATE` — so two concurrent
     /// same-path creates both pass the existence check and race the `INSERT`. The primary
     /// key `(store_id, path)` serializes them; the loser's unique-violation is translated
@@ -476,7 +486,7 @@ mod postgres {
         let Some(pool) = schema_pool("t_memoryfs_race").await else {
             return;
         };
-        let fs = Arc::new(PgMemoryFs::with_pool(pool));
+        let fs = Arc::new(PostgresMemoryRepository::with_pool(pool));
         fs.ensure_schema().await.unwrap();
 
         let mut handles = Vec::new();
@@ -513,7 +523,7 @@ mod postgres {
         let Some(pool) = schema_pool("t_memoryfs_reuse").await else {
             return;
         };
-        let fs = PgMemoryFs::with_pool(pool);
+        let fs = PostgresMemoryRepository::with_pool(pool);
         fs.ensure_schema().await.unwrap();
         fs.create("s", "/a.md", "a").await.unwrap();
         fs.create("s", "/b.md", "b").await.unwrap(); // mem_2 (top ordinal)

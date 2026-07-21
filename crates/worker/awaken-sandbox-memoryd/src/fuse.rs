@@ -1,7 +1,7 @@
 //! The fuser-backed write-through memory filesystem (ADR-0053, D2/D3).
 //!
 //! A faithful port of awaken-next's `memoryd` FUSE, over an in-process
-//! [`MemoryFs`] instead of an HTTP client, and reporting the store's real
+//! [`MemoryRepository`] instead of an HTTP client, and reporting the store's real
 //! create/update timestamps in `getattr` (awaken-next reported `now()`).
 
 use std::collections::{HashMap, VecDeque};
@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use awaken_memory_store::{MemErr, Memory, MemoryFs};
+use awaken_memory_store::{MemErr, Memory, MemoryRepository};
 use fuser::{
     BackgroundSession, FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyCreate,
     ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request, TimeOrNow,
@@ -157,7 +157,7 @@ impl Drop for MemoryMountHandle {
 
 /// Spawn a background mount of `store` at `mountpoint`, returning its handle.
 pub fn spawn_mount(
-    fs: Arc<dyn MemoryFs>,
+    fs: Arc<dyn MemoryRepository>,
     store_id: String,
     mountpoint: PathBuf,
 ) -> Result<MemoryMountHandle, FuseError> {
@@ -169,7 +169,7 @@ pub fn spawn_mount(
 /// on another node is reflected here. Pass a [`LocalInvalidator`](crate::LocalInvalidator)
 /// subscription (or a NATS/pg-notify bridge over the same broadcast).
 pub fn spawn_mount_with_invalidations(
-    fs: Arc<dyn MemoryFs>,
+    fs: Arc<dyn MemoryRepository>,
     store_id: String,
     mountpoint: PathBuf,
     invalidations: broadcast::Receiver<Invalidation>,
@@ -178,7 +178,7 @@ pub fn spawn_mount_with_invalidations(
 }
 
 fn spawn_mount_inner(
-    fs: Arc<dyn MemoryFs>,
+    fs: Arc<dyn MemoryRepository>,
     store_id: String,
     mountpoint: PathBuf,
     invalidations: Option<broadcast::Receiver<Invalidation>>,
@@ -214,9 +214,9 @@ fn mount_options() -> Vec<MountOption> {
     ]
 }
 
-/// The FUSE filesystem projecting one memory `store` over a [`MemoryFs`].
+/// The FUSE filesystem projecting one memory `store` over a [`MemoryRepository`].
 pub struct MemoryFuse {
-    fs: Arc<dyn MemoryFs>,
+    fs: Arc<dyn MemoryRepository>,
     store_id: String,
     runtime: Runtime,
     mount_time: u128,
@@ -331,12 +331,12 @@ impl ContentLruCache {
 
 impl MemoryFuse {
     /// Build a filesystem over `fs` for one `store_id` (no mount yet).
-    pub fn new(fs: Arc<dyn MemoryFs>, store_id: String) -> Result<Self, FuseError> {
+    pub fn new(fs: Arc<dyn MemoryRepository>, store_id: String) -> Result<Self, FuseError> {
         Self::new_with_state(fs, store_id, Arc::new(MountState::default()))
     }
 
     fn new_with_state(
-        fs: Arc<dyn MemoryFs>,
+        fs: Arc<dyn MemoryRepository>,
         store_id: String,
         mount_state: Arc<MountState>,
     ) -> Result<Self, FuseError> {
@@ -1164,10 +1164,14 @@ impl Filesystem for MemoryFuse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_memory_store::{InMemoryFs, sha256_hex};
+    use awaken_memory_store::{VolatileMemoryRepository, sha256_hex};
 
     fn test_fs() -> MemoryFuse {
-        MemoryFuse::new(Arc::new(InMemoryFs::new()), "memstore_test".into()).unwrap()
+        MemoryFuse::new(
+            Arc::new(VolatileMemoryRepository::new()),
+            "memstore_test".into(),
+        )
+        .unwrap()
     }
 
     fn memory(path: &str, content: &str) -> Memory {
@@ -1309,7 +1313,7 @@ mod tests {
     }
 
     // These drive the real open/write/flush/rename code paths over a live
-    // `InMemoryFs` (no kernel needed). The `MemoryFuse` owns its own runtime and
+    // `VolatileMemoryRepository` (no kernel needed). The `MemoryFuse` owns its own runtime and
     // its methods block on it internally, so the test stays synchronous and uses a
     // separate runtime only for external store setup — the two never nest.
     fn setup_rt() -> tokio::runtime::Runtime {
@@ -1319,7 +1323,7 @@ mod tests {
     #[test]
     fn a_stale_open_fd_conflicts_and_does_not_clobber_a_newer_write() {
         let store = "s";
-        let backend = Arc::new(InMemoryFs::new());
+        let backend = Arc::new(VolatileMemoryRepository::new());
         let rt = setup_rt();
         let created = rt.block_on(backend.create(store, "/c.md", "v1")).unwrap();
 
@@ -1396,7 +1400,7 @@ mod tests {
     #[test]
     fn lookup_path_resolves_files_synthetic_dirs_and_missing() {
         let store = "s";
-        let backend = Arc::new(InMemoryFs::new());
+        let backend = Arc::new(VolatileMemoryRepository::new());
         let rt = setup_rt();
         rt.block_on(backend.create(store, "/notes/a.md", "a"))
             .unwrap();
@@ -1426,7 +1430,7 @@ mod tests {
     #[test]
     fn open_create_flush_read_inner_branches() {
         let store = "s";
-        let backend = Arc::new(InMemoryFs::new());
+        let backend = Arc::new(VolatileMemoryRepository::new());
         let rt = setup_rt();
         rt.block_on(backend.create(store, "/f.md", "orig")).unwrap();
         let fuse = MemoryFuse::new(backend.clone(), store.into()).unwrap();
@@ -1477,7 +1481,7 @@ mod tests {
     #[test]
     fn readdir_entries_lists_children_and_rejects_non_directories() {
         let store = "s";
-        let backend = Arc::new(InMemoryFs::new());
+        let backend = Arc::new(VolatileMemoryRepository::new());
         let rt = setup_rt();
         rt.block_on(backend.create(store, "/a.md", "a")).unwrap();
         rt.block_on(backend.create(store, "/sub/b.md", "b"))
@@ -1518,7 +1522,7 @@ mod tests {
     #[test]
     fn apply_setattr_handles_metadata_fd_and_store_truncation() {
         let store = "s";
-        let backend = Arc::new(InMemoryFs::new());
+        let backend = Arc::new(VolatileMemoryRepository::new());
         let rt = setup_rt();
         rt.block_on(backend.create(store, "/f.md", "hello"))
             .unwrap();
@@ -1554,7 +1558,7 @@ mod tests {
     #[test]
     fn an_open_fd_survives_rename_and_flushes_to_the_renamed_memory() {
         let store = "s";
-        let backend = Arc::new(InMemoryFs::new());
+        let backend = Arc::new(VolatileMemoryRepository::new());
         let rt = setup_rt();
         rt.block_on(backend.create(store, "/old.md", "snapshot"))
             .unwrap();
@@ -1618,7 +1622,7 @@ mod tests {
     #[test]
     fn write_and_read_at_offsets_splice_and_clamp_the_fd_buffer() {
         let store = "s";
-        let backend = Arc::new(InMemoryFs::new());
+        let backend = Arc::new(VolatileMemoryRepository::new());
         let rt = setup_rt();
         rt.block_on(backend.create(store, "/f.md", "abcdef"))
             .unwrap();
@@ -1644,7 +1648,7 @@ mod tests {
         // mark the fd clean — the agent's write is preserved for a re-drive, and a
         // second flush conflicts again (proving the fd was never silently cleared).
         let store = "s";
-        let backend = Arc::new(InMemoryFs::new());
+        let backend = Arc::new(VolatileMemoryRepository::new());
         let rt = setup_rt();
         let created = rt.block_on(backend.create(store, "/c.md", "v1")).unwrap();
         let fuse = MemoryFuse::new(backend.clone(), store.into()).unwrap();
@@ -1673,7 +1677,7 @@ mod tests {
         // Truncation that GROWS a file (no open fd) zero-fills to the new size and
         // writes it through the store — the mirror of the shrink case.
         let store = "s";
-        let backend = Arc::new(InMemoryFs::new());
+        let backend = Arc::new(VolatileMemoryRepository::new());
         let rt = setup_rt();
         rt.block_on(backend.create(store, "/g.md", "hi")).unwrap();
         let fuse = MemoryFuse::new(backend.clone(), store.into()).unwrap();
@@ -1758,18 +1762,18 @@ mod tests {
     #[test]
     fn cross_host_write_invalidates_a_peer_mounts_cache_end_to_end() {
         use crate::LocalInvalidator;
-        use crate::invalidate::{InvalidatingMemoryFs, Invalidator};
+        use crate::invalidate::{InvalidatingMemoryRepository, Invalidator};
         // The D5 coherence model end-to-end, WITHOUT the kernel FUSE path: model two
-        // hosts mounting one store over the in-process `InMemoryFs`. Host A writes through
-        // an `InvalidatingMemoryFs` (the real write side); host B keeps its own
+        // hosts mounting one store over the in-process `VolatileMemoryRepository`. Host A writes through
+        // an `InvalidatingMemoryRepository` (the real write side); host B keeps its own
         // `ContentLruCache` fed by a listener draining the shared `LocalInvalidator`. A
         // write on A must drop the path from B's cache so B's next read refetches the new
         // content from the shared durable store — coherence with no shared mount.
         let rt = setup_rt();
-        let durable = Arc::new(InMemoryFs::new());
+        let durable = Arc::new(VolatileMemoryRepository::new());
         let bus = Arc::new(LocalInvalidator::new(16));
         let inval: Arc<dyn Invalidator> = bus.clone();
-        let fs_a = InvalidatingMemoryFs::new(durable.clone(), inval);
+        let fs_a = InvalidatingMemoryRepository::new(durable.clone(), inval);
 
         // Seed /note.md and let host B cache it (as if B had just read it).
         let seed = rt.block_on(fs_a.create("s", "/note.md", "v1")).unwrap();

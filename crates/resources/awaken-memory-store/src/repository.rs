@@ -1,14 +1,14 @@
 //! Path-addressed, CAS memory model (ADR-0053, D1).
 //!
-//! The [`MemoryFs`] port projects a memory store as a set of **path-addressed
+//! The [`MemoryRepository`] port projects a memory store as a set of **path-addressed
 //! memory files**, each carrying a `content_sha256`, a monotonic per-path
 //! `version`, and real create/update timestamps — the model a write-through FUSE
 //! mount ([ADR-0053] D2) needs to give an LLM native `read`/`write`/`edit`/`grep`
 //! semantics over `/mnt/memory/{store}/*`. A store holds many files with **per-file
-//! optimistic concurrency**: [`MemoryFs::update`] is a compare-and-swap on the base
+//! optimistic concurrency**: [`MemoryRepository::update`] is a compare-and-swap on the base
 //! sha, so two writers never silently clobber each other.
 //!
-//! Backends: [`InMemoryFs`], [`FsMemoryFs`] (one atomic aggregate document per
+//! Backends: [`VolatileMemoryRepository`], [`FilesystemMemoryRepository`] (one atomic aggregate document per
 //! store), and feature-gated SQLite/Postgres transactional repositories.
 //!
 use std::collections::BTreeMap;
@@ -21,12 +21,12 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-// The path-addressed memory port (`MemoryFs`), its value types (`Memory`,
+// The path-addressed memory port (`MemoryRepository`), its value types (`Memory`,
 // `MemoryEntry`), the error (`MemErr`), and the size caps live in the port-only
 // contract crate. This module implements the port and re-exports them so
-// `awaken_memory_store::memfs::Memory` (and the root re-exports) keep resolving.
+// `awaken_memory_store::repository::Memory` and root re-exports resolve uniformly.
 pub use awaken_resource_contract::{
-    MAX_MEMORY_BYTES, MAX_PATH_BYTES, MemErr, Memory, MemoryEntry, MemoryFs, MemoryVersion,
+    MAX_MEMORY_BYTES, MAX_PATH_BYTES, MemErr, Memory, MemoryEntry, MemoryRepository, MemoryVersion,
     MemoryVersionOperation,
 };
 
@@ -73,7 +73,7 @@ pub(crate) fn validate_size(content: &str) -> Result<(), MemErr> {
     }
 }
 
-/// The durable/in-memory record; also the on-disk JSON for [`FsMemoryFs`].
+/// The durable/in-memory record; also the on-disk JSON for [`FilesystemMemoryRepository`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Record {
     id: String,
@@ -122,10 +122,10 @@ pub(crate) fn under_prefix(path: &str, prefix: &str) -> bool {
 // In-memory backend
 // ---------------------------------------------------------------------------
 
-/// In-memory [`MemoryFs`] (tests / ephemeral single-process). One lock guards the
+/// In-memory [`MemoryRepository`] (tests / ephemeral single-process). One lock guards the
 /// whole map, so every create/update/rename/delete is atomic and CAS is race-free.
 #[derive(Default)]
-pub struct InMemoryFs {
+pub struct VolatileMemoryRepository {
     inner: Mutex<InMemoryState>,
     next: AtomicU64,
     version_next: AtomicU64,
@@ -138,7 +138,7 @@ struct InMemoryState {
     versions: BTreeMap<String, Vec<MemoryVersion>>,
 }
 
-impl InMemoryFs {
+impl VolatileMemoryRepository {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -173,7 +173,7 @@ impl InMemoryFs {
 }
 
 #[async_trait]
-impl MemoryFs for InMemoryFs {
+impl MemoryRepository for VolatileMemoryRepository {
     async fn list(&self, store: &str, prefix: &str) -> Result<Vec<MemoryEntry>, MemErr> {
         let guard = self.inner.lock().unwrap();
         Ok(guard
@@ -404,10 +404,10 @@ impl MemoryFs for InMemoryFs {
 // Filesystem backend
 // ---------------------------------------------------------------------------
 
-/// Durable local-development [`MemoryFs`]: one aggregate document per store,
+/// Durable local-development [`MemoryRepository`]: one aggregate document per store,
 /// replaced atomically after each serialized mutation. Production embedded and
 /// multi-node deployments use the SQLite/Postgres transactional adapters.
-pub struct FsMemoryFs {
+pub struct FilesystemMemoryRepository {
     root: PathBuf,
     write_seq: AtomicU64,
     write_lock: tokio::sync::Mutex<()>,
@@ -425,7 +425,7 @@ struct FsState {
     next_version: u64,
 }
 
-impl FsMemoryFs {
+impl FilesystemMemoryRepository {
     /// Open (creating if absent) the store rooted at `root`.
     pub fn open(root: impl Into<PathBuf>) -> std::io::Result<Self> {
         let root = root.into();
@@ -494,7 +494,7 @@ impl FsMemoryFs {
 }
 
 #[async_trait]
-impl MemoryFs for FsMemoryFs {
+impl MemoryRepository for FilesystemMemoryRepository {
     async fn list(&self, store: &str, prefix: &str) -> Result<Vec<MemoryEntry>, MemErr> {
         Ok(self
             .load_state(store)
@@ -694,7 +694,7 @@ mod tests {
 
     fn temp_root(tag: &str) -> PathBuf {
         let p = std::env::temp_dir().join(format!(
-            "awaken-memfs-{tag}-{}-{}",
+            "awaken-memory-repository-{tag}-{}-{}",
             std::process::id(),
             now_nanos()
         ));
@@ -702,8 +702,8 @@ mod tests {
         p
     }
 
-    /// Run the same conformance suite over any `MemoryFs` backend.
-    async fn conformance(fs: &dyn MemoryFs) {
+    /// Run the same conformance suite over any `MemoryRepository` backend.
+    async fn conformance(fs: &dyn MemoryRepository) {
         let store = "memstore_1";
 
         // create → version 1, sha set, content round-trips.
@@ -840,7 +840,7 @@ mod tests {
     /// Cause-effect-graph cases beyond `conformance`: the remaining validation
     /// branches, CAS/rename **precedence** (who masks whom), and prefix-boundary
     /// correctness. Runs over any backend.
-    async fn extended_conformance(fs: &dyn MemoryFs) {
+    async fn extended_conformance(fs: &dyn MemoryRepository) {
         let store = "ext";
 
         // G-C1: the other validate_path rejections — root, a control char, a `.`
@@ -958,7 +958,7 @@ mod tests {
     /// state-changing mutation => one durable version (rename-replace => displaced
     /// delete + source modify); rejected/idempotent mutation => no version;
     /// redaction => history content removed, live head unchanged.
-    async fn history_conformance(fs: &dyn MemoryFs) {
+    async fn history_conformance(fs: &dyn MemoryRepository) {
         let store = "history";
         let created = fs.create(store, "/a.md", "one").await.unwrap();
         let first = fs.list_versions(store).await.unwrap();
@@ -1026,18 +1026,18 @@ mod tests {
 
     #[tokio::test]
     async fn in_memory_extended_conformance() {
-        extended_conformance(&InMemoryFs::new()).await;
+        extended_conformance(&VolatileMemoryRepository::new()).await;
     }
 
     #[tokio::test]
     async fn in_memory_history_conformance() {
-        history_conformance(&InMemoryFs::new()).await;
+        history_conformance(&VolatileMemoryRepository::new()).await;
     }
 
     #[tokio::test]
     async fn fs_extended_conformance() {
         let root = temp_root("ext");
-        extended_conformance(&FsMemoryFs::open(&root).unwrap()).await;
+        extended_conformance(&FilesystemMemoryRepository::open(&root).unwrap()).await;
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -1046,11 +1046,11 @@ mod tests {
         let root = temp_root("history");
         let first_version_id;
         {
-            let fs = FsMemoryFs::open(&root).unwrap();
+            let fs = FilesystemMemoryRepository::open(&root).unwrap();
             history_conformance(&fs).await;
             first_version_id = fs.list_versions("history").await.unwrap()[0].id.clone();
         }
-        let reopened = FsMemoryFs::open(&root).unwrap();
+        let reopened = FilesystemMemoryRepository::open(&root).unwrap();
         let versions = reopened.list_versions("history").await.unwrap();
         assert_eq!(versions.len(), 6);
         assert_eq!(versions[0].id, first_version_id);
@@ -1059,7 +1059,7 @@ mod tests {
     }
 
     /// The `NotFound` paths of `update`/`rename`, over any backend.
-    async fn not_found_paths(fs: &dyn MemoryFs) {
+    async fn not_found_paths(fs: &dyn MemoryRepository) {
         let store = "s";
         // update on a store that does not exist yet → NotFound.
         assert!(matches!(
@@ -1086,25 +1086,25 @@ mod tests {
 
     #[tokio::test]
     async fn in_memory_not_found_paths() {
-        not_found_paths(&InMemoryFs::new()).await;
+        not_found_paths(&VolatileMemoryRepository::new()).await;
     }
 
     #[tokio::test]
     async fn fs_not_found_paths() {
         let root = temp_root("nf");
-        not_found_paths(&FsMemoryFs::open(&root).unwrap()).await;
+        not_found_paths(&FilesystemMemoryRepository::open(&root).unwrap()).await;
         std::fs::remove_dir_all(&root).ok();
     }
 
     #[tokio::test]
     async fn in_memory_backend_conforms() {
-        conformance(&InMemoryFs::new()).await;
+        conformance(&VolatileMemoryRepository::new()).await;
     }
 
     #[tokio::test]
     async fn fs_backend_conforms() {
         let root = temp_root("conf");
-        let fs = FsMemoryFs::open(&root).unwrap();
+        let fs = FilesystemMemoryRepository::open(&root).unwrap();
         conformance(&fs).await;
         std::fs::remove_dir_all(&root).ok();
     }
@@ -1115,7 +1115,7 @@ mod tests {
     #[tokio::test]
     async fn fs_mints_dense_ids() {
         let root = temp_root("dense");
-        let fs = FsMemoryFs::open(&root).unwrap();
+        let fs = FilesystemMemoryRepository::open(&root).unwrap();
         let a = fs.create("s", "/a.md", "a").await.unwrap();
         assert_eq!(a.id, "mem_1");
         // An update writes a record but must not advance the id counter.
@@ -1131,7 +1131,7 @@ mod tests {
     /// creating must mint a FRESH id, never re-hand-out the deleted one. Holds within a
     /// live handle for the in-memory backend and durably for every persistent
     /// backend because their high-water counters only advance.
-    async fn ids_stay_monotonic_across_delete(fs: &dyn MemoryFs) {
+    async fn ids_stay_monotonic_across_delete(fs: &dyn MemoryRepository) {
         let a = fs.create("s", "/a.md", "a").await.unwrap();
         let b = fs.create("s", "/b.md", "b").await.unwrap();
         assert_eq!((a.id.as_str(), b.id.as_str()), ("mem_1", "mem_2"));
@@ -1146,13 +1146,13 @@ mod tests {
 
     #[tokio::test]
     async fn in_memory_ids_stay_monotonic_across_delete() {
-        ids_stay_monotonic_across_delete(&InMemoryFs::new()).await;
+        ids_stay_monotonic_across_delete(&VolatileMemoryRepository::new()).await;
     }
 
     #[tokio::test]
     async fn fs_ids_stay_monotonic_across_delete() {
         let root = temp_root("mono");
-        ids_stay_monotonic_across_delete(&FsMemoryFs::open(&root).unwrap()).await;
+        ids_stay_monotonic_across_delete(&FilesystemMemoryRepository::open(&root).unwrap()).await;
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -1160,7 +1160,7 @@ mod tests {
     /// the memory formerly at `dst` (its id) is gone — an update on that stale id is
     /// `NotFound`, and the destination path now carries the source's id and content.
     /// This is the "who masks whom" edge of the POSIX-replace contract.
-    async fn rename_replace_orphans_the_destination_id(fs: &dyn MemoryFs) {
+    async fn rename_replace_orphans_the_destination_id(fs: &dyn MemoryRepository) {
         let dst = fs.create("s", "/dst.md", "old-dst").await.unwrap();
         let src = fs.create("s", "/src.md", "src").await.unwrap();
         assert_ne!(dst.id, src.id);
@@ -1182,13 +1182,16 @@ mod tests {
 
     #[tokio::test]
     async fn in_memory_rename_replace_orphans_destination_id() {
-        rename_replace_orphans_the_destination_id(&InMemoryFs::new()).await;
+        rename_replace_orphans_the_destination_id(&VolatileMemoryRepository::new()).await;
     }
 
     #[tokio::test]
     async fn fs_rename_replace_orphans_destination_id() {
         let root = temp_root("orphan");
-        rename_replace_orphans_the_destination_id(&FsMemoryFs::open(&root).unwrap()).await;
+        rename_replace_orphans_the_destination_id(
+            &FilesystemMemoryRepository::open(&root).unwrap(),
+        )
+        .await;
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -1196,12 +1199,12 @@ mod tests {
     async fn fs_backend_survives_reopen() {
         let root = temp_root("reopen");
         {
-            let fs = FsMemoryFs::open(&root).unwrap();
+            let fs = FilesystemMemoryRepository::open(&root).unwrap();
             fs.create("s1", "/keep.md", "durable").await.unwrap();
         }
         // A fresh handle over the same root sees the persisted memory and does not
         // re-mint its id.
-        let fs = FsMemoryFs::open(&root).unwrap();
+        let fs = FilesystemMemoryRepository::open(&root).unwrap();
         let got = fs.get_by_path("s1", "/keep.md").await.unwrap().unwrap();
         assert_eq!(got.content.as_deref(), Some("durable"));
         let fresh = fs.create("s1", "/new.md", "n").await.unwrap();
@@ -1214,7 +1217,7 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_create_of_the_same_path_has_exactly_one_winner() {
-        let fs = std::sync::Arc::new(InMemoryFs::new());
+        let fs = std::sync::Arc::new(VolatileMemoryRepository::new());
         let mut handles = Vec::new();
         for i in 0..8u32 {
             let fs = fs.clone();
@@ -1236,7 +1239,7 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_update_on_the_same_base_has_exactly_one_cas_winner() {
-        let fs = std::sync::Arc::new(InMemoryFs::new());
+        let fs = std::sync::Arc::new(VolatileMemoryRepository::new());
         let m = fs.create("s", "/c.md", "v0").await.unwrap();
         let mut handles = Vec::new();
         for i in 0..8u32 {
@@ -1264,7 +1267,7 @@ mod tests {
     async fn a_write_through_one_handle_is_visible_through_another() {
         // Two handles to one store stand in for two mounts sharing the same source
         // of truth — the basis of ADR-0053's shared-mount read coherence.
-        let fs = std::sync::Arc::new(InMemoryFs::new());
+        let fs = std::sync::Arc::new(VolatileMemoryRepository::new());
         let (writer, reader) = (fs.clone(), fs.clone());
         let m = writer.create("s", "/shared.md", "hello").await.unwrap();
         assert_eq!(
