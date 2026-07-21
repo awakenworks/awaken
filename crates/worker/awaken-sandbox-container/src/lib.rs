@@ -385,6 +385,42 @@ mod cgroup_caps_tests {
     }
 
     #[test]
+    fn writable_dirs_include_inline_workspace_file_parents_once() {
+        let mut plan = podman_plan();
+        plan.binds.extend([
+            BindPlan {
+                source_ref: "file-a".into(),
+                mount_path: "/workspace/.mnt/workspace/a.txt".into(),
+                read_only: true,
+                content: Some("a".into()),
+                content_bytes: None,
+                secret_content: None,
+                secret_writeback: false,
+                credential_file_path: None,
+            },
+            BindPlan {
+                source_ref: "file-b".into(),
+                mount_path: "/workspace/.mnt/workspace/b.txt".into(),
+                read_only: true,
+                content: None,
+                content_bytes: Some(vec![0xff]),
+                secret_content: None,
+                secret_writeback: false,
+                credential_file_path: None,
+            },
+        ]);
+        assert_eq!(
+            writable_dirs(&plan),
+            vec![
+                "/workspace",
+                "/workspace/.mnt/workspace",
+                "/mnt/session/outputs",
+                "/tmp",
+            ]
+        );
+    }
+
+    #[test]
     fn podman_run_argv_maps_init_network_limits_env_binds_and_command() {
         let argv = podman_run_argv("run-1", &podman_plan(), &RootfsPlan::Image("img:2".into()));
         assert!(argv.starts_with(&["run".into(), "-d".into(), "--init".into()]));
@@ -490,6 +526,25 @@ fn network_of(policy: &pc::NetworkPolicy) -> NetworkMode {
 #[must_use]
 pub fn writable_dirs(plan: &ContainerPlan) -> Vec<String> {
     let mut dirs = vec!["/workspace".to_string()];
+    // OCI creates the parent of a file bind as root:root. Keep the parent of every
+    // host-materialized workspace file on a Session-private writable volume so the
+    // non-root Agent can later attach, rename, or detach sibling resources without
+    // granting it root. Directory binds (repositories/memory) remain governed by
+    // their own mount and must not be shadowed here.
+    for bind in &plan.binds {
+        let is_file =
+            bind.content.is_some() || bind.content_bytes.is_some() || bind.secret_content.is_some();
+        let parent = is_file
+            .then(|| std::path::Path::new(&bind.mount_path).parent())
+            .flatten()
+            .and_then(std::path::Path::to_str)
+            .filter(|parent| parent.starts_with("/workspace/") && *parent != "/workspace");
+        if let Some(parent) = parent
+            && !dirs.iter().any(|entry| entry == parent)
+        {
+            dirs.push(parent.to_string());
+        }
+    }
     for path in [plan.outputs_volume.as_str(), "/tmp"] {
         if !dirs.iter().any(|entry| entry == path) {
             dirs.push(path.to_string());
@@ -1672,6 +1727,13 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
 /// agent-channel capability.
 #[async_trait]
 pub trait ContainerEnvironment: pc::Sandbox {
+    /// Absolute directory exposed to the Agent for out-of-band output artifacts.
+    /// Keeping it on the live environment prevents host projections from assuming
+    /// that container outputs live below `/workspace`.
+    fn outputs_path(&self) -> &str {
+        "/outputs"
+    }
+
     async fn spawn_agent_process(
         &self,
         command: pc::Command,
@@ -1691,6 +1753,10 @@ pub struct EnvironmentFile {
 
 #[async_trait]
 impl<R: ContainerRuntime + 'static> ContainerEnvironment for ContainerSandbox<R> {
+    fn outputs_path(&self) -> &str {
+        &self.outputs_path
+    }
+
     async fn spawn_agent_process(
         &self,
         command: pc::Command,
