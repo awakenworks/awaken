@@ -40,6 +40,7 @@ const scenarios: Scenario[] = [
   { id: 'memoryd_copy', file: 'e2e/memoryd_copy_lifecycle_e2e.mjs' },
   { id: 'resource_legacy_upgrade', file: 'e2e/resource_legacy_upgrade_e2e.mjs' },
   { id: 'resource_reclamation', file: 'e2e/resource_reclamation_e2e.mjs' },
+  { id: 'resource_ephemeral', file: 'e2e/resource_ephemeral_e2e.mjs' },
   { id: 'mcp_stdio', file: 'e2e/mcp_server_core_e2e.ts' },
   { id: 'mcp_http', file: 'e2e/mcp_streamable_http_e2e.ts' },
   { id: 'resource_plane_postgres', file: 'e2e/resource_plane_postgres_e2e.ts', postgres: true },
@@ -116,6 +117,7 @@ const obligations: Obligation[] = [
   { id: 'D7-11', stage: '7 resource persistence', behavior: 'authorized logical delete remains physically deferred by a live Session reference without IAM coupling', scenario: 'resource_reclamation' },
   { id: 'D7-12', stage: '7 resource persistence', behavior: 'SQLite Memory behavior config publishes with CAS and survives process replacement without pinning content', scenario: 'resource_legacy_upgrade' },
   { id: 'D7-13', stage: '7 resource persistence', behavior: 'Postgres Memory behavior config publishes with CAS and is shared across nodes', scenario: 'resource_plane_postgres' },
+  { id: 'D7-14', stage: '7 resource persistence', behavior: 'no-login/no-storage mode composes the volatile File, Memory, Skill, and lifecycle adapters under one explicit Workspace', scenario: 'resource_ephemeral' },
 
   { id: 'D8-01', stage: '8 neutral MCP server core', behavior: 'newest and older protocol versions negotiate', scenario: 'mcp_stdio' },
   { id: 'D8-02', stage: '8 neutral MCP server core', behavior: 'unsupported version returns invalid params', scenario: 'mcp_stdio' },
