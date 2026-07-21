@@ -17,7 +17,7 @@ import { DefaultChatTransport } from 'ai';
 import { Chat } from '@ai-sdk/react';
 import { spawnServer, waitForPort } from './harness.mjs';
 
-const PORT = 38300;
+const PORT = Number(process.env.E2E_PORT ?? 20_000 + (process.pid % 10_000));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Stop the server and GUARANTEE the port is released. With OTLP configured the
