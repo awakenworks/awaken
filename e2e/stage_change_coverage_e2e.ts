@@ -64,6 +64,7 @@ const scenarios: Scenario[] = [
     file: 'e2e/managed_container_agent_e2e.mjs',
     environment: { AWAKEN_E2E_CONTAINER_ENGINE: 'podman', AWAKEN_E2E_REQUIRE_CONTAINER: '1' },
   },
+  { id: 'session_environment_faults', file: 'e2e/session_environment_recovery_fault_e2e.ts' },
   { id: 'file_workspace_ownership', file: 'e2e/file_workspace_ownership_e2e.ts' },
   { id: 'mcp_stdio', file: 'e2e/mcp_server_core_e2e.ts' },
   { id: 'mcp_http', file: 'e2e/mcp_streamable_http_e2e.ts' },
@@ -145,6 +146,7 @@ const obligations: Obligation[] = [
   { id: 'D6-21', stage: '6 sandbox/recovery/metrics', behavior: 'a Managed environment declaration selects Podman host-userland or an explicit image through the canonical SandboxSpec', scenario: 'container_podman' },
   { id: 'D6-22', stage: '6 sandbox/recovery/metrics', behavior: 'Managed network and resource-limit declarations reach the Podman run plan', scenario: 'container_podman' },
   { id: 'D6-23', stage: '6 sandbox/recovery/metrics', behavior: 'missing private-root directory and tarball declarations fail closed without falling back to the default image', scenario: 'container_podman' },
+  { id: 'D6-24', stage: '6 sandbox/recovery/metrics', behavior: 'replacement rejects corrupt, cross-Session, wrong-provider, stopped and deleted durable environment bindings without creating a substitute', scenario: 'session_environment_faults' },
 
   { id: 'D7-01', stage: '7 resource persistence', behavior: 'File, Memory, Skill, and lifecycle adapters select one shared backend family', scenario: 'resource_plane_postgres' },
   { id: 'D7-02', stage: '7 resource persistence', behavior: 'resource data survives process and local-directory replacement', scenario: 'resource_plane_postgres' },

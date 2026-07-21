@@ -21,8 +21,7 @@ use tokio::process::{Child, Command as OsCommand};
 use crate::net::TcpAgentTransport;
 use crate::{
     ContainerPlan, ContainerRuntime, ContainerState, ManagedContainer, REAPER_LABEL,
-    REAPER_OWNER_LABEL, RuntimeAgentProcess, RuntimeError, podman_run_argv,
-    runtime_container_name,
+    REAPER_OWNER_LABEL, RuntimeAgentProcess, RuntimeError, podman_run_argv, runtime_container_name,
 };
 
 static EXEC_SEQUENCE: AtomicU64 = AtomicU64::new(0);

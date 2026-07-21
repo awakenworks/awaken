@@ -716,6 +716,23 @@ async fn adopt_without_container_id_fails_closed() {
 }
 
 #[tokio::test]
+async fn adopt_rejects_a_handle_owned_by_another_provider() {
+    let p = provider(Arc::new(FakeRuntime::default()));
+    let mut foreign = pc::SandboxHandle::new("bwrap", "run-3");
+    foreign.extra = Some(serde_json::json!({
+        "container_id": "cid-run-3",
+        "outputs_path": "/mnt/session/outputs",
+    }));
+
+    let error = match p.adopt(&foreign).await {
+        Ok(_) => panic!("foreign provider handle was accepted"),
+        Err(error) => error.to_string(),
+    };
+    assert!(error.contains("cannot adopt"), "{error}");
+    assert!(error.contains("bwrap"), "{error}");
+}
+
+#[tokio::test]
 async fn create_fails_closed_on_bad_spec_and_backend_error_but_needs_no_attempt_command() {
     let p = provider(Arc::new(FakeRuntime::default()));
 

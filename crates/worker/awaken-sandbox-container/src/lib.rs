@@ -23,6 +23,7 @@ mod environment_owned;
 use environment_owned::EnvironmentOwnedProcess;
 mod files;
 mod podman_plan;
+mod recovery;
 pub use podman_plan::{RootfsError, RootfsPlan, podman_run_argv, rootfs_plan};
 
 /// Container-tier capabilities: OS-enforced isolation strong enough to host an
@@ -1565,20 +1566,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         &self,
         handle: &pc::SandboxHandle,
     ) -> Result<ContainerSandbox<R>, pc::SandboxError> {
-        let container_id = handle
-            .extra
-            .as_ref()
-            .and_then(|v| v.get("container_id"))
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| err(RuntimeError::Backend("handle missing container_id".into())))?
-            .to_string();
-        let outputs_path = handle
-            .extra
-            .as_ref()
-            .and_then(|v| v.get("outputs_path"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("/mnt/session/outputs")
-            .to_string();
+        let (container_id, outputs_path) = recovery::container_locator(handle)?;
         self.runtime.inspect(&container_id).await.map_err(err)?;
         Ok(ContainerSandbox {
             runtime: self.runtime.clone(),
