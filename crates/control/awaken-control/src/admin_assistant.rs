@@ -11,11 +11,11 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_admin_assistant::{
     ADMIN_ASSISTANT_AGENT_ID, CapabilityReader, DraftStore, DraftValidator, EnvironmentAuthor,
-    PlatformCapabilities, PluginInfo, ResourceInventory, ResourceSpec, admin_assistant_config,
+    InputSpec, PlatformCapabilities, PluginInfo, ResourceInventory, admin_assistant_config,
 };
 use awaken_config_resolver::{
-    AgentInputBindingRepository, AgentResourceConfig, McpStore, ResourceAccess, ResourceBinding,
-    ResourceKind,
+    AgentInputBindingRepository, AgentInputConfig, BindingId, FileId, InputBinding,
+    InputResourceId, McpStore, MemoryStoreId, RepositoryId, ResourceAccess,
 };
 use awaken_config_service::{ConfigPlane, RESERVED_ADMIN_SCOPE};
 use awaken_config_store::{AgentConfig, DEFAULT_SCOPE, ManagementEffect};
@@ -311,9 +311,11 @@ async fn apply_pending_resource_effects(
         if effect.kind != RESOURCE_EFFECT_KIND {
             continue;
         }
-        let config: AgentResourceConfig =
+        let config: AgentInputConfig =
             serde_json::from_value(effect.payload).map_err(|error| error.to_string())?;
-        resources.put_agent_inputs(scope.as_str(), config.clone());
+        resources
+            .put_agent_inputs(scope.as_str(), config.clone())
+            .map_err(|error| error.to_string())?;
         if resources
             .get_agent_inputs(scope.as_str(), &config.agent_id)
             .as_ref()
@@ -332,27 +334,30 @@ async fn apply_pending_resource_effects(
     Ok(completed)
 }
 
-/// Map the neutral `kind` string to a [`ResourceKind`] (the assistant's leaf spec never
-/// names this enum). Fail-closed on an unknown kind.
-fn parse_kind(kind: &str) -> Result<ResourceKind, String> {
+/// Map the assistant's transport string to the canonical input identity.
+fn parse_target(kind: &str, resource_id: String) -> Result<InputResourceId, String> {
+    if resource_id.trim().is_empty() {
+        return Err(format!("resource id is required for `{kind}`"));
+    }
     match kind {
-        "outputs" => Ok(ResourceKind::Outputs),
-        "file" => Ok(ResourceKind::File),
-        "memory_store" => Ok(ResourceKind::MemoryStore),
-        "github_repository" => Ok(ResourceKind::GithubRepository),
-        "skill" => Ok(ResourceKind::Skill),
+        "file" => Ok(InputResourceId::File(FileId::from(resource_id))),
+        "memory_store" => Ok(InputResourceId::MemoryStore(MemoryStoreId::from(
+            resource_id,
+        ))),
+        "github_repository" | "repository" => {
+            Ok(InputResourceId::Repository(RepositoryId::from(resource_id)))
+        }
+        "outputs" => Err("outputs are configured by the Environment, not as Agent inputs".into()),
+        "skill" => Err("skills are configured through Agent skills, not as inputs".into()),
         other => Err(format!("unknown resource kind `{other}`")),
     }
 }
 
-/// The reverse mapping for `get_resources` (round-trips `parse_kind`).
-fn kind_str(kind: ResourceKind) -> &'static str {
-    match kind {
-        ResourceKind::Outputs => "outputs",
-        ResourceKind::File => "file",
-        ResourceKind::MemoryStore => "memory_store",
-        ResourceKind::GithubRepository => "github_repository",
-        ResourceKind::Skill => "skill",
+fn kind_str(target: &InputResourceId) -> &'static str {
+    match target {
+        InputResourceId::File(_) => "file",
+        InputResourceId::MemoryStore(_) => "memory_store",
+        InputResourceId::Repository(_) => "repository",
     }
 }
 
@@ -368,40 +373,44 @@ fn parse_access(access: Option<&str>) -> Result<ResourceAccess, String> {
 
 /// The per-kind default mount path when the operator omits `mount_path` — mirrors the
 /// console editor's defaults so an assistant-authored binding matches a hand-authored one.
-fn default_mount_path(kind: ResourceKind) -> &'static str {
-    match kind {
-        ResourceKind::MemoryStore => "/mnt/memory",
-        ResourceKind::File => "/mnt/files/data",
-        ResourceKind::GithubRepository => "/workspace/repo",
-        ResourceKind::Skill => "/mnt/skills/skill",
-        ResourceKind::Outputs => "/mnt/outputs",
+fn default_mount_path(target: &InputResourceId) -> &'static str {
+    match target {
+        InputResourceId::MemoryStore(_) => "/mnt/memory",
+        InputResourceId::File(_) => "/mnt/files/data",
+        InputResourceId::Repository(_) => "/workspace/repo",
     }
 }
 
 fn resource_config(
     agent_id: &str,
-    resources: Vec<ResourceSpec>,
-) -> Result<AgentResourceConfig, String> {
+    resources: Vec<InputSpec>,
+    revision: i64,
+) -> Result<AgentInputConfig, String> {
     let mut bindings = Vec::with_capacity(resources.len());
-    for spec in resources {
-        let kind = parse_kind(&spec.kind)?;
-        let access = parse_access(spec.access.as_deref())?;
+    for (index, spec) in resources.into_iter().enumerate() {
+        let target = parse_target(&spec.kind, spec.resource_id)?;
+        let requested_access = parse_access(spec.access.as_deref())?;
+        let access = if matches!(&target, InputResourceId::File(_)) {
+            ResourceAccess::ReadOnly
+        } else {
+            requested_access
+        };
         let mount_path = spec
             .mount_path
             .filter(|p| !p.is_empty())
-            .unwrap_or_else(|| default_mount_path(kind).to_string());
-        bindings.push(ResourceBinding {
-            kind,
-            resource_id: spec.resource_id,
+            .unwrap_or_else(|| default_mount_path(&target).to_string());
+        bindings.push(InputBinding {
+            binding_id: BindingId::new(format!("agent:{agent_id}:input:{index}")),
+            target,
             mount_path,
             access,
             instructions: spec.instructions,
         });
     }
-    Ok(AgentResourceConfig {
+    Ok(AgentInputConfig {
         agent_id: agent_id.to_string(),
-        resources: bindings,
-        version: 1,
+        inputs: bindings,
+        revision,
     })
 }
 
@@ -426,10 +435,14 @@ impl DraftStore for ConfigServiceDraftStore {
         &self,
         draft: &AgentConfig,
         audit: &awaken_admin_assistant::AdminAuditEvent,
-        resources: Option<Vec<ResourceSpec>>,
+        resources: Option<Vec<InputSpec>>,
     ) -> Result<(), String> {
+        let revision = self
+            .resources
+            .get_agent_inputs(self.scope.as_str(), &draft.id)
+            .map_or(1, |current| current.revision + 1);
         let resource_config = resources
-            .map(|resources| resource_config(&draft.id, resources))
+            .map(|resources| resource_config(&draft.id, resources, revision))
             .transpose()?;
         let effect = match resource_config.as_ref() {
             Some(config) => Some(ManagementEffect {
@@ -462,17 +475,21 @@ impl DraftStore for ConfigServiceDraftStore {
         self.plane.get(&self.scope, id).await
     }
 
-    async fn put_resources(
-        &self,
-        agent_id: &str,
-        resources: Vec<ResourceSpec>,
-    ) -> Result<(), String> {
+    async fn put_resources(&self, agent_id: &str, resources: Vec<InputSpec>) -> Result<(), String> {
+        let revision = self
+            .resources
+            .get_agent_inputs(self.scope.as_str(), agent_id)
+            .map_or(1, |current| current.revision + 1);
         self.resources
-            .put_agent_inputs(self.scope.as_str(), resource_config(agent_id, resources)?);
+            .put_agent_inputs(
+                self.scope.as_str(),
+                resource_config(agent_id, resources, revision)?,
+            )
+            .map_err(|error| error.to_string())?;
         Ok(())
     }
 
-    async fn get_resources(&self, agent_id: &str) -> Result<Vec<ResourceSpec>, String> {
+    async fn get_resources(&self, agent_id: &str) -> Result<Vec<InputSpec>, String> {
         let Some(cfg) = self
             .resources
             .get_agent_inputs(self.scope.as_str(), agent_id)
@@ -480,11 +497,11 @@ impl DraftStore for ConfigServiceDraftStore {
             return Ok(Vec::new());
         };
         Ok(cfg
-            .resources
+            .inputs
             .into_iter()
-            .map(|b| ResourceSpec {
-                kind: kind_str(b.kind).to_string(),
-                resource_id: b.resource_id,
+            .map(|b| InputSpec {
+                kind: kind_str(&b.target).to_string(),
+                resource_id: b.target.id().to_string(),
                 mount_path: Some(b.mount_path),
                 access: Some(match b.access {
                     ResourceAccess::ReadOnly => "read_only".to_string(),
@@ -611,7 +628,7 @@ mod tests {
         let workspace_a =
             ConfigServiceDraftStore::new(plane.clone(), "workspace-a", resources.clone());
         let workspace_b = ConfigServiceDraftStore::new(plane, "workspace-b", resources);
-        let binding = |resource_id: &str| ResourceSpec {
+        let binding = |resource_id: &str| InputSpec {
             kind: "file".into(),
             resource_id: resource_id.into(),
             mount_path: None,

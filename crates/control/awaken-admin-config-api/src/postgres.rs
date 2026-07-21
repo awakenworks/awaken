@@ -23,8 +23,9 @@ use sqlx::types::Json;
 use tokio::runtime::{Builder, Handle, Runtime};
 
 use awaken_config_resolver::{
-    AgentInputBindingRepository, AgentMcpConfig, AgentResourceConfig, InferenceProfile,
-    InferenceProfileStore, McpServerDef, McpStore, WebhookEndpointDef, WebhookStore,
+    AgentInputBindingRepository, AgentInputConfig, AgentInputRepositoryError, AgentMcpConfig,
+    InferenceProfile, InferenceProfileStore, McpServerDef, McpStore, WebhookEndpointDef,
+    WebhookStore, validate_agent_input_revision,
 };
 
 use crate::schema::admin_bundle;
@@ -188,11 +189,53 @@ async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
 }
 
 impl AgentInputBindingRepository for PostgresAdminStore {
-    fn put_agent_inputs(&self, workspace_id: &str, config: AgentResourceConfig) {
+    fn put_agent_inputs(
+        &self,
+        workspace_id: &str,
+        config: AgentInputConfig,
+    ) -> Result<(), AgentInputRepositoryError> {
         let key = format!("{workspace_id}\u{1f}{}", config.agent_id);
-        self.put_json("agent_resource", "agent_id", &key, &config);
+        let pool = self.pool.clone();
+        block(&self.handle, move || async move {
+            let mut tx = pool
+                .begin()
+                .await
+                .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
+            let row = sqlx::query(&format!(
+                "SELECT data FROM {NS}_agent_resource WHERE agent_id = $1 FOR UPDATE"
+            ))
+            .bind(&key)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
+            let current = row
+                .map(|row| {
+                    let Json(value): Json<AgentInputConfig> = row
+                        .try_get("data")
+                        .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
+                    Ok::<_, AgentInputRepositoryError>(value)
+                })
+                .transpose()?;
+            if !validate_agent_input_revision(current.as_ref(), &config)? {
+                return Ok(());
+            }
+            let data = serde_json::to_value(&config)
+                .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
+            sqlx::query(&format!(
+                "INSERT INTO {NS}_agent_resource (agent_id, data) VALUES ($1, $2) \
+                 ON CONFLICT (agent_id) DO UPDATE SET data = excluded.data"
+            ))
+            .bind(key)
+            .bind(Json(data))
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
+            tx.commit()
+                .await
+                .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))
+        })
     }
-    fn get_agent_inputs(&self, workspace_id: &str, agent_id: &str) -> Option<AgentResourceConfig> {
+    fn get_agent_inputs(&self, workspace_id: &str, agent_id: &str) -> Option<AgentInputConfig> {
         let key = format!("{workspace_id}\u{1f}{agent_id}");
         self.get_json("agent_resource", "agent_id", &key)
     }

@@ -39,17 +39,16 @@ export async function run({ page, goto, intro, say, clearCaption, checkpoint, ah
   await page.request.put(`http://127.0.0.1:38080/v1/config/agents/${AGENT_ID}`, {
     data: {
       id: AGENT_ID, name: "Resource provenance agent", model: { id: MODEL_ID },
-      system: "Use only mounted evidence.", tools: [], mcp_servers: [], skills: [],
+      system: "Use only mounted evidence.", tools: [], mcp_servers: [], skills: [{ id: skill.id }],
       plugins: [], plugin_config: {}, context_policy: { kind: "keep_all" }, max_steps: 4,
     },
   });
-  const resources = [
-    { kind: "memory_store", resource_id: memory.id, mount_path: "/mnt/memory/releases", access: "read_write" },
-    { kind: "file", resource_id: file.id, mount_path: "/mnt/files/release-policy.txt", access: "read_only" },
-    { kind: "skill", resource_id: skill.id, mount_path: "/mnt/skills/verify-release", access: "read_only" },
+  const inputs = [
+    { binding_id: "memory", target: { kind: "memory_store", id: memory.id }, mount_path: "/mnt/memory/releases", access: "read_write" },
+    { binding_id: "file", target: { kind: "file", id: file.id }, mount_path: "/mnt/files/release-policy.txt", access: "read_only" },
   ];
   await page.request.put(`http://127.0.0.1:38080/v1/config/agents/${AGENT_ID}/resources`, {
-    data: { agent_id: AGENT_ID, resources, version: 1 },
+    data: { agent_id: AGENT_ID, inputs, revision: 1 },
   });
   const published = await page.request.post(`http://127.0.0.1:38080/v1/config/agents/${AGENT_ID}/publish`);
   expect(published.ok()).toBeTruthy();

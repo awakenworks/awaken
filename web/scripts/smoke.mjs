@@ -188,29 +188,22 @@ await step("gated Observe face 404s (audit-log)", "GET", "/v1/audit-log", undefi
 // these; the create→list round-trip proves the console↔endpoint wiring.
 const mem = await step("create memory store", "POST", "/v1/memory_stores", { name: "smoke-mem" }, (s, p) => (s === 200 || s === 201) && typeof p.id === "string");
 await step("list memory stores", "GET", "/v1/memory_stores", undefined, (s, p) => s === 200 && p.data.some((x) => x.id === mem.id));
-// A file blob (Files API) and a skill (durable skill store, now wired in management
-// mode) — the other resource kinds an agent can bind (ADR-0038).
+// A File input and a Skill capability use distinct lifecycle/configuration paths.
 const file = await uploadStep("upload file", "/v1/files", "notes.txt", "text/plain", "the port is 8080", { purpose: "agent" }, (s, p) => s === 200 && typeof p.id === "string");
 const skill = await uploadStep("create skill", "/v1/skills", "SKILL.md", "text/markdown", "# Greeter\nSay hello.", { name: "smoke-skill" }, (s, p) => s === 200 && typeof p.id === "string");
 await step("list skills (durable store)", "GET", "/v1/skills", undefined, (s, p) => s === 200 && p.data.some((x) => x.id === skill.id));
-// Bind ALL FOUR kinds to the published agent (ADR-0038 agent resources) — the loop
-// that makes each resource usable: authored here → read into resource prompts + mounts
-// at compile, and staged into the sandbox at session-create (the config service and the
-// runtime host share this same resource store).
-await step("bind resources to agent (memory/file/repo/skill)", "PUT", "/v1/config/agents/smoke-agent/resources", {
+await step("bind typed inputs to agent (memory/file)", "PUT", "/v1/config/agents/smoke-agent/resources", {
   agent_id: "smoke-agent",
-  resources: [
-    { kind: "memory_store", resource_id: mem.id, mount_path: "/mnt/memory", access: "read_write" },
-    { kind: "file", resource_id: file.id, mount_path: "/mnt/files/notes.txt", access: "read_only" },
-    { kind: "github_repository", resource_id: "https://github.com/awaken/example.git", mount_path: "/mnt/repo", access: "read_only" },
-    { kind: "skill", resource_id: skill.id, mount_path: "/mnt/skills/greeter", access: "read_only" },
+  inputs: [
+    { binding_id: "memory", target: { kind: "memory_store", id: mem.id }, mount_path: "/mnt/memory", access: "read_write" },
+    { binding_id: "file", target: { kind: "file", id: file.id }, mount_path: "/mnt/files/notes.txt", access: "read_only" },
   ],
-  version: 1,
-}, (s, p) => s === 200 && p.resources.length === 4);
-await step("agent resources round-trip (all kinds)", "GET", "/v1/config/agents/smoke-agent/resources", undefined, (s, p) =>
+  revision: 1,
+}, (s, p) => s === 200 && p.inputs.length === 2);
+await step("agent inputs round-trip (typed identities)", "GET", "/v1/config/agents/smoke-agent/resources", undefined, (s, p) =>
   s === 200 &&
-  ["memory_store", "file", "github_repository", "skill"].every((k) => p.resources.some((r) => r.kind === k)) &&
-  p.resources.find((r) => r.kind === "file")?.resource_id === file.id);
+  ["memory_store", "file"].every((k) => p.inputs.some((r) => r.target.kind === k)) &&
+  p.inputs.find((r) => r.target.kind === "file")?.target.id === file.id);
 const env = await step("create environment", "POST", "/v1/environments", { name: "smoke-env", config: { type: "cloud", networking: { type: "unrestricted" } } }, (s, p) => (s === 200 || s === 201) && typeof p.id === "string");
 await step("list environments", "GET", "/v1/environments", undefined, (s, p) => s === 200 && p.data.some((x) => x.id === env.id));
 // A deployment binds a published agent (smoke-agent, above) to an environment + schedule.

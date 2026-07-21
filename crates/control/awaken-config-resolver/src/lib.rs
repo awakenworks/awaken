@@ -19,6 +19,9 @@ use awaken_credential_vault::{
     SecretStore,
 };
 use awaken_model_catalog::{ApiDialect, ProviderCatalog};
+pub use awaken_resource_contract::{
+    BindingId, FileId, InputBinding, InputResourceId, MemoryStoreId, RepositoryId, ResourceAccess,
+};
 
 /// Configuration-plane port that freezes inference access for one scope and one
 /// ordered model set. Implementations may read catalogs and credential inventories;
@@ -48,9 +51,9 @@ pub mod stores;
 pub mod telemetry;
 pub use resource_catalog::InMemoryResourceCatalog;
 pub use stores::{
-    AgentInputBindingRepository, InMemoryAgentInputBindingRepository, InMemoryMcpStore,
-    InMemoryProfileStore, InMemoryWebhookStore, InferenceProfileStore, McpStore,
-    WebhookOutboxEvent, WebhookStore,
+    AgentInputBindingRepository, AgentInputRepositoryError, InMemoryAgentInputBindingRepository,
+    InMemoryMcpStore, InMemoryProfileStore, InMemoryWebhookStore, InferenceProfileStore, McpStore,
+    WebhookOutboxEvent, WebhookStore, validate_agent_input_revision,
 };
 pub use telemetry::{RedactionMode, TelemetryCeiling};
 
@@ -576,94 +579,151 @@ pub struct AgentMcpConfig {
     pub version: i64,
 }
 
-/// Which resources an agent is bound to — the management-plane agent↔resource
-/// binding (ADR-0038). At run bind time each [`ResourceBinding`] is materialized
-/// two ways: into a `MountRequirement` the sandbox realizes, and into a prompt
-/// fragment appended to the agent's effective system prompt (ADR-0038 A3a). Rows
-/// are secret-free — a private resource's credential is a binding by reference,
-/// resolved through the vault like MCP auth, never material here.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// An Agent's authored default inputs. The repository supplies Workspace as the
+/// aggregate key, so this value contains only Agent-local configuration. The same
+/// typed [`InputBinding`] language is used by Session attachments; no authorization
+/// subject, policy, API key, secret, content pin, Project, or WorkUnit enters it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct AgentResourceConfig {
+pub struct AgentInputConfig {
     pub agent_id: String,
-    pub resources: Vec<ResourceBinding>,
-    pub version: i64,
+    #[cfg_attr(feature = "schema", schemars(with = "Vec<InputBindingSchema>"))]
+    pub inputs: Vec<InputBinding>,
+    pub revision: i64,
 }
 
-/// One resource bound to an agent. `resource_id` addresses the backing resource
-/// (a file/skill id, a memory store id, a repo URL; empty for the outputs mount);
-/// `mount_path` is where it appears in the sandbox; `instructions` is optional
-/// per-binding guidance rendered into the agent's system prompt.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct ResourceBinding {
-    pub kind: ResourceKind,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub resource_id: String,
-    pub mount_path: String,
-    pub access: ResourceAccess,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub instructions: Option<String>,
+// JSON Schema is an API representation concern, not part of the resource-domain
+// contract. Keep these private shadows at the configuration boundary so the
+// resource contract does not depend on schemars (or any HTTP/OpenAPI tooling).
+#[cfg(feature = "schema")]
+#[allow(dead_code, reason = "type-only JSON Schema projection")]
+#[derive(schemars::JsonSchema)]
+#[schemars(rename = "InputBinding")]
+struct InputBindingSchema {
+    binding_id: String,
+    target: InputResourceIdSchema,
+    mount_path: String,
+    access: ResourceAccessSchema,
+    instructions: Option<String>,
 }
 
-/// The resource kind a binding realizes — one variant per ADR-0038 resource.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg(feature = "schema")]
+#[allow(dead_code, reason = "type-only JSON Schema projection")]
+#[derive(schemars::JsonSchema)]
+#[serde(tag = "kind", content = "id", rename_all = "snake_case")]
+#[schemars(rename = "InputResourceId")]
+enum InputResourceIdSchema {
+    File(String),
+    MemoryStore(String),
+    Repository(String),
+}
+
+#[cfg(feature = "schema")]
+#[allow(dead_code, reason = "type-only JSON Schema projection")]
+#[derive(schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub enum ResourceKind {
-    /// The outputs mount the host collects as artifacts.
-    Outputs,
-    /// An immutable file blob.
-    File,
-    /// A persistent, keyed memory store.
-    MemoryStore,
-    /// A git working tree cloned from a remote.
-    GithubRepository,
-    /// A versioned skill bundle.
-    Skill,
-}
-
-/// Whether a bound resource is read-only or writable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub enum ResourceAccess {
+#[schemars(rename = "ResourceAccess")]
+enum ResourceAccessSchema {
     ReadOnly,
     ReadWrite,
 }
 
-/// Render one final Session binding into a prompt fragment, naming its realized
-/// mount path and effective access plus any per-binding instructions. Callers use
-/// this only after `SessionInputResolver` has composed defaults and attachments;
-/// Agent publication deliberately does not bake resource prompts into snapshots.
-#[must_use]
-pub fn resource_binding_prompt(binding: &ResourceBinding) -> String {
-    let path = &binding.mount_path;
-    let access = match binding.access {
-        ResourceAccess::ReadOnly => "read-only",
-        ResourceAccess::ReadWrite => "read/write",
-    };
-    let base = match binding.kind {
-        ResourceKind::Outputs => format!(
-            "Write any output files you want the caller to keep under `{path}`; \
-             files there are collected as run artifacts."
-        ),
-        ResourceKind::File => format!("A file is mounted {access} at `{path}`."),
-        ResourceKind::MemoryStore => format!(
-            "A persistent memory store is mounted {access} as the single file `{path}`. \
-             Read that exact file for prior context. To remember something, write it \
-             back to that same file at `{path}` (overwrite it) — do not create any other \
-             file. Its contents persist across sessions."
-        ),
-        ResourceKind::GithubRepository => format!(
-            "A git repository is checked out at `{path}` ({access}); use git there to \
-             read, edit, commit, and push."
-        ),
-        ResourceKind::Skill => format!("A skill bundle is mounted read-only at `{path}`."),
-    };
-    match &binding.instructions {
-        Some(extra) if !extra.is_empty() => format!("{base}\n{extra}"),
-        _ => base,
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum AgentInputConfigWire {
+    Canonical {
+        agent_id: String,
+        inputs: Vec<InputBinding>,
+        revision: i64,
+    },
+    Legacy {
+        agent_id: String,
+        resources: Vec<LegacyResourceBinding>,
+        version: i64,
+    },
+}
+
+#[derive(serde::Deserialize)]
+struct LegacyResourceBinding {
+    kind: LegacyResourceKind,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    resource_id: String,
+    mount_path: String,
+    access: ResourceAccess,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    instructions: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum LegacyResourceKind {
+    Outputs,
+    File,
+    MemoryStore,
+    GithubRepository,
+    Skill,
+}
+
+impl<'de> serde::Deserialize<'de> for AgentInputConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error as _;
+
+        match AgentInputConfigWire::deserialize(deserializer)? {
+            AgentInputConfigWire::Canonical {
+                agent_id,
+                inputs,
+                revision,
+            } => Ok(Self {
+                agent_id,
+                inputs,
+                revision,
+            }),
+            AgentInputConfigWire::Legacy {
+                agent_id,
+                resources,
+                version,
+            } => {
+                let mut inputs = Vec::with_capacity(resources.len());
+                for (index, resource) in resources.into_iter().enumerate() {
+                    let target = match resource.kind {
+                        LegacyResourceKind::File => {
+                            InputResourceId::File(FileId::from(resource.resource_id))
+                        }
+                        LegacyResourceKind::MemoryStore => {
+                            InputResourceId::MemoryStore(MemoryStoreId::from(resource.resource_id))
+                        }
+                        LegacyResourceKind::GithubRepository => {
+                            InputResourceId::Repository(RepositoryId::from(resource.resource_id))
+                        }
+                        LegacyResourceKind::Outputs | LegacyResourceKind::Skill => {
+                            return Err(D::Error::custom(
+                                "legacy outputs/skill resource bindings are not Agent inputs; migrate outputs to the Environment and skills to Agent skills",
+                            ));
+                        }
+                    };
+                    let access = if matches!(target, InputResourceId::File(_)) {
+                        ResourceAccess::ReadOnly
+                    } else {
+                        resource.access
+                    };
+                    inputs.push(InputBinding {
+                        binding_id: BindingId::new(format!("agent:{agent_id}:input:{index}")),
+                        target,
+                        mount_path: resource.mount_path,
+                        access,
+                        instructions: resource.instructions,
+                    });
+                }
+                Ok(Self {
+                    agent_id,
+                    inputs,
+                    revision: version,
+                })
+            }
+        }
     }
 }
 
@@ -753,65 +813,6 @@ mod tests {
         CredentialCreateParams, CredentialKind, CredentialSourceId, InMemorySecretStore,
         create_source,
     };
-
-    fn binding(kind: ResourceKind, path: &str, access: ResourceAccess) -> ResourceBinding {
-        ResourceBinding {
-            kind,
-            resource_id: String::new(),
-            mount_path: path.to_string(),
-            access,
-            instructions: None,
-        }
-    }
-
-    #[test]
-    fn resource_binding_prompt_names_path_access_and_appends_instructions() {
-        // outputs: artifact guidance
-        let out = resource_binding_prompt(&binding(
-            ResourceKind::Outputs,
-            "/mnt/session/outputs",
-            ResourceAccess::ReadWrite,
-        ));
-        assert!(out.contains("/mnt/session/outputs") && out.contains("artifacts"));
-
-        // memory: read/write access is named, and per-binding instructions append.
-        let mut mem = binding(
-            ResourceKind::MemoryStore,
-            "/mnt/memory/prefs",
-            ResourceAccess::ReadWrite,
-        );
-        assert!(resource_binding_prompt(&mem).contains("read/write"));
-        mem.instructions = Some("user preferences".to_string());
-        let rendered = resource_binding_prompt(&mem);
-        assert!(rendered.contains("/mnt/memory/prefs"));
-        assert!(rendered.ends_with("user preferences"));
-
-        // repo + file + skill each name their path.
-        assert!(
-            resource_binding_prompt(&binding(
-                ResourceKind::GithubRepository,
-                "/workspace/repo",
-                ResourceAccess::ReadWrite,
-            ))
-            .contains("/workspace/repo")
-        );
-        assert!(
-            resource_binding_prompt(&binding(
-                ResourceKind::File,
-                "/workspace/data.csv",
-                ResourceAccess::ReadOnly,
-            ))
-            .contains("read-only")
-        );
-        assert!(
-            resource_binding_prompt(&binding(
-                ResourceKind::Skill,
-                "/mnt/skills/xlsx",
-                ResourceAccess::ReadOnly,
-            ))
-            .contains("/mnt/skills/xlsx")
-        );
-    }
 
     use awaken_model_catalog::{
         Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
@@ -1686,43 +1687,27 @@ mod tests {
         assert!(ep(&["run.completed", "run.failed"]).wants("run.failed"));
         assert!(!ep(&["run.completed"]).wants("run.failed"));
     }
-
-    // ---- CEG 02: resource_binding_prompt empty instructions (A8f) ----
-
-    #[test]
-    fn resource_binding_prompt_treats_empty_instructions_as_missing() {
-        let mut b = binding(ResourceKind::File, "/w/a", ResourceAccess::ReadOnly);
-        b.instructions = Some(String::new());
-        let with_empty = resource_binding_prompt(&b);
-        b.instructions = None;
-        // An empty instruction fragment is indistinguishable from an absent one: no
-        // trailing newline, no appended blurb.
-        assert_eq!(with_empty, resource_binding_prompt(&b));
-        assert!(!with_empty.ends_with('\n'));
-    }
 }
 
-/// G6 — the agent↔resource binding crosses the config→data plane (and SQLite/PG
-/// persistence) only as serialized bytes, so its wire shape is a compatibility
-/// boundary, not an implementation detail. These pin a lossless round-trip, the
-/// `skip_serializing_if` compaction of the optional `resource_id`/`instructions`, and
-/// — what a self-round-trip cannot catch — that an OLDER writer's payload (missing the
-/// optionals) still loads and a NEWER writer's unknown field is ignored, not rejected.
+/// The canonical Agent input configuration is the same typed language Sessions
+/// consume. The legacy flat resource wire remains a read-only migration boundary.
 #[cfg(test)]
 mod resource_binding_serde_contract {
-    use super::{AgentResourceConfig, ResourceAccess, ResourceBinding, ResourceKind};
+    use super::{
+        AgentInputConfig, BindingId, InputBinding, InputResourceId, MemoryStoreId, ResourceAccess,
+    };
 
-    fn cfg() -> AgentResourceConfig {
-        AgentResourceConfig {
+    fn cfg() -> AgentInputConfig {
+        AgentInputConfig {
             agent_id: "a".into(),
-            resources: vec![ResourceBinding {
-                kind: ResourceKind::MemoryStore,
-                resource_id: "store-1".into(),
+            inputs: vec![InputBinding {
+                binding_id: BindingId::from("memory"),
+                target: InputResourceId::MemoryStore(MemoryStoreId::from("store-1")),
                 mount_path: "/mnt/memory".into(),
                 access: ResourceAccess::ReadWrite,
                 instructions: Some("read it first".into()),
             }],
-            version: 1,
+            revision: 1,
         }
     }
 
@@ -1730,85 +1715,42 @@ mod resource_binding_serde_contract {
     fn round_trips_lossless() {
         let c = cfg();
         let json = serde_json::to_string(&c).expect("serializes");
-        let back: AgentResourceConfig = serde_json::from_str(&json).expect("deserializes");
+        let back: AgentInputConfig = serde_json::from_str(&json).expect("deserializes");
         assert_eq!(back, c, "round-trip is lossless");
     }
 
     #[test]
-    fn empty_optionals_are_omitted_on_the_wire() {
-        let c = AgentResourceConfig {
-            agent_id: "a".into(),
-            resources: vec![ResourceBinding {
-                kind: ResourceKind::Outputs,
-                resource_id: String::new(), // omitted
-                mount_path: "/out".into(),
-                access: ResourceAccess::ReadWrite,
-                instructions: None, // omitted
-            }],
-            version: 1,
-        };
-        let json = serde_json::to_string(&c).expect("serializes");
-        assert!(
-            !json.contains("resource_id"),
-            "empty resource_id is not written: {json}"
-        );
-        assert!(
-            !json.contains("instructions"),
-            "a None instructions is not written: {json}"
-        );
-    }
-
-    #[test]
-    fn a_frozen_legacy_binding_still_deserializes_intact() {
-        // A binding an older writer produced: no `resource_id`, no `instructions` keys.
-        // Frozen as bytes so a rename/retype anywhere down the tree breaks THIS test
-        // instead of silently stranding every persisted binding.
+    fn a_supported_legacy_binding_migrates_to_the_typed_language() {
         const LEGACY: &str = r#"{
           "agent_id": "a",
           "resources": [
-            { "kind": "memory_store", "mount_path": "/mnt/memory", "access": "read_write" }
+            { "kind": "memory_store", "resource_id": "store-1",
+              "mount_path": "/mnt/memory", "access": "read_write" }
           ],
           "version": 1
         }"#;
-        let back: AgentResourceConfig =
+        let back: AgentInputConfig =
             serde_json::from_str(LEGACY).expect("a persisted legacy binding must still load");
-        assert_eq!(
-            back.resources[0].resource_id, "",
-            "a missing resource_id defaults empty"
-        );
-        assert!(back.resources[0].instructions.is_none());
-        assert_eq!(back.resources[0].kind, ResourceKind::MemoryStore);
-        assert_eq!(back.resources[0].access, ResourceAccess::ReadWrite);
+        assert_eq!(back.revision, 1);
+        assert_eq!(back.inputs[0].binding_id.as_str(), "agent:a:input:0");
+        assert_eq!(back.inputs[0].target.id(), "store-1");
+        assert_eq!(back.inputs[0].access, ResourceAccess::ReadWrite);
     }
 
     #[test]
-    fn todays_writer_still_emits_the_frozen_legacy_shape() {
-        let today = serde_json::to_value(AgentResourceConfig {
-            agent_id: "a".into(),
-            resources: vec![ResourceBinding {
-                kind: ResourceKind::MemoryStore,
-                resource_id: String::new(),
-                mount_path: "/mnt/memory".into(),
-                access: ResourceAccess::ReadWrite,
-                instructions: None,
-            }],
-            version: 1,
-        })
-        .expect("value");
-        let frozen: serde_json::Value = serde_json::from_str(
-            r#"{"agent_id":"a","resources":[{"kind":"memory_store","mount_path":"/mnt/memory","access":"read_write"}],"version":1}"#,
-        )
-        .expect("frozen parses");
-        assert_eq!(
-            today, frozen,
-            "the binding wire shape drifted from the frozen legacy row"
-        );
+    fn legacy_outputs_and_skills_fail_closed_instead_of_entering_the_input_union() {
+        for kind in ["outputs", "skill"] {
+            let json = format!(
+                r#"{{"agent_id":"a","resources":[{{"kind":"{kind}","resource_id":"x","mount_path":"/x","access":"read_only"}}],"version":1}}"#
+            );
+            assert!(serde_json::from_str::<AgentInputConfig>(&json).is_err());
+        }
     }
 
     #[test]
     fn an_unknown_future_field_is_ignored_not_rejected() {
-        let json = r#"{"agent_id":"a","resources":[],"version":1,"a_future_field":42}"#;
-        let back: AgentResourceConfig =
+        let json = r#"{"agent_id":"a","inputs":[],"revision":1,"a_future_field":42}"#;
+        let back: AgentInputConfig =
             serde_json::from_str(json).expect("an unknown field is ignored");
         assert_eq!(back.agent_id, "a");
     }

@@ -228,6 +228,9 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -metadir "$tlc_state_root/resource-binding-effect" \
     -config formal/tla/ResourceBindingEffect.cfg formal/tla/ResourceBindingEffect.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/agent-input-revision" \
+    -config formal/tla/AgentInputRevision.cfg formal/tla/AgentInputRevision.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/management-audit-intent" \
     -config formal/tla/ManagementAuditIntent.cfg formal/tla/ManagementAuditIntent.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \

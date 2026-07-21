@@ -603,23 +603,28 @@ internal config version remains an awaken governance detail.
 - the unified Workspace-scoped Skill aggregate repository and version-pinned
   Session Skill bindings.
 
-### Rename or merge
+### Completed consolidation
 
-- rename `AgentResourceConfig.version` to `revision`;
-- migrate `AgentResourceConfig` behind the now Workspace-mandatory
-  `AgentInputBindingRepository` to the canonical typed binding language;
-- replace `ResourceBinding.kind + resource_id` and string `SessionResource` with
-  the typed common binding language;
-- merge protocol-side and Host-side resource composition into
-  `SessionInputResolver`;
-- preserve `ResourceAccess` through the neutral Session contract and realizer;
-- generate prompts from `ResolvedSessionResources` once;
+- `AgentInputConfig { agent_id, inputs, revision }` replaces
+  `AgentResourceConfig { resources, version }`;
+- `AgentInputBindingRepository` requires Workspace on every operation and applies
+  sequential, idempotent revision transitions;
+- Agent defaults and Session attachments share typed `InputBinding` /
+  `InputResourceId`; Outputs and Skills are no longer input variants;
+- `SessionInputResolver` composes and resolves once, preserves access, and emits
+  the sole durable `ResolvedSessionResources` manifest;
+- prompts are generated only from the resolved Session manifest;
+- the former Runtime-side Agent repository read/lowering and duplicate
+  `EffectiveSessionInputs` name are removed.
+
+### Remaining rename or merge
+
 - rename the now-unified `MemoryFs` aggregate port to `MemoryRepository` when the
   remaining extraction call sites have migrated;
 - evolve repo staging into a `RepositoryRealizer` consuming a platform-managed
   Repository config version and credential binding.
 
-### Delete after migration
+### Remaining deletion
 
 - `MemoryBlobStore` and all blob backends;
 - legacy single-file Memory materialization and Host-global extraction directory;
@@ -629,27 +634,17 @@ internal config version remains an awaken governance detail.
 - `StagedResources.memory_mounts` and last-writer-wins Memory write-back;
 - API-local independent `VersionRepository` (removed; legacy rows are imported
   once into the aggregate repository without continued dual reads/writes);
-- Runtime's second read of the Agent resource store and
-  `binding_as_session_resource` lowering;
-- raw repository URL as `ResourceBinding.resource_id`;
+- raw repository URL support outside the legacy/protocol ingress adapter;
 - raw `auth_token` and string `git_ref` in the neutral Runtime resource shape;
 - commit/tree/content pin types for Repository;
 - File version abstractions above immutable `FileId`;
-- `Outputs` and `Skill` variants from the File/Memory/Repository input union.
 - API-local `SkillRegistry`, text-only `SkillStore` overwrite semantics, lossy
   `String::from_utf8_lossy` bundle ingestion, and runtime lookup of `latest`.
 
-### Add
+### Remaining additions
 
-- typed ids and `InputResourceId`;
-- `ResolvedSessionResources` and activation records;
-- version repositories for Memory/Repository config;
-- `SessionInputResolver`, `SessionResourceCoordinator`, and
-  `ResourceReclaimer` roles;
-- `ScopedMemoryStore` capabilities;
-- binary-safe File realization;
-- `SkillDefinition` / immutable `SkillVersion` / binary-safe `SkillBundleFile`,
-  exact Session pins, hash verification, and safe `.skills` materialization;
+- durable `SessionResourceActivation` records;
+- `SessionResourceCoordinator` and `ResourceReclaimer` roles;
 - resource-specific purge receipts and recovery tests.
 
 ## Failure Semantics

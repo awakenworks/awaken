@@ -6,8 +6,6 @@
  *
  * A credential pool identifier.
  *
- * Opaque handle into a [`SecretStore`]. Never the secret itself.
- *
  * Stable id of a [`ProtocolEndpoint`].
  *
  * Stable id of a [`Provider`] (vendor namespace).
@@ -21,13 +19,43 @@ type CredentialPoolID = string;
  *
  * A credential pool identifier.
  *
- * Opaque handle into a [`SecretStore`]. Never the secret itself.
- *
  * Stable id of a [`ProtocolEndpoint`].
  *
  * Stable id of a [`Provider`] (vendor namespace).
  */
 type MCPServerID = string;
+
+/**
+ * An Agent's authored default inputs. The repository supplies Workspace as the
+ * aggregate key, so this value contains only Agent-local configuration. The same
+ * typed [`InputBinding`] language is used by Session attachments; no authorization
+ * subject, policy, API key, secret, content pin, Project, or WorkUnit enters it.
+ */
+export interface AgentInputConfig {
+    agent_id: string;
+    inputs:   InputElement[];
+    revision: number;
+    [property: string]: unknown;
+}
+
+export interface InputElement {
+    access:        Access;
+    binding_id:    string;
+    instructions?: null | string;
+    mount_path:    string;
+    target:        Target;
+    [property: string]: unknown;
+}
+
+export type Access = "read_only" | "read_write";
+
+export interface Target {
+    id:   string;
+    kind: Kind;
+    [property: string]: unknown;
+}
+
+export type Kind = "file" | "memory_store" | "repository";
 
 /**
  * Which MCP servers an agent uses — the management-plane agent↔MCP binding
@@ -42,58 +70,8 @@ export interface AgentMCPConfig {
      * Owning workspace, stamped by the trusted configuration edge.
      */
     workspace_id?: string;
-    [property: string]: any;
+    [property: string]: unknown;
 }
-
-/**
- * Which resources an agent is bound to — the management-plane agent↔resource
- * binding (ADR-0038). At run bind time each [`ResourceBinding`] is materialized
- * two ways: into a `MountRequirement` the sandbox realizes, and into a prompt
- * fragment appended to the agent's effective system prompt (ADR-0038 A3a). Rows
- * are secret-free — a private resource's credential is a binding by reference,
- * resolved through the vault like MCP auth, never material here.
- */
-export interface AgentResourceConfig {
-    agent_id:  string;
-    resources: ResourceElement[];
-    version:   number;
-    [property: string]: any;
-}
-
-/**
- * One resource bound to an agent. `resource_id` addresses the backing resource
- * (a file/skill id, a memory store id, a repo URL; empty for the outputs mount);
- * `mount_path` is where it appears in the sandbox; `instructions` is optional
- * per-binding guidance rendered into the agent's system prompt.
- */
-export interface ResourceElement {
-    access:        Access;
-    instructions?: null | string;
-    kind:          Kind;
-    mount_path:    string;
-    resource_id?:  string;
-    [property: string]: any;
-}
-
-/**
- * Whether a bound resource is read-only or writable.
- */
-export type Access = "read_only" | "read_write";
-
-/**
- * The resource kind a binding realizes — one variant per ADR-0038 resource.
- *
- * The outputs mount the host collects as artifacts.
- *
- * An immutable file blob.
- *
- * A persistent, keyed memory store.
- *
- * A git working tree cloned from a remote.
- *
- * A versioned skill bundle.
- */
-export type Kind = "outputs" | "file" | "memory_store" | "github_repository" | "skill";
 
 /**
  * RFC 9457 Problem Details with stable application extension members (`code`, `request_id`,
@@ -111,7 +89,7 @@ export interface APIError {
     /**
      * Type-specific structured metadata.
      */
-    details?: any;
+    details?: unknown;
     /**
      * Field/query/header violations for validation-style problems.
      */
@@ -130,14 +108,14 @@ export interface APIError {
      * URI reference identifying the problem type.
      */
     type: string;
-    [property: string]: any;
+    [property: string]: unknown;
 }
 
 export interface Error {
     code:     string;
     field:    string;
     message?: string;
-    [property: string]: any;
+    [property: string]: unknown;
 }
 
 /**
@@ -155,7 +133,7 @@ export interface Error {
 export interface AvailabilityState {
     state:        State;
     retry_at_ms?: number;
-    [property: string]: any;
+    [property: string]: unknown;
 }
 
 export type State = "available" | "cooled_down" | "exhausted";
@@ -171,7 +149,7 @@ export type State = "available" | "cooled_down" | "exhausted";
 export interface CooldownRequest {
     kind:              string;
     retry_after_secs?: number | null;
-    [property: string]: any;
+    [property: string]: unknown;
 }
 
 /**
@@ -188,7 +166,7 @@ export interface CredentialBinding {
     type:                  Type;
     credential_source_id?: string;
     credential_pool_id?:   string;
-    [property: string]: any;
+    [property: string]: unknown;
 }
 
 export type Type = "none" | "exact" | "one_of_credential_pool";
@@ -211,7 +189,7 @@ export interface CredentialPool {
      */
     policy?:      Policy;
     workspace_id: string;
-    [property: string]: any;
+    [property: string]: unknown;
 }
 
 /**
@@ -224,7 +202,7 @@ export interface MemberElement {
     enabled:              boolean;
     ordinal:              number;
     selection_weight?:    number;
-    [property: string]: any;
+    [property: string]: unknown;
 }
 
 /**
@@ -264,38 +242,23 @@ export interface CredentialPoolMember {
     enabled:              boolean;
     ordinal:              number;
     selection_weight?:    number;
-    [property: string]: any;
+    [property: string]: unknown;
 }
 
 /**
- * The stored credential row — **secret-free** (the read/serde projection). The
- * secret is reachable only via `material_ref` through the [`SecretStore`].
+ * Secret-free credential projection. Internal token-source argv and vault refs
+ * never cross the admin boundary; consumers bind this stable source id.
  */
-export interface CredentialSource {
-    /**
-     * Environment-variable name the secret is injected under (all kinds may set it).
-     */
-    env_key?: null | string;
-    id:       string;
-    kind:     CredentialKind;
-    /**
-     * Vault reference; `None` for `Env` (the secret never crosses the control plane).
-     */
-    material_ref?: null | string;
-    /**
-     * The refresh helper for a [`CredentialKind::Oauth`] source: `[program,
-     * args…]`, whose trimmed stdout is a fresh access token. `None` for every
-     * other kind. Only a *reference to a command* travels — never a token.
-     */
-    oauth_command?: string[] | null;
-    /**
-     * Provider namespace this credential authenticates (`anthropic`, `openai`).
-     */
-    provider_id?: null | string;
-    status:       CredentialStatus;
-    version:      number;
-    workspace_id: string;
-    [property: string]: any;
+export interface CredentialSourceView {
+    env_key?:      null | string;
+    id:            string;
+    kind:          CredentialKind;
+    oauth_helper?: CredentialSource | null;
+    provider_id?:  null | string;
+    status:        CredentialStatus;
+    version:       number;
+    workspace_id:  string;
+    [property: string]: unknown;
 }
 
 /**
@@ -313,6 +276,15 @@ export interface CredentialSource {
 export type CredentialKind = "vault" | "env" | "oauth";
 
 /**
+ * Server-owned OAuth token helper. The API carries this allowlisted id, never
+ * an operator-supplied command line; the credential bounded context owns how
+ * it becomes a token source for model, MCP, and A2A consumers alike.
+ *
+ * Mint a Google access token from the active gcloud account.
+ */
+export type CredentialSource = "gcloud";
+
+/**
  * Lifecycle of a source.
  */
 export type CredentialStatus = "active" | "disabled" | "archived";
@@ -323,7 +295,7 @@ export type CredentialStatus = "active" | "disabled" | "archived";
 export interface CredentialValidation {
     adapter_kind: string;
     status:       Status;
-    [property: string]: any;
+    [property: string]: unknown;
 }
 
 /**
@@ -339,16 +311,21 @@ export type Status = "valid" | "invalid" | "unknown";
  * secret crosses the wire exactly once, here.
  */
 export interface EnterCredentialRequest {
-    env_key?:     null | string;
-    kind:         CredentialKind;
-    provider_id?: null | string;
+    env_key?: null | string;
+    kind:     CredentialKind;
+    /**
+     * A server-owned OAuth refresh helper. This is an allowlisted identifier,
+     * never an operator-supplied command line.
+     */
+    oauth_helper?: CredentialSource | null;
+    provider_id?:  null | string;
     /**
      * The secret to seal — required for `vault`, unused for `env` (which reads a
      * host variable at materialization), so it defaults to empty.
      */
     secret?:      string;
     workspace_id: string;
-    [property: string]: any;
+    [property: string]: unknown;
 }
 
 /**
@@ -389,7 +366,7 @@ export interface InferenceProfile {
      * for legacy rows, which scoped APIs treat as unowned.
      */
     workspace_id?: string;
-    [property: string]: any;
+    [property: string]: unknown;
 }
 
 /**
@@ -411,7 +388,7 @@ export interface InferenceProfileCredentialBinding {
     type:                  Type;
     credential_source_id?: string;
     credential_pool_id?:   string;
-    [property: string]: any;
+    [property: string]: unknown;
 }
 
 /**
@@ -431,7 +408,7 @@ export interface MCPServerDef {
      * Owning workspace, stamped by the trusted configuration edge.
      */
     workspace_id?: string;
-    [property: string]: any;
+    [property: string]: unknown;
 }
 
 /**
@@ -448,7 +425,7 @@ export interface MCPServerDefCredentialBinding {
     type:                  Type;
     credential_source_id?: string;
     credential_pool_id?:   string;
-    [property: string]: any;
+    [property: string]: unknown;
 }
 
 /**
@@ -468,7 +445,7 @@ export interface ModelAttributes {
      * Max output tokens the model emits, when published.
      */
     max_output_tokens?: number | null;
-    [property: string]: any;
+    [property: string]: unknown;
 }
 
 /**
@@ -487,7 +464,7 @@ export interface Offering {
      * Provider-canonical model name sent upstream when it differs from `model_id`.
      */
     upstream_model?: null | string;
-    [property: string]: any;
+    [property: string]: unknown;
 }
 
 /**
@@ -499,8 +476,11 @@ export interface Offering {
  * The `codex`/OpenAI chat wire.
  *
  * The Gemini wire.
+ *
+ * Gemini on Vertex AI: native Gemini payloads with OAuth Bearer auth and
+ * a project/location endpoint.
  */
-export type APIDialect = "anthropic_messages" | "open_ai_chat" | "gemini";
+export type APIDialect = "anthropic_messages" | "open_ai_chat" | "gemini" | "vertex_gemini";
 
 /**
  * Which members of a pool are selectable right now — `selection_order` with cooled
@@ -509,7 +489,7 @@ export type APIDialect = "anthropic_messages" | "open_ai_chat" | "gemini";
 export interface PoolEligibleView {
     cooled:   string[];
     eligible: string[];
-    [property: string]: any;
+    [property: string]: unknown;
 }
 
 /**
@@ -530,7 +510,7 @@ export interface ProtocolEndpoint {
      */
     timeout_secs: number;
     version:      number;
-    [property: string]: any;
+    [property: string]: unknown;
 }
 
 /**
@@ -547,7 +527,7 @@ export interface Provider {
      * Append-only version bumped on change.
      */
     version: number;
-    [property: string]: any;
+    [property: string]: unknown;
 }
 
 /**
@@ -564,7 +544,7 @@ export interface ProviderCatalog {
     model_attributes?: { [key: string]: ModelAttributeValue };
     offerings:         OfferingElement[];
     providers:         { [key: string]: ProviderValue };
-    [property: string]: any;
+    [property: string]: unknown;
 }
 
 /**
@@ -585,7 +565,7 @@ export interface EndpointValue {
      */
     timeout_secs: number;
     version:      number;
-    [property: string]: any;
+    [property: string]: unknown;
 }
 
 /**
@@ -605,7 +585,7 @@ export interface ModelAttributeValue {
      * Max output tokens the model emits, when published.
      */
     max_output_tokens?: number | null;
-    [property: string]: any;
+    [property: string]: unknown;
 }
 
 /**
@@ -624,7 +604,7 @@ export interface OfferingElement {
      * Provider-canonical model name sent upstream when it differs from `model_id`.
      */
     upstream_model?: null | string;
-    [property: string]: any;
+    [property: string]: unknown;
 }
 
 /**
@@ -641,7 +621,7 @@ export interface ProviderValue {
      * Append-only version bumped on change.
      */
     version: number;
-    [property: string]: any;
+    [property: string]: unknown;
 }
 
 /**
@@ -649,7 +629,7 @@ export interface ProviderValue {
  */
 export interface ResolveAgentMCPRequest {
     workspace_id: string;
-    [property: string]: any;
+    [property: string]: unknown;
 }
 
 /**
@@ -657,7 +637,7 @@ export interface ResolveAgentMCPRequest {
  */
 export interface ResolveProfileRequest {
     workspace_id: string;
-    [property: string]: any;
+    [property: string]: unknown;
 }
 
 /**
@@ -668,7 +648,7 @@ export interface ResolveRequest {
     binding:      Binding;
     model_id:     string;
     workspace_id: string;
-    [property: string]: any;
+    [property: string]: unknown;
 }
 
 /**
@@ -685,7 +665,7 @@ export interface Binding {
     type:                  Type;
     credential_source_id?: string;
     credential_pool_id?:   string;
-    [property: string]: any;
+    [property: string]: unknown;
 }
 
 /**
@@ -694,7 +674,7 @@ export interface Binding {
  */
 export interface ResolvedCandidatesView {
     candidates: CandidateElement[];
-    [property: string]: any;
+    [property: string]: unknown;
 }
 
 /**
@@ -712,7 +692,7 @@ export interface CandidateElement {
     model_id:             string;
     protocol_endpoint_id: string;
     provider_id:          string;
-    [property: string]: any;
+    [property: string]: unknown;
 }
 
 /**
@@ -730,7 +710,7 @@ export interface ResolvedInferenceView {
     model_id:             string;
     protocol_endpoint_id: string;
     provider_id:          string;
-    [property: string]: any;
+    [property: string]: unknown;
 }
 
 /**
@@ -745,7 +725,7 @@ export interface ResolvedMCPServerView {
     credential_present: boolean;
     name:               string;
     url:                string;
-    [property: string]: any;
+    [property: string]: unknown;
 }
 
 /**
@@ -754,5 +734,5 @@ export interface ResolvedMCPServerView {
 export interface ValidateCredentialRequest {
     model_id:     string;
     workspace_id: string;
-    [property: string]: any;
+    [property: string]: unknown;
 }

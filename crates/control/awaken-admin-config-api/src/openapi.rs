@@ -60,10 +60,7 @@ pub fn contract_schemas() -> Map<String, Value> {
     add!("McpServerId", awaken_config_resolver::McpServerId);
     add!("McpServerDef", awaken_config_resolver::McpServerDef);
     add!("AgentMcpConfig", awaken_config_resolver::AgentMcpConfig);
-    add!(
-        "AgentResourceConfig",
-        awaken_config_resolver::AgentResourceConfig
-    );
+    add!("AgentInputConfig", awaken_config_resolver::AgentInputConfig);
 
     // Route request bodies (secret-in is write-only by construction).
     add!("EnterCredentialRequest", crate::EnterCredentialRequest);
@@ -317,10 +314,10 @@ fn paths() -> Value {
                 &[path_param("agent_id", "Agent id")], None, 200, schema_ref("AgentMcpConfig"))
         },
         "/v1/config/agents/{agent_id}/resources": {
-            "put": op("put_agent_resource", "mcp", "Bind which resources an agent mounts (ADR-0038); stored whole, path id authoritative",
-                &[path_param("agent_id", "Agent id")], Some(schema_ref("AgentResourceConfig")), 200, schema_ref("AgentResourceConfig")),
-            "get": op("get_agent_resource", "mcp", "Fetch an agent's resource binding",
-                &[path_param("agent_id", "Agent id")], None, 200, schema_ref("AgentResourceConfig"))
+            "put": op("put_agent_inputs", "mcp", "Bind typed File/Memory/Repository Agent defaults; stored whole, path id authoritative",
+                &[path_param("agent_id", "Agent id")], Some(schema_ref("AgentInputConfig")), 200, schema_ref("AgentInputConfig")),
+            "get": op("get_agent_inputs", "mcp", "Fetch an Agent's typed default inputs",
+                &[path_param("agent_id", "Agent id")], None, 200, schema_ref("AgentInputConfig"))
         },
         "/v1/config/agents/{agent_id}/mcp/resolve": {
             "post": op("resolve_agent_mcp", "mcp", "Dry-run resolve an agent's MCP binding (secret-free views)",

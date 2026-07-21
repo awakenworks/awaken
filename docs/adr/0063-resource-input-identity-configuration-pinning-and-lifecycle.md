@@ -30,13 +30,13 @@ one content lifecycle:
   entries;
 - a Repository is a stable, mutable reference to an external Git truth.
 
-The existing implementation has the correct beginnings but no single version
-rule or lifecycle owner. `ResourceBinding` and `SessionResource` are separate,
-stringly shapes. The Managed protocol and Runtime Host each merge Agent defaults
-with Session attachments. Access is lost while lowering to `SessionResource`.
-Memory is split between a one-blob copy/harvest path, path-addressed `MemoryFs`,
-and a separate version log. Repository input carries a raw URL, token, and branch
-instead of referencing a platform-managed Repository definition.
+Before this decision was implemented, `ResourceBinding` and `SessionResource`
+were separate stringly shapes, protocol and Runtime both merged inputs, and
+access could be lost during lowering. Agent defaults now persist the same typed
+`InputBinding` language as Session attachments, composition happens once in
+`SessionInputResolver`, and `ResolvedSessionResources` is the only durable
+runtime manifest. Legacy flat File/Memory/Repository JSON is accepted only by a
+read migration adapter; legacy Outputs/Skill input variants fail closed.
 
 Treating every resource as content-pinned would make mutable Memory and Git look
 replayable when they are not. Treating every resource as live would discard the

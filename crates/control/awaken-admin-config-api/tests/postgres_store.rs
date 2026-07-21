@@ -8,9 +8,9 @@
 
 use awaken_admin_config_api::PostgresAdminStore;
 use awaken_config_resolver::{
-    AgentInputBindingRepository, AgentMcpConfig, AgentResourceConfig, InferenceProfile,
-    InferenceProfileStore, McpServerDef, McpServerId, McpStore, ResourceAccess, ResourceBinding,
-    ResourceKind,
+    AgentInputBindingRepository, AgentInputConfig, AgentMcpConfig, BindingId, InferenceProfile,
+    InferenceProfileStore, InputBinding, InputResourceId, McpServerDef, McpServerId, McpStore,
+    MemoryStoreId, ResourceAccess,
 };
 use awaken_credential_vault::CredentialBinding;
 use awaken_resource_contract::{
@@ -167,23 +167,23 @@ async fn postgres_admin_store_serves_every_port() {
 
     // AgentInputBindingRepository: Workspace-scoped round-trip + overwrite.
     assert!(store.get_agent_inputs("ws", "agent-1").is_none());
-    let rc = AgentResourceConfig {
+    let rc = AgentInputConfig {
         agent_id: "agent-1".into(),
-        resources: vec![ResourceBinding {
-            kind: ResourceKind::MemoryStore,
-            resource_id: "memstore-7".into(),
+        inputs: vec![InputBinding {
+            binding_id: BindingId::from("memory"),
+            target: InputResourceId::MemoryStore(MemoryStoreId::from("memstore-7")),
             mount_path: "/mnt/memory/prefs".into(),
             access: ResourceAccess::ReadWrite,
             instructions: Some("user preferences".into()),
         }],
-        version: 1,
+        revision: 1,
     };
-    store.put_agent_inputs("ws", rc.clone());
+    store.put_agent_inputs("ws", rc.clone()).unwrap();
     assert_eq!(store.get_agent_inputs("ws", "agent-1").unwrap(), rc);
     let mut v2 = rc.clone();
-    v2.version = 2;
-    v2.resources.clear();
-    store.put_agent_inputs("ws", v2.clone());
+    v2.revision = 2;
+    v2.inputs.clear();
+    store.put_agent_inputs("ws", v2.clone()).unwrap();
     assert_eq!(store.get_agent_inputs("ws", "agent-1").unwrap(), v2);
     assert!(store.get_agent_inputs("other", "agent-1").is_none());
 

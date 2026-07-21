@@ -40,13 +40,6 @@ export async function run({ page, goto, intro, say, clearCaption, checkpoint, ru
       context_policy: { kind: "keep_all" }, max_steps: 4,
     },
   });
-  await page.request.put(`http://127.0.0.1:38080/v1/config/agents/${AGENT_ID}/resources`, {
-    data: {
-      agent_id: AGENT_ID,
-      resources: [{ kind: "skill", resource_id: skill.id, mount_path: "/mnt/skills/release-signal", access: "read_only" }],
-      version: 1,
-    },
-  });
   const published = await page.request.post(`http://127.0.0.1:38080/v1/config/agents/${AGENT_ID}/publish`);
   expect(published.ok()).toBeTruthy();
 

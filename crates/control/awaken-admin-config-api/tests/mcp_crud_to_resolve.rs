@@ -308,16 +308,18 @@ async fn agent_resource_binding_crud_round_trips() {
     assert_eq!(s, StatusCode::NOT_FOUND);
     assert_eq!(err["code"], "not_found");
 
-    // Bind a memory store (read/write, with instructions) + the outputs mount.
+    // Bind typed Memory + File inputs. Outputs and Skills are deliberately not
+    // members of this input union.
     let body = json!({
         "agent_id": "ignored-path-wins",
-        "resources": [
-            { "kind": "memory_store", "resource_id": "memstore-7",
+        "inputs": [
+            { "binding_id": "memory", "target": { "kind": "memory_store", "id": "memstore-7" },
               "mount_path": "/mnt/memory/prefs", "access": "read_write",
               "instructions": "user preferences" },
-            { "kind": "outputs", "mount_path": "/mnt/session/outputs", "access": "read_write" }
+            { "binding_id": "file", "target": { "kind": "file", "id": "file-1" },
+              "mount_path": "/mnt/files/input.txt", "access": "read_only" }
         ],
-        "version": 1
+        "revision": 1
     });
     let (s, put) = call(
         &app,
@@ -328,12 +330,40 @@ async fn agent_resource_binding_crud_round_trips() {
     .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(put["agent_id"], "agent-1"); // the path id is authoritative
-    assert_eq!(put["resources"].as_array().unwrap().len(), 2);
+    assert_eq!(put["inputs"].as_array().unwrap().len(), 2);
+
+    let (s, conflict) = call(
+        &app,
+        "PUT",
+        "/v1/config/agents/agent-1/resources",
+        Some(json!({
+            "agent_id": "agent-1",
+            "inputs": [],
+            "revision": 1
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    assert_eq!(conflict["code"], "revision_conflict");
+
+    let (s, invalid) = call(
+        &app,
+        "PUT",
+        "/v1/config/agents/agent-2/resources",
+        Some(json!({
+            "agent_id": "agent-2",
+            "inputs": [],
+            "revision": 0
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(invalid["code"], "invalid_revision");
 
     // Read it back.
     let (s, got) = call(&app, "GET", "/v1/config/agents/agent-1/resources", None).await;
     assert_eq!(s, StatusCode::OK);
-    assert_eq!(got["resources"][0]["kind"], "memory_store");
-    assert_eq!(got["resources"][0]["mount_path"], "/mnt/memory/prefs");
-    assert_eq!(got["resources"][1]["kind"], "outputs");
+    assert_eq!(got["inputs"][0]["target"]["kind"], "memory_store");
+    assert_eq!(got["inputs"][0]["mount_path"], "/mnt/memory/prefs");
+    assert_eq!(got["inputs"][1]["target"]["kind"], "file");
 }

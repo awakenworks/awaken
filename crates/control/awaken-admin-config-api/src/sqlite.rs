@@ -16,8 +16,9 @@ use std::sync::{Arc, Mutex};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use awaken_config_resolver::{
-    AgentInputBindingRepository, AgentMcpConfig, AgentResourceConfig, InferenceProfile,
-    InferenceProfileStore, McpServerDef, McpStore, WebhookEndpointDef, WebhookStore,
+    AgentInputBindingRepository, AgentInputConfig, AgentInputRepositoryError, AgentMcpConfig,
+    InferenceProfile, InferenceProfileStore, McpServerDef, McpStore, WebhookEndpointDef,
+    WebhookStore, validate_agent_input_revision,
 };
 
 use crate::schema::admin_bundle;
@@ -109,11 +110,46 @@ impl SqliteAdminStore {
 }
 
 impl AgentInputBindingRepository for SqliteAdminStore {
-    fn put_agent_inputs(&self, workspace_id: &str, config: AgentResourceConfig) {
+    fn put_agent_inputs(
+        &self,
+        workspace_id: &str,
+        config: AgentInputConfig,
+    ) -> Result<(), AgentInputRepositoryError> {
         let key = format!("{workspace_id}\u{1f}{}", config.agent_id);
-        self.put_row("agent_resource", "agent_id", &key, &config);
+        let mut conn = self.conn.lock().expect("admin store");
+        let tx = conn
+            .transaction()
+            .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
+        let current: Option<String> = tx
+            .query_row(
+                &format!("SELECT data FROM {NS}_agent_resource WHERE agent_id = ?1"),
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
+        let current = current
+            .as_deref()
+            .map(serde_json::from_str::<AgentInputConfig>)
+            .transpose()
+            .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
+        if !validate_agent_input_revision(current.as_ref(), &config)? {
+            return Ok(());
+        }
+        let data = serde_json::to_string(&config)
+            .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
+        tx.execute(
+            &format!(
+                "INSERT INTO {NS}_agent_resource (agent_id, data) VALUES (?1, ?2) \
+                 ON CONFLICT(agent_id) DO UPDATE SET data = excluded.data"
+            ),
+            params![key, data],
+        )
+        .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
+        tx.commit()
+            .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))
     }
-    fn get_agent_inputs(&self, workspace_id: &str, agent_id: &str) -> Option<AgentResourceConfig> {
+    fn get_agent_inputs(&self, workspace_id: &str, agent_id: &str) -> Option<AgentInputConfig> {
         let key = format!("{workspace_id}\u{1f}{agent_id}");
         self.get_row("agent_resource", "agent_id", &key)
     }
@@ -239,7 +275,10 @@ impl WebhookStore for SqliteAdminStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_config_resolver::{McpServerId, ResourceAccess, ResourceBinding, ResourceKind};
+    use awaken_config_resolver::{
+        BindingId, FileId, InputBinding, InputResourceId, McpServerId, MemoryStoreId,
+        ResourceAccess,
+    };
     use awaken_credential_vault::CredentialBinding;
 
     fn profile(model: &str) -> InferenceProfile {
@@ -311,18 +350,20 @@ mod tests {
         let store = SqliteAdminStore::open_in_memory().unwrap();
         assert!(store.get_agent_inputs("workspace-a", "agent-1").is_none());
 
-        let config = AgentResourceConfig {
+        let config = AgentInputConfig {
             agent_id: "agent-1".into(),
-            resources: vec![ResourceBinding {
-                kind: ResourceKind::MemoryStore,
-                resource_id: "memstore-7".into(),
+            inputs: vec![InputBinding {
+                binding_id: BindingId::from("memory"),
+                target: InputResourceId::MemoryStore(MemoryStoreId::from("memstore-7")),
                 mount_path: "/mnt/memory/prefs".into(),
                 access: ResourceAccess::ReadWrite,
                 instructions: Some("user preferences".into()),
             }],
-            version: 1,
+            revision: 1,
         };
-        store.put_agent_inputs("workspace-a", config.clone());
+        store
+            .put_agent_inputs("workspace-a", config.clone())
+            .unwrap();
         assert_eq!(
             store.get_agent_inputs("workspace-a", "agent-1").unwrap(),
             config
@@ -330,18 +371,18 @@ mod tests {
 
         // Upsert by agent_id replaces the whole binding set.
         let mut v2 = config.clone();
-        v2.resources.push(ResourceBinding {
-            kind: ResourceKind::Outputs,
-            resource_id: String::new(),
-            mount_path: "/mnt/session/outputs".into(),
-            access: ResourceAccess::ReadWrite,
+        v2.inputs.push(InputBinding {
+            binding_id: BindingId::from("file"),
+            target: InputResourceId::File(FileId::from("file-1")),
+            mount_path: "/mnt/files/input.txt".into(),
+            access: ResourceAccess::ReadOnly,
             instructions: None,
         });
-        v2.version = 2;
-        store.put_agent_inputs("workspace-a", v2);
+        v2.revision = 2;
+        store.put_agent_inputs("workspace-a", v2).unwrap();
         let got = store.get_agent_inputs("workspace-a", "agent-1").unwrap();
-        assert_eq!(got.resources.len(), 2);
-        assert_eq!(got.version, 2);
+        assert_eq!(got.inputs.len(), 2);
+        assert_eq!(got.revision, 2);
         assert!(store.get_agent_inputs("workspace-a", "agent-2").is_none());
         assert!(
             store.get_agent_inputs("workspace-b", "agent-1").is_none(),

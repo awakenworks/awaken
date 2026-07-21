@@ -123,6 +123,12 @@ production logic.
   `ResourceBindingEffect.tla` cover audit-before-write admission for stores that
   cannot share the config transaction, namespace-fenced orphan cleanup, and the
   durable external-effect journal used for resource bindings.
+- `AgentInputRevision.tla` covers the resource-plane revision protocol for an
+  Agent's input configuration: a changed configuration must be the exact next
+  revision, an identical current revision is an idempotent replay, and every
+  stale, skipped, zero, or conflicting revision is rejected without mutation.
+  Authorization is deliberately outside this state machine and remains an edge
+  admission concern.
 - `WorkerReplacement.tla` composes authored route resolution, dispatch-time
   candidate pinning, worker claims, credential materialization, execution and
   settlement with concurrent route change, rotation, revocation, worker crash,
@@ -197,6 +203,7 @@ graphs with zero invariant violations and zero states left on the queue:
 | AuditCommit | 10 | 6 | 4 |
 | ConfigActivation | 85 | 35 | 9 |
 | ResourceBindingEffect | 21 | 10 | 6 |
+| AgentInputRevision | 297 | 65 | 9 |
 | ManagementAuditIntent | 15 | 8 | 5 |
 | CredentialInventory | 7 | 4 | 3 |
 | WorkerReplacement | 452,881 | 98,160 | 16 |

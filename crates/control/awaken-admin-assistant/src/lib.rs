@@ -153,11 +153,11 @@ custom TODO/background event works unless the platform advertises its fact adapt
 - Only pin a model if the operator names one; otherwise leave it auto-bound.
 - You can fill in EVERY part of a config, matching the manual editor: besides tools and \
 plugins you may set `mcp_servers`, `skills`, `multiagent`, and `metadata`, and BIND \
-data-plane `resources` (memory stores, files, git repos, skills) onto the agent.
+data-plane inputs (memory stores, files, managed repositories) onto the agent.
 - Resource binding: each `resources` entry is `{ kind (memory_store|file|\
-github_repository|skill), resource_id, mount_path?, access? (read_only|read_write, \
+repository), resource_id, mount_path?, access? (read_only|read_write, \
 default read_write), instructions? }`. Prefer a `resource_id` from the capability view \
-(its `memory_stores`/`skills`/etc.). If the operator explicitly gives you a specific \
+(its `memory_stores`/repositories/etc.). If the operator explicitly gives you a specific \
 resource_id, bind it as given — they have confirmed it. Only ask when the operator is \
 vague about which resource. Omit `mount_path` to accept the per-kind default. On \
 `admin_patch_agent`, a present `resources` array REPLACES the agent's whole binding set.";
@@ -199,15 +199,11 @@ pub trait DraftValidator: Send + Sync {
     fn validate(&self, draft: &AgentConfig) -> Result<(), String>;
 }
 
-/// A neutral, transport-shaped resource-binding spec (ADR-0038): one resource an agent
-/// mounts, authored by the assistant from the flattened `resources` intent. It is a
-/// leaf value in THIS crate — deliberately NOT the config-resolver's `ResourceBinding`
-/// — so the assistant crate stays a leaf that names only the neutral tool contract; the
-/// host's [`DraftStore`] adapter maps this onto the real binding (kind/access enums +
-/// per-kind default mount path). `kind` is `memory_store`/`file`/`github_repository`/
-/// `skill`; `access` is `read_only`/`read_write` (defaults to `read_write`).
+/// Neutral assistant-tool DTO for one Agent input. The host ACL maps this leaf
+/// transport value to the shared typed `InputBinding`; Skills stay in Agent
+/// `skills`, and outputs stay in the Environment.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ResourceSpec {
+pub struct InputSpec {
     pub kind: String,
     pub resource_id: String,
     #[serde(default)]
@@ -239,7 +235,7 @@ pub trait DraftStore: Send + Sync {
         &self,
         draft: &AgentConfig,
         audit: &AdminAuditEvent,
-        resources: Option<Vec<ResourceSpec>>,
+        resources: Option<Vec<InputSpec>>,
     ) -> Result<(), String> {
         self.put_audited(draft, audit).await?;
         if let Some(resources) = resources {
@@ -253,13 +249,9 @@ pub trait DraftStore: Send + Sync {
     /// Read a persisted draft agent config back by id (`None` if absent).
     async fn get(&self, id: &str) -> Result<Option<AgentConfig>, String>;
     /// Replace the whole set of resource bindings for `agent_id` (data-plane store).
-    async fn put_resources(
-        &self,
-        agent_id: &str,
-        resources: Vec<ResourceSpec>,
-    ) -> Result<(), String>;
+    async fn put_resources(&self, agent_id: &str, resources: Vec<InputSpec>) -> Result<(), String>;
     /// Read back the agent's resource bindings (empty when none are bound).
-    async fn get_resources(&self, agent_id: &str) -> Result<Vec<ResourceSpec>, String>;
+    async fn get_resources(&self, agent_id: &str) -> Result<Vec<InputSpec>, String>;
 }
 
 /// A write port over the managed-plane environment registry — the "where/how it runs"
@@ -430,15 +422,15 @@ pub fn admin_tool_descriptors() -> Vec<ToolDescriptor> {
                     },
                     "resources": {
                         "type": "array",
-                        "description": "Data-plane resources to mount onto the agent \
-                                        (memory stores, files, git repos, skills). Bind \
+                        "description": "Data-plane inputs to mount onto the agent \
+                                        (memory stores, files, managed repositories). Bind \
                                         only resource_ids present in the capability view.",
                         "items": {
                             "type": "object",
                             "properties": {
                                 "kind": {
                                     "type": "string",
-                                    "enum": ["memory_store", "file", "github_repository", "skill"],
+                                    "enum": ["memory_store", "file", "repository"],
                                     "description": "The resource kind to bind."
                                 },
                                 "resource_id": {
@@ -722,7 +714,7 @@ async fn validate_persist_emit(
     validator: &Arc<dyn DraftValidator>,
     store: &Arc<dyn DraftStore>,
     audit: &AdminAuditEvent,
-    resources: Option<Vec<ResourceSpec>>,
+    resources: Option<Vec<InputSpec>>,
 ) -> Result<ToolOutput, ToolError> {
     if let Err(error) = validator.validate(&config) {
         return Ok(ToolOutput::error(
@@ -802,7 +794,7 @@ struct DraftArgs {
     #[serde(default)]
     metadata: BTreeMap<String, String>,
     #[serde(default)]
-    resources: Vec<ResourceSpec>,
+    resources: Vec<InputSpec>,
 }
 
 struct DraftAgent {
@@ -925,7 +917,7 @@ struct PatchFields {
     /// When present, REPLACES the agent's whole resource-binding set (data-plane store);
     /// when absent, the existing bindings are left untouched.
     #[serde(default)]
-    resources: Option<Vec<ResourceSpec>>,
+    resources: Option<Vec<InputSpec>>,
 }
 
 struct PatchAgent {

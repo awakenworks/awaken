@@ -109,12 +109,13 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
             "/v1/config/agents/calc-agent/resources",
             Some(json!({
                 "agent_id": "ignored-path-is-authoritative",
-                "resources": [{
-                    "kind": "memory_store", "resource_id": "memory-main",
+                "inputs": [{
+                    "binding_id": "memory",
+                    "target": { "kind": "memory_store", "id": "memory-main" },
                     "mount_path": "/mnt/memory", "access": "read_write",
                     "instructions": null
                 }],
-                "version": 1
+                "revision": 1
             })),
         )
         .await;
@@ -257,10 +258,7 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
     let (s, resources) = call(&app, "GET", "/v1/config/agents/calc-agent/resources", None).await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(resources["agent_id"], json!("calc-agent"));
-    assert_eq!(
-        resources["resources"][0]["resource_id"],
-        json!("memory-main")
-    );
+    assert_eq!(resources["inputs"][0]["target"]["id"], json!("memory-main"));
 
     // The resolve arm works: the credential materializes from the sealed store.
     let (s, resolved) = call(

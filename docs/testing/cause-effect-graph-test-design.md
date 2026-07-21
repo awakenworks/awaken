@@ -837,7 +837,7 @@ C105=Block/Suspend → is_error(遮蔽执行)     C106 → E91     C107=2xx → 
 | E107 | 拒认证他 provider 的 env/不兼容凭证 `IncompatibleCredential`(作用域 provider_id) | resolver `can_consume` |
 | E108 | 池成员冷却轮换 / 全冷却→`NoEligibleCredential{cooled}`;跨模型故障转移 | resolver `eligible_order` |
 | E109 | 拒跨作用域配置写(no-op)/ 隐藏跨作用域读(scoped SQL 守卫) | config-store |
-| E110 | 内容寻址编译 `fingerprint_of` sha256(排除 name/description);编译期把资源提示渲入系统提示 | config-resolver `compose_instructions` |
+| E110 | 内容寻址编译 `fingerprint_of` sha256(排除 name/description);Agent 输入在 Session 创建时一次合并/解析，提示只从 `ResolvedSessionResources` 生成 | config-resolver + session-contract |
 
 ### 因果图与约束
 
@@ -846,7 +846,7 @@ C108 → E96 ∨ E98     C109=不符∧非幂等 → E99     C109=幂等 → 保
 C111 → E106(成功) ∨ ModelUnresolved     C112=不兼容 → E107     C112=全冷却 → E108     C112=跨作用域写 → E109
 ```
 
-- **O**{CredentialBinding None/Exact/Pool};**O**{ToolMatcher Exact/Glob/Regex};**O**{ApiDialect Anthropic/OpenAi/Gemini};ResourceKind 每 binding 单变体。
+- **O**{CredentialBinding None/Exact/Pool};**O**{ToolMatcher Exact/Glob/Regex};**O**{ApiDialect Anthropic/OpenAi/Gemini};InputResourceId(File/MemoryStore/Repository) 每 binding 单变体。
 - **R**:条件技能浮现(E102)要求 `PathActivations` 接线 ∧ 匹配 glob;`IncompatibleCredential`(E107)要求 offering_provider 存在 ∧ 源 `provider_id` 有作用域(无作用域/env 源 `provider_id=None` 对任何 provider 通过 `can_consume`)。
 - **M**:编译优先级 **UnknownTool 遮蔽 UnresolvedModel**(工具先解析);`mcp__` 前缀目标遮蔽"目标未选中"检查(MCP override 恒编译);净化为空遮蔽该工具投影但不遮服务器;命名空间冲突遮蔽第二服务器;`validate_size` 遮蔽 `NotFound`;delivered provenance 戳记遮蔽自声明 frontmatter;`model_invocable=false` 遮蔽激活;否定算子作用于缺失字段→NoMatch(文档化 fail-open 钉)。
 
