@@ -33,9 +33,10 @@ pub use input::{
     BindingId, FileId, InputBinding, InputResourceId, MemoryStoreId, RepositoryId, ResourceAccess,
 };
 pub use lifecycle::{
-    PutResourcePurgeOutcome, ResourceKind, ResourceLifecycleRepository, ResourcePhysicalReclaimer,
-    ResourcePurgeError, ResourcePurgeEvidence, ResourcePurgeGuard, ResourcePurgeIntent,
-    ResourcePurgeReceipt, ResourcePurgeRepository, ResourcePurgeScheduler, ResourcePurgeStatus,
+    AcquireResourceReclamationOutcome, PutResourcePurgeOutcome, ResourceKind,
+    ResourceLifecycleRepository, ResourcePhysicalReclaimer, ResourcePurgeError,
+    ResourcePurgeEvidence, ResourcePurgeGuard, ResourcePurgeIntent, ResourcePurgeReceipt,
+    ResourcePurgeRepository, ResourcePurgeScheduler, ResourcePurgeStatus, ResourceReclamationFence,
     ResourceReference, ResourceReferenceIndex, ResourceReferenceKind, ResourceReferenceRecord,
     ResourceTarget,
 };

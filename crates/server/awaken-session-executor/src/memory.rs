@@ -507,7 +507,21 @@ impl BoundMemory {
     /// Resume every non-terminal intent for this exact frozen binding. Invoked
     /// after enqueue and after Session rehydration, so a process crash cannot lose
     /// the remaining extraction/store/receipt work.
-    pub async fn reconcile(&self, thread: &str) {
+    pub async fn reconcile(&self, thread: &str) -> bool {
+        let Ok(candidates) = self
+            .runtime
+            .extraction_repository()
+            .recoverable_extractions(64)
+            .await
+        else {
+            return false;
+        };
+        if !candidates
+            .iter()
+            .any(|intent| intent.session_id == thread && self.matches_intent(intent))
+        {
+            return false;
+        }
         let bound = self.clone();
         let thread = thread.to_string();
         self.runtime
@@ -516,6 +530,7 @@ impl BoundMemory {
                 bound.drive_recoverable(&thread).await;
             })
             .await;
+        true
     }
 
     async fn drive_recoverable(&self, thread: &str) {
@@ -1028,6 +1043,10 @@ mod tests {
         let (runtime, extraction, repository, _extractions) =
             bound_test_memory(Arc::new(ExtractorModel), &sandbox_base, &mem_root);
 
+        assert!(
+            !extraction.reconcile("thread-1").await,
+            "an empty recovery scan must not create a background run"
+        );
         extraction
             .trigger(
                 "thread-1",

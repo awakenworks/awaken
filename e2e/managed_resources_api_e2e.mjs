@@ -15,6 +15,18 @@ import { withRealServer, pass } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01', 'files-api-2025-04-14'];
 
+async function request(baseUrl, method, route, body) {
+  const response = await fetch(`${baseUrl}${route}`, {
+    method,
+    headers: body === undefined ? undefined : { 'content-type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const text = await response.text();
+  let value = text;
+  try { value = JSON.parse(text); } catch {}
+  return { status: response.status, body: value };
+}
+
 async function main() {
   try {
     await withRealServer('echo', 38138, async (baseUrl) => {
@@ -68,8 +80,25 @@ async function main() {
       assert.equal(unknownScope.length, 0, 'unknown scope ⇒ empty list');
       pass('files.list is empty without a scope and for an unknown scope');
 
-      // ── memory-store API: create → read (empty) → 404 on unknown ───────────────
-      const mem = await client.post('/v1/memory_stores');
+      const deletedFile = await request(baseUrl, 'DELETE', `/v1/files/${up.id}`);
+      assert.equal(deletedFile.status, 200);
+      assert.equal(deletedFile.body.type, 'file_deleted');
+      await assert.rejects(
+        () => client.get(`/v1/files/${up.id}`),
+        (e) => String(e).includes('404'),
+        'logical File deletion denies reads before asynchronous reclamation',
+      );
+      assert.equal((await request(baseUrl, 'DELETE', `/v1/files/${up.id}`)).status, 404);
+      pass('file deletion commits immediate logical denial and is idempotently absent');
+
+      // ── MemoryStore: catalog patch + CAS heads + versions + redaction + delete ─
+      const mem = await client.post('/v1/memory_stores', {
+        body: {
+          name: 'embedded-memory',
+          description: 'initial',
+          metadata: { phase: 'created', remove_me: 'yes' },
+        },
+      });
       assert.ok(mem.id?.startsWith('memstore_'), 'memory store gets a memstore_ id');
       const read = await client.get(`/v1/memory_stores/${mem.id}`);
       assert.equal(read.id, mem.id);
@@ -78,6 +107,123 @@ async function main() {
       const memories = await client.get(`/v1/memory_stores/${mem.id}/memories`);
       assert.deepEqual(memories.data, [], 'a fresh memory store has no memory heads');
       pass(`memory store created and reads back empty: ${mem.id}`);
+
+      const stores = await request(baseUrl, 'GET', '/v1/memory_stores');
+      assert.equal(stores.status, 200);
+      assert.ok(stores.body.data.some((store) => store.id === mem.id));
+      const patched = await request(baseUrl, 'POST', `/v1/memory_stores/${mem.id}`, {
+        description: 'updated',
+        metadata: { phase: 'updated', remove_me: null },
+      });
+      assert.equal(patched.status, 200);
+      assert.equal(patched.body.description, 'updated');
+      assert.deepEqual(patched.body.metadata, { phase: 'updated' });
+
+      assert.equal(
+        (await request(baseUrl, 'POST', `/v1/memory_stores/${mem.id}/memories`, {
+          content: 'missing path',
+        })).status,
+        400,
+      );
+      const created = await request(baseUrl, 'POST', `/v1/memory_stores/${mem.id}/memories`, {
+        path: '/fact.md',
+        content: 'embedded v1',
+      });
+      assert.equal(created.status, 200);
+      const memoryId = created.body.id;
+      const initialSha = created.body.content_sha256;
+      assert.equal(
+        (await request(baseUrl, 'POST', `/v1/memory_stores/${mem.id}/memories`, {
+          path: '/fact.md',
+          content: 'duplicate path',
+        })).status,
+        409,
+      );
+      assert.equal(
+        (await request(baseUrl, 'POST', `/v1/memory_stores/${mem.id}/memories/${memoryId}`, {
+          content: 'stale must not win',
+          precondition: { content_sha256: 'stale' },
+        })).status,
+        409,
+      );
+      const updated = await request(
+        baseUrl,
+        'POST',
+        `/v1/memory_stores/${mem.id}/memories/${memoryId}`,
+        {
+          path: '/renamed.md',
+          content: 'embedded v2',
+          precondition: { content_sha256: initialSha },
+        },
+      );
+      assert.equal(updated.status, 200);
+      assert.equal(updated.body.path, '/renamed.md');
+      const basic = await request(
+        baseUrl,
+        'GET',
+        `/v1/memory_stores/${mem.id}/memories?path_prefix=/&view=basic`,
+      );
+      assert.equal(basic.status, 200);
+      assert.equal(basic.body.data[0].content, null);
+      assert.equal(
+        (await request(baseUrl, 'GET', `/v1/memory_stores/${mem.id}/memories/${memoryId}`)).status,
+        200,
+      );
+
+      const versions = await request(
+        baseUrl,
+        'GET',
+        `/v1/memory_stores/${mem.id}/memory_versions`,
+      );
+      assert.equal(versions.status, 200);
+      assert.ok(versions.body.data.length >= 2);
+      const firstVersion = versions.body.data[0].id;
+      assert.equal(
+        (await request(
+          baseUrl,
+          'GET',
+          `/v1/memory_stores/${mem.id}/memory_versions/${firstVersion}`,
+        )).status,
+        200,
+      );
+      const redacted = await request(
+        baseUrl,
+        'POST',
+        `/v1/memory_stores/${mem.id}/memory_versions/${firstVersion}/redact`,
+      );
+      assert.equal(redacted.status, 200);
+      assert.equal(redacted.body.content, null);
+      assert.notEqual(redacted.body.redacted_at, null);
+
+      assert.equal(
+        (await request(
+          baseUrl,
+          'DELETE',
+          `/v1/memory_stores/${mem.id}/memories/${memoryId}`,
+        )).status,
+        200,
+      );
+      assert.equal(
+        (await request(baseUrl, 'GET', `/v1/memory_stores/${mem.id}/memories/${memoryId}`)).status,
+        404,
+      );
+
+      const archived = await request(baseUrl, 'POST', `/v1/memory_stores/${mem.id}/archive`);
+      assert.equal(archived.status, 200);
+      assert.notEqual(archived.body.archived_at, null);
+      assert.equal(
+        (await request(baseUrl, 'POST', `/v1/memory_stores/${mem.id}/memories`, {
+          path: '/denied.md',
+          content: 'must not write',
+        })).status,
+        404,
+      );
+      assert.equal((await request(baseUrl, 'DELETE', `/v1/memory_stores/${mem.id}`)).status, 200);
+      assert.equal(
+        (await request(baseUrl, 'GET', `/v1/memory_stores/${mem.id}/memories`)).status,
+        404,
+      );
+      pass('embedded MemoryStore preserves CAS, version, redaction, and lifecycle invariants');
 
       await assert.rejects(
         () => client.get('/v1/memory_stores/memstore_absent'),

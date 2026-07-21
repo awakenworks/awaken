@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use awaken_memory_store::{FilesystemMemoryRepository, MemoryRepository};
+use awaken_memory_store::{MemoryRepository, SqliteMemoryRepository};
 use awaken_sandbox_memoryd::fuse::spawn_mount;
 use awaken_sandbox_memoryd::{FuseMountFactory, MountCoordinator};
 
@@ -47,10 +47,11 @@ fn kernel_reads_writes_renames_and_persists_across_remount() {
     }
     let rt = tokio::runtime::Runtime::new().unwrap();
     let store_root = unique("store");
+    let store_db = store_root.join("memory.db");
     let mnt = unique("mnt");
     let store = "memstore_1";
 
-    let backend = Arc::new(FilesystemMemoryRepository::open(&store_root).unwrap());
+    let backend = Arc::new(SqliteMemoryRepository::open(store_db.to_str().unwrap()).unwrap());
     rt.block_on(backend.create(store, "/seed.md", "hello"))
         .unwrap();
     rt.block_on(backend.create(store, "/notes/a.md", "note-a"))
@@ -107,7 +108,7 @@ fn kernel_reads_writes_renames_and_persists_across_remount() {
 
     // A fresh handle over the same durable store re-exposes the writes — they were
     // in the store of record, not a first-mount cache artifact.
-    let backend2 = Arc::new(FilesystemMemoryRepository::open(&store_root).unwrap());
+    let backend2 = Arc::new(SqliteMemoryRepository::open(store_db.to_str().unwrap()).unwrap());
     let handle2 = spawn_mount(backend2, store.into(), mnt.clone()).expect("remount");
     std::thread::sleep(Duration::from_millis(100));
     assert_eq!(
@@ -132,10 +133,11 @@ fn a_shared_mount_is_coherent_and_refcounted_across_acquirers() {
     }
     let rt = tokio::runtime::Runtime::new().unwrap();
     let store_root = unique("cstore");
+    let store_db = store_root.join("memory.db");
     let mnt_root = unique("cmnt");
     let store = "memstore_1";
 
-    let backend = Arc::new(FilesystemMemoryRepository::open(&store_root).unwrap());
+    let backend = Arc::new(SqliteMemoryRepository::open(store_db.to_str().unwrap()).unwrap());
     rt.block_on(backend.create(store, "/x.md", "one")).unwrap();
 
     let coord = MountCoordinator::new(Box::new(FuseMountFactory::new(backend.clone(), &mnt_root)));
@@ -183,10 +185,11 @@ fn kernel_exercises_metadata_truncate_offsets_dirs_and_errors() {
     }
     let rt = tokio::runtime::Runtime::new().unwrap();
     let store_root = unique("estore");
+    let store_db = store_root.join("memory.db");
     let mnt = unique("emnt");
     let store = "memstore_1";
 
-    let backend = Arc::new(FilesystemMemoryRepository::open(&store_root).unwrap());
+    let backend = Arc::new(SqliteMemoryRepository::open(store_db.to_str().unwrap()).unwrap());
     rt.block_on(backend.create(store, "/f.md", "0123456789"))
         .unwrap();
 

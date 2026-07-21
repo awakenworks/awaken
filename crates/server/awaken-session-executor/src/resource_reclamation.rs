@@ -155,21 +155,8 @@ impl ResourcePhysicalReclaimer for HostResourceReclamation {
     ) -> Result<ResourcePurgeEvidence, ResourcePurgeError> {
         match target.kind {
             ResourceKind::File => {
-                // Serialize ownership creation with the final reference recheck and
-                // blob delete. The durable local adapter is single-host SQLite;
-                // distributed adapters provide the equivalent transaction/lock.
-                let _guard = self.host.resource_lifecycle_gate.lock().await;
-                if !self
-                    .host
-                    .resource_lifecycle
-                    .references_for_resource(ResourceKind::File, &target.resource_id)
-                    .await?
-                    .is_empty()
-                {
-                    return Err(ResourcePurgeError::Storage(
-                        "File became referenced during reclamation".into(),
-                    ));
-                }
+                // The generic coordinator owns the durable resource-plane fence;
+                // this adapter only performs the idempotent physical operation.
                 let blob_deleted = self
                     .host
                     .file_store()

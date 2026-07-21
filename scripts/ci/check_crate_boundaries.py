@@ -1318,7 +1318,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tracing",
     },
     "awaken-resource-reclaimer": {"awaken-resource-contract", "async-trait", "tokio"},
-    "awaken-resource-store": {"awaken-resource-contract", "async-trait", "rusqlite", "serde_json", "tempfile", "tokio"},
+"awaken-resource-store": {"awaken-resource-contract", "awaken-scoped-migration", "async-trait", "proptest", "rusqlite", "serde_json", "sqlx", "tempfile", "tokio"},
     # Single-machine assembly binary: the composition root. Since the service
     # layer moved to awaken-session-executor; it composes host/protocol/management router modes.
     # Test-only scenario host (Stage A): the mock models + build_*_router scenario
@@ -1522,6 +1522,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-session-executor",
         "awaken-resource-store",
         "awaken-resource-reclaimer",
+        "awaken-file-store", "awaken-memory-store",
         # The ACP executor: the composition root wires an `acp:*` backend into the Serve
         # host by config (AWAKEN_ACP_ARGV), which the runtime-host plane does not do itself.
         "awaken-run-executor-acp",
@@ -1950,7 +1951,6 @@ def check_runtime_is_secret_resolution_free() -> list[str]:
 # ratchet — Phases 0.1 / 0.2 / 3) live in `_arch_fitness.py` (pure predicates + cause-
 # effect selftests), imported and driven by `main()` over the parsed crate specs. Split
 # out to keep this file under the 2000-line hard limit.
-
 
 # NOTE: this repo is fully open source. The open/closed line is the REPOSITORY
 # boundary — closed commercial capabilities (placement, sharded dispatch, multi-

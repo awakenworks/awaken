@@ -86,6 +86,30 @@ async function main() {
     assert.equal(repoRes.type, 'github_repository');
     pass('github_repository attached to a live session');
 
+    const retrievedRepo = await client.beta.sessions.resources.retrieve(repoRes.id, {
+      session_id: session.id,
+      betas: BETAS,
+    });
+    assert.equal(retrievedRepo.id, repoRes.id);
+    await assert.rejects(
+      () => client.beta.sessions.resources.update(fileRes.id, {
+        session_id: session.id,
+        authorization_token: 'file-cannot-use-token', // awaken-allow: secret
+        betas: BETAS,
+      }),
+      (e) => e.status === 400,
+      'repository authorization cannot be applied to a File binding',
+    );
+    const updatedRepo = await client.beta.sessions.resources.update(repoRes.id, {
+      session_id: session.id,
+      mount_path: '/workspace/repository',
+      instructions: 'updated repository instructions',
+      authorization_token: 'ghp_rotated_e2e', // awaken-allow: secret
+      betas: BETAS,
+    });
+    assert.equal(updatedRepo.mount_path, '/workspace/repository');
+    pass('repository config publication rotates only its governed credential reference');
+
     assert.equal((await listResources(client, session.id)).length, 2, 'both live mounts are listed');
 
     // ── memory_store: rejected on a running session (create-time only) ─────────
@@ -109,6 +133,21 @@ async function main() {
     assert.equal(after.length, 1, 'the file was detached; the repo remains');
     assert.equal(after[0].type, 'github_repository');
     pass('a file resource was detached from a live session');
+
+    await client.beta.sessions.resources.delete(repoRes.id, {
+      session_id: session.id,
+      betas: BETAS,
+    });
+    assert.deepEqual(await listResources(client, session.id), []);
+    await assert.rejects(
+      () => client.beta.sessions.resources.retrieve(repoRes.id, {
+        session_id: session.id,
+        betas: BETAS,
+      }),
+      (e) => e.status === 404,
+      'retired Repository binding is no longer visible',
+    );
+    pass('repository detach retires its resource-catalog aggregate');
   });
 
   console.log('E2E PASS: session resource lifecycle (file/repo live-attachable, memory create-time only).');

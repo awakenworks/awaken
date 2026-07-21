@@ -200,7 +200,6 @@ impl SharedHost {
         workspace: &str,
         id: &str,
     ) -> Result<bool, ResourcePurgeError> {
-        let _guard = self.resource_lifecycle_gate.lock().await;
         self.resource_lifecycle
             .add_reference(file_ownership(workspace, id))
             .await
@@ -220,7 +219,6 @@ impl SharedHost {
         workspace: &str,
         id: &str,
     ) -> Result<bool, ResourcePurgeError> {
-        let _guard = self.resource_lifecycle_gate.lock().await;
         self.resource_lifecycle
             .remove_reference(&file_ownership(workspace, id))
             .await
