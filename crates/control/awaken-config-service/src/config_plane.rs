@@ -103,6 +103,43 @@ impl ConfigService {
         self
     }
 
+    /// Agent ids whose current default-input configuration references `target` in
+    /// one Workspace. This is resource lifecycle evidence, not authorization.
+    pub fn agents_referencing_input(
+        &self,
+        workspace_id: &str,
+        target: &awaken_config_resolver::InputResourceId,
+    ) -> Vec<String> {
+        self.resources
+            .as_ref()
+            .map(|store| {
+                store
+                    .list_agent_inputs(workspace_id)
+                    .into_iter()
+                    .filter(|config| config.inputs.iter().any(|input| &input.target == target))
+                    .map(|config| config.agent_id)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Published Agent ids whose current capability configuration names a Skill.
+    pub fn agents_referencing_skill(&self, skill_id: &str) -> Vec<String> {
+        let installed = self.installed.lock().expect("config service");
+        let mut agents: Vec<_> = installed
+            .iter()
+            .filter_map(|(agent_id, entry)| {
+                awaken_runtime_contract::agent_bindings::AgentBindings::from_config(
+                    &entry.snapshot.resolved_spec.plugin_config,
+                )
+                .filter(|bindings| bindings.skill_ids.iter().any(|id| id == skill_id))
+                .map(|_| agent_id.clone())
+            })
+            .collect();
+        agents.sort();
+        agents
+    }
+
     /// Validate a config by compiling it against the caller-supplied tool `catalog`
     /// (a dry run of publish); no store write. Mirrors publish: an `Auto` model is
     /// resolved first (D5) so a draft with the default binding validates, and a config

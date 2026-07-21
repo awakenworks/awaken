@@ -536,6 +536,8 @@ pub trait ResourcePhysicalReclaimer: Send + Sync {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
 
     fn intent(kind: ResourceKind) -> ResourcePurgeIntent {
@@ -630,5 +632,22 @@ mod tests {
         let mut progressed = original.clone();
         progressed.claim("worker", 20, 10).unwrap();
         assert!(original.same_request(&progressed));
+    }
+
+    proptest! {
+        #[test]
+        fn retention_is_a_hard_lower_bound(requested in 0u64..1_000_000, delay in 1u64..1_000_000) {
+            let not_before = requested.saturating_add(delay);
+            let mut value = ResourcePurgeIntent::new(
+                "purge", "key", ResourceTarget::new("ws", ResourceKind::File, "file"),
+                None, requested, not_before,
+            ).unwrap();
+            let held = matches!(
+                value.claim("worker", not_before - 1, 1),
+                Err(ResourcePurgeError::RetentionHeld { .. })
+            );
+            prop_assert!(held);
+            prop_assert!(value.claim("worker", not_before, 1).is_ok());
+        }
     }
 }

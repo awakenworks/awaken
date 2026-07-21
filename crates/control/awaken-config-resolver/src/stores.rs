@@ -252,6 +252,7 @@ pub trait AgentInputBindingRepository: Send + Sync {
         config: AgentInputConfig,
     ) -> Result<(), AgentInputRepositoryError>;
     fn get_agent_inputs(&self, workspace_id: &str, agent_id: &str) -> Option<AgentInputConfig>;
+    fn list_agent_inputs(&self, workspace_id: &str) -> Vec<AgentInputConfig>;
 }
 
 /// Default in-memory Agent-input repository, keyed by `(Workspace, Agent)`.
@@ -287,6 +288,18 @@ impl AgentInputBindingRepository for InMemoryAgentInputBindingRepository {
             .expect("agent resource configs")
             .get(&(workspace_id.to_string(), agent_id.to_string()))
             .cloned()
+    }
+    fn list_agent_inputs(&self, workspace_id: &str) -> Vec<AgentInputConfig> {
+        let mut configs: Vec<_> = self
+            .0
+            .lock()
+            .expect("agent resource configs")
+            .iter()
+            .filter(|((workspace, _), _)| workspace == workspace_id)
+            .map(|(_, config)| config.clone())
+            .collect();
+        configs.sort_by(|a, b| a.agent_id.cmp(&b.agent_id));
+        configs
     }
 }
 
@@ -340,6 +353,14 @@ mod tests {
                 .get_agent_inputs("workspace-c", "shared-agent")
                 .is_none()
         );
+        assert_eq!(store.list_agent_inputs("workspace-a").len(), 1);
+        assert_eq!(
+            store.list_agent_inputs("workspace-a")[0].inputs[0]
+                .target
+                .id(),
+            "file-a"
+        );
+        assert!(store.list_agent_inputs("workspace-c").is_empty());
     }
 
     #[test]

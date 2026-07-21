@@ -239,6 +239,25 @@ impl AgentInputBindingRepository for PostgresAdminStore {
         let key = format!("{workspace_id}\u{1f}{agent_id}");
         self.get_json("agent_resource", "agent_id", &key)
     }
+    fn list_agent_inputs(&self, workspace_id: &str) -> Vec<AgentInputConfig> {
+        let prefix = format!("{workspace_id}\u{1f}");
+        let pool = self.pool.clone();
+        block(&self.handle, move || async move {
+            sqlx::query(&format!(
+                "SELECT agent_id, data FROM {NS}_agent_resource ORDER BY agent_id COLLATE \"C\""
+            ))
+            .fetch_all(&pool)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|row| {
+                let key = row.try_get::<String, _>("agent_id").ok()?;
+                let Json(config): Json<AgentInputConfig> = row.try_get("data").ok()?;
+                key.starts_with(&prefix).then_some(config)
+            })
+            .collect()
+        })
+    }
 }
 
 impl WebhookStore for PostgresAdminStore {

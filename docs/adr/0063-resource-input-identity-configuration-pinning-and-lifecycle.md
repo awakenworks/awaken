@@ -197,6 +197,14 @@ lifecycle. `Suspended` is a reversible live deny; `Archived` rejects new
 activation; `Deleted` is a tombstone; `Purged` is an asynchronous reclamation
 receipt rather than a reusable identity.
 
+The implemented reclamation workflow writes a durable, idempotent
+`ResourcePurgeIntent` before the logical File grant revoke or catalog/Skill
+tombstone. A lease-generation and revision fence prevents a stale worker from
+overwriting recovery. Physical adapters run only after the independently composed
+catalog, reverse-reference, Agent-binding, Session-binding, retention, runtime,
+and extraction guards report no blocker. These guards contain resource facts only;
+authentication, API keys, roles, policy and PDP decisions remain at the PEP edge.
+
 ### D7: Memory has one data truth
 
 Mount, recall, extraction, Memory API, version history, and redaction operate on

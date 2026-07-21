@@ -251,7 +251,7 @@ process-local handle.
 | `RepositoryRealizer` | Existing neutral port | Environment adapter | clone current remote config, construct working tree, publish Agent-authored commits with ephemeral transport credentials | remote repository ownership, authorization policy, or commit pinning |
 | `CredentialResolver`/Vault | Existing | Credential product domain | turn a credential binding into a short-lived lease and rotate/revoke it | Agent prompt, persisted Session secret material |
 | `SandboxProvider` | Existing | Environment provisioning | realize validated mounts/working trees and dispose them | product resource authoring and policy |
-| `ResourceReclaimer` | Existing for Session activation recovery; per-resource purge remains | Product/session operations | reconcile crashed activations, retention, reference checks, per-kind purge receipts | authorization decisions, remote Git deletion |
+| `ResourceReclaimer` | Existing, durable and per-resource | Product/session operations | reconcile crashed activations and purge intents; retention, reference checks, fenced claims, per-kind receipts | authorization decisions, remote Git deletion |
 
 The catalog names roles rather than forcing them into one crate. Local mode may
 compose several roles in one process; cloud mode may deploy them separately.
@@ -679,9 +679,21 @@ internal config version remains an awaken governance detail.
 - API-local `SkillRegistry`, text-only `SkillStore` overwrite semantics, lossy
   `String::from_utf8_lossy` bundle ingestion, and runtime lookup of `latest`.
 
-### Remaining additions
+### Completed reclamation slice
 
-- resource-specific purge receipts and recovery tests.
+- one `ResourcePurgeIntent`/receipt state machine covers File, MemoryStore,
+  Repository, and Skill without importing IAM vocabulary;
+- the durable resource store owns purge work plus Workspace-scoped reverse
+  references; Session manifest replacement updates its references atomically;
+- File GC checks every Workspace grant/reference before deleting shared bytes;
+- Memory GC requires the catalog tombstone, pinned config generation, retention,
+  no Session/Agent binding, and no recoverable extraction before atomically
+  deleting heads and history;
+- Skill delete is a tombstone: new resolution is denied while retained Session
+  pins can still read immutable versions until the reclaimer records physical
+  purge; and
+- Repository reclamation records only awaken-local cleanup and never calls a
+  remote Git deletion operation.
 
 ## Failure Semantics
 
