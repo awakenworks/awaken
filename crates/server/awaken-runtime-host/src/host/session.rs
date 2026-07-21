@@ -288,11 +288,12 @@ impl SharedHost {
         // it must not reopen the config registry and reconstruct current state.
         // Local session creation has no claimed snapshot yet, so it uses the
         // installed publication as the compatibility path.
+        let workspace = self.thread_workspace(thread);
         let installed = published_snapshot.or_else(|| {
             self.config_service
                 .as_ref()
                 .zip(agent)
-                .and_then(|(svc, agent)| svc.installed(agent))
+                .and_then(|(svc, agent)| svc.installed_in(&workspace, agent))
         });
         // The workspace skill dir is negotiated by the agent/hand definition: its
         // `plugin_config.skills_dir` (ADR-0036) overrides the default `skills` subdir,
@@ -363,7 +364,6 @@ impl SharedHost {
         // A managed Session consumes its exact frozen Skill versions. Direct/legacy
         // threads without a frozen manifest retain the latest-catalog compatibility
         // path. Presence of an empty frozen vector explicitly offers no Skills.
-        let workspace = self.thread_workspace(thread);
         let frozen = self
             .thread_skills
             .lock()

@@ -1460,7 +1460,7 @@ pub async fn build_config_router() -> Router {
     // Seed the management assistant as an ordinary published agent in the reserved
     // scope (ADR-0052 D1/D2): it becomes a compiled ExecutableAgentSnapshot via the same path
     // as any agent, projectable on `/v1/agents`.
-    awaken_control::seed_admin_assistant(&plane)
+    awaken_control::seed_admin_assistant(&plane, awaken_config_store::DEFAULT_SCOPE)
         .await
         .expect("seed admin assistant");
     // The management tool executables, backed by real ports (D3/D4): the capability

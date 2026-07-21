@@ -13,26 +13,22 @@ use crate::ConfigService;
 pub struct ConfigServiceAgentSource(pub Arc<ConfigService>);
 
 impl awaken_session_contract::AgentConfigSource for ConfigServiceAgentSource {
-    fn agent_view(&self, agent_id: &str) -> Option<awaken_session_contract::AgentConfigView> {
-        self.agent_view_with_resources(agent_id, None)
-    }
-
     fn agent_view_in(
         &self,
         workspace_id: &str,
         agent_id: &str,
     ) -> Option<awaken_session_contract::AgentConfigView> {
-        self.agent_view_with_resources(agent_id, Some(workspace_id))
+        self.agent_view_with_resources(workspace_id, agent_id)
     }
 }
 
 impl ConfigServiceAgentSource {
     fn agent_view_with_resources(
         &self,
+        workspace_id: &str,
         agent_id: &str,
-        workspace_id: Option<&str>,
     ) -> Option<awaken_session_contract::AgentConfigView> {
-        let snapshot = self.0.installed(agent_id)?;
+        let snapshot = self.0.installed_in(workspace_id, agent_id)?;
         let spec = &snapshot.resolved_spec;
         let bindings = awaken_runtime_contract::agent_bindings::AgentBindings::from_config(
             &spec.plugin_config,
@@ -42,12 +38,7 @@ impl ConfigServiceAgentSource {
             .0
             .resources
             .as_ref()
-            .and_then(|store| {
-                store.get_agent_inputs(
-                    workspace_id.unwrap_or(awaken_config_store::DEFAULT_SCOPE),
-                    agent_id,
-                )
-            })
+            .and_then(|store| store.get_agent_inputs(workspace_id, agent_id))
             .map(|config| config.inputs)
             .unwrap_or_default();
         Some(awaken_session_contract::AgentConfigView {

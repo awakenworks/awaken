@@ -114,7 +114,8 @@ impl ResourcePurgeGuard for HostResourceReclamation {
                         awaken_config_resolver::RepositoryId::from(target.resource_id.clone()),
                     ),
                 ),
-                ResourceKind::Skill => config_service.agents_referencing_skill(&target.resource_id),
+                ResourceKind::Skill => config_service
+                    .agents_referencing_skill(&target.workspace_id, &target.resource_id),
             };
             blockers.extend(agents.into_iter().map(|agent_id| ResourceReference {
                 kind: ResourceReferenceKind::AgentBinding,

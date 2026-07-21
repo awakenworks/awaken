@@ -4,7 +4,7 @@
 //!
 //! The assistant is authored, compiled, and published like any agent (D1) — the
 //! seeding here is exactly a `put` + `publish` through `ConfigService`, in the reserved
-//! scope (D2), where the scope-keyed catalog makes the five admin tools nameable (D3).
+//! scope (D2), where the scope-keyed catalog makes the six admin tools nameable (D3).
 
 use std::sync::Arc;
 
@@ -28,11 +28,14 @@ use awaken_tenancy::ScopeId;
 /// publish path (D1/D2), via the scope edge ([`ConfigPlane`]). Idempotent —
 /// re-seeding recompiles to the same content address. Returns the publish error
 /// verbatim so a caller can surface a bad setup (e.g. no provider-backed model).
-pub async fn seed_admin_assistant(plane: &ConfigPlane) -> Result<(), String> {
+pub async fn seed_admin_assistant(
+    plane: &ConfigPlane,
+    execution_workspace: &str,
+) -> Result<(), String> {
     let scope = ScopeId::from(RESERVED_ADMIN_SCOPE);
     plane.put(&scope, &admin_assistant_config()).await?;
     plane
-        .publish(&scope, ADMIN_ASSISTANT_AGENT_ID)
+        .publish_for_execution_workspace(&scope, execution_workspace, ADMIN_ASSISTANT_AGENT_ID)
         .await
         .map(|_| ())
         .map_err(|e| e.to_string())
@@ -656,7 +659,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn seeding_publishes_the_assistant_into_the_reserved_scope_only() {
+    async fn seeding_uses_reserved_configuration_and_explicit_execution_workspace() {
         // A scope-keyed catalog + a resolver so the Auto assistant can publish.
         let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
         let tools = Arc::new(ScopedToolCatalog::new(
@@ -670,11 +673,21 @@ mod tests {
         );
         let plane = ConfigPlane::new(service.clone(), store, tools);
 
-        seed_admin_assistant(&plane).await.expect("seed");
+        let execution_workspace = "wrkspc_live";
+        seed_admin_assistant(&plane, execution_workspace)
+            .await
+            .expect("seed");
 
-        // Published + installed under the reserved id, model auto-resolved.
+        // The draft/publication belongs to the reserved configuration namespace,
+        // while the executable is installed only in the real resource/credential
+        // Workspace. The reserved namespace never becomes a synthetic Workspace.
+        assert!(
+            service
+                .installed_in(RESERVED_ADMIN_SCOPE, ADMIN_ASSISTANT_AGENT_ID)
+                .is_none()
+        );
         let installed = service
-            .installed(ADMIN_ASSISTANT_AGENT_ID)
+            .installed_in(execution_workspace, ADMIN_ASSISTANT_AGENT_ID)
             .expect("installed");
         let spec = &installed.resolved_spec;
         assert_eq!(spec.model_binding.model_ref, "m-1");
@@ -858,7 +871,7 @@ mod tests {
                 .with_model_resolver(Arc::new(FirstOfferingResolver(ProviderCatalog::default()))),
         );
         let plane = ConfigPlane::new(service, store, tools);
-        let err = seed_admin_assistant(&plane)
+        let err = seed_admin_assistant(&plane, DEFAULT_SCOPE)
             .await
             .expect_err("no provider-backed model → publish fails");
         assert!(!err.is_empty(), "the publish error is surfaced: {err}");
@@ -879,25 +892,29 @@ mod tests {
         );
         let plane = ConfigPlane::new(service.clone(), store, tools);
 
-        seed_admin_assistant(&plane).await.expect("first seed");
+        seed_admin_assistant(&plane, DEFAULT_SCOPE)
+            .await
+            .expect("first seed");
         let first_model = service
-            .installed(ADMIN_ASSISTANT_AGENT_ID)
+            .installed_in(DEFAULT_SCOPE, ADMIN_ASSISTANT_AGENT_ID)
             .unwrap()
             .resolved_spec
             .model_binding
             .model_ref
             .clone();
         let first_tools = service
-            .installed(ADMIN_ASSISTANT_AGENT_ID)
+            .installed_in(DEFAULT_SCOPE, ADMIN_ASSISTANT_AGENT_ID)
             .unwrap()
             .resolved_spec
             .tool_descriptors
             .len();
 
-        seed_admin_assistant(&plane)
+        seed_admin_assistant(&plane, DEFAULT_SCOPE)
             .await
             .expect("re-seed is idempotent");
-        let handle = service.installed(ADMIN_ASSISTANT_AGENT_ID).unwrap();
+        let handle = service
+            .installed_in(DEFAULT_SCOPE, ADMIN_ASSISTANT_AGENT_ID)
+            .unwrap();
         let second = handle;
         assert_eq!(second.resolved_spec.model_binding.model_ref, first_model);
         assert_eq!(second.resolved_spec.tool_descriptors.len(), first_tools);

@@ -99,10 +99,42 @@ function hasTool(parsed, name) {
 const text = (t) => ({ text: t });
 const tool = (id, name, input) => ({ tool: { id, name, input } });
 
+function adminDriveReply(parsed) {
+  switch (toolResults(parsed).length) {
+    case 0: return tool('c0', 'admin_get_platform_capabilities', {});
+    case 1: return tool('c1', 'admin_draft_agent', {
+      id: 'drafted-agent',
+      instructions: 'a drafted agent',
+      resources: [
+        { kind: 'file', resource_id: 'draft-file', access: 'read_write' },
+        { kind: 'memory_store', resource_id: 'draft-memory', access: 'read_only' },
+        { kind: 'repository', resource_id: 'draft-repository' },
+      ],
+    });
+    case 2: return tool('c2', 'admin_patch_agent', {
+      id: 'drafted-agent',
+      patch: {
+        description: 'patched by the admin assistant',
+        resources: [{ kind: 'file', resource_id: 'replacement-file' }],
+      },
+    });
+    case 3: return tool('c3', 'admin_validate_agent', { id: 'drafted-agent' });
+    case 4: return tool('c4', 'admin_draft_environment', {
+      name: 'admin-authored-environment',
+      runtime: 'awaken',
+      placement: 'self_hosted',
+      sandbox: { isolation: 'process', network: { mode: 'none' } },
+    });
+    case 5: return tool('c5', 'admin_explain_console', { topic: 'agent' });
+    default: return text('ADMIN-RUN-DONE: capabilities, agent draft, environment, and help completed');
+  }
+}
+
 export const BEHAVIORS = {
   // The historic default: echo the last user text, and drive one tool round-trip
   // on `use-tool:<name>` (kept so the fault-injection / real-wire e2e are unchanged).
   default(parsed) {
+    if (hasTool(parsed, 'admin_get_platform_capabilities')) return adminDriveReply(parsed);
     const t = lastUserText(parsed);
     // The tool round-trip stays on the streaming path only (its historic home), so
     // a non-streamed `use-tool:` still echoes as text exactly as before.
@@ -252,18 +284,11 @@ export const BEHAVIORS = {
     return text(`USED-SKILL: ${lastText}`);
   },
   // AdminAssistantModel (ADR-0052): drive the seeded management assistant through all
-  // five admin tools in one run, sequenced by tool-result count, then a
+  // six admin tools in one run, sequenced by tool-result count, then a
   // final marker. Every draft it passes is a valid ordinary config (auto-bound, no
   // tools) so the real DraftValidator accepts it.
   adminDrive(parsed) {
-    switch (toolResults(parsed).length) {
-      case 0: return tool('c0', 'admin_get_platform_capabilities', {});
-      case 1: return tool('c1', 'admin_draft_agent', { id: 'drafted-agent', instructions: 'a drafted agent' });
-      case 2: return tool('c2', 'admin_patch_agent', { id: 'drafted-agent', patch: { description: 'patched by the admin assistant' } });
-      case 3: return tool('c3', 'admin_validate_agent', { id: 'drafted-agent' });
-      case 4: return tool('c4', 'admin_explain_console', { topic: 'agent' });
-      default: return text('ADMIN-RUN-DONE: capabilities read, draft created, patched, validated, help read');
-    }
+    return adminDriveReply(parsed);
   },
   // DelegatingModel: with `agent_run` it delegates (to `researcher`, or `ghost` if
   // asked) and reports the delegate's result; without it, it answers plainly (so the

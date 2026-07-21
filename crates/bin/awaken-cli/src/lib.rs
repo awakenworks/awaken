@@ -900,7 +900,7 @@ async fn management_router_over(
     // Seed the in-console Admin Assistant as an ordinary published agent in the
     // reserved scope (ADR-0052 D1/D2). Best-effort: a server booted without a
     // resolvable model still starts (the assistant stays a draft until one is set).
-    if let Err(err) = awaken_control::seed_admin_assistant(&plane).await {
+    if let Err(err) = awaken_control::seed_admin_assistant(&plane, &platform_workspace).await {
         eprintln!("admin assistant not seeded (configure a model, then republish): {err}");
     }
     // When an operator adds a model AFTER startup, re-publish the reserved-scope
@@ -911,6 +911,7 @@ async fn management_router_over(
     let reconciler = Arc::new(awaken_runtime_host::ConfigServiceReconciler::new(
         plane.clone(),
         RESERVED_ADMIN_SCOPE,
+        platform_workspace.clone(),
         vec![awaken_admin_assistant::ADMIN_ASSISTANT_AGENT_ID.to_string()],
     ));
     // The LIVE data-plane resource inventory (ADR-0038): memory-store ids from the durable

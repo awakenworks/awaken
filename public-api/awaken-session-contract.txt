@@ -403,7 +403,6 @@ pub struct awaken_session_contract::ToolPermissionDecision
 pub awaken_session_contract::ToolPermissionDecision::allow: bool
 pub awaken_session_contract::ToolPermissionDecision::note: core::option::Option<alloc::string::String>
 pub trait awaken_session_contract::AgentConfigSource: core::marker::Send + core::marker::Sync
-pub fn awaken_session_contract::AgentConfigSource::agent_view(&self, &str) -> core::option::Option<awaken_session_contract::AgentConfigView>
 pub fn awaken_session_contract::AgentConfigSource::agent_view_in(&self, &str, &str) -> core::option::Option<awaken_session_contract::AgentConfigView>
 pub trait awaken_session_contract::ManagedSessionRepository: core::marker::Send + core::marker::Sync
 pub fn awaken_session_contract::ManagedSessionRepository::append_lifecycle<'life0, 'async_trait>(&'life0 self, awaken_session_contract::SessionLifecycleFact) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait

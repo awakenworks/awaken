@@ -78,7 +78,7 @@ struct AcceptingFake {
 struct AgentWithResources;
 
 impl AgentConfigSource for AgentWithResources {
-    fn agent_view(&self, agent_id: &str) -> Option<AgentConfigView> {
+    fn agent_view_in(&self, _workspace_id: &str, agent_id: &str) -> Option<AgentConfigView> {
         (agent_id == "a").then(|| AgentConfigView {
             model: None,
             system: None,
@@ -98,7 +98,7 @@ impl AgentConfigSource for AgentWithResources {
 struct AgentWithIntegrations;
 
 impl AgentConfigSource for AgentWithIntegrations {
-    fn agent_view(&self, agent_id: &str) -> Option<AgentConfigView> {
+    fn agent_view_in(&self, _workspace_id: &str, agent_id: &str) -> Option<AgentConfigView> {
         (agent_id == "integrated").then(|| AgentConfigView {
             model: None,
             system: None,
@@ -116,7 +116,7 @@ impl AgentConfigSource for AgentWithIntegrations {
 struct AgentWithPlatformRepository;
 
 impl AgentConfigSource for AgentWithPlatformRepository {
-    fn agent_view(&self, agent_id: &str) -> Option<AgentConfigView> {
+    fn agent_view_in(&self, _workspace_id: &str, agent_id: &str) -> Option<AgentConfigView> {
         (agent_id == "repo-agent").then(|| AgentConfigView {
             model: None,
             system: None,
@@ -136,10 +136,6 @@ impl AgentConfigSource for AgentWithPlatformRepository {
 struct WorkspaceScopedAgent;
 
 impl AgentConfigSource for WorkspaceScopedAgent {
-    fn agent_view(&self, _agent_id: &str) -> Option<AgentConfigView> {
-        panic!("Session creation must use the Workspace-scoped projection")
-    }
-
     fn agent_view_in(&self, workspace_id: &str, agent_id: &str) -> Option<AgentConfigView> {
         (workspace_id == "default" && agent_id == "scoped").then(|| AgentConfigView {
             model: None,
