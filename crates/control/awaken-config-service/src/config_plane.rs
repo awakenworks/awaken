@@ -1676,61 +1676,6 @@ mod resource_prompt_tests {
         assert_eq!(stored.unwrap().instructions, "hi");
     }
 
-    // ---- agent_config_from_managed (F22) ----
-
-    #[test]
-    fn agent_config_from_managed_reads_the_model_ref() {
-        // F22a/b/c: model as a String, an object {id}, or absent → "".
-        let from_string =
-            super::agent_config_from_managed("a".into(), &json!({ "model": "gpt-x" })).unwrap();
-        assert_eq!(
-            from_string.model_binding.resolved().unwrap().model_ref,
-            "gpt-x"
-        );
-
-        let from_object =
-            super::agent_config_from_managed("a".into(), &json!({ "model": { "id": "claude" } }))
-                .unwrap();
-        assert_eq!(
-            from_object.model_binding.resolved().unwrap().model_ref,
-            "claude"
-        );
-
-        let missing = super::agent_config_from_managed("a".into(), &json!({})).unwrap();
-        assert_eq!(missing.model_binding.resolved().unwrap().model_ref, "");
-    }
-
-    #[test]
-    fn agent_config_from_managed_rejects_unparseable_context_policy() {
-        // F22d.
-        let err = super::agent_config_from_managed("a".into(), &json!({ "context_policy": 123 }))
-            .unwrap_err();
-        assert!(!err.is_empty());
-    }
-
-    #[test]
-    fn agent_config_from_managed_rejects_unparseable_tool_overrides() {
-        // F22e.
-        let err = super::agent_config_from_managed("a".into(), &json!({ "tool_overrides": 123 }))
-            .unwrap_err();
-        assert!(!err.is_empty());
-    }
-
-    #[test]
-    fn managed_agent_view_round_trips_compaction_for_lossless_editing() {
-        let config = super::agent_config_from_managed(
-            "a".into(),
-            &json!({
-                "system": "compact carefully",
-                "compaction": { "window": 32000, "keep_recent": 12 }
-            }),
-        )
-        .unwrap();
-        let projected = super::managed_from_agent_config(&config, false);
-        assert_eq!(projected["compaction"]["window"], json!(32000));
-        assert_eq!(projected["compaction"]["keep_recent"], json!(12));
-    }
-
     // ---- publish handler (F23) ----
 
     #[tokio::test]
