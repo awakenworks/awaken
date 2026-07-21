@@ -135,6 +135,7 @@ const obligations: Obligation[] = [
   { id: 'D7-17', stage: '7 resource persistence', behavior: 'persisted Prepared and Releasing Session resource generations converge after process death', scenario: 'resource_activation_recovery' },
   { id: 'D7-18', stage: '7 resource persistence', behavior: 'a missing current resource config fails closed and the frozen Session generation resumes after repair', scenario: 'resource_catalog_corruption' },
   { id: 'D7-19', stage: '7 resource persistence', behavior: 'guard, fence contention, late-reference, and release faults retry through the original purge intents', scenario: 'resource_reclamation_faults' },
+  { id: 'D7-19a', stage: '7 resource persistence', behavior: 'Postgres reclamation fences recover from contention, late references, physical faults, and release faults', scenario: 'resource_plane_postgres' },
   { id: 'D7-20', stage: '7 resource persistence', behavior: 'Extracted and Stored Memory intents resume while stale mutations and unavailable extractors fail terminally', scenario: 'memory_extraction_stage_recovery' },
 
   { id: 'D8-01', stage: '8 neutral MCP server core', behavior: 'newest and older protocol versions negotiate', scenario: 'mcp_stdio' },
