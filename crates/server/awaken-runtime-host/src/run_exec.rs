@@ -17,6 +17,7 @@ use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::{
     Error as ExecutionError, Result as ExecutionResult, RunAttemptExecutor, RunExecutor,
 };
+use awaken_runtime_contract::permission::{ToolCall, ToolPermissionPolicy, ToolPermissionVerdict};
 use awaken_runtime_contract::resolved::Backend;
 use awaken_runtime_contract::resume::ResumeCommand;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
@@ -57,6 +58,17 @@ pub(crate) struct SnapshotRunResult {
     pub(crate) state: RunState,
     pub(crate) new_messages: Vec<Message>,
     pub(crate) before: usize,
+}
+
+struct DenyAllTools;
+
+#[async_trait::async_trait]
+impl ToolPermissionPolicy for DenyAllTools {
+    async fn evaluate(&self, _call: &ToolCall) -> ToolPermissionVerdict {
+        ToolPermissionVerdict::Deny {
+            reason: "this Run purpose does not permit tools".into(),
+        }
+    }
 }
 
 /// The one executor router owned by a Session. Backend identity comes only from
@@ -180,7 +192,13 @@ impl SharedHost {
 
         *ctx.active_run.lock().expect("active run mutex poisoned") = Some(run_id.clone());
         let state = self
-            .execute_activation(ctx, activation, request.supersede, request.sink)
+            .execute_activation(
+                ctx,
+                activation,
+                request.purpose,
+                request.supersede,
+                request.sink,
+            )
             .await;
         {
             let mut active_run = ctx.active_run.lock().expect("active run mutex poisoned");
@@ -245,6 +263,7 @@ impl SharedHost {
         &self,
         ctx: &Arc<SessionCtx>,
         activation: RunActivation,
+        purpose: RunPurpose,
         supersede: bool,
         sink: Option<Arc<dyn StreamSink>>,
     ) -> Result<RunState, HostError> {
@@ -289,6 +308,9 @@ impl SharedHost {
             }
             if let Some(sink) = sink {
                 context = context.with_stream_sink(sink);
+            }
+            if purpose == RunPurpose::OutcomeGrader {
+                context = context.with_tool_permission_policy(Arc::new(DenyAllTools));
             }
             let result = ctx
                 .ingress

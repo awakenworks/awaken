@@ -4,6 +4,8 @@
 //! tool, or Agent implementation. An application controller supplies stable Run
 //! identities and persists the resulting state transitions.
 
+use async_trait::async_trait;
+use awaken_runtime_contract::Message;
 use awaken_runtime_contract::RunId;
 use serde::{Deserialize, Serialize};
 
@@ -92,6 +94,107 @@ pub struct Evaluation {
     pub message_start: usize,
     pub message_end: usize,
     pub grade: Grade,
+}
+
+/// A deterministic, already-prepared item the Grader may inspect. Preparing
+/// binary/file evidence is an application concern; the Judge receives no Worker
+/// workspace or discovery tools.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeliverableEvidence {
+    pub kind: String,
+    pub locator: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GradingInput {
+    pub outcome_id: Id,
+    pub iteration: u32,
+    pub description: String,
+    pub rubric: Rubric,
+    pub transcript: Vec<Message>,
+    pub message_start: usize,
+    pub message_end: usize,
+    pub worker_state: serde_json::Value,
+    pub evidence: Vec<DeliverableEvidence>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GraderError {
+    Execution(String),
+    InvalidOutput(String),
+}
+
+impl std::fmt::Display for GraderError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Execution(message) => write!(formatter, "Grader execution failed: {message}"),
+            Self::InvalidOutput(message) => write!(formatter, "invalid Grader output: {message}"),
+        }
+    }
+}
+
+impl std::error::Error for GraderError {}
+
+#[async_trait]
+pub trait Grader: Send + Sync {
+    async fn grade(&self, input: &GradingInput) -> Result<Grade, GraderError>;
+}
+
+/// Offline reference Grader used by deterministic tests and local demos.
+pub struct KeywordGrader;
+
+#[async_trait]
+impl Grader for KeywordGrader {
+    async fn grade(&self, input: &GradingInput) -> Result<Grade, GraderError> {
+        let deliverable = input.transcript[input.message_start.min(input.transcript.len())
+            ..input.message_end.min(input.transcript.len())]
+            .iter()
+            .map(Message::text_content)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let satisfied = input.rubric.0.is_empty() || deliverable.contains(&input.rubric.0);
+        Ok(Grade {
+            decision: if satisfied {
+                GradeDecision::Satisfied
+            } else {
+                GradeDecision::NeedsRevision
+            },
+            explanation: if satisfied {
+                "deliverable satisfies the rubric".into()
+            } else {
+                format!("deliverable must satisfy the rubric ({:?})", input.rubric.0)
+            },
+        })
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GradeWire {
+    result: GradeDecision,
+    explanation: String,
+}
+
+/// Parse the complete Judge reply. Markdown fences, surrounding prose, unknown
+/// fields, missing explanations, and invalid decision tokens all fail closed.
+pub fn parse_grade(reply: &str) -> Result<Grade, GraderError> {
+    let wire: GradeWire = serde_json::from_str(reply)
+        .map_err(|error| GraderError::InvalidOutput(error.to_string()))?;
+    if wire.explanation.trim().is_empty() {
+        return Err(GraderError::InvalidOutput(
+            "explanation must not be empty".into(),
+        ));
+    }
+    Ok(Grade {
+        decision: wire.result,
+        explanation: wire.explanation,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -402,6 +505,7 @@ impl Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_runtime_contract::{MessageId, Role};
 
     fn definition(max_iterations: u32) -> Definition {
         Definition::new("ship", "all tests pass", max_iterations).unwrap()
@@ -694,5 +798,58 @@ mod tests {
         let json = serde_json::to_string(&state).unwrap();
         let restored: State = serde_json::from_str(&json).unwrap();
         assert_eq!(restored, state);
+    }
+
+    #[test]
+    fn strict_grade_parser_accepts_exact_schema_and_all_decisions() {
+        for (token, decision) in [
+            ("satisfied", GradeDecision::Satisfied),
+            ("needs_revision", GradeDecision::NeedsRevision),
+            ("failed", GradeDecision::Failed),
+        ] {
+            let grade =
+                parse_grade(&format!(r#"{{"result":"{token}","explanation":"reason"}}"#)).unwrap();
+            assert_eq!(grade.decision, decision);
+        }
+    }
+
+    #[test]
+    fn strict_grade_parser_rejects_non_schema_outputs() {
+        for reply in [
+            "",
+            "prose {\"result\":\"satisfied\",\"explanation\":\"ok\"}",
+            "```json\n{\"result\":\"satisfied\",\"explanation\":\"ok\"}\n```",
+            r#"{"result":"unknown","explanation":"x"}"#,
+            r#"{"result":"satisfied"}"#,
+            r#"{"result":"satisfied","explanation":""}"#,
+            r#"{"result":"satisfied","explanation":"x","extra":true}"#,
+        ] {
+            assert!(
+                parse_grade(reply).is_err(),
+                "unexpectedly accepted {reply:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn keyword_grader_uses_only_the_evaluated_message_range() {
+        let input = GradingInput {
+            outcome_id: Id("o".into()),
+            iteration: 0,
+            description: "ship".into(),
+            rubric: Rubric("PASS".into()),
+            transcript: vec![
+                Message::text(MessageId("old".into()), Role::Assistant, "PASS"),
+                Message::text(MessageId("new".into()), Role::Assistant, "not yet"),
+            ],
+            message_start: 1,
+            message_end: 2,
+            worker_state: serde_json::json!({}),
+            evidence: Vec::new(),
+        };
+        assert_eq!(
+            KeywordGrader.grade(&input).await.unwrap().decision,
+            GradeDecision::NeedsRevision
+        );
     }
 }

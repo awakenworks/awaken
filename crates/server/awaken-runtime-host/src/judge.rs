@@ -10,7 +10,12 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+use awaken_agent_contract::agent::run::{EndCause, RunState};
 use awaken_ext_builtin_tools::{AGENT_RUN, AgentRunArgs};
+use awaken_ext_goal::outcome::{
+    Grader as OutcomeGrader, GraderError as OutcomeGraderError, GradingInput, parse_grade,
+};
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::resolved::ModelBinding;
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
@@ -18,6 +23,9 @@ use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
 use awaken_sandbox_local::LocalProvider;
 
 use crate::agent_catalog::AgentCatalog;
+use crate::host::SharedHost;
+use crate::outcome_state::{grader_run_id, grader_thread_id};
+use crate::run_exec::{Continuity, RunPurpose, SnapshotRunRequest};
 
 /// Default judge instructions. The outcome loop supplies the goal, rubric, and
 /// deliverable in the prompt; the judge returns a JSON verdict the grader parses.
@@ -39,6 +47,85 @@ pub fn default_judge_agent(
         .model(ModelBinding::new("default", model_ref, "default"))
         .max_steps(2)
         .build()
+}
+
+/// Direct Agent-backed Grader. It executes the pinned Judge snapshot through the
+/// same backend-neutral Run boundary as a user turn, on a deterministic fresh
+/// Thread, then strictly parses the complete final assistant reply.
+#[allow(dead_code)] // Constructed by OutcomeController in ADR-0064 P5.
+pub(crate) struct AgentGrader<'a> {
+    pub(crate) host: &'a SharedHost,
+    pub(crate) snapshot: &'a ExecutableAgentSnapshot,
+}
+
+#[allow(dead_code)] // Called by AgentGrader once P5 wires the controller.
+fn grading_prompt(input: &GradingInput) -> Result<String, OutcomeGraderError> {
+    serde_json::to_string(input)
+        .map(|payload| {
+            format!(
+                "Evaluate this Outcome input against its rubric. Return ONLY the required JSON object.\n{payload}"
+            )
+        })
+        .map_err(|error| OutcomeGraderError::Execution(error.to_string()))
+}
+
+#[async_trait::async_trait]
+impl OutcomeGrader for AgentGrader<'_> {
+    async fn grade(
+        &self,
+        input: &GradingInput,
+    ) -> Result<awaken_ext_goal::outcome::Grade, OutcomeGraderError> {
+        if input.message_start > input.message_end || input.message_end > input.transcript.len() {
+            return Err(OutcomeGraderError::Execution(
+                "evaluated message range is outside the committed transcript".into(),
+            ));
+        }
+        let thread_id = grader_thread_id(&input.outcome_id, input.iteration);
+        let ctx = self
+            .host
+            .ctx_for(&thread_id.0, None)
+            .await
+            .map_err(|error| OutcomeGraderError::Execution(error.to_string()))?;
+        let result = self
+            .host
+            .execute_snapshot(
+                &ctx,
+                SnapshotRunRequest {
+                    run_id: Some(grader_run_id(&input.outcome_id, input.iteration)),
+                    thread_id,
+                    snapshot: self.snapshot.clone(),
+                    input: vec![Message::text(
+                        MessageId(format!(
+                            "outcome/{}/grader/{}/input",
+                            input.outcome_id.0, input.iteration
+                        )),
+                        Role::User,
+                        grading_prompt(input)?,
+                    )],
+                    continuity: Continuity::Fresh,
+                    purpose: RunPurpose::OutcomeGrader,
+                    model_ref_override: None,
+                    supersede: false,
+                    sink: None,
+                },
+            )
+            .await
+            .map_err(|error| OutcomeGraderError::Execution(error.to_string()))?;
+        if result.state != RunState::Ended(EndCause::NaturalEnd) {
+            return Err(OutcomeGraderError::Execution(format!(
+                "Judge Run ended in {:?}",
+                result.state
+            )));
+        }
+        let reply = result
+            .new_messages
+            .iter()
+            .rev()
+            .find(|message| message.role == Role::Assistant)
+            .map(Message::text_content)
+            .ok_or_else(|| OutcomeGraderError::InvalidOutput("Judge returned no reply".into()))?;
+        parse_grade(&reply)
+    }
 }
 
 /// Ordinary Agent-backed tool used by the judge, compactor, and memory selector.
@@ -91,6 +178,47 @@ impl RawTool for HostAgentTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_ext_goal::outcome::{GradeDecision, Id, Rubric};
+    use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse};
+    use std::sync::Mutex;
+
+    struct FixedJudge {
+        reply: String,
+        requests: Mutex<Vec<ChatRequest>>,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmExecutor for FixedJudge {
+        async fn infer(
+            &self,
+            request: ChatRequest,
+        ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+            self.requests.lock().unwrap().push(request);
+            Ok(ChatResponse {
+                output: AssistantOutput::text(self.reply.clone()),
+                usage: None,
+                stop_reason: None,
+            })
+        }
+    }
+
+    fn grading_input() -> GradingInput {
+        GradingInput {
+            outcome_id: Id("agent-grade".into()),
+            iteration: 0,
+            description: "ship".into(),
+            rubric: Rubric("all tests pass".into()),
+            transcript: vec![Message::text(
+                MessageId("worker-answer".into()),
+                Role::Assistant,
+                "done",
+            )],
+            message_start: 0,
+            message_end: 1,
+            worker_state: serde_json::json!({"version": 2}),
+            evidence: Vec::new(),
+        }
+    }
 
     #[test]
     fn default_judge_agent_carries_its_id_and_instructions() {
@@ -99,5 +227,54 @@ mod tests {
         assert!(cfg.resolved_spec.instructions.contains("strict evaluator"));
         // A judge is pure reasoning: no tools.
         assert!(cfg.resolved_spec.tool_descriptors.is_empty());
+    }
+
+    #[tokio::test]
+    async fn agent_grader_executes_a_fresh_toolless_run_and_parses_exact_json() {
+        let model = Arc::new(FixedJudge {
+            reply: r#"{"result":"needs_revision","explanation":"add coverage"}"#.into(),
+            requests: Mutex::new(Vec::new()),
+        });
+        let host = SharedHost::new(model.clone(), "stub");
+        let snapshot = default_judge_agent("stub", "judge", DEFAULT_JUDGE_INSTRUCTIONS);
+        let grade = AgentGrader {
+            host: &host,
+            snapshot: &snapshot,
+        }
+        .grade(&grading_input())
+        .await
+        .unwrap();
+
+        assert_eq!(grade.decision, GradeDecision::NeedsRevision);
+        assert_eq!(grade.explanation, "add coverage");
+        let requests = model.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].tools.is_empty());
+        assert!(
+            requests[0]
+                .messages
+                .iter()
+                .any(|message| message.content.iter().any(|block| {
+                    matches!(block, awaken_agent_contract::agent::content::ContentBlock::Text { text } if text.contains("all tests pass"))
+                }))
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_grader_rejects_prose_wrapped_json() {
+        let model = Arc::new(FixedJudge {
+            reply: r#"Result: {"result":"satisfied","explanation":"ok"}"#.into(),
+            requests: Mutex::new(Vec::new()),
+        });
+        let host = SharedHost::new(model, "stub");
+        let snapshot = default_judge_agent("stub", "judge", DEFAULT_JUDGE_INSTRUCTIONS);
+        let error = AgentGrader {
+            host: &host,
+            snapshot: &snapshot,
+        }
+        .grade(&grading_input())
+        .await
+        .unwrap_err();
+        assert!(matches!(error, OutcomeGraderError::InvalidOutput(_)));
     }
 }

@@ -24,6 +24,7 @@ use crate::capture::CaptureDecision;
 use crate::data_subject::{CaptureSink, DataSubjectId};
 use crate::live_inbox::LiveInbox;
 use crate::pause::PauseSignal;
+use crate::permission::ToolPermissionPolicy;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
 
 /// The content-capture wiring for one attempt (ADR-0050): the resolved decision
@@ -75,6 +76,10 @@ pub struct RuntimeRunContext {
     /// present routes every already-gated call through this port — e.g. a remote
     /// hand. The kernel never learns placement; it calls the port either way.
     pub tool_executor: Option<Arc<dyn crate::tool::ToolExecutor>>,
+    /// Optional per-Run narrowing of the backend's tool permission authority.
+    /// External runtimes use this for purpose-specific fail-closed overlays; it
+    /// may restrict the configured policy but is never a capability grant.
+    pub tool_permission_policy: Option<Arc<dyn ToolPermissionPolicy>>,
     /// The model executor to use for THIS attempt, overriding the runtime's bound
     /// default. Absent means use the runtime's session-resolved executor. Present
     /// routes this attempt's inference through the given executor — the run's model,
@@ -188,6 +193,12 @@ impl RuntimeRunContext {
     #[must_use]
     pub fn with_tool_executor(mut self, executor: Arc<dyn crate::tool::ToolExecutor>) -> Self {
         self.tool_executor = Some(executor);
+        self
+    }
+
+    #[must_use]
+    pub fn with_tool_permission_policy(mut self, policy: Arc<dyn ToolPermissionPolicy>) -> Self {
+        self.tool_permission_policy = Some(policy);
         self
     }
 
