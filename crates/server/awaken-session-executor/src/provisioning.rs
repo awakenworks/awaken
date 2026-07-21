@@ -47,14 +47,14 @@ pub(crate) struct StagedResources {
 }
 
 /// A staged github_repository: cloned host-side into the jailed `logical` path and
-/// pushed back on harvest. The `token` is the host-held GitHub PAT, used only on the
-/// git transport — it never enters the sandbox jail.
+/// pushed back on harvest. `credential` is materialized at the runtime injection
+/// seam, used only on host transports, and never enters the sandbox jail.
 #[derive(Clone)]
 pub(crate) struct RepoStage {
     pub logical: String,
     pub url: String,
     pub git_ref: Option<String>,
-    pub token: Option<awaken_agent_contract::RedactedString>,
+    pub credential: Option<awaken_agent_contract::RedactedString>,
     pub access: pc::MountAccess,
 }
 
@@ -283,7 +283,7 @@ impl SharedHost {
                     &repo.logical,
                     &repo.url,
                     repo.git_ref.as_deref(),
-                    repo.token.as_ref().map(|t| t.expose_secret()),
+                    repo.credential.as_ref().map(|value| value.expose_secret()),
                 )
                 .map_err(|e| crate::host::HostError::internal(e.to_string()))?;
         }
@@ -335,7 +335,7 @@ impl SharedHost {
             }
             let _ = env.push_repo(
                 &repo.logical,
-                repo.token.as_ref().map(|t| t.expose_secret()),
+                repo.credential.as_ref().map(|value| value.expose_secret()),
             );
         }
     }
@@ -587,7 +587,7 @@ mod provisioning_registry_tests {
             logical: logical.to_string(),
             url: "https://example.invalid/x.git".to_string(),
             git_ref: None,
-            token: None,
+            credential: None,
             access: pc::MountAccess::ReadWrite,
         }
     }
@@ -665,7 +665,7 @@ mod provisioning_registry_tests {
                     logical: "../escape".into(),
                     url: "https://example.invalid/x.git".into(),
                     git_ref: None,
-                    token: None,
+                    credential: None,
                     access: pc::MountAccess::ReadWrite,
                 }],
                 ..Default::default()
