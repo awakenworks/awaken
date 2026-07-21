@@ -1277,7 +1277,6 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-work-store",
         "awaken-session-store",
         "awaken-env-store",
-        "awaken-config-store",
         # The config-authoring plane, extracted to a shared crate; the host re-exports
         # it (config service + routers + resolver + tool catalog) for the composition
         # root while depending on it like any other config-domain crate.
@@ -1299,12 +1298,10 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "async-trait",
         "axum",
         "serde",
-        # Durable ManagedSessionRepository backends (sqlite + postgres) over the
-        # `managed` scoped-migration bundle; the SQL drivers + the shared migrator.
+        # SQL drivers still used by the legacy skill importer and Postgres commit
+        # integration tests. Migration bundles belong to the extracted stores.
         "rusqlite",
         "sqlx",
-        "awaken-scoped-migration",
-        "awaken-scoped-migration-sqlite",
         "tempfile",
         "base64",
         "form_urlencoded",
