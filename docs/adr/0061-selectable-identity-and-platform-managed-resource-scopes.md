@@ -141,10 +141,9 @@ fenced against that authority.
   the generated/persisted platform Workspace, but those fallbacks must become a
   required scope input or fail closed before the individual routers are claimed
   safe for arbitrary multi-tenant embedding.
-- Skill object/version persistence is durable, but complete bundle
-  materialization and runtime enforcement of `allowed_tools` remain the separate
-  runtime capability-policy slice recorded by ADR-0036. IAM ownership checks do
-  not substitute for that execution permission gate.
+- Legacy `resource-api.db::skill_records` and V1 current-`SKILL.md` rows are
+  imported idempotently into the single Skill aggregate repository. New writes
+  no longer maintain an API-local registry.
 - The awaken-iam whole-profile lifecycle described above must land before
   action/scope rules can be replaced and rolled back as one centrally managed
   unit.
@@ -174,5 +173,7 @@ Workspace targets.
 
 Skill `allowed_tools` is enforced after the platform tool gate as a session-local
 monotonic intersection. It can only remove authority and can never grant or
-restore a tool denied by IAM/platform policy. Full bundle materialization remains
-content delivery and sandbox packaging work; it is not an authorization bypass.
+restore a tool denied by IAM/platform policy. Complete binary-safe bundles are
+now hash-verified and materialized under the Session's `.skills` tree from the
+exact version frozen in `ResolvedSessionResources`; that content operation is not
+an authorization bypass.

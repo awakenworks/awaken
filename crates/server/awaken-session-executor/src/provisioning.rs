@@ -373,7 +373,7 @@ impl SharedHost {
     ) {
         for skill in env.scan_skill_dir(crate::skills::DEFAULT_SKILLS_SUBDIR) {
             self.skills
-                .store_put_in(workspace, &skill.id, &skill.content)
+                .persist_authored(workspace, &skill.id, &skill.content)
                 .await;
         }
     }
@@ -629,10 +629,21 @@ mod provisioning_registry_tests {
 
         // The catalog is empty until the run-authored skill is harvested; after harvest it
         // holds the skill, addressable for delivery to the next session.
-        assert!(host.skills.store_list().await.is_empty());
+        assert!(
+            host.skills
+                .definitions(host.local_workspace())
+                .await
+                .is_empty()
+        );
         host.persist_authored_skills(host.local_workspace(), &env)
             .await;
-        let ids = host.skills.store_list().await;
+        let ids = host
+            .skills
+            .definitions(host.local_workspace())
+            .await
+            .into_iter()
+            .map(|definition| definition.id)
+            .collect::<Vec<_>>();
         assert!(
             ids.iter().any(|id| id.contains("notes")),
             "the authored skill must be persisted to the durable catalog: {ids:?}"
@@ -650,31 +661,32 @@ mod provisioning_registry_tests {
         let dir = std::env::temp_dir().join(format!("awaken-skillid-{}", std::process::id()));
         let host = SharedHost::new(Arc::new(NoLlm), "test").with_skill_store(dir.join("store"));
         host.skills
-            .store_put(
+            .persist_authored(
+                host.local_workspace(),
                 "Greeter",
                 "---\nname: Greeter\ndescription: hi\n---\nsay hi",
             )
             .await;
 
-        let cid = awaken_skill_store::catalog_id("Greeter");
+        let cid = "Greeter".to_string();
         let advertised = host.skills.ids();
         assert!(
             advertised.contains(&cid),
-            "advertisement {advertised:?} must offer the catalog id {cid}"
-        );
-        assert!(
-            !advertised.iter().any(|s| s == "Greeter"),
-            "the raw skill name must not be advertised as a skill_id"
+            "advertisement {advertised:?} must offer the stable resource id {cid}"
         );
 
-        let (_stem, content) = host
+        let version = host
             .skills
-            .by_catalog_id(&cid)
-            .expect("the advertised catalog id must resolve to the skill");
-        assert!(content.contains("say hi"));
+            .cache_snapshot_in(host.local_workspace())
+            .into_iter()
+            .find(|version| version.skill_id == cid)
+            .expect("the advertised resource id must resolve to the Skill version");
+        assert!(version.skill_md().unwrap().ends_with(b"say hi"));
         assert!(
             host.skills
-                .by_catalog_id("skill_deadbeefdeadbeef")
+                .cache_snapshot_in(host.local_workspace())
+                .into_iter()
+                .find(|version| version.skill_id == "skill_deadbeefdeadbeef")
                 .is_none()
         );
 

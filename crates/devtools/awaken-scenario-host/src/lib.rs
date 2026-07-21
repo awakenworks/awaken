@@ -102,29 +102,11 @@ const FAKE_ACP_SCRIPT: &str = "read _p; \
 /// A router with out-of-band memory extraction + bounded recall (the memory
 /// e2e): after each turn the extractor sub-run saves a memory, and later
 /// sessions see it injected request-only by the recall plugin.
-/// `AWAKEN_MODEL_MODE=memory`; the store lives under `AWAKEN_MEMORY_DIR` (a
-/// fresh temp dir when unset).
+/// `AWAKEN_MODEL_MODE=memory`; the caller must create and attach a governed
+/// MemoryStore resource to each participating Session.
 pub fn build_memory_router() -> Router {
-    // The extraction store's durable root: an explicit `AWAKEN_MEMORY_DIR` override
-    // wins; otherwise it lives under the standard `AWAKEN_STORAGE_DIR` (so memory is
-    // governed by the same durable root as every other piece of committed state and
-    // survives a restart); only with neither set does it fall back to a per-process
-    // temp dir (ephemeral).
-    let mem_dir = std::env::var("AWAKEN_MEMORY_DIR")
-        .ok()
-        .map(std::path::PathBuf::from)
-        .or_else(|| {
-            std::env::var("AWAKEN_STORAGE_DIR")
-                .ok()
-                .filter(|v| !v.is_empty())
-                .map(awaken_memory_store::memory_scope_root)
-        })
-        .unwrap_or_else(|| {
-            std::env::temp_dir().join(format!("awaken-memory-e2e-{}", std::process::id()))
-        });
-    std::fs::create_dir_all(&mem_dir).expect("create memory dir");
     let (model, model_ref) = scenario_model(Arc::new(MemoryProbeModel), "memory");
-    let host = SharedHost::new(model, model_ref).with_memory(mem_dir);
+    let host = SharedHost::new(model, model_ref);
     mount(Arc::new(host))
 }
 
@@ -160,24 +142,9 @@ pub fn build_git_repo_router() -> Router {
 /// `EchoModel` is only the non-http fallback, never run by the e2e).
 /// `AWAKEN_MODEL_MODE=full-chain` with `AWAKEN_MODEL_SOURCE=http`.
 pub fn build_full_chain_router() -> Router {
-    let mem_dir = std::env::var("AWAKEN_MEMORY_DIR")
-        .ok()
-        .map(std::path::PathBuf::from)
-        .or_else(|| {
-            std::env::var("AWAKEN_STORAGE_DIR")
-                .ok()
-                .filter(|v| !v.is_empty())
-                .map(awaken_memory_store::memory_scope_root)
-        })
-        .unwrap_or_else(|| {
-            std::env::temp_dir().join(format!("awaken-fullchain-e2e-{}", std::process::id()))
-        });
-    std::fs::create_dir_all(&mem_dir).expect("create memory dir");
     let greet = SkillSpec::new("greet", "Greet", "say hello", "GREETING-FROM-SKILL");
     let (model, model_ref) = scenario_model(Arc::new(EchoModel), "full-chain");
-    let host = SharedHost::new(model, model_ref)
-        .with_memory(mem_dir)
-        .with_skills(vec![greet]);
+    let host = SharedHost::new(model, model_ref).with_skills(vec![greet]);
     mount(Arc::new(host))
 }
 
@@ -1358,11 +1325,17 @@ impl LlmExecutor for SkillDrivingModel {
                 arguments: serde_json::json!({}),
             }]),
             Role::Tool if last_text.contains("\"skills\"") => {
-                // The catalog came back — activate the offered `greet` skill.
+                // The catalog came back — activate the id it actually advertised.
+                // This keeps the fixture valid for both a legacy `greet` id and the
+                // official multipart API's tagged catalog id.
+                let skill = serde_json::from_str::<serde_json::Value>(&last_text)
+                    .ok()
+                    .and_then(|value| value["skills"][0]["id"].as_str().map(str::to_string))
+                    .unwrap_or_else(|| "greet".to_string());
                 AssistantOutput::from_tool_calls(vec![ToolCall {
                     call_id: "s".into(),
                     tool_id: "Skill".into(),
-                    arguments: serde_json::json!({ "skill": "greet" }),
+                    arguments: serde_json::json!({ "skill": skill }),
                 }])
             }
             Role::Tool => AssistantOutput::text(format!("USED-SKILL: {last_text}")),
@@ -1500,7 +1473,7 @@ pub async fn build_config_router() -> Router {
             awaken_config_store::DEFAULT_SCOPE,
             // The scenario host has no durable resource store in scope; an in-memory one
             // satisfies the port so the assistant can bind resources onto a draft.
-            Arc::new(awaken_config_resolver::InMemoryResourceStore::new()),
+            Arc::new(awaken_config_resolver::InMemoryAgentInputBindingRepository::new()),
         )),
         // A fresh in-memory environment registry satisfies the author port for the
         // scenario host (no durable env state in scope).

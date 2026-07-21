@@ -71,7 +71,7 @@ struct ManagementStores {
     secrets: Arc<dyn awaken_credential_vault::SecretStore>,
     profiles: Arc<dyn awaken_admin_config_api::InferenceProfileStore>,
     mcp: Arc<dyn awaken_admin_config_api::McpStore>,
-    resources: Arc<dyn awaken_config_resolver::ResourceStore>,
+    resources: Arc<dyn awaken_config_resolver::AgentInputBindingRepository>,
     resource_catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
     /// Authored webhook endpoints (ADR-0048), an id-addressed config resource beside
     /// profiles/MCP — the same admin store, a distinct port.
@@ -136,7 +136,7 @@ fn in_memory_management_stores() -> ManagementStores {
         secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
         profiles: Arc::new(awaken_admin_config_api::InMemoryProfileStore::new()),
         mcp: Arc::new(awaken_admin_config_api::InMemoryMcpStore::new()),
-        resources: Arc::new(awaken_admin_config_api::InMemoryResourceStore::new()),
+        resources: Arc::new(awaken_admin_config_api::InMemoryAgentInputBindingRepository::new()),
         resource_catalog: Arc::new(awaken_config_resolver::InMemoryResourceCatalog::new()),
         webhooks: Arc::new(awaken_admin_config_api::InMemoryWebhookStore::new()),
         sessions: Arc::new(awaken_protocol_managed::InMemorySessionRepository::default()),
@@ -292,7 +292,7 @@ async fn open_management_stores(
     let admin_profiles: Arc<dyn awaken_admin_config_api::InferenceProfileStore>;
     let admin_mcp: Arc<dyn awaken_admin_config_api::McpStore>;
     let admin_webhooks: Arc<dyn awaken_admin_config_api::WebhookStore>;
-    let admin_resources: Arc<dyn awaken_config_resolver::ResourceStore>;
+    let admin_resources: Arc<dyn awaken_config_resolver::AgentInputBindingRepository>;
     let admin_catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>;
     match &cfg.admin {
         StoreBackend::Sqlite(p) => {

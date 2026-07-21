@@ -186,7 +186,7 @@ pub struct SessionInit {
     /// The session's mounted resources (ADR-0038), parsed from the wire `resources[]`:
     /// files, memory stores, repos. The host realizes each into the run's sandbox and
     /// appends a prompt fragment to the system prompt (A3a). Empty = no mounts.
-    pub resources: crate::EffectiveSessionInputs,
+    pub resources: crate::ResolvedSessionResources,
     /// The session's requested model (R2), staged so the run binds it; `None` →
     /// the host default.
     pub model: Option<String>,
@@ -326,6 +326,17 @@ pub trait SessionRuntime: Send + Sync {
         Ok(())
     }
 
+    /// Resolve the current versions of already-authorized Skill resource ids once
+    /// at Session creation. The implementation receives only a trusted Workspace
+    /// and resource ids; it performs no principal/role/policy decision.
+    async fn resolve_session_skills(
+        &self,
+        _workspace_id: &str,
+        _skill_ids: &[String],
+    ) -> Result<Vec<crate::ResolvedSkillBinding>, RunError> {
+        Ok(Vec::new())
+    }
+
     /// Rebind `thread` to `model` for its subsequent turns (R5, per-turn override).
     /// The default is a no-op, so a host without per-thread model routing is
     /// unaffected; the server impl re-stages the thread's model and evicts the
@@ -341,7 +352,7 @@ pub trait SessionRuntime: Send + Sync {
         &self,
         _thread: &str,
         _workspace_id: &str,
-        _inputs: &crate::EffectiveSessionInputs,
+        _inputs: &crate::ResolvedSessionResources,
     ) -> Result<(), RunError> {
         Ok(())
     }
@@ -656,7 +667,7 @@ mod tests {
             workspace_id: "ws_test".into(),
             agent_id: "a".into(),
             mcp_servers: Vec::new(),
-            resources: crate::EffectiveSessionInputs::default(),
+            resources: crate::ResolvedSessionResources::default(),
             model: None,
             runtime: None,
             deny_egress: false,

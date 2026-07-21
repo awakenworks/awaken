@@ -18,6 +18,9 @@ use std::time::Duration;
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::RunState;
+use awaken_protocol_managed::resource_plane::{
+    ConfigVersion, MemoryStoreConfigVersion, ResourceAccess,
+};
 use awaken_provider_genai::GenaiExecutor;
 use awaken_server::SharedHost;
 
@@ -34,20 +37,26 @@ fn user(text: &str) -> Vec<Message> {
     vec![Message::text(MessageId("u".into()), Role::User, text)]
 }
 
-fn tmp_dir(tag: &str) -> std::path::PathBuf {
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    std::env::temp_dir().join(format!("awaken-e2e-{tag}-{stamp}"))
+fn bind_memory(host: &SharedHost, thread: &str, store: &str) {
+    host.bind_resolved_memory(
+        thread,
+        &MemoryStoreConfigVersion {
+            memory_store_id: store.into(),
+            version: ConfigVersion::INITIAL,
+            recall_policy: Default::default(),
+            extraction_policy: Default::default(),
+            retention_policy: Default::default(),
+        },
+        ResourceAccess::ReadWrite,
+    );
 }
 
 #[tokio::test]
 #[ignore = "hits a live model endpoint; run with KIMI_API_KEY set and --ignored"]
 async fn live_memory_extraction_writes_a_memory_file() {
     let (host, _model) = live_host().expect("set KIMI_API_KEY to run this test");
-    let mem_dir = tmp_dir("mem");
-    let host = host.with_memory(&mem_dir);
+    let store = "live-memory-extraction";
+    bind_memory(&host, "mem-e2e", store);
 
     // A turn stating a clear, durable preference the extractor should save.
     let state = host
@@ -66,17 +75,20 @@ async fn live_memory_extraction_writes_a_memory_file() {
         "memory extraction should finish"
     );
 
-    let files: Vec<_> = std::fs::read_dir(&mem_dir)
-        .map(|rd| rd.filter_map(|e| e.ok()).map(|e| e.path()).collect())
-        .unwrap_or_default();
+    let files = host.memory_fs().list(store, "/").await.unwrap();
     assert!(
         !files.is_empty(),
-        "the extractor should have written at least one memory file in {}",
-        mem_dir.display()
+        "the extractor should have written at least one governed memory"
     );
     let mut combined = String::new();
-    for f in &files {
-        combined.push_str(&std::fs::read_to_string(f).unwrap_or_default());
+    for file in &files {
+        let memory = host
+            .memory_fs()
+            .get_by_path(store, &file.path)
+            .await
+            .unwrap()
+            .unwrap();
+        combined.push_str(memory.content.as_deref().unwrap_or_default());
         combined.push('\n');
     }
     eprintln!("live memory files: {files:?}\n---\n{combined}\n---");
@@ -95,8 +107,9 @@ async fn live_memory_extraction_writes_a_memory_file() {
 #[ignore = "hits a live model endpoint; run with KIMI_API_KEY set and --ignored"]
 async fn live_memory_is_generated_then_recalled_and_used_in_a_new_conversation() {
     let (host, _model) = live_host().expect("set KIMI_API_KEY to run this test");
-    let mem_dir = tmp_dir("loop");
-    let host = host.with_memory(&mem_dir);
+    let store = "live-memory-loop";
+    bind_memory(&host, "conv-1", store);
+    bind_memory(&host, "conv-2", store);
 
     // Conversation 1: the user states a durable preference; extraction saves it.
     host.run(None, "conv-1",
@@ -108,13 +121,7 @@ async fn live_memory_is_generated_then_recalled_and_used_in_a_new_conversation()
         host.drain_memory(Duration::from_secs(90)).await,
         "memory extraction should finish"
     );
-    let files: Vec<_> = std::fs::read_dir(&mem_dir)
-        .map(|rd| {
-            rd.filter_map(|e| e.ok())
-                .map(|e| e.path())
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+    let files = host.memory_fs().list(store, "/").await.unwrap();
     assert!(!files.is_empty(), "a memory should have been generated");
 
     // Conversation 2 (a fresh thread, no shared transcript): the saved memory is
@@ -143,8 +150,7 @@ async fn live_memory_is_generated_then_recalled_and_used_in_a_new_conversation()
 #[ignore = "hits a live model endpoint; run with KIMI_API_KEY set and --ignored"]
 async fn live_relevance_selection_picks_the_right_memory_via_the_selector_agent() {
     let (host, _model) = live_host().expect("set KIMI_API_KEY to run this test");
-    let mem_dir = tmp_dir("select");
-    std::fs::create_dir_all(&mem_dir).unwrap();
+    let store = "live-memory-selection";
 
     // Pre-populate MORE than the recall `select_over` threshold (12) so the recall
     // hook uses the relevance selector (a `memory-selector` sub-agent), not the
@@ -164,11 +170,16 @@ async fn live_relevance_selection_picks_the_right_memory_via_the_selector_agent(
         "the user enjoys cooking pasta",
     ];
     for (i, n) in noise.iter().enumerate() {
-        std::fs::write(mem_dir.join(format!("noise-{i}.md")), n).unwrap();
+        host.memory_fs()
+            .create(store, &format!("/noise-{i}.md"), n)
+            .await
+            .unwrap();
     }
-    std::fs::write(mem_dir.join("pet.md"), "the user's dog is named Rex").unwrap();
-
-    let host = host.with_memory(&mem_dir);
+    host.memory_fs()
+        .create(store, "/pet.md", "the user's dog is named Rex")
+        .await
+        .unwrap();
+    bind_memory(&host, "select-e2e", store);
 
     // A pointed question: the selector sub-agent must pick the dog memory out of 13,
     // and the main model must answer from it.

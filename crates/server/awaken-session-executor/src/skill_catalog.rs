@@ -10,7 +10,8 @@
 use std::sync::{Arc, Mutex};
 
 use awaken_ext_skills::SkillSpec;
-use awaken_skill_store::SkillStore;
+use awaken_protocol_managed::ResolvedSkillBinding;
+use awaken_skill_store::{SkillDefinition, SkillStore, SkillStoreError, SkillVersion};
 
 /// Skills offered on every thread, plus the durable delivered-catalog and its
 /// synchronous read cache. See the module docs for the coherence invariant.
@@ -20,17 +21,17 @@ pub(crate) struct SkillCatalog {
     /// single `Skill` tool; the model activates one by id to load its instructions.
     specs: Vec<SkillSpec>,
     /// An optional durable delivered-skill catalog (resources plane). When set, its
-    /// `SKILL.md`s are offered alongside the static `specs` and survive a restart, so
+    /// immutable versions are offered alongside the static `specs` and survive a restart, so
     /// a catalog configured through `/v1/skills` outlives the process. The host reads
     /// the bytes and feeds them to the extension's `SkillSource`, so the runtime stays
     /// store-unaware.
     store: Option<Arc<dyn SkillStore>>,
-    /// In-memory snapshot of the delivered catalog `(id, content)`, read
+    /// In-memory snapshot of the latest delivered versions, read
     /// *synchronously* by the capability advertisement (`ids`) and the run-loop
     /// `SkillSource` scan — refreshed from the async `store` on a write and at each
     /// session's setup (`reload_cache`). This is how a network-DB (async) catalog
     /// serves the host's sync read paths.
-    cache: Mutex<std::collections::BTreeMap<String, Vec<(String, String)>>>,
+    cache: Mutex<std::collections::BTreeMap<String, Vec<SkillVersion>>>,
 }
 
 impl SkillCatalog {
@@ -69,64 +70,207 @@ impl SkillCatalog {
         self.store.is_some()
     }
 
-    /// Store (or overwrite) a delivered skill's `SKILL.md` `content` under `id` in the
-    /// durable catalog, returning the safe id it is addressable by. `None` when this
-    /// host has no durable skill store wired (nothing to persist into).
-    #[cfg(test)]
-    pub(crate) async fn store_put(&self, id: &str, content: &str) -> Option<String> {
-        self.store_put_in(&self.local_workspace, id, content).await
+    pub(crate) async fn create(
+        &self,
+        definition: SkillDefinition,
+        initial_version: SkillVersion,
+    ) -> Option<Result<(), SkillStoreError>> {
+        let store = self.store.as_ref()?;
+        let workspace = definition.workspace_id.clone();
+        let result = store.create(definition, initial_version).await;
+        if result.is_ok() {
+            self.reload_cache_in(&workspace).await;
+        }
+        Some(result)
     }
 
-    pub(crate) async fn store_put_in(
+    pub(crate) async fn append_version(
         &self,
         workspace: &str,
         id: &str,
-        content: &str,
-    ) -> Option<String> {
+        version: SkillVersion,
+    ) -> Option<Result<(), SkillStoreError>> {
         let store = self.store.as_ref()?;
-        let out = store
-            .put(workspace, id, content)
-            .await
-            .expect("persist durable skill");
-        // Keep the sync-read cache current for advertisement + scan.
-        self.reload_cache_in(workspace).await;
-        Some(out)
+        let result = store.append_version(workspace, id, version).await;
+        if result.is_ok() {
+            self.reload_cache_in(workspace).await;
+        }
+        Some(result)
     }
 
-    /// The ids currently in the durable skill catalog (read straight from the store,
-    /// so the CRUD `list` reflects any peer node's writes). Empty when no store is
-    /// wired.
-    #[cfg(test)]
-    pub(crate) async fn store_list(&self) -> Vec<String> {
-        self.store_list_in(&self.local_workspace).await
-    }
-
-    pub(crate) async fn store_list_in(&self, workspace: &str) -> Vec<String> {
-        match self.store.as_ref() {
-            Some(store) => store
-                .list(workspace)
+    /// Persist one agent-authored `SKILL.md` as an immutable resource version.
+    /// Re-harvesting identical bytes is a no-op; changed bytes append exactly one
+    /// version. The caller already supplies the trusted Workspace scope.
+    pub(crate) async fn persist_authored(
+        &self,
+        workspace: &str,
+        raw_id: &str,
+        content: &str,
+    ) -> Option<Result<(), SkillStoreError>> {
+        let store = self.store.as_ref()?;
+        let id = awaken_skill_store::sanitize_stem(raw_id);
+        let existing = match store.definition(workspace, &id).await {
+            Ok(value) => value,
+            Err(error) => return Some(Err(error)),
+        };
+        let next = existing
+            .as_ref()
+            .map_or(1, |definition| definition.latest_version + 1);
+        if let Some(definition) = &existing {
+            match store
+                .version(workspace, &id, definition.latest_version)
                 .await
-                .unwrap_or_default()
-                .into_iter()
-                .map(|(id, _)| id)
-                .collect(),
+            {
+                Ok(Some(latest))
+                    if latest
+                        .skill_md()
+                        .is_some_and(|bytes| bytes == content.as_bytes()) =>
+                {
+                    return Some(Ok(()));
+                }
+                Ok(_) => {}
+                Err(error) => return Some(Err(error)),
+            }
+        }
+        let parsed = awaken_ext_skills::parse_skill_md(&id, content);
+        let files = vec![awaken_skill_store::SkillBundleFile {
+            path: "SKILL.md".into(),
+            content: content.as_bytes().to_vec(),
+        }];
+        let version = SkillVersion {
+            id: format!("skver_{id}_{next}"),
+            skill_id: id.clone(),
+            version: next,
+            name: parsed.name,
+            description: parsed.description,
+            directory: format!("/skills/{id}"),
+            bundle_sha256: awaken_skill_store::bundle_sha256(&files),
+            files,
+        };
+        let result = if existing.is_some() {
+            store.append_version(workspace, &id, version).await
+        } else {
+            store
+                .create(
+                    SkillDefinition {
+                        id,
+                        workspace_id: workspace.to_string(),
+                        display_title: None,
+                        latest_version: 1,
+                        last_version: 1,
+                    },
+                    version,
+                )
+                .await
+        };
+        if result.is_ok() {
+            self.reload_cache_in(workspace).await;
+        }
+        Some(result)
+    }
+
+    pub(crate) async fn definition(
+        &self,
+        workspace: &str,
+        id: &str,
+    ) -> Option<Result<Option<SkillDefinition>, SkillStoreError>> {
+        Some(self.store.as_ref()?.definition(workspace, id).await)
+    }
+
+    pub(crate) async fn definitions(&self, workspace: &str) -> Vec<SkillDefinition> {
+        match self.store.as_ref() {
+            Some(store) => store.list_definitions(workspace).await.unwrap_or_default(),
             None => Vec::new(),
         }
     }
 
-    pub(crate) async fn store_delete_in(&self, workspace: &str, id: &str) -> Option<bool> {
+    pub(crate) async fn versions(
+        &self,
+        workspace: &str,
+        id: &str,
+    ) -> Option<Result<Vec<SkillVersion>, SkillStoreError>> {
+        Some(self.store.as_ref()?.list_versions(workspace, id).await)
+    }
+
+    pub(crate) async fn resolve_latest(
+        &self,
+        workspace: &str,
+        ids: &[String],
+    ) -> Result<Vec<ResolvedSkillBinding>, SkillStoreError> {
+        let store = self
+            .store
+            .as_ref()
+            .ok_or_else(|| SkillStoreError::Storage("no durable Skill repository".into()))?;
+        let mut bindings = Vec::with_capacity(ids.len());
+        for id in ids {
+            let definition = store
+                .definition(workspace, id)
+                .await?
+                .ok_or_else(|| SkillStoreError::NotFound(id.clone()))?;
+            let version = store
+                .version(workspace, id, definition.latest_version)
+                .await?
+                .ok_or_else(|| SkillStoreError::NotFound(id.clone()))?;
+            bindings.push(ResolvedSkillBinding {
+                skill_id: id.clone(),
+                version: version.version,
+                bundle_sha256: version.bundle_sha256,
+            });
+        }
+        Ok(bindings)
+    }
+
+    pub(crate) async fn load_pinned(
+        &self,
+        workspace: &str,
+        bindings: &[ResolvedSkillBinding],
+    ) -> Result<Vec<SkillVersion>, SkillStoreError> {
+        let store = self
+            .store
+            .as_ref()
+            .ok_or_else(|| SkillStoreError::Storage("no durable Skill repository".into()))?;
+        let mut versions = Vec::with_capacity(bindings.len());
+        for binding in bindings {
+            let version = store
+                .version(workspace, &binding.skill_id, binding.version)
+                .await?
+                .ok_or_else(|| SkillStoreError::NotFound(binding.skill_id.clone()))?;
+            if version.bundle_sha256 != binding.bundle_sha256 {
+                return Err(SkillStoreError::Invalid(format!(
+                    "Skill {} version {} hash changed",
+                    binding.skill_id, binding.version
+                )));
+            }
+            versions.push(version);
+        }
+        Ok(versions)
+    }
+
+    pub(crate) async fn delete_version(
+        &self,
+        workspace: &str,
+        id: &str,
+        version: u64,
+    ) -> Option<Result<bool, SkillStoreError>> {
         let store = self.store.as_ref()?;
-        let durable_id = self
-            .cache_snapshot_in(workspace)
-            .into_iter()
-            .find(|(stem, _)| awaken_skill_store::catalog_id(stem) == id || stem == id)
-            .map_or_else(|| id.to_string(), |(stem, _)| stem);
-        let removed = store
-            .delete(workspace, &durable_id)
-            .await
-            .expect("delete durable skill");
-        self.reload_cache_in(workspace).await;
-        Some(removed)
+        let result = store.delete_version(workspace, id, version).await;
+        if result.as_ref().is_ok_and(|removed| *removed) {
+            self.reload_cache_in(workspace).await;
+        }
+        Some(result)
+    }
+
+    pub(crate) async fn delete(
+        &self,
+        workspace: &str,
+        id: &str,
+    ) -> Option<Result<bool, SkillStoreError>> {
+        let store = self.store.as_ref()?;
+        let result = store.delete_skill(workspace, id).await;
+        if result.as_ref().is_ok_and(|removed| *removed) {
+            self.reload_cache_in(workspace).await;
+        }
+        Some(result)
     }
 
     /// Refresh the in-memory delivered-catalog snapshot from the async store. Called
@@ -134,7 +278,16 @@ impl SkillCatalog {
     /// run-loop scan) see the current catalog.
     pub(crate) async fn reload_cache_in(&self, workspace: &str) {
         if let Some(store) = self.store.as_ref() {
-            let snapshot = store.list(workspace).await.unwrap_or_default();
+            let definitions = store.list_definitions(workspace).await.unwrap_or_default();
+            let mut snapshot = Vec::with_capacity(definitions.len());
+            for definition in definitions {
+                if let Ok(Some(version)) = store
+                    .version(workspace, &definition.id, definition.latest_version)
+                    .await
+                {
+                    snapshot.push(version);
+                }
+            }
             self.cache
                 .lock()
                 .expect("skill cache poisoned")
@@ -142,9 +295,9 @@ impl SkillCatalog {
         }
     }
 
-    /// A clone of the cached delivered catalog `(id, content)` — the synchronous read
+    /// A clone of the cached latest versions — the synchronous read
     /// the host's `SkillSource` bridge scans (the run-loop scan cannot await).
-    pub(crate) fn cache_snapshot_in(&self, workspace: &str) -> Vec<(String, String)> {
+    pub(crate) fn cache_snapshot_in(&self, workspace: &str) -> Vec<SkillVersion> {
         self.cache
             .lock()
             .expect("skill cache poisoned")
@@ -168,28 +321,73 @@ impl SkillCatalog {
         // session setup); a network-DB store cannot be awaited from this sync path.
         // A durable skill is advertised by its tagged catalog id (not its name) so the
         // official worker can download it — `/v1/skills` resolves the same id.
-        for (stem, _) in self.cache_snapshot_in(workspace) {
-            let id = awaken_skill_store::catalog_id(&stem);
-            if !ids.contains(&id) {
-                ids.push(id);
+        for version in self.cache_snapshot_in(workspace) {
+            if !ids.contains(&version.skill_id) {
+                ids.push(version.skill_id);
             }
         }
         ids
     }
+}
 
-    /// Resolve an advertised durable-catalog skill id back to its `(stem, content)`.
-    /// Accepts the tagged catalog id (what advertisement + the worker use) and, as a
-    /// courtesy, the raw durable stem. Lets the `/v1/skills` read paths serve any
-    /// advertised id even for skills that never went through the SDK create route
-    /// (harvested / legacy-delivered), where the in-memory registry has no entry.
-    #[cfg(test)]
-    pub(crate) fn by_catalog_id(&self, id: &str) -> Option<(String, String)> {
-        self.by_catalog_id_in(&self.local_workspace, id)
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use awaken_skill_store::{InMemorySkillStore, SkillBundleFile, bundle_sha256};
+
+    fn version(id: &str, ordinal: u64, body: &str) -> SkillVersion {
+        let files = vec![SkillBundleFile {
+            path: "SKILL.md".into(),
+            content: body.as_bytes().to_vec(),
+        }];
+        SkillVersion {
+            id: format!("skver-{id}-{ordinal}"),
+            skill_id: id.into(),
+            version: ordinal,
+            name: id.into(),
+            description: String::new(),
+            directory: format!("/skills/{id}"),
+            bundle_sha256: bundle_sha256(&files),
+            files,
+        }
     }
 
-    pub(crate) fn by_catalog_id_in(&self, workspace: &str, id: &str) -> Option<(String, String)> {
-        self.cache_snapshot_in(workspace)
-            .into_iter()
-            .find(|(stem, _)| awaken_skill_store::catalog_id(stem) == id || stem == id)
+    #[tokio::test]
+    async fn frozen_binding_keeps_v1_after_v2_and_is_workspace_scoped() {
+        let mut catalog = SkillCatalog::new("ws-a".into());
+        catalog.set_store(Arc::new(InMemorySkillStore::new()));
+        catalog
+            .create(
+                SkillDefinition {
+                    id: "greet".into(),
+                    workspace_id: "ws-a".into(),
+                    display_title: None,
+                    latest_version: 1,
+                    last_version: 1,
+                },
+                version("greet", 1, "---\ndescription: v1\n---\nONE"),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+
+        let frozen = catalog
+            .resolve_latest("ws-a", &["greet".into()])
+            .await
+            .unwrap();
+        catalog
+            .append_version(
+                "ws-a",
+                "greet",
+                version("greet", 2, "---\ndescription: v2\n---\nTWO"),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+
+        let loaded = catalog.load_pinned("ws-a", &frozen).await.unwrap();
+        assert_eq!(loaded[0].version, 1);
+        assert!(loaded[0].skill_md().unwrap().ends_with(b"ONE"));
+        assert!(catalog.load_pinned("ws-b", &frozen).await.is_err());
     }
 }

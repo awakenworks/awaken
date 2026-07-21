@@ -20,7 +20,9 @@
 //! The registry ([`SkillRegistry`] / [`InMemorySkillRegistry`]) is the source of
 //! the catalog and activation body. `allowed_tools` is enforced as a
 //! session-local, monotonic restriction after the platform gate; it never grants
-//! a capability. Full sandbox bundle materialization remains a separate slice.
+//! a capability. The Runtime Host composition layer materializes the exact
+//! hash-verified bundle before constructing this extension's registry, keeping
+//! this crate independent of repositories, tenancy, and sandbox implementation.
 
 mod registry;
 mod spec;

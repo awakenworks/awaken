@@ -22,6 +22,10 @@ const FILES: &[(&str, &str)] = &[
         "V0002__memories.sql",
         include_str!("migrations/V0002__memories.sql"),
     ),
+    (
+        "V0003__versions_and_counters.sql",
+        include_str!("migrations/V0003__versions_and_counters.sql"),
+    ),
 ];
 
 /// Version from a `Vnnnn__slug.sql` file name (`V0001__…` ⇒ 1); a non-positive

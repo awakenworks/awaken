@@ -1,8 +1,8 @@
 //! The Skills API (`/v1/skills`, ADR-0036) end-to-end through its real axum router.
 //! Two create paths coexist: the SDK multipart upload (a `SKILL.md` + supporting
 //! files) and the legacy JSON `{id, content}` delivery. Both feed the runtime's
-//! durable delivered-skill catalog; the SDK's richer object + version history lives
-//! in an in-memory registry keyed by skill id.
+//! single durable Skill repository; definitions, versions, and binary bundles share
+//! that one source of truth.
 //!
 //! The in-module unit test already covers the durable-only catalog-id fallback; this
 //! binary drives the untested SDK surface: multipart create, list, retrieve, the
@@ -91,6 +91,19 @@ async fn get(router: &Router, uri: &str) -> (StatusCode, String) {
     (status, String::from_utf8_lossy(&bytes).to_string())
 }
 
+async fn get_bytes(router: &Router, uri: &str) -> (StatusCode, Vec<u8>) {
+    let response = router
+        .clone()
+        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), 8 << 20)
+        .await
+        .unwrap();
+    (status, bytes.to_vec())
+}
+
 async fn delete(router: &Router, uri: &str) -> (StatusCode, Value) {
     let req = Request::builder()
         .method("DELETE")
@@ -113,6 +126,49 @@ async fn read(resp: axum::response::Response) -> (StatusCode, Value) {
 
 const SKILL_V1: &str = "---\nname: Greeter\ndescription: says hi\n---\nsay hello";
 const SKILL_V2: &str = "---\nname: Greeter\ndescription: says hi\n---\nsay HELLO LOUDER";
+
+#[tokio::test]
+async fn multipart_bundle_preserves_binary_support_files() {
+    let (router, dir) = router_with_store();
+    let binary = vec![0, 159, 146, 150, 255];
+    let mut body = multipart_skill(SKILL_V1);
+    let closing = format!("--{BOUNDARY}--\r\n").into_bytes();
+    body.truncate(body.len() - closing.len());
+    body.extend_from_slice(format!("--{BOUNDARY}\r\n").as_bytes());
+    body.extend_from_slice(
+        b"Content-Disposition: form-data; name=\"file\"; filename=\"assets/data.bin\"\r\n",
+    );
+    body.extend_from_slice(b"Content-Type: application/octet-stream\r\n\r\n");
+    body.extend_from_slice(&binary);
+    body.extend_from_slice(b"\r\n");
+    body.extend_from_slice(&closing);
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/skills")
+                .header(
+                    "content-type",
+                    format!("multipart/form-data; boundary={BOUNDARY}"),
+                )
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, created) = read(response).await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    let id = created["id"].as_str().unwrap();
+    let (status, got) = get_bytes(
+        &router,
+        &format!("/v1/skills/{id}/versions/1/files/assets/data.bin"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(got, binary);
+    let _ = std::fs::remove_dir_all(dir);
+}
 
 #[tokio::test]
 async fn sdk_multipart_create_list_retrieve_and_version_lifecycle() {

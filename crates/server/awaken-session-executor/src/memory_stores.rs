@@ -33,10 +33,14 @@ impl MemoryStores {
         let fs: Arc<dyn MemoryFs> = Arc::new(match store_dir {
             Some(dir) => {
                 let db = dir.join("memory_fs.db");
-                awaken_memory_store::SqliteMemoryFs::open(
+                let store = awaken_memory_store::SqliteMemoryFs::open(
                     db.to_str().expect("memory-fs db path is valid UTF-8"),
                 )
-                .expect("open durable memory-fs sqlite store")
+                .expect("open durable memory-fs sqlite store");
+                store
+                    .import_legacy_versions(&dir.join("resource-api.db"))
+                    .expect("import legacy memory version sidecar");
+                store
             }
             // No durable dir → an ephemeral in-memory database (dies with the process).
             None => awaken_memory_store::SqliteMemoryFs::open_in_memory()
