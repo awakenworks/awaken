@@ -59,7 +59,11 @@ async function main() {
     await waitUntil('attempt A to enter provider inference', () => upstream.received >= 1);
 
     const database = `${STORE}/dispatch.db`;
-    execFileSync('sqlite3', [database, "UPDATE runtime_dispatch SET lease_until = 0 WHERE status = 'running'"]);
+    execFileSync(
+      'sqlite3',
+      [database, "PRAGMA busy_timeout=10000; UPDATE runtime_dispatch SET lease_until = 0 WHERE status = 'running'"],
+      { timeout: 15_000 },
+    );
     const recovery = await fetch(`${baseUrl}/v1/durable/threads/${THREAD}/reconcile`, { method: 'POST' });
     const recoveryBody = await recovery.text();
     assert.equal(recovery.status, 200, recoveryBody);
