@@ -10,7 +10,9 @@ use async_trait::async_trait;
 use awaken_agent_channel::AgentChannel;
 use std::time::Duration;
 
-use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
+use tokio::net::{TcpListener, TcpStream};
+#[cfg(unix)]
+use tokio::net::{UnixListener, UnixStream};
 
 use crate::plan::{ConnectionPlan, DialAddr, DialPolicy};
 
@@ -48,10 +50,20 @@ impl ChannelFactory for TokioChannelFactory {
         }
         match &plan.transport {
             DialAddr::Unix(path) => {
-                let stream = UnixStream::connect(path)
-                    .await
-                    .map_err(|e| ConnectError::Io(e.to_string()))?;
-                Ok(Box::new(stream))
+                #[cfg(unix)]
+                {
+                    let stream = UnixStream::connect(path)
+                        .await
+                        .map_err(|e| ConnectError::Io(e.to_string()))?;
+                    Ok(Box::new(stream))
+                }
+                #[cfg(not(unix))]
+                {
+                    let _ = path;
+                    Err(ConnectError::Unsupported(
+                        "unix sockets are not supported on this platform".to_string(),
+                    ))
+                }
             }
             DialAddr::Tcp(addr) => {
                 // Direct topology over the network: the brain dials the hand's
@@ -104,33 +116,54 @@ pub fn in_process_pair() -> (Box<dyn AgentChannel>, Box<dyn AgentChannel>) {
 /// A bound Unix listener that accepts one channel — the hand's side of a Direct
 /// plan, or the brain's side of a Reverse plan.
 pub struct UnixHandListener {
+    #[cfg(unix)]
     listener: UnixListener,
 }
 
 impl UnixHandListener {
     /// Accept one inbound connection.
     pub async fn accept(&self) -> Result<Box<dyn AgentChannel>, ConnectError> {
-        let (stream, _addr) = self
-            .listener
-            .accept()
-            .await
-            .map_err(|e| ConnectError::Io(e.to_string()))?;
-        Ok(Box::new(stream))
+        #[cfg(unix)]
+        {
+            let (stream, _addr) = self
+                .listener
+                .accept()
+                .await
+                .map_err(|e| ConnectError::Io(e.to_string()))?;
+            Ok(Box::new(stream))
+        }
+        #[cfg(not(unix))]
+        {
+            Err(ConnectError::Unsupported(
+                "unix sockets are not supported on this platform".to_string(),
+            ))
+        }
     }
 }
 
 /// Bind a Unix listener for a plan whose transport is [`DialAddr::Unix`]. A stale
 /// socket file at the path is removed best-effort first.
 pub fn bind_unix(plan: &ConnectionPlan) -> Result<UnixHandListener, ConnectError> {
-    match &plan.transport {
-        DialAddr::Unix(path) => {
-            let _ = std::fs::remove_file(path);
-            let listener = UnixListener::bind(path).map_err(|e| ConnectError::Io(e.to_string()))?;
-            Ok(UnixHandListener { listener })
+    #[cfg(unix)]
+    {
+        match &plan.transport {
+            DialAddr::Unix(path) => {
+                let _ = std::fs::remove_file(path);
+                let listener =
+                    UnixListener::bind(path).map_err(|e| ConnectError::Io(e.to_string()))?;
+                Ok(UnixHandListener { listener })
+            }
+            other => Err(ConnectError::Unsupported(format!(
+                "bind_unix requires a Unix transport, got {other:?}"
+            ))),
         }
-        other => Err(ConnectError::Unsupported(format!(
-            "bind_unix requires a Unix transport, got {other:?}"
-        ))),
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = plan;
+        Err(ConnectError::Unsupported(
+            "unix sockets are not supported on this platform".to_string(),
+        ))
     }
 }
 

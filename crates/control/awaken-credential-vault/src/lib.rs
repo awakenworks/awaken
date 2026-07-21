@@ -668,7 +668,7 @@ mod tests {
         // An OAuth source mints its token by running the helper; nothing sealed.
         let store = InMemorySecretStore::new();
         let mut source = bare_source(CredentialKind::Oauth);
-        source.oauth_command = Some(vec!["printf".into(), "ya29.materialized".into()]);
+        source.oauth_command = Some(oauth::test_stdout_command("ya29.materialized"));
         let token = materialize(&source, &store).await.unwrap();
         assert_eq!(token.expose_secret(), "ya29.materialized");
     }
@@ -690,6 +690,7 @@ mod tests {
         // The standard create seam accepts an OAuth source with its helper command,
         // so it round-trips and materializes without direct construction (#5v2).
         let store = InMemorySecretStore::new();
+        let oauth_command = oauth::test_stdout_command("ya29.created");
         let source = create_source(
             CredentialCreateParams {
                 workspace_id: "ws".into(),
@@ -697,7 +698,7 @@ mod tests {
                 provider_id: Some("anthropic".into()),
                 env_key: None,
                 secret: None,
-                oauth_command: Some(vec!["printf".into(), "ya29.created".into()]),
+                oauth_command: Some(oauth_command.clone()),
             },
             &store,
         )
@@ -706,7 +707,7 @@ mod tests {
         assert_eq!(source.kind, CredentialKind::Oauth);
         assert_eq!(
             source.oauth_command.as_deref(),
-            Some(&["printf".to_string(), "ya29.created".to_string()][..])
+            Some(oauth_command.as_slice())
         );
         let token = materialize(&source, &store).await.unwrap();
         assert_eq!(token.expose_secret(), "ya29.created");

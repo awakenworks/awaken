@@ -26,6 +26,63 @@ use awaken_runtime_contract::llm::ToolCall;
 use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
 use serde_json::Value;
 
+#[cfg(windows)]
+pub(crate) fn sandbox_dir(base: &Path, id: &str) -> PathBuf {
+    let invalid = id.is_empty()
+        || matches!(id, "." | "..")
+        || id.ends_with([' ', '.'])
+        || id
+            .chars()
+            .any(|character| character.is_control() || r#"<>:"/\|?*%"#.contains(character));
+    let stem = id.split('.').next().unwrap_or_default();
+    let reserved = matches!(
+        stem.to_ascii_uppercase().as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    );
+    if !invalid && !reserved {
+        return base.join(id);
+    }
+    let mut encoded = String::from("scope-");
+    for character in id.chars() {
+        // This branch runs only for an invalid/reserved identifier. Encode dots
+        // too, otherwise "." and identifiers ending in "." would still produce
+        // illegal Windows path components after adding the prefix.
+        if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+            encoded.push(character);
+        } else {
+            use std::fmt::Write as _;
+            write!(encoded, "%{:06X}", u32::from(character)).expect("writing to String");
+        }
+    }
+    base.join(encoded)
+}
+
+#[cfg(not(windows))]
+pub(crate) fn sandbox_dir(base: &Path, id: &str) -> PathBuf {
+    base.join(id)
+}
+
 /// The `awaken-provisioning-contract` seam realized locally (ADR-0041).
 mod artifacts;
 mod blob_cache;
@@ -753,6 +810,27 @@ mod tests {
 
     // ---- jail_args branches ----
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_sandbox_directories_escape_reserved_and_trailing_dot_ids() {
+        let base = Path::new(r"C:\awaken");
+        assert_eq!(sandbox_dir(base, "valid.scope"), base.join("valid.scope"));
+
+        let reserved = sandbox_dir(base, "CON");
+        assert_ne!(reserved, base.join("CON"));
+        assert!(!reserved.file_name().unwrap().to_string_lossy().ends_with('.'));
+
+        let trailing_dot = sandbox_dir(base, "session.");
+        assert_ne!(trailing_dot, base.join("session."));
+        assert!(
+            !trailing_dot
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .ends_with('.')
+        );
+    }
+
     #[test]
     fn jail_rebases_glob_pattern_and_cds_bash() {
         let root = IsolatedRoot::new("/env");
@@ -764,7 +842,10 @@ mod tests {
             false,
         )
         .unwrap();
-        assert_eq!(g["pattern"], "/env/src/*.rs");
+        assert_eq!(
+            g["pattern"],
+            root.resolve("src/*.rs").unwrap().to_string_lossy().as_ref()
+        );
 
         let b = jail_args(
             "bash",
@@ -774,7 +855,10 @@ mod tests {
             false,
         )
         .unwrap();
-        assert_eq!(b["command"], "cd '/env' && ls");
+        assert_eq!(
+            b["command"],
+            format!("cd '{}' && ls", root.root().display())
+        );
     }
 
     #[test]

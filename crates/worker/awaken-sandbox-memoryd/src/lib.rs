@@ -7,8 +7,8 @@
 //! `awaken-sandbox-memoryd`, adapted to call an **in-process** `MemoryRepository` (not HTTP)
 //! and to report **faithful `getattr` timestamps** from the store's record.
 //!
-//! The `fuse` feature (default) gates the fuser-backed mount ([`fuse`]); the pure
-//! helpers below build without it.
+//! On Linux, the `fuse` feature (default) gates the fuser-backed mount ([`fuse`]);
+//! the pure helpers and copy fallback build on every platform.
 
 use std::collections::BTreeMap;
 

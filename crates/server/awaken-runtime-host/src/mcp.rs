@@ -214,11 +214,26 @@ fn basic_client_auth(client_id: &str, client_secret: &str) -> String {
 impl VaultRefresher {
     #[must_use]
     pub fn new(refresh: PreparedMcpRefresh) -> Self {
-        Self {
-            refresh,
-            http: reqwest::Client::new(),
-        }
+        let http = http_client_for(&refresh.token_endpoint);
+        Self { refresh, http }
     }
+}
+
+fn http_client_for(url: &str) -> reqwest::Client {
+    let mut builder = reqwest::Client::builder();
+    if reqwest::Url::parse(url)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(str::to_owned))
+        .is_some_and(|host| {
+            host.eq_ignore_ascii_case("localhost")
+                || host
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|address| address.is_loopback())
+        })
+    {
+        builder = builder.no_proxy();
+    }
+    builder.build().expect("build OAuth HTTP client")
 }
 
 #[async_trait::async_trait]

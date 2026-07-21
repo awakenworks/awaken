@@ -178,8 +178,8 @@ impl Tool for EditTool {
     }
 }
 
-/// Run a shell command via `sh -c` and return its output. A non-zero exit is a
-/// model-visible error result carrying stdout/stderr, not a run abort.
+/// Run a command via the platform shell and return its output. A non-zero exit
+/// is a model-visible error result carrying stdout/stderr, not a run abort.
 pub struct BashTool;
 
 #[derive(Deserialize)]
@@ -195,11 +195,11 @@ impl Tool for BashTool {
         "bash"
     }
     async fn call(&self, args: BashArgs) -> Result<String, ToolError> {
-        let output = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(&args.command)
+        let mut command = platform_shell_command(&args.command);
+        let shell = command.get_program().to_string_lossy().into_owned();
+        let output = command
             .output()
-            .map_err(|err| ToolError::Execution(format!("spawn sh: {err}")))?;
+            .map_err(|err| ToolError::Execution(format!("spawn {shell}: {err}")))?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         if output.status.success() {
@@ -214,6 +214,53 @@ impl Tool for BashTool {
             )))
         }
     }
+}
+
+#[cfg(windows)]
+fn platform_shell_command(command: &str) -> std::process::Command {
+    let shell = windows_posix_shell();
+    let mut process = std::process::Command::new(shell.as_deref().unwrap_or("cmd.exe"));
+    if shell.is_some() {
+        process.args(["-c", command]);
+    } else {
+        process.args(["/D", "/S", "/C", command]);
+    }
+    process
+}
+
+#[cfg(windows)]
+fn windows_posix_shell() -> Option<String> {
+    if let Some(shell) = std::env::var_os("AWAKEN_BASH") {
+        let shell = std::path::PathBuf::from(shell);
+        if shell.is_file() {
+            return Some(shell.to_string_lossy().into_owned());
+        }
+    }
+    for directory in std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()) {
+        let shell = directory.join("sh.exe");
+        if shell.is_file() {
+            return Some(shell.to_string_lossy().into_owned());
+        }
+        let git = directory.join("git.exe");
+        if git.is_file() && directory.file_name().is_some_and(|name| name == "cmd") {
+            let shell = directory.parent()?.join("bin").join("sh.exe");
+            if shell.is_file() {
+                return Some(shell.to_string_lossy().into_owned());
+            }
+        }
+    }
+    std::env::var_os("ProgramFiles")
+        .map(std::path::PathBuf::from)
+        .map(|root| root.join("Git").join("bin").join("sh.exe"))
+        .filter(|shell| shell.is_file())
+        .map(|shell| shell.to_string_lossy().into_owned())
+}
+
+#[cfg(not(windows))]
+fn platform_shell_command(command: &str) -> std::process::Command {
+    let mut process = std::process::Command::new("sh");
+    process.args(["-c", command]);
+    process
 }
 
 /// The local hand tools, erased for `Runtime::with_tool` registration. The

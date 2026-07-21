@@ -20,8 +20,8 @@ tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync"] }
 tracing = "0.1"
 
 # The kernel-backed implementation currently targets Linux `/dev/fuse`. Keeping
-# these dependencies target-scoped lets macOS compile and use copy+harvest without
-# requiring an optional macFUSE SDK merely to build the fallback.
+# these dependencies target-scoped lets non-Linux hosts compile and use
+# copy+harvest without requiring an optional FUSE SDK merely to build the fallback.
 [target.'cfg(target_os = "linux")'.dependencies]
 fuser = { version = "0.15", default-features = false, optional = true }
 libc = { version = "0.2", optional = true }

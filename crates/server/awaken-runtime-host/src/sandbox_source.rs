@@ -1234,6 +1234,21 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
+    fn successful_command() -> Vec<String> {
+        vec![
+            "cmd.exe".into(),
+            "/D".into(),
+            "/C".into(),
+            "exit /b 0".into(),
+        ]
+    }
+
+    #[cfg(not(windows))]
+    fn successful_command() -> Vec<String> {
+        vec!["true".into()]
+    }
+
     #[test]
     fn spec_carries_the_thread_staged_resource_mounts_into_the_sandbox() {
         // ADR-0038 resources bound to a session must reach the isolated ACP sandbox,
@@ -1362,7 +1377,7 @@ mod tests {
         );
         let source = SandboxChannelSource::workdir(
             base(),
-            LaunchSource::Fixed(AcpLaunch::custom(vec!["true".into()], vec![])),
+            LaunchSource::Fixed(AcpLaunch::custom(successful_command(), vec![])),
         )
         .with_thread_resources(registry);
         // The Workdir spec declares the unsandboxed isolation class and carries the mount.
@@ -1384,7 +1399,7 @@ mod tests {
         //     the Local/Workdir tier — no OS sandbox needed.
         let plain = SandboxChannelSource::workdir(
             base(),
-            LaunchSource::Fixed(AcpLaunch::custom(vec!["true".into()], vec![])),
+            LaunchSource::Fixed(AcpLaunch::custom(successful_command(), vec![])),
         );
         assert!(
             plain.open(&acp_activation("genai")).await.is_ok(),

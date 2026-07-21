@@ -318,7 +318,7 @@ impl HttpTransportBuilder {
         });
         HttpTransport {
             shared: Arc::new(HttpShared {
-                client: reqwest::Client::new(),
+                client: http_client_for(&self.url),
                 url: self.url,
                 credential: RwLock::new(self.credential),
                 headers: self.headers,
@@ -350,6 +350,23 @@ impl HttpTransportBuilder {
         transport.spawn_listener();
         Ok(transport)
     }
+}
+
+fn http_client_for(url: &str) -> reqwest::Client {
+    let mut builder = reqwest::Client::builder();
+    if reqwest::Url::parse(url)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(str::to_owned))
+        .is_some_and(|host| {
+            host.eq_ignore_ascii_case("localhost")
+                || host
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|address| address.is_loopback())
+        })
+    {
+        builder = builder.no_proxy();
+    }
+    builder.build().expect("build MCP HTTP client")
 }
 
 /// An HTTP MCP server connection presented as an [`McpToolTransport`].
