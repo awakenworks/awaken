@@ -568,6 +568,10 @@ impl SharedHost {
             )
             .await?;
         let durable = durable_ingress.is_some();
+        let mut hand_placement = self.hand_placement.clone();
+        if let Some(hand) = env.bound_tool_executor() {
+            hand_placement.bind_environment_hand(hand);
+        }
         // No per-session dispatch daemon: the process-level `DispatchPool` (spawned
         // once by `mount`) is the sole claimer of the shared queue and drives this
         // session's runs by routing claimed work back to its worker (O2).
@@ -579,7 +583,7 @@ impl SharedHost {
             config,
             commit,
             stream_checkpoint,
-            hand_placement: self.hand_placement.clone(),
+            hand_placement,
             capture_sink: self.capture_sink.clone(),
             thread_id,
             env,

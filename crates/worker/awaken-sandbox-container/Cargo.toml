@@ -44,3 +44,5 @@ podman = ["connection", "tokio/process"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "io-util", "net", "time", "test-util"] }
+awaken-runtime-contract.workspace = true
+awaken-tool-relay.workspace = true

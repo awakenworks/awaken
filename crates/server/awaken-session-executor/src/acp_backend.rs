@@ -208,7 +208,10 @@ impl crate::host::SharedHost {
     /// realized in `AWAKEN_SANDBOX_TIER` (`local`/`namespace`/container) — the
     /// executor is unaware of which (worker + provisioning own the environment).
     /// Panics on a misconfigured tier, never a silent fallback.
-    pub async fn with_acp_from_env(self) -> Self {
+    pub async fn with_acp_from_env(
+        self,
+        hand_factory: Arc<dyn crate::HandExecutorFactory>,
+    ) -> Self {
         let base = acp_sandbox_base();
         let source = match (acp_serve_cli(), acp_launch_argv()) {
             (Some(id), _) => {
@@ -252,21 +255,16 @@ impl crate::host::SharedHost {
             }
             _ => {}
         }
-        let egress = host.thread_egress();
-        let resources = host.thread_resources_handle();
-        let sandbox = host.thread_sandbox();
-        let bindings = crate::AcpSandboxBindings::new(egress, resources, sandbox)
-            .with_memory_mounter(host.memory_mounter());
-        let channel = crate::build_acp_channel_source(
-            tier,
-            dep.container_image.as_deref(),
-            source,
-            bindings,
-            base,
-        )
-        .await
-        .unwrap_or_else(|e| panic!("configure the ACP sandbox tier: {e}"));
-        host.with_acp(Arc::new(AcpRunExecutor::new(channel)))
+        let (provider, extra_mounts) =
+            crate::container_environment::build(tier, dep.container_image.as_deref(), &source)
+                .await
+                .unwrap_or_else(|e| panic!("configure the ACP sandbox tier: {e}"));
+        host.session_provider = crate::session_environment::SessionEnvironmentProvider::container(
+            provider,
+            extra_mounts,
+            hand_factory,
+        );
+        host.with_bound_acp(source, None)
     }
 
     /// The hub-backed launch observer for this host: republishes an ACP agent's

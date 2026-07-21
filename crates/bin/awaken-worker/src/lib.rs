@@ -114,7 +114,9 @@ async fn run_configured(
     // Serve `acp:*` runs this worker claims on the config-selected CLI, realized in the
     // worker's configured sandbox tier — the SAME env wiring the server root uses, so
     // the two never drift (ADR-0057). No selector set → no ACP backend, native only.
-    host = host.with_acp_from_env().await;
+    host = host
+        .with_acp_from_env(awaken_server::relay_hand_executor_factory())
+        .await;
 
     let host = Arc::new(host);
     let lifecycle = Arc::new(WorkerLifecycle {

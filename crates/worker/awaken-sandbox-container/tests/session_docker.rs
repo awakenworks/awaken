@@ -1,0 +1,110 @@
+//! Production-image proof that one live Docker environment serves Native, ACP-like
+//! stdio, and the remote hand without recreating the container.
+#![cfg(feature = "docker")]
+
+use std::sync::Arc;
+
+use awaken_provisioning_contract as pc;
+use awaken_runtime_contract::llm::ToolCall;
+use awaken_runtime_contract::tool::ToolExecutor;
+use awaken_sandbox_container::docker::DockerRuntime;
+use awaken_sandbox_container::{ContainerProvider, ContainerRuntime, ContainerState};
+use tokio::io::AsyncReadExt;
+
+#[tokio::test]
+async fn native_acp_and_hand_share_one_production_container() {
+    let Ok(image) = std::env::var("AWAKEN_TEST_SESSION_IMAGE") else {
+        eprintln!("skipping: AWAKEN_TEST_SESSION_IMAGE is not set");
+        return;
+    };
+    let runtime = Arc::new(DockerRuntime::connect_local(8080).expect("docker client"));
+    runtime.ping().await.expect("reachable Docker daemon");
+    let provider = ContainerProvider::new(runtime.clone(), image);
+    let scope = format!("session-real-{}", std::process::id());
+    let spec = pc::SandboxSpec {
+        scope,
+        isolation: pc::IsolationClass::Container,
+        mounts: Vec::new(),
+        env: Vec::new(),
+        network: pc::NetworkPolicy::Unrestricted,
+        outputs_path: "/mnt/session/outputs".into(),
+        limits: pc::ResourceLimits::default(),
+        lease_ttl_secs: None,
+        extra: None,
+    };
+    let sandbox = provider
+        .create_container(&spec)
+        .await
+        .expect("create Session environment despite the image's legacy entrypoint");
+    let handle = pc::Sandbox::handle(&sandbox);
+    let container_id = handle
+        .extra
+        .as_ref()
+        .and_then(|value| value.get("container_id"))
+        .and_then(serde_json::Value::as_str)
+        .expect("physical container id")
+        .to_string();
+
+    let mut write = pc::Command::new([
+        "sh",
+        "-c",
+        "printf real-shared-state > /workspace/session-marker",
+    ]);
+    write.cwd = "/workspace".into();
+    assert_eq!(
+        pc::Sandbox::spawn(&sandbox, write)
+            .await
+            .unwrap()
+            .wait()
+            .await
+            .unwrap()
+            .code,
+        Some(0)
+    );
+
+    let mut read = pc::Command::new(["sh", "-c", "cat /workspace/session-marker"]);
+    read.cwd = "/workspace".into();
+    let mut acp = sandbox.spawn_agent(read).await.unwrap();
+    let mut output = String::new();
+    acp.channel.read_to_string(&mut output).await.unwrap();
+    assert_eq!(acp.process.wait().await.unwrap().code, Some(0));
+    assert_eq!(output, "real-shared-state");
+
+    let hand = sandbox
+        .spawn_agent(pc::Command {
+            argv: vec![
+                "/usr/local/bin/awaken-sandbox".into(),
+                "hand".into(),
+                "--stdio".into(),
+            ],
+            cwd: "/workspace".into(),
+            env: Vec::new(),
+            stdio: pc::Stdio::Piped,
+        })
+        .await
+        .unwrap();
+    let hand_process: Arc<dyn pc::ProcessHandle> = Arc::from(hand.process);
+    let executor = awaken_tool_relay::RemoteToolExecutor::new(hand.channel)
+        .with_operation_scope(pc::Sandbox::id(&sandbox));
+    let result = executor
+        .invoke(&ToolCall {
+            call_id: "real-bound-hand".into(),
+            tool_id: "bash".into(),
+            arguments: serde_json::json!({
+                "command": "test \"$(cat /workspace/session-marker)\" = real-shared-state && printf real-hand-ok"
+            }),
+        })
+        .await
+        .expect("Native tool routed through the in-container hand");
+    assert!(result.content.contains("real-hand-ok"));
+
+    hand_process.signal(pc::Signal::Term).await.unwrap();
+    assert!(
+        hand_process.wait().await.unwrap().signaled || hand_process.poll().await.unwrap().is_some()
+    );
+    pc::Sandbox::dispose(&sandbox).await.unwrap();
+    assert!(matches!(
+        runtime.inspect(&container_id).await,
+        Err(_) | Ok(ContainerState::Gone)
+    ));
+}
