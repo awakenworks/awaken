@@ -81,9 +81,9 @@ impl SharedHost {
                 .map_err(|e| HostError::internal(e.to_string()))?
                 .with_live_inbox(ctx.open_live_inbox());
             // Route this attempt's inference through the run's effective model,
-            // resolved through the host's InferenceExecutorMaterializer. `None` leaves the
-            // runtime's bound (host default) executor — a single-model deployment is
-            // unaffected.
+            // materialized through the host's InferenceExecutorMaterializer. `None` means
+            // this composition installed no materializer and explicitly uses its bound
+            // host executor; an installed materializer rejects an unusable pin fail-closed.
             if let Some(exec) = self
                 .inference_routing
                 .executor_for_activation(&activation)

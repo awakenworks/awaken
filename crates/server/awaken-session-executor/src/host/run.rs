@@ -269,8 +269,16 @@ impl SharedHost {
             .metadata
             .inference_access
             .as_ref()
-            .and_then(|access| access.for_model(&model_ref))
-            .unwrap_or_else(|| awaken_runtime_contract::InferenceAccess::host_executor(&model_ref));
+            .and_then(|access| access.for_model(&model_ref));
+        let Some(inference_access) = inference_access else {
+            tracing::error!(
+                thread,
+                model_ref,
+                snapshot_id = %snapshot.id.0,
+                "memory extraction rejected: snapshot has no pinned inference access for model"
+            );
+            return;
+        };
         let extractor = awaken_protocol_managed::MemoryExtractorSnapshot {
             agent_id: awaken_ext_memory::MEMORY_AGENT_ID.to_string(),
             model_ref,
