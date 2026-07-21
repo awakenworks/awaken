@@ -135,7 +135,7 @@ pub(super) async fn materialize_read_only_tree(
             argv: vec![
                 "sh".into(),
                 "-c".into(),
-                "current=/workspace; old_ifs=$IFS; IFS=/; for part in $2; do current=\"$current/$part\"; test ! -L \"$current\" || exit 65; done; IFS=$old_ifs; rm -rf -- \"$1\" && mkdir -p -- \"$1\"".into(),
+                "current=/workspace; old_ifs=$IFS; IFS=/; for part in $2; do current=\"$current/$part\"; test ! -L \"$current\" || exit 65; done; IFS=$old_ifs; chmod -R u+w -- \"$1\" 2>/dev/null || true; rm -rf -- \"$1\" && mkdir -p -- \"$1\"".into(),
                 "awaken-read-only-tree".into(),
                 root.clone(),
                 subdir.to_string(),

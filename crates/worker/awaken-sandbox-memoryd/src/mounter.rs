@@ -208,6 +208,60 @@ impl MemoryMounter for MemoryStoreMounter {
             snapshot,
         }))
     }
+
+    async fn reconcile_recovered_copy(
+        &self,
+        store_id: &str,
+        files: &[(String, Vec<u8>)],
+        access: MountAccess,
+    ) -> Result<(), SandboxError> {
+        if access != MountAccess::ReadWrite {
+            return Ok(());
+        }
+        static RECOVERY_SEQUENCE: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "awaken-memory-recovery-{}-{}",
+            std::process::id(),
+            RECOVERY_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&root).map_err(sandbox_err)?;
+        let result = async {
+            for (relative, bytes) in files {
+                let path = std::path::Path::new(relative);
+                if relative.is_empty()
+                    || path.is_absolute()
+                    || path
+                        .components()
+                        .any(|component| !matches!(component, std::path::Component::Normal(_)))
+                {
+                    return Err(sandbox_err("unsafe recovered Memory copy path"));
+                }
+                let destination = root.join(path);
+                if let Some(parent) = destination.parent() {
+                    std::fs::create_dir_all(parent).map_err(sandbox_err)?;
+                }
+                std::fs::write(destination, bytes).map_err(sandbox_err)?;
+            }
+            let mut snapshot = copy::snapshot(&*self.fs, store_id)
+                .await
+                .map_err(sandbox_err)?;
+            let report = copy::harvest(&*self.fs, store_id, &root, &mut snapshot)
+                .await
+                .map_err(sandbox_err)?;
+            if !report.conflicts.is_empty() {
+                tracing::warn!(
+                    store = %store_id,
+                    conflicts = ?report.conflicts,
+                    "recovered memory copy preserved concurrent durable heads"
+                );
+            }
+            Ok(())
+        }
+        .await;
+        let _ = std::fs::remove_dir_all(root);
+        result
+    }
 }
 
 /// A live FUSE mount; teardown unmounts (draining open fds).
@@ -315,6 +369,46 @@ mod tests {
             "harvest wrote the edit back to the durable store"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn recovered_copy_reconciles_surviving_files_without_a_live_guard() {
+        let durable = Arc::new(VolatileMemoryRepository::new());
+        durable.create("s", "/note.md", "before").await.unwrap();
+        let mounter = MemoryStoreMounter::copy_only(durable.clone());
+
+        mounter
+            .reconcile_recovered_copy(
+                "s",
+                &[
+                    ("note.md".into(), b"after".to_vec()),
+                    ("nested/new.md".into(), b"new".to_vec()),
+                ],
+                MountAccess::ReadWrite,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            durable
+                .get_by_path("s", "/note.md")
+                .await
+                .unwrap()
+                .unwrap()
+                .content
+                .as_deref(),
+            Some("after")
+        );
+        assert_eq!(
+            durable
+                .get_by_path("s", "/nested/new.md")
+                .await
+                .unwrap()
+                .unwrap()
+                .content
+                .as_deref(),
+            Some("new")
+        );
     }
 
     #[tokio::test]

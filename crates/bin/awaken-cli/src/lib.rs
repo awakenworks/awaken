@@ -114,36 +114,13 @@ impl ResourcePlaneStores {
     }
 
     fn embedded(root: &std::path::Path) -> Self {
-        std::fs::create_dir_all(root).expect("create resource-plane directory");
-        let memory = awaken_memory_store::SqliteMemoryRepository::open(
-            root.join("memory_fs.db")
-                .to_str()
-                .expect("resource memory path is valid UTF-8"),
-        )
-        .expect("open resource memory sqlite");
-        memory
-            .import_legacy_versions(&root.join("resource-api.db"))
-            .expect("import legacy resource memory versions");
+        let (files, memory, skills, lifecycle) =
+            awaken_server::embedded_resource_plane(root).into_parts();
         Self {
-            lifecycle: Arc::new(
-                awaken_resource_store::SqliteResourceStore::open(
-                    root.join("resource-lifecycle.db"),
-                )
-                .expect("open resource lifecycle sqlite"),
-            ),
-            files: Arc::new(
-                awaken_file_store::sqlite::SqliteFileStore::open(
-                    root.join("files.db")
-                        .to_str()
-                        .expect("resource file path is valid UTF-8"),
-                )
-                .expect("open resource file sqlite"),
-            ),
-            memory: Arc::new(memory),
-            skills: Arc::new(
-                awaken_skill_store::FsSkillStore::open(root.join("skills"))
-                    .expect("open resource skill filesystem store"),
-            ),
+            lifecycle,
+            files,
+            memory,
+            skills,
         }
     }
 

@@ -29,6 +29,9 @@ awaken-config-store = { workspace = true }
 # Canonical Memory data plane used by API, mount, recall, extraction, history, and
 # redaction. The composition root selects its durable or ephemeral adapter once.
 awaken-memory-store = { workspace = true }
+awaken-file-store = { workspace = true, features = ["sqlite"] }
+awaken-skill-store = { workspace = true }
+awaken-resource-store = { workspace = true }
 # Concrete worker adapter is assembled here, outside runtime-host, behind the
 # neutral MemoryMounter port (FUSE where available, copy/harvest otherwise).
 awaken-sandbox-memoryd = { workspace = true }
