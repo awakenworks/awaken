@@ -564,13 +564,8 @@ impl SharedHost {
             config.resolved_spec.model_binding.backend_ref = adapter;
         }
         // Recover the session's position from committed truth: a durable store may
-        // already hold this thread's history and an awaiting run (e.g. after a
-        // restart). `consumed_rounds` starts past any prior outcome rounds so a new
-        // `define_outcome` reports only the rounds it produces.
-        let mut state = SessionState {
-            consumed_rounds: commit.continuation_payloads(&thread_id).len(),
-            ..SessionState::default()
-        };
+        // already hold this thread's history and an awaiting run after a restart.
+        let mut state = SessionState::default();
         if let Some((run_id, _)) = commit.open_wait_for_thread(&thread_id) {
             // Prime the fresh runtime so the awaiting run's snapshot resolves on
             // resume — `start_run` would normally have installed it.
@@ -621,11 +616,13 @@ impl SharedHost {
             thread_id,
             env,
             skill_registry,
-            cancel: std::sync::Mutex::new(None),
+            cancel: Arc::new(std::sync::Mutex::new(None)),
             active_run: std::sync::Mutex::new(None),
             reschedule: std::sync::Mutex::new(None),
             live_inbox: std::sync::Mutex::new(crate::live_inbox::LiveInboxSlot::default()),
             state: tokio::sync::Mutex::new(state),
+            outcome: tokio::sync::Mutex::new(()),
+            execution: tokio::sync::Mutex::new(()),
         });
         sessions.insert(thread.to_string(), ctx.clone());
         drop(sessions);

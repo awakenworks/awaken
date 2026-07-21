@@ -516,6 +516,7 @@ async fn snapshot_run_is_the_ordinary_turn_execution_boundary() {
                 model_ref_override: None,
                 supersede: false,
                 sink: None,
+                cancellation_mirror: None,
             },
         )
         .await
@@ -567,6 +568,7 @@ async fn outcome_grader_snapshot_with_tools_is_rejected_before_execution() {
                 model_ref_override: None,
                 supersede: false,
                 sink: None,
+                cancellation_mirror: None,
             },
         )
         .await

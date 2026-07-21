@@ -39,6 +39,7 @@ mod mcp_relay;
 mod memory;
 mod memory_store_api;
 mod memory_stores;
+mod outcome_controller;
 mod outcome_state;
 mod provisioning;
 mod redact;

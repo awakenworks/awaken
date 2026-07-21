@@ -128,6 +128,7 @@ pub struct GradingInput {
 pub enum GraderError {
     Execution(String),
     InvalidOutput(String),
+    Interrupted,
 }
 
 impl std::fmt::Display for GraderError {
@@ -135,6 +136,7 @@ impl std::fmt::Display for GraderError {
         match self {
             Self::Execution(message) => write!(formatter, "Grader execution failed: {message}"),
             Self::InvalidOutput(message) => write!(formatter, "invalid Grader output: {message}"),
+            Self::Interrupted => formatter.write_str("Grader execution was interrupted"),
         }
     }
 }
@@ -241,6 +243,7 @@ pub enum Phase {
     Evaluating {
         iteration: u32,
         grader_run_id: RunId,
+        message_start: usize,
     },
     Acknowledging {
         run_id: RunId,
@@ -297,6 +300,7 @@ impl State {
         &mut self,
         expected_run_id: &RunId,
         grader_run_id: RunId,
+        message_start: usize,
         transcript_cursor: usize,
     ) -> Result<(), Error> {
         let iteration = match &self.phase {
@@ -311,10 +315,16 @@ impl State {
             }
             phase => return Err(Error::invalid_transition("worker_completed", phase)),
         };
-        if transcript_cursor < self.transcript_cursor {
+        if message_start < self.transcript_cursor {
             return Err(Error::CursorRegression {
                 current: self.transcript_cursor,
-                proposed: transcript_cursor,
+                proposed: message_start,
+            });
+        }
+        if message_start > transcript_cursor {
+            return Err(Error::InvalidMessageRange {
+                start: message_start,
+                end: transcript_cursor,
             });
         }
         self.transcript_cursor = transcript_cursor;
@@ -322,6 +332,7 @@ impl State {
         self.phase = Phase::Evaluating {
             iteration,
             grader_run_id,
+            message_start,
         };
         self.advance();
         Ok(())
@@ -341,6 +352,7 @@ impl State {
             Phase::Evaluating {
                 iteration,
                 grader_run_id,
+                ..
             } if grader_run_id == expected_grader_run_id => *iteration,
             Phase::Evaluating { grader_run_id, .. } => {
                 return Err(Error::StaleRun {
@@ -459,6 +471,10 @@ pub enum Error {
         current: usize,
         proposed: usize,
     },
+    InvalidMessageRange {
+        start: usize,
+        end: usize,
+    },
 }
 
 impl std::fmt::Display for Error {
@@ -481,6 +497,9 @@ impl std::fmt::Display for Error {
                     formatter,
                     "transcript cursor regressed from {current} to {proposed}"
                 )
+            }
+            Self::InvalidMessageRange { start, end } => {
+                write!(formatter, "invalid evaluated message range {start}..{end}")
             }
         }
     }
@@ -528,7 +547,9 @@ mod tests {
         let worker = run("worker-0");
         let grader = run("grader-0");
         state.start(worker.clone()).unwrap();
-        state.worker_completed(&worker, grader.clone(), 4).unwrap();
+        state
+            .worker_completed(&worker, grader.clone(), 2, 4)
+            .unwrap();
         (definition, state, grader)
     }
 
@@ -560,7 +581,7 @@ mod tests {
                 ..
             }
         ));
-        state.worker_completed(&run("w0"), run("g0"), 8).unwrap();
+        state.worker_completed(&run("w0"), run("g0"), 3, 8).unwrap();
         assert!(matches!(
             state.phase,
             Phase::Evaluating { iteration: 0, .. }
@@ -638,7 +659,7 @@ mod tests {
                 run("w1"),
             )
             .unwrap();
-        state.worker_completed(&run("w1"), run("g1"), 6).unwrap();
+        state.worker_completed(&run("w1"), run("g1"), 4, 6).unwrap();
         assert_eq!(
             state
                 .apply_grade(
@@ -700,7 +721,7 @@ mod tests {
             .unwrap();
         let version = state.version;
         assert!(matches!(
-            state.worker_completed(&run("wrong-worker"), run("g1"), 7),
+            state.worker_completed(&run("wrong-worker"), run("g1"), 4, 7),
             Err(Error::StaleRun { .. })
         ));
         assert_eq!(state.version, version);
@@ -711,7 +732,7 @@ mod tests {
         let mut state = State::new(Id("o".into()), 10);
         state.start(run("w0")).unwrap();
         assert_eq!(
-            state.worker_completed(&run("w0"), run("g0"), 9),
+            state.worker_completed(&run("w0"), run("g0"), 9, 9),
             Err(Error::CursorRegression {
                 current: 10,
                 proposed: 9
@@ -776,7 +797,11 @@ mod tests {
             .unwrap();
         let version = state.version;
         assert!(state.start(run("again")).is_err());
-        assert!(state.worker_completed(&run("again"), run("g"), 20).is_err());
+        assert!(
+            state
+                .worker_completed(&run("again"), run("g"), 20, 20)
+                .is_err()
+        );
         assert_eq!(state.version, version);
     }
 

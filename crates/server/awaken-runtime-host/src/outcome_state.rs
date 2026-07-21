@@ -343,7 +343,9 @@ mod tests {
         state.start(worker_run_id(&state.outcome_id, 0)).unwrap();
         let worker = worker_run_id(&state.outcome_id, 0);
         let grader = grader_run_id(&state.outcome_id, 0);
-        state.worker_completed(&worker, grader.clone(), 9).unwrap();
+        state
+            .worker_completed(&worker, grader.clone(), 4, 9)
+            .unwrap();
         let evaluation = Evaluation {
             iteration: 0,
             worker_run_id: worker,

@@ -50,6 +50,11 @@ pub(crate) struct SnapshotRunRequest {
     pub(crate) model_ref_override: Option<String>,
     pub(crate) supersede: bool,
     pub(crate) sink: Option<Arc<dyn StreamSink>>,
+    /// Optional parent-visible cancellation slot for an auxiliary Run. The Run
+    /// keeps its own context; this only lets an interrupt addressed to the
+    /// Worker Session cancel the currently active Judge.
+    pub(crate) cancellation_mirror:
+        Option<Arc<std::sync::Mutex<Option<awaken_runtime_contract::CancellationToken>>>>,
 }
 
 #[derive(Debug)]
@@ -61,6 +66,14 @@ pub(crate) struct SnapshotRunResult {
 }
 
 struct DenyAllTools;
+
+struct ActivationOptions {
+    purpose: RunPurpose,
+    supersede: bool,
+    sink: Option<Arc<dyn StreamSink>>,
+    cancellation_mirror:
+        Option<Arc<std::sync::Mutex<Option<awaken_runtime_contract::CancellationToken>>>>,
+}
 
 #[async_trait::async_trait]
 impl ToolPermissionPolicy for DenyAllTools {
@@ -195,9 +208,12 @@ impl SharedHost {
             .execute_activation(
                 ctx,
                 activation,
-                request.purpose,
-                request.supersede,
-                request.sink,
+                ActivationOptions {
+                    purpose: request.purpose,
+                    supersede: request.supersede,
+                    sink: request.sink,
+                    cancellation_mirror: request.cancellation_mirror,
+                },
             )
             .await;
         {
@@ -259,13 +275,11 @@ impl SharedHost {
     /// `sink`, when set, receives the engine's best-effort live progress — only
     /// the in-process direct path wires it (the durable/ACP paths run elsewhere
     /// and simply omit live events, degrading to the committed projection).
-    pub(crate) async fn execute_activation(
+    async fn execute_activation(
         &self,
         ctx: &Arc<SessionCtx>,
         activation: RunActivation,
-        purpose: RunPurpose,
-        supersede: bool,
-        sink: Option<Arc<dyn StreamSink>>,
+        options: ActivationOptions,
     ) -> Result<RunState, HostError> {
         // Runtime selection is already pinned in the Session snapshot before the
         // SessionCtx and ingress are built. Every first attempt, resume, durable
@@ -276,7 +290,7 @@ impl SharedHost {
         // so the runtime only ever receives an executor, never a model identity to
         // look up — the provider owns how the model is reached (local credentials or a
         // gateway offering).
-        if supersede {
+        if options.supersede {
             // Durable + superseding: enqueue (marking prior pending superseded) and
             // let the process pool drive it on this session's worker (O2).
             self.submit_durable_foreground(ctx, activation, true).await
@@ -295,6 +309,12 @@ impl SharedHost {
                 .await
                 .map_err(|e| HostError::internal(e.to_string()))?
                 .with_live_inbox(ctx.open_live_inbox());
+            if let (Some(mirror), Some(token)) = (
+                options.cancellation_mirror.as_ref(),
+                context.cancellation.clone(),
+            ) {
+                *mirror.lock().expect("cancel mirror mutex poisoned") = Some(token);
+            }
             // Route this attempt's inference through the run's effective model,
             // resolved through the host's InferenceExecutorMaterializer. `None` leaves the
             // runtime's bound (host default) executor — a single-model deployment is
@@ -306,10 +326,10 @@ impl SharedHost {
             {
                 context = context.with_model_executor(exec);
             }
-            if let Some(sink) = sink {
+            if let Some(sink) = options.sink {
                 context = context.with_stream_sink(sink);
             }
-            if purpose == RunPurpose::OutcomeGrader {
+            if options.purpose == RunPurpose::OutcomeGrader {
                 context = context.with_tool_permission_policy(Arc::new(DenyAllTools));
             }
             let result = ctx

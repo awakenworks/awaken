@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, RunState};
+use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_ext_builtin_tools::{AGENT_RUN, AgentRunArgs};
 use awaken_ext_goal::outcome::{
     Grader as OutcomeGrader, GraderError as OutcomeGraderError, GradingInput, parse_grade,
@@ -23,7 +24,7 @@ use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
 use awaken_sandbox_local::LocalProvider;
 
 use crate::agent_catalog::AgentCatalog;
-use crate::host::SharedHost;
+use crate::host::{SessionCtx, SharedHost};
 use crate::outcome_state::{grader_run_id, grader_thread_id};
 use crate::run_exec::{Continuity, RunPurpose, SnapshotRunRequest};
 
@@ -56,6 +57,7 @@ pub fn default_judge_agent(
 pub(crate) struct AgentGrader<'a> {
     pub(crate) host: &'a SharedHost,
     pub(crate) snapshot: &'a ExecutableAgentSnapshot,
+    pub(crate) worker_context: &'a SessionCtx,
 }
 
 #[allow(dead_code)] // Called by AgentGrader once P5 wires the controller.
@@ -86,39 +88,50 @@ impl OutcomeGrader for AgentGrader<'_> {
             .ctx_for(&thread_id.0, None)
             .await
             .map_err(|error| OutcomeGraderError::Execution(error.to_string()))?;
-        let result = self
-            .host
-            .execute_snapshot(
-                &ctx,
-                SnapshotRunRequest {
-                    run_id: Some(grader_run_id(&input.outcome_id, input.iteration)),
-                    thread_id,
-                    snapshot: self.snapshot.clone(),
-                    input: vec![Message::text(
-                        MessageId(format!(
-                            "outcome/{}/grader/{}/input",
-                            input.outcome_id.0, input.iteration
-                        )),
-                        Role::User,
-                        grading_prompt(input)?,
-                    )],
-                    continuity: Continuity::Fresh,
-                    purpose: RunPurpose::OutcomeGrader,
-                    model_ref_override: None,
-                    supersede: false,
-                    sink: None,
-                },
-            )
-            .await
-            .map_err(|error| OutcomeGraderError::Execution(error.to_string()))?;
-        if result.state != RunState::Ended(EndCause::NaturalEnd) {
+        let run_id = grader_run_id(&input.outcome_id, input.iteration);
+        let (state, new_messages) = if let Some(state) = ctx.commit.run_state(&run_id) {
+            (state, ctx.commit.committed_messages(&thread_id))
+        } else {
+            // Make the Judge's live cancellation visible through the Worker
+            // Session address used by Managed `user.interrupt`.
+            let result = self
+                .host
+                .execute_snapshot(
+                    &ctx,
+                    SnapshotRunRequest {
+                        run_id: Some(run_id),
+                        thread_id,
+                        snapshot: self.snapshot.clone(),
+                        input: vec![Message::text(
+                            MessageId(format!(
+                                "outcome/{}/grader/{}/input",
+                                input.outcome_id.0, input.iteration
+                            )),
+                            Role::User,
+                            grading_prompt(input)?,
+                        )],
+                        continuity: Continuity::Fresh,
+                        purpose: RunPurpose::OutcomeGrader,
+                        model_ref_override: None,
+                        supersede: false,
+                        sink: None,
+                        cancellation_mirror: Some(self.worker_context.cancel.clone()),
+                    },
+                )
+                .await
+                .map_err(|error| OutcomeGraderError::Execution(error.to_string()))?;
+            (result.state, result.new_messages)
+        };
+        if state == RunState::Ended(EndCause::Cancelled) {
+            return Err(OutcomeGraderError::Interrupted);
+        }
+        if state != RunState::Ended(EndCause::NaturalEnd) {
             return Err(OutcomeGraderError::Execution(format!(
                 "Judge Run ended in {:?}",
-                result.state
+                state
             )));
         }
-        let reply = result
-            .new_messages
+        let reply = new_messages
             .iter()
             .rev()
             .find(|message| message.role == Role::Assistant)
@@ -237,9 +250,11 @@ mod tests {
         });
         let host = SharedHost::new(model.clone(), "stub");
         let snapshot = default_judge_agent("stub", "judge", DEFAULT_JUDGE_INSTRUCTIONS);
+        let worker_context = host.ctx_for("worker", None).await.unwrap();
         let grade = AgentGrader {
             host: &host,
             snapshot: &snapshot,
+            worker_context: worker_context.as_ref(),
         }
         .grade(&grading_input())
         .await
@@ -268,9 +283,11 @@ mod tests {
         });
         let host = SharedHost::new(model, "stub");
         let snapshot = default_judge_agent("stub", "judge", DEFAULT_JUDGE_INSTRUCTIONS);
+        let worker_context = host.ctx_for("worker", None).await.unwrap();
         let error = AgentGrader {
             host: &host,
             snapshot: &snapshot,
+            worker_context: worker_context.as_ref(),
         }
         .grade(&grading_input())
         .await
