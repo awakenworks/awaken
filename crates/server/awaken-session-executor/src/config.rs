@@ -231,15 +231,35 @@ pub(crate) fn server_config(
     context_policy: ContextPolicy,
 ) -> ExecutableAgentSnapshot {
     let tools = advertised_tools(client_tools, delegates, dynamic_descriptors);
+    let model_candidates = model_fallbacks();
+    let inference_access = awaken_runtime_contract::InferenceAccess::candidate_set(
+        std::iter::once(model_ref)
+            .chain(
+                model_candidates
+                    .iter()
+                    .map(|candidate| candidate.model_ref.as_str()),
+            )
+            .map(|model| {
+                (
+                    model.to_string(),
+                    awaken_runtime_contract::InferenceAccess::host_executor(model),
+                )
+            }),
+    )
+    .expect("server config always contains its primary model");
     ExecutableAgentSnapshot::builder(agent_id)
         .instructions(SYSTEM_PROMPT)
         .model(ModelBinding::new("default", model_ref, "default"))
-        .model_candidates(model_fallbacks())
+        .model_candidates(model_candidates)
         .tools(tools)
         .max_steps(20)
         .plugins(plugin_ids.iter().cloned())
         .plugin_config(plugin_config.iter().map(|(k, v)| (k.clone(), v.clone())))
         .context_policy(context_policy)
+        .metadata(awaken_runtime_contract::AgentSnapshotMetadata {
+            inference_access: Some(inference_access),
+            ..Default::default()
+        })
         .build()
 }
 
