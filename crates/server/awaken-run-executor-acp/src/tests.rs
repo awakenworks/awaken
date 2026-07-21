@@ -230,6 +230,29 @@ fn exec(frames: Vec<String>) -> AcpRunExecutor {
     }))
 }
 
+async fn commit_ticket(coordinator: &Arc<RecordingCoordinator>, ticket: ResumeTicket) {
+    awaken_agent_contract::thread::commit::commit_run(
+        coordinator.as_ref(),
+        &ticket.thread_id.clone(),
+        awaken_agent_contract::thread::commit::RunDisposition::awaiting(ticket),
+        Vec::new(),
+        Vec::new(),
+    )
+    .await
+    .unwrap();
+}
+
+fn resume_command_for(ticket: &ResumeTicket) -> awaken_runtime_contract::resume::ResumeCommand {
+    awaken_runtime_contract::resume::ResumeCommand::from_ticket(
+        ticket,
+        awaken_runtime_contract::resume::ResumeResult::Decision {
+            allow: true,
+            note: None,
+        },
+        0,
+    )
+}
+
 #[cfg(feature = "real-acp")]
 const SESSION_CARRY_AGENT: &str = "while IFS= read -r line; do \
       case \"$line\" in \
@@ -253,6 +276,145 @@ fn advertises_remote_abort_and_auth_wait() {
     let caps = exec(vec![]).capabilities();
     assert_eq!(caps.cancellation, Cancellation::RemoteAbort);
     assert_eq!(caps.wait, Wait::Auth);
+}
+
+#[tokio::test]
+async fn resume_requires_history_then_an_active_ticket() {
+    let activation = activation();
+    let ticket = pause_ticket(&activation, &activation.run_id, AwaitReason::ToolPermission);
+    let command = resume_command_for(&ticket);
+    assert!(
+        exec(Vec::new())
+            .resume(
+                activation.clone(),
+                command.clone(),
+                RuntimeRunContext::new()
+            )
+            .await
+            .is_err()
+    );
+
+    let empty = Arc::new(RecordingCoordinator::default());
+    assert!(
+        exec(Vec::new())
+            .resume(
+                activation,
+                command,
+                RuntimeRunContext::new().with_reader(empty),
+            )
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn permission_resume_requires_the_call_and_pending_tool_facts() {
+    let activation = activation();
+
+    let missing_call = Arc::new(RecordingCoordinator::default());
+    let ticket = pause_ticket(&activation, &activation.run_id, AwaitReason::ToolPermission);
+    commit_ticket(&missing_call, ticket.clone()).await;
+    let error = exec(Vec::new())
+        .resume(
+            activation.clone(),
+            resume_command_for(&ticket),
+            RuntimeRunContext::new().with_reader(missing_call),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("tool call id"));
+
+    let missing_tool = Arc::new(RecordingCoordinator::default());
+    let mut ticket = ticket;
+    ticket.call_id = Some("call-7".into());
+    commit_ticket(&missing_tool, ticket.clone()).await;
+    let error = exec(Vec::new())
+        .resume(
+            activation,
+            resume_command_for(&ticket),
+            RuntimeRunContext::new().with_reader(missing_tool),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("pending tool"));
+}
+
+#[test]
+fn restored_session_rejects_removed_mismatched_and_empty_ids() {
+    let activation = activation();
+    let coordinator = Arc::new(RecordingCoordinator::default());
+    let context = RuntimeRunContext::new().with_reader(coordinator.clone());
+    assert_eq!(
+        restored_session_id(
+            &context,
+            &activation.thread_id,
+            &activation.snapshot.resolved_spec.model_binding.backend_ref,
+        ),
+        None
+    );
+
+    let commands = [
+        StateCommand::set(
+            Scope::Thread,
+            MergePolicy::Disjoint,
+            ACP_SESSION_ID_STATE_KEY,
+            serde_json::json!({"backend_ref": "acp:other", "session_id": "session-7"}),
+        ),
+        StateCommand::set(
+            Scope::Thread,
+            MergePolicy::Disjoint,
+            ACP_SESSION_ID_STATE_KEY,
+            serde_json::json!({"backend_ref": "acp:claude", "session_id": ""}),
+        ),
+        StateCommand::remove(
+            Scope::Thread,
+            MergePolicy::Disjoint,
+            ACP_SESSION_ID_STATE_KEY,
+        ),
+    ];
+    for command in commands {
+        coordinator.commits.lock().unwrap().push(ThreadCommit {
+            thread_id: activation.thread_id.clone(),
+            run: awaken_agent_contract::thread::commit::RunDisposition::running(
+                activation.run_id.clone(),
+            ),
+            messages: Vec::new(),
+            state: vec![command],
+            events: Vec::new(),
+        });
+        assert_eq!(
+            restored_session_id(
+                &context,
+                &activation.thread_id,
+                &activation.snapshot.resolved_spec.model_binding.backend_ref,
+            ),
+            None
+        );
+        coordinator.commits.lock().unwrap().clear();
+    }
+}
+
+#[test]
+fn an_existing_pending_tool_use_is_not_duplicated() {
+    use awaken_agent_contract::agent::content::ContentBlock;
+    use awaken_protocol_acp::PermissionAsk;
+
+    let ask = PermissionAsk {
+        tool: "bash".into(),
+        call_id: "call-7".into(),
+        arguments: serde_json::json!({"cmd": "pwd"}),
+    };
+    let mut messages = vec![Message {
+        id: MessageId("tool-use".into()),
+        role: Role::Assistant,
+        content: vec![ContentBlock::tool_use(
+            "call-7",
+            "bash",
+            serde_json::json!({"cmd": "pwd"}),
+        )],
+    }];
+    ensure_pending_tool_use(&mut messages, &ask);
+    assert_eq!(messages.len(), 1);
 }
 
 /// Records every lifecycle event the executor emits during bring-up.
