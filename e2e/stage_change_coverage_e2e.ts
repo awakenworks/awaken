@@ -87,6 +87,7 @@ const obligations: Obligation[] = [
   { id: 'D4-07', stage: '4 credential injection', behavior: 'production worker opens only credential materialization stores and calls the pinned endpoint', scenario: 'credential_materialization_worker' },
   { id: 'D4-08', stage: '4 credential injection', behavior: 'ACP native credential files remain host-brokered and unsafe projection fails closed before traffic', scenario: 'acp_credential_projection' },
   { id: 'D4-09', stage: '4 credential injection', behavior: 'the production composition projects endpoint and credential use once into the per-thread ACP sandbox', scenario: 'acp_projected_local' },
+  { id: 'D4-10', stage: '4 credential injection', behavior: 'config-file ACP adapters receive a per-run materialized config home through the same local projection', scenario: 'acp_projected_local' },
 
   { id: 'D5-01', stage: '5 durable child lifecycle', behavior: 'child has a first-class stable run identity', scenario: 'child_recovery' },
   { id: 'D5-02', stage: '5 durable child lifecycle', behavior: 'hard process crash occurs while child inference is in flight', scenario: 'child_recovery' },
