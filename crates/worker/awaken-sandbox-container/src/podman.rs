@@ -881,5 +881,62 @@ mod tests {
 
         let failing_signal = exec_process(None, "false");
         assert!(failing_signal.signal(pc::Signal::Int).await.is_err());
+
+        let missing_binary = exec_process(None, "/definitely/missing/podman");
+        assert!(missing_binary.signal(pc::Signal::Kill).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn exec_admission_rejects_empty_piped_and_unmaterialized_commands() {
+        let (rt, _) = runtime_with(9000, |_| ok(""));
+
+        assert!(
+            rt.exec_process("cid", pc::Command::new(Vec::<String>::new()), false)
+                .is_err()
+        );
+
+        let mut piped = pc::Command::new(["echo", "value"]);
+        piped.stdio = pc::Stdio::Piped;
+        assert!(rt.exec_process("cid", piped, false).is_err());
+
+        let mut secret = pc::Command::new(["echo", "value"]);
+        secret.env.push(pc::EnvVar {
+            name: "TOKEN".into(),
+            value: pc::EnvValue::Secret {
+                reference: "credential://test".into(),
+            },
+            visibility: pc::EnvVisibility::Process,
+        });
+        assert!(rt.exec_process("cid", secret, false).is_err());
+    }
+
+    #[tokio::test]
+    async fn spawn_and_attached_spawn_cover_stdio_cwd_and_inline_environment() {
+        let (mut rt, _) = runtime_with(9000, |_| ok(""));
+        // `true` is a deterministic stand-in for the Podman CLI. It ignores the
+        // assembled `exec ...` argv while preserving the exact child stdio shape.
+        rt.bin = "true".into();
+
+        let mut inherited = pc::Command::new(["echo", "inherited"]);
+        inherited.cwd = "/workspace".into();
+        inherited.env.push(pc::EnvVar {
+            name: "MODE".into(),
+            value: pc::EnvValue::Inline {
+                value: "test".into(),
+            },
+            visibility: pc::EnvVisibility::Process,
+        });
+        let inherited = rt.spawn("cid", inherited).await.unwrap();
+        assert_eq!(inherited.wait().await.unwrap().code, Some(0));
+
+        let mut null = pc::Command::new(["echo", "discarded"]);
+        null.stdio = pc::Stdio::Null;
+        let null = rt.spawn("cid", null).await.unwrap();
+        assert_eq!(null.wait().await.unwrap().code, Some(0));
+
+        let mut piped = pc::Command::new(["agent", "--stdio"]);
+        piped.stdio = pc::Stdio::Piped;
+        let attached = rt.spawn_agent("cid", piped).await.unwrap();
+        assert_eq!(attached.process.wait().await.unwrap().code, Some(0));
     }
 }
