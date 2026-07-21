@@ -45,6 +45,17 @@ pub struct DispatchWorker<S> {
     cancellation: Option<CancellationToken>,
 }
 
+struct AttemptControlGuard {
+    runtime: Arc<Runtime>,
+    run_id: RunId,
+}
+
+impl Drop for AttemptControlGuard {
+    fn drop(&mut self) {
+        self.runtime.deregister_attempt_controls(&self.run_id);
+    }
+}
+
 impl<S: Dispatch + 'static> DispatchWorker<S> {
     /// Wire a worker to its runtime, dispatch store, and durable commit boundary.
     /// The `commit` handle is the single source of durable truth: it is the
@@ -417,6 +428,13 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         let model_executor = self
             .exec
             .materialize_inference(&claimed.request.activation)?;
+        let execution_context = self.execution_context_with(&claim, &model_executor);
+        self.runtime
+            .register_attempt_controls(&run_id, &execution_context);
+        let _attempt_control = AttemptControlGuard {
+            runtime: self.runtime.clone(),
+            run_id: run_id.clone(),
+        };
         // Continue the admitting request's trace across the durable queue boundary:
         // this `wake.dispatch` span's remote parent is the persisted traceparent, so
         // the run driven below (`runtime.run` → …) nests under the trace that
@@ -456,11 +474,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                     Some(input) => {
                         let command = ResumeCommand::from_ticket(&ticket, input.result, now_ms);
                         match attempt_executor
-                            .resume(
-                                activation.clone(),
-                                command,
-                                self.execution_context_with(&claim, &model_executor),
-                            )
+                            .resume(activation.clone(), command, execution_context.clone())
                             .instrument(dispatch.clone())
                             .await
                         {
@@ -570,10 +584,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                     // Consumed on settle, not on read, so a crash re-delivers them.
                     all_pending.extend(unbound.into_iter().map(|input| input.message_id));
                     match attempt_executor
-                        .execute(
-                            activation,
-                            self.execution_context_with(&claim, &model_executor),
-                        )
+                        .execute(activation, execution_context.clone())
                         .instrument(dispatch.clone())
                         .await
                     {

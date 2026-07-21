@@ -350,6 +350,67 @@ const FAKE_ACP_PERMISSION_SCRIPT: &str = "while IFS= read -r line; do \
       esac; \
     done";
 
+const SLOW_FAKE_ACP_SCRIPT: &str = "read _prompt; sleep 3; \
+    printf '%s\\n' '{\"type\":\"message\",\"text\":\"ACP-SLOW-TURN\"}'; \
+    printf '%s\\n' '{\"type\":\"turn_end\",\"reason\":\"natural_end\"}'";
+
+fn slow_acp_source() -> awaken_run_executor_acp::SubprocessChannelSource {
+    awaken_run_executor_acp::SubprocessChannelSource::new(
+        awaken_run_executor_acp::AcpLaunch::custom(
+            vec![
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                SLOW_FAKE_ACP_SCRIPT.to_string(),
+            ],
+            vec![],
+        ),
+    )
+}
+
+/// Slow newline ACP process used to exercise live pause and safe-boundary resume.
+pub fn build_acp_control_router() -> Router {
+    let acp = Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(Arc::new(
+        slow_acp_source(),
+    )));
+    mount(Arc::new(
+        SharedHost::new(Arc::new(EchoModel), "awaken").with_acp(acp),
+    ))
+}
+
+struct FailSecondAcpSource {
+    inner: awaken_run_executor_acp::SubprocessChannelSource,
+    opens: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl awaken_run_executor_acp::AgentChannelSource for FailSecondAcpSource {
+    async fn open(
+        &self,
+        activation: &awaken_runtime_contract::activation::RunActivation,
+    ) -> Result<awaken_run_executor_acp::AgentSession, awaken_run_executor_acp::OpenError> {
+        if self.opens.fetch_add(1, std::sync::atomic::Ordering::SeqCst) > 0 {
+            return Err(awaken_run_executor_acp::OpenError(
+                "deliberate replacement launch failure".to_string(),
+            ));
+        }
+        awaken_run_executor_acp::AgentChannelSource::open(&self.inner, activation).await
+    }
+}
+
+/// First ACP turn starts normally; a live-inbox continuation reaches the normal
+/// relaunch seam, where the deterministic source fails. Production error handling
+/// is exercised without adding a diagnostic endpoint to the server.
+pub fn build_acp_relaunch_failure_router() -> Router {
+    let source = Arc::new(FailSecondAcpSource {
+        inner: slow_acp_source(),
+        opens: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let acp = Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(source));
+    mount(Arc::new(
+        SharedHost::new(Arc::new(EchoModel), "awaken").with_acp(acp),
+    ))
+}
+
 /// [`build_acp_router`]'s official-wire twin: `acp:*` sessions drive the fake agent
 /// over real ACP JSON-RPC (the [`awaken_run_executor_acp::Codec::Acp`] driver),
 /// proving the production codec end-to-end. `AWAKEN_MODEL_MODE=acp-jsonrpc`.
