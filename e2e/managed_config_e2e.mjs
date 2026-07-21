@@ -24,12 +24,28 @@ const GREETING = 'HELLO-FROM-CONFIG';
 // stored config truth carries the model/instructions the projection asserts below.
 const agentConfig = {
   id: AGENT,
+  name: 'Managed config greeter',
+  description: 'Exercises the complete managed authoring projection.',
   system: GREETING,
   max_steps: 4,
   model: { id: 'config-model' },
-  tools: [],
+  // Accept both managed tool reference shapes. Non-reference values are ignored
+  // at the wire adapter instead of leaking into the domain config.
+  tools: [{ id: 'bash' }, 7],
   plugins: [],
-  plugin_config: {},
+  plugin_config: { marker: 'managed-wire' },
+  context_policy: { kind: 'keep_last', keep_last: 3 },
+  tool_overrides: [{
+    target: 'mcp__future__lookup',
+    alias: 'lookup',
+    description: 'Look up a future MCP value.',
+    defer: true,
+  }],
+  recovery_policies: {},
+  metadata: { owner: 'e2e', ignored_non_string: 7 },
+  mcp_servers: [],
+  skills: [],
+  multiagent: null,
 };
 
 async function main() {
@@ -59,7 +75,11 @@ async function main() {
     // field-routed structured issues for the UI): the request succeeds with 200 and
     // reports `valid: false` + a structured issue, rather than a transport 400 — a
     // name absent from the catalog fails closed with UnknownTool (config_plane D3).
-    const bad = await json('POST', `/v1/config/agents/${AGENT}/validate`, { id: AGENT, system: GREETING, tools: ['no_such_tool'] });
+    const bad = await json('POST', `/v1/config/agents/${AGENT}/validate`, {
+      id: AGENT,
+      system: GREETING,
+      tools: [{ name: 'no_such_tool' }],
+    });
     assert.equal(bad.status, 200, 'validation is a query — 200 with the verdict');
     assert.equal(bad.body.valid, false, 'valid=false on unknown tool');
     assert.ok(Array.isArray(bad.body.issues) && bad.body.issues.length > 0, 'a structured issue is reported');
@@ -72,6 +92,13 @@ async function main() {
     assert.equal(published.body.installed, true, 'installed into the live catalog');
     pass(`published: fingerprint ${published.body.fingerprint.slice(0, 12)}…`);
 
+    const authored = await json('GET', `/v1/config/agents/${AGENT}`, undefined);
+    assert.equal(authored.status, 200);
+    assert.deepEqual(authored.body.tools, ['bash']);
+    assert.deepEqual(authored.body.metadata, { owner: 'e2e' });
+    assert.deepEqual(authored.body.context_policy, { kind: 'keep_last', keep_last: 3 });
+    assert.equal(authored.body.tool_overrides[0].alias, 'lookup');
+
     // Retreat to projection: the published agent appears on `/v1/agents` as a
     // managed-wire projection of the config truth — model/system come from the
     // published config, though it was never created via the agents registry.
@@ -80,6 +107,7 @@ async function main() {
     assert.equal(projected.body.id, AGENT);
     assert.equal(projected.body.model.id, 'config-model', 'model projected from config truth');
     assert.equal(projected.body.system, GREETING, 'system projected from config instructions');
+    assert.deepEqual(projected.body.tools, [{ type: 'custom', name: 'bash' }]);
     pass('published config agent projects onto /v1/agents');
 
     // Run: a session for the published agent runs with its own instructions.
