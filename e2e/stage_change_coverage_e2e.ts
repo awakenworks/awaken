@@ -34,6 +34,7 @@ const scenarios: Scenario[] = [
   { id: 'credential_reference_worker', file: 'e2e/credential_reference_worker_e2e.ts' },
   { id: 'credential_materialization_worker', file: 'e2e/credential_materialization_worker_e2e.ts' },
   { id: 'acp_credential_projection', file: 'e2e/acp_credential_projection_e2e.mjs' },
+  { id: 'acp_projected_local', file: 'e2e/acp_projected_local_e2e.mjs' },
   { id: 'child_recovery', file: 'e2e/durable_child_sandbox_recovery_e2e.ts' },
   { id: 'durable_cancel', file: 'e2e/durable_worker_cancel_e2e.mjs' },
   { id: 'dispatch_metrics', file: 'e2e/dispatch_metrics_export_e2e.mjs' },
@@ -85,6 +86,7 @@ const obligations: Obligation[] = [
   { id: 'D4-06', stage: '4 credential injection', behavior: 'reference-routed result commits and settles exactly once', scenario: 'credential_reference_worker' },
   { id: 'D4-07', stage: '4 credential injection', behavior: 'production worker opens only credential materialization stores and calls the pinned endpoint', scenario: 'credential_materialization_worker' },
   { id: 'D4-08', stage: '4 credential injection', behavior: 'ACP native credential files remain host-brokered and unsafe projection fails closed before traffic', scenario: 'acp_credential_projection' },
+  { id: 'D4-09', stage: '4 credential injection', behavior: 'the production composition projects endpoint and credential use once into the per-thread ACP sandbox', scenario: 'acp_projected_local' },
 
   { id: 'D5-01', stage: '5 durable child lifecycle', behavior: 'child has a first-class stable run identity', scenario: 'child_recovery' },
   { id: 'D5-02', stage: '5 durable child lifecycle', behavior: 'hard process crash occurs while child inference is in flight', scenario: 'child_recovery' },
