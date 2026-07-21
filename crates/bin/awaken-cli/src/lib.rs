@@ -1227,7 +1227,7 @@ mod runtime_session_store_tests {
             metadata: Default::default(),
             environment_id: "env_local".to_string(),
             mcp_servers: Vec::new(),
-            effective_inputs: Default::default(),
+            resources: Default::default(),
             status: "idle".to_string(),
             archived_at: None,
         }
