@@ -242,6 +242,15 @@ export const BEHAVIORS = {
   // out-of-band extractor sub-run that saves a memory. Sequenced by tool-result count
   // so it needs no transcript parsing; every write is host-gated and harvested.
   fullChain(parsed) {
+    const prompt = lastUserText(parsed);
+    if (prompt === 'author-skill-v1' || prompt === 'author-skill-v2') {
+      if (toolResults(parsed).length > 0) return text(`authored ${prompt}`);
+      const body = prompt.endsWith('v2') ? 'AUTHORED_SKILL_V2' : 'AUTHORED_SKILL_V1';
+      return tool(`author-${prompt}`, 'write', {
+        path: 'skills/authored/SKILL.md',
+        content: `---\nname: authored\ndescription: agent authored skill\n---\n${body}`,
+      });
+    }
     // The extraction sub-run (out-of-band): save one memory, then finish. It is seeded
     // with the whole main-turn transcript (which carries tool results), so we can't key
     // off a tool-result *count*; instead write_memory unless the LAST message is our

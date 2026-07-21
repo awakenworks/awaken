@@ -46,6 +46,7 @@ const scenarios: Scenario[] = [
   { id: 'resource_catalog_corruption', file: 'e2e/resource_catalog_corruption_e2e.mjs' },
   { id: 'resource_reclamation_faults', file: 'e2e/resource_reclamation_faults_e2e.mjs' },
   { id: 'memory_extraction_stage_recovery', file: 'e2e/managed_memory_extraction_stage_recovery_e2e.mjs' },
+  { id: 'managed_full_chain', file: 'e2e/managed_full_chain_e2e.mjs' },
   { id: 'resource_ephemeral', file: 'e2e/resource_ephemeral_e2e.mjs' },
   { id: 'resource_scope_boundary', file: 'e2e/resource_scope_boundary_e2e.mjs' },
   { id: 'mcp_stdio', file: 'e2e/mcp_server_core_e2e.ts' },
@@ -137,6 +138,7 @@ const obligations: Obligation[] = [
   { id: 'D7-19', stage: '7 resource persistence', behavior: 'guard, fence contention, late-reference, and release faults retry through the original purge intents', scenario: 'resource_reclamation_faults' },
   { id: 'D7-19a', stage: '7 resource persistence', behavior: 'Postgres reclamation fences recover from contention, late references, physical faults, and release faults', scenario: 'resource_plane_postgres' },
   { id: 'D7-20', stage: '7 resource persistence', behavior: 'Extracted and Stored Memory intents resume while stale mutations and unavailable extractors fail terminally', scenario: 'memory_extraction_stage_recovery' },
+  { id: 'D7-21', stage: '7 resource persistence', behavior: 'agent-authored Skill harvest is idempotent for equal bytes and appends one immutable changed version', scenario: 'managed_full_chain' },
 
   { id: 'D8-01', stage: '8 neutral MCP server core', behavior: 'newest and older protocol versions negotiate', scenario: 'mcp_stdio' },
   { id: 'D8-02', stage: '8 neutral MCP server core', behavior: 'unsupported version returns invalid params', scenario: 'mcp_stdio' },
