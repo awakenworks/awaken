@@ -5,6 +5,9 @@
 use std::path::Path;
 
 use crate::Dataset;
+use crate::compact_eval::{CompactDataset, CompactObservation};
+use crate::memory_eval::{MemoryDataset, MemoryObservation};
+use crate::outcome_judge::{JudgeDataset, JudgeObservation};
 
 /// Read a dataset from a JSON file.
 pub fn load_dataset(path: &Path) -> std::io::Result<Dataset> {
@@ -17,4 +20,72 @@ pub fn save_dataset(path: &Path, dataset: &Dataset) -> std::io::Result<()> {
     let data = serde_json::to_string_pretty(dataset)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     std::fs::write(path, data)
+}
+
+/// Read and validate a versioned Outcome Judge dataset.
+pub fn load_judge_dataset(path: &Path) -> std::io::Result<JudgeDataset> {
+    let data = std::fs::read_to_string(path)?;
+    let dataset: JudgeDataset = serde_json::from_str(&data)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    dataset
+        .validate()
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    Ok(dataset)
+}
+
+/// Read provider outputs recorded separately from the frozen Judge corpus.
+pub fn load_judge_observations(path: &Path) -> std::io::Result<Vec<JudgeObservation>> {
+    let data = std::fs::read_to_string(path)?;
+    if let Ok(observations) = serde_json::from_str(&data) {
+        return Ok(observations);
+    }
+    let value: serde_json::Value = serde_json::from_str(&data)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    serde_json::from_value(
+        value
+            .get("observations")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+    )
+    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
+/// Write a frozen or locally-derived Outcome Judge dataset.
+pub fn save_judge_dataset(path: &Path, dataset: &JudgeDataset) -> std::io::Result<()> {
+    dataset
+        .validate()
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    let data = serde_json::to_string_pretty(dataset)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    std::fs::write(path, data)
+}
+
+pub fn load_compact_dataset(path: &Path) -> std::io::Result<CompactDataset> {
+    let dataset: CompactDataset = load_json(path)?;
+    dataset
+        .validate()
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    Ok(dataset)
+}
+
+pub fn load_compact_observations(path: &Path) -> std::io::Result<Vec<CompactObservation>> {
+    load_json(path)
+}
+
+pub fn load_memory_dataset(path: &Path) -> std::io::Result<MemoryDataset> {
+    let dataset: MemoryDataset = load_json(path)?;
+    dataset
+        .validate()
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    Ok(dataset)
+}
+
+pub fn load_memory_observations(path: &Path) -> std::io::Result<Vec<MemoryObservation>> {
+    load_json(path)
+}
+
+fn load_json<T: serde::de::DeserializeOwned>(path: &Path) -> std::io::Result<T> {
+    let data = std::fs::read_to_string(path)?;
+    serde_json::from_str(&data)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
 }

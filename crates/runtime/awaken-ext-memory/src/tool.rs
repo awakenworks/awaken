@@ -46,11 +46,9 @@ impl Tool for WriteMemoryTool {
             .get("content")
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArguments("write_memory needs `content`".into()))?;
-        // Model-independent backstop for the extractor's "what NOT to save" gate: the
-        // weakest models save a second memory about the refactor / bug fix ~half the time
-        // despite the prompt (runtime-prompt-eval: skipped_forbidden 50%, unmovable by
-        // prompt wording across 5 variants). Skip an implementation note here — NOT an
-        // error, so the extractor's other (valid) writes still land.
+        // Model-independent backstop for the extractor's "what NOT to save" gate.
+        // Skip an implementation note here — NOT an error, so the extractor's
+        // other valid writes still land.
         if looks_like_implementation_note(content) {
             return Ok(format!(
                 "skipped `{name}`: implementation detail (code / a fix) belongs in the repo, not memory"

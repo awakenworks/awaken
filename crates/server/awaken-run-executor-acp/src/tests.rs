@@ -223,6 +223,20 @@ pub(crate) fn activation() -> RunActivation {
     }
 }
 
+#[test]
+fn initial_acp_prompt_projects_frozen_agent_instructions_before_untrusted_input() {
+    let activation = activation();
+    let prompt = super::initial_prompt(&activation);
+    let instructions_at = prompt.find("be helpful").unwrap();
+    let input_at = prompt.find("do it").unwrap();
+    assert!(instructions_at < input_at, "{prompt}");
+    assert!(prompt.contains("untrusted data"), "{prompt}");
+
+    let mut blank = activation;
+    blank.snapshot.resolved_spec.instructions.clear();
+    assert_eq!(super::initial_prompt(&blank), "do it");
+}
+
 fn exec(frames: Vec<String>) -> AcpRunExecutor {
     AcpRunExecutor::new(Arc::new(ScriptedSource {
         frames,
