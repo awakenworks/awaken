@@ -30,10 +30,15 @@ RESOURCE_APPLICATION_SOURCES = (
     "crates/control/awaken-admin-config-api/src/sqlite_resource_catalog.rs",
     "crates/control/awaken-config-resolver/src/resource_catalog.rs",
     "crates/server/awaken-managed-routers/src/files.rs",
+    "crates/server/awaken-protocol-managed/src/state/resource.rs",
+    "crates/server/awaken-protocol-managed/src/state/resources.rs",
     "crates/server/awaken-runtime-host/src/memory_store_api.rs",
     "crates/server/awaken-runtime-host/src/memory_stores.rs",
+    "crates/server/awaken-runtime-host/src/provisioning.rs",
     "crates/server/awaken-runtime-host/src/resource_lifecycle.rs",
     "crates/server/awaken-runtime-host/src/resource_reclamation.rs",
+    "crates/server/awaken-runtime-host/src/resource_scope.rs",
+    "crates/server/awaken-runtime-host/src/skill_catalog.rs",
     "crates/server/awaken-runtime-host/src/skills_api.rs",
 )
 
@@ -132,6 +137,8 @@ def _rust_violations(content: str) -> list[str]:
 def selftest() -> None:
     allowed = "pub struct Config { pub workspace_id: String, pub recall_policy: RecallPolicy }"
     assert not _rust_violations(allowed)
+    workspace_context = "fn open(workspace_id: &str, resource_id: &str) {}"
+    assert not _rust_violations(workspace_context)
     denied = "pub struct Row { pub principal_id: String, pub decision: PermissionDecision }"
     violations = _rust_violations(denied)
     assert any("principal_id" in violation for violation in violations)
