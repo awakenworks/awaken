@@ -14,6 +14,7 @@ use awaken_provisioning_contract::SandboxProvider;
 use awaken_sandbox_container::podman::PodmanRuntime;
 use awaken_sandbox_container::{
     ContainerPlan, ContainerProvider, ContainerRuntime, ContainerState, NetworkMode, RootfsPlan,
+    command_of,
 };
 
 const AGENT_PORT: u16 = 8080;
@@ -125,9 +126,9 @@ async fn podman_materializes_inline_content_through_the_provider() {
         .await
         .expect("create rootless container");
     let proc = sandbox
-        .spawn(pc::Command::new(["true"]))
+        .spawn(pc::Command::new(command_of(&spec)))
         .await
-        .expect("handle to the process-as-container");
+        .expect("exec content probe");
     let mut code = None;
     for _ in 0..100 {
         match proc.poll().await.expect("poll") {
@@ -196,13 +197,16 @@ async fn podman_rotates_and_persists_a_native_credential_file() {
         })),
     };
     let sandbox = provider.create(&spec).await.unwrap();
-    let process = sandbox.spawn(pc::Command::new(["true"])).await.unwrap();
+    let process = sandbox
+        .spawn(pc::Command::new(command_of(&spec)))
+        .await
+        .unwrap();
     for _ in 0..100 {
         if process.poll().await.unwrap().is_some() {
             break;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    assert_eq!(broker.0.lock().unwrap().as_slice(), refreshed);
     sandbox.dispose().await.unwrap();
+    assert_eq!(broker.0.lock().unwrap().as_slice(), refreshed);
 }

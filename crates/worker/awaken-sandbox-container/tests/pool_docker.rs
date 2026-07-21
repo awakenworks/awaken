@@ -1,5 +1,5 @@
-//! G6 warm pool against a REAL Docker daemon: pre-warm process-as-container agents,
-//! prove a warm one is handed out to a matching session over the real ACP wire
+//! G6 warm pool against a REAL Docker daemon: pre-warm empty environments,
+//! prove one is bound to a matching Session and execs its ACP process
 //! (cold-start paid off-path), and that shutdown reaps every warm container.
 //!
 //! Gated on the `docker` feature AND a reachable daemon (self-skips otherwise).
@@ -16,21 +16,12 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const AGENT_PORT: u16 = 8080;
 
-/// A busybox `nc` agent: listen on the port and reply with the newline ACP wire.
+/// A busybox stdio agent replying with the newline ACP wire.
 fn agent_argv() -> Vec<String> {
     let script = "read _p; \
         printf '%s\\n' '{\"type\":\"message\",\"text\":\"warm reply\"}'; \
         printf '%s\\n' '{\"type\":\"turn_end\",\"reason\":\"natural_end\"}'";
-    vec![
-        "nc".into(),
-        "-lk".into(),
-        "-p".into(),
-        AGENT_PORT.to_string(),
-        "-e".into(),
-        "sh".into(),
-        "-c".into(),
-        script.into(),
-    ]
+    vec!["sh".into(), "-c".into(), script.into()]
 }
 
 /// A mount-less process-as-container agent spec (poolable). `scope` is the session
@@ -74,7 +65,7 @@ async fn a_warm_pool_pre_provisions_capacity_and_hands_a_ready_agent_to_a_sessio
     let pool = WarmContainerPool::new(provider, 2);
     let session_spec = spec("pool-session");
 
-    // Pre-provision 2 warm agents for this shape (cold-start capacity).
+    // Pre-provision 2 empty environments for this shape (cold-start capacity).
     pool.prewarm(&session_spec, 2)
         .await
         .expect("pre-warm two agents");
@@ -96,7 +87,7 @@ async fn a_warm_pool_pre_provisions_capacity_and_hands_a_ready_agent_to_a_sessio
         "handing out a session consumed one warm agent"
     );
 
-    // The warm agent is fully usable: drive the real ACP wire over its dialed port.
+    // The agent exec is fully usable over its own stdio channel.
     let mut channel = session.channel;
     channel.write_all(b"hello\n").await.expect("write prompt");
     channel.flush().await.ok();
@@ -123,8 +114,7 @@ async fn a_warm_pool_pre_provisions_capacity_and_hands_a_ready_agent_to_a_sessio
         0,
         "shutdown disposed every warm container"
     );
-    // The session's own container is disposed via its process handle (kill).
-    let _ = session.process.signal(pc::Signal::Kill).await;
+    assert_eq!(session.process.wait().await.unwrap().code, Some(0));
 
     assert!(
         got.contains("warm reply") && got.contains("turn_end"),
@@ -168,6 +158,7 @@ async fn a_session_with_a_mount_bypasses_the_pool() {
     // pool was BYPASSED: the shape-matched warm base capacity is untouched.
     if let Ok(session) = AgentContainerProvider::open_agent(&pool, &mounted).await {
         let _ = session.process.signal(pc::Signal::Kill).await;
+        let _ = session.process.wait().await;
     }
     assert_eq!(
         pool.ready_len(&base),

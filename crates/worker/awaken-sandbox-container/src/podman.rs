@@ -9,21 +9,117 @@
 //! same dial the Docker adapter uses. Compile-verified here; running needs `podman`.
 
 use std::net::SocketAddr;
+use std::process::Stdio;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
-use awaken_agent_channel::{AgentChannel, AgentTransport};
+use awaken_agent_channel::{AgentChannel, AgentTransport, SplitChannel};
 use awaken_provisioning_contract as pc;
-use tokio::process::Command as OsCommand;
+use tokio::process::{Child, Command as OsCommand};
 
 use crate::net::TcpAgentTransport;
 use crate::{
     ContainerPlan, ContainerRuntime, ContainerState, ManagedContainer, REAPER_LABEL,
-    REAPER_OWNER_LABEL, RuntimeError, podman_run_argv, runtime_container_name,
+    REAPER_OWNER_LABEL, RuntimeAgentProcess, RuntimeError, podman_run_argv,
+    runtime_container_name,
 };
+
+static EXEC_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 fn backend(e: impl std::fmt::Display) -> RuntimeError {
     RuntimeError::Backend(e.to_string())
+}
+
+struct PodmanExecState {
+    child: Option<Child>,
+    status: Option<pc::ExitStatus>,
+}
+
+struct PodmanExecProcess {
+    id: String,
+    container_id: String,
+    bin: String,
+    pid_file: String,
+    state: tokio::sync::Mutex<PodmanExecState>,
+}
+
+impl PodmanExecProcess {
+    fn exit_status(status: std::process::ExitStatus) -> pc::ExitStatus {
+        pc::ExitStatus {
+            code: status.code(),
+            signaled: status.code().is_none(),
+        }
+    }
+}
+
+#[async_trait]
+impl pc::ProcessHandle for PodmanExecProcess {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    async fn wait(&self) -> Result<pc::ExitStatus, pc::SandboxError> {
+        let mut state = self.state.lock().await;
+        if let Some(status) = &state.status {
+            return Ok(status.clone());
+        }
+        let child = state
+            .child
+            .as_mut()
+            .ok_or_else(|| pc::SandboxError::new("podman exec process is not attached"))?;
+        let status = child
+            .wait()
+            .await
+            .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+        let status = Self::exit_status(status);
+        state.status = Some(status.clone());
+        Ok(status)
+    }
+
+    async fn poll(&self) -> Result<Option<pc::ExitStatus>, pc::SandboxError> {
+        let mut state = self.state.lock().await;
+        if let Some(status) = &state.status {
+            return Ok(Some(status.clone()));
+        }
+        let child = state
+            .child
+            .as_mut()
+            .ok_or_else(|| pc::SandboxError::new("podman exec process is not attached"))?;
+        let status = child
+            .try_wait()
+            .map_err(|error| pc::SandboxError::new(error.to_string()))?
+            .map(Self::exit_status);
+        if let Some(status) = &status {
+            state.status = Some(status.clone());
+        }
+        Ok(status)
+    }
+
+    async fn signal(&self, signal: pc::Signal) -> Result<(), pc::SandboxError> {
+        let name = match signal {
+            pc::Signal::Term => "TERM",
+            pc::Signal::Kill => "KILL",
+            pc::Signal::Int => "INT",
+        };
+        let script = format!(
+            "pid=$(cat -- '{}') && kill -{} \"$pid\"",
+            self.pid_file.replace('\'', "'\\''"),
+            name
+        );
+        let status = OsCommand::new(&self.bin)
+            .args(["exec", &self.container_id, "sh", "-c", &script])
+            .status()
+            .await
+            .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(pc::SandboxError::new(format!(
+                "podman exec signal failed with {status}"
+            )))
+        }
+    }
 }
 
 /// The outcome of one subcommand, decoupled from `std::process` so the CLI logic
@@ -140,6 +236,79 @@ impl PodmanRuntime {
             .parse()
             .map_err(|e| backend(format!("bad published addr: {e}")))
     }
+
+    fn exec_process(
+        &self,
+        container_id: &str,
+        command: pc::Command,
+        attached_agent: bool,
+    ) -> Result<(String, String, Child), RuntimeError> {
+        if command.argv.is_empty() {
+            return Err(backend("exec command argv is empty"));
+        }
+        if !attached_agent && command.stdio == pc::Stdio::Piped {
+            return Err(backend(
+                "piped container exec requires the agent-channel capability",
+            ));
+        }
+        let id = format!(
+            "podman-exec-{}-{}",
+            std::process::id(),
+            EXEC_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        );
+        let pid_file = format!("/tmp/{id}.pid");
+        let mut args = vec!["exec".to_string()];
+        if attached_agent {
+            args.push("-i".into());
+        }
+        if !command.cwd.is_empty() {
+            args.extend(["--workdir".into(), command.cwd.clone()]);
+        }
+        for var in &command.env {
+            let pc::EnvValue::Inline { value } = &var.value else {
+                return Err(backend(format!(
+                    "exec env {} is not materialized inline",
+                    var.name
+                )));
+            };
+            args.extend(["--env".into(), format!("{}={value}", var.name)]);
+        }
+        args.extend([
+            container_id.to_string(),
+            "sh".into(),
+            "-c".into(),
+            "pid_file=$1; shift; printf '%s' \"$$\" > \"$pid_file\"; exec \"$@\"".into(),
+            "awaken-exec".into(),
+            pid_file.clone(),
+        ]);
+        args.extend(command.argv);
+        let mut process = OsCommand::new(&self.bin);
+        process.args(args);
+        if attached_agent {
+            process
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null());
+        } else {
+            match command.stdio {
+                pc::Stdio::Inherit => {
+                    process
+                        .stdin(Stdio::inherit())
+                        .stdout(Stdio::inherit())
+                        .stderr(Stdio::inherit());
+                }
+                pc::Stdio::Null => {
+                    process
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null());
+                }
+                pc::Stdio::Piped => unreachable!("rejected above"),
+            }
+        }
+        let child = process.spawn().map_err(backend)?;
+        Ok((id, pid_file, child))
+    }
 }
 
 #[async_trait]
@@ -165,6 +334,53 @@ impl ContainerRuntime for PodmanRuntime {
         }
         self.run(&args).await?;
         Ok(name)
+    }
+
+    async fn spawn(
+        &self,
+        container_id: &str,
+        command: pc::Command,
+    ) -> Result<Box<dyn pc::ProcessHandle>, RuntimeError> {
+        let (id, pid_file, child) = self.exec_process(container_id, command, false)?;
+        Ok(Box::new(PodmanExecProcess {
+            id,
+            container_id: container_id.to_string(),
+            bin: self.bin.clone(),
+            pid_file,
+            state: tokio::sync::Mutex::new(PodmanExecState {
+                child: Some(child),
+                status: None,
+            }),
+        }))
+    }
+
+    async fn spawn_agent(
+        &self,
+        container_id: &str,
+        command: pc::Command,
+    ) -> Result<RuntimeAgentProcess, RuntimeError> {
+        let (id, pid_file, mut child) = self.exec_process(container_id, command, true)?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| backend("podman agent exec has no stdin"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| backend("podman agent exec has no stdout"))?;
+        Ok(RuntimeAgentProcess {
+            process: Box::new(PodmanExecProcess {
+                id,
+                container_id: container_id.to_string(),
+                bin: self.bin.clone(),
+                pid_file,
+                state: tokio::sync::Mutex::new(PodmanExecState {
+                    child: Some(child),
+                    status: None,
+                }),
+            }),
+            channel: Box::new(SplitChannel::new(stdout, stdin)),
+        })
     }
 
     async fn open_channel(

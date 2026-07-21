@@ -10,24 +10,126 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 
 use async_trait::async_trait;
-use awaken_agent_channel::{AgentChannel, AgentTransport};
+use awaken_agent_channel::{AgentChannel, AgentTransport, SplitChannel};
 use awaken_provisioning_contract as pc;
 use bollard::Docker;
 use bollard::container::{
     Config, CreateContainerOptions, DownloadFromContainerOptions, KillContainerOptions,
     ListContainersOptions, RemoveContainerOptions, StartContainerOptions, WaitContainerOptions,
 };
+use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
 use bollard::models::{HostConfig, PortBinding};
 use futures_util::StreamExt;
+use tokio::io::AsyncWriteExt;
 
 use crate::net::TcpAgentTransport;
 use crate::{
     ContainerPlan, ContainerRuntime, ContainerState, ManagedContainer, REAPER_LABEL,
-    REAPER_OWNER_LABEL, RuntimeError, runtime_container_name,
+    REAPER_OWNER_LABEL, RuntimeAgentProcess, RuntimeError, runtime_container_name,
 };
 
 fn backend(e: impl std::fmt::Display) -> RuntimeError {
     RuntimeError::Backend(e.to_string())
+}
+
+fn exec_env(command: &pc::Command) -> Result<Vec<String>, RuntimeError> {
+    command
+        .env
+        .iter()
+        .map(|var| match &var.value {
+            pc::EnvValue::Inline { value } => Ok(format!("{}={value}", var.name)),
+            _ => Err(backend(format!(
+                "exec env {} is not materialized inline",
+                var.name
+            ))),
+        })
+        .collect()
+}
+
+struct DockerExecProcess {
+    docker: Docker,
+    container_id: String,
+    exec_id: String,
+}
+
+impl DockerExecProcess {
+    async fn status(&self) -> Result<Option<pc::ExitStatus>, pc::SandboxError> {
+        let state = self
+            .docker
+            .inspect_exec(&self.exec_id)
+            .await
+            .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+        if state.running.unwrap_or(false) {
+            return Ok(None);
+        }
+        Ok(Some(pc::ExitStatus {
+            code: state.exit_code.map(|code| code as i32),
+            signaled: false,
+        }))
+    }
+}
+
+#[async_trait]
+impl pc::ProcessHandle for DockerExecProcess {
+    fn id(&self) -> &str {
+        &self.exec_id
+    }
+
+    async fn wait(&self) -> Result<pc::ExitStatus, pc::SandboxError> {
+        loop {
+            if let Some(status) = self.status().await? {
+                return Ok(status);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    }
+
+    async fn poll(&self) -> Result<Option<pc::ExitStatus>, pc::SandboxError> {
+        self.status().await
+    }
+
+    async fn signal(&self, signal: pc::Signal) -> Result<(), pc::SandboxError> {
+        let state = self
+            .docker
+            .inspect_exec(&self.exec_id)
+            .await
+            .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+        let pid = state
+            .pid
+            .filter(|pid| *pid > 0)
+            .ok_or_else(|| pc::SandboxError::new("docker exec process has no live pid"))?;
+        let name = match signal {
+            pc::Signal::Term => "TERM",
+            pc::Signal::Kill => "KILL",
+            pc::Signal::Int => "INT",
+        };
+        let request = self
+            .docker
+            .create_exec(
+                &self.container_id,
+                CreateExecOptions {
+                    cmd: Some(vec![
+                        "kill".to_string(),
+                        format!("-{name}"),
+                        pid.to_string(),
+                    ]),
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+        self.docker
+            .start_exec(
+                &request.id,
+                Some(StartExecOptions {
+                    detach: true,
+                    ..Default::default()
+                }),
+            )
+            .await
+            .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+        Ok(())
+    }
 }
 
 /// Map neutral resource limits onto a bollard `HostConfig`'s cgroup fields (limits
@@ -371,6 +473,130 @@ impl ContainerRuntime for DockerRuntime {
             .await
             .map_err(backend)?;
         Ok(created.id)
+    }
+
+    async fn spawn(
+        &self,
+        container_id: &str,
+        command: pc::Command,
+    ) -> Result<Box<dyn pc::ProcessHandle>, RuntimeError> {
+        if command.argv.is_empty() {
+            return Err(backend("exec command argv is empty"));
+        }
+        let env = exec_env(&command)?;
+        let working_dir = (!command.cwd.is_empty()).then_some(command.cwd.clone());
+        let request = self
+            .docker
+            .create_exec(
+                container_id,
+                CreateExecOptions {
+                    cmd: Some(command.argv),
+                    env: Some(env),
+                    working_dir,
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(backend)?;
+        match self
+            .docker
+            .start_exec(
+                &request.id,
+                Some(StartExecOptions {
+                    detach: true,
+                    ..Default::default()
+                }),
+            )
+            .await
+            .map_err(backend)?
+        {
+            StartExecResults::Detached => Ok(Box::new(DockerExecProcess {
+                docker: self.docker.clone(),
+                container_id: container_id.to_string(),
+                exec_id: request.id,
+            })),
+            StartExecResults::Attached { .. } => {
+                Err(backend("docker returned attached result for detached exec"))
+            }
+        }
+    }
+
+    async fn spawn_agent(
+        &self,
+        container_id: &str,
+        command: pc::Command,
+    ) -> Result<RuntimeAgentProcess, RuntimeError> {
+        if command.argv.is_empty() {
+            return Err(backend("agent exec command argv is empty"));
+        }
+        let env = exec_env(&command)?;
+        let working_dir = (!command.cwd.is_empty()).then_some(command.cwd.clone());
+        let request = self
+            .docker
+            .create_exec(
+                container_id,
+                CreateExecOptions {
+                    attach_stdin: Some(true),
+                    attach_stdout: Some(true),
+                    attach_stderr: Some(false),
+                    cmd: Some(command.argv),
+                    env: Some(env),
+                    working_dir,
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(backend)?;
+        let (mut output, input) = match self
+            .docker
+            .start_exec(&request.id, None::<StartExecOptions>)
+            .await
+            .map_err(backend)?
+        {
+            StartExecResults::Attached { output, input } => (output, input),
+            StartExecResults::Detached => {
+                return Err(backend("docker returned detached result for agent exec"));
+            }
+        };
+        let (mut output_writer, output_reader) = tokio::io::duplex(64 * 1024);
+        tokio::spawn(async move {
+            while let Some(frame) = output.next().await {
+                match frame {
+                    Ok(frame) if output_writer.write_all(frame.as_ref()).await.is_ok() => {}
+                    _ => break,
+                }
+            }
+        });
+        Ok(RuntimeAgentProcess {
+            process: Box::new(DockerExecProcess {
+                docker: self.docker.clone(),
+                container_id: container_id.to_string(),
+                exec_id: request.id,
+            }),
+            channel: Box::new(SplitChannel::new(output_reader, input)),
+        })
+    }
+
+    async fn process(
+        &self,
+        container_id: &str,
+        process_id: &str,
+    ) -> Result<Box<dyn pc::ProcessHandle>, RuntimeError> {
+        let state = self
+            .docker
+            .inspect_exec(process_id)
+            .await
+            .map_err(backend)?;
+        if state.container_id.as_deref() != Some(container_id) {
+            return Err(backend(format!(
+                "exec {process_id} does not belong to container {container_id}"
+            )));
+        }
+        Ok(Box::new(DockerExecProcess {
+            docker: self.docker.clone(),
+            container_id: container_id.to_string(),
+            exec_id: process_id.to_string(),
+        }))
     }
 
     async fn open_channel(

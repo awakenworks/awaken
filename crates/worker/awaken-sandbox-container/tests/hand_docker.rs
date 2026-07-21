@@ -5,8 +5,8 @@
 //! in a host<->container bind-mount rendezvous (the host then dials `DialAddr::Unix`).
 //!
 //! This proves the whole path works with EXISTING container primitives: a `CacheVolume`
-//! mount is already a RW host-dir bind, `pc::SandboxProvider::create` runs the hand as a
-//! process-as-container under `network: None`, and the host reaches the unix socket the
+//! mount is already a RW host-dir bind, the bound Session environment execs the hand
+//! under `network: None`, and the host reaches the unix socket the
 //! hand bound in the shared dir. (The fake hand is a python unix-echo — self-contained,
 //! no egress install — standing in for `awaken-sandbox hand`.)
 //!
@@ -90,13 +90,17 @@ async fn a_hand_in_a_network_denied_container_is_reached_over_a_unix_rendezvous(
         outputs_path: "/mnt/session/outputs".into(),
         limits: Default::default(),
         lease_ttl_secs: None,
-        extra: Some(serde_json::json!({ "command": fake_hand_argv() })),
+        extra: None,
     };
 
     let sandbox = provider
         .create(&spec)
         .await
         .expect("create the hand container under --network none");
+    let hand = sandbox
+        .spawn(pc::Command::new(fake_hand_argv()))
+        .await
+        .expect("exec hand in the Session environment");
 
     // The brain (host side) dials the hand's unix socket — DialAddr::Unix. Retry while
     // the container boots and the hand binds the socket.
@@ -115,6 +119,7 @@ async fn a_hand_in_a_network_denied_container_is_reached_over_a_unix_rendezvous(
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
+    assert_eq!(hand.wait().await.expect("hand exit").code, Some(0));
     sandbox.dispose().await.expect("dispose");
     let _ = std::fs::remove_dir_all(&rv);
 

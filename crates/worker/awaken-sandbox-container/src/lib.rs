@@ -19,6 +19,9 @@ use awaken_agent_channel::{AgentChannel, AgentTransport, ChannelError};
 use awaken_provisioning_contract as pc;
 use std::sync::Arc;
 
+mod environment_owned;
+use environment_owned::EnvironmentOwnedProcess;
+
 /// Container-tier capabilities: OS-enforced isolation strong enough to host an
 /// opaque agent, with the guarantees bwrap could not give (allowlist egress,
 /// resource limits, a custom rootfs/image).
@@ -1085,6 +1088,17 @@ pub fn command_of(spec: &pc::SandboxSpec) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Portable PID-1 command for a Session-owned container environment. Attempt
+/// commands run through exec; PID 1 only keeps the mount and network namespaces
+/// alive until the owning Session disposes the sandbox.
+fn environment_keepalive_command() -> Vec<String> {
+    vec![
+        "/bin/sh".into(),
+        "-c".into(),
+        "trap 'exit 0' TERM INT; while :; do sleep 3600 & wait $!; done".into(),
+    ]
+}
+
 fn inline_env(spec: &pc::SandboxSpec) -> Vec<(String, String)> {
     spec.env
         .iter()
@@ -1191,6 +1205,15 @@ pub enum ContainerState {
     Gone,
 }
 
+/// One opaque agent process started *inside* an already-running container
+/// environment.  The environment and process deliberately have independent
+/// lifecycles: dropping or terminating this process must not dispose the Session's
+/// container.
+pub struct RuntimeAgentProcess {
+    pub process: Box<dyn pc::ProcessHandle>,
+    pub channel: Box<dyn AgentChannel>,
+}
+
 /// The seam the provider drives — implemented by a bollard adapter (Docker) or a
 /// kube adapter (K8s), and by an in-memory fake in tests. Names no neutral-contract
 /// type beyond the value objects it must move.
@@ -1214,6 +1237,44 @@ pub trait ContainerRuntime: Send + Sync {
     }
     /// Create + start the container/pod running `plan.command` as its main process.
     async fn create(&self, id: &str, plan: &ContainerPlan) -> Result<String, RuntimeError>;
+
+    /// Launch an ordinary process inside a live container environment.  Unlike the
+    /// historical process-as-container implementation, this MUST execute `command`;
+    /// returning a handle to PID 1 would violate tool transparency.
+    async fn spawn(
+        &self,
+        _container_id: &str,
+        _command: pc::Command,
+    ) -> Result<Box<dyn pc::ProcessHandle>, RuntimeError> {
+        Err(RuntimeError::Backend(
+            "container runtime does not implement exec".into(),
+        ))
+    }
+
+    /// Launch an opaque stdio agent inside a live container and return the exact
+    /// process plus its duplex stdin/stdout channel.
+    async fn spawn_agent(
+        &self,
+        _container_id: &str,
+        _command: pc::Command,
+    ) -> Result<RuntimeAgentProcess, RuntimeError> {
+        Err(RuntimeError::Backend(
+            "container runtime does not implement attached exec".into(),
+        ))
+    }
+
+    /// Reconnect to a previously launched exec process.  Backends unable to recover
+    /// an ephemeral exec session fail closed; the host may then apply its declared
+    /// rebuild policy instead of silently re-running the command.
+    async fn process(
+        &self,
+        _container_id: &str,
+        _process_id: &str,
+    ) -> Result<Box<dyn pc::ProcessHandle>, RuntimeError> {
+        Err(RuntimeError::Backend(
+            "container runtime cannot reconnect to exec process".into(),
+        ))
+    }
     /// Open a duplex channel to the running agent — bollard container attach for
     /// Docker, a network dial (TCP / reverse-dial via `awaken-connection`) for a
     /// firewalled Pod. This replaces exec-into-idle: the agent *is* the container.
@@ -1386,14 +1447,10 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             )));
         }
 
-        // Process-as-container: the agent command is provisioned at create, not
-        // exec'd into an idle container later.
-        let command = command_of(spec);
-        if command.is_empty() {
-            return Err(err(RuntimeError::Backend(
-                "container tier requires spec.extra.command (process-as-container)".into(),
-            )));
-        }
+        // A Session owns one live environment. PID 1 is only a keepalive;
+        // Native/ACP commands are exec processes and can be replaced or retried
+        // without recreating the workspace.
+        let command = environment_keepalive_command();
         let mut plan = container_plan(spec, &self.default_image, &command);
         // Resolve + materialize each mount's bytes: self-contained content (codex config,
         // ADR-0038 resources) ships in the plan; File/Resource/Secret resolve by id through
@@ -1476,6 +1533,36 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             handle,
         })
     }
+
+    /// Re-adopt a concrete long-lived environment from its durable handle.
+    pub async fn adopt_container(
+        &self,
+        handle: &pc::SandboxHandle,
+    ) -> Result<ContainerSandbox<R>, pc::SandboxError> {
+        let container_id = handle
+            .extra
+            .as_ref()
+            .and_then(|v| v.get("container_id"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| err(RuntimeError::Backend("handle missing container_id".into())))?
+            .to_string();
+        let outputs_path = handle
+            .extra
+            .as_ref()
+            .and_then(|v| v.get("outputs_path"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("/mnt/session/outputs")
+            .to_string();
+        self.runtime.inspect(&container_id).await.map_err(err)?;
+        Ok(ContainerSandbox {
+            runtime: self.runtime.clone(),
+            id: handle.sandbox_id.clone(),
+            container_id,
+            outputs_path,
+            realized: Vec::new(),
+            lifecycle: Arc::new(ContainerLifecycle::completed()),
+        })
+    }
 }
 
 /// A running process-as-container agent, handed to the host's ACP
@@ -1508,8 +1595,46 @@ impl<R: ContainerRuntime + 'static> AgentContainerProvider for ContainerProvider
         &self,
         spec: &pc::SandboxSpec,
     ) -> Result<AgentContainerSession, pc::SandboxError> {
-        let sandbox = self.create_container(spec).await?;
-        self.open_agent_from(sandbox).await
+        let environment: Arc<dyn ContainerEnvironment> =
+            Arc::new(self.create_container(spec).await?);
+        let argv = command_of(spec);
+        if argv.is_empty() {
+            return Err(pc::SandboxError::new("agent command argv is empty"));
+        }
+        let handle = environment.handle();
+        let RuntimeAgentProcess { process, channel } = environment
+            .spawn_agent_process(pc::Command {
+                argv,
+                cwd: String::new(),
+                env: Vec::new(),
+                stdio: pc::Stdio::Piped,
+            })
+            .await?;
+        Ok(AgentContainerSession {
+            channel,
+            process: Box::new(EnvironmentOwnedProcess {
+                inner: process,
+                environment,
+            }),
+            handle,
+        })
+    }
+}
+
+#[async_trait]
+impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for ContainerProvider<R> {
+    async fn create_environment(
+        &self,
+        spec: &pc::SandboxSpec,
+    ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
+        Ok(Arc::new(self.create_container(spec).await?))
+    }
+
+    async fn adopt_environment(
+        &self,
+        handle: &pc::SandboxHandle,
+    ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
+        Ok(Arc::new(self.adopt_container(handle).await?))
     }
 }
 
@@ -1530,30 +1655,7 @@ impl<R: ContainerRuntime + 'static> pc::SandboxProvider for ContainerProvider<R>
         &self,
         handle: &pc::SandboxHandle,
     ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
-        let container_id = handle
-            .extra
-            .as_ref()
-            .and_then(|v| v.get("container_id"))
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| err(RuntimeError::Backend("handle missing container_id".into())))?
-            .to_string();
-        let outputs_path = handle
-            .extra
-            .as_ref()
-            .and_then(|v| v.get("outputs_path"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("/mnt/session/outputs")
-            .to_string();
-        // Prove the container is still there before handing back a live sandbox.
-        self.runtime.inspect(&container_id).await.map_err(err)?;
-        Ok(Box::new(ContainerSandbox {
-            runtime: self.runtime.clone(),
-            id: handle.sandbox_id.clone(),
-            container_id,
-            outputs_path,
-            realized: Vec::new(),
-            lifecycle: Arc::new(ContainerLifecycle::completed()),
-        }))
+        Ok(Box::new(self.adopt_container(handle).await?))
     }
 }
 
@@ -1573,6 +1675,61 @@ pub struct ContainerSandbox<R: ContainerRuntime> {
     lifecycle: Arc<ContainerLifecycle>,
 }
 
+impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
+    /// Start an opaque stdio agent as an exec process in this Session environment.
+    /// Repeated calls create independent attempt processes while preserving the same
+    /// workspace, mounts, network policy, and durable sandbox handle.
+    pub async fn spawn_agent(
+        &self,
+        command: pc::Command,
+    ) -> Result<RuntimeAgentProcess, pc::SandboxError> {
+        self.runtime
+            .spawn_agent(&self.container_id, command)
+            .await
+            .map_err(err)
+    }
+
+    fn bind_scope(mut self, scope: impl Into<String>) -> Self {
+        self.id = scope.into();
+        self
+    }
+}
+
+/// Object-safe live container environment owned by one Session.  This is the
+/// container counterpart of a local/namespace sandbox plus its segregated opaque
+/// agent-channel capability.
+#[async_trait]
+pub trait ContainerEnvironment: pc::Sandbox {
+    async fn spawn_agent_process(
+        &self,
+        command: pc::Command,
+    ) -> Result<RuntimeAgentProcess, pc::SandboxError>;
+}
+
+#[async_trait]
+impl<R: ContainerRuntime + 'static> ContainerEnvironment for ContainerSandbox<R> {
+    async fn spawn_agent_process(
+        &self,
+        command: pc::Command,
+    ) -> Result<RuntimeAgentProcess, pc::SandboxError> {
+        self.spawn_agent(command).await
+    }
+}
+
+/// Backend-erased provider for Session-owned container environments.
+#[async_trait]
+pub trait ContainerEnvironmentProvider: Send + Sync {
+    async fn create_environment(
+        &self,
+        spec: &pc::SandboxSpec,
+    ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError>;
+
+    async fn adopt_environment(
+        &self,
+        handle: &pc::SandboxHandle,
+    ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError>;
+}
+
 struct ContainerLifecycle {
     staging: std::sync::Mutex<Option<StagingGuard>>,
     secret_writebacks: Vec<SecretWriteback>,
@@ -1588,7 +1745,7 @@ impl ContainerLifecycle {
             secret_writebacks: Vec::new(),
             secret_broker: None,
             writeback_done: tokio::sync::Mutex::new(true),
-            remove_done: tokio::sync::Mutex::new(true),
+            remove_done: tokio::sync::Mutex::new(false),
         }
     }
 
@@ -1637,6 +1794,19 @@ impl ContainerLifecycle {
             let _ = runtime.remove(container_id).await;
             *done = true;
         }
+    }
+
+    async fn dispose_once<R: ContainerRuntime>(
+        &self,
+        runtime: &R,
+        container_id: &str,
+    ) -> Result<(), pc::SandboxError> {
+        let mut done = self.remove_done.lock().await;
+        if !*done {
+            runtime.remove(container_id).await.map_err(err)?;
+            *done = true;
+        }
+        Ok(())
     }
 }
 
@@ -1722,17 +1892,12 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
 
     async fn spawn(
         &self,
-        _command: pc::Command,
+        command: pc::Command,
     ) -> Result<Box<dyn pc::ProcessHandle>, pc::SandboxError> {
-        // Process-as-container: the agent was launched as the container's main
-        // process at `create`. `spawn` returns a handle to it (the command is
-        // provisioned, not re-launched); drive its stdio via `AgentTransport`.
-        Ok(Box::new(ContainerProcess {
-            runtime: self.runtime.clone(),
-            container_id: self.container_id.clone(),
-            lifecycle: self.lifecycle.clone(),
-            remove_on_exit: false,
-        }))
+        self.runtime
+            .spawn(&self.container_id, command)
+            .await
+            .map_err(err)
     }
 
     async fn attach(
@@ -1766,15 +1931,12 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
 
     async fn process(
         &self,
-        _process_id: &str,
+        process_id: &str,
     ) -> Result<Box<dyn pc::ProcessHandle>, pc::SandboxError> {
-        // One process per container tier: reconnect to the main agent process.
-        Ok(Box::new(ContainerProcess {
-            runtime: self.runtime.clone(),
-            container_id: self.container_id.clone(),
-            lifecycle: self.lifecycle.clone(),
-            remove_on_exit: false,
-        }))
+        self.runtime
+            .process(&self.container_id, process_id)
+            .await
+            .map_err(err)
     }
 
     async fn status(&self) -> Result<pc::SandboxStatus, pc::SandboxError> {
@@ -1797,7 +1959,15 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
     }
 
     async fn dispose(&self) -> Result<(), pc::SandboxError> {
-        self.runtime.remove(&self.container_id).await.map_err(err)
+        // Writable durable credentials belong to the Session environment and are
+        // harvested exactly once when that environment terminates, not after each
+        // attempt process.
+        self.lifecycle
+            .write_back_secrets(self.runtime.as_ref(), &self.container_id)
+            .await?;
+        self.lifecycle
+            .dispose_once(self.runtime.as_ref(), &self.container_id)
+            .await
     }
 }
 
