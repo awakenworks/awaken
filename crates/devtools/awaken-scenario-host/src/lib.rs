@@ -1585,7 +1585,8 @@ pub async fn build_config_router() -> Router {
     let host = SharedHost::new(model, model_ref)
         .with_local_workspace(platform_workspace.clone())
         .with_config_service(service.clone())
-        .with_admin_tools(admin_execs);
+        .with_admin_tools(admin_execs)
+        .with_remote_attempt_executor(awaken_server::a2a_attempt_executor());
     // The reserved value owns only configuration/tool visibility. Install the
     // executable in the Host's real platform Workspace so Sessions, resources,
     // credentials, and runtime lookup share one coordinate.

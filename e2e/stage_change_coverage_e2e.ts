@@ -54,6 +54,7 @@ const scenarios: Scenario[] = [
   { id: 'mcp_stdio', file: 'e2e/mcp_server_core_e2e.ts' },
   { id: 'mcp_http', file: 'e2e/mcp_streamable_http_e2e.ts' },
   { id: 'resource_plane_postgres', file: 'e2e/resource_plane_postgres_e2e.ts', postgres: true },
+  { id: 'remote_attempt', file: 'e2e/remote_attempt_lifecycle_e2e.ts' },
 ];
 
 const obligations: Obligation[] = [
@@ -142,6 +143,14 @@ const obligations: Obligation[] = [
   { id: 'D7-19a', stage: '7 resource persistence', behavior: 'Postgres reclamation fences recover from contention, late references, physical faults, and release faults', scenario: 'resource_plane_postgres' },
   { id: 'D7-20', stage: '7 resource persistence', behavior: 'Extracted and Stored Memory intents resume while stale mutations and unavailable extractors fail terminally', scenario: 'memory_extraction_stage_recovery' },
   { id: 'D7-21', stage: '7 resource persistence', behavior: 'agent-authored Skill harvest is idempotent for equal bytes and appends one immutable changed version', scenario: 'managed_full_chain' },
+  { id: 'D7-A01', stage: '7 remote A2A attempt', behavior: 'managed config preserves and publishes the complete A2A backend binding', scenario: 'remote_attempt' },
+  { id: 'D7-A02', stage: '7 remote A2A attempt', behavior: 'root remote attempt commits its opaque task reference before polling', scenario: 'remote_attempt' },
+  { id: 'D7-A03', stage: '7 remote A2A attempt', behavior: 'replacement reattaches after hard crash without a second message send', scenario: 'remote_attempt' },
+  { id: 'D7-A04', stage: '7 remote A2A attempt', behavior: 'every recovery poll addresses the pinned remote task identity', scenario: 'remote_attempt' },
+  { id: 'D7-A05', stage: '7 remote A2A attempt', behavior: 'remote input-required resumes through the managed API', scenario: 'remote_attempt' },
+  { id: 'D7-A06', stage: '7 remote A2A attempt', behavior: 'resume preserves the committed remote context and stable message identity', scenario: 'remote_attempt' },
+  { id: 'D7-A07', stage: '7 remote A2A attempt', behavior: 'durable cancellation addresses the pinned remote task exactly once', scenario: 'remote_attempt' },
+  { id: 'D7-A08', stage: '7 remote A2A attempt', behavior: 'cancelled remote attempt is no longer dispatchable', scenario: 'remote_attempt' },
 
   { id: 'D8-01', stage: '8 neutral MCP server core', behavior: 'newest and older protocol versions negotiate', scenario: 'mcp_stdio' },
   { id: 'D8-02', stage: '8 neutral MCP server core', behavior: 'unsupported version returns invalid params', scenario: 'mcp_stdio' },
