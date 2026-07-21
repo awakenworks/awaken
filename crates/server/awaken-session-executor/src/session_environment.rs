@@ -393,7 +393,26 @@ mod tests {
         shared: Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>>,
     }
 
-    struct DoneProcess(String);
+    struct DoneProcess {
+        id: String,
+        code: i32,
+    }
+
+    impl DoneProcess {
+        fn success(id: impl Into<String>) -> Self {
+            Self {
+                id: id.into(),
+                code: 0,
+            }
+        }
+
+        fn exited(id: impl Into<String>, code: i32) -> Self {
+            Self {
+                id: id.into(),
+                code,
+            }
+        }
+    }
 
     struct FakeHandExecutorFactory;
 
@@ -428,12 +447,12 @@ mod tests {
     #[async_trait]
     impl pc::ProcessHandle for DoneProcess {
         fn id(&self) -> &str {
-            &self.0
+            &self.id
         }
 
         async fn wait(&self) -> Result<pc::ExitStatus, pc::SandboxError> {
             Ok(pc::ExitStatus {
-                code: Some(0),
+                code: Some(self.code),
                 signaled: false,
             })
         }
@@ -481,6 +500,7 @@ mod tests {
             command: pc::Command,
         ) -> Result<awaken_sandbox_container::RuntimeAgentProcess, pc::SandboxError> {
             let (ours, theirs) = tokio::io::duplex(64 * 1024);
+            let repository_export = command.argv.iter().any(|part| part == "bundle");
             if command.argv.iter().any(|part| part == "--stdio") {
                 tokio::spawn(async move {
                     use tokio::io::AsyncReadExt;
@@ -501,6 +521,8 @@ mod tests {
                     let mut theirs = theirs;
                     let _ = theirs.write_all(&bytes).await;
                 });
+            } else if repository_export {
+                drop(theirs);
             } else {
                 tokio::spawn(async move {
                     use tokio::io::AsyncReadExt;
@@ -509,8 +531,19 @@ mod tests {
                     let _ = theirs.read_to_end(&mut bytes).await;
                 });
             }
+            let exit_code = if repository_export
+                && self
+                    .shared
+                    .lock()
+                    .unwrap()
+                    .contains_key("__fail_repository_export")
+            {
+                19
+            } else {
+                0
+            };
             Ok(awaken_sandbox_container::RuntimeAgentProcess {
-                process: Box::new(DoneProcess("container-exec".into())),
+                process: Box::new(DoneProcess::exited("container-exec", exit_code)),
                 channel: Box::new(ours),
             })
         }
@@ -552,7 +585,19 @@ mod tests {
                     .unwrap()
                     .insert("marker".into(), b"shared-container-state".to_vec());
             }
-            Ok(Box::new(DoneProcess("native-exec".into())))
+            let repository_import = command.argv.iter().any(|part| part == "awaken-repo-import");
+            let exit_code = if repository_import
+                && self
+                    .shared
+                    .lock()
+                    .unwrap()
+                    .contains_key("__fail_repository_import")
+            {
+                23
+            } else {
+                0
+            };
+            Ok(Box::new(DoneProcess::exited("native-exec", exit_code)))
         }
 
         async fn attach(
@@ -575,7 +620,7 @@ mod tests {
         }
 
         async fn process(&self, id: &str) -> Result<Box<dyn pc::ProcessHandle>, pc::SandboxError> {
-            Ok(Box::new(DoneProcess(id.into())))
+            Ok(Box::new(DoneProcess::success(id)))
         }
 
         async fn status(&self) -> Result<pc::SandboxStatus, pc::SandboxError> {
@@ -766,6 +811,82 @@ mod tests {
             "adoption refreshes ownership before starting the replacement hand"
         );
         adopted.dispose().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn container_repository_transfer_reports_import_and_export_failures() {
+        let source_root = tempfile::tempdir().expect("source root");
+        let source = source_root.path().join("source");
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .status()
+                .expect("run git fixture command");
+            assert!(status.success(), "git fixture command failed: {args:?}");
+        };
+        git(&["init", "-q", source.to_str().unwrap()]);
+        git(&[
+            "-C",
+            source.to_str().unwrap(),
+            "config",
+            "user.name",
+            "fixture",
+        ]);
+        git(&[
+            "-C",
+            source.to_str().unwrap(),
+            "config",
+            "user.email",
+            "fixture@example.invalid",
+        ]);
+        std::fs::write(source.join("README.md"), "fixture").unwrap();
+        git(&["-C", source.to_str().unwrap(), "add", "README.md"]);
+        git(&[
+            "-C",
+            source.to_str().unwrap(),
+            "commit",
+            "-q",
+            "-m",
+            "fixture",
+        ]);
+
+        let shared = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        let container = FakeContainer {
+            renews: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            shared: shared.clone(),
+        };
+        shared
+            .lock()
+            .unwrap()
+            .insert("__fail_repository_import".into(), Vec::new());
+        let import_error = container_repositories::provision(
+            &container,
+            "repo",
+            source.to_str().unwrap(),
+            None,
+            None,
+        )
+        .await
+        .expect_err("a failed container import is not reported as provisioned");
+        assert!(
+            import_error
+                .to_string()
+                .contains("container repository import exited Some(23)")
+        );
+
+        let mut state = shared.lock().unwrap();
+        state.remove("__fail_repository_import");
+        state.insert("__fail_repository_export".into(), Vec::new());
+        drop(state);
+        let export_error =
+            container_repositories::push(&container, "repo", source.to_str().unwrap(), None)
+                .await
+                .expect_err("a failed container export is not pushed");
+        assert!(
+            export_error
+                .to_string()
+                .contains("container repository export exited Some(19)")
+        );
     }
 
     #[tokio::test]
