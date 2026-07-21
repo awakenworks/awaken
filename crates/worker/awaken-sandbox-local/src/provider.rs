@@ -1401,5 +1401,65 @@ mod workdir_helper_tests {
                 .materialize_read_only_tree(".skills/bad", &[("../escape".into(), vec![])])
                 .is_err()
         );
+        assert!(
+            sandbox
+                .materialize_read_only_tree(".skills/bad", &[("bad\\path".into(), vec![])])
+                .is_err()
+        );
+        assert!(
+            sandbox
+                .materialize_read_only_tree(".skills/bad", &[("/absolute".into(), vec![])])
+                .is_err()
+        );
+
+        let root = tmp.path().join("skill-tree");
+        std::fs::write(root.join("unsafe-root"), b"file").unwrap();
+        assert!(
+            sandbox
+                .materialize_read_only_tree("unsafe-root", &[("value".into(), vec![])])
+                .is_err()
+        );
+
+        std::fs::create_dir_all(root.join("unsafe-destination/dir")).unwrap();
+        assert!(
+            sandbox
+                .materialize_read_only_tree(
+                    "unsafe-destination",
+                    &[("dir".into(), b"not-a-directory".to_vec())],
+                )
+                .is_err()
+        );
+
+        #[cfg(unix)]
+        {
+            let outside = tmp.path().join("outside");
+            std::fs::create_dir_all(&outside).unwrap();
+            std::fs::create_dir_all(root.join("unsafe-parent")).unwrap();
+            std::os::unix::fs::symlink(&outside, root.join("unsafe-parent/link")).unwrap();
+            assert!(
+                sandbox
+                    .materialize_read_only_tree("unsafe-parent", &[("link/value".into(), vec![])],)
+                    .is_err()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn dynamic_inline_projection_handles_file_directory_and_missing_removal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sandbox = LocalProvider::new(tmp.path())
+            .create_sandbox(&workdir_spec("inline-lifecycle", false))
+            .await
+            .unwrap();
+
+        sandbox
+            .materialize_inline("nested/value", b"value")
+            .unwrap();
+        sandbox.remove_inline("nested/value").unwrap();
+        sandbox
+            .materialize_inline("nested/value", b"value")
+            .unwrap();
+        sandbox.remove_inline("nested").unwrap();
+        sandbox.remove_inline("nested").unwrap();
     }
 }

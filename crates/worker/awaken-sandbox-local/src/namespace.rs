@@ -602,7 +602,7 @@ impl NamespaceSandbox {
 
     pub fn list_files(&self, subdir: &str) -> Vec<(String, Vec<u8>)> {
         if subdir.starts_with('/') && !subdir.starts_with("/workspace") {
-            list_files_at(&self.root, subdir)
+            list_files_at(&self.root, subdir.trim_start_matches('/'))
         } else {
             list_files_at(&self.workspace_root(), workspace_relative(subdir))
         }
@@ -893,6 +893,51 @@ mod tests {
             }],
         );
         assert!(provider.create_sandbox(&spec).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn namespace_lifecycle_helpers_cover_adoption_and_projection_boundaries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = NamespaceProvider::new(tmp.path());
+        let sandbox = provider
+            .create_sandbox(&ns_spec("t-ns-lifecycle", Vec::new()))
+            .await
+            .unwrap();
+
+        let wrong = pc::SandboxHandle::new("local", "t-ns-lifecycle");
+        assert!(provider.adopt_sandbox(&wrong).await.is_err());
+
+        sandbox
+            .materialize_inline("nested/value.txt", b"value")
+            .unwrap();
+        assert_eq!(
+            sandbox.list_files("nested"),
+            vec![("value.txt".to_string(), b"value".to_vec())]
+        );
+        sandbox.remove_inline("nested").unwrap();
+        sandbox.remove_inline("nested").unwrap();
+
+        let outputs = sandbox.root.resolve("/outputs").unwrap();
+        std::fs::create_dir_all(&outputs).unwrap();
+        std::fs::write(outputs.join("result.txt"), b"result").unwrap();
+        assert_eq!(
+            sandbox.list_files("/outputs"),
+            vec![("result.txt".to_string(), b"result".to_vec())]
+        );
+
+        let projection = sandbox.root.resolve(".mnt").unwrap();
+        std::fs::create_dir_all(projection.join("resource")).unwrap();
+        sandbox.clear_resource_projection().unwrap();
+        sandbox.clear_resource_projection().unwrap();
+
+        std::fs::write(&projection, b"stale").unwrap();
+        sandbox.clear_resource_projection().unwrap();
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(outputs.join("result.txt"), &projection).unwrap();
+            sandbox.clear_resource_projection().unwrap();
+        }
     }
 
     async fn bwrap_usable() -> bool {

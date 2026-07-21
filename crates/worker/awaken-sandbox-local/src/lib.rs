@@ -667,6 +667,60 @@ mod tests {
         assert_eq!(root.resolve("").unwrap(), PathBuf::from("/env"));
     }
 
+    #[test]
+    fn explicit_remote_push_rejects_a_detached_head_before_network_access() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        let run = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .current_dir(tmp.path())
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?}");
+        };
+        run(&["init", "repo"]);
+        std::fs::write(repo.join("README.md"), "seed").unwrap();
+        let status = std::process::Command::new("git")
+            .current_dir(&repo)
+            .args([
+                "-c",
+                "user.name=Awaken Test",
+                "-c",
+                "user.email=test@awaken.local",
+                "add",
+                "README.md",
+            ])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let status = std::process::Command::new("git")
+            .current_dir(&repo)
+            .args([
+                "-c",
+                "user.name=Awaken Test",
+                "-c",
+                "user.email=test@awaken.local",
+                "commit",
+                "-m",
+                "seed",
+            ])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let status = std::process::Command::new("git")
+            .current_dir(&repo)
+            .args(["checkout", "--detach"])
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let root = IsolatedRoot::new(tmp.path());
+        let error = push_repo_to_at(&root, "repo", "https://invalid.example/repo", None)
+            .expect_err("detached HEAD is rejected before contacting the remote");
+        assert!(error.0.contains("detached HEAD"));
+    }
+
     // ---- helpers ----
 
     fn call(tool_id: &str, args: serde_json::Value) -> ToolCall {
