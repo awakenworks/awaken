@@ -34,6 +34,10 @@ must state what value they resolve.
 - Snapshot identity lookup cannot be confused with Runtime materialization.
 - Delegated child Runs use execution language and carry typed parent/call/child/
   result identities.
+- A local child executes as an ordinary `RunActivation`/`RunAttemptExecutor` over
+  `RunDispatch`; `DelegationOrigin` records parentage and `session_thread_id`
+  retains parent-Session environment affinity. There is no child executor, child
+  store, or delegated completion helper (G40).
 - Local and Remote delegation implement the same lifecycle interface; protocol
   routing stays outside Runtime Core.
 - A new `*Resolver` helper must name the value it resolves.

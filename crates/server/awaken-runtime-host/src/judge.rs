@@ -81,8 +81,6 @@ impl RawTool for HostAgentTool {
             None,
             None,
             None,
-            None,
-            None,
         )
         .await
         .map_err(|error| ToolError::Execution(error.to_string()))?;

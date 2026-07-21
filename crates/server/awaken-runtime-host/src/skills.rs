@@ -115,7 +115,7 @@ impl RawTool for ForkAgentTool {
                 scheduler: None,
             },
             sandbox,
-            crate::agent_runner::AgentRunIdentity::transient(&name),
+            &name,
             request.seed,
             None,
         )
