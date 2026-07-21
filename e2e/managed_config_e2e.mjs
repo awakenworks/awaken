@@ -171,7 +171,10 @@ async function main() {
     for await (const ev of client.beta.sessions.events.list(session.id, { betas: BETAS })) events.push(ev);
     const assistant = events.filter((e) => e.type === 'agent.message');
     const text = JSON.stringify(assistant.map((m) => m.content));
-    assert.ok(text.includes(GREETING), `run used the published agent's instructions (${GREETING})`);
+    assert.ok(
+      text.includes(GREETING),
+      `run used the published agent's instructions (${GREETING}); events=${text}`,
+    );
     pass('published agent ran with its own instructions');
 
     console.log('E2E PASS: config author→validate→publish→run loop via HTTP + TS SDK.');

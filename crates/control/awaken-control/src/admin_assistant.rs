@@ -95,6 +95,16 @@ impl CatalogCapabilityReader {
             inventory,
         }
     }
+
+    /// Bind live Agent discovery to the same execution Workspace as the
+    /// Assistant session. The default constructor retains the self-hosted
+    /// compatibility scope; composition roots with a platform-provisioned
+    /// Workspace must select it explicitly instead of reading another namespace.
+    #[must_use]
+    pub fn with_scope(mut self, workspace_id: impl Into<String>) -> Self {
+        self.scope = ScopeId::from(workspace_id.into());
+        self
+    }
 }
 
 #[async_trait]
@@ -840,6 +850,40 @@ mod tests {
         let caps = reader.capabilities().await;
         assert_eq!(caps.agents, vec!["support"]);
         assert!(!caps.agents.contains(&ADMIN_ASSISTANT_AGENT_ID.to_string()));
+    }
+
+    #[tokio::test]
+    async fn capability_reader_lists_only_its_selected_execution_workspace() {
+        let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+        let plane = ConfigPlane::new(
+            Arc::new(ConfigService::new()),
+            store,
+            Arc::new(StaticToolCatalog(vec![tool("read")])),
+        );
+        let mut default_agent = admin_assistant_config();
+        default_agent.id = "default-agent".into();
+        plane
+            .put(&ScopeId::from(DEFAULT_SCOPE), &default_agent)
+            .await
+            .unwrap();
+        let mut workspace_agent = admin_assistant_config();
+        workspace_agent.id = "workspace-agent".into();
+        plane
+            .put(&ScopeId::from("workspace-local"), &workspace_agent)
+            .await
+            .unwrap();
+
+        let reader = CatalogCapabilityReader::new(
+            repo("m-1").await,
+            &[tool("read")],
+            &[],
+            Arc::new(InMemoryMcpStore::new()),
+            plane,
+            None,
+        )
+        .with_scope("workspace-local");
+        let caps = reader.capabilities().await;
+        assert_eq!(caps.agents, vec!["workspace-agent"]);
     }
 
     #[tokio::test]
