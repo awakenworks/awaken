@@ -230,6 +230,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     },
     "awaken-config-resolver": {
         "awaken-agent-contract",
+        # Resource Catalog is a port-only inward dependency; it contains no IAM,
+        # HTTP, storage adapter, or runtime-host type.
+        "awaken-resource-contract",
         "awaken-runtime-contract",
         "awaken-model-catalog",
         "awaken-credential-vault",

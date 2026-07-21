@@ -363,6 +363,7 @@ dependencies = [
  "awaken-managed-bridge",
  "awaken-model-catalog",
  "awaken-provider-genai",
+ "awaken-resource-contract",
  "awaken-runtime-contract",
  "schemars 1.2.1",
  "serde",
