@@ -23,7 +23,7 @@ use futures_util::StreamExt;
 use crate::net::TcpAgentTransport;
 use crate::{
     ContainerPlan, ContainerRuntime, ContainerState, ManagedContainer, REAPER_LABEL,
-    REAPER_OWNER_LABEL, RuntimeError,
+    REAPER_OWNER_LABEL, RuntimeError, runtime_container_name,
 };
 
 fn backend(e: impl std::fmt::Display) -> RuntimeError {
@@ -359,7 +359,7 @@ impl ContainerRuntime for DockerRuntime {
             .docker
             .create_container(
                 Some(CreateContainerOptions {
-                    name: format!("awaken-{id}"),
+                    name: runtime_container_name(&self.owner_id, id),
                     platform: None,
                 }),
                 config,

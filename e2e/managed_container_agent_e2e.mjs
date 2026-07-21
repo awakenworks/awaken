@@ -134,10 +134,6 @@ async function main() {
     );
   } finally {
     brain.kill('SIGINT');
-    // Reap any container the run left (scope-named awaken-*).
-    spawnSync('sh', ['-c', 'docker ps -aq --filter label=awaken.sandbox=1 | xargs -r docker rm -f'], {
-      stdio: 'ignore',
-    });
   }
 }
 
