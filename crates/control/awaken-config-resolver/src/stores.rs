@@ -16,75 +16,6 @@ use crate::{
     AgentMcpConfig, AgentResourceConfig, InferenceProfile, McpServerDef, WebhookEndpointDef,
 };
 
-/// The **identity** of an authored memory store (ADR-0038 MemoryStore family): its id,
-/// name, description, free-form metadata, and an archived flag. This is a control-plane
-/// aggregate — the durable metadata that mirrors the `McpServerDef` pattern — kept
-/// distinct from the store's *content* (the path-addressed memories, which live in the
-/// data-plane `MemoryFs`). Persisting this def is what lets a store's identity survive a
-/// restart and be enumerated from the control plane.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct MemoryStoreDef {
-    pub id: String,
-    /// Owning platform workspace. Empty only for legacy rows written before
-    /// ownership became durable; scoped APIs treat those rows as unowned.
-    #[serde(default)]
-    pub workspace_id: String,
-    pub name: String,
-    #[serde(default)]
-    pub description: String,
-    #[serde(default)]
-    pub metadata: std::collections::BTreeMap<String, String>,
-    #[serde(default)]
-    pub archived: bool,
-}
-
-/// A registry of authored [`MemoryStoreDef`]s (by store id) — the memory-store identity
-/// aggregate, mirroring [`McpStore`]. Sync + in-memory by default; the durable admin
-/// backend implements the same port over the `admin` migration bundle, so a memory
-/// store's identity/metadata survives a restart and the admin assistant can enumerate
-/// stores. Content lives elsewhere (the data-plane `MemoryFs`).
-pub trait MemoryStoreRegistry: Send + Sync {
-    fn put_memory_store(&self, def: MemoryStoreDef);
-    fn get_memory_store(&self, id: &str) -> Option<MemoryStoreDef>;
-    /// Non-archived stores, sorted by id (the enumeration contract).
-    fn list_memory_stores(&self) -> Vec<MemoryStoreDef>;
-}
-
-/// The default in-memory [`MemoryStoreRegistry`], keyed by store id.
-#[derive(Default)]
-pub struct InMemoryMemoryStoreRegistry(
-    std::sync::Mutex<std::collections::BTreeMap<String, MemoryStoreDef>>,
-);
-
-impl InMemoryMemoryStoreRegistry {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-impl MemoryStoreRegistry for InMemoryMemoryStoreRegistry {
-    fn put_memory_store(&self, def: MemoryStoreDef) {
-        self.0
-            .lock()
-            .expect("memory stores")
-            .insert(def.id.clone(), def);
-    }
-    fn get_memory_store(&self, id: &str) -> Option<MemoryStoreDef> {
-        self.0.lock().expect("memory stores").get(id).cloned()
-    }
-    fn list_memory_stores(&self) -> Vec<MemoryStoreDef> {
-        // Non-archived, sorted by id (the BTreeMap already orders by key).
-        self.0
-            .lock()
-            .expect("memory stores")
-            .values()
-            .filter(|d| !d.archived)
-            .cloned()
-            .collect()
-    }
-}
-
 /// A store for authored [`InferenceProfile`]s (an admin-plane aggregate). Sync +
 /// in-memory by default; a durable backend can implement the same port.
 pub trait InferenceProfileStore: Send + Sync {
@@ -345,36 +276,6 @@ impl ResourceStore for InMemoryResourceStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn def(id: &str, archived: bool) -> MemoryStoreDef {
-        MemoryStoreDef {
-            id: id.to_string(),
-            workspace_id: "ws_test".to_string(),
-            name: format!("{id} name"),
-            description: String::new(),
-            metadata: std::collections::BTreeMap::new(),
-            archived,
-        }
-    }
-
-    #[test]
-    fn memory_registry_round_trips_and_lists_non_archived_sorted() {
-        let reg = InMemoryMemoryStoreRegistry::new();
-        assert!(reg.get_memory_store("mem-1").is_none());
-        reg.put_memory_store(def("zeta", false));
-        reg.put_memory_store(def("alpha", false));
-        reg.put_memory_store(def("gamma", true)); // archived → excluded from list
-
-        assert_eq!(reg.get_memory_store("zeta").unwrap().name, "zeta name");
-        let ids: Vec<String> = reg.list_memory_stores().into_iter().map(|d| d.id).collect();
-        assert_eq!(ids, vec!["alpha".to_string(), "zeta".to_string()]);
-
-        // Upsert (archive) removes it from the listing but keeps it retrievable.
-        reg.put_memory_store(def("zeta", true));
-        let ids: Vec<String> = reg.list_memory_stores().into_iter().map(|d| d.id).collect();
-        assert_eq!(ids, vec!["alpha".to_string()]);
-        assert!(reg.get_memory_store("zeta").unwrap().archived);
-    }
 
     // ---- SEC: WebhookStore tenant fence + delete/disabled semantics ----
 

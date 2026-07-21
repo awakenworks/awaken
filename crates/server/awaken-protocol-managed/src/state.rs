@@ -50,8 +50,10 @@ mod threads;
 mod types;
 
 pub(crate) use helpers::{content_text, rubric_text, session_usage_value};
-pub use resource::{ResourceAccess, SessionResource};
-pub(crate) use resource::{parse_session_resource, resource_dto};
+pub(crate) use resource::{
+    ParsedInputTarget, ParsedSessionInput, input_binding, parse_session_input,
+    resolved_resource_dto,
+};
 pub use types::{
     AgentCapabilities, BuiltinTool, CustomTool, DelegatedRun, LiveInboxEntry, LiveInboxError,
     LiveInboxSnapshot, McpServerBinding, OutcomeIteration, OutcomeReport, Pending, RunError,
@@ -61,6 +63,8 @@ pub use types::{
 struct SessionRecord {
     agent_id: String,
     session: Session,
+    /// Durable source of truth for the runtime's currently applied input projection.
+    effective_inputs: awaken_session_contract::EffectiveSessionInputs,
     events: Vec<Event>,
     /// Subagent (multiagent delegate) child threads spawned in the session, each a
     /// projected `session_thread` object (parent = the primary thread). Enumerated
@@ -87,7 +91,14 @@ pub struct ManagedState {
     /// [`crate::routes::agents_registry::AgentConfigSource`] port `/v1/agents` reads —
     /// no second source of agent truth. `None` → fall back to the host default model.
     config_source: Option<Arc<dyn crate::routes::agents_registry::AgentConfigSource>>,
+    /// Resource authoring/resolution port. The Managed ACL lowers compatibility
+    /// Repository URL/token input into catalog/vault references; the catalog owns
+    /// no principal or authorization policy.
+    resource_catalog: Option<Arc<dyn awaken_resource_contract::ResourceCatalog>>,
     sessions: Mutex<HashMap<String, SessionRecord>>,
+    /// Serializes manifest mutations so runtime projection and durable aggregate
+    /// updates cannot lose a concurrent resources.add/update/delete operation.
+    resource_mutations: tokio::sync::Mutex<()>,
     /// The aspect-layer session→owner index (ADR-0051): the [`ScopeId`] that
     /// created each session, keyed by the tenancy-agnostic session id. It is NOT
     /// on the core session aggregate (which stays tenancy-agnostic) — it lives
@@ -183,7 +194,9 @@ impl ManagedState {
             vaults: None,
             environments: None,
             config_source: None,
+            resource_catalog: None,
             sessions: Mutex::new(HashMap::new()),
+            resource_mutations: tokio::sync::Mutex::new(()),
             owners: Mutex::new(HashMap::new()),
             sessions_repo: Arc::new(InMemorySessionRepository::default()),
             lifecycle_sink: None,
@@ -246,6 +259,17 @@ impl ManagedState {
         self
     }
 
+    /// Wire the platform Resource Catalog used to resolve Memory/Repository
+    /// configuration once at Session creation.
+    #[must_use]
+    pub fn with_resource_catalog(
+        mut self,
+        catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
+    ) -> Self {
+        self.resource_catalog = Some(catalog);
+        self
+    }
+
     fn next_event_id(&self) -> String {
         format!("evt_{}", self.event_seq.fetch_add(1, Ordering::SeqCst))
     }
@@ -299,7 +323,18 @@ mod tests {
 
     /// A runtime that reports a non-empty committed transcript, so a session can
     /// rehydrate. Every operational method is unused by these tests.
-    struct RehydrateFake;
+    #[derive(Clone, Default)]
+    struct RehydrateFake {
+        restored: Arc<
+            std::sync::Mutex<
+                Vec<(
+                    String,
+                    String,
+                    awaken_session_contract::EffectiveSessionInputs,
+                )>,
+            >,
+        >,
+    }
 
     #[async_trait]
     impl SessionRuntime for RehydrateFake {
@@ -349,6 +384,19 @@ mod tests {
         }
         fn model(&self) -> String {
             "host-default-model".to_string()
+        }
+        async fn apply_session_inputs(
+            &self,
+            thread: &str,
+            workspace_id: &str,
+            inputs: &awaken_session_contract::EffectiveSessionInputs,
+        ) -> Result<(), RunError> {
+            self.restored.lock().unwrap().push((
+                thread.to_string(),
+                workspace_id.to_string(),
+                inputs.clone(),
+            ));
+            Ok(())
         }
     }
 
@@ -541,15 +589,29 @@ mod tests {
             mcp_servers: vec![
                 serde_json::json!({"name": "calc", "type": "url", "url": "https://x"}),
             ],
-            effective_inputs: Default::default(),
+            effective_inputs: sample_inputs(),
             status: "idle".into(),
             archived_at: None,
         }
     }
 
+    fn sample_inputs() -> awaken_session_contract::EffectiveSessionInputs {
+        awaken_session_contract::EffectiveSessionInputs {
+            inputs: vec![awaken_session_contract::ResolvedInput {
+                binding_id: awaken_resource_contract::BindingId::from("input-file"),
+                source: awaken_session_contract::ResolvedInputSource::File {
+                    file_id: awaken_resource_contract::FileId::from("file-hash"),
+                },
+                mount_path: "/input.txt".into(),
+                access: awaken_resource_contract::ResourceAccess::ReadOnly,
+                instructions: None,
+            }],
+        }
+    }
+
     #[test]
     fn rehydrated_session_restores_persisted_config() {
-        let state = ManagedState::new(RehydrateFake);
+        let state = ManagedState::new(RehydrateFake::default());
         let session = state.rehydrated_session("sesn_1", Some(sample_persisted("sesn_1")));
         assert_eq!(session.agent.id, "coder");
         assert_eq!(session.agent.model.id, "kimi-k2");
@@ -563,11 +625,13 @@ mod tests {
             1,
             "the accepted MCP server is restored"
         );
+        assert_eq!(session.resources.len(), 1);
+        assert_eq!(session.resources[0]["file_id"], "file-hash");
     }
 
     #[test]
     fn rehydrated_session_falls_back_without_persisted_config() {
-        let state = ManagedState::new(RehydrateFake);
+        let state = ManagedState::new(RehydrateFake::default());
         let session = state.rehydrated_session("sesn_1", None);
         assert_eq!(session.agent.id, "assistant");
         assert_eq!(session.agent.model.id, "host-default-model");
@@ -584,7 +648,9 @@ mod tests {
         repo.save(sample_persisted("sesn_1")).await;
 
         // Fresh state (empty cache) sharing the durable repo — simulates a restart.
-        let restarted = ManagedState::new(RehydrateFake).with_session_repo(repo);
+        let runtime = RehydrateFake::default();
+        let restored = runtime.restored.clone();
+        let restarted = ManagedState::new(runtime).with_session_repo(repo);
         restarted.ensure_session("sesn_1").await.expect("rehydrate");
         let session = restarted
             .get_session("sesn_1")
@@ -595,6 +661,73 @@ mod tests {
         );
         assert_eq!(session.title.as_deref(), Some("My session"));
         assert_eq!(session.agent.mcp_servers.len(), 1);
+        assert_eq!(
+            restored.lock().unwrap().as_slice(),
+            &[(
+                "sesn_1".to_string(),
+                DEFAULT_SCOPE.to_string(),
+                sample_inputs(),
+            )],
+            "restart replays the persisted manifest once without re-resolving it"
+        );
+    }
+
+    #[tokio::test]
+    async fn live_input_mutations_survive_restart_without_changing_resource_identity() {
+        let repo: Arc<dyn ManagedSessionRepository> =
+            Arc::new(InMemorySessionRepository::default());
+        let catalog = Arc::new(awaken_config_resolver::InMemoryResourceCatalog::new());
+        let state = ManagedState::new(RehydrateFake::default())
+            .with_session_repo(repo.clone())
+            .with_resource_catalog(catalog.clone());
+        let id = state
+            .create_session(bare_create_params(), None)
+            .await
+            .expect("create")
+            .id;
+
+        let resource = state
+            .create_resource(
+                &id,
+                serde_json::json!({
+                    "type": "file",
+                    "file_id": "immutable-file-hash",
+                    "mount_path": "/input.txt"
+                }),
+            )
+            .await
+            .expect("attach");
+        let resource_id = resource["id"].as_str().unwrap().to_string();
+        state
+            .update_resource(
+                &id,
+                &resource_id,
+                serde_json::json!({"mount_path": "/renamed/input.txt"}),
+            )
+            .await
+            .expect("update");
+
+        let restarted = ManagedState::new(RehydrateFake::default())
+            .with_session_repo(repo.clone())
+            .with_resource_catalog(catalog.clone());
+        restarted.ensure_session(&id).await.expect("rehydrate");
+        let restored = restarted.list_resources(&id).expect("list restored");
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0]["id"], resource_id);
+        assert_eq!(restored[0]["mount_path"], "/renamed/input.txt");
+
+        restarted
+            .delete_resource(&id, &resource_id)
+            .await
+            .expect("detach");
+        let second_restart = ManagedState::new(RehydrateFake::default())
+            .with_session_repo(repo)
+            .with_resource_catalog(catalog);
+        second_restart
+            .ensure_session(&id)
+            .await
+            .expect("rehydrate after delete");
+        assert!(second_restart.list_resources(&id).unwrap().is_empty());
     }
 
     /// The only required create field is the agent; every other field defaults.
@@ -605,7 +738,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_broadcasts_session_deleted_then_removes_the_record() {
-        let state = ManagedState::new(RehydrateFake);
+        let state = ManagedState::new(RehydrateFake::default());
         let id = state
             .create_session(bare_create_params(), None)
             .await

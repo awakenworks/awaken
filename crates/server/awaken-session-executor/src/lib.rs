@@ -64,6 +64,7 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, RunState};
+use awaken_protocol_managed::resource_plane as awaken_resource_contract;
 use awaken_protocol_managed::{
     AgentCapabilities, BuiltinTool, CustomTool, LiveInboxEntry, LiveInboxError, LiveInboxSnapshot,
     OutcomeIteration, OutcomeReport, Pending, RunError, SessionRuntime, StepOutcome,
@@ -90,7 +91,7 @@ pub use crate::worker_control_client::WorkerControlClient;
 // per-thread egress handle a composition root wires it with.
 pub use crate::data_subject_api::{consent_router, erasure_router, install_capture_sink};
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
-pub use crate::memory_store_api::memory_stores_router;
+pub use crate::memory_store_api::{memory_stores_router, memory_stores_router_with_catalog};
 pub use crate::redact::PiiRedactor;
 pub use crate::sandbox_source::{
     ContainerChannelSource, LaunchSource, SandboxChannelSource, ThreadEgress, ThreadResources,
@@ -227,6 +228,7 @@ fn to_step_outcome(result: RunResult) -> Result<StepOutcome, RunError> {
 pub struct ManagedHost {
     host: Arc<SharedHost>,
     mcp: Option<ManagedMcp>,
+    resource_configs: Option<Arc<dyn awaken_resource_contract::ResourceConfigSource>>,
 }
 
 /// The session-ingress MCP wiring (ADR-0043 Phase 3): the stores
@@ -238,156 +240,232 @@ struct ManagedMcp {
     mcp_store: Arc<dyn awaken_config_resolver::McpStore>,
 }
 
-/// The system-prompt fragment (ADR-0038 A3a) for a bound resource — the realized
-/// mount path the agent reads (`.mnt/<logical>` for file/memory, the working-tree
-/// path for a repo) plus access + instructions. Deterministic, so the live detach
-/// path can reproduce and remove the exact fragment it staged.
-fn effective_resource_access(
-    res: &awaken_protocol_managed::SessionResource,
-) -> awaken_protocol_managed::ResourceAccess {
-    if res.kind == "file" {
-        awaken_protocol_managed::ResourceAccess::ReadOnly
-    } else {
-        res.access
-    }
-}
+fn resolved_resource_prompt(input: &awaken_protocol_managed::ResolvedInput) -> String {
+    use awaken_protocol_managed::ResolvedInputSource;
+    use awaken_resource_contract::ResourceAccess;
 
-fn resource_prompt(res: &awaken_protocol_managed::SessionResource) -> String {
-    let logical = res.mount_path.trim_start_matches('/').to_string();
-    let (kind, mount_path) = match res.kind.as_str() {
-        "github_repository" => (
-            awaken_config_resolver::ResourceKind::GithubRepository,
-            logical,
-        ),
-        "memory_store" => (
-            awaken_config_resolver::ResourceKind::MemoryStore,
-            format!(".mnt/{logical}"),
-        ),
-        _ => (
-            awaken_config_resolver::ResourceKind::File,
-            format!(".mnt/{logical}"),
+    let access = match input.access {
+        ResourceAccess::ReadOnly => "read-only",
+        ResourceAccess::ReadWrite => "read/write",
+    };
+    let carried_path = format!(".mnt/{}", input.mount_path.trim_start_matches('/'));
+    let base = match &input.source {
+        ResolvedInputSource::File { .. } => {
+            format!("A file is mounted read-only at `{carried_path}`.")
+        }
+        ResolvedInputSource::MemoryStore { .. } => {
+            format!("A persistent memory store is mounted {access} at `{carried_path}`.")
+        }
+        ResolvedInputSource::Repository { .. } => format!(
+            "A git repository is checked out at `{}` ({access}); use git there to read, edit, commit, and push.",
+            input.mount_path
         ),
     };
-    awaken_config_resolver::resource_binding_prompt(&awaken_config_resolver::ResourceBinding {
-        kind,
-        resource_id: res.id.clone(),
-        mount_path,
-        access: match effective_resource_access(res) {
-            awaken_protocol_managed::ResourceAccess::ReadOnly => {
-                awaken_config_resolver::ResourceAccess::ReadOnly
-            }
-            awaken_protocol_managed::ResourceAccess::ReadWrite => {
-                awaken_config_resolver::ResourceAccess::ReadWrite
-            }
-        },
-        instructions: res.instructions.clone(),
-    })
+    match &input.instructions {
+        Some(instructions) if !instructions.is_empty() => format!("{base}\n{instructions}"),
+        _ => base,
+    }
 }
 
 impl ManagedHost {
     pub fn new(host: Arc<SharedHost>) -> Self {
-        Self { host, mcp: None }
+        Self {
+            host,
+            mcp: None,
+            resource_configs: None,
+        }
     }
 
-    /// Stage ONE resource (ADR-0038) into a partial [`StagedResources`]: resolve its
-    /// seed bytes and realize it as a sandbox mount + prompt fragment (+ memory
-    /// write-back tracking / repo clone stage). Shared by create-time
-    /// `prepare_session` (folded over all resources) and the live `attach_resource`
-    /// path. A `file`/`memory_store` whose backing store is missing fails closed.
-    async fn stage_one_resource(
+    /// Wire the live resource-state/config read port used at activation. The
+    /// pinned config stays authoritative; this lookup only supplies the current
+    /// Workspace ownership and lifecycle deny overlay.
+    #[must_use]
+    pub fn with_resource_configs(
+        mut self,
+        source: Arc<dyn awaken_resource_contract::ResourceConfigSource>,
+    ) -> Self {
+        self.resource_configs = Some(source);
+        self
+    }
+
+    async fn stage_resolved_input(
         &self,
         workspace: &str,
-        res: &awaken_protocol_managed::SessionResource,
+        input: &awaken_protocol_managed::ResolvedInput,
     ) -> Result<crate::provisioning::StagedResources, RunError> {
+        use awaken_protocol_managed::ResolvedInputSource;
+        use awaken_resource_contract::ResourceAccess;
+
         let mut staged = crate::provisioning::StagedResources::default();
-        let logical = res.mount_path.trim_start_matches('/').to_string();
-        // github_repository is a host-side `git clone` (ADR-0038), not a byte mount —
-        // the token authenticates the clone transport host-side and never enters the jail.
-        if res.kind == "github_repository" {
-            staged.prompts.push(resource_prompt(res));
-            staged.repos.push(crate::provisioning::RepoStage {
-                logical,
-                url: res.id.clone(),
-                git_ref: res.git_ref.clone(),
-                token: res
-                    .auth_token
-                    .clone()
-                    .map(awaken_agent_contract::RedactedString::from),
-                access: match effective_resource_access(res) {
-                    awaken_protocol_managed::ResourceAccess::ReadOnly => {
-                        awaken_provisioning_contract::MountAccess::ReadOnly
-                    }
-                    awaken_protocol_managed::ResourceAccess::ReadWrite => {
-                        awaken_provisioning_contract::MountAccess::ReadWrite
-                    }
-                },
-            });
-            return Ok(staged);
-        }
-        if res.kind != "file" && res.kind != "memory_store" {
-            return Ok(staged);
-        }
-        staged.prompts.push(resource_prompt(res));
-        // Resolve seed content by family: a file from the content-addressed blob store,
-        // a memory_store from its mutable id-keyed store (tracked for write-back).
-        let content = match res.kind.as_str() {
-            "file" if !self.host.owns_file(workspace, &res.id) => {
-                return Err(RunError::bad_request(format!(
-                    "file resource `{}` not found in this workspace",
-                    res.id
-                )));
-            }
-            "file" => match self.host.file_store().get(&res.id).await {
-                Ok(Some(bytes)) => {
-                    let actual = awaken_sandbox_local::content_fingerprint(&bytes);
-                    if actual != res.id {
-                        return Err(RunError::bad_request(format!(
-                            "file resource `{}` content hash mismatch (realized `{actual}`)",
-                            res.id
-                        )));
-                    }
-                    bytes
-                }
-                _ => {
-                    return Err(RunError::bad_request(format!(
-                        "file resource `{}` not found in the blob store",
-                        res.id
-                    )));
-                }
-            },
-            _ => {
-                let Some(bytes) = self.host.memory_get_in(workspace, &res.id).await else {
-                    return Err(RunError::bad_request(format!(
-                        "memory_store resource `{}` does not exist",
-                        res.id
-                    )));
-                };
-                staged.memory_mounts.push((res.id.clone(), logical.clone()));
-                bytes
-            }
+        let logical = input.mount_path.trim_start_matches('/').to_string();
+        staged.prompts.push(resolved_resource_prompt(input));
+        let mount_access = match input.access {
+            ResourceAccess::ReadOnly => awaken_provisioning_contract::MountAccess::ReadOnly,
+            ResourceAccess::ReadWrite => awaken_provisioning_contract::MountAccess::ReadWrite,
         };
-        let content_hash = (res.kind == "file").then(|| res.id.clone());
-        staged
-            .mounts
-            .push(awaken_provisioning_contract::MountRequirement {
-                mount_id: res.id.clone(),
-                source: awaken_provisioning_contract::MountSource::InlineBytes {
-                    contents: content,
-                    content_hash,
-                },
-                mount_path: format!(".mnt/{logical}"),
-                access: match effective_resource_access(res) {
-                    awaken_protocol_managed::ResourceAccess::ReadOnly => {
-                        awaken_provisioning_contract::MountAccess::ReadOnly
+
+        match &input.source {
+            ResolvedInputSource::File { file_id } => {
+                if !self.host.owns_file(workspace, file_id.as_str()) {
+                    return Err(RunError::bad_request(format!(
+                        "file resource `{file_id}` not found in this workspace"
+                    )));
+                }
+                let bytes = self
+                    .host
+                    .file_store()
+                    .get(file_id.as_str())
+                    .await
+                    .ok()
+                    .flatten()
+                    .ok_or_else(|| {
+                        RunError::bad_request(format!(
+                            "file resource `{file_id}` not found in the blob store"
+                        ))
+                    })?;
+                let actual = awaken_sandbox_local::content_fingerprint(&bytes);
+                if actual != file_id.as_str() {
+                    return Err(RunError::bad_request(format!(
+                        "file resource `{file_id}` content hash mismatch (realized `{actual}`)"
+                    )));
+                }
+                staged
+                    .mounts
+                    .push(awaken_provisioning_contract::MountRequirement {
+                        mount_id: file_id.to_string(),
+                        source: awaken_provisioning_contract::MountSource::InlineBytes {
+                            contents: bytes,
+                            content_hash: Some(file_id.to_string()),
+                        },
+                        mount_path: format!(".mnt/{logical}"),
+                        // Immutable File access can only narrow to read-only.
+                        access: awaken_provisioning_contract::MountAccess::ReadOnly,
+                        lifetime: awaken_provisioning_contract::MountLifetime::PerRun,
+                        required: true,
+                    });
+            }
+            ResolvedInputSource::MemoryStore {
+                memory_store_id, ..
+            } => {
+                let source = self.resource_configs.as_ref().ok_or_else(|| {
+                    RunError::bad_request("memory resources require a configured Resource Catalog")
+                })?;
+                source
+                    .resolve_memory_store(workspace, memory_store_id.as_str())
+                    .map_err(|error| RunError::bad_request(error.to_string()))?;
+                let bytes = self
+                    .host
+                    .memory_get_in(workspace, memory_store_id.as_str())
+                    .await
+                    .ok_or_else(|| {
+                        RunError::bad_request(format!(
+                            "memory_store resource `{memory_store_id}` does not exist"
+                        ))
+                    })?;
+                if input.access == ResourceAccess::ReadWrite {
+                    staged
+                        .memory_mounts
+                        .push((memory_store_id.to_string(), logical.clone()));
+                }
+                staged
+                    .mounts
+                    .push(awaken_provisioning_contract::MountRequirement {
+                        mount_id: memory_store_id.to_string(),
+                        source: awaken_provisioning_contract::MountSource::InlineBytes {
+                            contents: bytes,
+                            content_hash: None,
+                        },
+                        mount_path: format!(".mnt/{logical}"),
+                        access: mount_access,
+                        lifetime: awaken_provisioning_contract::MountLifetime::PerRun,
+                        required: true,
+                    });
+            }
+            ResolvedInputSource::Repository {
+                repository_id,
+                config,
+            } => {
+                let source = self.resource_configs.as_ref().ok_or_else(|| {
+                    RunError::bad_request(
+                        "repository resources require a configured Resource Catalog",
+                    )
+                })?;
+                source
+                    .resolve_repository(workspace, repository_id.as_str())
+                    .map_err(|error| RunError::bad_request(error.to_string()))?;
+                let token = match &config.credential_binding {
+                    Some(binding) => {
+                        let mcp = self.mcp.as_ref().ok_or_else(|| {
+                            RunError::bad_request(
+                                "repository credential requires a configured credential vault",
+                            )
+                        })?;
+                        let source_id =
+                            awaken_credential_vault::CredentialSourceId(binding.clone());
+                        let row = mcp.credentials.get(&source_id).await.map_err(|error| {
+                            RunError::bad_request(format!(
+                                "repository `{repository_id}` credential: {error}"
+                            ))
+                        })?;
+                        Some(
+                            awaken_credential_vault::materialize(&row, mcp.secrets.as_ref())
+                                .await
+                                .map_err(|error| {
+                                    RunError::bad_request(format!(
+                                        "repository `{repository_id}` credential: {error}"
+                                    ))
+                                })?,
+                        )
                     }
-                    awaken_protocol_managed::ResourceAccess::ReadWrite => {
-                        awaken_provisioning_contract::MountAccess::ReadWrite
-                    }
-                },
-                lifetime: awaken_provisioning_contract::MountLifetime::PerRun,
-                required: true,
-            });
+                    None => None,
+                };
+                staged.repos.push(crate::provisioning::RepoStage {
+                    logical,
+                    url: config.remote_url.clone(),
+                    git_ref: config.initial_branch.clone(),
+                    token,
+                    access: mount_access,
+                });
+            }
+        }
         Ok(staged)
+    }
+
+    /// Realize an already-resolved, secret-free manifest. The pinned Memory/
+    /// Repository configuration in `inputs` remains authoritative; the per-item
+    /// lookup in `stage_resolved_input` is only the current ownership/state deny
+    /// overlay. No Agent binding or current config is composed here.
+    async fn stage_effective_inputs(
+        &self,
+        thread: &str,
+        workspace: &str,
+        inputs: &awaken_protocol_managed::EffectiveSessionInputs,
+    ) -> Result<Vec<crate::host::PreparedMcpServer>, RunError> {
+        let mut all = crate::provisioning::StagedResources::default();
+        for input in &inputs.inputs {
+            let one = self.stage_resolved_input(workspace, input).await?;
+            all.mounts.extend(one.mounts);
+            all.prompts.extend(one.prompts);
+            all.memory_mounts.extend(one.memory_mounts);
+            all.repos.extend(one.repos);
+        }
+
+        const GITHUB_MCP_URL: &str = "https://api.githubcopilot.com/mcp/";
+        let repository_mcp = all
+            .repos
+            .iter()
+            .filter(|repository| repository.token.is_some())
+            .map(|repository| crate::host::PreparedMcpServer {
+                name: format!("github:{}", repository.logical),
+                url: GITHUB_MCP_URL.to_string(),
+                bearer: repository.token.clone(),
+                refresh: None,
+            })
+            .collect();
+        // The complete manifest replaces the prior projection. Register an empty
+        // value too, so deleting the final input cannot leave a stale mount behind.
+        self.host.register_thread_resources(thread, all);
+        Ok(repository_mcp)
     }
 
     /// Wire the MCP stores so `prepare_session` materializes a session's MCP
@@ -702,58 +780,20 @@ impl SessionRuntime for ManagedHost {
         Ok(())
     }
 
-    async fn attach_resource(
+    async fn apply_session_inputs(
         &self,
         thread: &str,
-        resource: awaken_protocol_managed::SessionResource,
+        workspace_id: &str,
+        inputs: &awaken_protocol_managed::EffectiveSessionInputs,
     ) -> Result<(), RunError> {
-        // Flush in-sandbox memory edits AND run-authored skills before dropping the cached
-        // sandbox (else the evicted workspace loses them), then stage the new resource
-        // (fail closed on a missing backing store) and evict so the next turn rebuilds WITH it.
+        self.host.register_thread_workspace(thread, workspace_id);
         self.host.harvest_thread_memory(thread).await;
         self.host.harvest_thread_skills(thread).await;
-        let workspace = self.host.thread_workspace(thread);
-        let one = self.stage_one_resource(&workspace, &resource).await?;
-        self.host.merge_thread_resources(thread, one);
-        self.host.sessions.lock().await.remove(thread);
-        Ok(())
-    }
-
-    async fn detach_resource(
-        &self,
-        thread: &str,
-        resource: awaken_protocol_managed::SessionResource,
-    ) -> Result<(), RunError> {
-        // Flush write-back while the old sandbox is still live (preserve edits to other
-        // still-mounted memory stores + run-authored skills), drop this resource's mount +
-        // prompt, then evict so the next turn rebuilds WITHOUT it.
-        self.host.harvest_thread_memory(thread).await;
-        self.host.harvest_thread_skills(thread).await;
-        let logical = resource.mount_path.trim_start_matches('/').to_string();
+        let repository_mcp = self
+            .stage_effective_inputs(thread, workspace_id, inputs)
+            .await?;
         self.host
-            .remove_thread_resource(thread, &logical, &resource_prompt(&resource));
-        self.host.sessions.lock().await.remove(thread);
-        Ok(())
-    }
-
-    async fn rotate_resource_token(
-        &self,
-        thread: &str,
-        resource: awaken_protocol_managed::SessionResource,
-    ) -> Result<(), RunError> {
-        // Only github_repository carries a rotatable authorization token; other kinds have
-        // no host-held credential to re-key.
-        if resource.kind != "github_repository" {
-            return Ok(());
-        }
-        let logical = resource.mount_path.trim_start_matches('/').to_string();
-        let new_token = resource
-            .auth_token
-            .map(awaken_agent_contract::RedactedString::from);
-        // Re-key the staged clone token AND the injected GitHub MCP bearer, then evict so the
-        // next turn rebuilds using the rotated credential for clone + MCP push/PR.
-        self.host
-            .rotate_thread_repo_token(thread, &logical, new_token);
+            .replace_thread_repository_mcp(thread, repository_mcp);
         self.host.sessions.lock().await.remove(thread);
         Ok(())
     }
@@ -792,43 +832,11 @@ impl SessionRuntime for ManagedHost {
         {
             self.host.register_thread_sandbox(thread, over);
         }
-        // Stage the effective resource set resolved once by the Session control plane.
-        // Runtime never reads the Agent binding repository or composes defaults again.
-        let mut all = crate::provisioning::StagedResources::default();
-        // Wire session resources carry their own prompt (no compile-time fragment
-        // exists for an ad-hoc session mount), so we keep `one.prompts`.
-        for res in &init.resources {
-            let one = self.stage_one_resource(&init.workspace_id, res).await?;
-            all.mounts.extend(one.mounts);
-            all.prompts.extend(one.prompts);
-            all.memory_mounts.extend(one.memory_mounts);
-            all.repos.extend(one.repos);
-        }
-        // Bridge github_repository resources to a GitHub MCP server (Anthropic Managed Agents
-        // model): each cloned repo whose token is held host-side also gets a `github:<logical>`
-        // MCP server bearing that token, so the agent branches, commits, pushes, and opens PRs
-        // through MCP tools while the credential stays server-side and never enters the sandbox
-        // (a sandboxed run sees only an α reference — see `project_staged_mcp`). Captured now
-        // because `all` is moved into the resource registry next.
-        const GITHUB_MCP_URL: &str = "https://api.githubcopilot.com/mcp/";
-        let repo_mcp: Vec<crate::host::PreparedMcpServer> = all
-            .repos
-            .iter()
-            .filter(|r| r.token.is_some())
-            .map(|r| crate::host::PreparedMcpServer {
-                name: format!("github:{}", r.logical),
-                url: GITHUB_MCP_URL.to_string(),
-                bearer: r.token.clone(),
-                refresh: None,
-            })
-            .collect();
-        if !all.mounts.is_empty()
-            || !all.prompts.is_empty()
-            || !all.repos.is_empty()
-            || !all.memory_mounts.is_empty()
-        {
-            self.host.register_thread_resources(thread, all);
-        }
+        // Stage only the already-resolved manifest. Runtime never reads the Agent
+        // binding repository or composes defaults again.
+        let repo_mcp = self
+            .stage_effective_inputs(thread, &init.workspace_id, &init.resources)
+            .await?;
         let Some(mcp) = &self.mcp else {
             return Ok(());
         };

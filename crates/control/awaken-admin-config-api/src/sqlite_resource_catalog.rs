@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use awaken_resource_contract::{
     ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, RepositoryConfigVersion,
     RepositoryDefinition, ResolvedMemoryStoreConfig, ResolvedRepositoryConfig, ResourceCatalog,
-    ResourceCatalogError, ResourceState,
+    ResourceCatalogError, ResourceConfigSource, ResourceState,
 };
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -20,6 +20,23 @@ const REPOSITORY: &str = "repository";
 struct MemoryRecord {
     definition: MemoryStoreDefinition,
     configs: BTreeMap<ConfigVersion, MemoryStoreConfigVersion>,
+}
+
+/// Upgrade-only shape written by the removed `MemoryStoreRegistry`. Empty-owner
+/// rows are deliberately quarantined: ownership cannot be inferred safely.
+#[derive(Debug, Deserialize)]
+struct LegacyMemoryStoreDef {
+    id: String,
+    #[serde(default)]
+    workspace_id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    metadata: BTreeMap<String, String>,
+    #[serde(default)]
+    archived: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,6 +98,62 @@ fn validate_publish(
 }
 
 impl SqliteAdminStore {
+    /// Idempotently import owned rows from the retired identity table into the
+    /// Resource Catalog. This is an upgrade adapter, never a live read fallback.
+    pub(crate) fn migrate_legacy_memory_stores(&self) -> Result<(), ResourceCatalogError> {
+        let rows = {
+            let conn = self.conn.lock().expect("resource catalog");
+            let mut statement = conn
+                .prepare(&format!("SELECT data FROM {NS}_memory_store ORDER BY id"))
+                .map_err(storage)?;
+            let rows = statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(storage)?;
+            rows.map(|row| {
+                let data = row.map_err(storage)?;
+                serde_json::from_str::<LegacyMemoryStoreDef>(&data).map_err(storage)
+            })
+            .collect::<Result<Vec<_>, _>>()?
+        };
+        for legacy in rows {
+            if legacy.workspace_id.trim().is_empty()
+                || self
+                    .catalog_record::<MemoryRecord>(MEMORY, &legacy.id)
+                    .is_some()
+            {
+                continue;
+            }
+            let id = legacy.id;
+            let result = self.create_memory_store(
+                MemoryStoreDefinition {
+                    id: id.clone(),
+                    workspace_id: legacy.workspace_id,
+                    name: legacy.name,
+                    description: legacy.description,
+                    metadata: legacy.metadata,
+                    state: if legacy.archived {
+                        ResourceState::Archived
+                    } else {
+                        ResourceState::Active
+                    },
+                    current_config_version: ConfigVersion::INITIAL,
+                },
+                MemoryStoreConfigVersion {
+                    memory_store_id: id,
+                    version: ConfigVersion::INITIAL,
+                    recall_policy: Default::default(),
+                    extraction_policy: Default::default(),
+                    retention_policy: Default::default(),
+                },
+            );
+            match result {
+                Ok(()) | Err(ResourceCatalogError::AlreadyExists(_)) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    }
+
     fn catalog_record<T: serde::de::DeserializeOwned>(&self, kind: &str, id: &str) -> Option<T> {
         let data: Option<String> = self
             .conn
@@ -153,6 +226,68 @@ impl SqliteAdminStore {
     }
 }
 
+impl ResourceConfigSource for SqliteAdminStore {
+    fn resolve_memory_store(
+        &self,
+        workspace_id: &str,
+        id: &str,
+    ) -> Result<ResolvedMemoryStoreConfig, ResourceCatalogError> {
+        let record = self
+            .catalog_record::<MemoryRecord>(MEMORY, id)
+            .filter(|record| record.definition.workspace_id == workspace_id)
+            .ok_or_else(|| ResourceCatalogError::NotFound(id.into()))?;
+        if record.definition.state != ResourceState::Active {
+            return Err(ResourceCatalogError::NotActive {
+                id: id.into(),
+                state: record.definition.state,
+            });
+        }
+        let config = record
+            .configs
+            .get(&record.definition.current_config_version)
+            .cloned()
+            .ok_or_else(|| {
+                ResourceCatalogError::Storage(format!(
+                    "MemoryStore `{id}` current config version is missing"
+                ))
+            })?;
+        Ok(ResolvedMemoryStoreConfig {
+            definition: record.definition,
+            config,
+        })
+    }
+
+    fn resolve_repository(
+        &self,
+        workspace_id: &str,
+        id: &str,
+    ) -> Result<ResolvedRepositoryConfig, ResourceCatalogError> {
+        let record = self
+            .catalog_record::<RepositoryRecord>(REPOSITORY, id)
+            .filter(|record| record.definition.workspace_id == workspace_id)
+            .ok_or_else(|| ResourceCatalogError::NotFound(id.into()))?;
+        if record.definition.state != ResourceState::Active {
+            return Err(ResourceCatalogError::NotActive {
+                id: id.into(),
+                state: record.definition.state,
+            });
+        }
+        let config = record
+            .configs
+            .get(&record.definition.current_config_version)
+            .cloned()
+            .ok_or_else(|| {
+                ResourceCatalogError::Storage(format!(
+                    "Repository `{id}` current config version is missing"
+                ))
+            })?;
+        Ok(ResolvedRepositoryConfig {
+            definition: record.definition,
+            config,
+        })
+    }
+}
+
 impl ResourceCatalog for SqliteAdminStore {
     fn create_memory_store(
         &self,
@@ -183,6 +318,54 @@ impl ResourceCatalog for SqliteAdminStore {
             .map(|record| record.definition)
     }
 
+    fn list_memory_stores(&self, workspace_id: &str) -> Vec<MemoryStoreDefinition> {
+        let conn = self.conn.lock().expect("resource catalog");
+        let mut statement = conn
+            .prepare(&format!(
+                "SELECT data FROM {NS}_resource_catalog WHERE kind = ?1 ORDER BY id"
+            ))
+            .expect("prepare resource catalog list");
+        statement
+            .query_map(params![MEMORY], |row| row.get::<_, String>(0))
+            .expect("list resource catalog")
+            .map(|data| {
+                serde_json::from_str::<MemoryRecord>(&data.expect("read resource catalog"))
+                    .expect("decode resource catalog")
+            })
+            .filter(|record| {
+                record.definition.workspace_id == workspace_id
+                    && !matches!(
+                        record.definition.state,
+                        ResourceState::Archived | ResourceState::Deleted
+                    )
+            })
+            .map(|record| record.definition)
+            .collect()
+    }
+
+    fn update_memory_store(
+        &self,
+        definition: MemoryStoreDefinition,
+    ) -> Result<(), ResourceCatalogError> {
+        let id = definition.id.clone();
+        self.update_catalog_record::<MemoryRecord, _>(MEMORY, &id, |record| {
+            if record.definition.workspace_id != definition.workspace_id {
+                return Err(ResourceCatalogError::NotFound(id.clone()));
+            }
+            if record.definition.state != definition.state
+                || record.definition.current_config_version != definition.current_config_version
+            {
+                return Err(ResourceCatalogError::Invalid(
+                    "definition update cannot change lifecycle or config version".into(),
+                ));
+            }
+            record.definition.name = definition.name;
+            record.definition.description = definition.description;
+            record.definition.metadata = definition.metadata;
+            Ok(())
+        })
+    }
+
     fn memory_config(
         &self,
         workspace_id: &str,
@@ -192,36 +375,6 @@ impl ResourceCatalog for SqliteAdminStore {
         self.catalog_record::<MemoryRecord>(MEMORY, id)
             .filter(|record| record.definition.workspace_id == workspace_id)
             .and_then(|record| record.configs.get(&version).cloned())
-    }
-
-    fn resolve_memory_store(
-        &self,
-        workspace_id: &str,
-        id: &str,
-    ) -> Result<ResolvedMemoryStoreConfig, ResourceCatalogError> {
-        let record = self
-            .catalog_record::<MemoryRecord>(MEMORY, id)
-            .filter(|record| record.definition.workspace_id == workspace_id)
-            .ok_or_else(|| ResourceCatalogError::NotFound(id.into()))?;
-        if record.definition.state != ResourceState::Active {
-            return Err(ResourceCatalogError::NotActive {
-                id: id.into(),
-                state: record.definition.state,
-            });
-        }
-        let config = record
-            .configs
-            .get(&record.definition.current_config_version)
-            .cloned()
-            .ok_or_else(|| {
-                ResourceCatalogError::Storage(format!(
-                    "MemoryStore `{id}` current config version is missing"
-                ))
-            })?;
-        Ok(ResolvedMemoryStoreConfig {
-            definition: record.definition,
-            config,
-        })
     }
 
     fn publish_memory_config(
@@ -306,36 +459,6 @@ impl ResourceCatalog for SqliteAdminStore {
         self.catalog_record::<RepositoryRecord>(REPOSITORY, id)
             .filter(|record| record.definition.workspace_id == workspace_id)
             .and_then(|record| record.configs.get(&version).cloned())
-    }
-
-    fn resolve_repository(
-        &self,
-        workspace_id: &str,
-        id: &str,
-    ) -> Result<ResolvedRepositoryConfig, ResourceCatalogError> {
-        let record = self
-            .catalog_record::<RepositoryRecord>(REPOSITORY, id)
-            .filter(|record| record.definition.workspace_id == workspace_id)
-            .ok_or_else(|| ResourceCatalogError::NotFound(id.into()))?;
-        if record.definition.state != ResourceState::Active {
-            return Err(ResourceCatalogError::NotActive {
-                id: id.into(),
-                state: record.definition.state,
-            });
-        }
-        let config = record
-            .configs
-            .get(&record.definition.current_config_version)
-            .cloned()
-            .ok_or_else(|| {
-                ResourceCatalogError::Storage(format!(
-                    "Repository `{id}` current config version is missing"
-                ))
-            })?;
-        Ok(ResolvedRepositoryConfig {
-            definition: record.definition,
-            config,
-        })
     }
 
     fn publish_repository_config(
@@ -488,5 +611,69 @@ mod tests {
             Err(ResourceCatalogError::NotActive { .. })
         ));
         assert!(reopened.repository("workspace-b", "repo-1").is_none());
+    }
+
+    #[test]
+    fn inventory_update_and_legacy_upgrade_are_scoped_and_durable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("admin.db");
+        {
+            let store = SqliteAdminStore::open(path.to_str().unwrap()).unwrap();
+            store
+                .conn
+                .lock()
+                .unwrap()
+                .execute(
+                    &format!("INSERT INTO {NS}_memory_store (id, data) VALUES (?1, ?2), (?3, ?4)"),
+                    rusqlite::params![
+                        "legacy-owned",
+                        serde_json::json!({
+                            "id": "legacy-owned",
+                            "workspace_id": "workspace-a",
+                            "name": "Legacy",
+                            "description": "old row",
+                            "metadata": {"source": "v6"},
+                            "archived": false
+                        })
+                        .to_string(),
+                        "legacy-unowned",
+                        serde_json::json!({
+                            "id": "legacy-unowned",
+                            "name": "Quarantined",
+                            "archived": false
+                        })
+                        .to_string(),
+                    ],
+                )
+                .unwrap();
+        }
+
+        let store = SqliteAdminStore::open(path.to_str().unwrap()).unwrap();
+        let mut migrated = store
+            .memory_store("workspace-a", "legacy-owned")
+            .expect("owned legacy row migrated");
+        assert_eq!(migrated.current_config_version, ConfigVersion::INITIAL);
+        assert!(
+            store
+                .memory_store("workspace-a", "legacy-unowned")
+                .is_none()
+        );
+        assert_eq!(
+            store.list_memory_stores("workspace-a")[0].id,
+            "legacy-owned"
+        );
+
+        migrated.name = "Renamed".into();
+        store.update_memory_store(migrated).unwrap();
+        drop(store);
+        let reopened = SqliteAdminStore::open(path.to_str().unwrap()).unwrap();
+        assert_eq!(
+            reopened
+                .memory_store("workspace-a", "legacy-owned")
+                .unwrap()
+                .name,
+            "Renamed"
+        );
+        assert!(reopened.list_memory_stores("workspace-b").is_empty());
     }
 }

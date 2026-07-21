@@ -568,7 +568,7 @@ impl SharedHost {
     /// Idempotent — a thread with no live session is a no-op.
     ///
     /// This is the ONLY place a session's sandbox is reaped. The evict-to-rebuild
-    /// edges (`rebind_model`/`attach_resource`/`detach_resource`/`rotate_resource_token`)
+    /// edges (`rebind_model`/`apply_session_inputs`)
     /// remove the cached context WITHOUT disposing, so the next turn's `ctx_for`
     /// rebuilds over the same `base/<thread>` workspace (ADR-0038 continuity); a
     /// terminal end must instead reap it, so any in-sandbox memory/skill edits are

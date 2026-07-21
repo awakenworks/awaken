@@ -21,13 +21,20 @@ mod session;
 mod session_repo;
 pub mod work_queue;
 
+/// Resource-plane vocabulary used by Session ports. Runtime implementors can
+/// consume these signatures through this contract instead of adding another
+/// dependency edge to the resource plane.
+pub mod resource_plane {
+    pub use awaken_resource_contract::*;
+}
+
 pub use agent_config::{AgentConfigSource, AgentConfigView, AgentMcpServerView};
 pub use lifecycle::{SessionLifecycleFact, SessionLifecycleSink};
 pub use mcp_binding::{McpRefreshBinding, TokenEndpointAuthBinding};
 pub use mcp_probe::{McpProbe, McpProbeStatus};
 pub use resource::{
-    EffectiveSessionInputs, ResolvedInput, ResolvedInputSource, ResourceAccess,
-    SessionInputAttachment, SessionInputError, SessionInputResolver, SessionResource,
+    EffectiveSessionInputs, ResolvedInput, ResolvedInputSource, SessionInputAttachment,
+    SessionInputError, SessionInputResolver,
 };
 pub use session::{
     AgentCapabilities, BuiltinTool, CustomTool, DelegatedRun, LiveInboxEntry, LiveInboxError,
