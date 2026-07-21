@@ -48,14 +48,14 @@ export const options =
         thresholds: { checks: ['rate==1.0'], http_req_failed: ['rate==0'] },
       };
 
-function post(path, body) {
-  return http.post(`${BASE}${path}`, JSON.stringify(body), { headers: BETA });
+function post(path, body, metricName = path) {
+  return http.post(`${BASE}${path}`, JSON.stringify(body), { headers: BETA, tags: { name: metricName } });
 }
-function put(path, body) {
-  return http.put(`${BASE}${path}`, JSON.stringify(body), { headers: BETA });
+function put(path, body, metricName = path) {
+  return http.put(`${BASE}${path}`, JSON.stringify(body), { headers: BETA, tags: { name: metricName } });
 }
-function get(path) {
-  return http.get(`${BASE}${path}`, { headers: BETA });
+function get(path, metricName = path) {
+  return http.get(`${BASE}${path}`, { headers: BETA, tags: { name: metricName } });
 }
 
 export default function () {
@@ -68,13 +68,13 @@ export default function () {
     }), { 'provider 200': (r) => r.status === 200 });
 
     check(put('/v1/config/endpoints/ep1', {
-      id: 'ep1', provider_id: 'anthropic', flavor: 'anthropic_messages',
+      id: 'ep1', provider_id: 'anthropic', dialect: 'anthropic_messages',
       base_url: 'https://api.anthropic.com/v1/', timeout_secs: 300, display_name: 'prod', version: 1,
     }), { 'endpoint 200': (r) => r.status === 200 });
 
     check(post('/v1/config/offerings', {
       model_id: 'claude-opus-4-8', provider_id: 'anthropic',
-      protocol_endpoint_id: 'ep1', flavor: 'anthropic_messages', upstream_model: null,
+      protocol_endpoint_id: 'ep1', dialect: 'anthropic_messages', upstream_model: null,
     }), { 'offering 200': (r) => r.status === 200 });
 
     check(get('/v1/config/catalog'), {
@@ -110,7 +110,7 @@ export default function () {
     const cred = post(`/v1/vaults/${vaultId}/credentials`, {
       type: 'environment_variable', secret_name: 'ANTHROPIC_API_KEY',
       secret_value: `sk-k6-vault-${uid}`, networking: { type: 'unrestricted' },
-    });
+    }, '/v1/vaults/:vault_id/credentials');
     check(cred, {
       'vault credential 200': (r) => r.status === 200,
       'vault credential type': (r) => r.json('type') === 'vault_credential',
@@ -118,7 +118,8 @@ export default function () {
     });
     const credId = cred.json('id');
 
-    check(post(`/v1/vaults/${vaultId}/credentials/${credId}/mcp_oauth_validate`, {}), {
+    check(post(`/v1/vaults/${vaultId}/credentials/${credId}/mcp_oauth_validate`, {},
+      '/v1/vaults/:vault_id/credentials/:credential_id/mcp_oauth_validate'), {
       'validate 200': (r) => r.status === 200,
       'validate unknown': (r) => r.json('status') === 'unknown',
     });
@@ -134,9 +135,9 @@ export default function () {
 
     check(post(`/v1/sessions/${sid}/events`, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: `hello ${uid}` }] }],
-    }), { 'send events 200': (r) => r.status === 200 });
+    }, '/v1/sessions/:session_id/events'), { 'send events 200': (r) => r.status === 200 });
 
-    const events = get(`/v1/sessions/${sid}/events`);
+    const events = get(`/v1/sessions/${sid}/events`, '/v1/sessions/:session_id/events');
     check(events, {
       'events 200': (r) => r.status === 200,
       'echoed the turn': (r) => {
