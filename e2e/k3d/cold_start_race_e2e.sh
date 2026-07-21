@@ -79,6 +79,7 @@ k3d cluster delete "$CLUSTER" >/dev/null 2>&1 || true
 # DiskPressure and refuses to schedule pods. This is a test box, not a capacity test.
 EVICT="eviction-hard=imagefs.available<2%,nodefs.available<2%"
 k3d cluster create "$CLUSTER" --agents 0 --wait --timeout 180s \
+  --runtime-ulimit "nofile=65536:65536" \
   --k3s-arg "--kubelet-arg=$EVICT@server:*" >/dev/null
 
 log "4/5 side-load images into the cluster (single-platform tars)"

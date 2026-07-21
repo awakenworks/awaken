@@ -33,6 +33,7 @@ if ! k3d cluster list 2>/dev/null | grep -q "^${CLUSTER}\b"; then
   # Other repository k3d gates use the same 2% floor.
   EVICT="eviction-hard=imagefs.available<2%,nodefs.available<2%"
   k3d cluster create "${CLUSTER}" --wait --timeout 150s \
+    --runtime-ulimit "nofile=65536:65536" \
     --k3s-arg "--kubelet-arg=$EVICT@server:*"
 fi
 k3d kubeconfig merge "${CLUSTER}" --output "$KUBECONFIG_FILE" --overwrite >/dev/null

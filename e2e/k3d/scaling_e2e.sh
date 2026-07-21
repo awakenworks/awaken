@@ -68,6 +68,7 @@ k3d cluster delete "$CLUSTER" >/dev/null 2>&1 || true
 # is a test box, not a capacity test, so push eviction to ~2%.
 EVICT="eviction-hard=imagefs.available<2%,nodefs.available<2%"
 k3d cluster create "$CLUSTER" --agents 2 --wait --timeout 180s \
+  --runtime-ulimit "nofile=65536:65536" \
   --k3s-arg "--kubelet-arg=$EVICT@server:*" \
   --k3s-arg "--kubelet-arg=$EVICT@agent:*" >/dev/null
 
