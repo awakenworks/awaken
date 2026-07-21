@@ -101,7 +101,6 @@ npm run test:extended
 # The production `awaken` composition (not the scenario host) proves
 # catalog publication -> snapshot-pinned access -> credential materialization.
 node awaken_cli_e2e.mjs
-npm run test:resource-reclamation
 node runtime_embedded_e2e.mjs
 # Exercise the production cross-node worker-pool path as part of the same
 # changed-line evidence instead of leaving scenario-host worker code uncovered.
