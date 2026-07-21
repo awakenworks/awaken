@@ -23,6 +23,8 @@ cd "$REPO_ROOT"
 CLUSTER="awaken-scaling"
 IMAGE="awaken-topology:latest"
 NS="awaken-scaling"
+AGENTS="${AWAKEN_K3D_AGENTS:-2}"
+KEEP_CLUSTER="${AWAKEN_K3D_KEEP:-0}"
 LOCAL_PORT="${SCALING_LOCAL_PORT:-38631}"
 M="${1:-15}"
 DEPLOY_DIR="$REPO_ROOT/deploy/k3d"
@@ -30,12 +32,22 @@ NODE="k3d-$CLUSTER-server-0"
 DRIVER="$REPO_ROOT/e2e/k3d/scaling_driver.ts"
 PF_PID=""
 
+if ! [[ "$AGENTS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "AWAKEN_K3D_AGENTS must be a positive integer (got: $AGENTS)" >&2
+  exit 2
+fi
+
 log() { echo -e "\n\033[1;36m== $* ==\033[0m"; }
 ok()  { echo -e "\033[1;32m$*\033[0m"; }
 err() { echo -e "\033[1;31m$*\033[0m"; }
 
 cleanup() {
   [ -n "$PF_PID" ] && kill "$PF_PID" 2>/dev/null || true
+  if [ "$KEEP_CLUSTER" = "1" ]; then
+    log "keeping k3d cluster $CLUSTER for diagnostics"
+    rm -f "$DEPLOY_DIR/awaken-server"
+    return
+  fi
   log "teardown: deleting k3d cluster $CLUSTER"
   k3d cluster delete "$CLUSTER" >/dev/null 2>&1 || true
   rm -f "$DEPLOY_DIR/awaken-server"
@@ -43,7 +55,9 @@ cleanup() {
 trap cleanup EXIT
 
 # psql on the postgres pod (authoritative source of truth); -tA = bare scalar.
-psql_scalar() { kubectl -n "$NS" exec deploy/postgres -- env PGPASSWORD=test psql -U postgres -d awaken -tAc "$1" 2>/dev/null | tr -d '[:space:]'; }
+# Polling suppresses transient exec errors, while final assertions preserve stderr.
+psql_scalar() { kubectl -n "$NS" exec deploy/postgres -- env PGPASSWORD=test psql -U postgres -d awaken -tAc "$1" | tr -d '[:space:]'; }
+psql_scalar_quiet() { psql_scalar "$1" 2>/dev/null; }
 
 log "1/5 build the server binary on the host (rustc 1.96)"
 RUSTUP_TOOLCHAIN=1.96.0 cargo build -q -p awaken-scenario-host --bin awaken-scenario-host
@@ -60,14 +74,14 @@ cp "$BIN" "$DEPLOY_DIR/awaken-server"
 log "2/5 build the topology image (copy-in, no in-container rust build)"
 docker build --load -q -t "$IMAGE" -f "$DEPLOY_DIR/Dockerfile.server" "$DEPLOY_DIR" >/dev/null
 
-log "3/5 create MULTI-node k3d cluster $CLUSTER (server + 2 agents)"
+log "3/5 create MULTI-node k3d cluster $CLUSTER (server + $AGENTS agent(s))"
 k3d cluster delete "$CLUSTER" >/dev/null 2>&1 || true
 # Relax the kubelet disk-eviction thresholds: on a busy dev host (docker images +
 # Rust target dir) the shared disk can sit past k3s's default nodefs/imagefs<10%,
 # which taints the node DiskPressure and refuses to schedule the postgres pod. This
 # is a test box, not a capacity test, so push eviction to ~2%.
 EVICT="eviction-hard=imagefs.available<2%,nodefs.available<2%"
-k3d cluster create "$CLUSTER" --agents 2 --wait --timeout 180s \
+k3d cluster create "$CLUSTER" --agents "$AGENTS" --wait --timeout 180s \
   --runtime-ulimit "nofile=65536:65536" \
   --k3s-arg "--kubelet-arg=$EVICT@server:*" \
   --k3s-arg "--kubelet-arg=$EVICT@agent:*" >/dev/null
@@ -129,7 +143,7 @@ log "wait for the fleet to drain, then assert consistency in Postgres"
 WANT=$((M * 2))   # one echo turn commits 2 messages: User + Assistant
 GOT=0
 for _ in $(seq 1 60); do
-  GOT=$(psql_scalar "SELECT count(*) FROM runtime_message" || echo 0)
+  GOT=$(psql_scalar_quiet "SELECT count(*) FROM runtime_message" || echo 0)
   [ "${GOT:-0}" -ge "$WANT" ] && break
   sleep 2
 done
