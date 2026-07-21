@@ -67,13 +67,14 @@ pub fn awaken_run_executor_acp::AcpLaunch::claude(&str, &str, &str) -> Self
 pub fn awaken_run_executor_acp::AcpLaunch::custom(alloc::vec::Vec<alloc::string::String>, alloc::vec::Vec<(alloc::string::String, alloc::string::String)>) -> Self
 pub struct awaken_run_executor_acp::AcpRunExecutor
 impl awaken_run_executor_acp::AcpRunExecutor
-pub fn awaken_run_executor_acp::AcpRunExecutor::model_switch(&self) -> awaken_run_executor_acp::ModelSwitch
-impl awaken_run_executor_acp::AcpRunExecutor
+pub fn awaken_run_executor_acp::AcpRunExecutor::for_permission_policy(&self, alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy>) -> Self
 pub fn awaken_run_executor_acp::AcpRunExecutor::new(alloc::sync::Arc<dyn awaken_run_executor_acp::AgentChannelSource>) -> Self
 pub fn awaken_run_executor_acp::AcpRunExecutor::with_launch_observer(self, alloc::sync::Arc<dyn awaken_protocol_acp::LaunchObserver>) -> Self
 pub fn awaken_run_executor_acp::AcpRunExecutor::with_permission_policy(self, alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy>) -> Self
 pub fn awaken_run_executor_acp::AcpRunExecutor::with_session_home(self, alloc::sync::Arc<dyn awaken_run_executor_acp::SessionHomeProvider>) -> Self
 pub fn awaken_run_executor_acp::AcpRunExecutor::with_session_mode(self, impl core::convert::Into<alloc::string::String>) -> Self
+impl awaken_run_executor_acp::AcpRunExecutor
+pub fn awaken_run_executor_acp::AcpRunExecutor::model_switch(&self) -> awaken_run_executor_acp::ModelSwitch
 impl awaken_runtime_contract::execution::RunAttemptExecutor for awaken_run_executor_acp::AcpRunExecutor
 pub fn awaken_run_executor_acp::AcpRunExecutor::resume<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::resume::ResumeCommand, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::RunState>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 impl awaken_runtime_contract::execution::RunExecutor for awaken_run_executor_acp::AcpRunExecutor
@@ -103,11 +104,6 @@ pub fn awaken_run_executor_acp::DirSessionHome::new(core::option::Option<std::pa
 impl awaken_run_executor_acp::SessionHomeProvider for awaken_run_executor_acp::DirSessionHome
 pub fn awaken_run_executor_acp::DirSessionHome::harvest<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_run_executor_acp::SessionHomeKey, &'life2 awaken_run_executor_acp::SessionHomePlan) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_run_executor_acp::DirSessionHome::restore<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_run_executor_acp::SessionHomeKey, &'life2 awaken_run_executor_acp::SessionHomePlan) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
-pub struct awaken_run_executor_acp::DispatchRunExecutor
-impl awaken_run_executor_acp::DispatchRunExecutor
-pub fn awaken_run_executor_acp::DispatchRunExecutor::new(alloc::sync::Arc<dyn awaken_runtime_contract::execution::RunExecutor>, alloc::sync::Arc<dyn awaken_runtime_contract::execution::RunExecutor>, alloc::sync::Arc<dyn awaken_runtime_contract::execution::RunExecutor>) -> Self
-impl awaken_runtime_contract::execution::RunExecutor for awaken_run_executor_acp::DispatchRunExecutor
-pub fn awaken_run_executor_acp::DispatchRunExecutor::execute<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::RunState>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub struct awaken_run_executor_acp::FsSessionBlobStore
 impl awaken_run_executor_acp::FsSessionBlobStore
 pub fn awaken_run_executor_acp::FsSessionBlobStore::new(std::path::PathBuf) -> Self
