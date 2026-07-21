@@ -155,7 +155,7 @@ def _selftest_resource_authz_separation() -> None:
 
 
 # ── Phase 3: the runtime-host god-hub dependency ratchet ─────────────────────────
-# `awaken-runtime-host` is the historical god-hub (~6 bounded contexts, 36 first-party
+# `awaken-runtime-host` is the historical god-hub (~6 bounded contexts, now 35 first-party
 # deps). Its full crate-split is a multi-session, port-first effort — each extraction must
 # introduce a narrow port at the `SharedHost` boundary first, because the modules own the
 # host's fields, add `impl SharedHost` methods, and the host itself depends on
@@ -164,7 +164,7 @@ def _selftest_resource_authz_separation() -> None:
 # context is extracted, LOWER this ceiling in the same commit. NEVER raise it — a new hub
 # dependency means the substrate grew a responsibility, the regression we are undoing.
 GOD_HUB_CRATE = "awaken-runtime-host"
-GOD_HUB_FIRST_PARTY_DEP_CEILING = 36
+GOD_HUB_FIRST_PARTY_DEP_CEILING = 35
 
 
 def god_hub_ratchet_violation(dep_count: int, ceiling: int) -> list[str]:
@@ -181,8 +181,8 @@ def god_hub_ratchet_violation(dep_count: int, ceiling: int) -> list[str]:
 
 def _selftest_god_hub_ratchet() -> None:
     """Cause: C1 = dep_count > ceiling. Effect: E1 = one directive; E2 = none."""
-    assert god_hub_ratchet_violation(37, 36), "over ceiling -> violation"  # C1=T -> E1
-    assert god_hub_ratchet_violation(36, 36) == []  # C1=F equal -> E2
+    assert god_hub_ratchet_violation(36, 35), "over ceiling -> violation"  # C1=T -> E1
+    assert god_hub_ratchet_violation(35, 35) == []  # C1=F equal -> E2
     assert god_hub_ratchet_violation(30, 36) == []  # C1=F shrunk -> E2
     v = god_hub_ratchet_violation(40, 36)
     assert len(v) == 1 and "40" in v[0] and "36" in v[0], v  # E1 names both counts

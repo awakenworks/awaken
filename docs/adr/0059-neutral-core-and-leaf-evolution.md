@@ -123,7 +123,7 @@ with this ADR, living as pure predicates + cause-effect selftests in
   layer). This is the primary guard against drift (1) — a new reverse edge onto an adapter
   fails the build, forcing the neutral port to move to a contract leaf first.
 - **God-hub ratchet** — `awaken-runtime-host`'s first-party dependency count is monotone
-  non-increasing (ceiling starts at 36). The hub may only shrink; each extraction lowers
+  non-increasing (ceiling started at 36 and is now 35). The hub may only shrink; each extraction lowers
   the ceiling in the same commit.
 - **Bucket direction + secret-resolution-free runtime** — the pre-existing rules.
 

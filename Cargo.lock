@@ -1235,7 +1235,6 @@ dependencies = [
  "awaken-agent-contract",
  "awaken-config-resolver",
  "awaken-config-service",
- "awaken-config-store",
  "awaken-credential-vault",
  "awaken-data-subject",
  "awaken-env-store",

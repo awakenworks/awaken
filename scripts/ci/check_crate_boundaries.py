@@ -1277,7 +1277,6 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-work-store",
         "awaken-session-store",
         "awaken-env-store",
-        "awaken-config-store",
         # The config-authoring plane, extracted to a shared crate; the host re-exports
         # it (config service + routers + resolver + tool catalog) for the composition
         # root while depending on it like any other config-domain crate.
