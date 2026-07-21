@@ -760,7 +760,7 @@ mod provisioning_registry_tests {
             .await;
 
         let cid = "Greeter".to_string();
-        let advertised = host.skills.ids();
+        let advertised = host.skills.ids_in(host.local_workspace());
         assert!(
             advertised.contains(&cid),
             "advertisement {advertised:?} must offer the stable resource id {cid}"
