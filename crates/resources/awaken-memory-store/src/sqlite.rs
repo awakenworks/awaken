@@ -1,11 +1,10 @@
-//! SQLite [`MemoryBlobStore`] over the crate's `memory_store` migration scope.
+//! SQLite [`MemoryFs`] over the crate's `memory_store` migration scope.
 
 use std::sync::{Arc, Mutex};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::schema::memory_store_bundle;
-use crate::{MemoryBlobStore, MemoryStoreError, sanitize_stem};
 
 const NS: &str = "memory_store";
 
@@ -35,131 +34,6 @@ fn migrate_guarded(conn: &Arc<Mutex<Connection>>) -> Result<(), StoreError> {
         .map_err(|_| StoreError::Migrate("memory_store connection poisoned".into()))?;
     migrate_conn(&guard)
 }
-
-fn storage(err: impl std::fmt::Display) -> MemoryStoreError {
-    MemoryStoreError::Storage(err.to_string())
-}
-
-async fn with_conn<T, F>(conn: &Arc<Mutex<Connection>>, f: F) -> Result<T, MemoryStoreError>
-where
-    T: Send + 'static,
-    F: FnOnce(&Connection) -> Result<T, MemoryStoreError> + Send + 'static,
-{
-    let conn = conn.clone();
-    tokio::task::spawn_blocking(move || {
-        let guard = conn.lock().map_err(|_| storage("memory_store poisoned"))?;
-        f(&guard)
-    })
-    .await
-    .map_err(storage)?
-}
-
-/// A SQLite-backed [`MemoryBlobStore`].
-pub struct SqliteMemoryBlobStore {
-    conn: Arc<Mutex<Connection>>,
-}
-
-impl SqliteMemoryBlobStore {
-    /// Open (or create) a database file and apply the memory-store migrations
-    /// (one-step convenience for a store-owned database).
-    pub fn open(path: &str) -> Result<Self, StoreError> {
-        let conn = Connection::open(path).map_err(|e| StoreError::Open(e.to_string()))?;
-        let store = Self::over(conn);
-        store.ensure_schema()?;
-        Ok(store)
-    }
-
-    /// Open a private in-memory database (tests / ephemeral).
-    pub fn open_in_memory() -> Result<Self, StoreError> {
-        let conn = Connection::open_in_memory().map_err(|e| StoreError::Open(e.to_string()))?;
-        let store = Self::over(conn);
-        store.ensure_schema()?;
-        Ok(store)
-    }
-
-    /// Wrap an existing connection **without migrating**. Call
-    /// [`Self::ensure_schema`], or let a unified migration pipeline own the
-    /// `memory_store` scope so this store shares the caller's database.
-    pub fn over(conn: Connection) -> Self {
-        Self {
-            conn: Arc::new(Mutex::new(conn)),
-        }
-    }
-
-    /// Apply the `memory_store` scoped migration bundle (idempotent). Optional.
-    pub fn ensure_schema(&self) -> Result<(), StoreError> {
-        migrate_guarded(&self.conn)
-    }
-}
-
-#[async_trait::async_trait]
-impl MemoryBlobStore for SqliteMemoryBlobStore {
-    async fn create(&self, workspace_id: &str) -> Result<String, MemoryStoreError> {
-        let ws = workspace_id.to_string();
-        with_conn(&self.conn, move |conn| {
-            // Dense global id: max ordinal + 1, inserted empty, in one statement so a
-            // concurrent create cannot mint the same id (the Mutex serializes anyway).
-            conn.query_row(
-                &format!(
-                    "INSERT INTO {NS}_blob (workspace_id, id, ordinal, content) \
-                     SELECT ?1, 'memstore_' || x.n, x.n, x'' \
-                     FROM (SELECT COALESCE(MAX(ordinal), 0) + 1 AS n FROM {NS}_blob) x \
-                     RETURNING id"
-                ),
-                params![ws],
-                |r| r.get::<_, String>(0),
-            )
-            .map_err(storage)
-        })
-        .await
-    }
-
-    async fn put(
-        &self,
-        workspace_id: &str,
-        id: &str,
-        bytes: &[u8],
-    ) -> Result<(), MemoryStoreError> {
-        let ws = workspace_id.to_string();
-        let stem = sanitize_stem(id);
-        let bytes = bytes.to_vec();
-        with_conn(&self.conn, move |conn| {
-            conn.execute(
-                &format!(
-                    "INSERT INTO {NS}_blob (workspace_id, id, ordinal, content) VALUES (?1, ?2, 0, ?3) \
-                     ON CONFLICT(workspace_id, id) DO UPDATE SET content = excluded.content"
-                ),
-                params![ws, stem, bytes],
-            )
-            .map_err(storage)?;
-            Ok(())
-        })
-        .await
-    }
-
-    async fn get(&self, workspace_id: &str, id: &str) -> Result<Option<Vec<u8>>, MemoryStoreError> {
-        let ws = workspace_id.to_string();
-        let stem = sanitize_stem(id);
-        with_conn(&self.conn, move |conn| {
-            conn.query_row(
-                &format!("SELECT content FROM {NS}_blob WHERE workspace_id = ?1 AND id = ?2"),
-                params![ws, stem],
-                |r| r.get::<_, Vec<u8>>(0),
-            )
-            .optional()
-            .map_err(storage)
-        })
-        .await
-    }
-
-    async fn exists(&self, workspace_id: &str, id: &str) -> Result<bool, MemoryStoreError> {
-        Ok(self.get(workspace_id, id).await?.is_some())
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Path-addressed MemoryFs backend (ADR-0053)
-// ---------------------------------------------------------------------------
 
 use crate::memfs::{now_nanos, under_prefix, validate_path, validate_size};
 use crate::{MemErr, Memory, MemoryEntry, MemoryFs, sha256_hex};
@@ -209,8 +83,8 @@ impl SqliteMemoryFs {
         Ok(store)
     }
 
-    /// Wrap an existing connection **without migrating** (see
-    /// [`SqliteMemoryBlobStore::over`] for the single-DB reuse rationale).
+    /// Wrap an existing connection **without migrating**, allowing a unified
+    /// migration pipeline to own the shared database.
     pub fn over(conn: Connection) -> Self {
         Self {
             conn: Arc::new(Mutex::new(conn)),
@@ -524,17 +398,9 @@ mod migration_seam_tests {
     use super::*;
 
     /// `over` wraps a connection without migrating; the store only works once the
-    /// caller opts into the `memory_store` scope via `ensure_schema`. Proven on the
-    /// blob store and the memfs store — both share the one scope.
+    /// caller opts into the `memory_store` scope via `ensure_schema`.
     #[tokio::test]
     async fn over_does_not_migrate_but_ensure_schema_does() {
-        let blob = SqliteMemoryBlobStore::over(Connection::open_in_memory().unwrap());
-        assert!(blob.create("ws").await.is_err());
-        blob.ensure_schema().unwrap();
-        let id = blob.create("ws").await.unwrap();
-        blob.put("ws", &id, b"x").await.unwrap();
-        assert_eq!(blob.get("ws", &id).await.unwrap(), Some(b"x".to_vec()));
-
         let fs = SqliteMemoryFs::over(Connection::open_in_memory().unwrap());
         assert!(fs.create("s", "/a.md", "alpha").await.is_err());
         fs.ensure_schema().unwrap();

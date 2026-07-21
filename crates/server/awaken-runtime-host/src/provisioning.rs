@@ -201,36 +201,6 @@ impl SharedHost {
         self.resource_ownership.has_any_owner("file", id)
     }
 
-    /// Create a new, empty memory store and return its stable id (ADR-0038 MemoryStore).
-    /// Unlike a blob id, this id is mutable: a session mounts it read-write and the host
-    /// harvests the write back under the same id. Backed by the durable
-    /// [`awaken_memory_store::MemoryBlobStore`], so the store (and its id) survive a
-    /// process restart when the host runs under a storage dir.
-    pub async fn create_memory_store(&self) -> String {
-        self.create_memory_store_in(&self.local_workspace).await
-    }
-
-    pub async fn create_memory_store_in(&self, workspace: &str) -> String {
-        self.memory_stores
-            .blob()
-            .create(workspace)
-            .await
-            .expect("create durable memory store")
-    }
-
-    /// The current bytes of a memory store; `None` if the id is unknown.
-    pub async fn memory_get(&self, id: &str) -> Option<Vec<u8>> {
-        self.memory_get_in(&self.local_workspace, id).await
-    }
-
-    pub async fn memory_get_in(&self, workspace: &str, id: &str) -> Option<Vec<u8>> {
-        self.memory_stores
-            .blob()
-            .get(workspace, id)
-            .await
-            .unwrap_or(None)
-    }
-
     /// Harvest a thread's read-write MemoryStore directory back through the same
     /// path-addressed CAS store used by recall, extraction, and the Memory API.
     pub async fn harvest_thread_memory(&self, thread: &str) {
@@ -451,37 +421,6 @@ impl SharedHost {
     /// The delegate agent ids (advertised as the agent's `multiagent` roster).
     pub fn delegate_ids(&self) -> Vec<String> {
         self.delegates.ids()
-    }
-}
-
-#[cfg(test)]
-mod memory_store_tests {
-    use super::*;
-    use crate::host::SharedHost;
-    use awaken_runtime_contract::llm::{ChatRequest, ChatResponse};
-
-    struct NoLlm;
-    #[async_trait::async_trait]
-    impl awaken_runtime_contract::llm::LlmExecutor for NoLlm {
-        async fn infer(
-            &self,
-            _request: ChatRequest,
-        ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
-            unreachable!("the memory-store map never calls the model")
-        }
-    }
-
-    #[tokio::test]
-    async fn create_mints_unique_ids_readable_via_get() {
-        let host = SharedHost::new(Arc::new(NoLlm), "test");
-        let a = host.create_memory_store().await;
-        let b = host.create_memory_store().await;
-        assert_ne!(a, b, "each memory store gets a distinct id");
-        // A freshly created store exists and is empty; an unknown id is absent — the
-        // distinction `prepare_session` relies on to reject a dangling memory binding.
-        assert_eq!(host.memory_get(&a).await, Some(Vec::new()));
-        assert_eq!(host.memory_get(&b).await, Some(Vec::new()));
-        assert_eq!(host.memory_get("memstore_does_not_exist").await, None);
     }
 }
 

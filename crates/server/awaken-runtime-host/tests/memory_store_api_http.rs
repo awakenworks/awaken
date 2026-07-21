@@ -5,9 +5,8 @@
 //! precondition / delete), and the `memory_versions` log (list / retrieve / redact),
 //! plus the fail-closed error arms (unknown store, unknown memory, bad path).
 //!
-//! The router is built over a real `SharedHost` whose content backends are the
-//! ephemeral in-memory blob store + in-memory `SqliteMemoryFs` — the same code paths
-//! a durable deployment runs, only the storage root differs.
+//! The router is built over a real `SharedHost` and its in-memory `SqliteMemoryFs` —
+//! the same path-addressed content model a durable deployment runs.
 
 use std::sync::Arc;
 
@@ -116,12 +115,13 @@ async fn store_lifecycle_create_get_list_update_archive_delete() {
     assert_eq!(created["metadata"]["team"], "core");
     assert_eq!(created["archived_at"], Value::Null);
 
-    // Retrieve carries the SDK object PLUS the legacy mount-blob fields.
+    // Retrieve carries only the governed definition; mutable data has one surface,
+    // `/memories`, shared with execution.
     let (status, got) = call(&router, "GET", &format!("/v1/memory_stores/{id}"), None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(got["name"], "notes");
-    assert_eq!(got["size_bytes"], 0, "a fresh store's blob is empty");
-    assert!(got.get("content").is_some(), "legacy content field present");
+    assert!(got.get("size_bytes").is_none());
+    assert!(got.get("content").is_none());
 
     // List surfaces the non-archived store.
     let (status, list) = call(&router, "GET", "/v1/memory_stores", None).await;
@@ -185,7 +185,7 @@ async fn unknown_store_is_fail_closed_on_every_verb() {
     let router = router();
     let missing = "memstore_does_not_exist";
 
-    // GET on a store with neither a blob nor a registry row → 404.
+    // GET on a store with no Resource Catalog identity → 404.
     let (status, v) = call(
         &router,
         "GET",

@@ -7,7 +7,7 @@
 // process dying, not just live in one process's heap.
 //
 // Flow: create a memory store, run a session whose deterministic model writes a
-// marker into the mount (harvested on turn end), assert `GET /v1/memory_stores/:id`
+// marker into the mount (harvested on turn end), assert the `/memories` content
 // reflects it, then KILL the server and start a fresh one over the SAME storage
 // dir. The marker must still be there. A purely in-memory store loses it on
 // restart — that is the completeness gap this test exists to catch.
@@ -52,8 +52,8 @@ async function approveGated(sid, evs, approved) {
 
 async function memContent(id) {
   try {
-    const cur = await client.get(`/v1/memory_stores/${id}`);
-    return cur?.content ?? '';
+    const page = await client.get(`/v1/memory_stores/${id}/memories`);
+    return (page?.data ?? []).map((memory) => memory.content ?? '').join('\n');
   } catch {
     return '';
   }
@@ -87,7 +87,7 @@ async function main() {
     const session = await client.beta.sessions.create({
       agent: 'assistant',
       environment_id: 'env_local',
-      resources: [{ type: 'memory_store', memory_store_id: mem.id, mount_path: '/notes.txt' }],
+      resources: [{ type: 'memory_store', memory_store_id: mem.id, mount_path: '/memory' }],
       betas: BETAS,
     });
     await client.beta.sessions.events.send(session.id, {

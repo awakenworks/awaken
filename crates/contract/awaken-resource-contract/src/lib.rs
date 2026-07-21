@@ -1,7 +1,7 @@
 //! Port-only contract for the resources plane (files, memory, repositories, skills).
 //!
-//! The four mountable-resource **ports** — [`FileStore`], [`MemoryBlobStore`],
-//! [`MemoryFs`], [`SkillStore`] — plus the value/error types in their signatures,
+//! The three mountable-resource **ports** — [`FileStore`], [`MemoryFs`],
+//! [`SkillStore`] — plus the value/error types in their signatures,
 //! and **nothing else**: no backend, no SQL driver, no filesystem. It mirrors
 //! [`awaken-provisioning-contract`](https://docs.rs/awaken-provisioning-contract):
 //! an adapter (or a consumer reusing these stores inside its own database) can
@@ -91,37 +91,6 @@ pub trait SkillStore: Send + Sync {
     async fn list(&self, workspace_id: &str) -> Result<Vec<(String, String)>, SkillStoreError>;
     /// Delete a skill; returns whether it existed. Idempotent.
     async fn delete(&self, workspace_id: &str, id: &str) -> Result<bool, SkillStoreError>;
-}
-
-// ---------------------------------------------------------------------------
-// Memory blob store (ADR-0038): id-keyed byte store port.
-// ---------------------------------------------------------------------------
-
-/// A memory-store failure.
-#[derive(Debug, thiserror::Error)]
-pub enum MemoryStoreError {
-    #[error("io: {0}")]
-    Io(String),
-    #[error("storage: {0}")]
-    Storage(String),
-}
-
-/// A durable, id-keyed, workspace-scoped byte store: one blob per id. Backs the
-/// ADR-0038 `memory_store` resource family. `create` mints a dense, globally-unique
-/// `memstore_<n>` id and writes it empty so it resolves before any write-back. Async
-/// so a network-DB backend fits; the filesystem/in-memory backends satisfy it
-/// trivially. Mirrors [`FileStore`].
-#[async_trait]
-pub trait MemoryBlobStore: Send + Sync {
-    /// Mint a new, empty store and return its stable id.
-    async fn create(&self, workspace_id: &str) -> Result<String, MemoryStoreError>;
-    /// Overwrite the bytes under `id` (the harvest write-back path).
-    async fn put(&self, workspace_id: &str, id: &str, bytes: &[u8])
-    -> Result<(), MemoryStoreError>;
-    /// The bytes under `id`, or `None` if no such store exists.
-    async fn get(&self, workspace_id: &str, id: &str) -> Result<Option<Vec<u8>>, MemoryStoreError>;
-    /// Whether a store with `id` exists.
-    async fn exists(&self, workspace_id: &str, id: &str) -> Result<bool, MemoryStoreError>;
 }
 
 // ---------------------------------------------------------------------------

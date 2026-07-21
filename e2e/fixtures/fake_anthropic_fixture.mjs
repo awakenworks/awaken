@@ -149,7 +149,7 @@ export const BEHAVIORS = {
   // tool result is present) reply `memory persisted`.
   memoryResource(parsed) {
     if (toolResults(parsed).length > 0) return text('memory persisted');
-    return tool('memres-1', 'write', { path: '.mnt/notes.txt', content: lastUserText(parsed) });
+    return tool('memres-1', 'write', { path: '.mnt/memory/note.md', content: lastUserText(parsed) });
   },
   // GitRepoModel: read the seed file, write a new file, then finish (sequenced off
   // the tool-result count).
@@ -228,8 +228,8 @@ export const BEHAVIORS = {
     switch (toolResults(parsed).length) {
       case 0: return tool('ls', 'list_skills', {});
       case 1: return tool('sk', 'Skill', { skill: 'greet' });
-      // Write into the mounted memory store (mount_path /notes.txt → .mnt/notes.txt).
-      case 2: return tool('wm', 'write', { path: '.mnt/notes.txt', content: 'MEMO_FULLCHAIN_5521' });
+      // Write into the mounted MemoryStore directory.
+      case 2: return tool('wm', 'write', { path: '.mnt/memory/note.md', content: 'MEMO_FULLCHAIN_5521' });
       // Write into the cloned repo working tree (host commits + pushes on harvest).
       case 3: return tool('wr', 'write', { path: 'workspace/repo/CHAIN.txt', content: 'REPO_FULLCHAIN_8830' });
       // Produce an output artifact (harvested into the blob store, listed by /v1/files).

@@ -4,16 +4,13 @@
 //! memory files**, each carrying a `content_sha256`, a monotonic per-path
 //! `version`, and real create/update timestamps — the model a write-through FUSE
 //! mount ([ADR-0053] D2) needs to give an LLM native `read`/`write`/`edit`/`grep`
-//! semantics over `/mnt/memory/{store}/*`. Unlike the id-keyed [`MemoryBlobStore`]
-//! (one opaque blob per store), a store here holds many files with **per-file
+//! semantics over `/mnt/memory/{store}/*`. A store holds many files with **per-file
 //! optimistic concurrency**: [`MemoryFs::update`] is a compare-and-swap on the base
 //! sha, so two writers never silently clobber each other.
 //!
 //! Backends: [`InMemoryFs`], [`FsMemoryFs`] (JSON record per memory), and — feature-
 //! record per memory). Sqlite/postgres are a later slice (ADR-0053 P4).
 //!
-//! [`MemoryBlobStore`]: crate::MemoryBlobStore
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;

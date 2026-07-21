@@ -1,126 +1,10 @@
-//! Backend-generic conformance for `MemoryBlobStore`, run against every backend
-//! (in-memory + filesystem + sqlite, and — when reachable — postgres), so all
-//! backends keep identical semantics: dense unique-id minting, byte round-trips,
-//! workspace scoping, and empty-on-create.
+//! Backend-generic conformance for the path-addressed `MemoryFs` port (ADR-0053).
+//! The cross-node CAS backend (`PgMemoryFs`) keeps the same POSIX-replace and
+//! compare-and-swap semantics as the in-process backends.
 
-use awaken_memory_store::{FsMemoryBlobStore, InMemoryBlobStore, MemoryBlobStore};
-
-// The path-addressed `MemoryFs` port (ADR-0053) — exercised below across the same
-// backend set as the blob store, so the cross-node CAS backend (`PgMemoryFs`) keeps
-// the identical POSIX-replace / compare-and-swap semantics the in-process backends
-// already prove in the crate's unit tests.
 use awaken_memory_store::memfs::MAX_PATH_BYTES;
 use awaken_memory_store::{FsMemoryFs, MAX_MEMORY_BYTES, MemErr, MemoryFs, sha256_hex};
 use std::sync::Arc;
-
-async fn create_put_get_exists_and_scope_by_workspace(store: &dyn MemoryBlobStore) {
-    // create mints a distinct id per call and resolves empty.
-    let a = store.create("ws1").await.unwrap();
-    let b = store.create("ws1").await.unwrap();
-    assert_ne!(a, b, "ids are distinct");
-    assert_eq!(store.get("ws1", &a).await.unwrap(), Some(Vec::new()));
-    assert!(store.exists("ws1", &a).await.unwrap());
-    assert!(!store.exists("ws1", "memstore_absent").await.unwrap());
-
-    // put overwrites; bytes round-trip.
-    store.put("ws1", &a, b"hello bytes").await.unwrap();
-    assert_eq!(
-        store.get("ws1", &a).await.unwrap().as_deref(),
-        Some(&b"hello bytes"[..])
-    );
-
-    // A different workspace is isolated: the same id is absent there.
-    assert_eq!(store.get("ws2", &a).await.unwrap(), None);
-    assert!(!store.exists("ws2", &a).await.unwrap());
-    store.put("ws2", "memstore_x", b"other").await.unwrap();
-    assert_eq!(
-        store.get("ws2", "memstore_x").await.unwrap().as_deref(),
-        Some(&b"other"[..])
-    );
-    assert_eq!(store.get("ws1", "memstore_x").await.unwrap(), None);
-
-    // A crafted `../` id addresses one safe blob: put and get sanitize identically, so
-    // it round-trips and can never escape the store root. A very long id is bounded to
-    // a stem, not a panic or an over-NAME_MAX filename.
-    store.put("wsC", "../../etc/passwd", b"safe").await.unwrap();
-    assert_eq!(
-        store
-            .get("wsC", "../../etc/passwd")
-            .await
-            .unwrap()
-            .as_deref(),
-        Some(&b"safe"[..])
-    );
-    let long = "x".repeat(500);
-    store.put("wsC", &long, b"bounded").await.unwrap();
-    assert_eq!(
-        store.get("wsC", &long).await.unwrap().as_deref(),
-        Some(&b"bounded"[..])
-    );
-}
-
-/// Ids are dense AND monotonic AND globally-unique across workspaces: the first three
-/// creates on a fresh store yield `memstore_1`, `memstore_2`, `memstore_3` regardless
-/// of which workspace mints them (the counter is store-global, not per-workspace).
-/// Pins the "dense `memstore_<n>`" clause of the port contract across every backend.
-async fn mints_dense_global_monotonic_ids(store: &dyn MemoryBlobStore) {
-    assert_eq!(store.create("ws1").await.unwrap(), "memstore_1");
-    assert_eq!(store.create("ws1").await.unwrap(), "memstore_2");
-    // A different workspace shares the same monotonic counter — no reset, no gap.
-    assert_eq!(store.create("ws2").await.unwrap(), "memstore_3");
-    assert_eq!(store.create("ws1").await.unwrap(), "memstore_4");
-}
-
-#[tokio::test]
-async fn in_memory_mints_dense_ids() {
-    mints_dense_global_monotonic_ids(&InMemoryBlobStore::new()).await;
-}
-
-#[tokio::test]
-async fn fs_mints_dense_ids() {
-    let dir = tempfile::tempdir().unwrap();
-    mints_dense_global_monotonic_ids(&FsMemoryBlobStore::open(dir.path()).unwrap()).await;
-}
-
-#[tokio::test]
-async fn in_memory_conforms() {
-    create_put_get_exists_and_scope_by_workspace(&InMemoryBlobStore::new()).await;
-}
-
-#[tokio::test]
-async fn fs_conforms_and_survives_reopen() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().to_path_buf();
-    create_put_get_exists_and_scope_by_workspace(&FsMemoryBlobStore::open(&root).unwrap()).await;
-
-    // A restart re-seeds the counter past what's on disk (no id re-mint) and reads
-    // the committed bytes back.
-    let store = FsMemoryBlobStore::open(&root).unwrap();
-    let id = store.create("wsR").await.unwrap();
-    store.put("wsR", &id, b"persist").await.unwrap();
-    let reopened = FsMemoryBlobStore::open(&root).unwrap();
-    assert_eq!(
-        reopened.get("wsR", &id).await.unwrap().as_deref(),
-        Some(&b"persist"[..])
-    );
-    // The reopened store does not re-mint the existing id.
-    assert_ne!(reopened.create("wsR").await.unwrap(), id);
-}
-
-#[cfg(feature = "sqlite")]
-#[tokio::test]
-async fn sqlite_conforms() {
-    use awaken_memory_store::SqliteMemoryBlobStore;
-    create_put_get_exists_and_scope_by_workspace(&SqliteMemoryBlobStore::open_in_memory().unwrap())
-        .await;
-}
-
-#[cfg(feature = "sqlite")]
-#[tokio::test]
-async fn sqlite_mints_dense_ids() {
-    use awaken_memory_store::SqliteMemoryBlobStore;
-    mints_dense_global_monotonic_ids(&SqliteMemoryBlobStore::open_in_memory().unwrap()).await;
-}
 
 // ---------------------------------------------------------------------------
 // Path-addressed MemoryFs conformance (ADR-0053), backend-generic. The in-memory,
@@ -459,7 +343,7 @@ async fn sqlite_concurrent_cas_has_exactly_one_winner() {
 #[cfg(feature = "postgres")]
 mod postgres {
     use super::*;
-    use awaken_memory_store::{PgMemoryBlobStore, PgMemoryFs};
+    use awaken_memory_store::PgMemoryFs;
     use sqlx::Executor;
     use sqlx::postgres::{PgPool, PgPoolOptions};
 
@@ -496,16 +380,6 @@ mod postgres {
             .connect(&database_url())
             .await
             .ok()
-    }
-
-    #[tokio::test]
-    async fn postgres_conforms() {
-        let Some(pool) = schema_pool("t_memory").await else {
-            return;
-        };
-        let store = PgMemoryBlobStore::with_pool(pool);
-        store.ensure_schema().await.unwrap();
-        create_put_get_exists_and_scope_by_workspace(&store).await;
     }
 
     /// The FULL path-addressed `MemoryFs` conformance + extended + not-found suites

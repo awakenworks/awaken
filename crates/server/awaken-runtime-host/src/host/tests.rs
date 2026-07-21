@@ -247,6 +247,13 @@ fn install_test_memory_mounter(host: &SharedHost) {
     }));
 }
 
+fn test_memory_store_id() -> String {
+    format!(
+        "test-memory-store-{}",
+        BASE_SEQ.fetch_add(1, Ordering::SeqCst)
+    )
+}
+
 /// A model that blocks on its second inference (the first revision round) until
 /// a gate is released, so a concurrent `interrupt` can land while the outcome
 /// loop is mid-run. Its reply never contains the rubric, so the guard steers.
@@ -597,8 +604,8 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
 
     let host = Arc::new(SharedHost::new(Arc::new(MemLoopModel), "stub").with_memory(&global));
     install_test_memory_mounter(&host);
-    let store_a = host.create_memory_store().await;
-    let store_b = host.create_memory_store().await;
+    let store_a = test_memory_store_id();
+    let store_b = test_memory_store_id();
     let managed = managed_with_resource_source(host.clone());
     let init = |store: Option<&str>, extraction_enabled: bool| {
         let mut init = SessionInit {
@@ -730,7 +737,7 @@ async fn pinned_memory_policy_can_disable_recall_and_extraction() {
     let global = std::env::temp_dir().join(format!("awaken-managed-policy-{stamp}"));
     let host = Arc::new(SharedHost::new(Arc::new(MemLoopModel), "stub").with_memory(global));
     install_test_memory_mounter(&host);
-    let store = host.create_memory_store().await;
+    let store = test_memory_store_id();
     host.memory_stores
         .fs()
         .create(&store, "/existing.md", "the user prefers tea")
@@ -1194,7 +1201,7 @@ async fn prepare_session_mounts_an_effective_memory_resource() {
 
     // Seed a memory store with known bytes. The control plane has already resolved
     // this resource into the SessionInit passed across the runtime boundary.
-    let store_id = host.create_memory_store().await;
+    let store_id = test_memory_store_id();
     host.memory_stores
         .fs()
         .create(&store_id, "/facts.md", "the secret code is BANANA-42")
@@ -1274,7 +1281,7 @@ async fn activation_applies_current_resource_state_as_a_deny_only_overlay() {
     };
 
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
-    let store_id = host.create_memory_store().await;
+    let store_id = test_memory_store_id();
     let catalog = Arc::new(awaken_config_resolver::InMemoryResourceCatalog::new());
     catalog
         .create_memory_store(
@@ -1329,7 +1336,7 @@ async fn memory_activation_enforces_catalog_workspace_without_iam_policy_logic()
     };
 
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
-    let store_id = host.create_memory_store().await;
+    let store_id = test_memory_store_id();
     let catalog = Arc::new(awaken_config_resolver::InMemoryResourceCatalog::new());
     catalog
         .create_memory_store(
@@ -1424,7 +1431,12 @@ async fn prepare_session_mounts_effective_file_and_stages_effective_repo() {
     let spec = host.sandbox_spec("t-multi");
     let mount = &spec.mounts[0];
     assert_eq!(mount.mount_path, ".mnt/mnt/files/notes.txt");
-    assert_eq!(mount.access, MountAccess::ReadOnly);
+    assert_eq!(
+        mount.access,
+        MountAccess::ReadWrite,
+        "an immutable FileStore input is a disposable copy on Workdir; its read-only \
+         resource authorization is not encoded as an unsupported OS guarantee"
+    );
     let MountSource::InlineBytes {
         contents,
         content_hash,
@@ -1744,7 +1756,7 @@ async fn told_equals_mounted_the_prompt_path_and_access_match_the_realized_mount
     use awaken_protocol_managed::SessionRuntime;
     use awaken_provisioning_contract::MountAccess;
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
-    let store_id = host.create_memory_store().await;
+    let store_id = test_memory_store_id();
     host.memory_stores
         .fs()
         .create(&store_id, "/seed.md", "seed")
@@ -1785,7 +1797,7 @@ async fn told_equals_mounted_the_prompt_path_and_access_match_the_realized_mount
 async fn runtime_stages_exactly_the_effective_resource_list() {
     use awaken_protocol_managed::SessionRuntime;
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
-    let s2 = host.create_memory_store().await;
+    let s2 = test_memory_store_id();
     host.memory_stores
         .fs()
         .create(&s2, "/wire.md", "WIRE-BYTES")
@@ -1858,7 +1870,7 @@ async fn a_bound_resource_with_a_missing_backing_store_fails_the_session_closed(
 async fn an_effective_resource_mounts_on_a_worker_without_the_binding_repository() {
     use awaken_protocol_managed::SessionRuntime;
     let db_less = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
-    let store_id = db_less.create_memory_store().await;
+    let store_id = test_memory_store_id();
     db_less
         .memory_stores
         .fs()

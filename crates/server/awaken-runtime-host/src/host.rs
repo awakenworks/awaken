@@ -217,10 +217,8 @@ pub struct SharedHost {
     pub(crate) file_store: Arc<dyn FileStore>,
     /// Durable workspace ownership projection for content-addressed resources.
     pub(crate) resource_ownership: crate::resource_ownership::ResourceOwnership,
-    /// The memory resource plane's *content* backends (ADR-0038/0053): the id-keyed
-    /// read-write blob store + the path-addressed CAS `/memories` store, both governed
-    /// by one storage-dir durability rule and grouped behind one type that owns that
-    /// construction invariant. See [`crate::memory_stores`].
+    /// The memory resource plane's path-addressed content backend shared by API,
+    /// mounts, recall, and extraction. See [`crate::memory_stores`].
     pub(crate) memory_stores: crate::memory_stores::MemoryStores,
     /// Worker-side realization port for governed MemoryStore mounts. The runtime
     /// host stores only the neutral port; the outer server composition installs

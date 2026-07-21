@@ -345,8 +345,13 @@ impl ManagedHost {
                             content_hash: Some(file_id.to_string()),
                         },
                         mount_path: format!(".mnt/{logical}"),
-                        // Immutable File access can only narrow to read-only.
-                        access: awaken_provisioning_contract::MountAccess::ReadOnly,
+                        // FileStore content is immutable and this per-run copy has no
+                        // write-back path. Keep authorization (`input.access`) outside
+                        // the sandbox protocol: a Workdir backend may let the agent
+                        // alter its disposable copy without gaining mutation authority
+                        // over the resource. Namespace/container adapters can still
+                        // choose a read-only bind when they materialize by reference.
+                        access: awaken_provisioning_contract::MountAccess::ReadWrite,
                         lifetime: awaken_provisioning_contract::MountLifetime::PerRun,
                         required: true,
                     });

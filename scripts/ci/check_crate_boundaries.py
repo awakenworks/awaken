@@ -107,7 +107,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # dev-only: property-based verification of the WorkState wire bijection (ADR-0059).
         "proptest",
     },
-    # Resources-plane ports (FileStore / MemoryBlobStore / MemoryFs / SkillStore) +
+    # Resources-plane ports (FileStore / MemoryFs / SkillStore) +
     # the value/error types in their signatures — mirrors awaken-provisioning-contract.
     # A foundation leaf: no backend, SQL driver, or filesystem, so an adapter reusing
     # these stores depends on the traits alone. The backends re-export it.
@@ -432,20 +432,18 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # dev-only: temp dirs for the fs backend round-trip test.
         "tempfile",
     },
-    # Durable memory persistence (resources plane): id-keyed byte store behind the
-    # ADR-0038 memory_store family. A resources-plane store like awaken-data-subject —
-    # a scoped-migration bundle over sqlite (+ an optional postgres sibling) — so the
-    # host backs memory durability with it while the runtime stays store-unaware. It
-    # names no runtime/host/provider type; only the storage stack.
+    # Durable path-addressed memory persistence (resources plane), backed by a
+    # scoped-migration bundle over SQLite with an optional Postgres sibling. It names
+    # no runtime, authorization, workspace, principal, role, or provider type.
     "awaken-memory-store": {
         # The port-only contract this crate implements and re-exports
-        # (MemoryBlobStore / MemoryFs + Memory/MemoryEntry/MemErr).
+        # (MemoryFs + Memory/MemoryEntry/MemErr).
         "awaken-resource-contract",
         "async-trait",
         "thiserror",
         "tokio",
         "rusqlite",
-        # feature `postgres`: the multi-node MemoryBlobStore backend.
+        # feature `postgres`: the multi-node MemoryFs backend.
         "sqlx",
         "awaken-scoped-migration",
         "awaken-scoped-migration-sqlite",

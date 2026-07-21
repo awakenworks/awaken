@@ -325,11 +325,21 @@ fn active_store_exists(state: &MemoryStoreApi, workspace: &str, id: &str) -> boo
         .is_some_and(|definition| definition.state == ResourceState::Active)
 }
 
+fn mint_memory_store_id() -> String {
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("memstore_{nanos:032x}_{sequence:016x}")
+}
+
 // ---- Store routes ----------------------------------------------------------
 
 /// `POST /v1/memory_stores` — create a store. The SDK sends `{name, description?,
-/// metadata?}`; the legacy mount path sends no body (name defaults empty). Both
-/// mint a real mount-blob store id via the host.
+/// metadata?}`; an empty body keeps the name empty. The Resource Catalog owns
+/// identity/existence while MemoryFs owns only path-addressed content.
 async fn create_store(
     State(state): State<Arc<MemoryStoreApi>>,
     scope: Option<Extension<WorkspaceScope>>,
@@ -341,7 +351,7 @@ async fn create_store(
         serde_json::from_slice(&body).unwrap_or(Value::Null)
     };
     let workspace = request_workspace(&state, scope);
-    let id = state.host.create_memory_store_in(&workspace).await;
+    let id = mint_memory_store_id();
     let def = MemoryStoreDefinition {
         id: id.clone(),
         workspace_id: workspace,
@@ -386,25 +396,18 @@ async fn create_store(
     (StatusCode::OK, Json(projected)).into_response()
 }
 
-/// `GET /v1/memory_stores/:id` — the SDK store object PLUS the legacy mount-blob
-/// `content` / `size_bytes` (extra fields the SDK decoder ignores). Works after a
-/// restart because the definition and content backends are both durable.
+/// `GET /v1/memory_stores/:id` — the governed store definition. Mutable content
+/// is exposed only through `/memories`, the same MemoryFs used by execution.
 async fn get_store(
     State(state): State<Arc<MemoryStoreApi>>,
     scope: Option<Extension<WorkspaceScope>>,
     Path(id): Path<String>,
 ) -> axum::response::Response {
     let workspace = request_workspace(&state, scope);
-    let blob = state.host.memory_get_in(&workspace, &id).await;
     let Some(def) = state.catalog.memory_store(&workspace, &id) else {
         return not_found("memory_store");
     };
-    let mut obj = project_def(&def);
-    // Legacy mount-blob fields (additive; the SDK ignores them).
-    let bytes = blob.unwrap_or_default();
-    obj["content"] = json!(String::from_utf8_lossy(&bytes));
-    obj["size_bytes"] = json!(bytes.len());
-    (StatusCode::OK, Json(obj)).into_response()
+    (StatusCode::OK, Json(project_def(&def))).into_response()
 }
 
 async fn list_stores(
@@ -566,9 +569,7 @@ async fn create_memory(
         .and_then(Value::as_str)
         .unwrap_or_default();
     let workspace = request_workspace(&state, scope);
-    if !active_store_exists(&state, &workspace, &id)
-        || state.host.memory_get_in(&workspace, &id).await.is_none()
-    {
+    if !active_store_exists(&state, &workspace, &id) {
         return not_found("memory_store");
     }
     // The durable path-addressed store is the source of truth for the head.

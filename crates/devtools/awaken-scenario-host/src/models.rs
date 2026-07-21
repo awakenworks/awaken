@@ -262,7 +262,7 @@ impl LlmExecutor for ProbeModel {
 
 /// A deterministic model for the memory_store RESOURCE durability e2e (ADR-0038).
 /// On its first turn it writes the user's text into the mounted memory store,
-/// realized read-write at `.mnt/notes.txt`; the host harvests that write back into
+/// realized read-write at `.mnt/memory`; the host harvests that write back into
 /// the store under its stable id on turn end. On the follow-up turn (a tool result
 /// is present) it replies `memory persisted`. Driving write -> harvest lets an e2e
 /// prove the store's contents survive a real process restart.
@@ -288,7 +288,7 @@ impl LlmExecutor for MemoryResourceModel {
             AssistantOutput::from_tool_calls(vec![ToolCall {
                 call_id: "memres-1".into(),
                 tool_id: "write".into(),
-                arguments: serde_json::json!({ "path": ".mnt/notes.txt", "content": user_text }),
+                arguments: serde_json::json!({ "path": ".mnt/memory/note.md", "content": user_text }),
             }])
         };
         Ok(ChatResponse {
