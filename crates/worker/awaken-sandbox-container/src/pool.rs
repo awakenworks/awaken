@@ -1,9 +1,7 @@
 //! Warm container pool (ADR-0056 §warm-pool): pre-provisioned reusable capacity in
 //! front of the container tier, addressing BOTH cold-start latency and resource
-//! reuse. A pool keeps up to `size` **fresh** process-as-container agents ready per
-//! container shape; a matching session is handed a warm one (skipping create +
-//! agent boot on the request path) and the pool replenishes off-path, so the
-//! provisioned capacity is continuously reused across sessions.
+//! reuse. A pool keeps up to `size` **empty live environments** ready per container
+//! shape; a matching Session binds one and execs its own Native/ACP processes.
 //!
 //! Safety: only **mount-less** specs are pooled ([`pool_key`] returns `None`
 //! otherwise) — a per-session mount bakes session-specific bytes into the container
@@ -21,8 +19,9 @@ use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
 
 use crate::{
-    AgentContainerProvider, AgentContainerSession, ContainerProvider, ContainerRuntime,
-    ContainerSandbox, command_of,
+    AgentContainerProvider, AgentContainerSession, ContainerEnvironment,
+    ContainerEnvironmentProvider, ContainerProvider, ContainerRuntime, ContainerSandbox,
+    EnvironmentOwnedProcess, RuntimeAgentProcess, command_of,
 };
 
 /// A process-global sequence for warm container scopes, so names are unique across
@@ -42,9 +41,9 @@ fn next_warm_scope() -> String {
 
 /// The container shape two sessions must share for a warm container to be
 /// substitutable, or `None` when the spec is not poolable (it declares mounts). The
-/// key excludes `scope` (the per-session container name) and includes everything the
-/// container is realized from: the agent command, network policy, resource limits,
-/// base env, and outputs path. A pure-brain agent (no mounts) of the same shape is
+/// key excludes `scope` (the per-session logical id) and the attempt command, and
+/// includes everything the environment is realized from: network policy, resource
+/// limits, base env, and outputs path. A mount-less environment of the same shape is
 /// reusable; anything with a mount is not.
 #[must_use]
 pub fn pool_key(spec: &pc::SandboxSpec) -> Option<String> {
@@ -52,12 +51,8 @@ pub fn pool_key(spec: &pc::SandboxSpec) -> Option<String> {
         return None;
     }
     Some(format!(
-        "{:?}|{:?}|{:?}|{:?}|{}",
-        command_of(spec),
-        spec.network,
-        spec.limits,
-        spec.env,
-        spec.outputs_path
+        "{:?}|{:?}|{:?}|{}",
+        spec.network, spec.limits, spec.env, spec.outputs_path
     ))
 }
 
@@ -215,12 +210,39 @@ impl<R: ContainerRuntime + 'static> AgentContainerProvider for WarmContainerPool
         &self,
         spec: &pc::SandboxSpec,
     ) -> Result<AgentContainerSession, pc::SandboxError> {
-        // Not poolable (declares mounts): create fresh, never pool.
+        let environment = self.create_environment(spec).await?;
+        let argv = command_of(spec);
+        if argv.is_empty() {
+            return Err(pc::SandboxError::new("agent command argv is empty"));
+        }
+        let RuntimeAgentProcess { process, channel } = environment
+            .spawn_agent_process(pc::Command {
+                argv,
+                cwd: String::new(),
+                env: Vec::new(),
+                stdio: pc::Stdio::Piped,
+            })
+            .await?;
+        Ok(AgentContainerSession {
+            channel,
+            process: Box::new(EnvironmentOwnedProcess {
+                inner: process,
+                environment: environment.clone(),
+            }),
+            handle: environment.handle(),
+        })
+    }
+}
+
+#[async_trait]
+impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for WarmContainerPool<R> {
+    async fn create_environment(
+        &self,
+        spec: &pc::SandboxSpec,
+    ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
         let Some(key) = pool_key(spec) else {
-            return self.inner.open_agent(spec).await;
+            return self.inner.create_environment(spec).await;
         };
-        // Take a warm container if one is ready, and record this shape's template so a
-        // cold miss still teaches the pool what to replenish.
         let warm = {
             let mut map = self.warm.lock().expect("warm pool mutex");
             let entry = map.entry(key.clone()).or_insert_with(|| WarmEntry {
@@ -229,15 +251,19 @@ impl<R: ContainerRuntime + 'static> AgentContainerProvider for WarmContainerPool
             });
             entry.ready.pop()
         };
-        let session = match warm {
-            // Hit: attach the ACP channel to an already-warmed container (cold-start
-            // paid off-path). Its handle carries the warm container's real id.
-            Some(sandbox) => self.inner.open_agent_from(sandbox).await?,
-            // Miss: create fresh on the request path.
-            None => self.inner.open_agent(spec).await?,
+        let environment = match warm {
+            Some(environment) => environment.bind_scope(spec.scope.clone()),
+            None => self.inner.create_container(spec).await?,
         };
         self.spawn_replenish(key);
-        Ok(session)
+        Ok(Arc::new(environment))
+    }
+
+    async fn adopt_environment(
+        &self,
+        handle: &pc::SandboxHandle,
+    ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
+        self.inner.adopt_environment(handle).await
     }
 }
 
@@ -272,8 +298,8 @@ mod tests {
     #[test]
     fn a_different_shape_gets_a_different_key() {
         let base = spec("t", &["agent", "--acp"]);
-        // Different command.
-        assert_ne!(pool_key(&base), pool_key(&spec("t", &["other"])));
+        // Attempt commands do not change the empty environment shape.
+        assert_eq!(pool_key(&base), pool_key(&spec("t", &["other"])));
         // Different network.
         let mut net = spec("t", &["agent", "--acp"]);
         net.network = pc::NetworkPolicy::Unrestricted;

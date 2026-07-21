@@ -288,11 +288,41 @@ struct FakeState {
     refreshed_credential: Option<Vec<u8>>,
     live_credential: Option<Vec<u8>>,
     credential_source: Option<std::path::PathBuf>,
+    spawned: Vec<(String, pc::Command)>,
 }
 
 #[derive(Default)]
 struct FakeRuntime {
     st: Mutex<FakeState>,
+}
+
+struct FakeExecProcess {
+    id: String,
+}
+
+#[async_trait]
+impl pc::ProcessHandle for FakeExecProcess {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    async fn wait(&self) -> Result<pc::ExitStatus, pc::SandboxError> {
+        Ok(pc::ExitStatus {
+            code: Some(0),
+            signaled: false,
+        })
+    }
+
+    async fn poll(&self) -> Result<Option<pc::ExitStatus>, pc::SandboxError> {
+        Ok(Some(pc::ExitStatus {
+            code: Some(0),
+            signaled: false,
+        }))
+    }
+
+    async fn signal(&self, _signal: pc::Signal) -> Result<(), pc::SandboxError> {
+        Ok(())
+    }
 }
 
 impl FakeRuntime {
@@ -364,6 +394,46 @@ impl ContainerRuntime for FakeRuntime {
             },
         );
         Ok(cid)
+    }
+
+    async fn spawn(
+        &self,
+        container_id: &str,
+        command: pc::Command,
+    ) -> Result<Box<dyn pc::ProcessHandle>, RuntimeError> {
+        if !self.st.lock().unwrap().alive.contains_key(container_id) {
+            return Err(RuntimeError::NotFound(container_id.into()));
+        }
+        let mut state = self.st.lock().unwrap();
+        let id = format!("exec-{}", state.spawned.len());
+        state.spawned.push((container_id.to_string(), command));
+        Ok(Box::new(FakeExecProcess { id }))
+    }
+
+    async fn spawn_agent(
+        &self,
+        container_id: &str,
+        command: pc::Command,
+    ) -> Result<RuntimeAgentProcess, RuntimeError> {
+        let process = self.spawn(container_id, command).await?;
+        let (ours, _peer) = tokio::io::duplex(64);
+        Ok(RuntimeAgentProcess {
+            process,
+            channel: Box::new(ours),
+        })
+    }
+
+    async fn process(
+        &self,
+        container_id: &str,
+        process_id: &str,
+    ) -> Result<Box<dyn pc::ProcessHandle>, RuntimeError> {
+        if !self.st.lock().unwrap().alive.contains_key(container_id) {
+            return Err(RuntimeError::NotFound(container_id.into()));
+        }
+        Ok(Box::new(FakeExecProcess {
+            id: process_id.to_string(),
+        }))
     }
     async fn open_channel(
         &self,
@@ -476,7 +546,8 @@ async fn full_lifecycle_create_channel_process_artifacts_lease_dispose() {
     assert_eq!(sandbox.id(), "run-1");
     assert_eq!(sandbox.realized().len(), 2);
     assert_eq!(sandbox.realized()[0].realization, pc::Realization::Bind);
-    // Process-as-container: create launched the agent argv as the main command.
+    // Creation starts only the Session environment keepalive. Attempt commands use
+    // exec and therefore cannot terminate the environment.
     assert_eq!(
         rt.st
             .lock()
@@ -484,16 +555,20 @@ async fn full_lifecycle_create_channel_process_artifacts_lease_dispose() {
             .created_command
             .get("cid-run-1")
             .unwrap(),
-        &vec!["claude".to_string(), "--acp".to_string()]
+        &environment_keepalive_command()
     );
 
-    // spawn returns a handle to the main process; wait/poll/signal act on it.
+    // spawn executes the requested command inside the existing environment;
+    // wait/poll/signal act on that exec process, not container PID 1.
     let proc = sandbox.spawn(pc::Command::new(["ignored"])).await.unwrap();
-    assert_eq!(proc.id(), "cid-run-1");
+    assert_eq!(proc.id(), "exec-0");
+    assert_eq!(
+        rt.st.lock().unwrap().spawned,
+        vec![("cid-run-1".into(), pc::Command::new(["ignored"]))]
+    );
     assert_eq!(proc.wait().await.unwrap().code, Some(0));
     assert!(proc.poll().await.unwrap().is_some());
     proc.signal(pc::Signal::Term).await.unwrap();
-    assert_eq!(rt.st.lock().unwrap().signals.len(), 1);
 
     // artifacts out-of-band
     assert_eq!(sandbox.artifacts().await.unwrap().len(), 1);
@@ -547,7 +622,7 @@ async fn a_second_node_adopts_a_running_container_over_the_shared_runtime() {
         .spawn(pc::Command::new(["ignored"]))
         .await
         .unwrap();
-    assert_eq!(proc.id(), "cid-run-x");
+    assert_eq!(proc.id(), "exec-0");
     assert_eq!(sandbox_b.read_artifact("a1").await.unwrap(), b"work");
     sandbox_b.renew_lease().await.unwrap();
     assert_eq!(rt.st.lock().unwrap().lease_touches, 1);
@@ -592,7 +667,7 @@ async fn handle_round_trips_and_adopt_reconnects() {
     let adopted = p.adopt(&recovered).await.unwrap();
     assert_eq!(adopted.id(), "run-2");
     let proc = adopted.process("main").await.unwrap();
-    assert_eq!(proc.id(), "cid-run-2");
+    assert_eq!(proc.id(), "main");
     // late attach fails closed on this tier
     assert!(adopted.attach(spec("x").mounts.remove(0)).await.is_err());
 }
@@ -605,7 +680,7 @@ async fn adopt_without_container_id_fails_closed() {
 }
 
 #[tokio::test]
-async fn create_fails_closed_on_bad_spec_missing_command_and_backend_error() {
+async fn create_fails_closed_on_bad_spec_and_backend_error_but_needs_no_attempt_command() {
     let p = provider(Arc::new(FakeRuntime::default()));
 
     // Non-absolute outputs → prepare_environment rejects before the runtime.
@@ -613,10 +688,11 @@ async fn create_fails_closed_on_bad_spec_missing_command_and_backend_error() {
     bad.outputs_path = "relative/outputs".into();
     assert!(p.create(&bad).await.is_err());
 
-    // Missing process-as-container command → fail closed.
+    // The Session environment is independent of an attempt command.
     let mut no_cmd = spec("run-4b");
     no_cmd.extra = None;
-    assert!(p.create(&no_cmd).await.is_err());
+    let environment = p.create(&no_cmd).await.unwrap();
+    environment.dispose().await.unwrap();
 
     // Backend create failure propagates.
     let rt = Arc::new(FakeRuntime {
@@ -694,8 +770,9 @@ async fn open_agent_creates_the_container_and_returns_its_channel_and_process() 
     let provider: Box<dyn AgentContainerProvider> = Box::new(provider(rt.clone()));
     let session = provider.open_agent(&spec("run-oa")).await.unwrap();
 
-    // The process handle IS the container's main process (process-as-container).
-    assert_eq!(session.process.id(), "cid-run-oa");
+    // The one-shot compatibility seam also launches the agent through exec; it does
+    // not return PID 1 as though the environment were the attempt process.
+    assert_eq!(session.process.id(), "exec-0");
     assert_eq!(
         session.process.poll().await.unwrap(),
         Some(pc::ExitStatus {
@@ -716,11 +793,56 @@ async fn open_agent_creates_the_container_and_returns_its_channel_and_process() 
     );
     // A live duplex channel was opened (the ACP bridge would drive it).
     let _channel = session.channel;
-    // The container was actually created with the agent argv as its command.
+    // The physical container is an environment keepalive, not the attempt agent.
     assert_eq!(
         rt.st.lock().unwrap().created_command.get("cid-run-oa"),
-        Some(&vec!["claude".to_string(), "--acp".to_string()])
+        Some(&environment_keepalive_command())
     );
+    assert_eq!(
+        rt.st.lock().unwrap().spawned[0].1.argv,
+        ["claude", "--acp"].map(str::to_string)
+    );
+}
+
+#[tokio::test]
+async fn one_container_environment_executes_native_and_agent_processes_without_recreation() {
+    let runtime = Arc::new(FakeRuntime::default());
+    let sandbox = provider(runtime.clone())
+        .create_container(&spec("shared-session"))
+        .await
+        .unwrap();
+
+    let native = pc::Sandbox::spawn(&sandbox, pc::Command::new(["sh", "-c", "touch marker"]))
+        .await
+        .unwrap();
+    let agent = sandbox
+        .spawn_agent(pc::Command {
+            stdio: pc::Stdio::Piped,
+            ..pc::Command::new(["codex", "--acp"])
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(native.id(), "exec-0");
+    assert_eq!(agent.process.id(), "exec-1");
+    let state = runtime.st.lock().unwrap();
+    assert_eq!(state.created_command.len(), 1, "environment created once");
+    assert_eq!(state.spawned.len(), 2);
+    assert!(
+        state
+            .spawned
+            .iter()
+            .all(|(container, _)| container == "cid-shared-session")
+    );
+    assert_eq!(
+        state.spawned[0].1.argv,
+        ["sh", "-c", "touch marker"].map(str::to_string)
+    );
+    assert_eq!(
+        state.spawned[1].1.argv,
+        ["codex", "--acp"].map(str::to_string)
+    );
+    assert_eq!(state.alive.get("cid-shared-session"), Some(&true));
 }
 
 #[tokio::test]
@@ -796,7 +918,7 @@ async fn durable_writable_secret_is_materialized_and_written_back_after_process_
 }
 
 #[tokio::test]
-async fn remote_runtime_harvests_live_credential_before_signal() {
+async fn remote_runtime_harvests_live_credential_when_signalled_attempt_finishes_session() {
     let refreshed = br#"{"claudeAiOauth":{"accessToken":"new","refreshToken":"rotated"}}"#;
     let rt = Arc::new(FakeRuntime::default().with_live_credential(refreshed));
     let broker = Arc::new(RecordingSecretBroker::default());
@@ -819,11 +941,11 @@ async fn remote_runtime_harvests_live_credential_before_signal() {
 
     let session = provider.open_agent(&spec).await.unwrap();
     session.process.signal(pc::Signal::Term).await.unwrap();
+    session.process.wait().await.unwrap();
     assert_eq!(
         broker.writes.lock().unwrap().as_slice(),
         &[refreshed.to_vec()]
     );
-    assert_eq!(rt.st.lock().unwrap().signals.len(), 1);
 }
 
 // ── BlobSource resolution (File/Resource/Secret by id) ───────────────────────────
