@@ -1264,6 +1264,19 @@ pub(crate) fn runtime_owner_id() -> String {
     format!("{}-{epoch}-{sequence}", std::process::id())
 }
 
+/// A daemon-global container name. Session/thread ids are only unique inside one
+/// host, while Docker and Podman names share a daemon namespace across hosts and CI
+/// processes. Prefix the readable scope with the runtime-owner fingerprint so two
+/// valid `sesn_0` executions cannot collide. The durable sandbox identity remains
+/// the original scope; this is only an adapter-local runtime name.
+#[cfg(any(feature = "docker", feature = "podman"))]
+pub(crate) fn runtime_container_name(owner_id: &str, scope: &str) -> String {
+    let owner = blake3::hash(owner_id.as_bytes()).to_hex();
+    let scope = stage_name(scope);
+    let scope = &scope[..scope.len().min(80)];
+    format!("awaken-{}-{scope}", &owner[..16])
+}
+
 /// One awaken-managed container the reaper can judge. `age_secs` is computed by the runtime against its own clock,
 /// so the reaper's decision ([`crate::reaper::should_reap`]) stays a pure value test.
 #[derive(Debug, Clone, PartialEq, Eq)]

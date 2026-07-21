@@ -19,7 +19,7 @@ use tokio::process::Command as OsCommand;
 use crate::net::TcpAgentTransport;
 use crate::{
     ContainerPlan, ContainerRuntime, ContainerState, ManagedContainer, REAPER_LABEL,
-    REAPER_OWNER_LABEL, RuntimeError, podman_run_argv,
+    REAPER_OWNER_LABEL, RuntimeError, podman_run_argv, runtime_container_name,
 };
 
 fn backend(e: impl std::fmt::Display) -> RuntimeError {
@@ -145,7 +145,7 @@ impl PodmanRuntime {
 #[async_trait]
 impl ContainerRuntime for PodmanRuntime {
     async fn create(&self, id: &str, plan: &ContainerPlan) -> Result<String, RuntimeError> {
-        let name = format!("awaken-{id}");
+        let name = runtime_container_name(&self.owner_id, id);
         // Idempotent: clear any stale container of this scope first.
         let _ = self.run(&["rm".into(), "-f".into(), name.clone()]).await;
 
@@ -446,15 +446,16 @@ mod tests {
     #[tokio::test]
     async fn create_clears_a_stale_container_then_publishes_the_agent_port() {
         let (rt, fake) = runtime_with(7777, |_| ok(""));
+        let expected = runtime_container_name(&rt.owner_id, "s1");
         let name = rt.create("s1", &plan()).await.unwrap();
-        assert_eq!(name, "awaken-s1");
+        assert_eq!(name, expected);
         let calls = fake.calls.lock().unwrap();
-        // First call is the idempotent `rm -f awaken-s1`.
-        assert_eq!(calls[0], vec!["rm", "-f", "awaken-s1"]);
+        // First call is the idempotent removal of this runtime instance's name.
+        assert_eq!(calls[0], vec!["rm", "-f", expected.as_str()]);
         // The `run` argv stamps this worker instance's ownership and publishes the
-        // agent port right after `--name awaken-s1`.
+        // agent port right after its daemon-global name.
         let run = &calls[1];
-        let name_at = run.iter().position(|a| a == "awaken-s1").unwrap();
+        let name_at = run.iter().position(|a| a == &expected).unwrap();
         assert_eq!(run[name_at + 1], "--label");
         assert!(run[name_at + 2].starts_with(&format!("{REAPER_OWNER_LABEL}=")));
         assert_eq!(run[name_at + 3], "-p");
