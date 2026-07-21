@@ -42,6 +42,15 @@ RESOURCE_APPLICATION_SOURCES = (
     "crates/server/awaken-runtime-host/src/skills_api.rs",
 )
 
+# HTTP adapters are PEP consumers, not Workspace selectors. Every handler must
+# extract the Workspace stamp installed by the outer composition edge; none may
+# fall back to a Host-local tenant.
+RESOURCE_HTTP_SOURCES = (
+    "crates/server/awaken-managed-routers/src/files.rs",
+    "crates/server/awaken-runtime-host/src/memory_store_api.rs",
+    "crates/server/awaken-runtime-host/src/skills_api.rs",
+)
+
 FORBIDDEN_DEPENDENCY_PREFIXES = ("awaken-authz", "awaken-iam")
 
 FORBIDDEN_TYPE_NAMES = {
@@ -127,6 +136,13 @@ def _rust_violations(content: str) -> list[str]:
 
     uncommented = re.sub(r"/\*.*?\*/", "", production, flags=re.DOTALL)
     uncommented = re.sub(r"//[^\n]*", "", uncommented)
+    if re.search(r"\b(?:DEFAULT|FIXED|HOST)_\w*WORKSPACE\w*\b", code):
+        violations.append("declares or uses a fixed Workspace selector")
+    if re.search(
+        r'std\s*::\s*env\s*::\s*var\s*\(\s*"[A-Z0-9_]*WORKSPACE[A-Z0-9_]*"',
+        uncommented,
+    ):
+        violations.append("selects a resource Workspace from process environment")
     for field_name in sorted(FORBIDDEN_FIELD_NAMES):
         field = re.escape(field_name)
         if re.search(rf"\b{field}\s*:", code) or re.search(rf'"{field}"', uncommented):
@@ -145,6 +161,15 @@ def selftest() -> None:
     assert any("PermissionDecision" in violation for violation in violations)
     test_only = '#[cfg(test)]\nmod tests { const FIELD: &str = "api_key"; }'
     assert not _rust_violations(test_only)
+    fixed_workspace = 'const HOST_SKILL_WORKSPACE: &str = "workspace-a";'
+    assert any("fixed Workspace" in item for item in _rust_violations(fixed_workspace))
+    environment_workspace = (
+        'fn scope() { let _ = std::env::var("HOST_SKILL_WORKSPACE"); }'
+    )
+    assert any(
+        "process environment" in item
+        for item in _rust_violations(environment_workspace)
+    )
 
 
 def check_all(repo_root: Path, crates: Path) -> list[str]:
@@ -190,4 +215,20 @@ def check_all(repo_root: Path, crates: Path) -> list[str]:
             continue
         for violation in _rust_violations(path.read_text(encoding="utf-8")):
             errors.append(f"{relative}: {violation}")
+
+    for relative in RESOURCE_HTTP_SOURCES:
+        path = repo_root / relative
+        if not path.is_file():
+            continue
+        production = _without_cfg_test_module(path.read_text(encoding="utf-8"))
+        code = _without_rust_comments_and_strings(production)
+        if "RequiredWorkspaceScope" not in code:
+            errors.append(
+                f"{relative}: resource HTTP adapter does not require the edge-stamped "
+                "Workspace scope"
+            )
+        if re.search(r"\blocal_workspace\s*\(", code):
+            errors.append(
+                f"{relative}: resource HTTP adapter falls back to the Host-local Workspace"
+            )
     return errors
