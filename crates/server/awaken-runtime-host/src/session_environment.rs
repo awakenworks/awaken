@@ -57,38 +57,6 @@ pub(crate) trait AgentSandbox: Send + Sync {
     >;
 }
 
-#[async_trait]
-impl AgentSandbox for LocalSandbox {
-    fn is_container(&self) -> bool {
-        false
-    }
-
-    fn config_home(&self) -> &'static str {
-        ".acp-config"
-    }
-
-    async fn materialize_inline(
-        &self,
-        logical: &str,
-        contents: &[u8],
-    ) -> Result<(), pc::SandboxError> {
-        self.materialize_inline(logical, contents)
-    }
-
-    async fn spawn_agent(
-        &self,
-        command: pc::Command,
-    ) -> Result<
-        (
-            Box<dyn pc::ProcessHandle>,
-            Box<dyn awaken_run_executor_acp::AgentChannelType>,
-        ),
-        pc::SandboxError,
-    > {
-        self.spawn_agent(command).await
-    }
-}
-
 /// One realized sandbox shared by every Run attempt in a Session.
 pub(crate) enum SessionEnvironment {
     Workdir(Arc<LocalSandbox>),
@@ -107,6 +75,30 @@ impl SessionEnvironment {
             Self::Workdir(sandbox) => sandbox.as_ref(),
             Self::Namespace(sandbox) => sandbox.as_ref(),
             Self::Container { sandbox, .. } => sandbox.as_ref(),
+        }
+    }
+
+    pub(crate) fn handle(&self) -> pc::SandboxHandle {
+        self.sandbox().handle()
+    }
+
+    pub(crate) async fn status(&self) -> Result<pc::SandboxStatus, pc::SandboxError> {
+        self.sandbox().status().await
+    }
+
+    pub(crate) async fn dispose(&self) -> Result<(), pc::SandboxError> {
+        match self {
+            Self::Workdir(sandbox) => pc::Sandbox::dispose(sandbox.as_ref()).await,
+            Self::Namespace(sandbox) => pc::Sandbox::dispose(sandbox.as_ref()).await,
+            Self::Container {
+                sandbox,
+                hand_process,
+                ..
+            } => {
+                let _ = hand_process.signal(pc::Signal::Term).await;
+                let _ = hand_process.wait().await;
+                sandbox.dispose().await
+            }
         }
     }
 
@@ -379,74 +371,6 @@ impl AgentSandbox for SessionEnvironment {
     }
 }
 
-#[async_trait]
-impl pc::Sandbox for SessionEnvironment {
-    fn id(&self) -> &str {
-        self.sandbox().id()
-    }
-
-    fn handle(&self) -> pc::SandboxHandle {
-        self.sandbox().handle()
-    }
-
-    async fn spawn(
-        &self,
-        command: pc::Command,
-    ) -> Result<Box<dyn pc::ProcessHandle>, pc::SandboxError> {
-        self.sandbox().spawn(command).await
-    }
-
-    async fn attach(
-        &self,
-        requirement: pc::MountRequirement,
-    ) -> Result<pc::RealizedMount, pc::SandboxError> {
-        self.sandbox().attach(requirement).await
-    }
-
-    async fn artifacts(&self) -> Result<Vec<pc::Artifact>, pc::SandboxError> {
-        self.sandbox().artifacts().await
-    }
-
-    async fn read_artifact(&self, id: &str) -> Result<Vec<u8>, pc::SandboxError> {
-        self.sandbox().read_artifact(id).await
-    }
-
-    fn realized(&self) -> &[pc::RealizedMount] {
-        self.sandbox().realized()
-    }
-
-    async fn process(
-        &self,
-        process_id: &str,
-    ) -> Result<Box<dyn pc::ProcessHandle>, pc::SandboxError> {
-        self.sandbox().process(process_id).await
-    }
-
-    async fn status(&self) -> Result<pc::SandboxStatus, pc::SandboxError> {
-        self.sandbox().status().await
-    }
-
-    async fn renew_lease(&self) -> Result<(), pc::SandboxError> {
-        self.sandbox().renew_lease().await
-    }
-
-    async fn dispose(&self) -> Result<(), pc::SandboxError> {
-        match self {
-            Self::Workdir(sandbox) => pc::Sandbox::dispose(sandbox.as_ref()).await,
-            Self::Namespace(sandbox) => pc::Sandbox::dispose(sandbox.as_ref()).await,
-            Self::Container {
-                sandbox,
-                hand_process,
-                ..
-            } => {
-                let _ = hand_process.signal(pc::Signal::Term).await;
-                let _ = hand_process.wait().await;
-                sandbox.dispose().await
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -692,9 +616,10 @@ mod tests {
             .unwrap();
         let original = Sandbox::handle(&local);
         let environment = SessionEnvironment::workdir(local);
-        assert_eq!(Sandbox::handle(&environment), original);
+        assert_eq!(environment.handle(), original);
 
         let native = environment
+            .sandbox()
             .spawn(pc::Command::new([
                 "/bin/sh",
                 "-c",
@@ -732,7 +657,7 @@ mod tests {
         let mut native_command =
             pc::Command::new(["/bin/sh", "-c", "printf namespace-state > marker"]);
         native_command.cwd = "/workspace".into();
-        let native = environment.spawn(native_command).await.unwrap();
+        let native = environment.sandbox().spawn(native_command).await.unwrap();
         assert_eq!(native.wait().await.unwrap().code, Some(0));
 
         let mut agent_command = pc::Command::new(["/bin/sh", "-c", "cat marker"]);
@@ -764,6 +689,7 @@ mod tests {
         assert_eq!(environment.handle().provider_kind, "container");
 
         let native = environment
+            .sandbox()
             .spawn(pc::Command::new(["sh", "-c", "write marker"]))
             .await
             .unwrap();
@@ -890,6 +816,7 @@ mod tests {
         assert!(environment.list_files(".mnt").await.unwrap().is_empty());
 
         let change = environment
+            .sandbox()
             .spawn(pc::Command::new([
                 "sh",
                 "-c",

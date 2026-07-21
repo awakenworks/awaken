@@ -1159,46 +1159,6 @@ fn ensure_pending_tool_use(messages: &mut Vec<Message>, ask: &PermissionAsk) {
     }
 }
 
-/// Routes each run to the native / ACP / remote executor by its [`Backend`] (R3).
-/// Each peer is a `RunExecutor` (the remote one held as a trait object, so this
-/// crate needs no dependency on the A2A executor), so the match on the backend sum
-/// is the entire "which runtime serves this agent" mechanism — every backend is
-/// reachable over every wire adapter exactly like a native one.
-pub struct DispatchRunExecutor {
-    native: Arc<dyn RunExecutor>,
-    acp: Arc<dyn RunExecutor>,
-    remote: Arc<dyn RunExecutor>,
-}
-
-impl DispatchRunExecutor {
-    pub fn new(
-        native: Arc<dyn RunExecutor>,
-        acp: Arc<dyn RunExecutor>,
-        remote: Arc<dyn RunExecutor>,
-    ) -> Self {
-        Self {
-            native,
-            acp,
-            remote,
-        }
-    }
-}
-
-#[async_trait]
-impl RunExecutor for DispatchRunExecutor {
-    async fn execute(
-        &self,
-        activation: RunActivation,
-        context: RuntimeRunContext,
-    ) -> Result<RunState> {
-        match Backend::from_ref(&activation.snapshot.resolved_spec.model_binding.backend_ref) {
-            Backend::Native => self.native.execute(activation, context).await,
-            Backend::Acp { .. } => self.acp.execute(activation, context).await,
-            Backend::Remote { .. } => self.remote.execute(activation, context).await,
-        }
-    }
-}
-
 mod acp_cli;
 mod config_home;
 mod session_home;
