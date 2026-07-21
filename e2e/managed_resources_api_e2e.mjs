@@ -73,8 +73,10 @@ async function main() {
       assert.ok(mem.id?.startsWith('memstore_'), 'memory store gets a memstore_ id');
       const read = await client.get(`/v1/memory_stores/${mem.id}`);
       assert.equal(read.id, mem.id);
-      assert.equal(read.content, '', 'a fresh memory store is empty');
-      assert.equal(read.size_bytes, 0);
+      assert.equal(read.content, undefined, 'store definition does not duplicate mutable content');
+      assert.equal(read.size_bytes, undefined);
+      const memories = await client.get(`/v1/memory_stores/${mem.id}/memories`);
+      assert.deepEqual(memories.data, [], 'a fresh memory store has no memory heads');
       pass(`memory store created and reads back empty: ${mem.id}`);
 
       await assert.rejects(

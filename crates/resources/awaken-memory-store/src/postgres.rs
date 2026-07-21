@@ -1,11 +1,10 @@
-//! Postgres [`MemoryBlobStore`] over the crate's `memory_store` migration scope —
-//! the multi-node sibling of the sqlite backend, the same portable bundle.
+//! Postgres [`MemoryFs`] over the crate's `memory_store` migration scope — the
+//! multi-node sibling of the SQLite backend over the same portable bundle.
 
 use sqlx::Row;
 use sqlx::postgres::PgPool;
 
 use crate::schema::memory_store_bundle;
-use crate::{MemoryBlobStore, MemoryStoreError, sanitize_stem};
 
 const NS: &str = "memory_store";
 
@@ -29,99 +28,6 @@ async fn run_migrations(pool: &PgPool) -> Result<(), PgStoreError> {
         .map_err(|e| PgStoreError::Migrate(e.to_string()))?;
     Ok(())
 }
-
-fn storage(err: impl std::fmt::Display) -> MemoryStoreError {
-    MemoryStoreError::Storage(err.to_string())
-}
-
-/// A Postgres-backed [`MemoryBlobStore`].
-pub struct PgMemoryBlobStore {
-    pool: PgPool,
-}
-
-impl PgMemoryBlobStore {
-    /// Connect and apply the memory-store migrations under the `memory_store`
-    /// namespace (one-step convenience for a store-owned database).
-    pub async fn connect(url: &str) -> Result<Self, PgStoreError> {
-        let pool = PgPool::connect(url)
-            .await
-            .map_err(|e| PgStoreError::Connect(e.to_string()))?;
-        let store = Self::with_pool(pool);
-        store.ensure_schema().await?;
-        Ok(store)
-    }
-
-    /// Wrap an existing pool **without migrating**. Call [`Self::ensure_schema`],
-    /// or let a unified migration pipeline own the `memory_store` scope so this
-    /// store reuses the caller's single database instead of a parallel schema.
-    pub fn with_pool(pool: PgPool) -> Self {
-        Self { pool }
-    }
-
-    /// Apply the `memory_store` scoped migration bundle (idempotent). Optional:
-    /// skip it when the schema is owned externally.
-    pub async fn ensure_schema(&self) -> Result<(), PgStoreError> {
-        run_migrations(&self.pool).await
-    }
-}
-
-#[async_trait::async_trait]
-impl MemoryBlobStore for PgMemoryBlobStore {
-    async fn create(&self, workspace_id: &str) -> Result<String, MemoryStoreError> {
-        // Dense global id: max ordinal + 1, inserted empty, in one statement.
-        let row = sqlx::query(&format!(
-            "INSERT INTO {NS}_blob (workspace_id, id, ordinal, content) \
-             SELECT $1, 'memstore_' || x.n::text, x.n, ''::bytea \
-             FROM (SELECT COALESCE(MAX(ordinal), 0) + 1 AS n FROM {NS}_blob) x \
-             RETURNING id"
-        ))
-        .bind(workspace_id)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(storage)?;
-        row.try_get::<String, _>("id").map_err(storage)
-    }
-
-    async fn put(
-        &self,
-        workspace_id: &str,
-        id: &str,
-        bytes: &[u8],
-    ) -> Result<(), MemoryStoreError> {
-        sqlx::query(&format!(
-            "INSERT INTO {NS}_blob (workspace_id, id, ordinal, content) VALUES ($1, $2, 0, $3) \
-             ON CONFLICT (workspace_id, id) DO UPDATE SET content = excluded.content"
-        ))
-        .bind(workspace_id)
-        .bind(sanitize_stem(id))
-        .bind(bytes)
-        .execute(&self.pool)
-        .await
-        .map_err(storage)?;
-        Ok(())
-    }
-
-    async fn get(&self, workspace_id: &str, id: &str) -> Result<Option<Vec<u8>>, MemoryStoreError> {
-        let row = sqlx::query(&format!(
-            "SELECT content FROM {NS}_blob WHERE workspace_id = $1 AND id = $2"
-        ))
-        .bind(workspace_id)
-        .bind(sanitize_stem(id))
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(storage)?;
-        row.map(|r| r.try_get::<Vec<u8>, _>("content").map_err(storage))
-            .transpose()
-    }
-
-    async fn exists(&self, workspace_id: &str, id: &str) -> Result<bool, MemoryStoreError> {
-        Ok(self.get(workspace_id, id).await?.is_some())
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Path-addressed MemoryFs backend (ADR-0053) — multi-node sibling of SqliteMemoryFs
-// ---------------------------------------------------------------------------
 
 use crate::memfs::{now_nanos, under_prefix, validate_path, validate_size};
 use crate::{MemErr, Memory, MemoryEntry, MemoryFs, sha256_hex};
@@ -148,8 +54,8 @@ impl PgMemoryFs {
         Ok(store)
     }
 
-    /// Wrap an existing pool **without migrating** (see
-    /// [`PgMemoryBlobStore::with_pool`] for the single-DB reuse rationale).
+    /// Wrap an existing pool **without migrating**, allowing a unified migration
+    /// pipeline to own the shared database.
     pub fn with_pool(pool: PgPool) -> Self {
         Self { pool }
     }

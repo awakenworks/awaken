@@ -1,7 +1,7 @@
 //! The memory-store schema. One portable [`MigrationBundle`] under the
-//! `memory_store` namespace; a blob is `(workspace_id, id) → content` bytes plus a
-//! per-workspace `ordinal` for dense id minting. The same bundle renders on sqlite
-//! and postgres ({blob} → BLOB / bytea) — the schema is written once.
+//! `memory_store` namespace. V0002 defines the active path-addressed `MemoryFs`
+//! storage. V0001 is retained only so existing migration histories remain valid;
+//! its former workspace-scoped blob table has no production adapter or port.
 //!
 //! The DDL is a `.sql` file under `migrations/`, embedded with `include_str!`: the
 //! file name carries the version (`V0001__…` ⇒ version 1) and the first

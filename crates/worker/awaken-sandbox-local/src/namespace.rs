@@ -215,6 +215,10 @@ impl NamespaceProvider {
         self
     }
 
+    pub fn install_memory_mounter(&mut self, mounter: Arc<dyn pc::MemoryMounter>) {
+        self.memory_mounter = Some(mounter);
+    }
+
     fn caps() -> pc::SandboxCapabilities {
         pc::SandboxCapabilities {
             isolation: pc::IsolationClass::Namespace,

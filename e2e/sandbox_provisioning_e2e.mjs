@@ -76,7 +76,7 @@ async function main() {
       environment_id: 'env_local',
       resources: [
         { type: 'file', file_id: file.id, mount_path: '/workspace/doc.txt' },
-        { type: 'memory_store', memory_store_id: mem.id, mount_path: '/workspace/notes.txt' },
+        { type: 'memory_store', memory_store_id: mem.id, mount_path: '/workspace/memory' },
         { type: 'github_repository', url: bare, mount_path: '/workspace/repo' },
       ],
       betas: BETAS,

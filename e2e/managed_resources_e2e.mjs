@@ -183,15 +183,15 @@ async function main() {
       const sessionA = await client.beta.sessions.create({
         agent: 'assistant',
         environment_id: 'env_local',
-        resources: [{ type: 'memory_store', memory_store_id: mem.id, mount_path: '/notes.txt' }],
+        resources: [{ type: 'memory_store', memory_store_id: mem.id, mount_path: '/memory' }],
         betas: BETAS,
       });
       let memContent = '';
       const memWrite = await driveUntil(
         client,
         sessionA.id,
-        `Your sandbox has a notes file mounted at the relative path .mnt/notes.txt. ` +
-          `Using your write tool, overwrite exactly that file (path: .mnt/notes.txt) so ` +
+        `Your sandbox has a memory directory mounted at .mnt/memory. ` +
+          `Using your write tool, write exactly .mnt/memory/note.md so ` +
           `its entire contents become: ${MEMTOKEN}. Do not create any other file and do ` +
           `not use an absolute path. Reply with "saved" when done.`,
         async () => {
@@ -199,8 +199,8 @@ async function main() {
           for await (const _ of client.beta.files.list({ scope_id: sessionA.id, betas: BETAS })) {
             /* drain to trigger harvest */
           }
-          const cur = await client.get(`/v1/memory_stores/${mem.id}`);
-          memContent = cur.content ?? '';
+          const page = await client.get(`/v1/memory_stores/${mem.id}/memories`);
+          memContent = (page?.data ?? []).map((memory) => memory.content ?? '').join('\n');
           return memContent.includes(MEMTOKEN);
         },
         { nudgeText: `Use the write tool to save the exact text ${MEMTOKEN} into your persistent memory file.` },
@@ -213,7 +213,7 @@ async function main() {
       const sessionB = await client.beta.sessions.create({
         agent: 'assistant',
         environment_id: 'env_local',
-        resources: [{ type: 'memory_store', memory_store_id: mem.id, mount_path: '/notes.txt' }],
+        resources: [{ type: 'memory_store', memory_store_id: mem.id, mount_path: '/memory' }],
         betas: BETAS,
       });
       const memRead = await driveUntil(

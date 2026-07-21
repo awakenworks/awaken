@@ -29,6 +29,9 @@ awaken-config-store = { workspace = true }
 # Durable memory persistence (resources plane): the memory-extraction mode roots its
 # store under AWAKEN_STORAGE_DIR via `memory_scope_root` so it survives a restart.
 awaken-memory-store = { workspace = true }
+# Concrete worker adapter is assembled here, outside runtime-host, behind the
+# neutral MemoryMounter port (FUSE where available, copy/harvest otherwise).
+awaken-sandbox-memoryd = { workspace = true }
 # ACP runtime (R3/R4): drive an external ACP CLI as a peer RunExecutor when a
 # session selects `runtime: "acp:*"`.
 awaken-run-executor-acp = { workspace = true }

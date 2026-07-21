@@ -131,7 +131,7 @@ pub struct LocalProvider {
     file_store: Option<Arc<dyn pc::BlobSource>>,
     /// Optional memory-store realizer (FUSE / copy). Absent → a `MemoryStore` mount
     /// fails loud rather than being faked as an empty file (ADR-0053 item 1).
-    memory_mounter: Option<Arc<dyn pc::MemoryMounter>>,
+    memory_mounter: Arc<std::sync::RwLock<Option<Arc<dyn pc::MemoryMounter>>>>,
 }
 
 impl LocalProvider {
@@ -140,7 +140,7 @@ impl LocalProvider {
             base: base.into(),
             blobs: HashMap::new(),
             file_store: None,
-            memory_mounter: None,
+            memory_mounter: Arc::new(std::sync::RwLock::new(None)),
         }
     }
 
@@ -161,9 +161,19 @@ impl LocalProvider {
     /// Realize `MemoryStore` mounts via an injected mounter (FUSE where available,
     /// else a harvested copy). Without one, a `MemoryStore` mount fails loud.
     #[must_use]
-    pub fn with_memory_mounter(mut self, mounter: Arc<dyn pc::MemoryMounter>) -> Self {
-        self.memory_mounter = Some(mounter);
+    pub fn with_memory_mounter(self, mounter: Arc<dyn pc::MemoryMounter>) -> Self {
+        self.install_memory_mounter(mounter);
         self
+    }
+
+    /// Install/replace the mounter at the outer composition seam. Interior
+    /// mutability lets a server assemble the host first and wire worker adapters
+    /// before serving, without putting the implementation dependency in the host.
+    pub fn install_memory_mounter(&self, mounter: Arc<dyn pc::MemoryMounter>) {
+        *self
+            .memory_mounter
+            .write()
+            .expect("memory mounter lock poisoned") = Some(mounter);
     }
 
     /// Realize a sandbox and return the concrete [`LocalSandbox`], so a caller can
@@ -216,7 +226,7 @@ impl LocalProvider {
                 }
                 Err(e) => {
                     // Tear down any memory mounts already realized before reaping.
-                    sandbox.teardown_memory_mounts().await;
+                    sandbox.release_memory_mounts().await;
                     let _ = std::fs::remove_dir_all(sandbox.root.root());
                     return Err(e);
                 }
@@ -274,7 +284,12 @@ impl LocalProvider {
         // else a harvested copy). Without a mounter, fail loud rather than fake it
         // with an empty file that misleads the agent into thinking it has a store.
         if let pc::MountSource::MemoryStore { store_id } = &req.source {
-            let Some(mounter) = &self.memory_mounter else {
+            let mounter = self
+                .memory_mounter
+                .read()
+                .expect("memory mounter lock poisoned")
+                .clone();
+            let Some(mounter) = mounter else {
                 return Err(err(format!(
                     "mount {:?}: memory_store is not realizable on this provider (no memory mounter wired)",
                     req.mount_id
@@ -394,11 +409,26 @@ pub struct LocalSandbox {
 impl LocalSandbox {
     /// Tear down every live memory mount: unmount a FUSE mount, or harvest a writable
     /// copy back to its store. Drains the guard list so a later dispose is a no-op.
-    async fn teardown_memory_mounts(&self) {
+    pub async fn release_memory_mounts(&self) {
         let mounts: Vec<Box<dyn pc::MemoryMount>> =
             std::mem::take(&mut self.memory_mounts.lock().unwrap());
         for mount in mounts {
             mount.teardown().await;
+        }
+    }
+
+    /// Remove only the runtime-owned resource projection, preserving the rest of
+    /// the Session workspace. Used when a live input manifest is replaced: a
+    /// detached resource must not remain reachable as stale bytes under `.mnt`.
+    pub fn clear_resource_projection(&self) -> Result<(), pc::SandboxError> {
+        let projection = self.root.resolve(".mnt").map_err(err)?;
+        let Ok(metadata) = std::fs::symlink_metadata(&projection) else {
+            return Ok(());
+        };
+        if metadata.file_type().is_symlink() || metadata.is_file() {
+            std::fs::remove_file(&projection).map_err(err)
+        } else {
+            std::fs::remove_dir_all(&projection).map_err(err)
         }
     }
 
@@ -603,7 +633,7 @@ impl pc::Sandbox for LocalSandbox {
         // Order: harvest memory (reads edits back, unmounts FUSE) → shred secrets
         // (overwrite credential bytes) → reap the directory. Memory harvest must run
         // before shred so a promised write-back is never lost; both run before reap.
-        self.teardown_memory_mounts().await;
+        self.release_memory_mounts().await;
         self.shred_secrets();
         let root = self.root.root();
         if root.exists() {
@@ -728,6 +758,29 @@ mod shred_tests {
         // A non-secret mount is NOT tracked (only credentials are shredded).
         sandbox.dispose().await.unwrap();
         assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn clearing_resource_projection_revokes_stale_mounts_but_keeps_workspace_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut spec = secret_spec("clear-projection");
+        spec.mounts.clear();
+        let sandbox = LocalProvider::new(tmp.path())
+            .create_sandbox(&spec)
+            .await
+            .unwrap();
+        let root = sandbox.root.root();
+        std::fs::create_dir_all(root.join(".mnt/private")).unwrap();
+        std::fs::write(root.join(".mnt/private/secret.txt"), "secret").unwrap();
+        std::fs::write(root.join("work.txt"), "keep").unwrap();
+
+        sandbox.clear_resource_projection().unwrap();
+
+        assert!(!root.join(".mnt").exists());
+        assert_eq!(
+            std::fs::read_to_string(root.join("work.txt")).unwrap(),
+            "keep"
+        );
     }
 
     #[cfg(unix)]
