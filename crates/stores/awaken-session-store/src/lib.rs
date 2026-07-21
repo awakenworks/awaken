@@ -24,6 +24,7 @@ use awaken_session_contract::{
 // The in-memory reference backends (plain + scoped) live here beside the durable
 // siblings (issue A / Phase 1); the ports + PersistedSession value + the
 // ScopedSessionRepo decorator stay inward in `awaken-session-contract`.
+mod extraction;
 mod inmem;
 pub use inmem::{InMemoryScopedSessionStore, InMemorySessionRepository};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -86,6 +87,18 @@ fn session_bundle() -> Result<MigrationBundle, MigrationError> {
                 6,
                 "managed session frozen effective resource inputs",
                 "ALTER TABLE {prefix}_session ADD COLUMN effective_inputs_json TEXT NOT NULL DEFAULT '{\"inputs\":[]}'",
+            )?,
+            Migration::new(
+                7,
+                "durable Memory extraction intents",
+                "CREATE TABLE {prefix}_memory_extraction (\
+                    intent_id TEXT PRIMARY KEY, \
+                    idempotency_key TEXT NOT NULL UNIQUE, \
+                    status TEXT NOT NULL, \
+                    revision BIGINT NOT NULL, \
+                    lease_expires_at_unix_ms BIGINT, \
+                    data TEXT NOT NULL, \
+                    created_at {timestamptz} NOT NULL DEFAULT {now})",
             )?,
         ],
     )
@@ -770,6 +783,71 @@ mod tests {
         }
     }
 
+    fn extraction(id: &str, key: &str) -> awaken_session_contract::MemoryExtractionIntent {
+        awaken_session_contract::MemoryExtractionIntent::new(
+            id,
+            key,
+            "ws-a",
+            "sesn-1",
+            "terminal-1",
+            "memory-1",
+            1,
+            Vec::new(),
+            awaken_session_contract::MemoryExtractorSnapshot {
+                agent_id: "memory-agent".into(),
+                model_ref: "model-1".into(),
+                instructions: Some("extract durable facts".into()),
+                extraction_prompt: None,
+            },
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn extraction_intent_and_claim_survive_sqlite_reopen() {
+        use awaken_session_contract::{
+            MemoryExtractionRepository, MemoryExtractionStatus, PutMemoryExtractionOutcome,
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessions.db");
+        let path = path.to_string_lossy().to_string();
+        {
+            let repo = SqliteManagedSessionRepository::open(&path).unwrap();
+            let initial = extraction("extract-1", "terminal-1");
+            assert_eq!(
+                repo.put_extraction_if_absent(initial.clone())
+                    .await
+                    .unwrap(),
+                PutMemoryExtractionOutcome::Inserted
+            );
+            assert_eq!(
+                repo.put_extraction_if_absent(initial).await.unwrap(),
+                PutMemoryExtractionOutcome::Existing
+            );
+        }
+
+        let repo = SqliteManagedSessionRepository::open(&path).unwrap();
+        let mut claimed = repo.get_extraction("extract-1").await.unwrap().unwrap();
+        let expected_revision = claimed.revision;
+        claimed.claim("worker-a", 100, 50).unwrap();
+        repo.compare_and_swap_extraction(expected_revision, claimed.clone())
+            .await
+            .unwrap();
+        drop(repo);
+
+        let reopened = SqliteManagedSessionRepository::open(&path).unwrap();
+        let recovered = reopened.recoverable_extractions(10).await.unwrap();
+        assert_eq!(recovered, vec![claimed]);
+        assert_eq!(recovered[0].status, MemoryExtractionStatus::Claimed);
+        assert!(matches!(
+            reopened
+                .compare_and_swap_extraction(0, recovered[0].clone())
+                .await,
+            Err(awaken_session_contract::MemoryExtractionError::RevisionConflict(_))
+        ));
+    }
+
     #[tokio::test]
     async fn lifecycle_fact_survives_the_commit_to_notification_crash_window() {
         let dir = tempfile::tempdir().unwrap();
@@ -950,6 +1028,7 @@ mod tests {
     /// and the same behavior on the network backend.
     #[tokio::test]
     async fn postgres_round_trips_and_upserts() {
+        use awaken_session_contract::{MemoryExtractionRepository, PutMemoryExtractionOutcome};
         use sqlx::Executor;
         use sqlx::postgres::{PgPool, PgPoolOptions};
 
@@ -1021,6 +1100,23 @@ mod tests {
         assert_eq!(
             repo.pending_lifecycle().await[0].id,
             "session:sesn_pg_tx:terminated"
+        );
+
+        let initial = extraction("extract-pg", "terminal-pg");
+        assert_eq!(
+            repo.put_extraction_if_absent(initial.clone())
+                .await
+                .unwrap(),
+            PutMemoryExtractionOutcome::Inserted
+        );
+        let mut claimed = initial;
+        claimed.claim("worker-pg", 100, 50).unwrap();
+        repo.compare_and_swap_extraction(0, claimed.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.recoverable_extractions(10).await.unwrap(),
+            vec![claimed]
         );
     }
 
