@@ -15,6 +15,8 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38436);
 const WORKSPACE = `resource-pg-${process.pid}`;
 const OTHER_WORKSPACE = `resource-pg-other-${process.pid}`;
+const AGENT = `resource-pg-agent-${process.pid}`;
+const MODEL = `resource-pg-model-${process.pid}`;
 const OWN_BUILD_TARGET = process.env.CARGO_TARGET_DIR === undefined;
 const BUILD_TARGET = process.env.CARGO_TARGET_DIR ??
   path.join(os.tmpdir(), `awaken-resource-plane-e2e-target-${process.pid}`);
@@ -171,6 +173,50 @@ function assertNoLocalResourceTruth(directory: string): void {
 
 function psql(container: string, sql: string): string {
   return docker('exec', container, 'psql', '-U', 'postgres', '-d', 'awaken', '-At', '-c', sql);
+}
+
+function seedRepository(root: string): string {
+  const work = path.join(root, 'repository-work');
+  const remote = path.join(root, 'repository.git');
+  fs.mkdirSync(work, { recursive: true });
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: work });
+  execFileSync('git', ['config', 'user.email', 'resource-e2e@example.invalid'], { cwd: work });
+  execFileSync('git', ['config', 'user.name', 'resource-e2e'], { cwd: work });
+  fs.writeFileSync(path.join(work, 'README.md'), 'governed repository');
+  execFileSync('git', ['add', 'README.md'], { cwd: work });
+  execFileSync('git', ['commit', '-q', '-m', 'seed'], { cwd: work });
+  execFileSync('git', ['clone', '-q', '--bare', work, remote]);
+  return remote;
+}
+
+async function publishAgent(): Promise<void> {
+  assert.equal((await json('PUT', scoped(WORKSPACE, 'config/providers/resource-e2e'), {
+    id: 'resource-e2e', slug: 'resource-e2e', display_name: 'Resource E2E', version: 1,
+  })).status, 200);
+  assert.equal((await json('PUT', scoped(WORKSPACE, 'config/endpoints/resource-e2e'), {
+    id: 'resource-e2e', provider_id: 'resource-e2e', dialect: 'anthropic_messages',
+    base_url: 'http://127.0.0.1:1/v1/', timeout_secs: 10, display_name: 'unused', version: 1,
+  })).status, 200);
+  assert.equal((await json('POST', scoped(WORKSPACE, 'config/offerings'), {
+    model_id: MODEL, provider_id: 'resource-e2e', protocol_endpoint_id: 'resource-e2e',
+    dialect: 'anthropic_messages', upstream_model: null,
+  })).status, 200);
+  assert.equal((await json('PUT', scoped(WORKSPACE, `config/model-attributes/${MODEL}`), {
+    context_window: 4096, max_output_tokens: 1024,
+  })).status, 200);
+  assert.equal((await json('POST', scoped(WORKSPACE, 'config/credentials'), {
+    workspace_id: WORKSPACE, kind: 'vault', provider_id: 'resource-e2e',
+    env_key: null, secret: 'resource-e2e-model-key', // awaken-allow: secret
+  })).status, 201);
+  assert.equal((await json('PUT', scoped(WORKSPACE, `config/agents/${AGENT}`), {
+    name: AGENT, model: { id: MODEL }, system: 'Resource lifecycle test.',
+    max_steps: 2, plugins: [], plugin_config: {},
+  })).status, 200);
+  assert.equal((await json('PUT', scoped(WORKSPACE, `config/agents/${AGENT}/resources`), {
+    agent_id: AGENT, revision: 1, inputs: [],
+  })).status, 200);
+  const published = await json('POST', scoped(WORKSPACE, `config/agents/${AGENT}/publish`));
+  assert.equal(published.status, 200, JSON.stringify(published.body));
 }
 
 async function main(): Promise<void> {
@@ -330,6 +376,37 @@ async function main(): Promise<void> {
     assert.equal((await fetch(scoped(OTHER_WORKSPACE, `files/${fileId}/content`))).status, 404);
     assert.equal((await json('GET', scoped(OTHER_WORKSPACE, `memory_stores/${memoryId}`))).status, 404);
     assert.equal((await json('GET', scoped(OTHER_WORKSPACE, `skills/${skillId}`))).status, 404);
+
+    // Drive the production Managed Session edge so Repository configuration uses
+    // this same PostgreSQL Resource Catalog rather than a scenario-host registry.
+    await publishAgent();
+    const repository = seedRepository(secondDirectory);
+    const session = await json('POST', scoped(WORKSPACE, 'sessions'), {
+      agent: AGENT, environment_id: 'env_local',
+    });
+    assert.equal(session.status, 200, JSON.stringify(session.body));
+    const repositoryResource = await json(
+      'POST',
+      scoped(WORKSPACE, `sessions/${session.body.id}/resources`),
+      { type: 'github_repository', url: repository, mount_path: '/workspace/repository' },
+    );
+    assert.equal(repositoryResource.status, 200, JSON.stringify(repositoryResource.body));
+    const updatedRepository = await json(
+      'POST',
+      scoped(WORKSPACE, `sessions/${session.body.id}/resources/${repositoryResource.body.id}`),
+      {
+        mount_path: '/workspace/repository-updated',
+        authorization_token: 'repository-rotated-token', // awaken-allow: secret
+      },
+    );
+    assert.equal(updatedRepository.status, 200, JSON.stringify(updatedRepository.body));
+    assert.equal(updatedRepository.body.mount_path, '/workspace/repository-updated');
+    const retiredRepository = await json(
+      'DELETE',
+      scoped(WORKSPACE, `sessions/${session.body.id}/resources/${repositoryResource.body.id}`),
+    );
+    assert.equal(retiredRepository.status, 200, JSON.stringify(retiredRepository.body));
+    assert.equal(retiredRepository.body.type, 'session_resource_deleted');
 
     // The immutable File blob may have more than one Workspace ownership edge.
     // Removing one edge must deny that Workspace immediately without deleting
