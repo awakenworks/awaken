@@ -151,6 +151,53 @@ impl HostWorkerResolver {
                 Self::execution_error(format!("thread {} has no durable ingress", thread_id.0))
             })
     }
+
+    /// Resolve the terminal-control path without creating, adopting, or probing a
+    /// Session environment. Cancellation only needs the dispatch fence and the
+    /// thread commit boundary; making it depend on the run's model, credentials,
+    /// placement capabilities, or sandbox would let the failed dependency prevent
+    /// its own termination.
+    async fn cancellation_worker(
+        &self,
+        host: &SharedHost,
+        claimed: &awaken_run_ingress::Claimed,
+    ) -> Result<Arc<awaken_run_ingress::DispatchWorker<AnyDispatchStore>>, awaken_run_ingress::Error>
+    {
+        let thread_id = claimed.request.session_thread_id();
+        if let Some(worker) = host
+            .sessions
+            .lock()
+            .await
+            .get(&thread_id.0)
+            .and_then(|ctx| ctx.durable_ingress.as_ref())
+            .map(|ingress| ingress.worker_handle())
+        {
+            return Ok(worker);
+        }
+
+        let commit = Arc::new(
+            host.build_commit(&thread_id.0)
+                .await
+                .map_err(|error| Self::execution_error(error.to_string()))?,
+        );
+        let store = crate::dispatch_backend::shared_durable_store(host.store_dir.as_deref())
+            .map_err(|error| Self::execution_error(error.to_string()))?;
+        let mut worker = awaken_run_ingress::DispatchWorker::new(
+            Arc::new(awaken_runtime::Runtime::new()),
+            store,
+            commit,
+            claimed.lease.owner.clone(),
+        );
+        if let Some(upstream) = &host.upstream {
+            let mut remote = crate::commit_ingest::RemoteClaimedRunCommit::new(upstream.base_url())
+                .with_client(upstream.client().clone());
+            if let Some(identity) = upstream.worker_identity() {
+                remote = remote.with_worker_identity(identity.clone());
+            }
+            worker = worker.with_claimed_commit(Arc::new(remote));
+        }
+        Ok(Arc::new(worker))
+    }
 }
 
 #[async_trait::async_trait]
@@ -177,6 +224,9 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
     ) -> Result<Arc<awaken_run_ingress::DispatchWorker<AnyDispatchStore>>, awaken_run_ingress::Error>
     {
         let host = self.host()?;
+        if claimed.cancellation_requested {
+            return self.cancellation_worker(&host, claimed).await;
+        }
         let thread_id = claimed.request.session_thread_id();
         let agent_id = claimed.request.activation.snapshot.root_agent_id.0.as_str();
         let agent_id = (!agent_id.is_empty()).then_some(agent_id);
@@ -236,6 +286,10 @@ mod tests {
     use super::*;
     use awaken_runtime_contract::llm::{
         AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult,
+    };
+    use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
+    use awaken_runtime_contract::snapshot::{
+        AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
     };
 
     struct AdoptionModel;
@@ -462,5 +516,64 @@ mod tests {
             .await
             .expect("replacement kept");
         assert!(Arc::ptr_eq(&current, &replacement));
+    }
+
+    #[tokio::test]
+    async fn cancellation_resolution_does_not_touch_an_invalid_sandbox_binding() {
+        let storage = tempfile::tempdir().expect("storage");
+        let host = Arc::new(
+            SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()),
+        );
+        let thread = ThreadId("thread-control-only".to_string());
+        let run = RunId("run-control-only".to_string());
+        let fingerprint = CatalogFingerprint("control-only-catalog".to_string());
+        let activation = RunActivation::new(
+            run.clone(),
+            thread.clone(),
+            ExecutableAgentSnapshot {
+                id: ExecutableAgentSnapshotId("control-only-snapshot".to_string()),
+                metadata: Default::default(),
+                root_agent_id: AgentId("control-only-agent".to_string()),
+                resolved_spec: ResolvedSpec {
+                    model_candidates: Vec::new(),
+                    catalog_fingerprint: fingerprint.clone(),
+                    instructions: "test".to_string(),
+                    max_steps: 1,
+                    delegation_limits: Default::default(),
+                    model_binding: ModelBinding::new("provider", "model", "backend"),
+                    tool_descriptors: Vec::new(),
+                    plugin_ids: Vec::new(),
+                    plugin_config: Default::default(),
+                    context_policy: Default::default(),
+                    tool_presentation: Default::default(),
+                },
+                fingerprint,
+            },
+            Vec::new(),
+        );
+        let claimed = awaken_run_ingress::Claimed {
+            request: awaken_run_ingress::RunDispatch::new(activation),
+            lease: awaken_run_ingress::Lease {
+                run_id: run,
+                owner: "control-owner".to_string(),
+                expires_ms: 100,
+                epoch: 2,
+            },
+            cancellation_requested: true,
+            pending: Vec::new(),
+            recovered: false,
+            sandbox: Some("this is deliberately not a sandbox handle".to_string()),
+            assignment: None,
+        };
+        let resolver = HostWorkerResolver {
+            host: Arc::downgrade(&host),
+        };
+
+        resolver
+            .worker_for_claimed(&claimed)
+            .await
+            .expect("terminal control bypasses sandbox decoding/adoption");
+        assert!(host.session_environment(&thread.0).await.is_none());
+        assert!(host.sessions.lock().await.get(&thread.0).is_none());
     }
 }

@@ -15,7 +15,7 @@ use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_runtime::{RunIngress, RunService, Runtime};
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::control::{Error as ControlError, LiveCommand, LiveRunControl};
+use awaken_runtime_contract::control::Error as ControlError;
 use awaken_runtime_contract::execution::{Error as ExecError, Result as ExecResult};
 use awaken_runtime_contract::resume::ResumeCommand;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
@@ -284,19 +284,19 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
         Ok(self.worker.store().requeue(run_id).await?)
     }
 
-    /// Durably cancel a not-running run: remove its dispatch and pending input,
-    /// then commit a terminal `Cancelled` fact so its committed state reflects the
-    /// cancellation (clearing any awaiting ticket). Returns `true` if cancelled; a
-    /// currently-running run is not cancelled here — use `cancel` (live control).
+    /// Durably request cancellation and drive the same claimed/fenced worker path
+    /// used by crash recovery. The intent remains in the dispatch row until the
+    /// terminal `Cancelled` commit and Done settlement both succeed.
     pub async fn cancel_durable(&self, run_id: &RunId) -> Result<bool, Error> {
-        let Some(thread_id) = self.worker.store().cancel(run_id).await? else {
+        let Some(_thread_id) = self.worker.store().cancel(run_id).await? else {
             return Ok(false);
         };
-        self.worker
-            .runtime()
-            .cancel_run(run_id.clone(), thread_id, self.worker.execution_context())
-            .await?;
-        Ok(true)
+        let driven = self.worker.tick_run(run_id, 0).await?;
+        Ok(!matches!(
+            driven,
+            Some((_, RunState::Ended(cause)))
+                if cause != awaken_agent_contract::agent::run::EndCause::Cancelled
+        ))
     }
 }
 
@@ -327,10 +327,17 @@ impl<S: Dispatch + 'static> RunService for DurableRunIngress<S> {
             .await
     }
 
-    fn cancel(&self, run_id: &RunId) -> Result<(), ControlError> {
-        self.worker.runtime().deliver(LiveCommand::Cancel {
-            run_id: run_id.clone(),
-        })
+    async fn cancel(&self, run_id: &RunId) -> Result<(), ControlError> {
+        self.live_control()
+            .cancel(&run_id.0)
+            .await
+            .map_err(|error| match error {
+                crate::live_control::Error::NotFound(_) => ControlError::NotActive,
+                crate::live_control::Error::NoSubscriber(_) => {
+                    ControlError::Rejected(error.to_string())
+                }
+                crate::live_control::Error::Dispatch(message) => ControlError::Rejected(message),
+            })
     }
 }
 

@@ -746,6 +746,7 @@ C94 → E82     C96 ∧ C97 → E85(resume)     C96 ∧ ~C97 → 整步重跑   
 | C105 | MCP 门裁决 Allow/Block/SetResult/(Suspend\|Schedule) | mcp `gate_verdict` |
 | C106 | Managed 会话 id 服务端铸造(跳过 `owns_thread`);archived 写(409) | managed `create_session`/`Archived` |
 | C107 | webhook 响应 2xx vs 非2xx;连败 ≥ 阈值;畸形签名密钥;SSRF/私网 | webhook `dispatch`/`validate_endpoint_url` |
+| C108 | ACP 策略 `RequireConfirmation`;进程/worker 在等待期间被替换 | ACP `PermissionAwait` → durable `ResumeTicket` → one-shot resumed resolver |
 
 ### 果(E86–E95)
 
@@ -761,12 +762,14 @@ C94 → E82     C96 ∧ C97 → E85(resume)     C96 ∧ ~C97 → 整步重跑   
 | E93 | webhook 签名重试投递(Standard-Webhooks 头,稳定 `webhook-id`);2xx→delivered,非2xx→failed 重试;≥阈值→自动禁用 | webhook dispatch |
 | E94 | webhook 投递期 SSRF 守卫:解析并钉全局可路由,拒 loopback/非https | `ReqwestSender::guarded` |
 | E95 | `session.error`(`SessionError::classify`)于 `outcome.failure`;生命周期扇出 IDLED/TERMINATED/DELETED | managed events.rs |
+| E96 | ACP permission 请求提交 `ToolPermission` await 并释放进程/租约;恢复仅对 ticket 固定 call id 应用一次裁决 | acp executor permission replacement e2e |
 
 ### 因果图与约束
 
 ```
 C98 → E86     C99 → E87     C100 → E88     C101 → E89     C102(共享) → E90
 C105=Block/Suspend → is_error(遮蔽执行)     C106 → E91     C107=2xx → delivered / 非2xx → 重试(E93)     C107=SSRF → E94(拒 POST)
+C108 → E96
 ```
 
 - **O/E**:协议前门按路径互斥,但**全收敛于单一 `ProtocolRuntime`**(跨协议共享宿主);后端路由 `Native ⊕ Acp ⊕ Remote`;`Codec::Newline ⊕ Codec::Acp`(Acp 需 `real-acp` feature)。`Terminal` 枚举使"waiting ∧ failed"/"pending ∧ finished"不可表示。
@@ -774,7 +777,6 @@ C105=Block/Suspend → is_error(遮蔽执行)     C106 → E91     C107=2xx → 
   - **A2A 无带内拒绝**——`to_resume` 把任何入站文本读作 `Confirm{allow:true}`,拒绝仅经 `tasks/cancel` 可达。
   - **A2A 无流式/推送**——card `streaming=false,push_notifications=false`;`Working/InputRequired/AuthRequired` 遮为 `Indeterminate`(无法轮询/await)。
   - **AG-UI 错误通道仅单串**——拒绝/错误只经 `ToolMessage.error` 表达,无结构化故障通道。
-  - **ACP `Ask`(HITL)遮蔽**——`NeutralPermissionResolver` 把策略 `Ask` 坍缩为 `Deny`(持轮内无同步应答)。
   - **MCP `Suspend`/`Schedule` 遮蔽**——外部客户端无 await run,fail closed 为模型可见 `is_error`。
   - **webhook 重试遮蔽**——唯一成功谓词是 `2xx`;永久 4xx(404/410/422)如瞬态 5xx 般重试到耗尽;`300` 非 2xx 亦重试。
 

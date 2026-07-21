@@ -20,7 +20,7 @@ use awaken_run_ingress::{
     MemoryDispatchStore, OutboxMessageSender, PendingInput, RunDispatch, RunIngressCapabilities,
 };
 use awaken_runtime::memory::MemoryCommitCoordinator;
-use awaken_runtime::{DirectRunIngress, RunIngress};
+use awaken_runtime::{DirectRunIngress, RunIngress, RunService};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::{
     Error as ExecutionError, Result as ExecutionResult, RunAttemptExecutor, RunExecutor,
@@ -870,7 +870,7 @@ async fn cancel_durable_commits_cancelled_for_an_awaiting_run() {
 }
 
 #[tokio::test]
-async fn cancel_durable_for_a_queued_run_that_never_ran() {
+async fn unified_run_service_cancel_is_durable_for_a_queued_run() {
     let runtime = text_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
@@ -882,12 +882,9 @@ async fn cancel_durable_for_a_queued_run_that_never_ran() {
         .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
-    assert!(
-        ingress
-            .cancel_durable(&RunId("run-1".to_string()))
-            .await
-            .unwrap()
-    );
+    RunService::cancel(&ingress, &RunId("run-1".to_string()))
+        .await
+        .expect("unified cancel");
     let record = awaken_agent_contract::thread::read::run_store::RunStore::get(
         commit.as_ref(),
         &RunId("run-1".to_string()),
@@ -896,12 +893,91 @@ async fn cancel_durable_for_a_queued_run_that_never_ran() {
     assert_eq!(record.state, RunState::Ended(EndCause::Cancelled));
     assert_eq!(store.dispatch_count(), 0);
 
-    // Cancelling again is a no-op.
-    assert!(
-        !ingress
-            .cancel_durable(&RunId("run-1".to_string()))
+    // Cancelling again fails closed as no longer active/queued.
+    assert_eq!(
+        RunService::cancel(&ingress, &RunId("run-1".to_string())).await,
+        Err(awaken_runtime_contract::control::Error::NotActive)
+    );
+}
+
+#[tokio::test]
+async fn committed_cancel_is_settled_without_duplicate_after_crash() {
+    let runtime = text_runtime();
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let run = RunId("cancel-crash".to_string());
+
+    store
+        .enqueue(RunDispatch::new(activation("cancel-crash")))
+        .await
+        .unwrap();
+    store.cancel(&run).await.unwrap().expect("intent persisted");
+    let crashed = store
+        .claim("dead-worker", 1_000, 0)
+        .await
+        .unwrap()
+        .expect("intent claimed");
+    assert!(crashed.cancellation_requested);
+
+    // Model the exact crash window: the fenced worker commits Cancelled, but the
+    // process dies before settling/removing the dispatch row.
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
+    assert_eq!(
+        runtime
+            .cancel_run(run.clone(), ThreadId(THREAD.to_string()), context)
             .await
+            .expect("terminal cancel commit"),
+        RunState::Ended(EndCause::Cancelled)
+    );
+    assert_eq!(store.dispatch_count(), 1, "crash left intent for recovery");
+
+    let ingress = DurableRunIngress::new(runtime, store.clone(), commit.clone());
+    assert_eq!(
+        ingress.recover(1_001).await.expect("recovery"),
+        vec![(run.clone(), RunState::Ended(EndCause::Cancelled))]
+    );
+    assert_eq!(store.dispatch_count(), 0);
+    let record =
+        awaken_agent_contract::thread::read::run_store::RunStore::get(commit.as_ref(), &run)
+            .expect("single terminal record");
+    assert_eq!(record.state, RunState::Ended(EndCause::Cancelled));
+}
+
+#[tokio::test]
+async fn cancellation_does_not_materialize_the_model_or_credentials() {
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let materializations = Arc::new(AtomicUsize::new(0));
+    let seen = materializations.clone();
+    let resolver: awaken_run_ingress::InferenceMaterializerFn = Arc::new(move |_activation| {
+        seen.fetch_add(1, Ordering::SeqCst);
+        None
+    });
+    let ingress = DurableRunIngress::with_owner_and_resolver(
+        text_runtime(),
+        store.clone(),
+        commit.clone(),
+        "cancel-owner",
+        None,
+        Some(resolver),
+    );
+    let run = RunId("cancel-with-provider-down".to_string());
+    store
+        .enqueue(RunDispatch::new(activation("cancel-with-provider-down")))
+        .await
+        .unwrap();
+
+    assert!(ingress.cancel_durable(&run).await.unwrap());
+    assert_eq!(
+        materializations.load(Ordering::SeqCst),
+        0,
+        "terminal control must not depend on the unavailable execution provider"
+    );
+    assert_eq!(
+        awaken_agent_contract::thread::read::run_store::RunStore::get(commit.as_ref(), &run)
             .unwrap()
+            .state,
+        RunState::Ended(EndCause::Cancelled)
     );
 }
 

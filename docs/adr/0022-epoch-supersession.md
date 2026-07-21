@@ -30,11 +30,16 @@ recoverable record of "which is newest," not a wall-clock guess.
 
 ### D3: Superseded is a terminal dispatch status, excluded from claim
 
-Superseding marks the thread's prior **pending and awaiting** dispatches
+Superseding marks the thread's prior **pending and awaiting** dispatches that do
+not already carry a durable cancellation intent
 `Superseded` — a terminal dispatch status, excluded from claim exactly like
 dead-letter (ADR-0015). A superseded run is therefore never claimed, never woken,
 never resumed; its queued or awaiting work is abandoned. `superseded()` lists them
 for operations, the mirror of `dead_letters()`.
+
+An accepted cancellation intent wins over later work: it remains claimable and is
+driven to a committed `Cancelled` fact before its delivery row is removed. A newer
+submission cannot erase terminal control merely by superseding ordinary work.
 
 ### D4: An in-flight running run is not force-superseded
 
@@ -50,6 +55,7 @@ operator can `cancel` a superseded run to make it committed-terminal today.
 
 - A newer submission can abandon a thread's stale queued/awaiting work, by epoch,
   proven across the three backends against one shared spec.
+- An already-accepted cancellation is never abandoned by supersession.
 - Supersession stays opt-in and thread-keyed; default submits are unaffected.
 - Superseded dispatches are visible (`superseded()`) and excluded from claim, like
   dead-letters.

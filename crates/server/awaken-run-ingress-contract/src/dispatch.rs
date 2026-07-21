@@ -99,6 +99,11 @@ impl From<&Lease> for RunClaim {
 pub struct Claimed {
     pub request: RunDispatch,
     pub lease: Lease,
+    /// A durable cancellation intent recorded before any live signal or terminal
+    /// commit. The worker drives this through the same claim/epoch fence as normal
+    /// execution, so a crash cannot lose a cancellation or resurrect the run.
+    #[serde(default)]
+    pub cancellation_requested: bool,
     /// The run's undelivered pending input. The worker decides execute-vs-resume
     /// from committed truth (the awaiting ticket), not from this field, and tells
     /// `settle` which inputs it consumed.
@@ -217,6 +222,8 @@ pub struct DispatchSummary {
     pub run_id: RunId,
     pub thread_id: ThreadId,
     pub state: DispatchState,
+    /// Terminal control has been accepted and is awaiting/under a fenced claim.
+    pub cancellation_requested: bool,
     /// Consecutive crash-recoveries without a settle.
     pub attempt_count: u64,
 }
@@ -530,11 +537,12 @@ pub trait DispatchQueue: Send + Sync {
     /// if a dead-lettered run with that id was requeued.
     async fn requeue(&self, run_id: &RunId) -> Result<bool, DispatchError>;
 
-    /// Durably cancel a *not-running* dispatch (pending or awaiting): remove it and
-    /// its pending input so it never runs or resumes. Returns the run's thread id
-    /// when cancelled (the host then commits a terminal `Cancelled` fact), or
-    /// `None` if the run is currently running (use live cancel), already
-    /// dead-lettered, or unknown.
+    /// Durably request cancellation of a pending, awaiting, or running dispatch.
+    /// This operation records intent but never removes the row or pending input;
+    /// for a running row it also advances the epoch and releases the old lease so
+    /// that owner's later commit is fenced. The worker claims it and commits
+    /// `Cancelled` before settlement removes delivery state. Repeating it is
+    /// idempotent. Returns `None` only for a terminal queue state or unknown run.
     async fn cancel(&self, run_id: &RunId) -> Result<Option<ThreadId>, DispatchError>;
 
     /// The run currently awaiting on a thread, if any. A thread is the stable
@@ -819,6 +827,7 @@ mod tests {
                 expires_ms: 5_000,
                 epoch: 2,
             },
+            cancellation_requested: true,
             pending: vec![pending()],
             recovered: true,
             sandbox: Some("sbx-opaque-ref".into()),
@@ -829,6 +838,7 @@ mod tests {
                 .expect("deserializes");
         assert_eq!(back, claimed);
         assert_eq!(back.sandbox.as_deref(), Some("sbx-opaque-ref"));
+        assert!(back.cancellation_requested);
 
         // An unplaced run (no sandbox yet) round-trips with `sandbox: None`.
         let unplaced = Claimed {

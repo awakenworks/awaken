@@ -781,8 +781,8 @@ fn session_home_binding_is_none_for_a_non_acp_backend() {
 #[tokio::test]
 async fn neutral_permission_resolver_projects_the_policy_decision() {
     // The ACP permission port is decided by the single neutral `ToolPermissionPolicy`:
-    // Allow→Allow, Deny→Deny, and Ask fails safe to Deny (no synchronous HITL over
-    // the held ACP turn yet).
+    // Allow→Allow, Deny→Deny, and Ask carries its durable correlation instead of
+    // collapsing into a denial.
     use awaken_protocol_acp::{PermissionAsk, PermissionResolver, PermissionVerdict};
     use awaken_runtime_contract::permission::{
         ToolCall, ToolPermissionPolicy, ToolPermissionVerdict,
@@ -813,7 +813,9 @@ async fn neutral_permission_resolver_projects_the_policy_decision() {
             ToolPermissionVerdict::RequireConfirmation {
                 correlation_id: "tk".into(),
             },
-            PermissionVerdict::Deny,
+            PermissionVerdict::Await {
+                correlation_id: "tk".into(),
+            },
         ),
     ];
     for (decision, want) in cases {
@@ -821,6 +823,190 @@ async fn neutral_permission_resolver_projects_the_policy_decision() {
             policy: Arc::new(FixedPolicy(decision)),
         };
         assert_eq!(resolver.resolve(&ask).await, want);
+    }
+}
+
+#[cfg(feature = "real-acp")]
+#[tokio::test]
+async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_session() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use awaken_runtime_contract::permission::{ToolPermissionPolicy, ToolPermissionVerdict};
+    use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
+
+    const PERMISSION: &str = r#"{"jsonrpc":"2.0","id":42,"method":"session/request_permission","params":{"sessionId":"permission-session","toolCall":{"toolCallId":"tool-1","title":"bash","rawInput":{"cmd":"echo ok"}},"options":[{"optionId":"allow","name":"Allow","kind":"allow_once"},{"optionId":"reject","name":"Reject","kind":"reject_once"}]}}"#;
+
+    struct AskPolicy;
+    #[async_trait]
+    impl ToolPermissionPolicy for AskPolicy {
+        async fn evaluate(&self, _call: &ToolCall) -> ToolPermissionVerdict {
+            ToolPermissionVerdict::RequireConfirmation {
+                correlation_id: "approval-1".to_string(),
+            }
+        }
+    }
+
+    struct PermissionSource {
+        opens: AtomicUsize,
+        permission_replies: Arc<Mutex<Vec<String>>>,
+        resumed_prompts: Arc<Mutex<Vec<String>>>,
+        permission_events: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait]
+    impl AgentChannelSource for PermissionSource {
+        async fn open(
+            &self,
+            _activation: &RunActivation,
+        ) -> std::result::Result<AgentSession, OpenError> {
+            let attempt = self.opens.fetch_add(1, Ordering::SeqCst);
+            let replies = self.permission_replies.clone();
+            let prompts = self.resumed_prompts.clone();
+            let events = self.permission_events.clone();
+            let (ours, theirs) = tokio::io::duplex(8192);
+            tokio::spawn(async move {
+                let mut lines = BufReader::new(theirs);
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    if lines.read_line(&mut line).await.unwrap_or(0) == 0 {
+                        return;
+                    }
+                    let message: serde_json::Value =
+                        serde_json::from_str(line.trim()).expect("client JSON-RPC");
+                    let id = message.get("id").and_then(serde_json::Value::as_u64);
+                    let output = lines.get_mut();
+                    match id {
+                        Some(1) => {
+                            output.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{\"loadSession\":true}}}\n").await.unwrap();
+                            output.flush().await.unwrap();
+                        }
+                        Some(2) if attempt == 0 => {
+                            output.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"permission-session\"}}\n").await.unwrap();
+                            output.flush().await.unwrap();
+                        }
+                        Some(2) => {
+                            assert_eq!(
+                                message.get("method").and_then(serde_json::Value::as_str),
+                                Some("session/load"),
+                                "replacement resumes the committed ACP session"
+                            );
+                            output
+                                .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n")
+                                .await
+                                .unwrap();
+                            output.flush().await.unwrap();
+                        }
+                        Some(3) => {
+                            if attempt > 0 {
+                                let prompt = message
+                                    .pointer("/params/prompt/0/content/text")
+                                    .or_else(|| message.pointer("/params/prompt/0/text"))
+                                    .and_then(serde_json::Value::as_str)
+                                    .unwrap_or_default()
+                                    .to_string();
+                                prompts.lock().unwrap().push(prompt);
+                            }
+                            output.write_all(PERMISSION.as_bytes()).await.unwrap();
+                            output.write_all(b"\n").await.unwrap();
+                            output.flush().await.unwrap();
+                            line.clear();
+                            lines.read_line(&mut line).await.unwrap();
+                            replies.lock().unwrap().push(line.trim().to_string());
+                            events.notify_one();
+                            if attempt == 0 {
+                                return;
+                            }
+                            let output = lines.get_mut();
+                            output.write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"permission-session\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"continued\"}}}}\n").await.unwrap();
+                            output.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}\n").await.unwrap();
+                            output.flush().await.unwrap();
+                            return;
+                        }
+                        _ => return,
+                    }
+                }
+            });
+            Ok(AgentSession {
+                channel: Box::new(ours),
+                process: Arc::new(FakeProcess),
+                codec: Codec::Acp,
+                workspace_cwd: None,
+                mcp_session_servers: Vec::new(),
+            })
+        }
+    }
+
+    for allow in [true, false] {
+        let replies = Arc::new(Mutex::new(Vec::new()));
+        let prompts = Arc::new(Mutex::new(Vec::new()));
+        let events = Arc::new(tokio::sync::Notify::new());
+        let source: Arc<dyn AgentChannelSource> = Arc::new(PermissionSource {
+            opens: AtomicUsize::new(0),
+            permission_replies: replies.clone(),
+            resumed_prompts: prompts.clone(),
+            permission_events: events.clone(),
+        });
+        let committed = Arc::new(RecordingCoordinator::default());
+        let first = AcpRunExecutor::new(source.clone())
+            .with_permission_policy(Arc::new(AskPolicy))
+            .execute(
+                activation(),
+                RuntimeRunContext::new()
+                    .with_commit(committed.clone())
+                    .with_reader(committed.clone()),
+            )
+            .await
+            .expect("ACP permission request commits an await");
+        assert_eq!(first, RunState::Awaiting);
+        let ticket = committed
+            .resume_ticket_for(&RunId("run-1".into()))
+            .expect("permission ticket");
+        assert_eq!(ticket.reason, AwaitReason::ToolPermission);
+        assert_eq!(ticket.correlation_id, "approval-1");
+        assert_eq!(ticket.call_id.as_deref(), Some("tool-1"));
+        assert_eq!(
+            ticket
+                .pending_tool
+                .as_ref()
+                .map(|tool| tool.tool_id.as_str()),
+            Some("bash")
+        );
+        events.notified().await;
+        assert!(
+            replies.lock().unwrap()[0].contains("cancelled"),
+            "the first process is released before durable HITL"
+        );
+
+        let result = ResumeResult::Decision {
+            allow,
+            note: (!allow).then(|| "operator policy".to_string()),
+        };
+        let resumed = AcpRunExecutor::new(source)
+            .with_permission_policy(Arc::new(AskPolicy))
+            .resume(
+                activation(),
+                ResumeCommand::from_ticket(&ticket, result, 1),
+                RuntimeRunContext::new()
+                    .with_commit(committed.clone())
+                    .with_reader(committed.clone()),
+            )
+            .await
+            .expect("replacement consumes the durable decision");
+        events.notified().await;
+        assert_eq!(resumed, RunState::Ended(EndCause::NaturalEnd));
+        let replies = replies.lock().unwrap();
+        assert_eq!(replies.len(), 2);
+        assert!(replies[1].contains(if allow { "allow" } else { "reject" }));
+        let prompts = prompts.lock().unwrap();
+        assert_eq!(prompts.len(), 1);
+        assert!(prompts[0].contains(if allow { "approved" } else { "denied" }));
+        assert!(
+            committed
+                .resume_ticket_for(&RunId("run-1".into()))
+                .is_none(),
+            "terminal continuation consumes the permission ticket"
+        );
     }
 }
 

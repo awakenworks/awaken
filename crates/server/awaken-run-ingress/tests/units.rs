@@ -177,6 +177,7 @@ async fn durable_ingress_foreground_submit_and_cancel() {
     // Cancelling a run that is not in flight is a typed NotActive, not a panic.
     let err = ingress
         .cancel(&RunId("not-running".to_string()))
+        .await
         .expect_err("no such active run");
     assert_eq!(err, ControlError::NotActive);
 

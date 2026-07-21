@@ -353,9 +353,10 @@ impl Runtime {
         crate::engine::resume_run(self, command, reader, context).await
     }
 
-    /// Cancel a not-running run (queued or awaiting) by committing a terminal
-    /// `Cancelled` fact, clearing any awaiting ticket. An in-flight run is
-    /// cancelled through `LiveRunControl` instead.
+    /// Commit the authoritative terminal `Cancelled` fact and clear any awaiting
+    /// ticket. Durable ingress invokes this after claiming a cancellation intent;
+    /// live control is only the best-effort signal that stops an old in-flight
+    /// owner, whose epoch has already been fenced by the dispatch store.
     pub async fn cancel_run(
         &self,
         run_id: RunId,

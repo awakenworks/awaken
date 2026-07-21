@@ -36,8 +36,9 @@ pub trait RunService: Send + Sync {
     /// Resume a Run from its committed ticket with a typed response.
     async fn resume(&self, command: ResumeCommand, context: RuntimeRunContext) -> Result<RunState>;
 
-    /// Cancel an in-flight Run by id.
-    fn cancel(&self, run_id: &RunId) -> std::result::Result<(), ControlError>;
+    /// Cancel a Run by id. Durable ingress persists intent before signalling;
+    /// direct ingress can only address a currently-live run.
+    async fn cancel(&self, run_id: &RunId) -> std::result::Result<(), ControlError>;
 }
 
 /// Delivery capabilities owned by the ingress bounded context. This extends the
@@ -91,7 +92,7 @@ impl RunService for DirectRunIngress {
         self.runtime.resume(command, reader.as_ref(), context).await
     }
 
-    fn cancel(&self, run_id: &RunId) -> std::result::Result<(), ControlError> {
+    async fn cancel(&self, run_id: &RunId) -> std::result::Result<(), ControlError> {
         self.runtime.deliver(LiveCommand::Cancel {
             run_id: run_id.clone(),
         })

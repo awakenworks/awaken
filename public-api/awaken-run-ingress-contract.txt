@@ -49,6 +49,7 @@ impl awaken_run_ingress_contract::dispatch::SettleOutcome
 pub fn awaken_run_ingress_contract::dispatch::SettleOutcome::applied(self) -> bool
 pub struct awaken_run_ingress_contract::dispatch::Claimed
 pub awaken_run_ingress_contract::dispatch::Claimed::assignment: core::option::Option<awaken_worker_contract::WorkerAssignment>
+pub awaken_run_ingress_contract::dispatch::Claimed::cancellation_requested: bool
 pub awaken_run_ingress_contract::dispatch::Claimed::lease: awaken_run_ingress_contract::dispatch::Lease
 pub awaken_run_ingress_contract::dispatch::Claimed::pending: alloc::vec::Vec<awaken_run_ingress_contract::dispatch::PendingInput>
 pub awaken_run_ingress_contract::dispatch::Claimed::recovered: bool
@@ -62,6 +63,7 @@ pub awaken_run_ingress_contract::dispatch::DispatchCompletion::run_id: awaken_ag
 pub awaken_run_ingress_contract::dispatch::DispatchCompletion::sequence: u64
 pub struct awaken_run_ingress_contract::dispatch::DispatchSummary
 pub awaken_run_ingress_contract::dispatch::DispatchSummary::attempt_count: u64
+pub awaken_run_ingress_contract::dispatch::DispatchSummary::cancellation_requested: bool
 pub awaken_run_ingress_contract::dispatch::DispatchSummary::run_id: awaken_agent_contract::agent::run::Id
 pub awaken_run_ingress_contract::dispatch::DispatchSummary::state: awaken_run_ingress_contract::dispatch::DispatchState
 pub awaken_run_ingress_contract::dispatch::DispatchSummary::thread_id: awaken_agent_contract::agent::thread::Id
@@ -175,6 +177,7 @@ impl awaken_run_ingress_contract::dispatch::SettleOutcome
 pub fn awaken_run_ingress_contract::dispatch::SettleOutcome::applied(self) -> bool
 pub struct awaken_run_ingress_contract::Claimed
 pub awaken_run_ingress_contract::Claimed::assignment: core::option::Option<awaken_worker_contract::WorkerAssignment>
+pub awaken_run_ingress_contract::Claimed::cancellation_requested: bool
 pub awaken_run_ingress_contract::Claimed::lease: awaken_run_ingress_contract::dispatch::Lease
 pub awaken_run_ingress_contract::Claimed::pending: alloc::vec::Vec<awaken_run_ingress_contract::dispatch::PendingInput>
 pub awaken_run_ingress_contract::Claimed::recovered: bool
@@ -188,6 +191,7 @@ pub awaken_run_ingress_contract::DispatchCompletion::run_id: awaken_agent_contra
 pub awaken_run_ingress_contract::DispatchCompletion::sequence: u64
 pub struct awaken_run_ingress_contract::DispatchSummary
 pub awaken_run_ingress_contract::DispatchSummary::attempt_count: u64
+pub awaken_run_ingress_contract::DispatchSummary::cancellation_requested: bool
 pub awaken_run_ingress_contract::DispatchSummary::run_id: awaken_agent_contract::agent::run::Id
 pub awaken_run_ingress_contract::DispatchSummary::state: awaken_run_ingress_contract::dispatch::DispatchState
 pub awaken_run_ingress_contract::DispatchSummary::thread_id: awaken_agent_contract::agent::thread::Id

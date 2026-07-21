@@ -182,12 +182,14 @@ pub struct PermissionAsk {
     pub arguments: serde_json::Value,
 }
 
-/// The authorization verdict for one [`PermissionAsk`], projected back onto the
-/// agent's own offered option (allow/reject).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The authorization verdict for one [`PermissionAsk`]. Immediate allow/deny is
+/// projected back onto the agent's offered option; `Await` tells the runtime
+/// adapter to commit a durable permission ticket and end this process attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PermissionVerdict {
     Allow,
     Deny,
+    Await { correlation_id: String },
 }
 
 /// Resolves an agent permission request. Injected like [`RunFactAppender`]: this
@@ -378,6 +380,14 @@ pub enum AcpError {
     /// fail-closed rather than silently ignored.
     #[error("session mode not supported by the agent: {0}")]
     UnsupportedSessionMode(String),
+    /// Policy requires an out-of-band decision. The JSON-RPC request was answered
+    /// `cancelled` before this is raised, so the opaque agent is not left blocked;
+    /// the executor persists the ask as its ordinary neutral `ResumeTicket`.
+    #[error("agent tool permission awaits decision: {correlation_id}")]
+    PermissionAwait {
+        correlation_id: String,
+        ask: PermissionAsk,
+    },
     /// A provider HARD-quota banner arrived as assistant TEXT (`"You've hit your
     /// weekly limit · resets …"`) — the case where the CLI then hangs. The turn is
     /// failed closed carrying the classified [`AcpFailure`] (a `RateLimited`), rather

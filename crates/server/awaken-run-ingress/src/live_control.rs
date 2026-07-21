@@ -55,36 +55,59 @@ impl<S: Dispatch + 'static> LiveRunControlService<S> {
     /// Cancel the run identified by `correlation_id`.
     ///
     /// Resolution order:
-    /// 1. Live cancel via the runtime active-run registry (in-flight runs).
-    /// 2. Durable cancel via the dispatch store (queued or awaiting runs),
-    ///    followed by committing a terminal `Cancelled` fact.
+    /// 1. Persist cancellation intent for a durable queued/awaiting/running run.
+    /// 2. Signal a live attempt when present; otherwise claim the intent now.
+    /// 3. Fall back to live-only delivery for an inline run with no dispatch row.
     ///
     /// Returns [`Error::NotFound`] when no matching run exists in either path.
     pub async fn cancel(&self, correlation_id: &str) -> Result<(), Error> {
         let run_id = RunId(correlation_id.to_owned());
-        match self.worker.runtime().deliver(LiveCommand::Cancel {
-            run_id: run_id.clone(),
-        }) {
-            Ok(()) => return Ok(()),
-            Err(ControlError::NotActive) => {}
-            Err(e) => return Err(Error::Dispatch(e.to_string())),
-        }
-        // Not live-active — try a durable cancel for queued or awaiting dispatches.
         let thread_id = self
             .worker
             .store()
             .cancel(&run_id)
             .await
             .map_err(|e| Error::Dispatch(e.to_string()))?;
-        let Some(thread_id) = thread_id else {
-            return Err(Error::NotFound(correlation_id.to_owned()));
-        };
-        self.worker
+        if thread_id.is_some() {
+            let live = match self.worker.runtime().deliver(LiveCommand::Cancel {
+                run_id: run_id.clone(),
+            }) {
+                Ok(()) => true,
+                Err(ControlError::NotActive) => false,
+                Err(error) => return Err(Error::Dispatch(error.to_string())),
+            };
+            // Persisting a running cancel revoked its old epoch, so claim the
+            // cancellation now. `None` means another pool worker won the claim;
+            // the intent remains durable on that owner's lease.
+            let driven = self
+                .worker
+                .tick_run(&run_id, 0)
+                .await
+                .map_err(|error| Error::Dispatch(error.to_string()))?;
+            return match driven {
+                Some((
+                    _,
+                    awaken_agent_contract::agent::run::RunState::Ended(
+                        awaken_agent_contract::agent::run::EndCause::Cancelled,
+                    ),
+                ))
+                | None => Ok(()),
+                // A live owner may have completed concurrently after accepting the
+                // signal. The signal was delivered, so cancellation was not lost.
+                Some((_, _)) if live => Ok(()),
+                Some((_, _)) => Err(Error::NotFound(correlation_id.to_owned())),
+            };
+        }
+
+        match self
+            .worker
             .runtime()
-            .cancel_run(run_id, thread_id, self.worker.execution_context())
-            .await
-            .map(|_| ())
-            .map_err(|e| Error::Dispatch(e.to_string()))
+            .deliver(LiveCommand::Cancel { run_id })
+        {
+            Ok(()) => Ok(()),
+            Err(ControlError::NotActive) => Err(Error::NotFound(correlation_id.to_owned())),
+            Err(error) => Err(Error::Dispatch(error.to_string())),
+        }
     }
 
     /// Deliver a `PendingBoundaryWake` nudge to the run identified by
@@ -114,9 +137,12 @@ mod tests {
 
     use awaken_runtime::Runtime;
     use awaken_runtime::memory::MemoryCommitCoordinator;
+    use awaken_runtime_contract::activation::RunActivation;
+    use awaken_runtime_contract::resolved::ModelBinding;
+    use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 
-    use crate::MemoryDispatchStore;
     use crate::worker::DispatchWorker;
+    use crate::{DispatchQueue, MemoryDispatchStore, RunDispatch};
 
     fn make_service() -> LiveRunControlService<MemoryDispatchStore> {
         let runtime = Arc::new(Runtime::new());
@@ -131,6 +157,17 @@ mod tests {
         LiveRunControlService::new(worker)
     }
 
+    fn activation(run: &str) -> RunActivation {
+        RunActivation::new(
+            RunId(run.into()),
+            awaken_agent_contract::agent::thread::Id("cancel-thread".into()),
+            ExecutableAgentSnapshot::builder("cancel-snapshot")
+                .model(ModelBinding::new("provider", "model", "backend"))
+                .build(),
+            Vec::new(),
+        )
+    }
+
     #[tokio::test]
     async fn cancel_is_fail_closed_for_unknown_correlation_id() {
         let svc = make_service();
@@ -138,6 +175,37 @@ mod tests {
         assert!(
             matches!(err, Error::NotFound(_)),
             "cancel must be fail-closed for unknown correlation id: got {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn queued_cancel_persists_then_commits_through_the_worker() {
+        use awaken_agent_contract::agent::run::{EndCause, RunState};
+        use awaken_agent_contract::thread::read::run_store::RunStore;
+
+        let runtime = Arc::new(Runtime::new());
+        let store = Arc::new(MemoryDispatchStore::new());
+        let commit = Arc::new(MemoryCommitCoordinator::new());
+        let worker = Arc::new(DispatchWorker::new(
+            runtime,
+            store.clone(),
+            commit.clone(),
+            "live-control-test",
+        ));
+        let service = LiveRunControlService::new(worker);
+        store
+            .enqueue(RunDispatch::new(activation("queued-cancel")))
+            .await
+            .unwrap();
+
+        service.cancel("queued-cancel").await.expect("cancel");
+
+        assert_eq!(store.dispatch_count(), 0);
+        assert_eq!(
+            RunStore::get(commit.as_ref(), &RunId("queued-cancel".into()))
+                .expect("terminal record")
+                .state,
+            RunState::Ended(EndCause::Cancelled)
         );
     }
 

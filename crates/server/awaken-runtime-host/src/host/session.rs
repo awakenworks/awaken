@@ -28,7 +28,7 @@ impl SharedHost {
     /// Build a thread's commit boundary under the configured store directory: a
     /// durable SQLite database (default) or the filesystem append-log backend when
     /// `AWAKEN_STORE=fs`, or an in-memory coordinator when no store dir is set.
-    async fn build_commit(&self, thread: &str) -> Result<HostCommit, HostError> {
+    pub(crate) async fn build_commit(&self, thread: &str) -> Result<HostCommit, HostError> {
         use crate::store::{CommitPlan, plan_commit};
         // The backend-selection decision is pure config (see `plan_commit`): worker
         // upstream wins first, then the shared Postgres backend, then the on-disk

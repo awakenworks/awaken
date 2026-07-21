@@ -1,56 +1,86 @@
-# ADR-0016: Durable Cancel of a Not-Running Run
+# ADR-0016: Durable Cancellation Intent
 
 - Status: Accepted
 - Date: 2026-06-30
-- Depends on: ADR-0005, ADR-0009
+- Amended: 2026-07-21
+- Depends on: ADR-0005, ADR-0009, ADR-0013
 
 ## Context
 
-`RunIngress.cancel` cancels an *in-flight* run cooperatively through
-`LiveRunControl` — it signals the run's cancellation token, which the loop
-observes at a step boundary and commits `Cancelled`. But a *queued* (pending) or
-*awaiting* (waiting) run is not executing, so it holds no live token: cancelling it
-needs a durable path. Without one, an aawaiting run's committed `Awaiting` fact would
-dangle forever after its dispatch was dropped.
+An in-flight run can receive a cooperative cancellation signal, while a queued or
+awaiting run has no live token. Cancellation nevertheless has one required semantic:
+once accepted, a process crash must not lose it or allow the run to execute again.
+
+The original implementation deleted a pending/awaiting dispatch and then committed
+the terminal `Cancelled` fact. A crash between those writes left neither a dispatch
+to reconcile nor committed terminal truth. Running cancellation had the dual gap:
+the live signal was not represented in durable delivery state.
 
 ## Decision
 
-### D1: The dispatch layer removes; the runtime commits the terminal
+### D1: Persist intent before signalling or committing
 
-`RunDispatch.cancel(run_id)` removes a *pending or awaiting* dispatch and its
-pending input, and returns the run's thread id; a *running* dispatch is left
-alone (returns `None` — use live cancel) and so is a dead-lettered or unknown
-run. The dispatch store owns only delivery state, so it does not commit run
-truth.
+`DispatchQueue::cancel(run_id)` atomically sets `cancel_requested` on a pending,
+awaiting, or running row and returns its thread id. It is idempotent and retains the
+row and pending input. For a running row it advances the epoch and releases the old
+lease, immediately fencing the former owner. Unknown, dead-lettered, superseded, or
+completed runs return `None`.
 
-The terminal `Cancelled` fact is committed by the runtime, through a new
-`Runtime::cancel_run(run_id, thread_id, context)` that funnels through the single
-`finish` boundary (G31) with a cancelled checkpoint — the same boundary every run
-end uses. It clears any resume ticket, so an aawaiting run can no longer be resumed.
+The store still owns delivery state only. `cancel_requested` says what the worker
+must deliver; the authoritative run outcome remains a committed runtime fact.
 
-`DurableRunIngress::cancel_durable` composes the two: remove the dispatch, then
-commit `Cancelled`. A queued run that never executed still gets a committed
-`Cancelled` (its only fact), so its state is always defined after a cancel.
+### D2: Cancellation uses the ordinary claim and fencing path
 
-### D2: Supersession is cancel-plus-resubmit, not a new epoch axis
+A pending or awaiting cancellation is claimable without external input. Cancelling
+a running row revokes its epoch, makes the cancellation immediately claimable, and
+also signals the old live attempt so it stops wasting work. If that process has
+already crashed, no timeout is required. `Claimed::cancellation_requested` travels
+over the same local/remote dispatch boundary as the request and lease.
 
-The reference adds a dispatch *epoch* to supersede stale queued work for a
-thread. That is deferred: durable cancel already expresses "stop this run," and
-re-submitting under a new run id replaces it. An epoch/version axis is only
-warranted once interrupt-all-older semantics are a real requirement.
+The worker handles cancellation before model, credential, or sandbox materialization,
+commits `Cancelled` through `Runtime::cancel_run` and the claim's monotonic epoch
+fence, then settles `Done`. Settlement removes the dispatch and pending input only
+after terminal commit succeeds.
+
+Cancellation eligibility deliberately bypasses the run's execution capability
+requirements and replaceable placement ranking. A cold host resolver builds a
+control-only worker from the thread commit boundary and dispatch fence; it does not
+decode, adopt, create, or probe the bound sandbox. Placement remains authoritative
+for execution, but cannot prevent terminal control of that execution.
+
+### D3: Recovery is idempotent across both crash windows
+
+- Crash after intent, before commit: a worker claims the retained intent.
+- Crash after terminal commit, before settle: recovery reads terminal committed
+  truth, does not append a contradictory terminal, and settles the retained row.
+- Crash of a running owner: epoch revocation exposes the same retained intent
+  immediately, without waiting for lease expiry.
+
+Cancellation requests are prioritized over ordinary pending/wake work and are not
+discarded by a later superseding submission on the thread.
+
+### D4: Live control is an accelerator, not authority
+
+`LiveRunControlService` records durable intent first. It then signals an active run,
+or immediately claims a queued/awaiting intent. A live-only inline run without a
+dispatch row can still be signalled, but durable ingress never reports cancellation
+success after only an in-memory notification.
 
 ## Consequences
 
-- A queued or aawaiting run can be cancelled durably, with its committed state
-  ending `Cancelled` and any resume ticket cleared — no dangling aawaiting run.
-- In-flight cancel is unchanged (live control); the two paths are cleanly split
-  by whether the run is currently executing.
-- `Runtime::cancel_run` reuses the one finish boundary, so a cancelled run is
-  indistinguishable from any other terminal in committed truth (ADR-0005).
-- Epoch-based supersession remains a named, deferred item.
+- Accepted durable cancellation survives process and worker replacement.
+- There is one execution/commit/settle path for queued, awaiting, and recovered
+  running cancellation; no cancellation reconciliation outbox or second terminal
+  writer is introduced.
+- Terminal control remains available when model credentials, providers, or sandbox
+  materialization are unavailable, and when no worker satisfies the run's pinned
+  execution capabilities.
+- SQLite, PostgreSQL, and the in-memory executable specification share the same
+  cancellation-intent behavior and crash-window tests.
 
 ## References
 
-- [INVARIANTS.md](../INVARIANTS.md) — G31 (one finish boundary; one stored end).
-- ADR-0005 — the committed `RunState`/`EndCause` terminal authority.
-- ADR-0009 — the dispatch store and live-vs-durable ingress split.
+- [INVARIANTS.md](../INVARIANTS.md) — G5, G6, G13, G31.
+- ADR-0005 — committed `RunState` / `EndCause` authority.
+- ADR-0013 — monotonic lease-epoch commit and settlement fence.
+- ADR-0022 — cancellation intent is not superseded by newer queued work.

@@ -908,9 +908,13 @@ pub async fn assert_scheduled_due<S: awaken_run_ingress::Dispatch>(store: &S) {
         .await
         .unwrap();
     // Claim the fresh run, then await it so it can be woken by a delivery.
-    assert!(store.claim("w", 1_000, 0).await.unwrap().is_some());
+    let claimed = store
+        .claim("w", 1_000, 0)
+        .await
+        .unwrap()
+        .expect("running owner");
     store
-        .settle(&run, 1, DispatchOutcome::Awaiting, &[])
+        .settle(&run, claimed.lease.epoch, DispatchOutcome::Awaiting, &[])
         .await
         .unwrap();
 
@@ -981,14 +985,15 @@ pub async fn assert_dead_letter<S: awaken_run_ingress::Dispatch>(store: &S) {
     );
 }
 
-/// Shared spec for durable cancel: a pending or awaiting dispatch is cancellable
-/// (returns its thread id and is removed); a running one is not. Every backend
-/// must match.
+/// Shared spec for durable cancel: intent is retained and claimable until a
+/// fenced Done settlement, including across a running lease's expiry. Every
+/// backend must match.
 pub async fn assert_cancel<S: awaken_run_ingress::Dispatch>(store: &S) {
     use awaken_run_ingress::RunDispatch;
     let thread = Some(ThreadId(THREAD.to_string()));
 
-    // A pending run is cancellable and then gone.
+    // A pending run records an idempotent intent; it is not deleted before the
+    // worker has committed the terminal fact.
     store
         .enqueue(RunDispatch::new(activation("run-1")))
         .await
@@ -997,30 +1002,92 @@ pub async fn assert_cancel<S: awaken_run_ingress::Dispatch>(store: &S) {
         store.cancel(&RunId("run-1".to_string())).await.unwrap(),
         thread
     );
-    assert!(store.claim("w", 100, 0).await.unwrap().is_none());
-    // Cancelling an unknown run is a no-op.
+    assert!(
+        store
+            .list_dispatches()
+            .await
+            .unwrap()
+            .iter()
+            .any(|summary| summary.run_id.0 == "run-1" && summary.cancellation_requested),
+        "operations can distinguish cancellation intent from ordinary pending work"
+    );
+    assert_eq!(
+        store.cancel(&RunId("run-1".to_string())).await.unwrap(),
+        thread,
+        "repeating an uncommitted intent is idempotent"
+    );
+    let cancelled = store
+        .claim("w", 100, 0)
+        .await
+        .unwrap()
+        .expect("cancellation intent is claimable");
+    assert!(cancelled.cancellation_requested);
+    store
+        .settle(
+            &RunId("run-1".to_string()),
+            cancelled.lease.epoch,
+            awaken_run_ingress::DispatchOutcome::Done,
+            &[],
+        )
+        .await
+        .unwrap();
+    // Only after terminal settlement is it unknown.
     assert_eq!(
         store.cancel(&RunId("run-1".to_string())).await.unwrap(),
         None
     );
 
-    // A running run is not durably cancellable (use live control instead).
+    // A running cancellation revokes the old epoch and becomes immediately
+    // claimable; the former owner cannot commit or settle afterward.
     store
         .enqueue(RunDispatch::new(activation("run-2")))
         .await
         .unwrap();
-    assert!(store.claim("w", 1_000, 0).await.unwrap().is_some());
+    let old_owner = store
+        .claim("w", 1_000, 0)
+        .await
+        .unwrap()
+        .expect("running owner");
     assert_eq!(
         store.cancel(&RunId("run-2".to_string())).await.unwrap(),
-        None,
-        "a running run is not durably cancelled"
+        thread,
+        "live cancellation is persisted before signalling"
     );
-    // run-2 finishes so the thread frees for the next run — single-writer-per-thread
-    // (ADR-0022) forbids run-3 claiming while run-2 is still in flight.
+    assert!(
+        store
+            .lock_commit_epoch(&awaken_run_ingress::RunClaim::from(&old_owner.lease))
+            .await
+            .unwrap()
+            .is_none(),
+        "the revoked owner loses commit authority immediately"
+    );
+    let reclaimed = store
+        .claim("replacement", 100, 0)
+        .await
+        .unwrap()
+        .expect("revoked cancellation intent is immediately recovered");
+    assert!(reclaimed.cancellation_requested);
+    assert!(
+        reclaimed.lease.epoch >= 3,
+        "revoke and re-claim both advance the fence"
+    );
+    assert_eq!(
+        store
+            .settle(
+                &RunId("run-2".to_string()),
+                1,
+                awaken_run_ingress::DispatchOutcome::Done,
+                &[],
+            )
+            .await
+            .unwrap(),
+        awaken_run_ingress::SettleOutcome::Fenced,
+        "the cancelled owner cannot settle after revocation"
+    );
     store
         .settle(
             &RunId("run-2".to_string()),
-            1,
+            reclaimed.lease.epoch,
             awaken_run_ingress::DispatchOutcome::Done,
             &[],
         )
@@ -1048,6 +1115,84 @@ pub async fn assert_cancel<S: awaken_run_ingress::Dispatch>(store: &S) {
         store.awaiting_run(&thread_id).await.unwrap(),
         Some(RunId("run-3".to_string()))
     );
+    assert_eq!(
+        store.cancel(&RunId("run-3".to_string())).await.unwrap(),
+        Some(thread_id.clone())
+    );
+    assert!(
+        store.awaiting_run(&thread_id).await.unwrap().is_none(),
+        "new input cannot target an awaiting run once cancellation is durable"
+    );
+    let awaiting_cancel = store
+        .claim("w", 100, 0)
+        .await
+        .unwrap()
+        .expect("awaiting cancellation is claimable without pending input");
+    assert!(awaiting_cancel.cancellation_requested);
+    store
+        .settle(
+            &RunId("run-3".to_string()),
+            awaiting_cancel.lease.epoch,
+            awaken_run_ingress::DispatchOutcome::Done,
+            &[],
+        )
+        .await
+        .unwrap();
+
+    // Terminal control is independent of execution placement. A worker that does
+    // not satisfy the run's pinned GPU capability can still claim cancellation,
+    // and the replaceable ranking policy is not consulted for that control task.
+    use awaken_run_ingress::{
+        LeastLoadedPolicy, PlacementRequirements, WorkerIdentity, WorkerManifest, WorkerSnapshot,
+        WorkerState,
+    };
+    let mut gpu = PlacementRequirements::remote_required();
+    gpu.required_capabilities.insert("gpu".to_string());
+    let manifest = WorkerManifest::default();
+    let worker = WorkerSnapshot {
+        identity: WorkerIdentity::new("control-worker", "boot-1", 1),
+        capability_fingerprint: manifest.fingerprint().unwrap(),
+        manifest,
+        state: WorkerState::Ready,
+        in_flight: 0,
+        expires_at_ms: 10_000,
+    };
+
+    for (run, placed) in [("run-4", false), ("run-5", true)] {
+        store
+            .enqueue(
+                RunDispatch::new(activation_on(run, &format!("{run}-thread")))
+                    .with_placement(gpu.clone()),
+            )
+            .await
+            .unwrap();
+        store.cancel(&RunId(run.to_string())).await.unwrap();
+        let claimed = if placed {
+            store
+                .claim_placed(
+                    &worker,
+                    vec![worker.clone()],
+                    Arc::new(LeastLoadedPolicy),
+                    100,
+                    0,
+                )
+                .await
+                .unwrap()
+        } else {
+            store.claim_compatible(&worker, 100, 0).await.unwrap()
+        }
+        .expect("placement-incompatible cancellation is still control-claimable");
+        assert!(claimed.cancellation_requested);
+        store
+            .settle(
+                &RunId(run.to_string()),
+                claimed.lease.epoch,
+                awaken_run_ingress::DispatchOutcome::Done,
+                &[],
+            )
+            .await
+            .unwrap();
+    }
 }
 
 /// Shared spec for priority, dedupe, and dead-letter GC. Every backend matches.
@@ -1290,17 +1435,44 @@ pub async fn assert_supersession<S: awaken_run_ingress::Dispatch>(store: &S) {
     );
 
     // Only the newest run is claimable; the superseded awaiting run is never woken.
-    assert_eq!(
+    let newest = store.claim("w", 1_000, 0).await.unwrap().unwrap();
+    assert_eq!(newest.request.run_id().0, "new");
+    store
+        .settle(
+            &RunId("new".to_string()),
+            newest.lease.epoch,
+            DispatchOutcome::Done,
+            &[],
+        )
+        .await
+        .unwrap();
+
+    // Once cancellation is accepted, a later superseding submission cannot erase
+    // it. Terminal control is claimed before the newer ordinary run.
+    store
+        .enqueue(RunDispatch::new(activation("cancel-old")))
+        .await
+        .unwrap();
+    assert!(
         store
-            .claim("w", 1_000, 0)
+            .cancel(&RunId("cancel-old".to_string()))
             .await
             .unwrap()
-            .unwrap()
-            .request
-            .run_id()
-            .0,
-        "new"
+            .is_some()
     );
+    store
+        .enqueue_with(
+            RunDispatch::new(activation("after-cancel")),
+            SubmitOptions {
+                supersede: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let cancellation = store.claim("w", 1_000, 0).await.unwrap().unwrap();
+    assert_eq!(cancellation.request.run_id().0, "cancel-old");
+    assert!(cancellation.cancellation_requested);
 }
 
 /// Shared spec for the idle-thread inbox (ADR-0021): unbound input is listed for

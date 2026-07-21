@@ -356,16 +356,49 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
 
         let run_id = claimed.request.run_id().clone();
         let activation = claimed.request.activation.clone();
-        let attempt_executor = self
-            .attempt_executor
-            .read()
-            .expect("attempt executor lock poisoned")
-            .clone();
         // The fence token this drive holds. Every settle below carries it so a stale
         // owner (whose lease lapsed and was re-claimed under a higher epoch) is
         // rejected and abandons instead of clobbering the reclaimer's dispatch.
         let lease_epoch = claimed.lease.epoch;
         let claim = RunClaim::from(&claimed.lease);
+        let mut all_pending: Vec<String> = claimed
+            .pending
+            .iter()
+            .map(|p| p.message_id.clone())
+            .collect();
+
+        // Cancellation is itself a durable claimed attempt. It deliberately runs
+        // before model/credential/sandbox materialization: terminal control must
+        // remain possible when the execution dependency being cancelled is down.
+        if claimed.cancellation_requested {
+            let result = self
+                .runtime
+                .cancel_run(
+                    run_id.clone(),
+                    activation.thread_id.clone(),
+                    self.execution_context_with(&claim, &None),
+                )
+                .await;
+            let state = match result {
+                Ok(state) => state,
+                Err(error) => {
+                    return self
+                        .settle_if_terminal_or_raise(&run_id, lease_epoch, &all_pending, error)
+                        .await;
+                }
+            };
+            return Ok(self
+                .settle(&run_id, lease_epoch, DispatchOutcome::Done, &all_pending)
+                .await?
+                .applied()
+                .then_some((run_id, state)));
+        }
+
+        let attempt_executor = self
+            .attempt_executor
+            .read()
+            .expect("attempt executor lock poisoned")
+            .clone();
         // Resolve this run's model to an executor once, before the activation is
         // consumed, and route every inference in this drive through it: the run's
         // effective model (its per-run override, else its snapshot binding) resolved
@@ -380,11 +413,6 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         // the run driven below (`runtime.run` → …) nests under the trace that
         // submitted it — even when a daemon in another task/process drains it.
         let dispatch = awaken_observability::dispatch_span(claimed.request.traceparent.as_deref());
-        let mut all_pending: Vec<String> = claimed
-            .pending
-            .iter()
-            .map(|p| p.message_id.clone())
-            .collect();
 
         let mut state = match self.reader.resume_ticket(&run_id) {
             // A committed ScheduledAction (ADR-0020): the system performs the

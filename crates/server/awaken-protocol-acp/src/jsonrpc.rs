@@ -431,8 +431,24 @@ async fn answer_request(
                 .map(|r| (p, r))
         }) {
             Some((raw, req)) => {
-                let verdict = resolver.resolve(&permission_ask(&raw)).await;
-                select_outcome(&req, verdict)
+                let ask = permission_ask(&raw);
+                match resolver.resolve(&ask).await {
+                    PermissionVerdict::Await { correlation_id } => {
+                        wire.send(&OutResult {
+                            jsonrpc: JSONRPC,
+                            id,
+                            result: RequestPermissionResponse::new(
+                                RequestPermissionOutcome::Cancelled,
+                            ),
+                        })
+                        .await?;
+                        return Err(AcpError::PermissionAwait {
+                            correlation_id,
+                            ask,
+                        });
+                    }
+                    verdict => select_outcome(&req, verdict),
+                }
             }
             None => RequestPermissionOutcome::Cancelled,
         };
@@ -498,6 +514,9 @@ fn select_outcome(
             PermissionOptionKind::RejectOnce,
             PermissionOptionKind::RejectAlways,
         ),
+        PermissionVerdict::Await { .. } => {
+            unreachable!("await is handled before immediate outcome selection")
+        }
     };
     let chosen = req
         .options
@@ -828,6 +847,58 @@ mod tests {
         assert_eq!(seen[0].tool, "bash");
         assert_eq!(seen[0].call_id, "t1");
         assert_eq!(seen[0].arguments["cmd"], "ls");
+    }
+
+    #[tokio::test]
+    async fn an_awaiting_policy_cancels_the_wire_request_and_surfaces_the_neutral_ask() {
+        struct Awaiting;
+        #[async_trait]
+        impl PermissionResolver for Awaiting {
+            async fn resolve(&self, _ask: &PermissionAsk) -> PermissionVerdict {
+                PermissionVerdict::Await {
+                    correlation_id: "approval-42".to_string(),
+                }
+            }
+        }
+
+        let (mut ours, theirs) = channel();
+        let reply = Arc::new(Mutex::new(String::new()));
+        let captured = reply.clone();
+        let agent = tokio::spawn(async move {
+            let mut io = AgentIo::new(theirs);
+            io.read().await;
+            io.write_line(
+                r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}"#,
+            )
+            .await;
+            io.read().await;
+            io.write_line(r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"sess-1"}}"#)
+                .await;
+            io.read().await;
+            io.write_line(PERM).await;
+            io.read().await;
+            *captured.lock().unwrap() = io.line.clone();
+        });
+        let mut sink = RecordingSink::default();
+        let mut config = TurnConfig::new(&Awaiting);
+        let error = run_turn_with_config(ours.as_mut(), "p", &mut sink, &mut config, None)
+            .await
+            .expect_err("await ends this process attempt");
+        agent.await.unwrap();
+
+        assert!(reply.lock().unwrap().contains("cancelled"));
+        match error {
+            AcpError::PermissionAwait {
+                correlation_id,
+                ask,
+            } => {
+                assert_eq!(correlation_id, "approval-42");
+                assert_eq!(ask.call_id, "t1");
+                assert_eq!(ask.tool, "bash");
+                assert_eq!(ask.arguments["cmd"], "ls");
+            }
+            other => panic!("expected PermissionAwait, got {other:?}"),
+        }
     }
 
     #[tokio::test]
