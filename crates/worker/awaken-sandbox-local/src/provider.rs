@@ -42,6 +42,90 @@ fn err(e: impl ToString) -> pc::SandboxError {
 
 static READ_ONLY_TREE_WRITE_SEQ: AtomicU64 = AtomicU64::new(0);
 
+pub(crate) fn materialize_read_only_tree_at(
+    root: &IsolatedRoot,
+    subdir: &str,
+    files: &[(String, Vec<u8>)],
+) -> Result<(), pc::SandboxError> {
+    let base = root.resolve(subdir).map_err(err)?;
+    if let Ok(metadata) = std::fs::symlink_metadata(&base) {
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(err(format!("read-only tree root `{subdir}` is unsafe")));
+        }
+    } else {
+        std::fs::create_dir_all(&base).map_err(err)?;
+    }
+
+    for (relative, bytes) in files {
+        if relative.is_empty()
+            || relative.contains('\\')
+            || std::path::Path::new(relative).is_absolute()
+            || std::path::Path::new(relative)
+                .components()
+                .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
+            return Err(err(format!("read-only tree path `{relative}` is unsafe")));
+        }
+        let logical = format!(
+            "{}/{}",
+            subdir.trim_matches('/'),
+            relative.trim_start_matches('/')
+        );
+        let destination = root.resolve(&logical).map_err(err)?;
+        if !destination.starts_with(&base) || relative.is_empty() {
+            return Err(err(format!("read-only tree path `{relative}` is unsafe")));
+        }
+        let parent = destination
+            .parent()
+            .ok_or_else(|| err(format!("read-only tree path `{relative}` has no parent")))?;
+        std::fs::create_dir_all(parent).map_err(err)?;
+        let mut cursor = parent.to_path_buf();
+        while cursor.starts_with(&base) {
+            if let Ok(metadata) = std::fs::symlink_metadata(&cursor)
+                && metadata.file_type().is_symlink()
+            {
+                return Err(err(format!(
+                    "read-only tree path `{relative}` crosses a symlink"
+                )));
+            }
+            if cursor == base || !cursor.pop() {
+                break;
+            }
+        }
+        if let Ok(metadata) = std::fs::symlink_metadata(&destination)
+            && (metadata.file_type().is_symlink() || !metadata.is_file())
+        {
+            return Err(err(format!("read-only tree file `{relative}` is unsafe")));
+        }
+        if std::fs::read(&destination).is_ok_and(|current| current == *bytes) {
+            continue;
+        }
+        let sequence = READ_ONLY_TREE_WRITE_SEQ.fetch_add(1, Ordering::Relaxed);
+        let temporary = parent.join(format!(".awaken-tree-{}-{sequence}", std::process::id()));
+        let write = (|| -> std::io::Result<()> {
+            let mut file = std::fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&temporary)?;
+            file.write_all(bytes)?;
+            file.sync_all()?;
+            let mut permissions = file.metadata()?.permissions();
+            permissions.set_readonly(true);
+            file.set_permissions(permissions)?;
+            drop(file);
+            std::fs::rename(&temporary, &destination)
+        })();
+        if let Err(error) = write {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(err(error));
+        }
+        let mut permissions = std::fs::metadata(&destination).map_err(err)?.permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&destination, permissions).map_err(err)?;
+    }
+    Ok(())
+}
+
 /// Resolve a mount's bytes: an in-memory seed map first, then an optional
 /// content-addressed [`BlobSource`](pc::BlobSource), then inline `Other({content})`.
 pub(crate) async fn resolve_source(
@@ -431,87 +515,7 @@ impl LocalSandbox {
         subdir: &str,
         files: &[(String, Vec<u8>)],
     ) -> Result<(), pc::SandboxError> {
-        let base = self.root.resolve(subdir).map_err(err)?;
-        if let Ok(metadata) = std::fs::symlink_metadata(&base) {
-            if metadata.file_type().is_symlink() || !metadata.is_dir() {
-                return Err(err(format!("read-only tree root `{subdir}` is unsafe")));
-            }
-        } else {
-            std::fs::create_dir_all(&base).map_err(err)?;
-        }
-
-        for (relative, bytes) in files {
-            if relative.is_empty()
-                || relative.contains('\\')
-                || std::path::Path::new(relative).is_absolute()
-                || std::path::Path::new(relative)
-                    .components()
-                    .any(|component| !matches!(component, std::path::Component::Normal(_)))
-            {
-                return Err(err(format!("read-only tree path `{relative}` is unsafe")));
-            }
-            let logical = format!(
-                "{}/{}",
-                subdir.trim_matches('/'),
-                relative.trim_start_matches('/')
-            );
-            let destination = self.root.resolve(&logical).map_err(err)?;
-            if !destination.starts_with(&base) || relative.is_empty() {
-                return Err(err(format!("read-only tree path `{relative}` is unsafe")));
-            }
-            let parent = destination
-                .parent()
-                .ok_or_else(|| err(format!("read-only tree path `{relative}` has no parent")))?;
-            std::fs::create_dir_all(parent).map_err(err)?;
-            let mut cursor = parent.to_path_buf();
-            while cursor.starts_with(&base) {
-                if let Ok(metadata) = std::fs::symlink_metadata(&cursor)
-                    && metadata.file_type().is_symlink()
-                {
-                    return Err(err(format!(
-                        "read-only tree path `{relative}` crosses a symlink"
-                    )));
-                }
-                if cursor == base || !cursor.pop() {
-                    break;
-                }
-            }
-            if let Ok(metadata) = std::fs::symlink_metadata(&destination)
-                && (metadata.file_type().is_symlink() || !metadata.is_file())
-            {
-                return Err(err(format!("read-only tree file `{relative}` is unsafe")));
-            }
-            // Rehydration commonly realizes the same immutable bundle over an
-            // existing read-only file. Identical bytes need no mutation. Different
-            // bytes are written beside the target and atomically renamed over it,
-            // avoiding a writable window and never following the target as a link.
-            if std::fs::read(&destination).is_ok_and(|current| current == *bytes) {
-                continue;
-            }
-            let sequence = READ_ONLY_TREE_WRITE_SEQ.fetch_add(1, Ordering::Relaxed);
-            let temporary = parent.join(format!(".awaken-tree-{}-{sequence}", std::process::id()));
-            let write = (|| -> std::io::Result<()> {
-                let mut file = std::fs::OpenOptions::new()
-                    .create_new(true)
-                    .write(true)
-                    .open(&temporary)?;
-                file.write_all(bytes)?;
-                file.sync_all()?;
-                let mut permissions = file.metadata()?.permissions();
-                permissions.set_readonly(true);
-                file.set_permissions(permissions)?;
-                drop(file);
-                std::fs::rename(&temporary, &destination)
-            })();
-            if let Err(error) = write {
-                let _ = std::fs::remove_file(&temporary);
-                return Err(err(error));
-            }
-            let mut permissions = std::fs::metadata(&destination).map_err(err)?.permissions();
-            permissions.set_readonly(true);
-            std::fs::set_permissions(&destination, permissions).map_err(err)?;
-        }
-        Ok(())
+        materialize_read_only_tree_at(&self.root, subdir, files)
     }
 
     /// Tear down every live memory mount: unmount a FUSE mount, or harvest a writable

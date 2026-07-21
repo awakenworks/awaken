@@ -155,6 +155,12 @@ async function main() {
     await client.post(`/v1/memory_stores/${memory.id}/memories`, {
       body: { path: '/seed.txt', content: 'CONTAINER-MEMORY-SEED' },
     });
+    await client.post('/v1/skills', {
+      body: {
+        id: 'delivered-container',
+        content: '---\ndescription: delivered container skill\n---\nCONTAINER-DELIVERED-SKILL-OK',
+      },
+    });
 
     const session = await client.beta.sessions.create({
       agent: 'assistant',
@@ -200,6 +206,21 @@ async function main() {
       /CONTAINER-SKILL-OK/,
       'the repository-backed workspace skill must be imported into the Session container',
     );
+    const deliveredSkill = '/workspace/.skills/delivered-container/SKILL.md';
+    assert.match(
+      execFileSync('docker', ['exec', container, 'cat', deliveredSkill], { encoding: 'utf8' }),
+      /CONTAINER-DELIVERED-SKILL-OK/,
+      'the durable delivered-skill bundle must be materialized into the Session container',
+    );
+    execFileSync('docker', [
+      'exec',
+      container,
+      'sh',
+      '-c',
+      'test ! -w "$1"',
+      'awaken-skill-check',
+      deliveredSkill,
+    ]);
     assert.equal(
       execFileSync('docker', ['exec', container, 'cat', '/workspace/.mnt/notes/seed.txt'], {
         encoding: 'utf8',
@@ -224,7 +245,7 @@ async function main() {
     );
 
     console.log(
-      'E2E PASS: container agent — ACP, hand, file, memory, repository and workspace skill shared one Session-owned Docker environment.',
+      'E2E PASS: container agent — ACP, hand, file, memory, repository, workspace skill and immutable delivered skill shared one Session-owned Docker environment.',
     );
   } finally {
     brain.kill('SIGINT');
