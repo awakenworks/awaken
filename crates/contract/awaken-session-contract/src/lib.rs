@@ -25,7 +25,10 @@ pub use agent_config::{AgentConfigSource, AgentConfigView, AgentMcpServerView};
 pub use lifecycle::{SessionLifecycleFact, SessionLifecycleSink};
 pub use mcp_binding::{McpRefreshBinding, TokenEndpointAuthBinding};
 pub use mcp_probe::{McpProbe, McpProbeStatus};
-pub use resource::{ResourceAccess, SessionInputError, SessionInputResolver, SessionResource};
+pub use resource::{
+    EffectiveSessionInputs, ResolvedInput, ResolvedInputSource, ResourceAccess,
+    SessionInputAttachment, SessionInputError, SessionInputResolver, SessionResource,
+};
 pub use session::{
     AgentCapabilities, BuiltinTool, CustomTool, DelegatedRun, LiveInboxEntry, LiveInboxError,
     LiveInboxSnapshot, McpServerBinding, OutcomeIteration, OutcomeReport, Pending, RunError,

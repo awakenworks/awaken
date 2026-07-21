@@ -79,6 +79,11 @@ fn session_bundle() -> Result<MigrationBundle, MigrationError> {
                 "managed session durable archive timestamp",
                 "ALTER TABLE {prefix}_session ADD COLUMN archived_at TEXT",
             )?,
+            Migration::new(
+                6,
+                "managed session frozen effective resource inputs",
+                "ALTER TABLE {prefix}_session ADD COLUMN effective_inputs_json TEXT NOT NULL DEFAULT '{\"inputs\":[]}'",
+            )?,
         ],
     )
 }
@@ -89,6 +94,10 @@ fn metadata_str(session: &PersistedSession) -> String {
 
 fn mcp_str(session: &PersistedSession) -> String {
     serde_json::to_string(&session.mcp_servers).expect("session mcp servers serialize")
+}
+
+fn effective_inputs_str(session: &PersistedSession) -> String {
+    serde_json::to_string(&session.effective_inputs).expect("effective Session inputs serialize")
 }
 
 fn lifecycle_str(fact: &SessionLifecycleFact) -> String {
@@ -127,6 +136,7 @@ struct EncodedSessionRow {
     metadata_json: String,
     environment_id: String,
     mcp_json: String,
+    effective_inputs_json: String,
     status: String,
     archived_at: Option<String>,
 }
@@ -140,6 +150,7 @@ fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_json::Error>
         metadata: serde_json::from_str(&row.metadata_json)?,
         environment_id: row.environment_id,
         mcp_servers: serde_json::from_str(&row.mcp_json)?,
+        effective_inputs: serde_json::from_str(&row.effective_inputs_json)?,
         status: row.status,
         archived_at: row.archived_at,
     })
@@ -180,11 +191,12 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
     async fn save_owned(&self, owner_scope: &str, session: PersistedSession) {
         let metadata_json = metadata_str(&session);
         let mcp_json = mcp_str(&session);
+        let effective_inputs_json = effective_inputs_str(&session);
         let conn = self.conn.lock().expect("session store mutex poisoned");
         conn.execute(
             "INSERT INTO managed_session
-                (session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, scope_id, status, archived_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                (session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, scope_id, status, archived_at, effective_inputs_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
              ON CONFLICT(session_id) DO UPDATE SET
                 agent_id = excluded.agent_id,
                 model = excluded.model,
@@ -194,7 +206,8 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                 mcp_json = excluded.mcp_json,
                 scope_id = excluded.scope_id,
                 status = excluded.status,
-                archived_at = excluded.archived_at",
+                archived_at = excluded.archived_at,
+                effective_inputs_json = excluded.effective_inputs_json",
             params![
                 session.session_id,
                 session.agent_id,
@@ -206,6 +219,7 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                 owner_scope,
                 session.status,
                 session.archived_at,
+                effective_inputs_json,
             ],
         )
         .expect("persist managed session");
@@ -219,6 +233,7 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
     ) {
         let metadata_json = metadata_str(&session);
         let mcp_json = mcp_str(&session);
+        let effective_inputs_json = effective_inputs_str(&session);
         let fact_id = fact.id.clone();
         let fact_json = lifecycle_str(&fact);
         let mut conn = self.conn.lock().expect("session store mutex poisoned");
@@ -227,13 +242,14 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
             .expect("begin session lifecycle transaction");
         tx.execute(
             "INSERT INTO managed_session
-                (session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, scope_id, status, archived_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                (session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, scope_id, status, archived_at, effective_inputs_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
              ON CONFLICT(session_id) DO UPDATE SET
                 agent_id = excluded.agent_id, model = excluded.model, title = excluded.title,
                 metadata_json = excluded.metadata_json, environment_id = excluded.environment_id,
                 mcp_json = excluded.mcp_json, scope_id = excluded.scope_id,
-                status = excluded.status, archived_at = excluded.archived_at",
+                status = excluded.status, archived_at = excluded.archived_at,
+                effective_inputs_json = excluded.effective_inputs_json",
             params![
                 session.session_id,
                 session.agent_id,
@@ -245,6 +261,7 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                 owner_scope,
                 session.status,
                 session.archived_at,
+                effective_inputs_json,
             ],
         )
         .expect("persist managed session in lifecycle transaction");
@@ -340,7 +357,7 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         let conn = self.conn.lock().expect("session store mutex poisoned");
         let raw = conn
             .query_row(
-                "SELECT agent_id, model, title, metadata_json, environment_id, mcp_json, status, archived_at
+                "SELECT agent_id, model, title, metadata_json, environment_id, mcp_json, status, archived_at, effective_inputs_json
                  FROM managed_session WHERE session_id = ?1",
                 params![session_id],
                 |row| {
@@ -353,13 +370,23 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                         row.get::<_, String>(5)?,
                         row.get::<_, String>(6)?,
                         row.get::<_, Option<String>>(7)?,
+                        row.get::<_, String>(8)?,
                     ))
                 },
             )
             .optional()
             .expect("read managed session")?;
-        let (agent_id, model, title, metadata_json, environment_id, mcp_json, status, archived_at) =
-            raw;
+        let (
+            agent_id,
+            model,
+            title,
+            metadata_json,
+            environment_id,
+            mcp_json,
+            status,
+            archived_at,
+            effective_inputs_json,
+        ) = raw;
         Some(
             decode(EncodedSessionRow {
                 session_id: session_id.to_string(),
@@ -369,6 +396,7 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                 metadata_json,
                 environment_id,
                 mcp_json,
+                effective_inputs_json,
                 status,
                 archived_at,
             })
@@ -419,8 +447,8 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
     async fn save_owned(&self, owner_scope: &str, session: PersistedSession) {
         sqlx::query(
             "INSERT INTO managed_session \
-                (session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, scope_id, status, archived_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
+                (session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, scope_id, status, archived_at, effective_inputs_json) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
              ON CONFLICT (session_id) DO UPDATE SET \
                 agent_id = excluded.agent_id, \
                 model = excluded.model, \
@@ -428,7 +456,8 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
                 metadata_json = excluded.metadata_json, \
                 environment_id = excluded.environment_id, \
                 mcp_json = excluded.mcp_json, \
-                scope_id = excluded.scope_id, status = excluded.status, archived_at = excluded.archived_at",
+                scope_id = excluded.scope_id, status = excluded.status, archived_at = excluded.archived_at, \
+                effective_inputs_json = excluded.effective_inputs_json",
         )
         .bind(&session.session_id)
         .bind(&session.agent_id)
@@ -440,6 +469,7 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         .bind(owner_scope)
         .bind(&session.status)
         .bind(&session.archived_at)
+        .bind(effective_inputs_str(&session))
         .execute(&self.pool)
         .await
         .expect("persist managed session");
@@ -458,13 +488,14 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
             .expect("begin session lifecycle transaction");
         sqlx::query(
             "INSERT INTO managed_session
-                (session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, scope_id, status, archived_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                (session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, scope_id, status, archived_at, effective_inputs_json)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
              ON CONFLICT (session_id) DO UPDATE SET
                 agent_id = excluded.agent_id, model = excluded.model, title = excluded.title,
                 metadata_json = excluded.metadata_json, environment_id = excluded.environment_id,
                 mcp_json = excluded.mcp_json, scope_id = excluded.scope_id,
-                status = excluded.status, archived_at = excluded.archived_at",
+                status = excluded.status, archived_at = excluded.archived_at,
+                effective_inputs_json = excluded.effective_inputs_json",
         )
         .bind(&session.session_id)
         .bind(&session.agent_id)
@@ -476,6 +507,7 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         .bind(owner_scope)
         .bind(&session.status)
         .bind(&session.archived_at)
+        .bind(effective_inputs_str(&session))
         .execute(&mut *tx)
         .await
         .expect("persist managed session in lifecycle transaction");
@@ -586,7 +618,7 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
 
     async fn get(&self, session_id: &str) -> Option<PersistedSession> {
         let row = sqlx::query(
-            "SELECT agent_id, model, title, metadata_json, environment_id, mcp_json, status, archived_at \
+            "SELECT agent_id, model, title, metadata_json, environment_id, mcp_json, status, archived_at, effective_inputs_json \
              FROM managed_session WHERE session_id = $1",
         )
         .bind(session_id)
@@ -595,6 +627,7 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         .expect("read managed session")?;
         let metadata_json: String = row.get("metadata_json");
         let mcp_json: String = row.get("mcp_json");
+        let effective_inputs_json: String = row.get("effective_inputs_json");
         Some(
             decode(EncodedSessionRow {
                 session_id: session_id.to_string(),
@@ -604,6 +637,7 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
                 metadata_json,
                 environment_id: row.get("environment_id"),
                 mcp_json,
+                effective_inputs_json,
                 status: row.get("status"),
                 archived_at: row.get("archived_at"),
             })
@@ -638,6 +672,15 @@ mod tests {
             metadata,
             environment_id: "env_local".to_string(),
             mcp_servers: vec![serde_json::json!({"name":"calc","type":"url","url":"https://x"})],
+            effective_inputs: serde_json::from_value(serde_json::json!({
+                "inputs": [{
+                    "binding_id": "input-file",
+                    "source": { "kind": "file", "file_id": "file-1" },
+                    "mount_path": "/mnt/input",
+                    "access": "read_only"
+                }]
+            }))
+            .unwrap(),
             status: "idle".into(),
             archived_at: None,
         }

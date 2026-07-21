@@ -94,8 +94,12 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # only; names no wire, store, or plane. Ports move here incrementally.
     "awaken-session-contract": {
         "awaken-agent-contract",
+        # Session resolution consumes only the resources-plane identity/config
+        # port. Authorization remains an edge/PDP concern.
+        "awaken-resource-contract",
         "awaken-tenancy",
         "async-trait",
+        "serde",
         "serde_json",
         "thiserror",
         "tokio",
