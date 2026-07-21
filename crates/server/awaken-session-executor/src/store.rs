@@ -111,7 +111,7 @@ impl HostStore for SqliteCommitCoordinator {
         SqliteCommitCoordinator::open_wait_for_thread(self, thread)
     }
     fn continuation_payloads(&self, thread: &ThreadId) -> Vec<serde_json::Value> {
-        SqliteCommitCoordinator::continuation_payloads(self, thread)
+        continuation_from_reader(self, thread)
     }
 }
 
