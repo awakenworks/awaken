@@ -157,38 +157,6 @@ impl SessionEnvironment {
         }
     }
 
-    pub(crate) async fn provision_repo(
-        &self,
-        logical: &str,
-        url: &str,
-        git_ref: Option<&str>,
-        token: Option<&str>,
-    ) -> Result<(), pc::SandboxError> {
-        match self {
-            Self::Workdir(sandbox) => sandbox.provision_repo(logical, url, git_ref, token),
-            Self::Namespace(sandbox) => sandbox.provision_repo(logical, url, git_ref, token),
-            Self::Container { sandbox, .. } => {
-                container_repositories::provision(sandbox.as_ref(), logical, url, git_ref, token)
-                    .await
-            }
-        }
-    }
-
-    pub(crate) async fn push_repo(
-        &self,
-        logical: &str,
-        url: &str,
-        token: Option<&str>,
-    ) -> Result<bool, pc::SandboxError> {
-        match self {
-            Self::Workdir(sandbox) => sandbox.push_repo(logical, token),
-            Self::Namespace(sandbox) => sandbox.push_repo(logical, token),
-            Self::Container { sandbox, .. } => {
-                container_repositories::push(sandbox.as_ref(), logical, url, token).await
-            }
-        }
-    }
-
     pub(crate) async fn list_files(
         &self,
         subdir: &str,
@@ -245,9 +213,21 @@ impl SessionEnvironment {
         }
     }
 
-    /// Project a control-plane file into the already-live workspace. This is used
-    /// for the Managed API's file-only dynamic attach and deliberately retains the
-    /// Session environment instead of creating a second sandbox lifecycle.
+    pub(crate) async fn materialize_read_only_tree(
+        &self,
+        subdir: &str,
+        files: &[(String, Vec<u8>)],
+    ) -> Result<(), pc::SandboxError> {
+        match self {
+            Self::Workdir(sandbox) => sandbox.materialize_read_only_tree(subdir, files),
+            Self::Namespace(sandbox) => sandbox.materialize_read_only_tree(subdir, files),
+            Self::Container { sandbox, .. } => {
+                container_files::materialize_read_only_tree(sandbox.as_ref(), subdir, files).await
+            }
+        }
+    }
+
+    /// Project a resolved immutable file into the already-live Session workspace.
     pub(crate) async fn materialize_workspace_file(
         &self,
         logical: &str,
@@ -263,8 +243,8 @@ impl SessionEnvironment {
         }
     }
 
-    /// Remove a dynamically projected workspace path. It is idempotent and path
-    /// jailed on every tier, so detach cannot escape the Session workspace.
+    /// Remove one path from the live resource projection. Every backend applies
+    /// the same lexical jail and treats an absent path as an idempotent success.
     pub(crate) async fn remove_workspace_path(
         &self,
         logical: &str,
@@ -274,6 +254,29 @@ impl SessionEnvironment {
             Self::Namespace(sandbox) => sandbox.remove_inline(logical),
             Self::Container { sandbox, .. } => {
                 container_files::remove(sandbox.as_ref(), logical).await
+            }
+        }
+    }
+
+    /// Release live MemoryFs/FUSE guards before replacing the Session input
+    /// projection. Container mounts are owned by the container environment and
+    /// require no separate host-side guard teardown.
+    pub(crate) async fn release_memory_mounts(&self) {
+        match self {
+            Self::Workdir(sandbox) => sandbox.release_memory_mounts().await,
+            Self::Namespace(sandbox) => sandbox.release_memory_mounts().await,
+            Self::Container { .. } => {}
+        }
+    }
+
+    /// Revoke the complete runtime-owned resource projection without replacing
+    /// the Session environment itself.
+    pub(crate) async fn clear_resource_projection(&self) -> Result<(), pc::SandboxError> {
+        match self {
+            Self::Workdir(sandbox) => sandbox.clear_resource_projection(),
+            Self::Namespace(sandbox) => sandbox.clear_resource_projection(),
+            Self::Container { sandbox, .. } => {
+                container_files::remove(sandbox.as_ref(), ".mnt").await
             }
         }
     }
@@ -310,13 +313,27 @@ impl pc::RepositoryRealizer for SessionEnvironment {
         plan: &pc::RepositoryRealizationPlan,
         credential: Option<&str>,
     ) -> Result<(), pc::SandboxError> {
-        self.provision_repo(
-            &plan.mount_path,
-            &plan.remote_url,
-            plan.initial_branch.as_deref(),
-            credential,
-        )
-        .await
+        match self {
+            Self::Workdir(sandbox) => {
+                pc::RepositoryRealizer::realize_repository(sandbox.as_ref(), plan, credential).await
+            }
+            Self::Namespace(sandbox) => sandbox.provision_repo(
+                &plan.mount_path,
+                &plan.remote_url,
+                plan.initial_branch.as_deref(),
+                credential,
+            ),
+            Self::Container { sandbox, .. } => {
+                container_repositories::provision(
+                    sandbox.as_ref(),
+                    &plan.mount_path,
+                    &plan.remote_url,
+                    plan.initial_branch.as_deref(),
+                    credential,
+                )
+                .await
+            }
+        }
     }
 
     async fn publish_repository(
@@ -324,8 +341,21 @@ impl pc::RepositoryRealizer for SessionEnvironment {
         plan: &pc::RepositoryRealizationPlan,
         credential: Option<&str>,
     ) -> Result<bool, pc::SandboxError> {
-        self.push_repo(&plan.mount_path, &plan.remote_url, credential)
-            .await
+        match self {
+            Self::Workdir(sandbox) => {
+                pc::RepositoryRealizer::publish_repository(sandbox.as_ref(), plan, credential).await
+            }
+            Self::Namespace(sandbox) => sandbox.push_repo(&plan.mount_path, credential),
+            Self::Container { sandbox, .. } => {
+                container_repositories::push(
+                    sandbox.as_ref(),
+                    &plan.mount_path,
+                    &plan.remote_url,
+                    credential,
+                )
+                .await
+            }
+        }
     }
 }
 
@@ -890,22 +920,25 @@ mod tests {
         .create(&docker_spec)
         .await
         .unwrap();
-        environment
-            .provision_repo("workspace/repo", remote.to_str().unwrap(), None, None)
+        let repository_plan = pc::RepositoryRealizationPlan {
+            repository_id: "repo".into(),
+            mount_path: "workspace/repo".into(),
+            remote_url: remote.to_string_lossy().into_owned(),
+            initial_branch: None,
+            access: pc::MountAccess::ReadWrite,
+        };
+        pc::RepositoryRealizer::realize_repository(&environment, &repository_plan, None)
             .await
             .unwrap();
         environment
-            .materialize_workspace_file(".mnt/live.txt", b"live")
+            .materialize_inline("/workspace/.mnt/live.txt", b"live")
             .await
             .unwrap();
         assert_eq!(
             environment.list_files(".mnt").await.unwrap(),
             vec![("live.txt".into(), b"live".to_vec())]
         );
-        environment
-            .remove_workspace_path(".mnt/live.txt")
-            .await
-            .unwrap();
+        environment.clear_resource_projection().await.unwrap();
         assert!(environment.list_files(".mnt").await.unwrap().is_empty());
 
         let change = environment
@@ -934,14 +967,12 @@ mod tests {
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].id, "authored");
         assert!(
-            environment
-                .push_repo("workspace/repo", remote.to_str().unwrap(), None)
+            pc::RepositoryRealizer::publish_repository(&environment, &repository_plan, None)
                 .await
                 .unwrap()
         );
         assert!(
-            !environment
-                .push_repo("workspace/repo", remote.to_str().unwrap(), None)
+            !pc::RepositoryRealizer::publish_repository(&environment, &repository_plan, None)
                 .await
                 .unwrap()
         );

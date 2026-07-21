@@ -56,6 +56,14 @@ impl SessionEnvironmentProvider {
         }
     }
 
+    pub(crate) fn install_memory_mounter(&self, mounter: Arc<dyn pc::MemoryMounter>) {
+        match self {
+            Self::Workdir(provider) => provider.install_memory_mounter(mounter),
+            Self::Namespace(provider) => provider.install_memory_mounter(mounter),
+            Self::Container { .. } => {}
+        }
+    }
+
     pub(crate) async fn create(
         &self,
         spec: &pc::SandboxSpec,

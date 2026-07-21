@@ -797,6 +797,8 @@ impl crate::host::SharedHost {
         mounter: Arc<dyn awaken_provisioning_contract::MemoryMounter>,
     ) {
         self.provider.install_memory_mounter(mounter.clone());
+        self.session_provider
+            .install_memory_mounter(mounter.clone());
         *self
             .memory_mounter
             .write()
