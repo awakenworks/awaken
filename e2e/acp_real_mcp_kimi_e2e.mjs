@@ -1,12 +1,12 @@
 // REAL-CLI + REAL-LLM ACP × MCP e2e (no stubs): a managed session runs on the
 // ACTUAL `claude --acp` adapter (launched via npx) pointed at the real KIMI endpoint,
-// with a dynamically-injected, vault-bound MCP server (β trusted-inline). Proves two
+// with a dynamically-injected, vault-bound MCP server (α secretless relay). Proves two
 // things the user asked to verify with a real LLM:
 //
 //   1. DYNAMIC MCP INJECTION reaches a real CLI + real model: the session's `mcp_servers`
-//      are staged, β-projected into the adapter's `session/new`, the adapter connects to
-//      the real MCP server (authenticating with the vault-materialized token), and KIMI
-//      drives the tool. The MCP fixture records the requests it actually served.
+//      are staged and projected into the adapter's `session/new` as a loopback relay URL.
+//      The adapter carries no vault secret; the host relay authenticates upstream and KIMI
+//      drives the tool. The upstream MCP fixture records the requests it actually served.
 //   2. CONFIG-HOME ISOLATION: the adapter is pointed at an isolated per-thread config
 //      home under AWAKEN_STORAGE_DIR; the host's real ~/.claude is NEVER touched. We run
 //      the whole server under a throwaway $HOME so even a misbehaving CLI cannot reach it.
@@ -116,9 +116,9 @@ async function main() {
       // (1) Dynamic MCP injection reached the REAL adapter's own MCP client — not just the
       // host's in-process `connect_staged`. Two independent MCP clients handshake with the
       // fixture: the host (tool discovery/pre-auth) AND the launched claude adapter (its own
-      // client, from the β session/new injection). So ≥2 `initialize` proves the injected
-      // server reached the CLI. Every request carries the β vault token (never a `session-mcp:`
-      // reference) — the raw secret authenticated the real CLI's connection.
+      // client, through the α relay injected into session/new). So ≥2 `initialize` proves
+      // the injected server reached the CLI. Every upstream request carries the vault token,
+      // but only the host relay materializes it; the sandboxed CLI receives a loopback URL.
       const initializes = fixture.calls.filter((c) => c.method === 'initialize').length;
       assert.ok(
         initializes >= 2,
@@ -126,10 +126,10 @@ async function main() {
       );
       assert.ok(
         fixture.calls.every((c) => c.authorization === `Bearer ${CALC_TOKEN}`),
-        `every MCP request carried the β vault token, got ${JSON.stringify(fixture.calls.map((c) => c.authorization))}`,
+        `the host relay authenticated every upstream MCP request, got ${JSON.stringify(fixture.calls.map((c) => c.authorization))}`,
       );
       const calledAdd = fixture.calls.some((c) => c.method === 'tools/call');
-      pass(`dynamic MCP injection reached the real claude adapter + KIMI (host + CLI both connected: ${initializes} initialize, β-authenticated, tools/call=${calledAdd})`);
+      pass(`dynamic MCP injection reached the real claude adapter + KIMI (host + α-relayed CLI both connected: ${initializes} initialize, tools/call=${calledAdd})`);
 
       // (2) Config-home isolation: the adapter used an isolated per-thread home under the
       // storage dir, and the (throwaway) HOME's ~/.claude was never created.
