@@ -139,7 +139,7 @@ pub(crate) struct SkillWiring {
 /// `base_gate` is wrapped so conditional (`paths`) skills surface on file touch;
 /// `fork_base` is the sub-agent sandbox base for `context: fork` skills.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn wire_skills(
+pub(crate) async fn wire_skills(
     configured: &[SkillSpec],
     delivered: Option<Vec<SkillVersion>>,
     env: Arc<crate::session_environment::SessionEnvironment>,
@@ -157,6 +157,10 @@ pub(crate) fn wire_skills(
     // `delivered` is `Some` (possibly empty) exactly when a durable store is wired.
     if configured.is_empty() && delivered.is_none() {
         return Ok(None);
+    }
+    env.register_skill_dir(skills_subdir);
+    if let Err(error) = env.refresh_skills().await {
+        tracing::warn!(error = %error, "failed to seed container skill catalog");
     }
     // Delivered skills come from two trusted sources: the static configured set and —
     // when wired — the durable `/v1/skills` catalog snapshot (both `Delivered`

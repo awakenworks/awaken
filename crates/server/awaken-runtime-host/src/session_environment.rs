@@ -9,11 +9,15 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
 use awaken_run_executor_acp::AgentChannelType;
-use awaken_runtime_contract::tool::RawTool;
-use awaken_runtime_contract::tool::ToolExecutor;
+use awaken_runtime_contract::tool::{RawTool, ToolExecutor};
 use awaken_sandbox_local::{
     DiscoveredSkillFile, LocalProvider, LocalSandbox, NamespaceProvider, NamespaceSandbox,
 };
+
+mod container_files;
+mod container_repositories;
+mod container_skills;
+use container_skills::{ContainerSkillCache, RefreshingHandExecutor};
 
 /// Composition port that binds a live hand channel to the runtime's neutral tool
 /// executor. The framing implementation belongs to an outer composition crate;
@@ -101,6 +105,11 @@ impl SessionEnvironmentProvider {
                 let mut spec = spec.clone();
                 spec.isolation = pc::IsolationClass::Container;
                 spec.mounts.extend(extra_mounts.iter().cloned());
+                for mount in &mut spec.mounts {
+                    if !mount.mount_path.starts_with('/') {
+                        mount.mount_path = container_files::workspace_path(&mount.mount_path)?;
+                    }
+                }
                 let environment = provider.create_environment(&spec).await?;
                 SessionEnvironment::container(environment, hand_factory.as_ref()).await
             }
@@ -199,6 +208,7 @@ pub(crate) enum SessionEnvironment {
         sandbox: Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
         hand_process: Arc<dyn pc::ProcessHandle>,
         hand: Arc<dyn ToolExecutor>,
+        skills: Arc<ContainerSkillCache>,
     },
 }
 
@@ -227,11 +237,17 @@ impl SessionEnvironment {
                 stdio: pc::Stdio::Piped,
             })
             .await?;
-        let hand = hand_factory.bind(process.channel, sandbox.id());
+        let skills = Arc::new(ContainerSkillCache::default());
+        let hand: Arc<dyn ToolExecutor> = Arc::new(RefreshingHandExecutor {
+            inner: hand_factory.bind(process.channel, sandbox.id()),
+            sandbox: sandbox.clone(),
+            skills: skills.clone(),
+        });
         Ok(Self::Container {
             sandbox,
             hand_process: Arc::from(process.process),
             hand,
+            skills,
         })
     }
 
@@ -252,7 +268,7 @@ impl SessionEnvironment {
         }
     }
 
-    pub(crate) fn provision_repo(
+    pub(crate) async fn provision_repo(
         &self,
         logical: &str,
         url: &str,
@@ -262,31 +278,44 @@ impl SessionEnvironment {
         match self {
             Self::Workdir(sandbox) => sandbox.provision_repo(logical, url, git_ref, token),
             Self::Namespace(sandbox) => sandbox.provision_repo(logical, url, git_ref, token),
-            Self::Container { .. } => Err(pc::SandboxError::new(
-                "container repository provisioning must be staged before environment creation",
-            )),
+            Self::Container { sandbox, .. } => {
+                container_repositories::provision(sandbox.as_ref(), logical, url, git_ref, token)
+                    .await
+            }
         }
     }
 
-    pub(crate) fn push_repo(
+    pub(crate) async fn push_repo(
         &self,
         logical: &str,
+        url: &str,
         token: Option<&str>,
     ) -> Result<bool, pc::SandboxError> {
         match self {
             Self::Workdir(sandbox) => sandbox.push_repo(logical, token),
             Self::Namespace(sandbox) => sandbox.push_repo(logical, token),
-            Self::Container { .. } => Err(pc::SandboxError::new(
-                "container repository harvest requires a staged checkout volume",
-            )),
+            Self::Container { sandbox, .. } => {
+                container_repositories::push(sandbox.as_ref(), logical, url, token).await
+            }
         }
     }
 
-    pub(crate) fn list_files(&self, subdir: &str) -> Vec<(String, Vec<u8>)> {
+    pub(crate) async fn list_files(
+        &self,
+        subdir: &str,
+    ) -> Result<Vec<(String, Vec<u8>)>, pc::SandboxError> {
         match self {
-            Self::Workdir(sandbox) => sandbox.list_files(subdir),
-            Self::Namespace(sandbox) => sandbox.list_files(subdir),
-            Self::Container { .. } => Vec::new(),
+            Self::Workdir(sandbox) => Ok(sandbox.list_files(subdir)),
+            Self::Namespace(sandbox) => Ok(sandbox.list_files(subdir)),
+            Self::Container { sandbox, .. } => {
+                let root = container_files::workspace_path(subdir)?;
+                sandbox.read_files(&root).await.map(|files| {
+                    files
+                        .into_iter()
+                        .map(|file| (file.path, file.bytes))
+                        .collect()
+                })
+            }
         }
     }
 
@@ -294,7 +323,22 @@ impl SessionEnvironment {
         match self {
             Self::Workdir(sandbox) => sandbox.scan_skill_dir(subdir),
             Self::Namespace(sandbox) => sandbox.scan_skill_dir(subdir),
-            Self::Container { .. } => Vec::new(),
+            Self::Container { skills, .. } => skills.get(subdir),
+        }
+    }
+
+    pub(crate) fn register_skill_dir(&self, subdir: &str) {
+        if let Self::Container { skills, .. } = self {
+            skills.register(subdir);
+        }
+    }
+
+    pub(crate) async fn refresh_skills(&self) -> Result<(), pc::SandboxError> {
+        match self {
+            Self::Container {
+                sandbox, skills, ..
+            } => skills.refresh(sandbox.as_ref()).await,
+            Self::Workdir(_) | Self::Namespace(_) => Ok(()),
         }
     }
 
@@ -307,48 +351,7 @@ impl SessionEnvironment {
             Self::Workdir(sandbox) => sandbox.materialize_inline(logical, contents),
             Self::Namespace(sandbox) => sandbox.materialize_inline(logical, contents),
             Self::Container { sandbox, .. } => {
-                if !logical.starts_with('/')
-                    || logical.split('/').any(|part| part == "." || part == "..")
-                {
-                    return Err(pc::SandboxError::new(
-                        "unsafe container materialization path",
-                    ));
-                }
-                let mut writer = sandbox
-                    .spawn_agent_process(pc::Command {
-                        argv: vec![
-                            "sh".into(),
-                            "-c".into(),
-                            "umask 077; mkdir -p -- \"$(dirname -- \"$1\")\" && cat > \"$1\""
-                                .into(),
-                            "awaken-materialize".into(),
-                            logical.to_string(),
-                        ],
-                        cwd: "/workspace".into(),
-                        env: Vec::new(),
-                        stdio: pc::Stdio::Piped,
-                    })
-                    .await?;
-                use tokio::io::AsyncWriteExt;
-                writer
-                    .channel
-                    .write_all(contents)
-                    .await
-                    .map_err(|error| pc::SandboxError::new(error.to_string()))?;
-                writer
-                    .channel
-                    .shutdown()
-                    .await
-                    .map_err(|error| pc::SandboxError::new(error.to_string()))?;
-                let status = writer.process.wait().await?;
-                if status.code == Some(0) {
-                    Ok(())
-                } else {
-                    Err(pc::SandboxError::new(format!(
-                        "container materialization exited {:?}",
-                        status.code
-                    )))
-                }
+                container_files::write(sandbox.as_ref(), logical, contents).await
             }
         }
     }
@@ -365,6 +368,32 @@ impl SessionEnvironment {
                 .await
                 .map(|process| (process.process, process.channel)),
         }
+    }
+}
+
+#[async_trait]
+impl pc::RepositoryRealizer for SessionEnvironment {
+    async fn realize_repository(
+        &self,
+        plan: &pc::RepositoryRealizationPlan,
+        credential: Option<&str>,
+    ) -> Result<(), pc::SandboxError> {
+        self.provision_repo(
+            &plan.mount_path,
+            &plan.remote_url,
+            plan.initial_branch.as_deref(),
+            credential,
+        )
+        .await
+    }
+
+    async fn publish_repository(
+        &self,
+        plan: &pc::RepositoryRealizationPlan,
+        credential: Option<&str>,
+    ) -> Result<bool, pc::SandboxError> {
+        self.push_repo(&plan.mount_path, &plan.remote_url, credential)
+            .await
     }
 }
 
@@ -650,6 +679,22 @@ mod tests {
                 channel: Box::new(ours),
             })
         }
+
+        async fn read_files(
+            &self,
+            _root: &str,
+        ) -> Result<Vec<awaken_sandbox_container::EnvironmentFile>, pc::SandboxError> {
+            Ok(self
+                .shared
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(path, bytes)| awaken_sandbox_container::EnvironmentFile {
+                    path: path.clone(),
+                    bytes: bytes.clone(),
+                })
+                .collect())
+        }
     }
 
     #[async_trait]
@@ -820,6 +865,11 @@ mod tests {
         assert_eq!(output, "shared-container-state");
 
         let hand = environment.bound_tool_executor().expect("container hand");
+        environment.register_skill_dir("skills");
+        provider.shared.lock().unwrap().insert(
+            "authored/SKILL.md".into(),
+            b"---\ndescription: authored\n---\nbody".to_vec(),
+        );
         let result = hand
             .invoke(&ToolCall {
                 call_id: "bound-hand".into(),
@@ -829,6 +879,117 @@ mod tests {
             .await
             .unwrap();
         assert!(result.content.contains("bound-hand-ok"));
+        let skills = environment.scan_skill_dir("skills");
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].id, "authored");
+        assert_eq!(skills[0].dir, "skills/authored");
         environment.dispose().await.unwrap();
+    }
+
+    #[cfg(feature = "container-docker")]
+    #[tokio::test]
+    async fn docker_environment_transfers_repo_and_harvests_files_without_exposing_token() {
+        let Ok(image) = std::env::var("AWAKEN_TEST_SESSION_IMAGE") else {
+            eprintln!("skipping: AWAKEN_TEST_SESSION_IMAGE is not set");
+            return;
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let remote = temp.path().join("remote.git");
+        let seed = temp.path().join("seed");
+        let git = |cwd: &std::path::Path, args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .current_dir(cwd)
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?}");
+        };
+        git(temp.path(), &["init", "--bare", remote.to_str().unwrap()]);
+        git(
+            temp.path(),
+            &["clone", remote.to_str().unwrap(), seed.to_str().unwrap()],
+        );
+        git(&seed, &["config", "user.name", "seed"]);
+        git(&seed, &["config", "user.email", "seed@example.invalid"]);
+        std::fs::write(seed.join("README.md"), "base").unwrap();
+        git(&seed, &["add", "README.md"]);
+        git(&seed, &["commit", "-m", "base"]);
+        git(&seed, &["push", "-u", "origin", "HEAD"]);
+
+        let runtime =
+            Arc::new(awaken_sandbox_container::docker::DockerRuntime::connect_local(8080).unwrap());
+        let provider = Arc::new(awaken_sandbox_container::ContainerProvider::new(
+            runtime, image,
+        ));
+        let mut docker_spec = spec();
+        docker_spec.scope = format!("host-repo-real-{}", std::process::id());
+        docker_spec.outputs_path = "/mnt/session/outputs".into();
+        let environment = SessionEnvironmentProvider::container(
+            provider,
+            Vec::new(),
+            Arc::new(FakeHandExecutorFactory),
+        )
+        .create(&docker_spec)
+        .await
+        .unwrap();
+        environment
+            .provision_repo("workspace/repo", remote.to_str().unwrap(), None, None)
+            .await
+            .unwrap();
+
+        let change = environment
+            .spawn(pc::Command::new([
+                "sh",
+                "-c",
+                concat!(
+                    "git -C /workspace/repo config user.name agent && ",
+                    "git -C /workspace/repo config user.email agent@example.invalid && ",
+                    "printf changed > /workspace/repo/README.md && ",
+                    "git -C /workspace/repo add README.md && ",
+                    "git -C /workspace/repo commit -m changed && ",
+                    "mkdir -p /workspace/outputs/nested && ",
+                    "printf '\\000\\377' > /workspace/outputs/nested/result.bin && ",
+                    "mkdir -p /workspace/skills/authored && ",
+                    "printf '%s' '---\ndescription: authored\n---\nbody' > ",
+                    "/workspace/skills/authored/SKILL.md"
+                ),
+            ]))
+            .await
+            .unwrap();
+        assert_eq!(change.wait().await.unwrap().code, Some(0));
+        environment.register_skill_dir("skills");
+        environment.refresh_skills().await.unwrap();
+        let skills = environment.scan_skill_dir("skills");
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].id, "authored");
+        assert!(
+            environment
+                .push_repo("workspace/repo", remote.to_str().unwrap(), None)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !environment
+                .push_repo("workspace/repo", remote.to_str().unwrap(), None)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            environment.list_files("outputs").await.unwrap(),
+            vec![("nested/result.bin".into(), vec![0, 0xff])]
+        );
+        environment.dispose().await.unwrap();
+
+        let count = std::process::Command::new("git")
+            .args([
+                "--git-dir",
+                remote.to_str().unwrap(),
+                "rev-list",
+                "--count",
+                "--all",
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&count.stdout).trim(), "2");
     }
 }
