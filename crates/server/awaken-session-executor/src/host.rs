@@ -129,6 +129,10 @@ pub struct SharedHost {
     pub(crate) inference_routing: crate::inference_routing::InferenceRouting,
     /// ACP runtime backend (R3/R4): serves `acp:*` sessions on an external CLI.
     pub(crate) acp: Option<Arc<crate::acp_backend::AcpBackend>>,
+    /// Remote attempt adapter injected by the composition root. The neutral host
+    /// owns only the `RunAttemptExecutor` port and never names the A2A protocol.
+    pub(crate) remote_attempt_executor:
+        Option<Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>>,
     pub(crate) provider: LocalProvider,
     /// Provider for the Session-owned environment shared by Native/ACP/children.
     /// Kept separate from deliberately-fresh housekeeping sandboxes.

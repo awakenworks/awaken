@@ -105,7 +105,8 @@ async fn run_configured(
     );
 
     let mut host = SharedHost::new(Arc::new(NoModelConfiguredExecutor), "worker")
-        .with_worker_upstream(upstream);
+        .with_worker_upstream(upstream)
+        .with_remote_attempt_executor(awaken_server::a2a_attempt_executor());
     if let Some(materializer) = materializer {
         host = host.with_inference_materializer(materializer);
     }

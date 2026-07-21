@@ -1024,6 +1024,7 @@ async fn management_router_over(
     );
     let host_builder = SharedHost::new_with_resource_plane(model, model_ref, resource_ports)
         .with_local_workspace(platform_workspace.clone())
+        .with_remote_attempt_executor(awaken_server::a2a_attempt_executor())
         .with_config_service(config_service.clone())
         .with_admin_tools(admin_execs)
         // Resolve a session's model to a real executor from the config plane (M2):
