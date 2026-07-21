@@ -121,6 +121,7 @@ const obligations: Obligation[] = [
   { id: 'D7-08', stage: '7 resource persistence', behavior: 'legacy Memory history imports once and advances the canonical counter', scenario: 'resource_legacy_upgrade' },
   { id: 'D7-09', stage: '7 resource persistence', behavior: 'legacy Skill versions and support files become one canonical aggregate', scenario: 'resource_legacy_upgrade' },
   { id: 'D7-10', stage: '7 resource persistence', behavior: 'replacement process needs no legacy resource sidecar after upgrade', scenario: 'resource_legacy_upgrade' },
+  { id: 'D7-10a', stage: '7 resource persistence', behavior: 'legacy owned Memory identities migrate once while unowned and duplicate rows remain quarantined', scenario: 'resource_legacy_upgrade' },
   { id: 'D7-11', stage: '7 resource persistence', behavior: 'authorized logical delete remains physically deferred by a live Session reference without IAM coupling', scenario: 'resource_reclamation' },
   { id: 'D7-12', stage: '7 resource persistence', behavior: 'SQLite Memory behavior config publishes with CAS and survives process replacement without pinning content', scenario: 'resource_legacy_upgrade' },
   { id: 'D7-13', stage: '7 resource persistence', behavior: 'Postgres Memory behavior config publishes with CAS and is shared across nodes', scenario: 'resource_plane_postgres' },
