@@ -74,6 +74,9 @@ impl ManagedSessionRepository for SessionOutbox {
     async fn get(&self, _session_id: &str) -> Option<PersistedSession> {
         None
     }
+    async fn bind_environment(&self, _session_id: &str, _binding: &str) -> bool {
+        false
+    }
 }
 
 impl WebhookStore for MemStore {

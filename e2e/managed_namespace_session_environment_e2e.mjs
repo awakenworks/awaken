@@ -101,18 +101,20 @@ async function main() {
   fs.mkdirSync(TMP, { recursive: true });
   const repository = seedRepository();
   const fixtureRepository = seedAgentFixtureRepository();
-  const { server, baseUrl } = spawnServer('acp-container', PORT, {
+  const serverEnv = {
     AWAKEN_SANDBOX_TIER: TIER,
     AWAKEN_SANDBOX_DIR: `${TMP}/sandboxes`,
     AWAKEN_ACP_ARGV: TIER === 'namespace'
       ? 'node /workspace/fixture/namespace-agent.mjs'
       : `node ${TMP}/fixture-seed/namespace-agent.mjs`,
     AWAKEN_STORAGE_DIR: `${TMP}/storage`,
-  });
+  };
+  let running = spawnServer('acp-container', PORT, serverEnv);
+  let server = running.server;
 
   try {
     await waitForPort(PORT, 180_000, server);
-    const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
+    let client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: running.baseUrl });
     const memory = await client.post('/v1/memory_stores');
     await client.post(`/v1/memory_stores/${memory.id}/memories`, {
       body: { path: '/seed.txt', content: 'NAMESPACE-MEMORY-OK' },
@@ -206,6 +208,29 @@ async function main() {
     assert.match(reply, /renamed_file","ABSENT/, 'file detach revoked the live path');
     assert.match(reply, /renamed_repo","ABSENT/, 'repository detach revoked the live path');
 
+    if (TIER === 'namespace') {
+      // A hard process crash leaves the durable SandboxHandle and namespace tree
+      // behind. The replacement must adopt that exact environment before serving
+      // the next turn; rebuilding an empty attempt-local sandbox would lose the
+      // mounted fixture, Skill, memory and prior outputs.
+      const crashed = new Promise((resolve) => server.once('exit', resolve));
+      server.kill('SIGKILL');
+      await crashed;
+      assert.ok(
+        fs.existsSync(`${TMP}/sandboxes/${session.id}`),
+        'a process crash retains the namespace tree for durable adoption',
+      );
+      running = spawnServer('acp-container', PORT, serverEnv);
+      server = running.server;
+      await waitForPort(PORT, 180_000, server);
+      client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: running.baseUrl });
+      reply = await lastReply(client, session.id, 'observe adopted namespace after crash');
+      assert.match(reply, /NAMESPACE-SKILL-OK/, 'replacement process reused the delivered Skill tree');
+      assert.match(reply, /NAMESPACE-MEMORY-OK/, 'replacement process reused the governed memory tree');
+      assert.match(reply, /renamed_file","ABSENT/, 'replacement retained the detached resource state');
+      assert.match(reply, /renamed_repo","ABSENT/, 'replacement did not recreate a detached repository');
+    }
+
     const memoryResource = session.resources.find((resource) => resource.type === 'memory_store');
     await assert.rejects(
       () => client.beta.sessions.resources.delete(memoryResource.id, {
@@ -228,7 +253,7 @@ async function main() {
       `${TIER} terminal Session deletion disposes its retained environment`,
     );
 
-    console.log(`E2E PASS: ${TIER} Session retained one sandbox across Skill/memory materialization and live file/repository attach, rename and detach.`);
+    console.log(`E2E PASS: ${TIER} Session retained one sandbox across Skill/memory materialization, live resource changes${TIER === 'namespace' ? ', crash adoption' : ''}, and release.`);
   } finally {
     await stopServer(server);
     fs.rmSync(TMP, { recursive: true, force: true });

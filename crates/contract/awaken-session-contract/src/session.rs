@@ -209,7 +209,7 @@ pub struct SessionInit {
 /// credential the URL matched (`None` when no vault credential matches — the
 /// host then connects unauthenticated and the server decides). Consumed by
 /// `ManagedHost::prepare_session` in the server assembly.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct McpServerBinding {
     pub name: String,
     pub url: String,
@@ -323,6 +323,24 @@ pub trait SessionRuntime: Send + Sync {
     /// create (fail closed). The default is a no-op, so every host without MCP
     /// wiring is unaffected.
     async fn prepare_session(&self, _thread: &str, _init: SessionInit) -> Result<(), RunError> {
+        Ok(())
+    }
+
+    /// Return the runtime-owned, secret-free binding for the Session's live
+    /// environment. The adapter persists this opaque value but never parses it.
+    async fn session_environment_binding(&self, _thread: &str) -> Result<Option<String>, RunError> {
+        Ok(None)
+    }
+
+    /// Adopt a previously persisted environment before reopening a Session.
+    /// Implementations must validate that the binding belongs to `thread` and
+    /// fail closed when it is malformed, unavailable, or owned elsewhere.
+    async fn restore_session_environment(
+        &self,
+        _agent: &str,
+        _thread: &str,
+        _binding: &str,
+    ) -> Result<(), RunError> {
         Ok(())
     }
 

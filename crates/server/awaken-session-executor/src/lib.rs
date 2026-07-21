@@ -1304,6 +1304,39 @@ impl SessionRuntime for ManagedHost {
         Ok(())
     }
 
+    async fn session_environment_binding(&self, thread: &str) -> Result<Option<String>, RunError> {
+        self.host
+            .session_environment_handle(thread)
+            .await
+            .map(|handle| {
+                serde_json::to_string(&handle)
+                    .map_err(|error| RunError::internal(error.to_string()))
+            })
+            .transpose()
+    }
+
+    async fn restore_session_environment(
+        &self,
+        agent: &str,
+        thread: &str,
+        binding: &str,
+    ) -> Result<(), RunError> {
+        let (adopted, rebuild) = self
+            .host
+            .adopt_bound_session_environment(thread, Some(binding), false)
+            .await
+            .map_err(to_run_error)?;
+        debug_assert!(
+            !rebuild,
+            "foreground restoration never requests replacement"
+        );
+        self.host
+            .ctx_for_with_sandbox(thread, Some(agent), adopted)
+            .await
+            .map_err(to_run_error)?;
+        Ok(())
+    }
+
     /// Committed transcript from durable truth, so the adapter can rehydrate a
     /// session lost to a process restart and resume its awaiting run (ADR-0039).
     async fn committed_messages(&self, thread: &str) -> Vec<awaken_agent_contract::Message> {

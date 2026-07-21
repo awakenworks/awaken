@@ -7,7 +7,8 @@
 //! remains in the backend-specific suite.
 
 use awaken_session_contract::{
-    ManagedSessionRepository, PersistedSession, ScopedPersistedSession, SessionLifecycleFact,
+    ManagedSessionRepository, McpServerBinding, PersistedSession, PersistedSessionRuntime,
+    ScopedPersistedSession, SessionLifecycleFact,
 };
 use awaken_session_store::SqliteManagedSessionRepository;
 use serde_json::json;
@@ -27,6 +28,18 @@ fn session(id: &str, title: &str) -> PersistedSession {
         title: Some(title.to_string()),
         metadata: std::collections::BTreeMap::from([("k".into(), "v".into())]),
         environment_id: "env".into(),
+        environment_binding: None,
+        runtime: PersistedSessionRuntime {
+            mcp_servers: vec![McpServerBinding {
+                name: "github".into(),
+                url: "https://mcp.example".into(),
+                credential_source_id: Some("cred-1".into()),
+                refresh: None,
+            }],
+            runtime: Some("acp:custom".into()),
+            deny_egress: true,
+            sandbox: Some(json!({"isolation": "namespace"})),
+        },
         mcp_servers: vec![json!({ "name": "fs", "type": "stdio", "url": "x" })],
         resources: awaken_session_contract::SessionResourceState::from_legacy(
             serde_json::from_value(json!({
@@ -97,6 +110,26 @@ async fn save_owned_is_one_atomic_repository_fact<R: ManagedSessionRepository>(r
     );
 }
 
+/// Binding is a narrow update: it fails closed for an unknown id and changes no
+/// other aggregate field for a known Session.
+async fn environment_binding_is_atomic_and_non_destructive<R: ManagedSessionRepository>(r: &R) {
+    assert!(!r.bind_environment("unknown", "opaque").await);
+    let want = session("sesn_bound", "unchanged");
+    r.save_owned("ws_a", want.clone()).await;
+    assert!(
+        r.bind_environment("sesn_bound", r#"{"provider_kind":"bwrap"}"#)
+            .await
+    );
+    let mut got = r.get("sesn_bound").await.expect("bound Session");
+    assert_eq!(
+        got.environment_binding.as_deref(),
+        Some(r#"{"provider_kind":"bwrap"}"#)
+    );
+    got.environment_binding = None;
+    assert_eq!(got, want, "binding update preserves every other field");
+    assert_eq!(r.owner("sesn_bound").await.as_deref(), Some("ws_a"));
+}
+
 /// The lifecycle fact is committed in the same repository transaction as the
 /// aggregate and owner. Notification may crash afterwards without losing the fact.
 async fn lifecycle_outbox_tracks_every_committed_transition<R: ManagedSessionRepository>(r: &R) {
@@ -165,6 +198,7 @@ async fn run_suite<R: ManagedSessionRepository>(fresh: impl Fn() -> R) {
     absent_id_reads_none(&fresh()).await;
     save_is_idempotent_upsert(&fresh()).await;
     save_owned_is_one_atomic_repository_fact(&fresh()).await;
+    environment_binding_is_atomic_and_non_destructive(&fresh()).await;
     lifecycle_outbox_tracks_every_committed_transition(&fresh()).await;
     pending_resource_activation_index_is_durable(&fresh()).await;
 }

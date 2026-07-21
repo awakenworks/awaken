@@ -10,7 +10,7 @@
 /// session's transport-level token refresh. Secret-free: it carries the sealed
 /// refresh token's ref (and, for a confidential-client scheme, the sealed client
 /// secret's ref via [`TokenEndpointAuthBinding`]), never material.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct McpRefreshBinding {
     pub token_endpoint: String,
     pub client_id: String,
@@ -28,7 +28,7 @@ pub struct McpRefreshBinding {
 /// must apply it (RFC 6749 §2.3.1 `Basic` header for `client_secret_basic`, form
 /// field for `client_secret_post`). A confidential scheme carries the sealed client
 /// secret's ref (`sec:client:{source_id}`) as a plain string, never material.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TokenEndpointAuthBinding {
     None,
     /// Carries the sealed client secret's ref as a plain string (`sec:client:…`); the

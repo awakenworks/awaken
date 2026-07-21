@@ -665,7 +665,6 @@ impl SharedHost {
         self.session_environments.lock().await.get(thread).cloned()
     }
 
-    #[cfg(test)]
     pub(crate) async fn session_environment_handle(
         &self,
         thread: &str,
@@ -673,6 +672,91 @@ impl SharedHost {
         self.session_environment(thread)
             .await
             .map(|env| env.handle())
+    }
+
+    /// Resolve an opaque durable binding through the one Session environment
+    /// provider. Both claimed-worker recovery and foreground Managed-session
+    /// restoration use this path, so ownership/status validation cannot drift.
+    /// `rebuild_unavailable` is the dispatch recovery policy: when set, an
+    /// unavailable binding is fenced and reported to the caller for replacement.
+    pub(crate) async fn adopt_bound_session_environment(
+        &self,
+        thread: &str,
+        encoded: Option<&str>,
+        rebuild_unavailable: bool,
+    ) -> Result<(Option<crate::session_environment::SessionEnvironment>, bool), HostError> {
+        let Some(encoded) = encoded else {
+            return Ok((None, false));
+        };
+        let handle: awaken_provisioning_contract::SandboxHandle = serde_json::from_str(encoded)
+            .map_err(|error| {
+                HostError::internal(format!("invalid Session sandbox binding: {error}"))
+            })?;
+        if handle.sandbox_id != thread {
+            return Err(HostError::internal(format!(
+                "sandbox {} does not belong to Session {thread}",
+                handle.sandbox_id
+            )));
+        }
+        if let Some(environment) = self.session_environment(thread).await {
+            let resident = environment.handle();
+            if resident != handle {
+                return Err(HostError::internal(format!(
+                    "Session {thread} is already bound to sandbox {}, not {}",
+                    resident.sandbox_id, handle.sandbox_id
+                )));
+            }
+            match environment.status().await {
+                Ok(awaken_provisioning_contract::SandboxStatus::Ready) => {
+                    return Ok((None, false));
+                }
+                Ok(_) | Err(_) if rebuild_unavailable => {
+                    if !self.discard_session_environment(thread, &environment).await {
+                        return Err(HostError::internal(format!(
+                            "lost the sandbox recovery fence for Session {thread}"
+                        )));
+                    }
+                    return Ok((None, true));
+                }
+                Ok(status) => {
+                    return Err(HostError::internal(format!(
+                        "Session sandbox {} is not ready ({status:?})",
+                        handle.sandbox_id
+                    )));
+                }
+                Err(error) => {
+                    return Err(HostError::internal(format!(
+                        "could not inspect Session sandbox {}: {error}",
+                        handle.sandbox_id
+                    )));
+                }
+            }
+        }
+        let adoption = async {
+            let sandbox = self
+                .session_provider
+                .adopt(&handle)
+                .await
+                .map_err(|error| HostError::internal(error.to_string()))?;
+            if sandbox
+                .status()
+                .await
+                .map_err(|error| HostError::internal(error.to_string()))?
+                != awaken_provisioning_contract::SandboxStatus::Ready
+            {
+                return Err(HostError::internal(format!(
+                    "Session sandbox {} is no longer available",
+                    handle.sandbox_id
+                )));
+            }
+            Ok(sandbox)
+        }
+        .await;
+        match adoption {
+            Ok(sandbox) => Ok((Some(sandbox), false)),
+            Err(_) if rebuild_unavailable => Ok((None, true)),
+            Err(error) => Err(error),
+        }
     }
 
     /// Forget a dead environment only when it is still the exact `Arc` observed
