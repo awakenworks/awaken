@@ -17,8 +17,8 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 use awaken_session_contract::{
-    ManagedSessionRepository, PersistedSession, ResolvedSessionResources, SessionLifecycleFact,
-    SessionResourceState,
+    ManagedSessionRepository, PersistedSession, ResolvedSessionResources, ScopedPersistedSession,
+    SessionLifecycleFact, SessionResourceState,
 };
 
 // The in-memory reference backends (plain + scoped) live here beside the durable
@@ -429,32 +429,42 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         )
     }
 
-    async fn pending_resource_sessions(&self) -> Vec<PersistedSession> {
+    async fn pending_resource_sessions(&self) -> Vec<ScopedPersistedSession> {
         let conn = self.conn.lock().expect("session store mutex poisoned");
         let mut statement = conn
             .prepare(
-                "SELECT session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, status, archived_at, effective_inputs_json
+                "SELECT scope_id, session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, status, archived_at, effective_inputs_json
                  FROM managed_session ORDER BY session_id",
             )
             .expect("prepare pending Session resource activations");
         statement
             .query_map([], |row| {
-                Ok(EncodedSessionRow {
-                    session_id: row.get(0)?,
-                    agent_id: row.get(1)?,
-                    model: row.get(2)?,
-                    title: row.get(3)?,
-                    metadata_json: row.get(4)?,
-                    environment_id: row.get(5)?,
-                    mcp_json: row.get(6)?,
-                    status: row.get(7)?,
-                    archived_at: row.get(8)?,
-                    effective_inputs_json: row.get(9)?,
-                })
+                Ok((
+                    row.get::<_, String>(0)?,
+                    EncodedSessionRow {
+                        session_id: row.get(1)?,
+                        agent_id: row.get(2)?,
+                        model: row.get(3)?,
+                        title: row.get(4)?,
+                        metadata_json: row.get(5)?,
+                        environment_id: row.get(6)?,
+                        mcp_json: row.get(7)?,
+                        status: row.get(8)?,
+                        archived_at: row.get(9)?,
+                        effective_inputs_json: row.get(10)?,
+                    },
+                ))
             })
             .expect("query pending Session resource activations")
-            .map(|row| decode(row.expect("read managed session")).expect("decode managed session"))
-            .filter(|session| {
+            .map(|row| {
+                let (workspace_id, row) = row.expect("read managed session");
+                ScopedPersistedSession {
+                    workspace_id,
+                    session: decode(row).expect("decode managed session"),
+                }
+            })
+            .filter(|record| {
+                let session = &record.session;
                 session.resources.needs_reconciliation()
                     || (session.status != "idle" && session.resources.has_active())
             })
@@ -702,17 +712,18 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         )
     }
 
-    async fn pending_resource_sessions(&self) -> Vec<PersistedSession> {
+    async fn pending_resource_sessions(&self) -> Vec<ScopedPersistedSession> {
         sqlx::query(
-            "SELECT session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, status, archived_at, effective_inputs_json \
+            "SELECT scope_id, session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, status, archived_at, effective_inputs_json \
              FROM managed_session ORDER BY session_id",
         )
         .fetch_all(&self.pool)
         .await
         .expect("read pending Session resource activations")
         .into_iter()
-        .map(|row| {
-            decode(EncodedSessionRow {
+        .map(|row| ScopedPersistedSession {
+            workspace_id: row.get("scope_id"),
+            session: decode(EncodedSessionRow {
                 session_id: row.get("session_id"),
                 agent_id: row.get("agent_id"),
                 model: row.get("model"),
@@ -724,9 +735,13 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
                 archived_at: row.get("archived_at"),
                 effective_inputs_json: row.get("effective_inputs_json"),
             })
-            .expect("decode managed session")
+            .expect("decode managed session"),
         })
-        .filter(|session| session.resources.needs_reconciliation() || (session.status != "idle" && session.resources.has_active()))
+        .filter(|record| {
+            let session = &record.session;
+            session.resources.needs_reconciliation()
+                || (session.status != "idle" && session.resources.has_active())
+        })
         .collect()
     }
 

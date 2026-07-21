@@ -1,0 +1,46 @@
+pub mod awaken_inference_contract
+pub enum awaken_inference_contract::CredentialInjectionKind
+pub awaken_inference_contract::CredentialInjectionKind::Direct
+pub awaken_inference_contract::CredentialInjectionKind::Reference
+pub awaken_inference_contract::CredentialInjectionKind::SealedEnvelope
+pub enum awaken_inference_contract::CredentialUsage
+pub awaken_inference_contract::CredentialUsage::ClientCertificate
+pub awaken_inference_contract::CredentialUsage::EnvironmentVariable
+pub awaken_inference_contract::CredentialUsage::EnvironmentVariable::name: alloc::string::String
+pub awaken_inference_contract::CredentialUsage::File
+pub awaken_inference_contract::CredentialUsage::File::path: alloc::string::String
+pub awaken_inference_contract::CredentialUsage::HttpHeader
+pub awaken_inference_contract::CredentialUsage::HttpHeader::name: alloc::string::String
+pub awaken_inference_contract::CredentialUsage::HttpHeader::scheme: core::option::Option<alloc::string::String>
+pub awaken_inference_contract::CredentialUsage::ProviderAdapter
+pub awaken_inference_contract::CredentialUsage::QueryParameter
+pub awaken_inference_contract::CredentialUsage::QueryParameter::name: alloc::string::String
+pub struct awaken_inference_contract::CredentialAccess
+pub awaken_inference_contract::CredentialAccess::credential: awaken_inference_contract::CredentialRef
+pub awaken_inference_contract::CredentialAccess::injection: awaken_inference_contract::CredentialInjectionKind
+pub awaken_inference_contract::CredentialAccess::usage: awaken_inference_contract::CredentialUsage
+pub struct awaken_inference_contract::CredentialRef
+pub awaken_inference_contract::CredentialRef::id: alloc::string::String
+pub awaken_inference_contract::CredentialRef::revision: u64
+pub struct awaken_inference_contract::InferenceAccess
+pub awaken_inference_contract::InferenceAccess::candidates: alloc::vec::Vec<awaken_inference_contract::InferenceAccessCandidate>
+pub awaken_inference_contract::InferenceAccess::credential_access: core::option::Option<awaken_inference_contract::CredentialAccess>
+pub awaken_inference_contract::InferenceAccess::endpoint: core::option::Option<awaken_inference_contract::InferenceEndpoint>
+pub awaken_inference_contract::InferenceAccess::provider_ref: core::option::Option<alloc::string::String>
+pub awaken_inference_contract::InferenceAccess::reference: alloc::string::String
+pub awaken_inference_contract::InferenceAccess::route_ref: core::option::Option<alloc::string::String>
+pub awaken_inference_contract::InferenceAccess::scheme: alloc::string::String
+pub awaken_inference_contract::InferenceAccess::scope_id: core::option::Option<alloc::string::String>
+impl awaken_inference_contract::InferenceAccess
+pub fn awaken_inference_contract::InferenceAccess::candidate_set(impl core::iter::traits::collect::IntoIterator<Item = (alloc::string::String, awaken_inference_contract::InferenceAccess)>) -> core::option::Option<Self>
+pub fn awaken_inference_contract::InferenceAccess::for_model(&self, &str) -> core::option::Option<Self>
+pub fn awaken_inference_contract::InferenceAccess::host_executor(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_inference_contract::InferenceAccess::is_host_executor_for(&self, &str) -> bool
+pub fn awaken_inference_contract::InferenceAccess::resolved_credential(impl core::convert::Into<alloc::string::String>, u64, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, awaken_inference_contract::InferenceEndpoint) -> Self
+pub struct awaken_inference_contract::InferenceAccessCandidate
+pub awaken_inference_contract::InferenceAccessCandidate::access: awaken_inference_contract::InferenceAccess
+pub awaken_inference_contract::InferenceAccessCandidate::model_ref: alloc::string::String
+pub struct awaken_inference_contract::InferenceEndpoint
+pub awaken_inference_contract::InferenceEndpoint::adapter_kind: alloc::string::String
+pub awaken_inference_contract::InferenceEndpoint::base_url: alloc::string::String
+pub awaken_inference_contract::InferenceEndpoint::upstream_model: alloc::string::String

@@ -637,7 +637,13 @@ mod tests {
             awaken_session_contract::ActivationState::Releasing,
             "cleanup failure stays durable for ResourceReclaimer"
         );
-        assert_eq!(repo.pending_resource_sessions().await, vec![durable]);
+        assert_eq!(
+            repo.pending_resource_sessions().await,
+            vec![awaken_session_contract::ScopedPersistedSession {
+                workspace_id: DEFAULT_SCOPE.to_string(),
+                session: durable,
+            }]
+        );
     }
 
     fn sample_persisted(id: &str) -> PersistedSession {

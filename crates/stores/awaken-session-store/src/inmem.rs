@@ -13,8 +13,8 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use awaken_session_contract::{
     ManagedSessionRepository, MemoryExtractionError, MemoryExtractionIntent,
-    MemoryExtractionRepository, PersistedSession, PutMemoryExtractionOutcome, ScopedSessionStore,
-    SessionLifecycleFact,
+    MemoryExtractionRepository, PersistedSession, PutMemoryExtractionOutcome,
+    ScopedPersistedSession, ScopedSessionStore, SessionLifecycleFact,
 };
 use awaken_tenancy::ScopeId;
 
@@ -116,21 +116,23 @@ impl ManagedSessionRepository for InMemorySessionRepository {
             .map(|(session, _)| session.clone())
     }
 
-    async fn pending_resource_sessions(&self) -> Vec<PersistedSession> {
+    async fn pending_resource_sessions(&self) -> Vec<ScopedPersistedSession> {
         let mut sessions = self
             .state
             .lock()
             .expect("session repo mutex poisoned")
             .rows
             .values()
-            .map(|(session, _)| session)
-            .filter(|session| {
+            .filter(|(session, _)| {
                 session.resources.needs_reconciliation()
                     || (session.status != "idle" && session.resources.has_active())
             })
-            .cloned()
+            .map(|(session, workspace_id)| ScopedPersistedSession {
+                workspace_id: workspace_id.clone(),
+                session: session.clone(),
+            })
             .collect::<Vec<_>>();
-        sessions.sort_by(|left, right| left.session_id.cmp(&right.session_id));
+        sessions.sort_by(|left, right| left.session.session_id.cmp(&right.session.session_id));
         sessions
     }
 

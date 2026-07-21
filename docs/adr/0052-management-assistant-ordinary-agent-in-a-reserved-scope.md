@@ -65,7 +65,7 @@ Two facts about the current code make the mechanism concrete:
   name that is absent (`compile.rs:56`, fail-closed). There is **no per-scope
   visibility fence today**.
 - The model catalog is **org/deployment-shared and readable from any scope**
-  (ADR-0051's settled decision; `awaken-server-local/src/resource_owner.rs:14-15`).
+  (ADR-0051's settled decision; `awaken-server/src/resource_scope_fence.rs`).
   `compile` requires `model_binding` to be already filled (`compile.rs:82`, a plain
   clone with no default). There is **no auto-selection of a model today**.
 
@@ -173,7 +173,7 @@ admin authors it as an ordinary editable config.
 
 The assistant must not require an operator to hand-pick a model, yet must stay
 editable. The model catalog is org/deployment-shared and visible from the reserved
-scope (ADR-0051; `resource_owner.rs:14-15`), so binding is possible; only the
+scope (ADR-0051; `resource_scope_fence.rs`), so binding is possible; only the
 auto-selection is missing.
 
 - **Explicit binding mode, not a sentinel.** `model_binding` is not "empty means
