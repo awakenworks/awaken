@@ -42,8 +42,8 @@ type ContainerCredential = (
 ))]
 fn wrap<R: awaken_sandbox_container::ContainerRuntime + 'static>(
     provider: ContainerProvider<R>,
+    size: usize,
 ) -> Arc<dyn ContainerEnvironmentProvider> {
-    let size = warm_pool_size();
     if size == 0 {
         Arc::new(provider)
     } else {
@@ -87,7 +87,7 @@ fn finish<R: awaken_sandbox_container::ContainerRuntime + 'static>(
     if let Some(proxy) = configured_container_egress_proxy() {
         provider = provider.with_egress_proxy(proxy);
     }
-    Ok(wrap(provider))
+    Ok(wrap(provider, warm_pool_size()))
 }
 
 /// Build the one provider used by both Native tools and ACP attempts in a Session,
@@ -184,4 +184,59 @@ pub(crate) async fn build(
             SandboxTier::Namespace => "namespace",
         }
     ))
+}
+
+#[cfg(all(test, feature = "container-podman"))]
+mod tests {
+    use super::*;
+
+    struct Broker;
+
+    #[async_trait::async_trait]
+    impl pc::SecretBroker for Broker {
+        async fn materialize(&self, _reference: &str) -> Result<Vec<u8>, pc::SandboxError> {
+            Ok(Vec::new())
+        }
+
+        async fn write_back(
+            &self,
+            _reference: &str,
+            _bytes: Vec<u8>,
+        ) -> Result<(), pc::SandboxError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn provider_composition_selects_direct_and_warm_pool_shapes() {
+        use awaken_sandbox_container::podman::PodmanRuntime;
+
+        let direct = ContainerProvider::new(Arc::new(PodmanRuntime::new(8080)), "busybox");
+        let _ = wrap(direct, 0);
+
+        let pooled = ContainerProvider::new(Arc::new(PodmanRuntime::new(8080)), "busybox");
+        let _ = wrap(pooled, 2);
+    }
+
+    #[test]
+    fn provider_composition_installs_a_secret_broker_and_requires_an_image() {
+        use awaken_sandbox_container::podman::PodmanRuntime;
+
+        assert!(
+            finish(
+                Arc::new(PodmanRuntime::new(8080)),
+                None,
+                Some(Arc::new(Broker)),
+            )
+            .is_err()
+        );
+        assert!(
+            finish(
+                Arc::new(PodmanRuntime::new(8080)),
+                Some("busybox"),
+                Some(Arc::new(Broker)),
+            )
+            .is_ok()
+        );
+    }
 }
