@@ -95,6 +95,10 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness fold_point_preserves_the_requested_suffix
   cargo kani -p awaken-ext-compact \
     --harness fold_point_is_present_exactly_when_triggered_with_nonempty_prefix
+  cargo kani -p awaken-ext-goal \
+    --harness applying_a_grade_obeys_decision_and_budget
+  cargo kani -p awaken-ext-goal \
+    --harness terminal_outcomes_are_absorbing
   cargo kani -p awaken-runtime-contract \
     --harness terminal_calls_are_never_reentered
   cargo kani -p awaken-runtime-contract \
@@ -233,6 +237,9 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/agent-input-revision" \
     -config formal/tla/AgentInputRevision.cfg formal/tla/AgentInputRevision.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/outcome-lifecycle" \
+    -config formal/tla/OutcomeLifecycle.cfg formal/tla/OutcomeLifecycle.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/session-resource-activation" \
     -config formal/tla/SessionResourceActivation.cfg \

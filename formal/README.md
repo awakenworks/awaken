@@ -75,6 +75,9 @@ The named harnesses in the strict gate invoke production pure functions directly
 - `awaken-ext-compact`
   - folding preserves the requested suffix;
   - the fold trigger is exact and total.
+- `awaken-ext-goal`
+  - every accepted Grade selects exactly the decision- and budget-authorized phase;
+  - terminal Outcome states are absorbing.
 
 The relationship and tool-call harnesses verify the same transition kernels
 used by `DelegationRegistry` and `ToolBatch`; they are not copies of the
@@ -140,6 +143,9 @@ production logic.
   stale, skipped, zero, or conflicting revision is rejected without mutation.
   Authorization is deliberately outside this state machine and remains an edge
   admission concern.
+- `OutcomeLifecycle.tla` covers the zero-based Worker/Grader loop, stable logical
+  Run identity under replay, the evaluation budget, the exactly-once ungraded
+  acknowledgment, interruption, infrastructure failure, and terminal absorption.
 - `SessionResourceActivation.tla` covers durable prepare-before-IO activation,
   exact revision issuance, commit/rollback, terminal release, and the rule that
   a terminated Session can never reactivate a pending resource generation.
@@ -228,6 +234,7 @@ graphs with zero invariant violations and zero states left on the queue:
 | InferenceAccessPublication | 466 | 234 | 9 |
 | ResourceBindingEffect | 21 | 10 | 6 |
 | AgentInputRevision | 297 | 65 | 9 |
+| OutcomeLifecycle | 62 | 31 | 9 |
 | SessionResourceActivation | 61 | 39 | 9 |
 | ResourceDispatch | 66,535 | 11,952 | 15 |
 | ResourceReclamation | 11,156 | 2,514 | 17 |

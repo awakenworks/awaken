@@ -209,6 +209,28 @@ pub enum EvaluationResult {
     Interrupted,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GradeTransition {
+    Complete(EvaluationResult),
+    Revise(u32),
+    Acknowledge,
+}
+
+const fn grade_transition(
+    decision: GradeDecision,
+    iteration: u32,
+    max_iterations: u32,
+) -> GradeTransition {
+    match decision {
+        GradeDecision::Satisfied => GradeTransition::Complete(EvaluationResult::Satisfied),
+        GradeDecision::Failed => GradeTransition::Complete(EvaluationResult::Failed),
+        GradeDecision::NeedsRevision if iteration.saturating_add(1) >= max_iterations => {
+            GradeTransition::Acknowledge
+        }
+        GradeDecision::NeedsRevision => GradeTransition::Revise(iteration + 1),
+    }
+}
+
 impl EvaluationResult {
     pub const fn token(self) -> &'static str {
         match self {
@@ -363,29 +385,18 @@ impl State {
             phase => return Err(Error::invalid_transition("apply_grade", phase)),
         };
 
-        let result = match grade.decision {
-            GradeDecision::Satisfied => {
-                self.phase = Phase::Completed {
-                    result: EvaluationResult::Satisfied,
-                };
-                EvaluationResult::Satisfied
+        let result = match grade_transition(grade.decision, iteration, definition.max_iterations) {
+            GradeTransition::Complete(result) => {
+                self.phase = Phase::Completed { result };
+                result
             }
-            GradeDecision::Failed => {
-                self.phase = Phase::Completed {
-                    result: EvaluationResult::Failed,
-                };
-                EvaluationResult::Failed
-            }
-            GradeDecision::NeedsRevision
-                if iteration.saturating_add(1) >= definition.max_iterations =>
-            {
+            GradeTransition::Acknowledge => {
                 self.phase = Phase::Acknowledging {
                     run_id: next_run_id,
                 };
                 EvaluationResult::MaxIterationsReached
             }
-            GradeDecision::NeedsRevision => {
-                let next_iteration = iteration + 1;
+            GradeTransition::Revise(next_iteration) => {
                 self.iteration = next_iteration;
                 self.phase = Phase::RunningWorker {
                     iteration: next_iteration,
@@ -518,6 +529,68 @@ impl Error {
             Phase::Errored { .. } => "errored",
         };
         Self::InvalidTransition { operation, phase }
+    }
+}
+
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    #[kani::proof]
+    fn applying_a_grade_obeys_decision_and_budget() {
+        let max_iterations: u32 = kani::any();
+        let iteration: u32 = kani::any();
+        let decision_code: u8 = kani::any();
+        kani::assume((MIN_ITERATIONS..=MAX_ITERATIONS).contains(&max_iterations));
+        kani::assume(iteration < max_iterations);
+        kani::assume(decision_code <= 2);
+
+        let decision = match decision_code {
+            0 => GradeDecision::Satisfied,
+            1 => GradeDecision::Failed,
+            _ => GradeDecision::NeedsRevision,
+        };
+        let transition = grade_transition(decision, iteration, max_iterations);
+        match decision {
+            GradeDecision::Satisfied => {
+                assert_eq!(
+                    transition,
+                    GradeTransition::Complete(EvaluationResult::Satisfied)
+                );
+            }
+            GradeDecision::Failed => {
+                assert_eq!(
+                    transition,
+                    GradeTransition::Complete(EvaluationResult::Failed)
+                );
+            }
+            GradeDecision::NeedsRevision if iteration + 1 >= max_iterations => {
+                assert_eq!(transition, GradeTransition::Acknowledge);
+            }
+            GradeDecision::NeedsRevision => {
+                assert_eq!(transition, GradeTransition::Revise(iteration + 1));
+            }
+        }
+    }
+
+    #[kani::proof]
+    fn terminal_outcomes_are_absorbing() {
+        let result_code: u8 = kani::any();
+        kani::assume(result_code <= 4);
+        let result = match result_code {
+            0 => EvaluationResult::Satisfied,
+            1 => EvaluationResult::NeedsRevision,
+            2 => EvaluationResult::MaxIterationsReached,
+            3 => EvaluationResult::Failed,
+            _ => EvaluationResult::Interrupted,
+        };
+        assert!(Phase::Completed { result }.is_terminal());
+        assert!(
+            Phase::Errored {
+                failure: ExecutionFailure::Persistence(String::new())
+            }
+            .is_terminal()
+        );
     }
 }
 
