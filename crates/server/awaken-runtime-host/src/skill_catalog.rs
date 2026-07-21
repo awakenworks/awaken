@@ -16,7 +16,6 @@ use awaken_skill_store::{SkillDefinition, SkillStore, SkillStoreError, SkillVers
 /// Skills offered on every thread, plus the durable delivered-catalog and its
 /// synchronous read cache. See the module docs for the coherence invariant.
 pub(crate) struct SkillCatalog {
-    local_workspace: String,
     /// Skills offered on every thread (ADR-0036). The whole set is fronted by the
     /// single `Skill` tool; the model activates one by id to load its instructions.
     specs: Vec<SkillSpec>,
@@ -37,17 +36,12 @@ pub(crate) struct SkillCatalog {
 impl SkillCatalog {
     /// An empty catalog: no static skills, no durable store. The builder wires the
     /// configured set and (optionally) a store.
-    pub(crate) fn new(local_workspace: String) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
-            local_workspace,
             specs: Vec::new(),
             store: None,
             cache: Mutex::new(std::collections::BTreeMap::new()),
         }
-    }
-
-    pub(crate) fn set_local_workspace(&mut self, workspace: String) {
-        self.local_workspace = workspace;
     }
 
     /// Builder: append the configured static skills.
@@ -324,11 +318,6 @@ impl SkillCatalog {
     /// the static configured set plus any durable `/v1/skills` catalog, de-duplicated
     /// with the static set winning, so the advertisement matches what `list_skills`
     /// resolves.
-    #[cfg(test)]
-    pub(crate) fn ids(&self) -> Vec<String> {
-        self.ids_in(&self.local_workspace)
-    }
-
     pub(crate) fn ids_in(&self, workspace: &str) -> Vec<String> {
         let mut ids: Vec<String> = self.specs.iter().map(|s| s.id.clone()).collect();
         // The durable catalog is read from the sync cache (refreshed on write and at
@@ -368,7 +357,7 @@ mod tests {
 
     #[tokio::test]
     async fn empty_binding_is_the_identity_without_a_repository() {
-        let catalog = SkillCatalog::new("ws-a".into());
+        let catalog = SkillCatalog::new();
         assert!(
             catalog
                 .resolve_latest("ws-a", &[])
@@ -381,7 +370,7 @@ mod tests {
 
     #[tokio::test]
     async fn frozen_binding_keeps_v1_after_v2_and_is_workspace_scoped() {
-        let mut catalog = SkillCatalog::new("ws-a".into());
+        let mut catalog = SkillCatalog::new();
         catalog.set_store(Arc::new(InMemorySkillStore::new()));
         catalog
             .create(
