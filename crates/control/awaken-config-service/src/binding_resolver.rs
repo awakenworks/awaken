@@ -72,23 +72,28 @@ pub fn needs_resolution(selection: &ModelSelection) -> bool {
 
 /// The concrete reconciler the host wires: it re-publishes a fixed set of agent ids
 /// (the reserved-scope assistant) in a scope through the ordinary config-plane publish
-/// path. It holds the scope edge ([`ConfigPlane`](crate::config_plane::ConfigPlane)) —
-/// which binds the scope onto the scope-free service — plus the scope + ids.
+/// path. It holds the scope edge ([`ConfigPlane`](crate::config_plane::ConfigPlane)),
+/// the configuration namespace, the execution Workspace, and the agent ids. Keeping
+/// both coordinates explicit prevents a reserved authoring namespace from becoming a
+/// synthetic resource or credential Workspace.
 pub struct ConfigServiceReconciler {
     plane: crate::config_plane::ConfigPlane,
-    scope: ScopeId,
+    configuration_scope: ScopeId,
+    execution_workspace: String,
     agent_ids: Vec<String>,
 }
 
 impl ConfigServiceReconciler {
     pub fn new(
         plane: crate::config_plane::ConfigPlane,
-        scope: impl Into<ScopeId>,
+        configuration_scope: impl Into<ScopeId>,
+        execution_workspace: impl Into<String>,
         agent_ids: Vec<String>,
     ) -> Self {
         Self {
             plane,
-            scope: scope.into(),
+            configuration_scope: configuration_scope.into(),
+            execution_workspace: execution_workspace.into(),
             agent_ids,
         }
     }
@@ -99,7 +104,15 @@ impl AssistantBindingReconciler for ConfigServiceReconciler {
     async fn reconcile(&self) -> Result<usize, String> {
         let mut republished = 0;
         for id in &self.agent_ids {
-            if self.plane.reconcile(&self.scope, id).await? {
+            if self
+                .plane
+                .reconcile_for_execution_workspace(
+                    &self.configuration_scope,
+                    &self.execution_workspace,
+                    id,
+                )
+                .await?
+            {
                 republished += 1;
             }
         }

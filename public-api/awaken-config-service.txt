@@ -17,11 +17,13 @@ pub async fn awaken_config_service::ConfigPlane::mark_management_audit_committed
 pub fn awaken_config_service::ConfigPlane::new(alloc::sync::Arc<awaken_config_service::ConfigService>, alloc::sync::Arc<dyn awaken_config_store::store::ScopedConfigRegistry>, alloc::sync::Arc<dyn awaken_config_service::ToolCatalogSource>) -> Self
 pub async fn awaken_config_service::ConfigPlane::pending_management_effects(&self, &awaken_tenancy::ScopeId) -> core::result::Result<alloc::vec::Vec<awaken_config_store::store::ManagementEffect>, alloc::string::String>
 pub async fn awaken_config_service::ConfigPlane::publish(&self, &awaken_tenancy::ScopeId, &str) -> core::result::Result<awaken_config_store::store::StoredPublication, awaken_config_service::PublishError>
+pub async fn awaken_config_service::ConfigPlane::publish_for_execution_workspace(&self, &awaken_tenancy::ScopeId, &str, &str) -> core::result::Result<awaken_config_store::store::StoredPublication, awaken_config_service::PublishError>
 pub async fn awaken_config_service::ConfigPlane::put(&self, &awaken_tenancy::ScopeId, &awaken_config_store::config::AgentConfig) -> core::result::Result<(), alloc::string::String>
 pub async fn awaken_config_service::ConfigPlane::put_if_revision(&self, &awaken_tenancy::ScopeId, &awaken_config_store::config::AgentConfig, u64) -> core::result::Result<awaken_config_store::store::ConfigWrite, alloc::string::String>
 pub async fn awaken_config_service::ConfigPlane::put_with_audit(&self, &awaken_tenancy::ScopeId, &awaken_config_store::config::AgentConfig, &awaken_config_store::store::ManagementAuditRecord) -> core::result::Result<awaken_config_store::store::AuditedConfigWrite, alloc::string::String>
 pub async fn awaken_config_service::ConfigPlane::put_with_audit_effect(&self, &awaken_tenancy::ScopeId, &awaken_config_store::config::AgentConfig, &awaken_config_store::store::ManagementAuditRecord, core::option::Option<&awaken_config_store::store::ManagementEffect>) -> core::result::Result<awaken_config_store::store::AuditedConfigWrite, alloc::string::String>
 pub async fn awaken_config_service::ConfigPlane::reconcile(&self, &awaken_tenancy::ScopeId, &str) -> core::result::Result<bool, alloc::string::String>
+pub async fn awaken_config_service::ConfigPlane::reconcile_for_execution_workspace(&self, &awaken_tenancy::ScopeId, &str, &str) -> core::result::Result<bool, alloc::string::String>
 pub async fn awaken_config_service::ConfigPlane::record_management_audit(&self, &awaken_tenancy::ScopeId, &awaken_config_store::store::ManagementAuditRecord) -> core::result::Result<awaken_config_store::store::AuditedConfigWrite, alloc::string::String>
 pub fn awaken_config_service::ConfigPlane::registry_for(&self, &awaken_tenancy::ScopeId) -> awaken_config_store::store::ScopedConfig<dyn awaken_config_store::store::ScopedConfigRegistry>
 pub fn awaken_config_service::ConfigPlane::service(&self) -> &alloc::sync::Arc<awaken_config_service::ConfigService>
@@ -29,10 +31,10 @@ pub fn awaken_config_service::ConfigPlane::validate(&self, &awaken_tenancy::Scop
 pub struct awaken_config_service::ConfigService
 impl awaken_config_service::ConfigService
 pub fn awaken_config_service::ConfigService::agents_referencing_input(&self, &str, &awaken_resource_contract::input::InputResourceId) -> alloc::vec::Vec<alloc::string::String>
-pub fn awaken_config_service::ConfigService::agents_referencing_skill(&self, &str) -> alloc::vec::Vec<alloc::string::String>
+pub fn awaken_config_service::ConfigService::agents_referencing_skill(&self, &str, &str) -> alloc::vec::Vec<alloc::string::String>
 pub async fn awaken_config_service::ConfigService::get(&self, &dyn awaken_config_store::store::ConfigRegistry, &str) -> core::result::Result<core::option::Option<awaken_config_store::config::AgentConfig>, alloc::string::String>
 pub async fn awaken_config_service::ConfigService::get_versioned(&self, &dyn awaken_config_store::store::ConfigRegistry, &str) -> core::result::Result<core::option::Option<awaken_config_store::store::AgentConfigRevision>, alloc::string::String>
-pub fn awaken_config_service::ConfigService::installed(&self, &str) -> core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>
+pub fn awaken_config_service::ConfigService::installed_in(&self, &str, &str) -> core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>
 pub async fn awaken_config_service::ConfigService::list(&self, &dyn awaken_config_store::store::ConfigRegistry) -> core::result::Result<alloc::vec::Vec<awaken_config_store::config::AgentConfig>, alloc::string::String>
 pub fn awaken_config_service::ConfigService::new() -> Self
 pub async fn awaken_config_service::ConfigService::publish(&self, &str, &dyn awaken_config_store::store::ConfigRegistry, &str, &[awaken_runtime_contract::resolved::ToolDescriptor]) -> core::result::Result<awaken_config_store::store::StoredPublication, awaken_config_service::PublishError>
@@ -41,16 +43,16 @@ pub async fn awaken_config_service::ConfigService::put_if_revision(&self, &dyn a
 pub async fn awaken_config_service::ConfigService::reconcile(&self, &str, &dyn awaken_config_store::store::ConfigRegistry, &str, &[awaken_runtime_contract::resolved::ToolDescriptor]) -> core::result::Result<bool, alloc::string::String>
 pub fn awaken_config_service::ConfigService::validate(&self, &str, &awaken_config_store::config::AgentConfig, &[awaken_runtime_contract::resolved::ToolDescriptor]) -> core::result::Result<(), awaken_config_service::ValidationIssue>
 pub async fn awaken_config_service::ConfigService::warm_install(&self, &dyn awaken_config_store::store::ScopedConfigRegistry, &awaken_tenancy::ScopeId) -> usize
+pub async fn awaken_config_service::ConfigService::warm_install_for_execution_workspace(&self, &dyn awaken_config_store::store::ScopedConfigRegistry, &awaken_tenancy::ScopeId, &str) -> usize
 pub fn awaken_config_service::ConfigService::with_inference_access_publisher(self, alloc::sync::Arc<dyn awaken_config_resolver::InferenceAccessPublisher>) -> Self
 pub fn awaken_config_service::ConfigService::with_model_resolver(self, alloc::sync::Arc<dyn awaken_config_service::ModelResolver>) -> Self
 pub fn awaken_config_service::ConfigService::with_resources(self, alloc::sync::Arc<dyn awaken_config_resolver::stores::AgentInputBindingRepository>) -> Self
 pub struct awaken_config_service::ConfigServiceAgentSource(pub alloc::sync::Arc<awaken_config_service::ConfigService>)
 impl awaken_session_contract::agent_config::AgentConfigSource for awaken_config_service::ConfigServiceAgentSource
-pub fn awaken_config_service::ConfigServiceAgentSource::agent_view(&self, &str) -> core::option::Option<awaken_session_contract::agent_config::AgentConfigView>
 pub fn awaken_config_service::ConfigServiceAgentSource::agent_view_in(&self, &str, &str) -> core::option::Option<awaken_session_contract::agent_config::AgentConfigView>
 pub struct awaken_config_service::ConfigServiceReconciler
 impl awaken_config_service::ConfigServiceReconciler
-pub fn awaken_config_service::ConfigServiceReconciler::new(awaken_config_service::ConfigPlane, impl core::convert::Into<awaken_tenancy::ScopeId>, alloc::vec::Vec<alloc::string::String>) -> Self
+pub fn awaken_config_service::ConfigServiceReconciler::new(awaken_config_service::ConfigPlane, impl core::convert::Into<awaken_tenancy::ScopeId>, impl core::convert::Into<alloc::string::String>, alloc::vec::Vec<alloc::string::String>) -> Self
 impl awaken_config_service::AssistantBindingReconciler for awaken_config_service::ConfigServiceReconciler
 pub fn awaken_config_service::ConfigServiceReconciler::reconcile<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub struct awaken_config_service::ResolvedModel

@@ -9,8 +9,7 @@
 //!
 //! The runtime never edits config records; it consumes only the compiled config.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use awaken_config_resolver::{AgentInputBindingRepository, InferenceAccessPublisher};
 use awaken_config_store::{
@@ -28,6 +27,7 @@ use axum::{Extension, Json, Router};
 use serde_json::{Value, json};
 
 use crate::binding_resolver::ModelResolver;
+use crate::installed_catalog::InstalledAgentCatalog;
 use crate::publication::{
     PublishError, ValidationIssue, pin_inference_access, prepare_agent_publication,
     snapshot_metadata,
@@ -37,26 +37,18 @@ use crate::tool_catalog::ToolCatalogSource;
 /// The config domain service: validate, store, publish, and expose the installed
 /// published executable snapshot per agent.
 ///
-/// **Scope-free by design (ADR-0051/0052).** Tenancy is an edge aspect: this service
-/// never names a `ScopeId`. The already-scoped collaborators — a scope-bound
-/// [`ConfigRegistry`] (via `ScopedConfig`) and the scope's resolved tool catalog
-/// (`&[ToolDescriptor]`) — are passed in per call by the edge ([`ConfigPlane`] and
-/// the router handlers). The service holds only scope-agnostic state: the installed
-/// hot catalog (by agent id), the resource-prompt store, and the model resolver.
-#[derive(Clone)]
-struct InstalledEntry {
-    source_revision: u64,
-    snapshot: ExecutableAgentSnapshot,
-}
-
+/// **Authorization-free by design (ADR-0051/0052).** The already-scoped authoring
+/// collaborators — a scope-bound [`ConfigRegistry`] (via `ScopedConfig`) and the
+/// namespace's resolved tool catalog (`&[ToolDescriptor]`) — are passed in per call
+/// by the edge ([`ConfigPlane`] and router handlers). Publication also receives one
+/// trusted execution Workspace coordinate so the installed catalog cannot leak a
+/// same-id Agent across Workspaces. It receives no principal, role, policy, token, or
+/// authorization decision.
 #[derive(Default)]
 pub struct ConfigService {
-    /// The installed catalog: agent id → executable snapshot, hot-swapped on
-    /// publish. A run resolves its agent here (awaken-next `set_registry_snapshot`).
-    /// Keyed by agent id alone (the durable, scope-owned store is the tenant-isolated
-    /// truth); built-in and reserved ids are globally unique, so no cross-scope
-    /// collision arises in practice.
-    installed: Mutex<HashMap<String, InstalledEntry>>,
+    /// Workspace-keyed hot catalog; a runtime lookup must never observe another
+    /// Workspace's same-id Agent publication.
+    installed: InstalledAgentCatalog,
     /// Per-agent resource bindings (ADR-0038). When wired, the agent's bound-resource
     /// prompt fragments are appended to its effective system prompt at compile (A3a).
     /// `None` → compilation is byte-identical to an unbound agent.
@@ -126,20 +118,9 @@ impl ConfigService {
     }
 
     /// Published Agent ids whose current capability configuration names a Skill.
-    pub fn agents_referencing_skill(&self, skill_id: &str) -> Vec<String> {
-        let installed = self.installed.lock().expect("config service");
-        let mut agents: Vec<_> = installed
-            .iter()
-            .filter_map(|(agent_id, entry)| {
-                awaken_runtime_contract::agent_bindings::AgentBindings::from_config(
-                    &entry.snapshot.resolved_spec.plugin_config,
-                )
-                .filter(|bindings| bindings.skill_ids.iter().any(|id| id == skill_id))
-                .map(|_| agent_id.clone())
-            })
-            .collect();
-        agents.sort();
-        agents
+    pub fn agents_referencing_skill(&self, workspace_id: &str, skill_id: &str) -> Vec<String> {
+        self.installed
+            .agents_referencing_skill(workspace_id, skill_id)
     }
 
     /// Validate a config by compiling it against the caller-supplied tool `catalog`
@@ -269,19 +250,8 @@ impl ConfigService {
         if let ConfigWrite::Conflict { current_revision } = write {
             return Err(PublishError::StaleRevision(current_revision));
         }
-        let mut installed = self.installed.lock().unwrap();
-        let replace = installed
-            .get(id)
-            .is_none_or(|current| source_revision >= current.source_revision);
-        if replace {
-            installed.insert(
-                id.to_string(),
-                InstalledEntry {
-                    source_revision,
-                    snapshot,
-                },
-            );
-        }
+        self.installed
+            .install(workspace, id, source_revision, snapshot);
         Ok(publication)
     }
 
@@ -312,12 +282,8 @@ impl ConfigService {
     }
 
     /// The installed (published) executable snapshot for `agent`, if any.
-    pub fn installed(&self, agent: &str) -> Option<ExecutableAgentSnapshot> {
-        self.installed
-            .lock()
-            .unwrap()
-            .get(agent)
-            .map(|entry| entry.snapshot.clone())
+    pub fn installed_in(&self, workspace: &str, agent: &str) -> Option<ExecutableAgentSnapshot> {
+        self.installed.snapshot_in(workspace, agent)
     }
 
     /// Warm-load the installed catalog from a durable registry's published configs
@@ -331,25 +297,31 @@ impl ConfigService {
         registry: &dyn ScopedConfigRegistry,
         scope: &ScopeId,
     ) -> usize {
-        let pubs = match registry.list_published_scoped(scope).await {
+        self.warm_install_for_execution_workspace(registry, scope, scope.as_str())
+            .await
+    }
+
+    /// Warm-install publications authored in `configuration_scope` for one
+    /// execution Workspace. These coordinates differ only for platform-owned
+    /// reserved agents; ordinary Workspace agents use [`Self::warm_install`].
+    pub async fn warm_install_for_execution_workspace(
+        &self,
+        registry: &dyn ScopedConfigRegistry,
+        configuration_scope: &ScopeId,
+        execution_workspace: &str,
+    ) -> usize {
+        let pubs = match registry.list_published_scoped(configuration_scope).await {
             Ok(pubs) => pubs,
             Err(_) => return 0,
         };
-        let mut installed = self.installed.lock().unwrap();
         let n = pubs.len();
         for p in pubs {
-            let replace = installed
-                .get(&p.agent_id)
-                .is_none_or(|current| p.source_revision >= current.source_revision);
-            if replace {
-                installed.insert(
-                    p.agent_id,
-                    InstalledEntry {
-                        source_revision: p.source_revision,
-                        snapshot: p.snapshot,
-                    },
-                );
-            }
+            self.installed.install(
+                execution_workspace,
+                &p.agent_id,
+                p.source_revision,
+                p.snapshot,
+            );
         }
         n
     }
@@ -521,24 +493,47 @@ impl ConfigPlane {
         scope: &ScopeId,
         id: &str,
     ) -> Result<StoredPublication, PublishError> {
+        self.publish_for_execution_workspace(scope, scope.as_str(), id)
+            .await
+    }
+
+    /// Publish from an authoring namespace into an explicit execution Workspace.
+    /// The split is required for reserved platform Agents; it is not an
+    /// authorization decision and does not change the scoped config repository.
+    pub async fn publish_for_execution_workspace(
+        &self,
+        configuration_scope: &ScopeId,
+        execution_workspace: &str,
+        id: &str,
+    ) -> Result<StoredPublication, PublishError> {
         self.service
             .publish(
-                scope.as_str(),
-                &self.registry_for(scope),
+                execution_workspace,
+                &self.registry_for(configuration_scope),
                 id,
-                &self.catalog_for(scope),
+                &self.catalog_for(configuration_scope),
             )
             .await
     }
 
     /// Re-resolve and re-publish an `Auto`-bound agent in `scope` (ADR-0052 D5).
     pub async fn reconcile(&self, scope: &ScopeId, id: &str) -> Result<bool, String> {
+        self.reconcile_for_execution_workspace(scope, scope.as_str(), id)
+            .await
+    }
+
+    pub async fn reconcile_for_execution_workspace(
+        &self,
+        configuration_scope: &ScopeId,
+        execution_workspace: &str,
+        id: &str,
+    ) -> Result<bool, String> {
         self.service
             .reconcile(
-                scope.as_str(),
-                &self.registry_for(scope),
+                execution_workspace,
+                &self.registry_for(configuration_scope),
                 id,
-                &self.catalog_for(scope),
+                &self.catalog_for(configuration_scope),
             )
             .await
     }
@@ -581,7 +576,10 @@ async fn list_configs(
             let data: Vec<Value> = configs
                 .into_iter()
                 .map(|config| {
-                    let published = plane.service().installed(&config.id).is_some();
+                    let published = plane
+                        .service()
+                        .installed_in(scope.as_str(), &config.id)
+                        .is_some();
                     managed_from_agent_config(&config, published)
                 })
                 .collect();
@@ -604,7 +602,7 @@ async fn get_config(
     let scope = request_scope(scope);
     match plane.get_versioned(&scope, &id).await {
         Ok(Some(versioned)) => {
-            let published = plane.service().installed(&id).is_some();
+            let published = plane.service().installed_in(scope.as_str(), &id).is_some();
             let mut body = managed_from_agent_config(&versioned.config, published);
             body.as_object_mut()
                 .expect("managed config is an object")
@@ -1201,7 +1199,7 @@ mod resource_prompt_tests {
 
         assert!(matches!(err, PublishError::StaleRevision(Some(8))));
         assert!(
-            service.installed("a").is_none(),
+            service.installed_in(DEFAULT_SCOPE, "a").is_none(),
             "a stale publication must not enter the live catalog"
         );
     }
@@ -1372,7 +1370,10 @@ mod resource_prompt_tests {
 
         // Only the authored Agent instructions are compiled. The final resource
         // prompt is generated from Effective Session inputs at preparation time.
-        let installed = plane.service().installed("agent-1").unwrap();
+        let installed = plane
+            .service()
+            .installed_in(DEFAULT_SCOPE, "agent-1")
+            .unwrap();
         let instructions = &installed.resolved_spec.instructions;
         assert!(instructions.starts_with("be helpful"));
         assert!(!instructions.contains("/mnt/memory/prefs"));
@@ -1437,7 +1438,7 @@ mod resource_prompt_tests {
 
         // The compiled (installed) config carries the resolved concrete binding +
         // the remaining offerings as pool candidates (ADR-0052 D5).
-        let installed = plane.service().installed("mgmt").unwrap();
+        let installed = plane.service().installed_in(DEFAULT_SCOPE, "mgmt").unwrap();
         let spec = &installed.resolved_spec;
         assert_eq!(spec.model_binding.model_ref, "m-first");
         assert_eq!(spec.model_candidates.len(), 1);
@@ -1492,6 +1493,7 @@ mod resource_prompt_tests {
         let reconciler = ConfigServiceReconciler::new(
             plane.clone(),
             DEFAULT_SCOPE,
+            DEFAULT_SCOPE,
             vec!["assistant".to_string(), "pinned".to_string()],
         );
         assert_eq!(reconciler.reconcile().await.unwrap(), 1);
@@ -1503,7 +1505,10 @@ mod resource_prompt_tests {
         let scope = ScopeId::from(DEFAULT_SCOPE);
         plane.put(&scope, &agent_config("pinned")).await.unwrap();
         plane.publish(&scope, "pinned").await.unwrap();
-        let installed = plane.service().installed("pinned").unwrap();
+        let installed = plane
+            .service()
+            .installed_in(DEFAULT_SCOPE, "pinned")
+            .unwrap();
         assert_eq!(installed.resolved_spec.model_binding.model_ref, "m");
     }
 
@@ -1554,7 +1559,10 @@ mod resource_prompt_tests {
         let plane = static_plane(None);
         plane.put(&scope, &agent_config("agent-2")).await.unwrap();
         plane.publish(&scope, "agent-2").await.unwrap();
-        let installed = plane.service().installed("agent-2").unwrap();
+        let installed = plane
+            .service()
+            .installed_in(DEFAULT_SCOPE, "agent-2")
+            .unwrap();
         assert_eq!(installed.resolved_spec.instructions, "be helpful");
     }
 
@@ -1879,6 +1887,53 @@ mod resource_prompt_tests {
     }
 
     #[tokio::test]
+    async fn installed_catalog_is_keyed_by_workspace_and_agent_id() {
+        // Separate scope-bound registries may legitimately reuse a local Agent id
+        // (for example when a router shards configuration storage). The live index
+        // must preserve that external Workspace coordinate rather than collapse it.
+        let registry_a = SqliteConfigStore::open_in_memory().unwrap();
+        let registry_b = SqliteConfigStore::open_in_memory().unwrap();
+        let service = ConfigService::new();
+
+        let mut a = agent_config("shared-id");
+        a.instructions = "workspace A".into();
+        ConfigRegistry::put_config(&registry_a, &a).await.unwrap();
+        service
+            .publish("wrkspc_a", &registry_a, &a.id, &[])
+            .await
+            .unwrap();
+
+        let mut b = agent_config("shared-id");
+        b.instructions = "workspace B".into();
+        ConfigRegistry::put_config(&registry_b, &b).await.unwrap();
+        service
+            .publish("wrkspc_b", &registry_b, &b.id, &[])
+            .await
+            .unwrap();
+
+        assert_eq!(
+            service
+                .installed_in("wrkspc_a", "shared-id")
+                .unwrap()
+                .resolved_spec
+                .instructions,
+            "workspace A"
+        );
+        assert_eq!(
+            service
+                .installed_in("wrkspc_b", "shared-id")
+                .unwrap()
+                .resolved_spec
+                .instructions,
+            "workspace B"
+        );
+        assert!(
+            service.installed_in("wrkspc_c", "shared-id").is_none(),
+            "an uninstalled Workspace must fail closed even when another Workspace uses the id"
+        );
+    }
+
+    #[tokio::test]
     async fn warm_install_rehydrates_the_latest_publication_per_agent() {
         // The `installed` catalog is populated only at publish time and held in
         // memory; a fresh process must warm-load it from the durable store or a
@@ -1904,7 +1959,9 @@ mod resource_prompt_tests {
         let cold = ConfigService::new();
         let n = cold.warm_install(store.as_ref(), &scope).await;
         assert_eq!(n, 2, "both published rows are read");
-        let installed = cold.installed("warm-agent").expect("agent hydrated");
+        let installed = cold
+            .installed_in(scope.as_str(), "warm-agent")
+            .expect("agent hydrated");
         assert_eq!(
             installed.resolved_spec.instructions, "version two",
             "the latest publication wins on rehydrate"

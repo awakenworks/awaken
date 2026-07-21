@@ -5,9 +5,9 @@
 - Builds on:
   [ADR-0051](0051-tenancy-edge-aspect-one-opaque-scope-id.md)
   (tenancy is an edge aspect; one **opaque** `ScopeId` the core never interprets —
-  this ADR reuses that opacity so a *reserved* scope and a future *org* scope are the
-  same mechanism, and leans on its **"model catalog is org/deployment-shared"**
-  resolution for D5),
+  this ADR reuses that type for a reserved **configuration namespace**, while keeping
+  it distinct from the real execution Workspace, and leans on its **"model catalog is
+  org/deployment-shared"** resolution for D5),
   [ADR-0047](0047-compaction-as-agent-run-and-the-context-plane-boundary.md)
   (a built-in agent — the compactor — is a **normal agent run at the same execution
   altitude**, not a privileged type; the management assistant follows the same rule),
@@ -37,7 +37,7 @@ this is a **port onto this branch's architecture**, not a code move.
 How the reference implementation does it, and why we should *not* copy it verbatim:
 
 - It **hardcodes a parallel path**: `admin_assistant_agent()` synthesises an
-  `AgentSpec` in Rust, binds four `admin_*` tools into a bespoke ephemeral
+  `AgentSpec` in Rust, binds management tools into a bespoke ephemeral
   `MapToolRegistry`, and streams a one-shot runtime that never enters the config
   store. The "specialness" is a second, private code path.
 - This branch already carries a *different* bypass of its own: the built-in agents
@@ -52,8 +52,9 @@ be **authored and edited exactly like an ordinary platform agent**, must **carry
 tools**, and must **auto-bind a model**. The organizing insight is therefore the
 mirror of ADR-0051's: *privilege is a cross-cutting edge aspect, not a property of the
 agent definition.* The assistant is an ordinary `AgentConfig`; what differs is the
-**scope it lives in** and the **tools visible in that scope** — both resolved at the
-edge, both leaving the neutral core and its value objects untouched.
+**configuration namespace it lives in** and the **tools visible in that namespace** —
+both resolved at the edge, both leaving the neutral core and its value objects
+untouched. Its execution still belongs to a real Workspace.
 
 Two facts about the current code make the mechanism concrete:
 
@@ -89,23 +90,37 @@ Corollary: this agent's hardcoded bypass is retired in favour of the ordinary pa
 Migrating the *other* built-ins (compactor, judge, memory) onto `AgentConfig` is
 **orthogonal and out of scope** — pursued separately if at all.
 
-### D2: Its home is a reserved `ScopeId`, addressable as a reserved workspace
+### D2: Its configuration home is a reserved `ScopeId`; execution uses a real Workspace
 
-Because ADR-0051's `ScopeId` is **opaque** and the core never interprets whether it
-denotes a workspace or an org, "a special workspace for the assistant" and "an
-org-tier resource" are the **same mechanism** at the persistence/fence layer: one
-reserved `ScopeId` stamped by `ScopedConfig`. We therefore give the assistant a
-**reserved scope** and address it through the **existing** management rewrite —
+Because ADR-0051's `ScopeId` is opaque, the configuration repository can use one
+reserved `ScopeId` as a platform-owned **authoring namespace** without introducing a
+new Agent kind. We give the assistant this reserved configuration scope and address
+its draft through the existing management rewrite —
 `/v1/workspaces/{RESERVED}/config/agents/{id}` collapses to the flat config route via
-`workspace_path.rs:36` and stamps the scope. This **reuses** all authoring,
-addressing, and per-scope isolation machinery and **avoids inventing an Org-tier
-addressing surface** (which does not exist today — `request_scope` always anchors at
-`ScopeRef::Workspace`, `authz-enforce/lib.rs:165-169`).
+`workspace_path.rs:36` and stamps the scope. This reuses the authoring, addressing,
+and per-scope isolation machinery without inventing an Org-tier addressing surface.
 
-Precedent: `DEFAULT_SCOPE = "default"` (`awaken-config-store/src/store.rs:96`) already
-establishes a reserved-scope constant. Multi-org deployments derive one reserved scope
-per org; self-hosted single-org collapses to one (ADR-0048 D4). No new tier, no new
-column.
+The reserved value is **not** a resource, credential, or execution Workspace. At
+publication the edge supplies two independent coordinates:
+
+```text
+configuration_scope = __admin       # draft/publication and tool visibility
+execution_workspace = selected_ws   # installed lookup, resources and credentials
+```
+
+`ConfigPlane::publish_for_execution_workspace` reads and persists through the
+scope-bound configuration repository, resolves the reserved tool-catalog projection,
+and installs the immutable snapshot under `(execution_workspace, agent_id)`. Model
+credential access is pinned for that same execution Workspace. Ordinary Agents use
+the simpler path where both coordinates are equal. The installed catalog must never
+be keyed by Agent id alone.
+
+This is bounded-context separation, not an authorization shortcut. The ingress PEP
+still decides whether the principal may manage the reserved configuration namespace;
+the configuration service receives only trusted coordinates. Resource stores and
+credential adapters receive only the real execution Workspace and never receive
+`__admin`, a principal, token, role, policy, or PDP decision. Self-hosted mode uses
+its hidden default execution Workspace (ADR-0048 D4).
 
 ### D3: Tool visibility is a scope-keyed catalog **projection** — a `ToolCatalogSource` resolver
 
@@ -122,7 +137,7 @@ trait ToolCatalogSource: Send + Sync {
 struct ScopedToolCatalog {
     global: Vec<ToolDescriptor>,   // advertised_tools() output — every scope sees this
     reserved_scope: ScopeId,
-    admin: Vec<ToolDescriptor>,    // the four management descriptors (D4)
+    admin: Vec<ToolDescriptor>,    // the six management descriptors (D4)
 }
 // catalog_for(s) = if s == reserved_scope { [global, admin].concat() } else { global }
 ```
@@ -140,17 +155,21 @@ struct ScopedToolCatalog {
   protocol-as-projection — "which tools exist for this scope" is now a function of the
   opaque scope.
 
-**The runtime executor registry stays global.** compile already guarantees that only
-the reserved scope's compiled snapshot can *name* the management tools (a tenant
-config never compiles a snapshot that references them), so no run outside the reserved
-scope can invoke them. The management `ToolExecutor`s additionally check authority
+**The runtime executor registry stays global.** Compile guarantees that only a
+snapshot authored through the reserved configuration namespace can *name* the
+management tools (an ordinary Workspace config never compiles such a snapshot). That
+snapshot is installed in the explicit real execution Workspace; the reserved
+namespace is not propagated into Runtime. The management `ToolExecutor`s additionally
+check authority
 themselves (they read only the org-shared, redacted view) as defense-in-depth. We do
 **not** scope the runtime tool registry — the compile-time projection is the fence.
 
-### D4: No sandbox — `Backend::Native`; safety lives in the read-only tools behind the gate
+### D4: No sandbox — `Backend::Native`; safety lives in bounded tools behind the gate
 
-The four management tools are **capability-access only**: read-only, redacted,
-never-publish. There is no untrusted execution, no filesystem write, no egress — so
+The six management tools are bounded platform operations and never publish an Agent.
+Capability/help/validation are read-only and redacted; draft mutations use the
+ordinary config/environment application ports plus durable audit and idempotency. No
+tool accepts arbitrary code, filesystem paths, or network destinations, so
 the sandbox axis (`awaken-sandbox-local`, bwrap, `NetworkPolicy`) is a no-op for this
 agent. It runs `Backend::Native` in-process. Safety is a property of the
 `ToolExecutor` implementations (behind the ADR-0043 gate), not of a cage:
@@ -158,9 +177,11 @@ agent. It runs `Backend::Native` in-process. Safety is a property of the
 | Tool id | Function | Constraint |
 | --- | --- | --- |
 | `admin_get_platform_capabilities` | Redacted, scope-aware snapshot of the org's agents / models / providers / plugins / tools / MCP / skills | Read-only; keys/credentials/headers redacted; reads the org-shared view (D5 / ADR-0051), never crosses scope to read tenant detail |
-| `admin_create_agent_draft` | Derive an `AgentConfig` draft from operator intent | Never writes, never publishes; output always `published: false` |
-| `admin_set_plugin_config` | Attach/replace a plugin config section on a draft and validate | Never publishes; size-bounded |
+| `admin_draft_agent` | Derive and persist an `AgentConfig` draft from operator intent | Never publishes; audited/idempotent write; output remains `published: false` |
+| `admin_patch_agent` | Replace selected draft fields and validate | Never publishes; audited/idempotent write; size-bounded |
 | `admin_validate_agent` | Validate a draft with the same server-side check as `/v1/config/agents/validate` | Read-only |
+| `admin_draft_environment` | Author an execution-environment draft through the shared registry | Never activates a run; audited/idempotent application write |
+| `admin_explain_console` | Return bounded in-console help | Read-only; no arbitrary document or network access |
 
 There is deliberately **no publish tool** — publication remains a console action, not
 an LLM tool call. The agent's system instructions are seeded in its `AgentConfig` like
@@ -256,11 +277,11 @@ Positive:
 - Neutral core and its value objects are untouched — no `origin`/`audience`/`locked`
   field; privilege is an edge projection (scope + tool catalog), consistent with
   ADR-0051 (tenancy) and ADR-0034 (protocol).
-- No new tenancy tier and no new addressing surface: the reserved scope reuses
-  ADR-0051's opaque `ScopeId` and ADR-0048's workspace rewrite. "Reserved workspace"
-  and "org-tier resource" are the same mechanism.
-- No sandbox surface to build or reason about; safety is localized in four read-only
-  tool executors behind the existing gate.
+- No new tenancy tier and no new resource: the reserved value is a configuration
+  namespace only. Runtime resources, credential access, and installed lookup use the
+  explicit real Workspace selected at publication.
+- No sandbox surface to build or reason about; safety is localized in six bounded
+  tool executors behind the existing gate and audited application ports.
 - Model binding is zero-touch for the operator yet fully editable, reproducible, and
   fails loud at configuration time. Its two intents are named at the type level
   (`ModelBinding::{Auto, Pinned}`), not encoded as a magic absent value.
@@ -278,7 +299,8 @@ Costs (accepted):
   avoid a stale `Auto` binding — a bounded staleness window between the catalog write
   and a successful reconcile (accepted per D5; idempotent + `Pinned`-skipping, so a
   retry is safe; the run-time alternative was rejected).
-- One more reserved-scope constant to seed and document.
+- One reserved configuration-scope constant to seed and document, plus an explicit
+  execution-Workspace argument at the exceptional Admin publication/reconcile seam.
 
 ## Alternatives considered
 
@@ -305,8 +327,8 @@ Costs (accepted):
 
 ## Migration (slices, each independently green, no stubs)
 
-- **S1** — New crate `crates/agents/awaken-admin-assistant`: the four `ToolExecutor`s
-  (read-only / redacted / `published: false`) and their four `ToolDescriptor`s, plus
+- **S1** — New crate `crates/control/awaken-admin-assistant`: the six `ToolExecutor`s
+  (bounded / redacted / never-publish) and their six `ToolDescriptor`s, plus
   the seeded instruction text. Add the crate to `check_crate_boundaries.py`
   `ALLOWED_DEPS`.
 - **S2** — `ToolCatalogSource` trait + `ScopedToolCatalog`; `ConfigService.tools` →
@@ -316,7 +338,7 @@ Costs (accepted):
   Test: reserved scope compiles a config naming the admin tools; a non-reserved scope
   with the same config gets `UnknownTool`.
 - **S3** — Introduce `ModelBinding::{Auto, Pinned}`; seed the assistant as an ordinary
-  `AgentConfig` (locked-free, instructions + `tool_ids` = the four tools +
+  `AgentConfig` (locked-free, instructions + `tool_ids` = the six tools +
   `ModelBinding::Auto`) in the reserved scope; publish it through the ordinary path so it
   lands in `AgentCatalog` as a compiled `RunnableConfig`; `Backend::Native`, no sandbox.
   Retire this agent's builder bypass. Test: `Pinned` survives publish untouched.
