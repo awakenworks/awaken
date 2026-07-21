@@ -449,10 +449,10 @@ fn spec2_missing_required() -> pc::SandboxSpec {
 
 #[tokio::test]
 async fn memory_store_realizes_as_copy_and_harvests_on_dispose() {
-    use awaken_memory_store::{InMemoryFs, MemoryFs};
+    use awaken_memory_store::{MemoryRepository, VolatileMemoryRepository};
     use awaken_sandbox_memoryd::MemoryStoreMounter;
 
-    let fs = Arc::new(InMemoryFs::new());
+    let fs = Arc::new(VolatileMemoryRepository::new());
     fs.create("s", "/note.md", "v1").await.unwrap();
     // The bwrap tier cannot splice a host FUSE into its namespace yet (ADR-0053
     // item 2), so it uses a copy-only mounter: materialize on create, harvest on
@@ -511,10 +511,10 @@ async fn bwrap_splices_a_live_fuse_memory_mount_into_the_namespace() {
         eprintln!("skipping: no /dev/fuse (copy fallback is covered by memory_mount.rs)");
         return;
     }
-    use awaken_memory_store::{InMemoryFs, MemoryFs};
+    use awaken_memory_store::{MemoryRepository, VolatileMemoryRepository};
     use awaken_sandbox_memoryd::MemoryStoreMounter;
 
-    let fs = Arc::new(InMemoryFs::new());
+    let fs = Arc::new(VolatileMemoryRepository::new());
     fs.create("s", "/note.md", "v1").await.unwrap();
     let tmp = tempfile::tempdir().unwrap();
     // The FUSE-preferring mounter (not `copy_only`): it FUSE-mounts the store at the

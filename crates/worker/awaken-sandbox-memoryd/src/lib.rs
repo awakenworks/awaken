@@ -1,10 +1,10 @@
 //! Write-through memory-store FUSE server (ADR-0053).
 //!
-//! A [`MemoryFuse`](fuse::MemoryFuse) projects a path-addressed [`MemoryFs`] store as
+//! A [`MemoryFuse`](fuse::MemoryFuse) projects a path-addressed [`MemoryRepository`] store as
 //! a filesystem: reads are lazy through a short-TTL LRU cache, writes buffer per-fd
 //! and flush on `flush`/`release` as a **CAS `update`** (keeping the buffer and
 //! returning `EAGAIN` on conflict, never clobbering). Ported from awaken-next's
-//! `awaken-sandbox-memoryd`, adapted to call an **in-process** `MemoryFs` (not HTTP)
+//! `awaken-sandbox-memoryd`, adapted to call an **in-process** `MemoryRepository` (not HTTP)
 //! and to report **faithful `getattr` timestamps** from the store's record.
 //!
 //! The `fuse` feature (default) gates the fuser-backed mount ([`fuse`]); the pure
@@ -29,7 +29,7 @@ pub use copy::{
 };
 #[cfg(feature = "fuse")]
 pub use fuse::{spawn_mount, spawn_mount_with_invalidations};
-pub use invalidate::{InvalidatingMemoryFs, Invalidation, Invalidator, LocalInvalidator};
+pub use invalidate::{InvalidatingMemoryRepository, Invalidation, Invalidator, LocalInvalidator};
 pub use mounter::MemoryStoreMounter;
 
 /// A memoryd operation failure — the store's [`MemErr`] plus FUSE-local faults

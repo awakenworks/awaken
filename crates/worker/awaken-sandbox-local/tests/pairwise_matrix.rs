@@ -20,7 +20,7 @@
 
 use std::sync::Arc;
 
-use awaken_memory_store::{InMemoryFs, MemoryFs};
+use awaken_memory_store::{MemoryRepository, VolatileMemoryRepository};
 use awaken_provisioning_contract as pc;
 use awaken_sandbox_local::{LocalProvider, NamespaceProvider};
 use awaken_sandbox_memoryd::MemoryStoreMounter;
@@ -197,7 +197,7 @@ fn sh(script: String) -> pc::Command {
 }
 
 /// Build the spec + provider for a case, injecting whatever blob/memory backing the
-/// resource needs. Returns the memory fs (when a `Memory` resource) so the harvest can
+/// resource needs. Returns the Memory repository (for a `Memory` resource) so teardown can
 /// be asserted after dispose.
 async fn build(
     case: &Case,
@@ -205,7 +205,7 @@ async fn build(
 ) -> (
     pc::SandboxSpec,
     Box<dyn pc::SandboxProvider>,
-    Option<Arc<InMemoryFs>>,
+    Option<Arc<VolatileMemoryRepository>>,
 ) {
     let mount_path = "/data/in.txt";
     let mem_path = "/workspace/memory";
@@ -271,9 +271,9 @@ async fn build(
         extra: None,
     };
 
-    // A memory fs seeded with one note, shared with the assertion side.
+    // A volatile Memory repository seeded with one note, shared with the assertion side.
     let mem_fs = if matches!(case.res, Res::Memory) {
-        let fs = Arc::new(InMemoryFs::new());
+        let fs = Arc::new(VolatileMemoryRepository::new());
         fs.create("s", "/note.md", "v1").await.unwrap();
         Some(fs)
     } else {

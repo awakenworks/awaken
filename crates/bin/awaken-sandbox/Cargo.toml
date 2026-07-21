@@ -39,7 +39,7 @@ hand = [
 memoryd = [
     "dep:awaken-sandbox-memoryd",
     "dep:awaken-memory-store",
-    # The store-owned sqlite backing database (SqliteMemoryFs + the memory-store
+    # The store-owned sqlite backing database (SqliteMemoryRepository + the memory-store
     # scoped migrations); the FUSE server projects it as files.
     "awaken-memory-store/sqlite",
 ]

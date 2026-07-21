@@ -15,7 +15,7 @@ struct TestInput {
     mount_path: String,
     access: awaken_resource_contract::ResourceAccess,
     instructions: Option<String>,
-    git_ref: Option<String>,
+    initial_branch: Option<String>,
 }
 
 use awaken_resource_contract::ResourceAccess;
@@ -134,7 +134,7 @@ fn effective_resources(
                             version: awaken_resource_contract::ConfigVersion::INITIAL,
                             remote_url: resource.id,
                             credential_binding: None,
-                            initial_branch: resource.git_ref,
+                            initial_branch: resource.initial_branch,
                             clone_policy: Default::default(),
                         },
                     },
@@ -202,7 +202,7 @@ fn memory_mount_store_id(mount: &awaken_provisioning_contract::MountRequirement)
 /// Test composition adapter for runtime-host's dependency-inverted MemoryMounter
 /// port. Production installs `awaken-sandbox-memoryd` from awaken-server.
 struct TestMemoryMounter {
-    fs: Arc<dyn awaken_memory_store::MemoryFs>,
+    fs: Arc<dyn awaken_memory_store::MemoryRepository>,
 }
 
 struct TestMemoryMount;
@@ -260,7 +260,7 @@ impl awaken_provisioning_contract::MemoryMounter for TestMemoryMounter {
 
 fn install_test_memory_mounter(host: &SharedHost) {
     host.install_memory_mounter(Arc::new(TestMemoryMounter {
-        fs: host.memory_fs(),
+        fs: host.memory_repository(),
     }));
 }
 
@@ -647,7 +647,7 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
                         // handle-level read-only invariant is covered separately.
                         access: ResourceAccess::ReadWrite,
                         instructions: None,
-                        git_ref: None,
+                        initial_branch: None,
                     })
                     .into_iter()
                     .collect(),
@@ -773,7 +773,7 @@ async fn pinned_memory_policy_can_disable_recall_and_extraction() {
         mount_path: "/memory".into(),
         access: ResourceAccess::ReadWrite,
         instructions: None,
-        git_ref: None,
+        initial_branch: None,
     }]);
     let ResolvedInputSource::MemoryStore { config, .. } = &mut init.resources.inputs[0].source
     else {
@@ -1085,7 +1085,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         mount_path: "/data.txt".into(),
         access: ResourceAccess::ReadOnly,
         instructions: None,
-        git_ref: None,
+        initial_branch: None,
     };
     let attached = effective_resources(vec![res.clone()]);
     managed
@@ -1266,7 +1266,7 @@ async fn prepare_session_mounts_an_effective_memory_resource() {
                     mount_path: "/mnt/memory".into(),
                     access: ResourceAccess::ReadWrite,
                     instructions: None,
-                    git_ref: None,
+                    initial_branch: None,
                 })
                 .into_iter()
                 .collect(),
@@ -1349,7 +1349,7 @@ async fn activation_applies_current_resource_state_as_a_deny_only_overlay() {
         mount_path: "/mnt/memory".into(),
         access: ResourceAccess::ReadOnly,
         instructions: None,
-        git_ref: None,
+        initial_branch: None,
     }]);
     catalog
         .set_memory_state(host.local_workspace(), &store_id, ResourceState::Suspended)
@@ -1406,7 +1406,7 @@ async fn memory_activation_enforces_catalog_workspace_without_iam_policy_logic()
         mount_path: "/memory".into(),
         access: ResourceAccess::ReadWrite,
         instructions: None,
-        git_ref: None,
+        initial_branch: None,
     }]);
 
     let error = managed
@@ -1446,7 +1446,7 @@ async fn prepare_session_mounts_effective_file_and_stages_effective_repo() {
                         mount_path: "/mnt/files/notes.txt".into(),
                         access: ResourceAccess::ReadOnly,
                         instructions: None,
-                        git_ref: None,
+                        initial_branch: None,
                     },
                     TestInput {
                         kind: "github_repository".into(),
@@ -1454,7 +1454,7 @@ async fn prepare_session_mounts_effective_file_and_stages_effective_repo() {
                         mount_path: "/mnt/repo".into(),
                         access: ResourceAccess::ReadOnly,
                         instructions: None,
-                        git_ref: None,
+                        initial_branch: None,
                     },
                 ]),
                 model: None,
@@ -1539,7 +1539,7 @@ async fn file_activation_rejects_bytes_that_do_not_match_the_file_id() {
         mount_path: "/mnt/input.bin".into(),
         access: ResourceAccess::ReadOnly,
         instructions: None,
-        git_ref: None,
+        initial_branch: None,
     }]);
 
     let error = managed.prepare_session("t-corrupt-file", init).await;
@@ -1565,7 +1565,7 @@ async fn file_activation_enforces_workspace_ownership_without_iam_policy_logic()
         mount_path: "/mnt/input.txt".into(),
         access: ResourceAccess::ReadOnly,
         instructions: None,
-        git_ref: None,
+        initial_branch: None,
     }]);
 
     let error = managed.prepare_session("t-cross-workspace", init).await;
@@ -1816,7 +1816,7 @@ async fn told_equals_mounted_the_prompt_path_and_access_match_the_realized_mount
         mount_path: "/mnt/memory".into(),
         access: ResourceAccess::ReadOnly,
         instructions: None,
-        git_ref: None,
+        initial_branch: None,
     };
     let managed = managed_with_resource_source(host.clone());
     let mut init = bare_session("a", host.local_workspace());
@@ -1860,7 +1860,7 @@ async fn runtime_stages_exactly_the_effective_resource_list() {
         mount_path: "/mnt/memory".into(),
         access: ResourceAccess::ReadWrite,
         instructions: None,
-        git_ref: None,
+        initial_branch: None,
     }]);
     managed.prepare_session("t-g3", init).await.unwrap();
 
@@ -1904,7 +1904,7 @@ async fn a_bound_resource_with_a_missing_backing_store_fails_the_session_closed(
         mount_path: "/mnt/memory".into(),
         access: ResourceAccess::ReadWrite,
         instructions: None,
-        git_ref: None,
+        initial_branch: None,
     }]);
 
     let result = managed.prepare_session("t-g4", init).await;
@@ -1935,7 +1935,7 @@ async fn an_effective_resource_mounts_on_a_worker_without_the_binding_repository
         mount_path: "/mnt/memory".into(),
         access: ResourceAccess::ReadOnly,
         instructions: None,
-        git_ref: None,
+        initial_branch: None,
     }]);
     managed_worker
         .prepare_session("t-g5-worker", init)

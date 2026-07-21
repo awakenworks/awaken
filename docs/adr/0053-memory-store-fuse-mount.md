@@ -67,12 +67,12 @@ and the **single-process/concurrent wiring**.
 
 ### D1 — Upgrade the memory model to path-addressed + CAS (the foundation)
 
-Introduce an in-process **`MemoryFs` port** (a `crates/resources/` trait) whose
+Introduce an in-process **`MemoryRepository` port** (a `crates/resources/` trait) whose
 method shapes mirror `awaken-next`'s `MemoryClient`, but async and in-process:
 
 ```rust
 #[async_trait]
-pub trait MemoryFs: Send + Sync {
+pub trait MemoryRepository: Send + Sync {
     async fn list(&self, store: &str, prefix: &str) -> Result<Vec<MemoryEntry>, MemErr>;
     async fn get_by_path(&self, store: &str, path: &str) -> Result<Option<Memory>, MemErr>;
     async fn create(&self, store: &str, path: &str, content: &str) -> Result<Memory, MemErr>;
@@ -114,7 +114,7 @@ The existing `memory_store_api.rs` HTTP facade is repointed at
 
 A new crate in the **`server` bucket** (`worker ⊥ resources`, so a crate that calls
 a resources-tier store cannot be `worker`). It depends on `fuser 0.15` (feature
-`fuse`, default on), `awaken-memory-store` (the `MemoryFs` port), and the
+`fuse`, default on), `awaken-memory-store` (the `MemoryRepository` port), and the
 provisioning contract. `fuser` is added to `check_crate_boundaries.py`'s
 `ALLOWED_DEPS`.
 
@@ -123,7 +123,7 @@ interning, `OpenFile` per-fd buffer, `ContentLruCache` (TTL 1s, cap 256, key=pat
 the dirty-fd budget (128, fail-closed), `sha256_hex`, `splice_bytes`,
 `MemoryMountHandle` (open-fd counting + bounded 5 s unmount drain), mount options
 (`FSName("awaken-memory")`, `NoExec`/`NoSuid`/`NoDev`), errno mapping. The **only
-substantive change** is that `MemoryClient` (HTTP) becomes `Arc<dyn MemoryFs>`; each
+substantive change** is that `MemoryClient` (HTTP) becomes `Arc<dyn MemoryRepository>`; each
 sync FUSE callback drives it via a dedicated tokio runtime + `block_on`, exactly as
 before. Directories are synthetic (rolled up from path listings); `mkdir` is
 store-free.
@@ -214,7 +214,7 @@ the store — the in-memory `path → version` index D1 already maintains is the
 oracle; a remote oracle is a cheap version query) plus an **`Invalidator`** seam
 (in-process bus now; NATS / pg-notify later). CAS write-safety is identical in both
 models. The interface is designed so the distributed model bolts on without
-reworking `MemoryFs` or the FUSE.
+reworking `MemoryRepository` or the FUSE.
 
 ### D6 — The unit of work is the provisioning-contract mount, not a legacy bolt-on
 
@@ -250,7 +250,7 @@ is to make them realize it, and to fill the currently-stubbed `Sandbox::attach`
   Teardown creates new paths, updates changed paths against the captured head, and
   deletes only captured paths through atomic `delete_if_match`. Concurrent durable
   heads win and are reported; paths created after materialization are never deleted
-  as locally absent. Both realizations back the one durable `MemoryFs`, so a store is
+  as locally absent. Both realizations back the one durable `MemoryRepository`, so a store is
   portable across FUSE-capable and FUSE-less hosts.
 - **Workdir tier first, then the namespace splice.** The Workdir `LocalProvider`
   realizes the FUSE mount at the sandbox path with **no mount-namespace splice**
@@ -265,8 +265,8 @@ is to make them realize it, and to fill the currently-stubbed `Sandbox::attach`
 
 | Slice | Content | Acceptance |
 |---|---|---|
-| **P0** | `MemoryFs` port + `PathAddressedMemoryStore` (inmem+fs): path-unique, CAS, monotonic version, stored timestamps, atomic rename-replace | Rust unit: create / update-CAS-conflict / rename-replace / delete / list |
-| **P1** | `awaken-sandbox-memoryd`: port `fuse.rs` over `MemoryFs`; conformance floor; real timestamps in `attr` | Ported unit tests: dirty-budget fail-closed, rename-keeps-open-fd, stale-fd-no-clobber |
+| **P0** | `MemoryRepository` port + `PathAddressedMemoryStore` (inmem+fs): path-unique, CAS, monotonic version, stored timestamps, atomic rename-replace | Rust unit: create / update-CAS-conflict / rename-replace / delete / list |
+| **P1** | `awaken-sandbox-memoryd`: port `fuse.rs` over `MemoryRepository`; conformance floor; real timestamps in `attr` | Ported unit tests: dirty-budget fail-closed, rename-keeps-open-fd, stale-fd-no-clobber |
 | **P2** | `MountCoordinator` (refcounted shared mount per `store_id`) + mount handle drain | Unit: refcount acquire/release, open-fd drain |
 | **P2.5** | Concurrency tests | (1) mount A writes → mount B reads fresh; (2) concurrent write same file → one wins, one `EAGAIN`, no lost update; (3) create-create race → one wins; (4) two sandboxes share store, release one, other still R/W, unmount only at 0 |
 | **P3** | Contract provider wiring: `LocalProvider` realizes `MemoryStore` → `Realization::Fuse` via the injected `MemoryMounter`; route the host memory-store family through the contract provider (retire copy-in/harvest for it) | Kernel-VFS integration test (gated on `/dev/fuse`) + TS e2e: agent writes memory files, readable across turns and after restart |
@@ -304,7 +304,7 @@ is to make them realize it, and to fill the currently-stubbed `Sandbox::attach`
   or the store directly. The FUSE/copy realizer (`MemoryStoreMounter`) lives in
   `awaken-sandbox-memoryd` (worker) and is the only crate that links `fuser`; the
   composition root injects it.
-- **Delivered:** P0 (`MemoryFs` port + CAS store, including conditional delete), P1 (the FUSE port, proven by a
+- **Delivered:** P0 (`MemoryRepository` port + CAS store, including conditional delete), P1 (the FUSE port, proven by a
   real kernel-VFS integration test), P2/P2.5 (`MountCoordinator` + concurrency),
   P3 (95% changed-code coverage), P4 (the durable path-addressed store backs the
   `/memories` HTTP endpoints, with a restart-durable TS e2e), and P5 minus the bwrap
@@ -330,12 +330,12 @@ is to make them realize it, and to fill the currently-stubbed `Sandbox::attach`
   per-mount invalidation listener (item 4) rather than a single shared mount, so the
   D5 guarantee holds without the privileged splice the shared-mount model would need.
 - **Distributed coherence — delivered (item 4).** `Invalidator` + `LocalInvalidator`
-  (in-process broadcast) with an `InvalidatingMemoryFs` write-side decorator and a
+  (in-process broadcast) with an `InvalidatingMemoryRepository` write-side decorator and a
   FUSE-side listener that drops invalidated paths from the content cache; a
   NATS/pg-notify transport swaps in behind the same trait. Unit-tested (publish→drop,
   reads-don't-invalidate, matching-store-only).
-- **Backends — delivered (item 5).** `SqliteMemoryFs` (tested, restart-durable) and
-  `PgMemoryFs` (cross-node CAS via `SELECT … FOR UPDATE`) over one scoped-migration
+- **Backends — delivered (item 5).** `SqliteMemoryRepository` (tested, restart-durable) and
+  `PostgresMemoryRepository` (cross-node CAS via `SELECT … FOR UPDATE`) over one scoped-migration
   bundle.
 - **Deferred — bwrap namespace splice (item 2).** Exposing a *live* FUSE mount inside
   the bwrap namespace still needs host mount propagation (`rshared`), an extra

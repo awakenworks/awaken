@@ -1,7 +1,7 @@
 // Durable path-addressed memory store (ADR-0053) over HTTP, across a real restart.
 //
 // The `/v1/memory_stores/:id/memories` endpoints are backed by the durable,
-// path-addressed `MemoryFs` (content_sha256 + compare-and-swap) — the same store a
+// path-addressed `MemoryRepository` (content_sha256 + compare-and-swap) — the same store a
 // write-through FUSE mount projects. This drives that store end-to-end through the
 // real server binary: create path-addressed memories, exercise the CAS precondition
 // (stale → 409, fresh → ok, version bumped), path_prefix listing, then KILL the
@@ -11,7 +11,7 @@
 // Deterministic (`echo` mode; the memory API is model-independent), so it runs in CI
 // without an API key.
 //
-// Run: (from e2e/)  node managed_memory_fs_durable_e2e.mjs
+// Run: (from e2e/)  node managed_memory_repository_durable_e2e.mjs
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -20,7 +20,7 @@ import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38513);
 const BETAS = ['managed-agents-2026-04-01'];
-const STORE_DIR = `/tmp/awaken-memfs-durable-e2e-${process.pid}`;
+const STORE_DIR = `/tmp/awaken-memory-repository-durable-e2e-${process.pid}`;
 
 const client = () => new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
 const drain = async (p) => {

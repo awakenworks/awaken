@@ -5,7 +5,7 @@
 //! precondition / delete), and the `memory_versions` log (list / retrieve / redact),
 //! plus the fail-closed error arms (unknown store, unknown memory, bad path).
 //!
-//! The router is built over a real `SharedHost` and its in-memory `SqliteMemoryFs` —
+//! The router is built over a real `SharedHost` and its in-memory `SqliteMemoryRepository` —
 //! the same path-addressed content model a durable deployment runs.
 
 use std::sync::Arc;

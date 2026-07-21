@@ -1,6 +1,6 @@
 //! Port-only contract for the resources plane (files, memory, repositories, skills).
 //!
-//! The three mountable-resource **ports** — [`FileStore`], [`MemoryFs`],
+//! The three mountable-resource **ports** — [`FileStore`], [`MemoryRepository`],
 //! [`SkillStore`] — plus the value/error types in their signatures,
 //! and **nothing else**: no backend, no SQL driver, no filesystem. It mirrors
 //! [`awaken-provisioning-contract`](https://docs.rs/awaken-provisioning-contract):
@@ -208,7 +208,7 @@ mod skill_bytes {
 }
 
 // ---------------------------------------------------------------------------
-// Memory FS (ADR-0053): path-addressed, CAS memory port + its value types.
+// Memory repository (ADR-0053): path-addressed CAS aggregate port + value types.
 // ---------------------------------------------------------------------------
 
 /// Hard cap on a single memory's content (Anthropic parity, ADR-0057). Enforced on
@@ -236,7 +236,7 @@ pub struct Memory {
 }
 
 /// A directory-listing entry (no content). Serializes with the same field names as a
-/// content-less [`Memory`], so a `MemoryFs::list` result crosses the managed/HTTP
+/// content-less [`Memory`], so a `MemoryRepository::list` result crosses the managed/HTTP
 /// surfaces directly rather than being re-projected through `Memory` first.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryEntry {
@@ -273,7 +273,7 @@ pub struct MemoryVersion {
     pub redacted_unix_nanos: Option<u128>,
 }
 
-/// A [`MemoryFs`] failure.
+/// A [`MemoryRepository`] failure.
 #[derive(Debug, thiserror::Error)]
 pub enum MemErr {
     #[error("memory not found: {0}")]
@@ -317,7 +317,7 @@ pub fn validate_path_len(path: &str) -> Result<(), MemErr> {
 /// Idempotent updates/deletes append nothing. This invariant is what keeps API
 /// versions, runtime recall/extraction, and mounted content on one source of truth.
 #[async_trait]
-pub trait MemoryFs: Send + Sync {
+pub trait MemoryRepository: Send + Sync {
     /// Memories whose path is at or under `prefix` (`"/"` or `""` = all).
     async fn list(&self, store: &str, prefix: &str) -> Result<Vec<MemoryEntry>, MemErr>;
     /// The memory at `path`, or `None`.
