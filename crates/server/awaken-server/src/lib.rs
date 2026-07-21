@@ -99,6 +99,26 @@ pub fn local_managed_state(
     host: Arc<SharedHost>,
     catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
 ) -> Arc<ManagedState> {
+    local_managed_state_over(host, catalog, None)
+}
+
+/// [`local_managed_state`] with the Environment registry/work queue installed on
+/// the same Managed aggregate. Composition roots that mount `/v1/environments`
+/// must pass that exact state here so Session environment pins resolve through the
+/// registry that authored them.
+pub fn local_managed_state_with_environments(
+    host: Arc<SharedHost>,
+    catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
+    environments: Arc<awaken_protocol_managed::EnvironmentState>,
+) -> Arc<ManagedState> {
+    local_managed_state_over(host, catalog, Some(environments))
+}
+
+fn local_managed_state_over(
+    host: Arc<SharedHost>,
+    catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
+    environments: Option<Arc<awaken_protocol_managed::EnvironmentState>>,
+) -> Arc<ManagedState> {
     let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
     let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
     let mcp_store = Arc::new(awaken_config_resolver::InMemoryMcpStore::new());
@@ -130,7 +150,11 @@ pub fn local_managed_state(
         Some(repo) => managed.with_session_repo(repo),
         None => managed,
     };
-    Arc::new(managed.with_vaults(vaults).with_resource_catalog(catalog))
+    let managed = managed.with_vaults(vaults).with_resource_catalog(catalog);
+    Arc::new(match environments {
+        Some(environments) => managed.with_environments(environments),
+        None => managed,
+    })
 }
 
 /// The deployment role this process runs as — the single role axis, selected by

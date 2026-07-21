@@ -199,7 +199,8 @@ impl SandboxCapabilities {
     ///
     /// Matches the two load-bearing axes the vocabulary makes selectable: isolation
     /// class (the provider must *meet or exceed* the requested minimum) and network
-    /// isolation (required for anything stricter than [`NetworkPolicy::Unrestricted`]).
+    /// isolation (required for anything stricter than
+    /// [`NetworkPolicy::Unrestricted`](crate::vocab::NetworkPolicy::Unrestricted)).
     #[must_use]
     pub fn satisfies(&self, spec: &crate::spec::SandboxSpec) -> bool {
         use crate::vocab::NetworkPolicy;

@@ -57,6 +57,20 @@ fn resource_host(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> Sha
     ))
 }
 
+/// Scenario composition with the Environment API and the same Resource Catalog,
+/// credential plane, and Session repository used by [`mount`].
+fn mount_with_environments(host: Arc<SharedHost>) -> Router {
+    let catalog = scenario_resource_catalog();
+    let environments = Arc::new(awaken_protocol_managed::EnvironmentState::new());
+    let managed = awaken_server::local_managed_state_with_environments(
+        host.clone(),
+        catalog.clone(),
+        environments.clone(),
+    );
+    awaken_server::mount_with_managed_and_resource_catalog(host, managed, catalog)
+        .merge(awaken_protocol_managed::environments_router(environments))
+}
+
 /// Resource HTTP adapters without the product composition root's local Workspace
 /// injector. This intentionally incomplete test composition proves that File,
 /// MemoryStore, and Skill routes fail closed instead of deriving a Workspace from
@@ -293,11 +307,7 @@ pub fn build_worker_router() -> Router {
     let client_tools = HashSet::from(["submit_answer".to_string()]);
     let (model, model_ref) = scenario_model(Arc::new(CustomToolModel), "worker");
     let host = Arc::new(SharedHost::new(model, model_ref).with_client_tools(client_tools));
-    let env_state = std::sync::Arc::new(awaken_protocol_managed::EnvironmentState::new());
-    let environments = awaken_protocol_managed::environments_router(env_state.clone());
-    let managed_state =
-        Arc::new(ManagedState::new(ManagedHost::new(host.clone())).with_environments(env_state));
-    mount_with_managed(host, managed_state).merge(environments)
+    mount_with_environments(host)
 }
 
 /// A fake ACP agent speaking the OFFICIAL JSON-RPC 2.0 wire (shell builtins only,
@@ -637,15 +647,9 @@ pub fn build_acp_sandboxed_router() -> Router {
         source,
     )));
     let host = Arc::new(host.with_acp(acp));
-    // Mount `/v1/environments` and share its state with the session surface, so a
-    // session's environment networking policy reaches `register_thread_egress` —
-    // the same registrations the sandboxed launch reads (unlike the plain `mount`,
-    // whose managed state carries no environment resolver).
-    let env_state = std::sync::Arc::new(awaken_protocol_managed::EnvironmentState::new());
-    let environments = awaken_protocol_managed::environments_router(env_state.clone());
-    let managed_state =
-        Arc::new(ManagedState::new(ManagedHost::new(host.clone())).with_environments(env_state));
-    mount_with_managed(host, managed_state).merge(environments)
+    // Mount `/v1/environments` over the same complete Managed state/resource
+    // catalog used by every other scenario.
+    mount_with_environments(host)
 }
 
 /// The container-tier sibling of [`build_acp_sandboxed_router`]: the deterministic ACP
@@ -672,9 +676,8 @@ pub async fn build_acp_container_router() -> Router {
         .with_acp_from_env(awaken_server::relay_hand_executor_factory())
         .await;
     // Use the same shared Resource Catalog + Managed ACL assembly as every other
-    // scenario. A bespoke state here previously dropped repository resolution and
-    // made the container path fail closed before the Session environment existed.
-    mount(Arc::new(host))
+    // scenario, with the exact EnvironmentState mounted by the environment API.
+    mount_with_environments(Arc::new(host))
 }
 
 // ── Router assembly ─────────────────────────────────────────────────────────
