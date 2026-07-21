@@ -169,6 +169,14 @@ function persistTerminalRelease(database, sessionId) {
   updateSessionRow(database, sessionId, 'terminated', '2026-07-22T00:00:00Z', resources);
 }
 
+function persistLegacyManifest(database, sessionId) {
+  const row = sessionRow(database, sessionId);
+  assert.equal(row.status, 'idle');
+  assert.equal(row.resources.pending, undefined);
+  assert.ok(row.resources.active.inputs.length > 0);
+  updateSessionRow(database, sessionId, 'idle', null, row.resources.active);
+}
+
 function receipts(directory) {
   const database = path.join(directory, 'resource-lifecycle.db');
   if (!fs.existsSync(database)) return [];
@@ -215,6 +223,13 @@ async function main() {
     });
     assert.equal(recovering.status, 200, JSON.stringify(recovering.body));
 
+    const legacy = await json('POST', scoped('sessions'), {
+      agent: 'assistant',
+      environment_id: 'env_local',
+      resources: [{ type: 'file', file_id: fileId, mount_path: '/workspace/legacy.txt' }],
+    });
+    assert.equal(legacy.status, 200, JSON.stringify(legacy.body));
+
     const repository = seedRepository(directory);
     const terminating = await json('POST', scoped('sessions'), {
       agent: 'assistant',
@@ -232,6 +247,7 @@ async function main() {
     // the states the coordinator persists before external sandbox/catalog IO.
     await stop(server, 'SIGKILL');
     persistPreparedGeneration(sessionsDatabase, recovering.body.id);
+    persistLegacyManifest(sessionsDatabase, legacy.body.id);
     persistTerminalRelease(sessionsDatabase, terminating.body.id);
 
     server = start(bin, directory);
@@ -247,6 +263,20 @@ async function main() {
     assert.equal(recovered.resources.activations[1].attempts, 1);
     assert.equal(recovered.resources.activations[1].last_error, undefined);
 
+    // Legacy rows stored only the resolved manifest. A request after restart
+    // forces durable rehydration, realizes the same manifest, and upgrades the
+    // row to the activation state machine before transcript lookup returns 404.
+    const legacyLookup = await json('GET', scoped(`sessions/${legacy.body.id}/live-inbox`));
+    assert.equal(legacyLookup.status, 404);
+    const upgraded = sessionRow(sessionsDatabase, legacy.body.id);
+    assert.equal(upgraded.status, 'idle');
+    assert.equal(upgraded.resources.revision, 1);
+    assert.equal(upgraded.resources.pending, undefined);
+    assert.equal(upgraded.resources.activations.length, 1);
+    assert.equal(upgraded.resources.activations[0].state, 'active');
+    assert.equal(upgraded.resources.activations[0].attempts, 1);
+    assert.equal(upgraded.resources.activations[0].last_error, undefined);
+
     const released = sessionRow(sessionsDatabase, terminating.body.id);
     assert.equal(released.status, 'terminated');
     assert.equal(released.resources.pending, undefined);
@@ -256,7 +286,7 @@ async function main() {
     const receipt = await waitRepositoryReceipt(directory, repositoryId);
     assert.equal(receipt.receipt.evidence.local_realizations_deleted, 0);
 
-    console.log('E2E PASS: Prepared activation and terminal release recover after process death.');
+    console.log('E2E PASS: prepared, legacy, and terminal activation states recover after process death.');
   } finally {
     await stop(server).catch(() => {});
     fs.rmSync(directory, { recursive: true, force: true });
