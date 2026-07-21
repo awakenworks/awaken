@@ -26,8 +26,8 @@ awaken-protocol-a2a = { workspace = true }
 awaken-protocol-mcp = { workspace = true }
 awaken-protocol-transport = { workspace = true }
 awaken-config-store = { workspace = true }
-# Durable memory persistence (resources plane): the memory-extraction mode roots its
-# store under AWAKEN_STORAGE_DIR via `memory_scope_root` so it survives a restart.
+# Canonical Memory data plane used by API, mount, recall, extraction, history, and
+# redaction. The composition root selects its durable or ephemeral adapter once.
 awaken-memory-store = { workspace = true }
 # Concrete worker adapter is assembled here, outside runtime-host, behind the
 # neutral MemoryMounter port (FUSE where available, copy/harvest otherwise).
