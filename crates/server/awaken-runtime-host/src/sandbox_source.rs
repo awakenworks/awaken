@@ -700,7 +700,7 @@ impl AgentChannelSource for SandboxChannelSource {
 /// Unlike [`SandboxChannelSource`], this source never realizes an environment;
 /// it only projects per-run launch data and starts a process in the bound one.
 pub struct BoundLocalChannelSource {
-    sandbox: Arc<awaken_sandbox_local::LocalSandbox>,
+    sandbox: Arc<dyn crate::session_environment::AgentSandbox>,
     launch: LaunchSource,
     codec: awaken_run_executor_acp::Codec,
 }
@@ -708,6 +708,21 @@ pub struct BoundLocalChannelSource {
 impl BoundLocalChannelSource {
     #[must_use]
     pub fn new(sandbox: Arc<awaken_sandbox_local::LocalSandbox>, launch: LaunchSource) -> Self {
+        let codec = match &launch {
+            LaunchSource::Fixed(_) => awaken_run_executor_acp::Codec::Newline,
+            LaunchSource::Projected { .. } => awaken_run_executor_acp::Codec::Acp,
+        };
+        Self {
+            sandbox,
+            launch,
+            codec,
+        }
+    }
+
+    pub(crate) fn from_environment(
+        sandbox: Arc<crate::session_environment::SessionEnvironment>,
+        launch: LaunchSource,
+    ) -> Self {
         let codec = match &launch {
             LaunchSource::Fixed(_) => awaken_run_executor_acp::Codec::Newline,
             LaunchSource::Projected { .. } => awaken_run_executor_acp::Codec::Acp,

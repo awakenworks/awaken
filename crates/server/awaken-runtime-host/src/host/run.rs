@@ -609,7 +609,7 @@ impl SharedHost {
         // run-end guard steers revisions until the goal is met or the budget is
         // spent. The host drives one run and projects the rounds it committed. The
         // guard shares the thread's committed history and sandbox root.
-        let goal_runtime = build_runtime(self.llm.clone(), &ctx.env)
+        let goal_runtime = build_runtime(self.llm.clone(), ctx.env.as_ref())
             .with_plugin(Arc::new(GoalPlugin::new(goal, self.grader.clone())));
         // The goal run auto-approves tools to drive to a deliverable, so it does not
         // advertise `agent_run` (which awaits and is host-fulfilled, not auto-run).

@@ -10,7 +10,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use awaken_run_executor_acp::{AcpRunExecutor, LaunchObserver, SessionHomeProvider};
-use awaken_sandbox_local::LocalSandbox;
 
 enum AcpExecutorSource {
     Static(Arc<AcpRunExecutor>),
@@ -67,7 +66,10 @@ impl AcpBackend {
     /// Materialize the executor for this session. Production local ACP uses a
     /// source bound to the session's existing sandbox; injected/static executors
     /// remain available for remote adapters and deterministic tests.
-    pub(crate) fn executor_for(&self, sandbox: Arc<LocalSandbox>) -> Arc<AcpRunExecutor> {
+    pub(crate) fn executor_for(
+        &self,
+        sandbox: Arc<crate::session_environment::SessionEnvironment>,
+    ) -> Arc<AcpRunExecutor> {
         match &self.source {
             AcpExecutorSource::Static(executor) => executor.clone(),
             AcpExecutorSource::Bound {
@@ -75,7 +77,10 @@ impl AcpBackend {
                 observer,
                 session_home,
             } => {
-                let source = Arc::new(crate::BoundLocalChannelSource::new(sandbox, launch.clone()));
+                let source = Arc::new(crate::BoundLocalChannelSource::from_environment(
+                    sandbox,
+                    launch.clone(),
+                ));
                 let mut executor = AcpRunExecutor::new(source);
                 if let Some(observer) = observer {
                     executor = executor.with_launch_observer(observer.clone());

@@ -246,14 +246,16 @@ impl SharedHost {
                 .await;
             return Ok(ctx);
         }
-        let env = Arc::new(match adopted {
-            Some(env) => env,
-            None => self
-                .provider
-                .create_sandbox(&self.sandbox_spec(thread))
-                .await
-                .map_err(|e| HostError::internal(e.to_string()))?,
-        });
+        let env = Arc::new(crate::session_environment::SessionEnvironment::workdir(
+            match adopted {
+                Some(env) => env,
+                None => self
+                    .provider
+                    .create_sandbox(&self.sandbox_spec(thread))
+                    .await
+                    .map_err(|e| HostError::internal(e.to_string()))?,
+            },
+        ));
         // Clone any staged github_repository resources into the fresh sandbox,
         // host-side (ADR-0038); fail-closed so a bad repo aborts session start.
         self.realize_thread_repositories(thread, env.as_ref())?;
@@ -337,7 +339,7 @@ impl SharedHost {
         // Resolving per run — not once at session build — means a per-turn model
         // switch needs no session rebuild, and a database-less worker runs the
         // configured model without a session-level registry.
-        let mut runtime = build_runtime(self.llm.clone(), &env);
+        let mut runtime = build_runtime(self.llm.clone(), env.as_ref());
         if apply_base_gate {
             runtime = runtime.with_gate(base_gate.clone());
         }
@@ -360,7 +362,7 @@ impl SharedHost {
         }
         // Delegation is a runtime concern: inject the executor so the kernel runs
         // `agent_run` as a sub-agent (native or remote), not the tool registry.
-        if let Some(service) = self.run_delegation(env.clone(), commit.clone())? {
+        if let Some(service) = self.run_delegation(env.workdir_handle(), commit.clone())? {
             runtime = runtime.with_run_delegation(service);
         }
         // Skills are fronted by two stable tools (ADR-0036); all skill behavior is
@@ -426,7 +428,7 @@ impl SharedHost {
         if let Some(wiring) = crate::skills::wire_skills(
             &filtered_specs,
             filtered_delivered,
-            env.clone(),
+            env.workdir_handle(),
             self.llm.clone(),
             &self.model_ref,
             thread,

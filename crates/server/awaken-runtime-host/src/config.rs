@@ -323,7 +323,26 @@ pub(crate) fn server_gate_allowing(
 /// A per-thread runtime whose hand tools come from `env` (placement-agnostic). No
 /// `agent_run` executor is registered: a delegate call is advertised by the config
 /// but the kernel runs it via the injected resolver, not the tool registry.
-pub(crate) fn build_runtime(llm: Arc<dyn LlmExecutor>, sandbox: &LocalSandbox) -> Runtime {
+pub(crate) trait RuntimeToolSource {
+    fn runtime_tools(&self) -> Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>;
+}
+
+impl RuntimeToolSource for LocalSandbox {
+    fn runtime_tools(&self) -> Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>> {
+        self.rooted_tools()
+    }
+}
+
+impl RuntimeToolSource for crate::session_environment::SessionEnvironment {
+    fn runtime_tools(&self) -> Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>> {
+        self.rooted_tools()
+    }
+}
+
+pub(crate) fn build_runtime<S: RuntimeToolSource + ?Sized>(
+    llm: Arc<dyn LlmExecutor>,
+    sandbox: &S,
+) -> Runtime {
     let mut runtime = Runtime::new()
         .with_llm(llm)
         .with_gate(server_gate())
@@ -335,7 +354,7 @@ pub(crate) fn build_runtime(llm: Arc<dyn LlmExecutor>, sandbox: &LocalSandbox) -
         .with_plugin(Arc::new(StateMachinePlugin::empty()));
     // The full capability surface (ADR-0035 D8): hand tools plus provisioned skill
     // tools. Placement-agnostic — the kernel sees `RawTool`s, not "skills".
-    for tool in sandbox.rooted_tools() {
+    for tool in sandbox.runtime_tools() {
         runtime = runtime.with_tool(tool);
     }
     runtime
