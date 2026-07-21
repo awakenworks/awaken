@@ -872,7 +872,6 @@ pub(crate) fn status_name(status: awaken_resource_contract::ResourcePurgeStatus)
         ResourcePurgeStatus::Pending => "pending",
         ResourcePurgeStatus::Claimed => "claimed",
         ResourcePurgeStatus::Completed => "completed",
-        ResourcePurgeStatus::TerminalFailed => "terminal_failed",
     }
 }
 
