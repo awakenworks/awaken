@@ -81,6 +81,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
             .await
         }
+        // The production management composition (durable stores + config plane +
+        // resource PEP) with only its deterministic fallback model replaced. Used
+        // by the Skill pin/restart e2e; resource repositories remain auth-agnostic.
+        Ok("management-skills") => {
+            awaken_cli::build_management_router_with_fallback(
+                std::sync::Arc::new(awaken_scenario_host::SkillDrivingModel),
+                "management-skills".to_string(),
+            )
+            .await
+        }
         Ok("real") => awaken_scenario_host::build_real_router(),
         Ok("real-gemini") => awaken_scenario_host::build_real_gemini_router().await,
         Ok("real-resolved") => awaken_scenario_host::build_resolved_real_router().await,

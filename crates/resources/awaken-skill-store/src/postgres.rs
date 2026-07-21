@@ -5,7 +5,10 @@ use sqlx::Row;
 use sqlx::postgres::PgPool;
 
 use crate::schema::skill_store_bundle;
-use crate::{SkillStore, SkillStoreError, sanitize_stem};
+use crate::{
+    SkillAggregate, SkillDefinition, SkillStore, SkillStoreError, SkillVersion, append_to,
+    legacy_aggregate, remove_version_from, validate_create,
+};
 
 const NS: &str = "skill_store";
 
@@ -60,52 +63,127 @@ impl PgSkillStore {
     /// Apply the `skill_store` scoped migration bundle (idempotent). Optional:
     /// skip it when the schema is owned externally.
     pub async fn ensure_schema(&self) -> Result<(), PgStoreError> {
-        run_migrations(&self.pool).await
+        run_migrations(&self.pool).await?;
+        let rows = sqlx::query(&format!("SELECT workspace_id, id, content FROM {NS}_skill"))
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|error| PgStoreError::Migrate(error.to_string()))?;
+        for row in rows {
+            let workspace = row
+                .try_get::<String, _>("workspace_id")
+                .map_err(|error| PgStoreError::Migrate(error.to_string()))?;
+            let id = row
+                .try_get::<String, _>("id")
+                .map_err(|error| PgStoreError::Migrate(error.to_string()))?;
+            let content = row
+                .try_get::<String, _>("content")
+                .map_err(|error| PgStoreError::Migrate(error.to_string()))?;
+            let data =
+                serde_json::to_string(&legacy_aggregate(&workspace, &id, content.as_bytes()))
+                    .map_err(|error| PgStoreError::Migrate(error.to_string()))?;
+            sqlx::query(&format!(
+                "INSERT INTO {NS}_aggregate(workspace_id, id, data) VALUES ($1, $2, $3) ON CONFLICT (workspace_id, id) DO NOTHING"
+            ))
+            .bind(workspace)
+            .bind(id)
+            .bind(data)
+            .execute(&self.pool)
+            .await
+            .map_err(|error| PgStoreError::Migrate(error.to_string()))?;
+        }
+        Ok(())
     }
 }
 
 #[async_trait::async_trait]
 impl SkillStore for PgSkillStore {
-    async fn put(
+    async fn create(
         &self,
-        workspace_id: &str,
-        id: &str,
-        content: &str,
-    ) -> Result<String, SkillStoreError> {
-        let stem = sanitize_stem(id);
+        definition: SkillDefinition,
+        initial_version: SkillVersion,
+    ) -> Result<(), SkillStoreError> {
+        validate_create(&definition, &initial_version)?;
+        let aggregate = SkillAggregate {
+            definition,
+            versions: std::collections::BTreeMap::from([(
+                initial_version.version,
+                initial_version,
+            )]),
+            retired_versions: Default::default(),
+        };
+        let data = serde_json::to_string(&aggregate).map_err(storage)?;
         sqlx::query(&format!(
-            "INSERT INTO {NS}_skill (workspace_id, id, content) VALUES ($1, $2, $3) \
-             ON CONFLICT (workspace_id, id) DO UPDATE SET content = excluded.content"
+            "INSERT INTO {NS}_aggregate (workspace_id, id, data) VALUES ($1, $2, $3)"
         ))
-        .bind(workspace_id)
-        .bind(&stem)
-        .bind(content)
+        .bind(&aggregate.definition.workspace_id)
+        .bind(&aggregate.definition.id)
+        .bind(data)
         .execute(&self.pool)
         .await
-        .map_err(storage)?;
-        Ok(stem)
+        .map(|_| ())
+        .map_err(|error| {
+            if error
+                .as_database_error()
+                .and_then(|error| error.code())
+                .as_deref()
+                == Some("23505")
+            {
+                SkillStoreError::AlreadyExists(aggregate.definition.id)
+            } else {
+                storage(error)
+            }
+        })
     }
 
-    async fn get(&self, workspace_id: &str, id: &str) -> Result<Option<String>, SkillStoreError> {
+    async fn append_version(
+        &self,
+        workspace_id: &str,
+        skill_id: &str,
+        version: SkillVersion,
+    ) -> Result<(), SkillStoreError> {
+        let mut transaction = self.pool.begin().await.map_err(storage)?;
         let row = sqlx::query(&format!(
-            "SELECT content FROM {NS}_skill WHERE workspace_id = $1 AND id = $2"
+            "SELECT data FROM {NS}_aggregate WHERE workspace_id = $1 AND id = $2 FOR UPDATE"
         ))
         .bind(workspace_id)
-        .bind(sanitize_stem(id))
-        .fetch_optional(&self.pool)
+        .bind(skill_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(storage)?
+        .ok_or_else(|| SkillStoreError::NotFound(skill_id.into()))?;
+        let data = row.try_get::<String, _>("data").map_err(storage)?;
+        let mut aggregate: SkillAggregate = serde_json::from_str(&data).map_err(storage)?;
+        append_to(&mut aggregate, version)?;
+        let data = serde_json::to_string(&aggregate).map_err(storage)?;
+        sqlx::query(&format!(
+            "UPDATE {NS}_aggregate SET data = $3 WHERE workspace_id = $1 AND id = $2"
+        ))
+        .bind(workspace_id)
+        .bind(skill_id)
+        .bind(data)
+        .execute(&mut *transaction)
         .await
         .map_err(storage)?;
-        row.map(|r| r.try_get::<String, _>("content").map_err(storage))
-            .transpose()
+        transaction.commit().await.map_err(storage)
     }
 
-    async fn list(&self, workspace_id: &str) -> Result<Vec<(String, String)>, SkillStoreError> {
+    async fn definition(
+        &self,
+        workspace_id: &str,
+        skill_id: &str,
+    ) -> Result<Option<SkillDefinition>, SkillStoreError> {
+        Ok(self
+            .load(workspace_id, skill_id)
+            .await?
+            .map(|aggregate| aggregate.definition))
+    }
+
+    async fn list_definitions(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<SkillDefinition>, SkillStoreError> {
         let rows = sqlx::query(&format!(
-            // COLLATE "C" = raw byte order, matching the fs/in-mem/sqlite backends.
-            // Without it Postgres sorts by the DB's default collation (e.g. en_US),
-            // which reorders mixed-case sanitized stems and breaks the SkillStore
-            // contract that every backend's `list` is byte-for-byte comparable.
-            "SELECT id, content FROM {NS}_skill WHERE workspace_id = $1 ORDER BY id COLLATE \"C\""
+            "SELECT data FROM {NS}_aggregate WHERE workspace_id = $1 ORDER BY id COLLATE \"C\""
         ))
         .bind(workspace_id)
         .fetch_all(&self.pool)
@@ -113,23 +191,117 @@ impl SkillStore for PgSkillStore {
         .map_err(storage)?;
         rows.into_iter()
             .map(|r| {
-                Ok((
-                    r.try_get::<String, _>("id").map_err(storage)?,
-                    r.try_get::<String, _>("content").map_err(storage)?,
-                ))
+                let data = r.try_get::<String, _>("data").map_err(storage)?;
+                serde_json::from_str::<SkillAggregate>(&data)
+                    .map(|aggregate| aggregate.definition)
+                    .map_err(storage)
             })
             .collect()
     }
 
-    async fn delete(&self, workspace_id: &str, id: &str) -> Result<bool, SkillStoreError> {
-        let r = sqlx::query(&format!(
-            "DELETE FROM {NS}_skill WHERE workspace_id = $1 AND id = $2"
+    async fn version(
+        &self,
+        workspace_id: &str,
+        skill_id: &str,
+        version: u64,
+    ) -> Result<Option<SkillVersion>, SkillStoreError> {
+        Ok(self
+            .load(workspace_id, skill_id)
+            .await?
+            .and_then(|aggregate| aggregate.versions.get(&version).cloned()))
+    }
+
+    async fn list_versions(
+        &self,
+        workspace_id: &str,
+        skill_id: &str,
+    ) -> Result<Vec<SkillVersion>, SkillStoreError> {
+        Ok(self
+            .load(workspace_id, skill_id)
+            .await?
+            .map(|aggregate| {
+                aggregate
+                    .versions
+                    .into_iter()
+                    .filter(|(version, _)| !aggregate.retired_versions.contains(version))
+                    .map(|(_, version)| version)
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    async fn delete_version(
+        &self,
+        workspace_id: &str,
+        skill_id: &str,
+        version: u64,
+    ) -> Result<bool, SkillStoreError> {
+        let mut transaction = self.pool.begin().await.map_err(storage)?;
+        let Some(row) = sqlx::query(&format!(
+            "SELECT data FROM {NS}_aggregate WHERE workspace_id = $1 AND id = $2 FOR UPDATE"
         ))
         .bind(workspace_id)
-        .bind(sanitize_stem(id))
+        .bind(skill_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(storage)?
+        else {
+            return Ok(false);
+        };
+        let data = row.try_get::<String, _>("data").map_err(storage)?;
+        let mut aggregate: SkillAggregate = serde_json::from_str(&data).map_err(storage)?;
+        let removed = remove_version_from(&mut aggregate, version)?;
+        if removed {
+            let data = serde_json::to_string(&aggregate).map_err(storage)?;
+            sqlx::query(&format!(
+                "UPDATE {NS}_aggregate SET data = $3 WHERE workspace_id = $1 AND id = $2"
+            ))
+            .bind(workspace_id)
+            .bind(skill_id)
+            .bind(data)
+            .execute(&mut *transaction)
+            .await
+            .map_err(storage)?;
+        }
+        transaction.commit().await.map_err(storage)?;
+        Ok(removed)
+    }
+
+    async fn delete_skill(
+        &self,
+        workspace_id: &str,
+        skill_id: &str,
+    ) -> Result<bool, SkillStoreError> {
+        let r = sqlx::query(&format!(
+            "DELETE FROM {NS}_aggregate WHERE workspace_id = $1 AND id = $2"
+        ))
+        .bind(workspace_id)
+        .bind(skill_id)
         .execute(&self.pool)
         .await
         .map_err(storage)?;
         Ok(r.rows_affected() > 0)
+    }
+}
+
+impl PgSkillStore {
+    async fn load(
+        &self,
+        workspace_id: &str,
+        skill_id: &str,
+    ) -> Result<Option<SkillAggregate>, SkillStoreError> {
+        let row = sqlx::query(&format!(
+            "SELECT data FROM {NS}_aggregate WHERE workspace_id = $1 AND id = $2"
+        ))
+        .bind(workspace_id)
+        .bind(skill_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(storage)?;
+        row.map(|row| {
+            let data = row.try_get::<String, _>("data").map_err(storage)?;
+            serde_json::from_str(&data).map_err(storage)
+        })
+        .transpose()
     }
 }

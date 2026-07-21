@@ -26,7 +26,7 @@ The key terms are:
 | Revision | optimistic-concurrency counter on a mutable authoring aggregate |
 | Config version | immutable published Memory/Repository configuration |
 | Content version | Memory entry version or Git revision; never a Memory/Repo binding pin |
-| Effective Session inputs | one secret-free, resolved manifest after Agent defaults and Session attachments are merged |
+| Resolved Session resources | one secret-free manifest containing resolved inputs and separately frozen Skill capabilities |
 | Activation | Session-local realization of one resolved input |
 | Reclamation | asynchronous physical cleanup after logical denial and reference/lease checks |
 
@@ -143,9 +143,14 @@ secret value.
 
 ```rust
 struct EffectiveSessionInputs {
-    files: Vec<ResolvedFileInput>,
-    memories: Vec<ResolvedMemoryInput>,
-    repositories: Vec<ResolvedRepositoryInput>,
+    inputs: Vec<ResolvedInput>,
+    skills: Option<Vec<ResolvedSkillBinding>>,
+}
+
+struct ResolvedSkillBinding {
+    skill_id: SkillId,
+    version: u64,
+    bundle_sha256: Sha256,
 }
 
 struct ResolvedFileInput {
@@ -178,6 +183,16 @@ struct ResolvedRepositoryInput {
 
 The manifest is serializable and secret-free. It contains no host path, live
 handle, credential value, Memory entry version, or Git commit.
+
+`skills = None` identifies a legacy Session; `Some([])` is an explicit empty
+selection. Skill bundle bytes remain in the Skill repository and are loaded by
+the frozen id/version/hash only.
+
+A Skill-version delete retires it from current management views while retaining
+the immutable bytes for existing pins. Version ordinals are monotonic and never
+reused. Recovery installs `ResolvedSessionResources` before opening the runtime
+commit history, so context construction cannot consult or materialize today's
+Agent/Skill configuration into an older Session.
 
 ### Activation model
 
@@ -542,8 +557,9 @@ Skills and MCP servers are capability material, not shortcuts around resource or
 authorization policy:
 
 1. product/config code owns Skill versions, bundles, visibility, and MCP config;
-2. Session resolution selects validated descriptors and opaque credential refs;
-3. the environment safely materializes Skill files and establishes MCP access;
+2. Session resolution freezes Skill id/version/hash and selects opaque MCP credential refs;
+3. the environment verifies and materializes the complete binary-safe Skill bundle
+   under `.skills/<id>` and establishes MCP access;
 4. Runtime invokes by validated id through tool/backend ports;
 5. effective tools are the intersection of platform authority, active lease, and
    Skill restrictions.
@@ -584,6 +600,8 @@ internal config version remains an awaken governance detail.
 - Agent default resource configuration and Managed Session attachment ingress;
 - `SandboxProvider`, mount descriptors, and environment realization boundary;
 - Vault credential references and host-side secret materialization.
+- the unified Workspace-scoped Skill aggregate repository and version-pinned
+  Session Skill bindings.
 
 ### Rename or merge
 
@@ -599,6 +617,8 @@ internal config version remains an awaken governance detail.
   remaining extraction call sites have migrated;
 - evolve repo staging into a `RepositoryRealizer` consuming a platform-managed
   Repository config version and credential binding.
+- use `ResolvedSessionResources` as the canonical name; retain
+  `EffectiveSessionInputs` only as a source-compatibility alias.
 
 ### Delete after migration
 
@@ -617,6 +637,8 @@ internal config version remains an awaken governance detail.
 - commit/tree/content pin types for Repository;
 - File version abstractions above immutable `FileId`;
 - `Outputs` and `Skill` variants from the File/Memory/Repository input union.
+- API-local `SkillRegistry`, text-only `SkillStore` overwrite semantics, lossy
+  `String::from_utf8_lossy` bundle ingestion, and runtime lookup of `latest`.
 
 ### Add
 
@@ -627,6 +649,8 @@ internal config version remains an awaken governance detail.
   `ResourceReclaimer` roles;
 - `ScopedMemoryStore` capabilities;
 - binary-safe File realization;
+- `SkillDefinition` / immutable `SkillVersion` / binary-safe `SkillBundleFile`,
+  exact Session pins, hash verification, and safe `.skills` materialization;
 - resource-specific purge receipts and recovery tests.
 
 ## Failure Semantics
@@ -659,6 +683,7 @@ reconciler. It never silently marks the resource released.
 | File | binary round-trip; content-id validation; read-only mount; shared-blob grant isolation; safe GC |
 | Memory | config update affects only later Sessions; current content remains shared; read-only extraction denied; CAS conflict loses no update |
 | Repository | config update affects later Sessions; no commit pin in manifest; credentials absent from logs/prompt/disk; remote is never deleted by GC |
+| Skill | binary bundle round-trip; traversal rejected; restart preserves history; v1 Session keeps v1 after v2 publication; hash mismatch fails closed |
 | Scope/auth | cross-Workspace File/Memory/Repo access fails closed; old config cannot bypass suspension/deletion/revocation |
 | Recovery | stale Prepared/Active/Releasing activations converge idempotently after restart |
 | Reclamation | no referenced File purge; Memory drains handles/jobs; Repository cleanup removes only local material |

@@ -92,6 +92,7 @@ impl SharedHost {
             compaction: None,
             config_service: None,
             thread_mcp: std::sync::Mutex::new(HashMap::new()),
+            thread_skills: std::sync::Mutex::new(HashMap::new()),
             mcp_relay: tokio::sync::OnceCell::new(),
             thread_resources: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
             thread_egress: crate::sandbox_source::ThreadEgress::new(),

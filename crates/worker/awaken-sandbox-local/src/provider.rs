@@ -15,8 +15,10 @@
 //! scanning) the runtime host composes into each session.
 
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::Stdio as ProcStdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use awaken_agent_channel::{AgentChannel, SplitChannel};
@@ -37,6 +39,8 @@ use crate::{
 fn err(e: impl ToString) -> pc::SandboxError {
     pc::SandboxError::new(e.to_string())
 }
+
+static READ_ONLY_TREE_WRITE_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Resolve a mount's bytes: an in-memory seed map first, then an optional
 /// content-addressed [`BlobSource`](pc::BlobSource), then inline `Other({content})`.
@@ -407,6 +411,99 @@ pub struct LocalSandbox {
 }
 
 impl LocalSandbox {
+    /// Materialize a runtime-owned, read-only file tree below the sandbox root.
+    /// Every relative path is revalidated by [`IsolatedRoot`], existing symlinks are
+    /// rejected, and permissions are narrowed only after the complete tree is
+    /// written. This is a generic provisioning primitive; it knows no Skill,
+    /// Workspace, principal, or authorization policy.
+    pub fn materialize_read_only_tree(
+        &self,
+        subdir: &str,
+        files: &[(String, Vec<u8>)],
+    ) -> Result<(), pc::SandboxError> {
+        let base = self.root.resolve(subdir).map_err(err)?;
+        if let Ok(metadata) = std::fs::symlink_metadata(&base) {
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(err(format!("read-only tree root `{subdir}` is unsafe")));
+            }
+        } else {
+            std::fs::create_dir_all(&base).map_err(err)?;
+        }
+
+        for (relative, bytes) in files {
+            if relative.is_empty()
+                || relative.contains('\\')
+                || std::path::Path::new(relative).is_absolute()
+                || std::path::Path::new(relative)
+                    .components()
+                    .any(|component| !matches!(component, std::path::Component::Normal(_)))
+            {
+                return Err(err(format!("read-only tree path `{relative}` is unsafe")));
+            }
+            let logical = format!(
+                "{}/{}",
+                subdir.trim_matches('/'),
+                relative.trim_start_matches('/')
+            );
+            let destination = self.root.resolve(&logical).map_err(err)?;
+            if !destination.starts_with(&base) || relative.is_empty() {
+                return Err(err(format!("read-only tree path `{relative}` is unsafe")));
+            }
+            let parent = destination
+                .parent()
+                .ok_or_else(|| err(format!("read-only tree path `{relative}` has no parent")))?;
+            std::fs::create_dir_all(parent).map_err(err)?;
+            let mut cursor = parent.to_path_buf();
+            while cursor.starts_with(&base) {
+                if let Ok(metadata) = std::fs::symlink_metadata(&cursor)
+                    && metadata.file_type().is_symlink()
+                {
+                    return Err(err(format!(
+                        "read-only tree path `{relative}` crosses a symlink"
+                    )));
+                }
+                if cursor == base || !cursor.pop() {
+                    break;
+                }
+            }
+            if let Ok(metadata) = std::fs::symlink_metadata(&destination)
+                && (metadata.file_type().is_symlink() || !metadata.is_file())
+            {
+                return Err(err(format!("read-only tree file `{relative}` is unsafe")));
+            }
+            // Rehydration commonly realizes the same immutable bundle over an
+            // existing read-only file. Identical bytes need no mutation. Different
+            // bytes are written beside the target and atomically renamed over it,
+            // avoiding a writable window and never following the target as a link.
+            if std::fs::read(&destination).is_ok_and(|current| current == *bytes) {
+                continue;
+            }
+            let sequence = READ_ONLY_TREE_WRITE_SEQ.fetch_add(1, Ordering::Relaxed);
+            let temporary = parent.join(format!(".awaken-tree-{}-{sequence}", std::process::id()));
+            let write = (|| -> std::io::Result<()> {
+                let mut file = std::fs::OpenOptions::new()
+                    .create_new(true)
+                    .write(true)
+                    .open(&temporary)?;
+                file.write_all(bytes)?;
+                file.sync_all()?;
+                let mut permissions = file.metadata()?.permissions();
+                permissions.set_readonly(true);
+                file.set_permissions(permissions)?;
+                drop(file);
+                std::fs::rename(&temporary, &destination)
+            })();
+            if let Err(error) = write {
+                let _ = std::fs::remove_file(&temporary);
+                return Err(err(error));
+            }
+            let mut permissions = std::fs::metadata(&destination).map_err(err)?.permissions();
+            permissions.set_readonly(true);
+            std::fs::set_permissions(&destination, permissions).map_err(err)?;
+        }
+        Ok(())
+    }
+
     /// Tear down every live memory mount: unmount a FUSE mount, or harvest a writable
     /// copy back to its store. Drains the guard list so a later dispose is a no-op.
     pub async fn release_memory_mounts(&self) {
@@ -1168,6 +1265,63 @@ mod workdir_helper_tests {
         assert!(
             sandbox
                 .provision_repo("../escape", "http://x", None, None)
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn read_only_tree_preserves_binary_files_and_rejects_traversal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sandbox = LocalProvider::new(tmp.path())
+            .create_sandbox(&workdir_spec("skill-tree", false))
+            .await
+            .unwrap();
+        let binary = vec![0, 159, 146, 150, 255];
+        sandbox
+            .materialize_read_only_tree(
+                ".skills/greet",
+                &[
+                    ("SKILL.md".into(), b"# greet".to_vec()),
+                    ("assets/data.bin".into(), binary.clone()),
+                ],
+            )
+            .unwrap();
+        assert_eq!(
+            std::fs::read(tmp.path().join("skill-tree/.skills/greet/assets/data.bin")).unwrap(),
+            binary
+        );
+        assert!(
+            std::fs::metadata(tmp.path().join("skill-tree/.skills/greet/SKILL.md"))
+                .unwrap()
+                .permissions()
+                .readonly()
+        );
+        // Rehydrating identical bytes is idempotent even though the target is
+        // read-only; a changed immutable version is atomically replaced and ends
+        // read-only as well.
+        sandbox
+            .materialize_read_only_tree(
+                ".skills/greet",
+                &[("SKILL.md".into(), b"# greet".to_vec())],
+            )
+            .unwrap();
+        sandbox
+            .materialize_read_only_tree(
+                ".skills/greet",
+                &[("SKILL.md".into(), b"# greet v2".to_vec())],
+            )
+            .unwrap();
+        let skill_md = tmp.path().join("skill-tree/.skills/greet/SKILL.md");
+        assert_eq!(std::fs::read(&skill_md).unwrap(), b"# greet v2");
+        assert!(
+            std::fs::metadata(skill_md)
+                .unwrap()
+                .permissions()
+                .readonly()
+        );
+        assert!(
+            sandbox
+                .materialize_read_only_tree(".skills/bad", &[("../escape".into(), vec![])])
                 .is_err()
         );
     }

@@ -368,14 +368,24 @@ impl SharedHost {
         // `skills::wire_skills`.
         let mut skill_descriptors = Vec::new();
         let mut skill_registry: Option<Arc<dyn SkillRegistry>> = None;
-        // Refresh the delivered-catalog snapshot from the (async) store for this
-        // session; `Some` (possibly empty) exactly when a durable store is wired.
+        // A managed Session consumes its exact frozen Skill versions. Direct/legacy
+        // threads without a frozen manifest retain the latest-catalog compatibility
+        // path. Presence of an empty frozen vector explicitly offers no Skills.
         let workspace = self.thread_workspace(thread);
-        self.skills.reload_cache_in(&workspace).await;
-        let delivered = self
-            .skills
-            .has_store()
-            .then(|| self.skills.cache_snapshot_in(&workspace));
+        let frozen = self
+            .thread_skills
+            .lock()
+            .expect("thread skills mutex poisoned")
+            .get(thread)
+            .cloned();
+        let delivered = if frozen.is_some() {
+            frozen
+        } else {
+            self.skills.reload_cache_in(&workspace).await;
+            self.skills
+                .has_store()
+                .then(|| self.skills.cache_snapshot_in(&workspace))
+        };
         // A newly published Agent receives exactly its selected Skills. Older
         // publications without the normalized binding section retain the legacy
         // global catalog behavior, which makes the migration backward compatible.
@@ -404,10 +414,7 @@ impl SharedHost {
             (Some(skills), Some(selected)) => Some(
                 skills
                     .into_iter()
-                    .filter(|(stem, _)| {
-                        selected.contains(stem)
-                            || selected.contains(&awaken_skill_store::catalog_id(stem))
-                    })
+                    .filter(|version| selected.contains(&version.skill_id))
                     .collect(),
             ),
             (skills, None) => skills,
@@ -426,7 +433,9 @@ impl SharedHost {
             sub_base("skill-fork"),
             self.agent_run_reuse_sandbox,
             &skills_subdir,
-        ) {
+        )
+        .map_err(HostError::internal)?
+        {
             runtime = runtime
                 .with_gate(wiring.gate)
                 .with_tool(wiring.list_tool)

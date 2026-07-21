@@ -326,6 +326,17 @@ pub trait SessionRuntime: Send + Sync {
         Ok(())
     }
 
+    /// Resolve the current versions of already-authorized Skill resource ids once
+    /// at Session creation. The implementation receives only a trusted Workspace
+    /// and resource ids; it performs no principal/role/policy decision.
+    async fn resolve_session_skills(
+        &self,
+        _workspace_id: &str,
+        _skill_ids: &[String],
+    ) -> Result<Vec<crate::ResolvedSkillBinding>, RunError> {
+        Ok(Vec::new())
+    }
+
     /// Rebind `thread` to `model` for its subsequent turns (R5, per-turn override).
     /// The default is a no-op, so a host without per-thread model routing is
     /// unaffected; the server impl re-stages the thread's model and evicts the

@@ -272,7 +272,7 @@ impl ManagedState {
         }
         // Sole composition/resolution point. Runtime receives this persisted,
         // secret-free manifest and never re-opens Agent or Resource config stores.
-        let effective_inputs = match self.resource_catalog.as_deref() {
+        let mut effective_inputs = match self.resource_catalog.as_deref() {
             Some(catalog) => awaken_session_contract::SessionInputResolver::resolve_inputs(
                 &owner_scope,
                 catalog,
@@ -287,6 +287,14 @@ impl ManagedState {
             ),
         }
         .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
+        if let Some(view) = &config_view {
+            effective_inputs.skills = Some(
+                self.runtime
+                    .resolve_session_skills(&owner_scope, &view.skill_ids)
+                    .await
+                    .map_err(StateError::Run)?,
+            );
+        }
         let resource_dtos: Vec<serde_json::Value> = effective_inputs
             .inputs
             .iter()
@@ -565,18 +573,10 @@ impl ManagedState {
         if self.sessions.lock().unwrap().contains_key(id) {
             return Ok(());
         }
-        let messages = self.runtime.committed_messages(id).await;
-        if messages.is_empty() {
-            return Err(StateError::NotFound);
-        }
-        let events: Vec<Event> = project_messages(&messages, None)
-            .into_iter()
-            .map(|event| Event {
-                id: event.id.unwrap_or_else(|| self.next_event_id()),
-                kind: event.kind,
-                processed_at: Some(PROCESSED_AT.to_string()),
-            })
-            .collect();
+        // Install the persisted, already-resolved resource snapshot BEFORE opening
+        // runtime history. Opening a thread constructs its context; doing that first
+        // would transiently resolve today's Agent/Skill configuration and could both
+        // drift from the Session pin and mutate its sandbox before the pin is known.
         let persisted = self.sessions_repo.get(id).await;
         if persisted
             .as_ref()
@@ -594,6 +594,18 @@ impl ManagedState {
                 .apply_session_inputs(id, &owner_scope, &session.effective_inputs)
                 .await?;
         }
+        let messages = self.runtime.committed_messages(id).await;
+        if messages.is_empty() {
+            return Err(StateError::NotFound);
+        }
+        let events: Vec<Event> = project_messages(&messages, None)
+            .into_iter()
+            .map(|event| Event {
+                id: event.id.unwrap_or_else(|| self.next_event_id()),
+                kind: event.kind,
+                processed_at: Some(PROCESSED_AT.to_string()),
+            })
+            .collect();
         let agent_id = persisted
             .as_ref()
             .map_or_else(|| "assistant".to_string(), |p| p.agent_id.clone());

@@ -19,7 +19,10 @@ impl SharedHost {
     pub async fn committed_messages(&self, thread: &str) -> Vec<Message> {
         match self.ctx_for(thread, None).await {
             Ok(ctx) => ctx.commit.committed_messages(&ctx.thread_id),
-            Err(_) => Vec::new(),
+            Err(error) => {
+                tracing::warn!(thread, error = %error, "failed to open committed thread history");
+                Vec::new()
+            }
         }
     }
 

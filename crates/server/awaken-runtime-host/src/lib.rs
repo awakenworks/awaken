@@ -848,6 +848,21 @@ impl SessionRuntime for ManagedHost {
             .map_err(to_run_error)
     }
 
+    async fn resolve_session_skills(
+        &self,
+        workspace_id: &str,
+        skill_ids: &[String],
+    ) -> Result<Vec<awaken_protocol_managed::ResolvedSkillBinding>, RunError> {
+        if skill_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.host
+            .skills
+            .resolve_latest(workspace_id, skill_ids)
+            .await
+            .map_err(|error| RunError::bad_request(error.to_string()))
+    }
+
     async fn apply_session_inputs(
         &self,
         thread: &str,
@@ -858,6 +873,28 @@ impl SessionRuntime for ManagedHost {
         self.host.harvest_thread_memory(thread).await;
         self.host.harvest_thread_skills(thread).await;
         self.host.harvest_thread_repo(thread).await;
+        match &inputs.skills {
+            Some(bindings) => {
+                let versions = self
+                    .host
+                    .skills
+                    .load_pinned(workspace_id, bindings)
+                    .await
+                    .map_err(|error| RunError::bad_request(error.to_string()))?;
+                self.host
+                    .thread_skills
+                    .lock()
+                    .expect("thread skills mutex poisoned")
+                    .insert(thread.to_string(), versions);
+            }
+            None => {
+                self.host
+                    .thread_skills
+                    .lock()
+                    .expect("thread skills mutex poisoned")
+                    .remove(thread);
+            }
+        }
         let repository_mcp = self
             .stage_effective_inputs(thread, workspace_id, inputs)
             .await?;
@@ -877,6 +914,28 @@ impl SessionRuntime for ManagedHost {
         self.host
             .register_thread_workspace(thread, &init.workspace_id);
         self.host.skills.reload_cache_in(&init.workspace_id).await;
+        match &init.resources.skills {
+            Some(bindings) => {
+                let versions = self
+                    .host
+                    .skills
+                    .load_pinned(&init.workspace_id, bindings)
+                    .await
+                    .map_err(|error| RunError::bad_request(error.to_string()))?;
+                self.host
+                    .thread_skills
+                    .lock()
+                    .expect("thread skills mutex poisoned")
+                    .insert(thread.to_string(), versions);
+            }
+            None => {
+                self.host
+                    .thread_skills
+                    .lock()
+                    .expect("thread skills mutex poisoned")
+                    .remove(thread);
+            }
+        }
         // R2: bind the session's requested model to the thread (independent of MCP),
         // consumed at the thread's first turn to resolve its executor + model name.
         if let Some(model) = &init.model {

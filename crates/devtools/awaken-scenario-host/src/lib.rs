@@ -1325,11 +1325,17 @@ impl LlmExecutor for SkillDrivingModel {
                 arguments: serde_json::json!({}),
             }]),
             Role::Tool if last_text.contains("\"skills\"") => {
-                // The catalog came back — activate the offered `greet` skill.
+                // The catalog came back — activate the id it actually advertised.
+                // This keeps the fixture valid for both a legacy `greet` id and the
+                // official multipart API's tagged catalog id.
+                let skill = serde_json::from_str::<serde_json::Value>(&last_text)
+                    .ok()
+                    .and_then(|value| value["skills"][0]["id"].as_str().map(str::to_string))
+                    .unwrap_or_else(|| "greet".to_string());
                 AssistantOutput::from_tool_calls(vec![ToolCall {
                     call_id: "s".into(),
                     tool_id: "Skill".into(),
-                    arguments: serde_json::json!({ "skill": "greet" }),
+                    arguments: serde_json::json!({ "skill": skill }),
                 }])
             }
             Role::Tool => AssistantOutput::text(format!("USED-SKILL: {last_text}")),

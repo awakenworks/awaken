@@ -190,6 +190,10 @@ pub struct SharedHost {
     /// Phase 3), consumed when the thread's context is first built. Keyed by
     /// thread id; a thread with no entry connects to no MCP server.
     pub(crate) thread_mcp: std::sync::Mutex<HashMap<String, Vec<PreparedMcpServer>>>,
+    /// Exact Skill versions frozen by the Session resource manifest. Presence of an
+    /// empty vector explicitly disables delivered Skills for that Session.
+    pub(crate) thread_skills:
+        std::sync::Mutex<HashMap<String, Vec<awaken_skill_store::SkillVersion>>>,
     /// The host's loopback MCP relay (α-reference resolver), started lazily on the first
     /// sandboxed ACP session that stages an authenticated MCP server. It holds the real
     /// bearers host-side and injects them when forwarding the sandbox's MCP calls, so the

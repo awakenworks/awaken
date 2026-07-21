@@ -52,11 +52,30 @@ pub struct ResolvedInput {
     pub instructions: Option<String>,
 }
 
-/// Durable, secret-free result of the Session control plane's one resolution.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EffectiveSessionInputs {
-    pub inputs: Vec<ResolvedInput>,
+/// Exact immutable Skill version selected for a Session. Bundle bytes remain in
+/// the resource repository; this durable pin is secret-free and retry-safe.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedSkillBinding {
+    pub skill_id: String,
+    pub version: u64,
+    pub bundle_sha256: String,
 }
+
+/// Durable, secret-free result of the Session control plane's one resolution.
+/// Inputs and Skill capabilities remain distinct collections because Skills are
+/// executable capabilities, not mounted user inputs. `skills = None` means a
+/// legacy record whose selection was not frozen; `Some([])` explicitly selects no
+/// Skills.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedSessionResources {
+    pub inputs: Vec<ResolvedInput>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skills: Option<Vec<ResolvedSkillBinding>>,
+}
+
+/// Compatibility name retained at existing call sites while the canonical model
+/// is [`ResolvedSessionResources`].
+pub type EffectiveSessionInputs = ResolvedSessionResources;
 
 impl EffectiveSessionInputs {
     /// Validate identity and mount invariants before an adapter performs any
@@ -281,7 +300,10 @@ impl SessionInputResolver {
                 })
             })
             .collect::<Result<Vec<_>, SessionInputError>>()?;
-        Ok(EffectiveSessionInputs { inputs })
+        Ok(EffectiveSessionInputs {
+            inputs,
+            skills: None,
+        })
     }
 }
 

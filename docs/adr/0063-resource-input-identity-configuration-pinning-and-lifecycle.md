@@ -55,6 +55,7 @@ The version rule is:
 | File | `FileId` | the same immutable content id | a separate File version |
 | MemoryStore | `MemoryStoreId` | `MemoryStoreConfigVersion` | entry id/version, head, content hash, checkpoint |
 | Repository | `RepositoryId` | `RepositoryConfigVersion` | Git commit, tree, branch head, internal file version |
+| Skill capability | Skill resource id | immutable Skill version + bundle SHA-256 | a later Skill version |
 
 An Agent does not pin a Memory or Repository configuration version. It names the
 resource identity. The `SessionInputResolver` reads the current published
@@ -62,6 +63,12 @@ configuration version exactly once while creating the Session and persists the
 secret-free result in `EffectiveSessionInputs`. A Session does not pin an Agent
 version; changes to Agent defaults affect later Sessions, not the effective
 inputs already recorded for an existing Session.
+
+Skills are capabilities rather than input mounts, so they are not added to
+`InputResourceId`. The same durable `ResolvedSessionResources` manifest carries a
+separate optional `skills[]` collection. `None` preserves legacy behavior;
+`Some([])` explicitly selects none; each non-empty entry freezes
+`skill_id + version + bundle_sha256` once at Session creation.
 
 `Revision` is reserved for optimistic concurrency on a mutable authoring
 aggregate. `ConfigVersion` is an immutable published Memory/Repository
@@ -90,7 +97,7 @@ current Agent bindings + Session attachments
               SessionInputResolver
                        |
                        v
-             EffectiveSessionInputs
+          ResolvedSessionResources
 ```
 
 An explicit Session attachment may replace a named Agent binding. Accidental
@@ -146,7 +153,7 @@ Workspace, preserving the same resource contracts without a fake identity.
 |---|---|---|
 | Configure | Resource Catalog application service and per-kind repositories | create definitions; publish immutable Memory/Repository config versions; maintain current version and live state |
 | Bind | Agent configuration service / Managed Session adapter | persist Agent defaults or accept temporary Session attachments; carry identity, mount, access, instructions only |
-| Resolve | `SessionInputResolver` in the Session control plane | merge once; resolve current config versions; validate paths/collisions; produce secret-free `EffectiveSessionInputs` |
+| Resolve | `SessionInputResolver` + Skill resource resolver in the Session control plane | merge inputs once; resolve current config/Skill versions; validate paths/collisions; produce secret-free `ResolvedSessionResources` |
 | Authorize | front-door PEP + authorization PDP/PIP | evaluate principal, action, Workspace, target facts, and active policy; return allow/deny/obligations |
 | Activate | `SessionResourceCoordinator` + `SandboxProvider` + per-kind realizer | create activation records; materialize File, open Memory, clone Repo; inject short-lived credentials |
 | Use | sandbox tools plus `FileStore`, `ScopedMemoryStore`, and Git/MCP adapters | enforce read/write capability and resource-specific consistency during the Session |
@@ -209,7 +216,28 @@ This preserves Anthropic behavior—Session resource input, current repository
 clone, no commit pin—while allowing awaken Agent defaults and internal config
 version governance.
 
-### D9: First vertical slice
+### D9: Skill versions and bundles have one durable truth
+
+`SkillDefinition`, immutable `SkillVersion`, and binary-safe `SkillBundleFile`
+belong to one Workspace-scoped `SkillStore` repository. The former HTTP-local
+`SkillRegistry` and current-text-only store are removed. SQLite/Postgres/FS and
+in-memory adapters implement the same aggregate semantics; legacy rows are
+imported once without continued dual writes.
+
+At Session creation the selected latest version is frozen into
+`ResolvedSessionResources.skills`. Retry and restart load that exact version and
+verify its bundle SHA-256. The Runtime materializer revalidates relative paths,
+rejects traversal/symlinks, preserves binary bytes, and writes supporting files
+under `.skills/<skill-id>`. `allowed_tools` remains a monotonic gate layered after
+platform authorization, so a Skill can only remove tool authority.
+
+Deleting one version is therefore a logical retirement from authoring/list views,
+not physical byte deletion: its ordinal is never reused and an already-persisted
+Session pin can still load it. On restart the Session repository is read and its
+frozen resources are installed before runtime history opens; current Agent or Skill
+configuration is never transiently resolved into the old Session's sandbox.
+
+### D10: First vertical slice
 
 The first coherent slice is:
 

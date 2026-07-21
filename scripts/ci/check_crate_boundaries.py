@@ -480,16 +480,19 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "async-trait",
         "tokio",
     },
-    # Durable skill catalog (resources plane): a SKILL.md-per-skill store the host
-    # serves delivered skills from. A resources-plane store like awaken-data-subject —
-    # a scoped-migration bundle over sqlite (+ an optional postgres sibling); names no
-    # runtime/host/ext type, so awaken-ext-skills stays store-unaware.
+    # Durable Skill aggregate repository (resources plane): complete immutable,
+    # binary-safe bundles over filesystem/sqlite/postgres. It names no runtime,
+    # authorization, principal, role, or policy type.
     "awaken-skill-store": {
         # The port-only contract this crate implements and re-exports (SkillStore).
         "awaken-resource-contract",
         "async-trait",
         "thiserror",
         "tokio",
+        # Aggregate serialization and canonical bundle integrity hashing.
+        "serde",
+        "serde_json",
+        "sha2",
         "rusqlite",
         # feature `postgres`: the multi-node SkillStore backend.
         "sqlx",

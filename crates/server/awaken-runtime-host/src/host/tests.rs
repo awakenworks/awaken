@@ -152,6 +152,7 @@ fn effective_resources(
                 }
             })
             .collect(),
+        skills: None,
     }
 }
 
@@ -179,6 +180,7 @@ fn effective_repository(
             access: awaken_resource_contract::ResourceAccess::ReadWrite,
             instructions: None,
         }],
+        skills: None,
     }
 }
 

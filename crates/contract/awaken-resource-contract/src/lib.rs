@@ -59,38 +59,152 @@ pub trait FileStore: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
-// Skill store: durable, workspace-scoped SKILL.md catalog port.
+// Skill repository: durable, workspace-scoped Skill aggregate port.
 // ---------------------------------------------------------------------------
 
 /// A skill-store failure.
 #[derive(Debug, thiserror::Error)]
 pub enum SkillStoreError {
+    #[error("skill `{0}` already exists")]
+    AlreadyExists(String),
+    #[error("skill `{0}` was not found in this Workspace")]
+    NotFound(String),
+    #[error("skill version `{0}` already exists")]
+    VersionConflict(String),
+    #[error("invalid skill resource: {0}")]
+    Invalid(String),
     #[error("io: {0}")]
     Io(String),
     #[error("storage: {0}")]
     Storage(String),
 }
 
-/// A durable, workspace-scoped catalog of `SKILL.md` bodies, addressed by a stable
-/// id. `put` returns the sanitized id the skill is addressable by (what `list`
-/// reports); `list` is sorted by id for a stable catalog. Async so a network-DB
-/// backend fits; the filesystem/in-memory backends satisfy it trivially.
+/// One binary-safe file in an immutable Skill version.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillBundleFile {
+    /// Normalized relative path inside the bundle. Validation belongs to the
+    /// resource application service; materializers must validate again before IO.
+    pub path: String,
+    #[serde(with = "skill_bytes")]
+    pub content: Vec<u8>,
+}
+
+/// One immutable version of a Skill bundle. The version freezes authored Skill
+/// content; it contains no principal, role, policy, API key, or runtime host path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillVersion {
+    pub id: String,
+    pub skill_id: String,
+    pub version: u64,
+    pub name: String,
+    pub description: String,
+    pub directory: String,
+    pub bundle_sha256: String,
+    pub files: Vec<SkillBundleFile>,
+}
+
+impl SkillVersion {
+    /// The exact `SKILL.md` bytes, when present at the bundle root or below a
+    /// single uploaded directory.
+    #[must_use]
+    pub fn skill_md(&self) -> Option<&[u8]> {
+        self.files
+            .iter()
+            .find(|file| file.path == "SKILL.md" || file.path.ends_with("/SKILL.md"))
+            .map(|file| file.content.as_slice())
+    }
+}
+
+/// Stable Skill resource identity and its current immutable-version pointer.
+/// Workspace ownership is an intrinsic resource invariant, not an authorization
+/// policy decision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillDefinition {
+    pub id: String,
+    pub workspace_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_title: Option<String>,
+    pub latest_version: u64,
+    /// Highest version number ever assigned. It never decreases or reuses a
+    /// retired version number.
+    pub last_version: u64,
+}
+
+/// A durable, workspace-scoped repository for the complete Skill aggregate.
+/// Authorization happens before this port is invoked; every operation is scoped by
+/// the trusted Workspace and can only observe resources owned by that Workspace.
 #[async_trait]
 pub trait SkillStore: Send + Sync {
-    /// Store (or overwrite) `content` under `id` in `workspace_id`; returns the safe
-    /// id (sanitized stem) it is addressable by.
-    async fn put(
+    /// Atomically create a Skill and its first version.
+    async fn create(
+        &self,
+        definition: SkillDefinition,
+        initial_version: SkillVersion,
+    ) -> Result<(), SkillStoreError>;
+    /// Append one immutable version and atomically advance `latest_version`.
+    async fn append_version(
         &self,
         workspace_id: &str,
-        id: &str,
-        content: &str,
-    ) -> Result<String, SkillStoreError>;
-    /// The content under `id`, or `None` if absent.
-    async fn get(&self, workspace_id: &str, id: &str) -> Result<Option<String>, SkillStoreError>;
-    /// Every skill in the workspace as `(id, content)`, sorted by id.
-    async fn list(&self, workspace_id: &str) -> Result<Vec<(String, String)>, SkillStoreError>;
-    /// Delete a skill; returns whether it existed. Idempotent.
-    async fn delete(&self, workspace_id: &str, id: &str) -> Result<bool, SkillStoreError>;
+        skill_id: &str,
+        version: SkillVersion,
+    ) -> Result<(), SkillStoreError>;
+    async fn definition(
+        &self,
+        workspace_id: &str,
+        skill_id: &str,
+    ) -> Result<Option<SkillDefinition>, SkillStoreError>;
+    /// Definitions owned by one Workspace, sorted by stable Skill id.
+    async fn list_definitions(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<SkillDefinition>, SkillStoreError>;
+    async fn version(
+        &self,
+        workspace_id: &str,
+        skill_id: &str,
+        version: u64,
+    ) -> Result<Option<SkillVersion>, SkillStoreError>;
+    async fn list_versions(
+        &self,
+        workspace_id: &str,
+        skill_id: &str,
+    ) -> Result<Vec<SkillVersion>, SkillStoreError>;
+    /// Retire a visible version. Ordinary listings/retrieval hide it and the latest
+    /// pointer moves, while immutable bytes remain addressable by an existing
+    /// Session pin. The only visible version cannot be retired.
+    async fn delete_version(
+        &self,
+        workspace_id: &str,
+        skill_id: &str,
+        version: u64,
+    ) -> Result<bool, SkillStoreError>;
+    /// Delete the complete Skill aggregate. Idempotent.
+    async fn delete_skill(
+        &self,
+        workspace_id: &str,
+        skill_id: &str,
+    ) -> Result<bool, SkillStoreError>;
+}
+
+/// JSON keeps binary files lossless without making the port depend on a wire
+/// encoding. This private adapter serializes bytes as integer arrays and rejects
+/// values outside the byte range on decode.
+mod skill_bytes {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        bytes.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Vec::<u8>::deserialize(deserializer)
+    }
 }
 
 // ---------------------------------------------------------------------------

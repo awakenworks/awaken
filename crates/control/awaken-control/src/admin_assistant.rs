@@ -210,14 +210,14 @@ impl ResourceInventory for HostResourceInventory {
     }
 
     async fn skills(&self) -> Vec<String> {
-        // The `.0` of each `(id, name)` pair; a read failure degrades to empty rather than
-        // failing the capability call.
+        // A repository read failure degrades to empty rather than failing the
+        // capability call.
         self.skills
-            .list(&self.skill_workspace)
+            .list_definitions(&self.skill_workspace)
             .await
             .unwrap_or_default()
             .into_iter()
-            .map(|(id, _)| id)
+            .map(|definition| definition.id)
             .collect()
     }
 }
@@ -660,7 +660,10 @@ mod tests {
             ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, ResourceCatalog,
             ResourceState,
         };
-        use awaken_skill_store::{InMemorySkillStore, SkillStore};
+        use awaken_skill_store::{
+            InMemorySkillStore, SkillBundleFile, SkillDefinition, SkillStore, SkillVersion,
+            bundle_sha256,
+        };
 
         let registry = Arc::new(InMemoryResourceCatalog::new());
         for (id, state) in [
@@ -689,7 +692,32 @@ mod tests {
                 .unwrap();
         }
         let skills = Arc::new(InMemorySkillStore::new());
-        skills.put(DEFAULT_SCOPE, "greet", "# greet").await.unwrap();
+        let files = vec![SkillBundleFile {
+            path: "SKILL.md".into(),
+            content: b"# greet".to_vec(),
+        }];
+        skills
+            .create(
+                SkillDefinition {
+                    id: "greet".into(),
+                    workspace_id: DEFAULT_SCOPE.into(),
+                    display_title: None,
+                    latest_version: 1,
+                    last_version: 1,
+                },
+                SkillVersion {
+                    id: "skver-greet-1".into(),
+                    skill_id: "greet".into(),
+                    version: 1,
+                    name: "greet".into(),
+                    description: String::new(),
+                    directory: "/skills/greet".into(),
+                    bundle_sha256: bundle_sha256(&files),
+                    files,
+                },
+            )
+            .await
+            .unwrap();
 
         let inv = HostResourceInventory::new(registry, skills, DEFAULT_SCOPE);
         assert_eq!(inv.memory_stores().await, vec!["mem-1".to_string()]);

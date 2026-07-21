@@ -1,5 +1,5 @@
 //! The skill-store schema. One portable [`MigrationBundle`] under the
-//! `skill_store` namespace; a skill is `(workspace_id, id) → content`. The same
+//! `skill_store` namespace; V2 stores the complete versioned aggregate. The same
 //! bundle renders on sqlite and postgres — the schema is written once.
 //!
 //! The DDL is a `.sql` file under `migrations/`, embedded with `include_str!`: the
@@ -12,10 +12,16 @@ use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 pub const BUNDLE_ID: &str = "awaken.skill_store";
 
 /// Embedded migration files, in apply order (`(name, contents)`).
-const FILES: &[(&str, &str)] = &[(
-    "V0001__skill.sql",
-    include_str!("migrations/V0001__skill.sql"),
-)];
+const FILES: &[(&str, &str)] = &[
+    (
+        "V0001__skill.sql",
+        include_str!("migrations/V0001__skill.sql"),
+    ),
+    (
+        "V0002__aggregate.sql",
+        include_str!("migrations/V0002__aggregate.sql"),
+    ),
+];
 
 /// Version from a `Vnnnn__slug.sql` file name (`V0001__…` ⇒ 1); a non-positive
 /// value is rejected by [`Migration::new`], so a mis-named file fails loudly.
