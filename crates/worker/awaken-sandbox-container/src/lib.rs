@@ -792,7 +792,8 @@ fn declared_hash(source: &pc::MountSource) -> Option<&str> {
     match source {
         pc::MountSource::File { content_hash, .. }
         | pc::MountSource::Resource { content_hash, .. }
-        | pc::MountSource::Secret { content_hash, .. } => content_hash.as_deref(),
+        | pc::MountSource::Secret { content_hash, .. }
+        | pc::MountSource::InlineBytes { content_hash, .. } => content_hash.as_deref(),
         _ => None,
     }
 }
@@ -843,12 +844,12 @@ async fn resolve_blob(
 }
 
 /// Resolve + materialize every mount's bytes for the container. Self-contained content
-/// (`Inline` / `Other{content}`, captured on the bind at plan time) ships as-is;
+/// (`Inline` / `InlineBytes` / `Other{content}`, captured on the bind at plan time) ships as-is;
 /// `File` / `Resource` / `Secret` resolve their bytes by id through [`resolve_blob`] and
 /// are hash-verified; a `CacheVolume` binds its caller-owned host path in place. Resolved
 /// bytes are written to a private host staging file (bound by docker/podman) and, when
 /// UTF-8, recorded as the bind's `content` so the k8s tier projects them as a ConfigMap
-/// (binary File bytes bind on docker/podman only — ConfigMap `binaryData` is a follow-up).
+/// (binary bytes use ConfigMap `binaryData` on Kubernetes).
 /// A required mount that resolves to nothing fails closed. Returns the staging guard (kept
 /// alive by the sandbox for the container's lifetime), or `None` when nothing was staged.
 async fn resolve_and_stage(
@@ -868,10 +869,16 @@ async fn resolve_and_stage(
     let mut secret_writebacks = Vec::new();
     for bind in binds.iter_mut() {
         // 1. Obtain the bytes this bind realizes, or skip a bind that needs no staging.
-        let had_content = bind.content.is_some();
+        let had_content = bind.content.is_some() || bind.content_bytes.is_some();
         let bytes: Vec<u8> = if let Some(contents) = &bind.content {
             // Inline / Other{content} — self-contained, captured by `binds_of`.
             contents.clone().into_bytes()
+        } else if let Some(contents) = &bind.content_bytes {
+            let bytes = contents.clone();
+            if let Some(mount) = by_path.get(bind.mount_path.as_str()) {
+                verify_hash(&mount.source, &bytes)?;
+            }
+            bytes
         } else {
             let Some(mount) = by_path.get(bind.mount_path.as_str()).copied() else {
                 continue;
@@ -1005,9 +1012,10 @@ fn binds_of(spec: &pc::SandboxSpec) -> Vec<BindPlan> {
             mount_path: m.mount_path.clone(),
             read_only: m.access == pc::MountAccess::ReadOnly,
             content: inline_content_of(&m.source),
-            // Binary single-file content is only known after a File/Resource resolves in
-            // `resolve_and_stage`; the plan starts with none.
-            content_bytes: None,
+            content_bytes: match &m.source {
+                pc::MountSource::InlineBytes { contents, .. } => Some(contents.clone()),
+                _ => None,
+            },
             secret_content: None,
             secret_writeback: m.is_secret_writeback(),
             credential_file_path: None,
@@ -1055,6 +1063,7 @@ fn mount_ref(source: &pc::MountSource) -> String {
         // first (same follow-up as content-store resolution for File/Resource). Empty
         // ref = not realized on this tier yet (bwrap realizes it, see awaken-sandbox-local).
         pc::MountSource::Inline { .. } => String::new(),
+        pc::MountSource::InlineBytes { .. } => String::new(),
         pc::MountSource::Other(_) => String::new(),
     }
 }

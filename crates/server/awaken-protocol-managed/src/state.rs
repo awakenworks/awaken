@@ -50,7 +50,7 @@ mod threads;
 mod types;
 
 pub(crate) use helpers::{content_text, rubric_text, session_usage_value};
-pub use resource::SessionResource;
+pub use resource::{ResourceAccess, SessionResource};
 pub(crate) use resource::{parse_session_resource, resource_dto};
 pub use types::{
     AgentCapabilities, BuiltinTool, CustomTool, DelegatedRun, LiveInboxEntry, LiveInboxError,

@@ -17,7 +17,10 @@ use tower::ServiceExt;
 
 /// A runtime that accepts every `prepare_session` — the session record exists, so
 /// the resource routes can be exercised. Turn methods are unused here.
-struct AcceptingFake;
+#[derive(Clone, Default)]
+struct AcceptingFake {
+    prepared: std::sync::Arc<std::sync::Mutex<Vec<SessionInit>>>,
+}
 
 struct AgentWithResources;
 
@@ -33,6 +36,7 @@ impl AgentConfigSource for AgentWithResources {
                 kind: "skill".into(),
                 id: "skill_release".into(),
                 mount_path: "/mnt/skills/release".into(),
+                access: awaken_protocol_managed::ResourceAccess::ReadOnly,
                 instructions: None,
                 auth_token: None,
                 git_ref: None,
@@ -59,9 +63,48 @@ impl AgentConfigSource for AgentWithIntegrations {
     }
 }
 
+struct WorkspaceScopedAgent;
+
+impl AgentConfigSource for WorkspaceScopedAgent {
+    fn agent_view(&self, _agent_id: &str) -> Option<AgentConfigView> {
+        panic!("Session creation must use the Workspace-scoped projection")
+    }
+
+    fn agent_view_in(&self, workspace_id: &str, agent_id: &str) -> Option<AgentConfigView> {
+        (workspace_id == "default" && agent_id == "scoped").then(|| AgentConfigView {
+            model: None,
+            system: None,
+            tool_ids: Vec::new(),
+            mcp_servers: Vec::new(),
+            skill_ids: Vec::new(),
+            resources: vec![
+                SessionResource {
+                    kind: "memory_store".into(),
+                    id: "agent-memory".into(),
+                    mount_path: "/mnt/memory".into(),
+                    access: awaken_protocol_managed::ResourceAccess::ReadWrite,
+                    instructions: None,
+                    auth_token: None,
+                    git_ref: None,
+                },
+                SessionResource {
+                    kind: "file".into(),
+                    id: "agent-file".into(),
+                    mount_path: "/mnt/agent.txt".into(),
+                    access: awaken_protocol_managed::ResourceAccess::ReadOnly,
+                    instructions: None,
+                    auth_token: None,
+                    git_ref: None,
+                },
+            ],
+        })
+    }
+}
+
 #[async_trait::async_trait]
 impl SessionRuntime for AcceptingFake {
-    async fn prepare_session(&self, _thread: &str, _init: SessionInit) -> Result<(), RunError> {
+    async fn prepare_session(&self, _thread: &str, init: SessionInit) -> Result<(), RunError> {
+        self.prepared.lock().unwrap().push(init);
         Ok(())
     }
     async fn run(
@@ -128,7 +171,7 @@ async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (St
 
 #[tokio::test]
 async fn session_inherits_published_agent_integrations_and_echoes_the_effective_set() {
-    let state = ManagedState::new(AcceptingFake)
+    let state = ManagedState::new(AcceptingFake::default())
         .with_config_source(std::sync::Arc::new(AgentWithIntegrations));
     let app = router(std::sync::Arc::new(state));
     let (status, session) = call(
@@ -144,7 +187,9 @@ async fn session_inherits_published_agent_integrations_and_echoes_the_effective_
 }
 
 async fn app_with_session() -> (Router, String) {
-    let app = router(std::sync::Arc::new(ManagedState::new(AcceptingFake)));
+    let app = router(std::sync::Arc::new(ManagedState::new(
+        AcceptingFake::default(),
+    )));
     let (s, session) = call(&app, "POST", "/v1/sessions", Some(json!({ "agent": "a" }))).await;
     assert_eq!(s, StatusCode::OK);
     let id = session["id"].as_str().unwrap().to_string();
@@ -153,7 +198,9 @@ async fn app_with_session() -> (Router, String) {
 
 #[tokio::test]
 async fn create_time_resources_are_backfilled_and_addressable() {
-    let app = router(std::sync::Arc::new(ManagedState::new(AcceptingFake)));
+    let app = router(std::sync::Arc::new(ManagedState::new(
+        AcceptingFake::default(),
+    )));
 
     let (s, session) = call(
         &app,
@@ -200,7 +247,7 @@ async fn create_time_resources_are_backfilled_and_addressable() {
 
 #[tokio::test]
 async fn published_agent_resources_are_visible_as_effective_session_inputs() {
-    let state = ManagedState::new(AcceptingFake)
+    let state = ManagedState::new(AcceptingFake::default())
         .with_config_source(std::sync::Arc::new(AgentWithResources));
     let app = router(std::sync::Arc::new(state));
 
@@ -210,6 +257,78 @@ async fn published_agent_resources_are_visible_as_effective_session_inputs() {
     assert_eq!(session["resources"][0]["type"], "skill");
     assert_eq!(session["resources"][0]["resource_id"], "skill_release");
     assert_eq!(session["resources"][0]["mount_path"], "/mnt/skills/release");
+}
+
+#[tokio::test]
+async fn session_resolves_scoped_defaults_and_attachments_once_before_runtime() {
+    let runtime = AcceptingFake::default();
+    let prepared = runtime.prepared.clone();
+    let state =
+        ManagedState::new(runtime).with_config_source(std::sync::Arc::new(WorkspaceScopedAgent));
+    let app = router(std::sync::Arc::new(state));
+
+    let (status, session) = call(
+        &app,
+        "POST",
+        "/v1/sessions",
+        Some(json!({
+            "agent": "scoped",
+            "resources": [{
+                "type": "memory_store",
+                "memory_store_id": "session-memory",
+                "mount_path": "/mnt/memory",
+                "access": "read_only"
+            }]
+        })),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(session["resources"].as_array().unwrap().len(), 2);
+    assert_eq!(session["resources"][0]["memory_store_id"], "session-memory");
+    assert_eq!(session["resources"][0]["access"], "read_only");
+
+    let calls = prepared.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].workspace_id, "default");
+    assert_eq!(calls[0].resources.len(), 2);
+    assert_eq!(calls[0].resources[0].id, "session-memory");
+    assert_eq!(
+        calls[0].resources[0].access,
+        awaken_protocol_managed::ResourceAccess::ReadOnly
+    );
+    assert!(
+        calls[0]
+            .resources
+            .iter()
+            .all(|resource| resource.id != "agent-memory"),
+        "the replaced Agent default must not cross the runtime boundary"
+    );
+    assert_eq!(calls[0].resources[1].id, "agent-file");
+}
+
+#[tokio::test]
+async fn duplicate_session_mount_paths_fail_closed_before_runtime() {
+    let runtime = AcceptingFake::default();
+    let prepared = runtime.prepared.clone();
+    let app = router(std::sync::Arc::new(ManagedState::new(runtime)));
+
+    let (status, error) = call(
+        &app,
+        "POST",
+        "/v1/sessions",
+        Some(json!({
+            "agent": "a",
+            "resources": [
+                { "type": "file", "file_id": "one", "mount_path": "/mnt/data" },
+                { "type": "file", "file_id": "two", "mount_path": "mnt/data" }
+            ]
+        })),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+    assert!(prepared.lock().unwrap().is_empty());
 }
 
 #[tokio::test]

@@ -58,7 +58,7 @@ pub struct ConfigService {
     /// Per-agent resource bindings (ADR-0038). When wired, the agent's bound-resource
     /// prompt fragments are appended to its effective system prompt at compile (A3a).
     /// `None` → compilation is byte-identical to an unbound agent.
-    resources: Option<Arc<dyn ResourceStore>>,
+    pub(crate) resources: Option<Arc<dyn ResourceStore>>,
     /// Resolves an `Auto` model selection to a concrete binding at publish (ADR-0052
     /// D5). `None` → an `Auto` config cannot publish (fail-closed); a `Pinned` config
     /// is unaffected.
@@ -94,25 +94,13 @@ impl ConfigService {
         self
     }
 
-    /// Wire the per-agent resource-binding store so compiled configs carry their
-    /// bound-resource prompts (ADR-0038 A3a). The same store instance is shared with
-    /// the admin router's `AdminState.resources`, so an authored binding is visible here.
+    /// Wire the per-Agent input binding repository used by Session projections.
+    /// Resource inputs are deliberately not compiled into the Agent snapshot: the
+    /// Session resolver composes current defaults with temporary attachments once.
     #[must_use]
     pub fn with_resources(mut self, resources: Arc<dyn ResourceStore>) -> Self {
         self.resources = Some(resources);
         self
-    }
-
-    /// The agent's bound-resource prompt fragments (ADR-0038 A3a). Empty when no
-    /// resource store is wired or the agent binds none, so compilation is unchanged.
-    fn resource_config(
-        &self,
-        workspace: &str,
-        agent_id: &str,
-    ) -> Option<awaken_config_resolver::AgentResourceConfig> {
-        self.resources
-            .as_ref()
-            .and_then(|store| store.get_agent_resource_in(workspace, agent_id))
     }
 
     /// Validate a config by compiling it against the caller-supplied tool `catalog`
@@ -145,7 +133,6 @@ impl ConfigService {
         awaken_config_store::compile_resolved(
             &resolved.config,
             catalog,
-            &resolved.resource_prompts,
             snapshot_metadata(&resolved),
         )
         .map(|_| ())
@@ -240,7 +227,6 @@ impl ConfigService {
         let snapshot = awaken_config_store::compile_resolved(
             &resolved.config,
             catalog,
-            &resolved.resource_prompts,
             snapshot_metadata(&resolved),
         )
         .map_err(|e| PublishError::Compile(e.to_string()))?;
@@ -273,7 +259,7 @@ impl ConfigService {
     /// worker path is allowed to repeat this work.
     fn resolve_agent_config(
         &self,
-        workspace: &str,
+        _workspace: &str,
         source: AgentConfigRevision,
     ) -> Result<ResolvedAgentConfig, PublishError> {
         let source_revision = source.revision;
@@ -305,30 +291,11 @@ impl ConfigService {
                 resolver.max_output_tokens(&model_id),
             );
         }
-        let resource_config = self.resource_config(workspace, &config.id);
-        let resource_prompts = resource_config
-            .as_ref()
-            .map(awaken_config_resolver::resource_prompts_for)
-            .unwrap_or_default();
-
         let mut inputs = vec![awaken_runtime_contract::ResolvedInputRef {
             kind: "agent_config".into(),
             id: config.id.clone(),
             version: awaken_runtime_contract::ResolvedInputVersion::Revision(source_revision),
         }];
-        if let Some(resources) = resource_config {
-            inputs.push(awaken_runtime_contract::ResolvedInputRef {
-                kind: "agent_resources".into(),
-                id: resources.agent_id,
-                version: awaken_runtime_contract::ResolvedInputVersion::Revision(
-                    resources.version.try_into().map_err(|_| {
-                        PublishError::Unresolvable(
-                            "agent resource revision must not be negative".into(),
-                        )
-                    })?,
-                ),
-            });
-        }
         let model_bytes = serde_json::to_vec(&(
             config.model_binding.resolved(),
             &config.model_candidates,
@@ -355,7 +322,6 @@ impl ConfigService {
                 revision: source_revision,
             },
             config,
-            resource_prompts,
             manifest,
             inference_access: None,
         })
@@ -623,69 +589,6 @@ impl ConfigPlane {
     #[must_use]
     pub fn service(&self) -> &Arc<ConfigService> {
         &self.service
-    }
-}
-
-/// Adapts the config plane to the managed agents registry's projection port
-/// ([`awaken_session_contract::AgentConfigSource`]): `/v1/agents` reads an agent's
-/// model/system/tools from the published config truth ([`ConfigService::installed`])
-/// rather than a second copy. This is the host-side half of the "retreat to
-/// projection" seam — the managed adapter names only the port, never this type.
-pub struct ConfigServiceAgentSource(pub Arc<ConfigService>);
-
-impl awaken_session_contract::AgentConfigSource for ConfigServiceAgentSource {
-    fn agent_view(&self, agent_id: &str) -> Option<awaken_session_contract::AgentConfigView> {
-        let snapshot = self.0.installed(agent_id)?;
-        let spec = &snapshot.resolved_spec;
-        let bindings = awaken_runtime_contract::agent_bindings::AgentBindings::from_config(
-            &spec.plugin_config,
-        )
-        .unwrap_or_default();
-        let resources = self
-            .0
-            .resources
-            .as_ref()
-            .and_then(|store| store.get_agent_resource(agent_id))
-            .map(|config| {
-                config
-                    .resources
-                    .into_iter()
-                    .map(|binding| {
-                        use awaken_config_resolver::ResourceKind as Kind;
-                        awaken_session_contract::SessionResource {
-                            kind: match binding.kind {
-                                Kind::Outputs => "outputs",
-                                Kind::File => "file",
-                                Kind::MemoryStore => "memory_store",
-                                Kind::GithubRepository => "github_repository",
-                                Kind::Skill => "skill",
-                            }
-                            .to_string(),
-                            id: binding.resource_id,
-                            mount_path: binding.mount_path,
-                            instructions: binding.instructions,
-                            auth_token: None,
-                            git_ref: None,
-                        }
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        Some(awaken_session_contract::AgentConfigView {
-            model: Some(spec.model_binding.model_ref.clone()),
-            system: (!spec.instructions.is_empty()).then(|| spec.instructions.clone()),
-            tool_ids: spec.tool_descriptors.iter().map(|d| d.id.clone()).collect(),
-            mcp_servers: bindings
-                .mcp_servers
-                .into_iter()
-                .map(|server| awaken_session_contract::AgentMcpServerView {
-                    name: server.name,
-                    url: server.url,
-                })
-                .collect(),
-            skill_ids: bindings.skill_ids,
-            resources,
-        })
     }
 }
 
@@ -1455,8 +1358,9 @@ mod resource_prompt_tests {
     }
 
     #[tokio::test]
-    async fn publish_injects_bound_resource_prompts_into_the_compiled_instructions() {
-        // Author a resource binding for agent-1 in the shared store (ADR-0038 A3a).
+    async fn publish_does_not_bake_session_resource_prompts_into_agent_instructions() {
+        // Agent defaults remain authoring data until Session resolution. Publishing
+        // the Agent must not bake a stale pre-merge resource prompt into its snapshot.
         let resources = Arc::new(awaken_config_resolver::InMemoryResourceStore::new());
         resources.put_agent_resource_in(
             DEFAULT_SCOPE,
@@ -1482,17 +1386,17 @@ mod resource_prompt_tests {
         plane.put(&scope, &agent_config("agent-1")).await.unwrap();
         plane.publish(&scope, "agent-1").await.unwrap();
 
-        // The compiled (installed) config's system prompt carries the base plus the
-        // bound memory store's fragment + its per-binding instructions.
+        // Only the authored Agent instructions are compiled. The final resource
+        // prompt is generated from Effective Session inputs at preparation time.
         let installed = plane.service().installed("agent-1").unwrap();
         let instructions = &installed.resolved_spec.instructions;
         assert!(instructions.starts_with("be helpful"));
-        assert!(instructions.contains("/mnt/memory/prefs"));
-        assert!(instructions.contains("user preferences"));
+        assert!(!instructions.contains("/mnt/memory/prefs"));
+        assert!(!instructions.contains("user preferences"));
     }
 
     #[tokio::test]
-    async fn publish_pins_source_resource_model_and_catalog_inputs_once() {
+    async fn publish_pins_agent_model_and_catalog_but_not_session_resources() {
         let resources = Arc::new(awaken_config_resolver::InMemoryResourceStore::new());
         resources.put_agent_resource_in(
             DEFAULT_SCOPE,
@@ -1530,16 +1434,9 @@ mod resource_prompt_tests {
             .iter()
             .map(|input| input.kind.as_str())
             .collect();
+        assert_eq!(kinds, ["agent_config", "model_binding", "tool"]);
         assert_eq!(
-            kinds,
-            ["agent_config", "agent_resources", "model_binding", "tool"]
-        );
-        assert_eq!(
-            metadata.resolution.inputs[1].version,
-            awaken_runtime_contract::ResolvedInputVersion::Revision(4)
-        );
-        assert_eq!(
-            metadata.resolution.inputs[3].version,
+            metadata.resolution.inputs[2].version,
             awaken_runtime_contract::ResolvedInputVersion::ContentHash(tool.content_hash)
         );
     }

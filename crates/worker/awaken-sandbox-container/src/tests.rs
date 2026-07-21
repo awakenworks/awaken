@@ -970,3 +970,48 @@ async fn resolve_and_stage_verifies_a_matching_content_hash() {
         .expect("a matching pin resolves");
     assert_eq!(plan.binds[0].content.as_deref(), Some("pinned-bytes"));
 }
+
+#[tokio::test]
+async fn inline_bytes_are_staged_binary_safe_and_hash_verified() {
+    let bytes = vec![0, 0xff, 0x80, b'\n'];
+    let spec = file_mount_spec(
+        "inline-binary",
+        pc::MountSource::InlineBytes {
+            contents: bytes.clone(),
+            content_hash: Some(content_fingerprint(&bytes)),
+        },
+        true,
+    );
+    let mut plan = container_plan(&spec, "img", &["x".to_string()]);
+
+    let staged = resolve_and_stage(&spec, &mut plan.binds, &HashMap::new(), &None, &None)
+        .await
+        .expect("matching binary content stages");
+
+    assert!(staged.guard.is_some());
+    assert_eq!(plan.binds[0].content, None);
+    assert_eq!(
+        plan.binds[0].content_bytes.as_deref(),
+        Some(bytes.as_slice())
+    );
+    assert_eq!(std::fs::read(&plan.binds[0].source_ref).unwrap(), bytes);
+}
+
+#[tokio::test]
+async fn inline_bytes_hash_mismatch_fails_before_container_start() {
+    let spec = file_mount_spec(
+        "inline-binary-corrupt",
+        pc::MountSource::InlineBytes {
+            contents: vec![0, 0xff],
+            content_hash: Some("wrong".into()),
+        },
+        true,
+    );
+    let mut plan = container_plan(&spec, "img", &["x".to_string()]);
+
+    let error = resolve_and_stage(&spec, &mut plan.binds, &HashMap::new(), &None, &None)
+        .await
+        .expect_err("corrupt binary content must fail closed");
+
+    assert!(error.to_string().contains("hash mismatch"), "{error}");
+}

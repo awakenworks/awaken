@@ -30,4 +30,11 @@ pub struct AgentConfigView {
 pub trait AgentConfigSource: Send + Sync {
     /// The config-plane view of `agent_id`, if it is published there.
     fn agent_view(&self, agent_id: &str) -> Option<AgentConfigView>;
+
+    /// Workspace-scoped projection used when creating a Session. Implementors
+    /// backed by a scoped repository must override this method; the default keeps
+    /// scope-free registries source-compatible while they migrate.
+    fn agent_view_in(&self, _workspace_id: &str, agent_id: &str) -> Option<AgentConfigView> {
+        self.agent_view(agent_id)
+    }
 }

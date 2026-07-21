@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
+awaken-resource-contract.workspace = true
 awaken-model-catalog.workspace = true
 awaken-credential-vault.workspace = true
 serde.workspace = true

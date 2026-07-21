@@ -230,6 +230,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     },
     "awaken-config-resolver": {
         "awaken-agent-contract",
+        # Resource Catalog is a port-only inward dependency; it contains no IAM,
+        # HTTP, storage adapter, or runtime-host type.
+        "awaken-resource-contract",
         "awaken-runtime-contract",
         "awaken-model-catalog",
         "awaken-credential-vault",
@@ -248,6 +251,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-agent-contract",
         "awaken-api-contract",
         "awaken-config-resolver",
+        # Resource Catalog port only: resource identity, Workspace ownership,
+        # config versions and lifecycle. Authorization remains at the PEP.
+        "awaken-resource-contract",
         # The neutral `Disposition` resilience taxonomy: the ops cooldown routes map
         # a credential-probe failure onto a retry/cool-down policy (E3-4).
         "awaken-runtime-contract",

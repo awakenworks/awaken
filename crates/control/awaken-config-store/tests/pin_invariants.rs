@@ -23,7 +23,7 @@ fn compile(
     config: &AgentConfig,
     tools: &[ToolDescriptor],
 ) -> Result<awaken_config_store::ExecutableAgentSnapshot, awaken_config_store::CompileError> {
-    compile_resolved(config, tools, &[], AgentSnapshotMetadata::default())
+    compile_resolved(config, tools, AgentSnapshotMetadata::default())
 }
 
 /// A representative config authored the way today's plane authors one. `backend`

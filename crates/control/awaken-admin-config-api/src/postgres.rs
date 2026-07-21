@@ -30,7 +30,7 @@ use awaken_config_resolver::{
 use crate::schema::admin_bundle;
 
 /// The admin component's table namespace (its bundle prefix).
-const NS: &str = "admin";
+pub(crate) const NS: &str = "admin";
 
 /// Errors from connecting or migrating the store.
 #[derive(Debug, thiserror::Error)]
@@ -49,7 +49,7 @@ pub enum StoreError {
 /// never crosses a thread boundary and need not be `Send` (only the builder
 /// closure and the output must be) — this sidesteps sqlx's
 /// `Send`-not-general-enough puzzles.
-fn block<T, F, Fut>(handle: &Handle, make: F) -> T
+pub(crate) fn block<T, F, Fut>(handle: &Handle, make: F) -> T
 where
     F: FnOnce() -> Fut + Send + 'static,
     Fut: Future<Output = T>,
@@ -65,8 +65,8 @@ where
 /// sync store ports. Wrap in `Arc` and clone into each `AdminState` slot so the
 /// ports share one pool.
 pub struct PostgresAdminStore {
-    pool: PgPool,
-    handle: Handle,
+    pub(crate) pool: PgPool,
+    pub(crate) handle: Handle,
     /// The store owns its runtime; `Option` so [`Drop`] can shut it down in the
     /// background (dropping a runtime from within another runtime would panic).
     rt: Option<Runtime>,
