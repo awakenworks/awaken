@@ -170,7 +170,7 @@ impl ManagedState {
         })?;
         awaken_session_contract::SessionInputResolver::resolve_inputs(
             owner_scope,
-            catalog,
+            Some(catalog),
             &[],
             &[attachment],
         )

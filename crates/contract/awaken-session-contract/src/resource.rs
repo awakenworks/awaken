@@ -6,7 +6,7 @@ use std::collections::HashSet;
 
 use awaken_resource_contract::{
     BindingId, InputBinding, InputResourceId, MemoryStoreConfigVersion, RepositoryConfigVersion,
-    ResourceConfigSource,
+    ResourceCatalogError, ResourceConfigSource,
 };
 use serde::{Deserialize, Serialize};
 
@@ -254,9 +254,9 @@ impl SessionInputResolver {
     /// Compose and resolve the current Memory/Repository configuration exactly
     /// once. The caller supplies a trusted Workspace after the edge PEP has made
     /// its authorization decision; this method contains no authorization policy.
-    pub fn resolve_inputs<S: ResourceConfigSource + ?Sized>(
+    pub fn resolve_inputs(
         workspace_id: &str,
-        catalog: &S,
+        catalog: Option<&dyn ResourceConfigSource>,
         agent_defaults: &[InputBinding],
         session_attachments: &[SessionInputAttachment],
     ) -> Result<ResolvedSessionResources, SessionInputError> {
@@ -266,16 +266,22 @@ impl SessionInputResolver {
                 let source = match binding.target {
                     InputResourceId::File(file_id) => ResolvedInputSource::File { file_id },
                     InputResourceId::MemoryStore(memory_store_id) => {
-                        let resolved =
-                            catalog.resolve_memory_store(workspace_id, memory_store_id.as_str())?;
+                        let resolved = catalog
+                            .ok_or_else(|| {
+                                ResourceCatalogError::NotFound(memory_store_id.to_string())
+                            })?
+                            .resolve_memory_store(workspace_id, memory_store_id.as_str())?;
                         ResolvedInputSource::MemoryStore {
                             memory_store_id,
                             config: resolved.config,
                         }
                     }
                     InputResourceId::Repository(repository_id) => {
-                        let resolved =
-                            catalog.resolve_repository(workspace_id, repository_id.as_str())?;
+                        let resolved = catalog
+                            .ok_or_else(|| {
+                                ResourceCatalogError::NotFound(repository_id.to_string())
+                            })?
+                            .resolve_repository(workspace_id, repository_id.as_str())?;
                         ResolvedInputSource::Repository {
                             repository_id,
                             config: resolved.config,
@@ -424,7 +430,7 @@ mod tests {
 
         let effective = SessionInputResolver::resolve_inputs(
             "workspace-a",
-            &Catalog::default(),
+            Some(&Catalog::default()),
             &defaults,
             &[SessionInputAttachment {
                 binding: file,
@@ -459,7 +465,8 @@ mod tests {
         ];
 
         let effective =
-            SessionInputResolver::resolve_inputs("workspace-a", &catalog, &defaults, &[]).unwrap();
+            SessionInputResolver::resolve_inputs("workspace-a", Some(&catalog), &defaults, &[])
+                .unwrap();
 
         assert_eq!(catalog.memory_resolves.load(Ordering::Relaxed), 1);
         assert_eq!(catalog.repository_resolves.load(Ordering::Relaxed), 1);
@@ -496,7 +503,7 @@ mod tests {
         assert!(matches!(
             SessionInputResolver::resolve_inputs(
                 "workspace-b",
-                &Catalog::default(),
+                Some(&Catalog::default()),
                 &[memory_binding],
                 &[]
             ),
@@ -504,6 +511,42 @@ mod tests {
                 _
             )))
         ));
+    }
+
+    #[test]
+    fn file_inputs_need_no_catalog_but_configured_resources_fail_closed_without_one() {
+        let file_binding = binding(
+            "file",
+            InputResourceId::File(FileId::from("file-1")),
+            "/mnt/file",
+            awaken_resource_contract::ResourceAccess::ReadWrite,
+        );
+        let resolved =
+            SessionInputResolver::resolve_inputs("workspace-a", None, &[file_binding], &[])
+                .unwrap();
+        assert_eq!(resolved.inputs.len(), 1);
+        assert_eq!(
+            resolved.inputs[0].access,
+            awaken_resource_contract::ResourceAccess::ReadOnly
+        );
+
+        for target in [
+            InputResourceId::MemoryStore(MemoryStoreId::from("memory-1")),
+            InputResourceId::Repository(RepositoryId::from("repo-1")),
+        ] {
+            let configured = binding(
+                "configured",
+                target,
+                "/mnt/configured",
+                awaken_resource_contract::ResourceAccess::ReadOnly,
+            );
+            assert!(matches!(
+                SessionInputResolver::resolve_inputs("workspace-a", None, &[configured], &[]),
+                Err(SessionInputError::Catalog(ResourceCatalogError::NotFound(
+                    _
+                )))
+            ));
+        }
     }
 
     fn resolved_file(binding_id: &str, file_id: &str, mount_path: &str) -> ResolvedInput {
