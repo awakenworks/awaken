@@ -112,7 +112,9 @@ async function validateJaeger() {
   const kind = (name) => ops.find((o) => o.name === name)?.spanKind;
   assert.equal(kind('http.request'), 'server', 'http.request should be SpanKind server in Jaeger');
   assert.equal(kind('invoke_agent'), 'internal', 'invoke_agent should be SpanKind internal');
-  const chatOp = ops.find((o) => o.name.startsWith('chat '));
+  // Current OTel GenAI convention uses the stable operation name `chat`; retain
+  // compatibility with older provider-qualified names (`chat <provider>`).
+  const chatOp = ops.find((o) => o.name === 'chat' || o.name.startsWith('chat '));
   assert.ok(chatOp, 'no chat span operation in Jaeger');
   assert.equal(chatOp.spanKind, 'client', 'chat should be SpanKind client');
   const toolOp = ops.find((o) => o.name.startsWith('execute_tool '));
