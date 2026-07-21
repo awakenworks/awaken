@@ -69,7 +69,7 @@ function spawnBrain(binary: string, storage: string) {
 }
 
 function sqlite(storage: string, statement: string): string {
-  return execFileSync('sqlite3', [path.join(storage, 'sessions.db'), statement], {
+  return execFileSync('sqlite3', ['-cmd', '.timeout 5000', path.join(storage, 'sessions.db'), statement], {
     encoding: 'utf8',
   }).trim();
 }
@@ -149,6 +149,7 @@ async function main(): Promise<void> {
   try {
     await waitForPort(PORT, 180_000, brain);
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: BASE });
+
     const cases = new Map<string, string>();
     for (const name of [
       'invalid-json',
