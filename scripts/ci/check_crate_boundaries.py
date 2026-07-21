@@ -1314,7 +1314,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tracing",
     },
     "awaken-resource-reclaimer": {"awaken-resource-contract", "async-trait", "tokio"},
-"awaken-resource-store": {"awaken-resource-contract", "awaken-scoped-migration", "async-trait", "proptest", "rusqlite", "serde_json", "sqlx", "tempfile", "tokio"},
+"awaken-resource-store": {"awaken-resource-contract", "awaken-scoped-migration", "async-trait", "parking_lot", "proptest", "rusqlite", "serde_json", "sqlx", "tempfile", "tokio"},
     # Single-machine assembly binary: the composition root. Since the service
     # layer moved to awaken-runtime-host; it composes host/protocol/management router modes.
     # Test-only scenario host (Stage A): the mock models + build_*_router scenario

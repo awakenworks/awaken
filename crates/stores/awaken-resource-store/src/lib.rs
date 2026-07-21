@@ -5,8 +5,8 @@
 //! or policy. The same ports support the in-process local composition and a
 //! replaceable durable adapter.
 
+use parking_lot::Mutex;
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Mutex;
 
 use async_trait::async_trait;
 use awaken_resource_contract::{
@@ -46,10 +46,7 @@ impl ResourceReclamationFence for InMemoryResourceStore {
         target: &ResourceTarget,
     ) -> Result<AcquireResourceReclamationOutcome, ResourcePurgeError> {
         validate_fence_request(intent_id, target)?;
-        let mut state = self
-            .consistency
-            .lock()
-            .map_err(|error| storage(error.to_string()))?;
+        let mut state = self.consistency.lock();
         let key = physical_key(target);
         if let Some(owner) = state.reclamation_fences.get(&key) {
             return Ok(if owner == intent_id {
@@ -72,10 +69,7 @@ impl ResourceReclamationFence for InMemoryResourceStore {
         target: &ResourceTarget,
     ) -> Result<bool, ResourcePurgeError> {
         validate_fence_request(intent_id, target)?;
-        let mut state = self
-            .consistency
-            .lock()
-            .map_err(|error| storage(error.to_string()))?;
+        let mut state = self.consistency.lock();
         let key = physical_key(target);
         match state.reclamation_fences.get(&key) {
             Some(owner) if owner == intent_id => {
@@ -102,10 +96,7 @@ impl ResourcePurgeRepository for InMemoryResourceStore {
         intent: ResourcePurgeIntent,
     ) -> Result<PutResourcePurgeOutcome, ResourcePurgeError> {
         intent.validate()?;
-        let mut rows = self
-            .intents
-            .lock()
-            .map_err(|error| storage(error.to_string()))?;
+        let mut rows = self.intents.lock();
         if let Some(existing) = rows.get(&intent.intent_id).or_else(|| {
             rows.values()
                 .find(|row| row.idempotency_key == intent.idempotency_key)
@@ -126,12 +117,7 @@ impl ResourcePurgeRepository for InMemoryResourceStore {
         &self,
         intent_id: &str,
     ) -> Result<Option<ResourcePurgeIntent>, ResourcePurgeError> {
-        Ok(self
-            .intents
-            .lock()
-            .map_err(|error| storage(error.to_string()))?
-            .get(intent_id)
-            .cloned())
+        Ok(self.intents.lock().get(intent_id).cloned())
     }
 
     async fn recoverable(
@@ -142,7 +128,6 @@ impl ResourcePurgeRepository for InMemoryResourceStore {
         let mut rows: Vec<_> = self
             .intents
             .lock()
-            .map_err(|error| storage(error.to_string()))?
             .values()
             .filter(|intent| recoverable(intent, now_unix_ms))
             .cloned()
@@ -162,10 +147,7 @@ impl ResourcePurgeRepository for InMemoryResourceStore {
         intent: ResourcePurgeIntent,
     ) -> Result<(), ResourcePurgeError> {
         intent.validate()?;
-        let mut rows = self
-            .intents
-            .lock()
-            .map_err(|error| storage(error.to_string()))?;
+        let mut rows = self.intents.lock();
         let current = rows
             .get(&intent.intent_id)
             .ok_or_else(|| ResourcePurgeError::NotFound(intent.intent_id.clone()))?;
@@ -184,10 +166,7 @@ impl ResourceReferenceIndex for InMemoryResourceStore {
         record: ResourceReferenceRecord,
     ) -> Result<bool, ResourcePurgeError> {
         validate_reference(&record)?;
-        let mut state = self
-            .consistency
-            .lock()
-            .map_err(|error| storage(error.to_string()))?;
+        let mut state = self.consistency.lock();
         ensure_unfenced(&state.reclamation_fences, &record.target)?;
         Ok(state.references.insert(record))
     }
@@ -197,12 +176,7 @@ impl ResourceReferenceIndex for InMemoryResourceStore {
         record: &ResourceReferenceRecord,
     ) -> Result<bool, ResourcePurgeError> {
         validate_reference(record)?;
-        Ok(self
-            .consistency
-            .lock()
-            .map_err(|error| storage(error.to_string()))?
-            .references
-            .remove(record))
+        Ok(self.consistency.lock().references.remove(record))
     }
 
     async fn replace_references(
@@ -212,10 +186,7 @@ impl ResourceReferenceIndex for InMemoryResourceStore {
         records: Vec<ResourceReferenceRecord>,
     ) -> Result<(), ResourcePurgeError> {
         validate_replacement(kind, reference_id, &records)?;
-        let mut state = self
-            .consistency
-            .lock()
-            .map_err(|error| storage(error.to_string()))?;
+        let mut state = self.consistency.lock();
         for record in &records {
             ensure_unfenced(&state.reclamation_fences, &record.target)?;
         }
@@ -230,10 +201,7 @@ impl ResourceReferenceIndex for InMemoryResourceStore {
         &self,
         target: &ResourceTarget,
     ) -> Result<Vec<ResourceReference>, ResourcePurgeError> {
-        let rows = self
-            .consistency
-            .lock()
-            .map_err(|error| storage(error.to_string()))?;
+        let rows = self.consistency.lock();
         Ok(rows
             .references
             .iter()
@@ -250,7 +218,6 @@ impl ResourceReferenceIndex for InMemoryResourceStore {
         Ok(self
             .consistency
             .lock()
-            .map_err(|error| storage(error.to_string()))?
             .references
             .iter()
             .filter(|record| record.target.kind == kind && record.target.resource_id == resource_id)
@@ -307,10 +274,8 @@ impl SqliteResourceStore {
         })
     }
 
-    fn connection(&self) -> Result<std::sync::MutexGuard<'_, Connection>, ResourcePurgeError> {
-        self.connection
-            .lock()
-            .map_err(|error| storage(error.to_string()))
+    fn connection(&self) -> parking_lot::MutexGuard<'_, Connection> {
+        self.connection.lock()
     }
 }
 
@@ -323,7 +288,7 @@ impl ResourceReclamationFence for SqliteResourceStore {
         target: &ResourceTarget,
     ) -> Result<AcquireResourceReclamationOutcome, ResourcePurgeError> {
         validate_fence_request(intent_id, target)?;
-        let mut connection = self.connection()?;
+        let mut connection = self.connection();
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| storage(error.to_string()))?;
@@ -367,7 +332,7 @@ impl ResourceReclamationFence for SqliteResourceStore {
         target: &ResourceTarget,
     ) -> Result<bool, ResourcePurgeError> {
         validate_fence_request(intent_id, target)?;
-        let mut connection = self.connection()?;
+        let mut connection = self.connection();
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| storage(error.to_string()))?;
@@ -409,7 +374,7 @@ impl ResourcePurgeRepository for SqliteResourceStore {
         intent: ResourcePurgeIntent,
     ) -> Result<PutResourcePurgeOutcome, ResourcePurgeError> {
         intent.validate()?;
-        let mut connection = self.connection()?;
+        let mut connection = self.connection();
         let transaction = connection
             .transaction()
             .map_err(|error| storage(error.to_string()))?;
@@ -461,7 +426,7 @@ impl ResourcePurgeRepository for SqliteResourceStore {
         &self,
         intent_id: &str,
     ) -> Result<Option<ResourcePurgeIntent>, ResourcePurgeError> {
-        self.connection()?
+        self.connection()
             .query_row(
                 "SELECT data FROM resource_purge_intents WHERE intent_id = ?1",
                 params![intent_id],
@@ -478,7 +443,7 @@ impl ResourcePurgeRepository for SqliteResourceStore {
         now_unix_ms: u64,
         limit: usize,
     ) -> Result<Vec<ResourcePurgeIntent>, ResourcePurgeError> {
-        let connection = self.connection()?;
+        let connection = self.connection();
         let mut statement = connection
             .prepare(
                 "SELECT data FROM resource_purge_intents
@@ -509,7 +474,7 @@ impl ResourcePurgeRepository for SqliteResourceStore {
         intent.validate()?;
         let data = encode_intent(&intent)?;
         let changed = self
-            .connection()?
+            .connection()
             .execute(
                 "UPDATE resource_purge_intents
                  SET revision = ?3, status = ?4, lease_expires_at_unix_ms = ?5, data = ?6
@@ -542,7 +507,7 @@ impl ResourceReferenceIndex for SqliteResourceStore {
         record: ResourceReferenceRecord,
     ) -> Result<bool, ResourcePurgeError> {
         validate_reference(&record)?;
-        let mut connection = self.connection()?;
+        let mut connection = self.connection();
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| storage(error.to_string()))?;
@@ -568,7 +533,7 @@ impl ResourceReferenceIndex for SqliteResourceStore {
     ) -> Result<bool, ResourcePurgeError> {
         validate_reference(record)?;
         Ok(self
-            .connection()?
+            .connection()
             .execute(
                 "DELETE FROM resource_references
                  WHERE workspace_id = ?1 AND resource_kind = ?2 AND resource_id = ?3
@@ -586,7 +551,7 @@ impl ResourceReferenceIndex for SqliteResourceStore {
         records: Vec<ResourceReferenceRecord>,
     ) -> Result<(), ResourcePurgeError> {
         validate_replacement(kind, reference_id, &records)?;
-        let mut connection = self.connection()?;
+        let mut connection = self.connection();
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| storage(error.to_string()))?;
@@ -618,7 +583,7 @@ impl ResourceReferenceIndex for SqliteResourceStore {
         &self,
         target: &ResourceTarget,
     ) -> Result<Vec<ResourceReference>, ResourcePurgeError> {
-        let connection = self.connection()?;
+        let connection = self.connection();
         let mut statement = connection
             .prepare(
                 "SELECT reference_kind, reference_id FROM resource_references
@@ -651,7 +616,7 @@ impl ResourceReferenceIndex for SqliteResourceStore {
         kind: ResourceKind,
         resource_id: &str,
     ) -> Result<Vec<ResourceReferenceRecord>, ResourcePurgeError> {
-        let connection = self.connection()?;
+        let connection = self.connection();
         let mut statement = connection
             .prepare(
                 "SELECT workspace_id, reference_kind, reference_id FROM resource_references
