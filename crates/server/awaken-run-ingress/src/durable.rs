@@ -45,6 +45,16 @@ pub struct DurableRunIngress<S> {
 }
 
 impl<S: Dispatch + 'static> DurableRunIngress<S> {
+    /// Install the session-selected attempt executor before the first claim.
+    /// Queueing, fencing, scheduled actions, metrics, and settlement remain owned
+    /// by this durable ingress; only fresh/resume execution is polymorphic.
+    pub fn install_attempt_executor(
+        &self,
+        executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>,
+    ) {
+        self.worker.install_attempt_executor(executor);
+    }
+
     /// Build durable ingress from a runtime, a dispatch store, and the durable
     /// commit boundary. The commit handle is the single source of truth shared by
     /// the runtime's writes and the worker's reads (G6 same-source wiring).

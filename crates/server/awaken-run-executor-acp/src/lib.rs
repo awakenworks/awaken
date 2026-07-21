@@ -25,7 +25,9 @@ use awaken_agent_contract::agent::awaiting::{AwaitReason, ResumeTicket};
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::run::{EndCause, Failure, RunState};
-use awaken_agent_contract::agent::state::{Command as StateCommand, MergePolicy, Scope};
+use awaken_agent_contract::agent::state::{
+    Action as StateAction, Command as StateCommand, MergePolicy, Scope,
+};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_protocol_acp::{
@@ -41,11 +43,12 @@ use awaken_provisioning_contract::ProcessHandle;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::boundary::{BoundaryOutcome, evaluate_boundary};
 use awaken_runtime_contract::execution::{
-    Cancellation, Error, ExecutorCapabilities, Result, RunExecutor, Wait,
+    Cancellation, Error, ExecutorCapabilities, Result, RunAttemptExecutor, RunExecutor, Wait,
 };
 use awaken_runtime_contract::llm::{THREAD_USAGE_STATE_KEY, ThreadUsage, TokenUsage};
 use awaken_runtime_contract::permission::{ToolCall, ToolPermissionPolicy, ToolPermissionVerdict};
 use awaken_runtime_contract::resolved::Backend;
+use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult, validate_resume};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 
 /// An already-launched ACP agent: the duplex channel plus the process handle for
@@ -320,6 +323,41 @@ impl RunExecutor for AcpRunExecutor {
     }
 }
 
+#[async_trait]
+impl RunAttemptExecutor for AcpRunExecutor {
+    async fn resume(
+        &self,
+        mut activation: RunActivation,
+        command: ResumeCommand,
+        context: RuntimeRunContext,
+    ) -> Result<RunState> {
+        let reader = context.reader.as_ref().ok_or_else(|| {
+            Error::Execution("ACP resume requires committed-history wiring".to_string())
+        })?;
+        let ticket = reader.resume_ticket(&command.run_id).ok_or_else(|| {
+            Error::Execution("ACP run is not awaiting an active resume ticket".to_string())
+        })?;
+        validate_resume(&ticket, &command)
+            .map_err(|error| Error::Execution(format!("invalid ACP resume: {error}")))?;
+        if activation.run_id != command.run_id || activation.thread_id != command.thread_id {
+            return Err(Error::Execution(
+                "ACP activation does not match the resumed Run".to_string(),
+            ));
+        }
+        let ResumeResult::Input(input) = command.result else {
+            return Err(Error::Execution(
+                "ACP currently resumes only operator/input waits".to_string(),
+            ));
+        };
+        activation.input = vec![Message::text(
+            MessageId(format!("acp-resume-{}", command.correlation_id)),
+            Role::User,
+            input,
+        )];
+        self.execute(activation, context).await
+    }
+}
+
 impl AcpRunExecutor {
     /// Resolve this run's portable session-home binding from the ACP CLI catalog:
     /// the thread+adapter key and the harvest plan, or `None` when the backend is
@@ -406,13 +444,19 @@ impl AcpRunExecutor {
             .model_binding
             .model_ref
             .clone();
+        let backend_ref = activation
+            .snapshot
+            .resolved_spec
+            .model_binding
+            .backend_ref
+            .clone();
         let mut prompt = prompt_of(&activation.input);
         let mut committed: Vec<Message> = Vec::new();
         // The ACP session id, carried across the per-turn relaunches so a resumed
         // turn reloads the CLI's own session (`session/load`) instead of starting
         // fresh — context survives the relaunch (the newline stand-in leaves it
         // `None`, so it always starts fresh, unchanged from before).
-        let mut acp_session_id: Option<String> = None;
+        let mut acp_session_id = restored_session_id(&context, &activation.thread_id, &backend_ref);
         // The run's token usage, accumulated across turns and committed as thread
         // state at the terminal state (matching the native engine's `__usage`).
         let mut run_usage = TokenUsage::default();
@@ -534,7 +578,12 @@ impl AcpRunExecutor {
                         &activation.thread_id,
                         disposition,
                         committed,
-                        usage_state(&run_usage, &model_ref),
+                        run_state(
+                            &run_usage,
+                            &model_ref,
+                            &backend_ref,
+                            acp_session_id.as_deref(),
+                        ),
                     )
                     .await?;
                     return Ok(state);
@@ -562,7 +611,12 @@ impl AcpRunExecutor {
                                 &activation.thread_id,
                                 disposition,
                                 committed,
-                                usage_state(&run_usage, &model_ref),
+                                run_state(
+                                    &run_usage,
+                                    &model_ref,
+                                    &backend_ref,
+                                    acp_session_id.as_deref(),
+                                ),
                             )
                             .await?;
                             return Ok(state);
@@ -583,7 +637,12 @@ impl AcpRunExecutor {
                         &activation.thread_id,
                         disposition,
                         committed,
-                        usage_state(&run_usage, &model_ref),
+                        run_state(
+                            &run_usage,
+                            &model_ref,
+                            &backend_ref,
+                            acp_session_id.as_deref(),
+                        ),
                     )
                     .await?;
                     return Ok(state);
@@ -597,7 +656,12 @@ impl AcpRunExecutor {
                         &activation.thread_id,
                         disposition,
                         committed,
-                        usage_state(&run_usage, &model_ref),
+                        run_state(
+                            &run_usage,
+                            &model_ref,
+                            &backend_ref,
+                            acp_session_id.as_deref(),
+                        ),
                     )
                     .await?;
                     return Ok(state);
@@ -697,6 +761,56 @@ fn usage_state(usage: &TokenUsage, model_ref: &str) -> Vec<StateCommand> {
         THREAD_USAGE_STATE_KEY,
         serde_json::to_value(tally).expect("thread usage serializes"),
     )]
+}
+
+const ACP_SESSION_ID_STATE_KEY: &str = "__acp_session_id";
+
+fn run_state(
+    usage: &TokenUsage,
+    model_ref: &str,
+    backend_ref: &str,
+    session_id: Option<&str>,
+) -> Vec<StateCommand> {
+    let mut state = usage_state(usage, model_ref);
+    if let Some(session_id) = session_id.filter(|id| !id.is_empty()) {
+        state.push(StateCommand::set(
+            Scope::Thread,
+            MergePolicy::Disjoint,
+            ACP_SESSION_ID_STATE_KEY,
+            serde_json::json!({
+                "backend_ref": backend_ref,
+                "session_id": session_id,
+            }),
+        ));
+    }
+    state
+}
+
+fn restored_session_id(
+    context: &RuntimeRunContext,
+    thread_id: &ThreadId,
+    backend_ref: &str,
+) -> Option<String> {
+    context
+        .reader
+        .as_ref()?
+        .committed_state(thread_id)
+        .into_iter()
+        .rev()
+        .find(|command| command.scope == Scope::Thread && command.key.0 == ACP_SESSION_ID_STATE_KEY)
+        .and_then(|command| match command.action {
+            StateAction::Set(value)
+                if value.get("backend_ref").and_then(serde_json::Value::as_str)
+                    == Some(backend_ref) =>
+            {
+                value
+                    .get("session_id")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|id| !id.is_empty())
+                    .map(str::to_string)
+            }
+            StateAction::Set(_) | StateAction::Remove => None,
+        })
 }
 
 /// A no-tool awaiting ticket for an operator pause (ADR-0054): the ACP run awaits

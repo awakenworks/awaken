@@ -9,7 +9,7 @@ mod harness;
 
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::message::Role;
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
@@ -21,7 +21,10 @@ use awaken_run_ingress::{
 };
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime::{DirectRunIngress, RunIngress};
-use awaken_runtime_contract::execution::RunExecutor;
+use awaken_runtime_contract::activation::RunActivation;
+use awaken_runtime_contract::execution::{
+    Error as ExecutionError, Result as ExecutionResult, RunAttemptExecutor, RunExecutor,
+};
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 
@@ -29,6 +32,61 @@ use harness::{
     FP, SNAP, THREAD, TICKET, activation, input_echo_runtime, schedule_runtime, text_runtime,
     tool_runtime,
 };
+
+#[derive(Default)]
+struct RecordingAttemptExecutor {
+    executes: AtomicUsize,
+    resumes: AtomicUsize,
+}
+
+impl RecordingAttemptExecutor {
+    async fn finish(
+        activation: &RunActivation,
+        context: &RuntimeRunContext,
+    ) -> ExecutionResult<RunState> {
+        let disposition = awaken_agent_contract::thread::commit::RunDisposition::ended(
+            activation.run_id.clone(),
+            EndCause::NaturalEnd,
+        );
+        if let Some(commit) = &context.commit {
+            awaken_agent_contract::thread::commit::commit_run(
+                commit.as_ref(),
+                &activation.thread_id,
+                disposition,
+                Vec::new(),
+                Vec::new(),
+            )
+            .await
+            .map_err(|error| ExecutionError::Commit(error.to_string()))?;
+        }
+        Ok(RunState::Ended(EndCause::NaturalEnd))
+    }
+}
+
+#[async_trait::async_trait]
+impl RunExecutor for RecordingAttemptExecutor {
+    async fn execute(
+        &self,
+        activation: RunActivation,
+        context: RuntimeRunContext,
+    ) -> ExecutionResult<RunState> {
+        self.executes.fetch_add(1, Ordering::SeqCst);
+        Self::finish(&activation, &context).await
+    }
+}
+
+#[async_trait::async_trait]
+impl RunAttemptExecutor for RecordingAttemptExecutor {
+    async fn resume(
+        &self,
+        activation: RunActivation,
+        _command: ResumeCommand,
+        context: RuntimeRunContext,
+    ) -> ExecutionResult<RunState> {
+        self.resumes.fetch_add(1, Ordering::SeqCst);
+        Self::finish(&activation, &context).await
+    }
+}
 
 fn opaque_access(scheme: &str, reference: &str) -> InferenceAccess {
     InferenceAccess {
@@ -94,6 +152,25 @@ async fn durable_submit_persists_then_runs_to_completion() {
     assert_eq!(messages[0].text_content(), "go");
     assert_eq!(messages.last().unwrap().text_content(), "done");
     assert_eq!(store.dispatch_count(), 0, "a finished dispatch is removed");
+}
+
+#[tokio::test]
+async fn installed_attempt_executor_drives_a_fresh_durable_run() {
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let ingress = DurableRunIngress::new(text_runtime(), store, commit);
+    let selected = Arc::new(RecordingAttemptExecutor::default());
+    ingress.install_attempt_executor(selected.clone());
+
+    assert_eq!(
+        ingress
+            .submit_background(activation("run-selected"))
+            .await
+            .expect("selected executor completes"),
+        RunState::Ended(EndCause::NaturalEnd)
+    );
+    assert_eq!(selected.executes.load(Ordering::SeqCst), 1);
+    assert_eq!(selected.resumes.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
@@ -399,6 +476,46 @@ async fn awaiting_run_resumes_through_delivered_input() {
             .iter()
             .any(|m| m.role == Role::Tool && m.text_content().contains("echoed"))
     );
+}
+
+#[tokio::test]
+async fn installed_attempt_executor_drives_the_durable_resume_path() {
+    let (runtime, _) = tool_runtime();
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let ingress = DurableRunIngress::new(runtime, store, commit);
+
+    assert_eq!(
+        ingress
+            .submit_background(activation("run-1"))
+            .await
+            .expect("native first attempt awaits"),
+        RunState::Awaiting
+    );
+
+    // Model a worker/backend replacement between attempts. The retained dispatch
+    // and ticket remain authoritative; only attempt execution is replaced.
+    let selected = Arc::new(RecordingAttemptExecutor::default());
+    ingress.install_attempt_executor(selected.clone());
+    assert_eq!(
+        ingress
+            .deliver_resume(
+                pending(
+                    "resume-selected",
+                    "run-1",
+                    ResumeResult::Decision {
+                        allow: true,
+                        note: None,
+                    },
+                ),
+                1,
+            )
+            .await
+            .expect("selected executor resumes"),
+        RunState::Ended(EndCause::NaturalEnd)
+    );
+    assert_eq!(selected.executes.load(Ordering::SeqCst), 0);
+    assert_eq!(selected.resumes.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

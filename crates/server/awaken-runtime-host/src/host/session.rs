@@ -548,6 +548,11 @@ impl SharedHost {
         let (ingress, durable_ingress) = self
             .build_ingress(runtime.clone(), commit.clone(), stream_checkpoint.clone())
             .await?;
+        if is_acp && let (Some(acp), Some(durable_ingress)) = (&self.acp, &durable_ingress) {
+            let executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor> =
+                acp.executor_for(env.clone());
+            durable_ingress.install_attempt_executor(executor);
+        }
         let durable = durable_ingress.is_some();
         // No per-session dispatch daemon: the process-level `DispatchPool` (spawned
         // once by `mount`) is the sole claimer of the shared queue and drives this
