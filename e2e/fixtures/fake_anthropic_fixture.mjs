@@ -320,7 +320,8 @@ function systemLines(parsed) {
   return systemText(parsed);
 }
 
-// `opts`: `{ behavior, failuresBeforeSuccess, alwaysFail, faultStatus, delayMs }`.
+// `opts`: `{ behavior, failuresBeforeSuccess, alwaysFail, faultStatus, delayMs,
+// firstDelayMs }`.
 // `behavior` (default `'default'`) selects the reproduced scenario model; the
 // fault-injection knobs drive the runtime's retry + circuit-breaker + error paths.
 export function startFakeAnthropic(apiKey, opts = {}) {
@@ -330,6 +331,7 @@ export function startFakeAnthropic(apiKey, opts = {}) {
     alwaysFail = false,
     faultStatus = 503,
     delayMs = 0,
+    firstDelayMs = 0,
     failModel = null,
   } = opts;
   const reply_of = BEHAVIORS[behavior];
@@ -343,7 +345,8 @@ export function startFakeAnthropic(apiKey, opts = {}) {
       // this externally observable socket fact to kill a worker while inference
       // is genuinely in flight, without peeking into the Rust process.
       state.received += 1;
-      if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
+      const responseDelay = state.received === 1 ? firstDelayMs || delayMs : delayMs;
+      if (responseDelay > 0) await new Promise((r) => setTimeout(r, responseDelay));
       const presented = req.headers['x-api-key'] ?? (req.headers.authorization ?? '').replace(/^Bearer /, '');
       if (req.method !== 'POST' || !req.url.endsWith('/messages')) {
         res.writeHead(404, { 'content-type': 'application/json' });
