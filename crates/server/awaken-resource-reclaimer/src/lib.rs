@@ -9,8 +9,9 @@
 use std::sync::Arc;
 
 use awaken_resource_contract::{
-    PutResourcePurgeOutcome, ResourcePhysicalReclaimer, ResourcePurgeError, ResourcePurgeGuard,
-    ResourcePurgeIntent, ResourcePurgeReceipt, ResourcePurgeRepository,
+    AcquireResourceReclamationOutcome, PutResourcePurgeOutcome, ResourcePhysicalReclaimer,
+    ResourcePurgeError, ResourcePurgeGuard, ResourcePurgeIntent, ResourcePurgeReceipt,
+    ResourcePurgeRepository,
 };
 
 /// Outcome of one reconciliation scan.
@@ -131,11 +132,100 @@ impl ResourceReclaimer {
             }
 
             match self
+                .repository
+                .acquire_reclamation(&intent.intent_id, &intent.target)
+                .await?
+            {
+                AcquireResourceReclamationOutcome::Acquired
+                | AcquireResourceReclamationOutcome::AlreadyOwned => {}
+                AcquireResourceReclamationOutcome::Blocked(records) => {
+                    let claimed_revision = intent.revision;
+                    intent.defer(
+                        &self.owner,
+                        generation,
+                        now_unix_ms,
+                        records.into_iter().map(|record| record.reference).collect(),
+                    )?;
+                    self.repository.save(claimed_revision, intent).await?;
+                    summary.deferred += 1;
+                    continue;
+                }
+                AcquireResourceReclamationOutcome::Contended => {
+                    let claimed_revision = intent.revision;
+                    intent.retry(
+                        &self.owner,
+                        generation,
+                        now_unix_ms,
+                        "physical resource is fenced by another reclamation intent",
+                    )?;
+                    self.repository.save(claimed_revision, intent).await?;
+                    summary.conflicts += 1;
+                    continue;
+                }
+            }
+
+            // Close the interval between the first guard scan and durable fence
+            // acquisition. Writers represented by the reference index now fail
+            // closed; independently owned guard sources get one final check.
+            blockers.clear();
+            guard_error = None;
+            for guard in &self.guards {
+                match guard
+                    .blockers(&intent.target, intent.config_version, now_unix_ms)
+                    .await
+                {
+                    Ok(mut found) => blockers.append(&mut found),
+                    Err(error) => {
+                        guard_error = Some(error);
+                        break;
+                    }
+                }
+            }
+            if let Some(error) = guard_error {
+                let release_error = self
+                    .repository
+                    .release_reclamation(&intent.intent_id, &intent.target)
+                    .await
+                    .err();
+                let claimed_revision = intent.revision;
+                intent.retry(
+                    &self.owner,
+                    generation,
+                    now_unix_ms,
+                    combine_errors(error, release_error),
+                )?;
+                self.repository.save(claimed_revision, intent).await?;
+                summary.retryable_failures += 1;
+                continue;
+            }
+            if !blockers.is_empty() {
+                self.repository
+                    .release_reclamation(&intent.intent_id, &intent.target)
+                    .await?;
+                let claimed_revision = intent.revision;
+                intent.defer(&self.owner, generation, now_unix_ms, blockers)?;
+                self.repository.save(claimed_revision, intent).await?;
+                summary.deferred += 1;
+                continue;
+            }
+
+            match self
                 .physical
                 .purge(&intent.target, intent.config_version)
                 .await
             {
                 Ok(evidence) => {
+                    if let Err(error) = self
+                        .repository
+                        .release_reclamation(&intent.intent_id, &intent.target)
+                        .await
+                    {
+                        let claimed_revision = intent.revision;
+                        intent.retry(&self.owner, generation, now_unix_ms, error.to_string())?;
+                        self.repository.save(claimed_revision, intent).await?;
+                        summary.retryable_failures += 1;
+                        continue;
+                    }
                     let claimed_revision = intent.revision;
                     intent.complete(
                         &self.owner,
@@ -150,8 +240,18 @@ impl ResourceReclaimer {
                     summary.completed += 1;
                 }
                 Err(error) => {
+                    let release_error = self
+                        .repository
+                        .release_reclamation(&intent.intent_id, &intent.target)
+                        .await
+                        .err();
                     let claimed_revision = intent.revision;
-                    intent.retry(&self.owner, generation, now_unix_ms, error.to_string())?;
+                    intent.retry(
+                        &self.owner,
+                        generation,
+                        now_unix_ms,
+                        combine_errors(error, release_error),
+                    )?;
                     self.repository.save(claimed_revision, intent).await?;
                     summary.retryable_failures += 1;
                 }
@@ -161,6 +261,13 @@ impl ResourceReclaimer {
     }
 }
 
+fn combine_errors(primary: ResourcePurgeError, release: Option<ResourcePurgeError>) -> String {
+    release.map_or_else(
+        || primary.to_string(),
+        |release| format!("{primary}; failed to release reclamation fence: {release}"),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -168,14 +275,53 @@ mod tests {
 
     use async_trait::async_trait;
     use awaken_resource_contract::{
-        ResourceKind, ResourcePurgeEvidence, ResourcePurgeStatus, ResourceReference,
-        ResourceReferenceKind, ResourceTarget,
+        ResourceKind, ResourcePurgeEvidence, ResourcePurgeStatus, ResourceReclamationFence,
+        ResourceReference, ResourceReferenceKind, ResourceTarget,
     };
 
     use super::*;
 
     #[derive(Default)]
-    struct MemoryRepository(Mutex<BTreeMap<String, ResourcePurgeIntent>>);
+    struct MemoryRepository {
+        intents: Mutex<BTreeMap<String, ResourcePurgeIntent>>,
+        fences: Mutex<BTreeMap<(ResourceKind, String), String>>,
+    }
+
+    #[async_trait]
+    impl ResourceReclamationFence for MemoryRepository {
+        async fn acquire_reclamation(
+            &self,
+            intent_id: &str,
+            target: &ResourceTarget,
+        ) -> Result<AcquireResourceReclamationOutcome, ResourcePurgeError> {
+            let mut fences = self.fences.lock().unwrap();
+            let key = (target.kind, target.resource_id.clone());
+            match fences.get(&key) {
+                Some(owner) if owner == intent_id => {
+                    Ok(AcquireResourceReclamationOutcome::AlreadyOwned)
+                }
+                Some(_) => Ok(AcquireResourceReclamationOutcome::Contended),
+                None => {
+                    fences.insert(key, intent_id.into());
+                    Ok(AcquireResourceReclamationOutcome::Acquired)
+                }
+            }
+        }
+
+        async fn release_reclamation(
+            &self,
+            intent_id: &str,
+            target: &ResourceTarget,
+        ) -> Result<bool, ResourcePurgeError> {
+            let mut fences = self.fences.lock().unwrap();
+            let key = (target.kind, target.resource_id.clone());
+            match fences.get(&key) {
+                Some(owner) if owner == intent_id => Ok(fences.remove(&key).is_some()),
+                Some(_) => Err(ResourcePurgeError::StaleReclamationFence),
+                None => Ok(false),
+            }
+        }
+    }
 
     #[async_trait]
     impl ResourcePurgeRepository for MemoryRepository {
@@ -183,7 +329,7 @@ mod tests {
             &self,
             intent: ResourcePurgeIntent,
         ) -> Result<PutResourcePurgeOutcome, ResourcePurgeError> {
-            let mut rows = self.0.lock().unwrap();
+            let mut rows = self.intents.lock().unwrap();
             if let Some(existing) = rows.get(&intent.intent_id) {
                 return if existing.same_request(&intent) {
                     Ok(PutResourcePurgeOutcome::Existing)
@@ -201,7 +347,7 @@ mod tests {
             &self,
             intent_id: &str,
         ) -> Result<Option<ResourcePurgeIntent>, ResourcePurgeError> {
-            Ok(self.0.lock().unwrap().get(intent_id).cloned())
+            Ok(self.intents.lock().unwrap().get(intent_id).cloned())
         }
 
         async fn recoverable(
@@ -210,7 +356,7 @@ mod tests {
             limit: usize,
         ) -> Result<Vec<ResourcePurgeIntent>, ResourcePurgeError> {
             Ok(self
-                .0
+                .intents
                 .lock()
                 .unwrap()
                 .values()
@@ -231,7 +377,7 @@ mod tests {
             expected_revision: u64,
             intent: ResourcePurgeIntent,
         ) -> Result<(), ResourcePurgeError> {
-            let mut rows = self.0.lock().unwrap();
+            let mut rows = self.intents.lock().unwrap();
             let current = rows
                 .get(&intent.intent_id)
                 .ok_or_else(|| ResourcePurgeError::NotFound(intent.intent_id.clone()))?;

@@ -10,17 +10,73 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 use awaken_resource_contract::{
-    PutResourcePurgeOutcome, ResourceKind, ResourcePurgeError, ResourcePurgeIntent,
-    ResourcePurgeRepository, ResourceReference, ResourceReferenceIndex, ResourceReferenceKind,
-    ResourceReferenceRecord, ResourceTarget,
+    AcquireResourceReclamationOutcome, PutResourcePurgeOutcome, ResourceKind, ResourcePurgeError,
+    ResourcePurgeIntent, ResourcePurgeRepository, ResourceReclamationFence, ResourceReference,
+    ResourceReferenceIndex, ResourceReferenceKind, ResourceReferenceRecord, ResourceTarget,
 };
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+
+#[derive(Default)]
+struct ResourceConsistencyState {
+    references: BTreeSet<ResourceReferenceRecord>,
+    reclamation_fences: BTreeMap<(ResourceKind, String), String>,
+}
 
 /// Ephemeral reference adapter used by embedded tests and no-storage mode.
 #[derive(Default)]
 pub struct InMemoryResourceStore {
     intents: Mutex<BTreeMap<String, ResourcePurgeIntent>>,
-    references: Mutex<BTreeSet<ResourceReferenceRecord>>,
+    consistency: Mutex<ResourceConsistencyState>,
+}
+
+#[async_trait]
+impl ResourceReclamationFence for InMemoryResourceStore {
+    async fn acquire_reclamation(
+        &self,
+        intent_id: &str,
+        target: &ResourceTarget,
+    ) -> Result<AcquireResourceReclamationOutcome, ResourcePurgeError> {
+        validate_fence_request(intent_id, target)?;
+        let mut state = self
+            .consistency
+            .lock()
+            .map_err(|error| storage(error.to_string()))?;
+        let key = physical_key(target);
+        if let Some(owner) = state.reclamation_fences.get(&key) {
+            return Ok(if owner == intent_id {
+                AcquireResourceReclamationOutcome::AlreadyOwned
+            } else {
+                AcquireResourceReclamationOutcome::Contended
+            });
+        }
+        let blockers = references_for_identity(&state.references, target.kind, &target.resource_id);
+        if !blockers.is_empty() {
+            return Ok(AcquireResourceReclamationOutcome::Blocked(blockers));
+        }
+        state.reclamation_fences.insert(key, intent_id.into());
+        Ok(AcquireResourceReclamationOutcome::Acquired)
+    }
+
+    async fn release_reclamation(
+        &self,
+        intent_id: &str,
+        target: &ResourceTarget,
+    ) -> Result<bool, ResourcePurgeError> {
+        validate_fence_request(intent_id, target)?;
+        let mut state = self
+            .consistency
+            .lock()
+            .map_err(|error| storage(error.to_string()))?;
+        let key = physical_key(target);
+        match state.reclamation_fences.get(&key) {
+            Some(owner) if owner == intent_id => {
+                state.reclamation_fences.remove(&key);
+                Ok(true)
+            }
+            Some(_) => Err(ResourcePurgeError::StaleReclamationFence),
+            None => Ok(false),
+        }
+    }
 }
 
 impl InMemoryResourceStore {
@@ -119,11 +175,12 @@ impl ResourceReferenceIndex for InMemoryResourceStore {
         record: ResourceReferenceRecord,
     ) -> Result<bool, ResourcePurgeError> {
         validate_reference(&record)?;
-        Ok(self
-            .references
+        let mut state = self
+            .consistency
             .lock()
-            .map_err(|error| storage(error.to_string()))?
-            .insert(record))
+            .map_err(|error| storage(error.to_string()))?;
+        ensure_unfenced(&state.reclamation_fences, &record.target)?;
+        Ok(state.references.insert(record))
     }
 
     async fn remove_reference(
@@ -132,9 +189,10 @@ impl ResourceReferenceIndex for InMemoryResourceStore {
     ) -> Result<bool, ResourcePurgeError> {
         validate_reference(record)?;
         Ok(self
-            .references
+            .consistency
             .lock()
             .map_err(|error| storage(error.to_string()))?
+            .references
             .remove(record))
     }
 
@@ -145,14 +203,17 @@ impl ResourceReferenceIndex for InMemoryResourceStore {
         records: Vec<ResourceReferenceRecord>,
     ) -> Result<(), ResourcePurgeError> {
         validate_replacement(kind, reference_id, &records)?;
-        let mut references = self
-            .references
+        let mut state = self
+            .consistency
             .lock()
             .map_err(|error| storage(error.to_string()))?;
-        references.retain(|record| {
+        for record in &records {
+            ensure_unfenced(&state.reclamation_fences, &record.target)?;
+        }
+        state.references.retain(|record| {
             record.reference.kind != kind || record.reference.reference_id != reference_id
         });
-        references.extend(records);
+        state.references.extend(records);
         Ok(())
     }
 
@@ -161,10 +222,11 @@ impl ResourceReferenceIndex for InMemoryResourceStore {
         target: &ResourceTarget,
     ) -> Result<Vec<ResourceReference>, ResourcePurgeError> {
         let rows = self
-            .references
+            .consistency
             .lock()
             .map_err(|error| storage(error.to_string()))?;
         Ok(rows
+            .references
             .iter()
             .filter(|record| &record.target == target)
             .map(|record| record.reference.clone())
@@ -177,9 +239,10 @@ impl ResourceReferenceIndex for InMemoryResourceStore {
         resource_id: &str,
     ) -> Result<Vec<ResourceReferenceRecord>, ResourcePurgeError> {
         Ok(self
-            .references
+            .consistency
             .lock()
             .map_err(|error| storage(error.to_string()))?
+            .references
             .iter()
             .filter(|record| record.target.kind == kind && record.target.resource_id == resource_id)
             .cloned()
@@ -219,7 +282,13 @@ impl SqliteResourceStore {
                    PRIMARY KEY(workspace_id, resource_kind, resource_id, reference_kind, reference_id)
                  );
                  CREATE INDEX IF NOT EXISTS resource_references_reverse
-                   ON resource_references(resource_kind, resource_id);",
+                   ON resource_references(resource_kind, resource_id);
+                 CREATE TABLE IF NOT EXISTS resource_reclamation_fences (
+                   resource_kind TEXT NOT NULL,
+                   resource_id TEXT NOT NULL,
+                   intent_id TEXT NOT NULL,
+                   PRIMARY KEY(resource_kind, resource_id)
+                 );",
             )
             .map_err(|error| storage(error.to_string()))?;
         Ok(Self {
@@ -231,6 +300,92 @@ impl SqliteResourceStore {
         self.connection
             .lock()
             .map_err(|error| storage(error.to_string()))
+    }
+}
+
+#[async_trait]
+impl ResourceReclamationFence for SqliteResourceStore {
+    async fn acquire_reclamation(
+        &self,
+        intent_id: &str,
+        target: &ResourceTarget,
+    ) -> Result<AcquireResourceReclamationOutcome, ResourcePurgeError> {
+        validate_fence_request(intent_id, target)?;
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| storage(error.to_string()))?;
+        let existing = transaction
+            .query_row(
+                "SELECT intent_id FROM resource_reclamation_fences
+                 WHERE resource_kind = ?1 AND resource_id = ?2",
+                params![kind_name(target.kind), target.resource_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| storage(error.to_string()))?;
+        if let Some(owner) = existing {
+            return Ok(if owner == intent_id {
+                AcquireResourceReclamationOutcome::AlreadyOwned
+            } else {
+                AcquireResourceReclamationOutcome::Contended
+            });
+        }
+        let blockers =
+            sqlite_references_for_identity(&transaction, target.kind, &target.resource_id)?;
+        if !blockers.is_empty() {
+            return Ok(AcquireResourceReclamationOutcome::Blocked(blockers));
+        }
+        transaction
+            .execute(
+                "INSERT INTO resource_reclamation_fences
+                 (resource_kind, resource_id, intent_id) VALUES (?1, ?2, ?3)",
+                params![kind_name(target.kind), target.resource_id, intent_id],
+            )
+            .map_err(|error| storage(error.to_string()))?;
+        transaction
+            .commit()
+            .map_err(|error| storage(error.to_string()))?;
+        Ok(AcquireResourceReclamationOutcome::Acquired)
+    }
+
+    async fn release_reclamation(
+        &self,
+        intent_id: &str,
+        target: &ResourceTarget,
+    ) -> Result<bool, ResourcePurgeError> {
+        validate_fence_request(intent_id, target)?;
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| storage(error.to_string()))?;
+        let existing = transaction
+            .query_row(
+                "SELECT intent_id FROM resource_reclamation_fences
+                 WHERE resource_kind = ?1 AND resource_id = ?2",
+                params![kind_name(target.kind), target.resource_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| storage(error.to_string()))?;
+        let changed = match existing {
+            Some(owner) if owner == intent_id => {
+                transaction
+                    .execute(
+                        "DELETE FROM resource_reclamation_fences
+                     WHERE resource_kind = ?1 AND resource_id = ?2 AND intent_id = ?3",
+                        params![kind_name(target.kind), target.resource_id, intent_id],
+                    )
+                    .map_err(|error| storage(error.to_string()))?
+                    == 1
+            }
+            Some(_) => return Err(ResourcePurgeError::StaleReclamationFence),
+            None => false,
+        };
+        transaction
+            .commit()
+            .map_err(|error| storage(error.to_string()))?;
+        Ok(changed)
     }
 }
 
@@ -373,8 +528,12 @@ impl ResourceReferenceIndex for SqliteResourceStore {
         record: ResourceReferenceRecord,
     ) -> Result<bool, ResourcePurgeError> {
         validate_reference(&record)?;
-        Ok(self
-            .connection()?
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| storage(error.to_string()))?;
+        sqlite_ensure_unfenced(&transaction, &record.target)?;
+        let changed = transaction
             .execute(
                 "INSERT OR IGNORE INTO resource_references
                  (workspace_id, resource_kind, resource_id, reference_kind, reference_id)
@@ -382,7 +541,11 @@ impl ResourceReferenceIndex for SqliteResourceStore {
                 reference_params(&record),
             )
             .map_err(|error| storage(error.to_string()))?
-            == 1)
+            == 1;
+        transaction
+            .commit()
+            .map_err(|error| storage(error.to_string()))?;
+        Ok(changed)
     }
 
     async fn remove_reference(
@@ -411,8 +574,11 @@ impl ResourceReferenceIndex for SqliteResourceStore {
         validate_replacement(kind, reference_id, &records)?;
         let mut connection = self.connection()?;
         let transaction = connection
-            .transaction()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| storage(error.to_string()))?;
+        for record in &records {
+            sqlite_ensure_unfenced(&transaction, &record.target)?;
+        }
         transaction
             .execute(
                 "DELETE FROM resource_references WHERE reference_kind = ?1 AND reference_id = ?2",
@@ -501,6 +667,111 @@ impl ResourceReferenceIndex for SqliteResourceStore {
         })
         .collect()
     }
+}
+
+fn physical_key(target: &ResourceTarget) -> (ResourceKind, String) {
+    (target.kind, target.resource_id.clone())
+}
+
+fn references_for_identity(
+    references: &BTreeSet<ResourceReferenceRecord>,
+    kind: ResourceKind,
+    resource_id: &str,
+) -> Vec<ResourceReferenceRecord> {
+    references
+        .iter()
+        .filter(|record| record.target.kind == kind && record.target.resource_id == resource_id)
+        .cloned()
+        .collect()
+}
+
+fn ensure_unfenced(
+    fences: &BTreeMap<(ResourceKind, String), String>,
+    target: &ResourceTarget,
+) -> Result<(), ResourcePurgeError> {
+    if fences.contains_key(&physical_key(target)) {
+        Err(ResourcePurgeError::ReclamationFenced {
+            kind: target.kind,
+            resource_id: target.resource_id.clone(),
+        })
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_fence_request(
+    intent_id: &str,
+    target: &ResourceTarget,
+) -> Result<(), ResourcePurgeError> {
+    if intent_id.trim().is_empty()
+        || target.workspace_id.trim().is_empty()
+        || target.resource_id.trim().is_empty()
+    {
+        Err(ResourcePurgeError::Invalid(
+            "reclamation fence fields must not be empty".into(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn sqlite_ensure_unfenced(
+    connection: &Connection,
+    target: &ResourceTarget,
+) -> Result<(), ResourcePurgeError> {
+    let exists = connection
+        .query_row(
+            "SELECT 1 FROM resource_reclamation_fences
+             WHERE resource_kind = ?1 AND resource_id = ?2",
+            params![kind_name(target.kind), target.resource_id],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(|error| storage(error.to_string()))?
+        .is_some();
+    if exists {
+        Err(ResourcePurgeError::ReclamationFenced {
+            kind: target.kind,
+            resource_id: target.resource_id.clone(),
+        })
+    } else {
+        Ok(())
+    }
+}
+
+fn sqlite_references_for_identity(
+    connection: &Connection,
+    kind: ResourceKind,
+    resource_id: &str,
+) -> Result<Vec<ResourceReferenceRecord>, ResourcePurgeError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT workspace_id, reference_kind, reference_id FROM resource_references
+             WHERE resource_kind = ?1 AND resource_id = ?2
+             ORDER BY workspace_id, reference_kind, reference_id",
+        )
+        .map_err(|error| storage(error.to_string()))?;
+    let rows = statement
+        .query_map(params![kind_name(kind), resource_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|error| storage(error.to_string()))?;
+    rows.map(|row| {
+        let (workspace_id, reference_kind, reference_id) =
+            row.map_err(|error| storage(error.to_string()))?;
+        Ok(ResourceReferenceRecord {
+            target: ResourceTarget::new(workspace_id, kind, resource_id),
+            reference: ResourceReference {
+                kind: parse_reference_kind(&reference_kind)?,
+                reference_id,
+            },
+        })
+    })
+    .collect()
 }
 
 fn recoverable(intent: &ResourcePurgeIntent, now_unix_ms: u64) -> bool {
@@ -679,7 +950,7 @@ mod tests {
         assert!(store.add_reference(b.clone()).await.unwrap());
         assert_eq!(
             store.references(&a.target).await.unwrap(),
-            vec![a.reference]
+            vec![a.reference.clone()]
         );
         assert_eq!(
             store
@@ -699,6 +970,56 @@ mod tests {
                 .len(),
             1
         );
+        assert!(matches!(
+            store.acquire_reclamation("intent-a", &a.target).await.unwrap(),
+            AcquireResourceReclamationOutcome::Blocked(rows) if rows == vec![a.clone()]
+        ));
+        assert!(store.remove_reference(&a).await.unwrap());
+        assert_eq!(
+            store
+                .acquire_reclamation("intent-a", &a.target)
+                .await
+                .unwrap(),
+            AcquireResourceReclamationOutcome::Acquired
+        );
+        assert_eq!(
+            store
+                .acquire_reclamation("intent-a", &a.target)
+                .await
+                .unwrap(),
+            AcquireResourceReclamationOutcome::AlreadyOwned
+        );
+        assert_eq!(
+            store
+                .acquire_reclamation("intent-b", &b.target)
+                .await
+                .unwrap(),
+            AcquireResourceReclamationOutcome::Contended
+        );
+        assert!(matches!(
+            store.add_reference(b.clone()).await,
+            Err(ResourcePurgeError::ReclamationFenced {
+                kind: ResourceKind::File,
+                resource_id
+            }) if resource_id == "hash-1"
+        ));
+        assert_eq!(
+            store.release_reclamation("intent-b", &b.target).await,
+            Err(ResourcePurgeError::StaleReclamationFence)
+        );
+        assert!(
+            store
+                .release_reclamation("intent-a", &a.target)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !store
+                .release_reclamation("intent-a", &a.target)
+                .await
+                .unwrap()
+        );
+        assert!(store.add_reference(b.clone()).await.unwrap());
         let replacement = ResourceReferenceRecord {
             target: ResourceTarget::new("workspace-c", ResourceKind::File, "hash-2"),
             reference: ResourceReference {
