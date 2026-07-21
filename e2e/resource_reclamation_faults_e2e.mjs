@@ -155,6 +155,7 @@ async function main() {
     const durableBlockers = await upload('durable-blockers', 'blockers.txt');
     const corruptReference = await upload('corrupt-reference', 'corrupt-reference.txt');
     const alreadyOwned = await upload('already-owned-fence', 'already-owned.txt');
+    const fencedBinding = await upload('fenced-binding', 'fenced-binding.txt');
     const skillId = `fault-skill-${process.pid}`;
     assert.equal((await json('POST', 'skills', {
       id: skillId,
@@ -228,6 +229,47 @@ async function main() {
 
     server = start(bin, directory);
     await ready(server);
+
+    // A reclamation fence is an intrinsic resource consistency boundary, not an
+    // IAM decision. Even after the API edge admitted this same-workspace request,
+    // the durable adapter must reject a new Session reference and activation must
+    // roll back to the prior empty manifest.
+    const fencedSession = await json('POST', 'sessions', {
+      agent: 'assistant',
+      environment_id: 'env_local',
+    });
+    assert.equal(fencedSession.status, 200, JSON.stringify(fencedSession.body));
+    sqlite(
+      lifecycle,
+      `INSERT INTO resource_reclamation_fences(resource_kind, resource_id, intent_id)
+         VALUES ('file', ${sqlQuote(fencedBinding)}, 'external-active-fence');`,
+    );
+    const fencedActivation = await json(
+      'POST',
+      `sessions/${fencedSession.body.id}/resources`,
+      { type: 'file', file_id: fencedBinding, mount_path: '/workspace/fenced.txt' },
+    );
+    assert.equal(fencedActivation.status, 500, JSON.stringify(fencedActivation.body));
+    assert.match(JSON.stringify(fencedActivation.body), /fenced for physical reclamation/u);
+    const projected = await json('GET', `sessions/${fencedSession.body.id}/resources`);
+    assert.equal(projected.status, 200, JSON.stringify(projected.body));
+    assert.deepEqual(projected.body.data, []);
+    assert.equal(
+      sqlite(
+        lifecycle,
+        `SELECT count(*) FROM resource_references
+          WHERE resource_kind = 'file' AND resource_id = ${sqlQuote(fencedBinding)}
+            AND reference_kind = 'session_binding';`,
+      ).trim(),
+      '0',
+    );
+    sqlite(
+      lifecycle,
+      `DELETE FROM resource_reclamation_fences
+        WHERE resource_kind = 'file' AND resource_id = ${sqlQuote(fencedBinding)}
+          AND intent_id = 'external-active-fence';`,
+    );
+
     const failed = await waitFor(
       directory,
       [releaseFailure, contended, lateReference, durableBlockers, corruptReference, skillId],
