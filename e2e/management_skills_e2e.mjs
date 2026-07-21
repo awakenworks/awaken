@@ -20,6 +20,18 @@ async function drain(pagePromise) {
   return items;
 }
 
+async function expectStatus(action, status) {
+  await assert.rejects(action, (error) => error.status === status);
+}
+
+async function uploadRaw(baseUrl, files) {
+  const form = new FormData();
+  for (const [name, bytes] of files) {
+    form.append('files[]', new Blob([bytes]), name);
+  }
+  return fetch(`${baseUrl}/v1/skills`, { method: 'POST', body: form });
+}
+
 async function main() {
   try {
     await withScenarioServer('management', 'mcp', 38142, async (baseUrl) => {
@@ -37,6 +49,29 @@ async function main() {
       assert.equal(skill.latest_version, '1');
       pass('beta.skills.create -> SkillCreateResponse (multipart)');
 
+      await expectStatus(
+        async () =>
+          client.beta.skills.create({
+            files: [await toFile(Buffer.from(SKILL_MD_V1), 'SKILL.md')],
+            betas: BETAS,
+          }),
+        409,
+      );
+      pass('duplicate durable Skill identity -> 409');
+
+      assert.equal((await uploadRaw(baseUrl, [['notes.txt', 'not a skill']])).status, 400);
+      assert.equal((await uploadRaw(baseUrl, [['SKILL.md', Buffer.from([0xff, 0xfe])]])).status, 400);
+      assert.equal(
+        (
+          await uploadRaw(baseUrl, [
+            ['SKILL.md', SKILL_MD_V1],
+            ['SKILL.md', SKILL_MD_V2],
+          ])
+        ).status,
+        400,
+      );
+      pass('missing, non-UTF8, and duplicate SKILL.md bundles fail closed');
+
       const got = await client.beta.skills.retrieve(skill.id, { betas: BETAS });
       assert.equal(got.id, skill.id);
       pass('beta.skills.retrieve');
@@ -44,6 +79,21 @@ async function main() {
       const skillIds = (await drain(client.beta.skills.list({ betas: BETAS }))).map((s) => s.id);
       assert.ok(skillIds.includes(skill.id));
       pass('beta.skills.list -> PageCursor<SkillListResponse>');
+
+      await expectStatus(() => client.beta.skills.retrieve('skill_missing', { betas: BETAS }), 404);
+      await expectStatus(
+        async () =>
+          client.beta.skills.versions.create('skill_missing', {
+            files: [await toFile(Buffer.from(SKILL_MD_V2), 'SKILL.md')],
+            betas: BETAS,
+          }),
+        404,
+      );
+      await expectStatus(
+        () => drain(client.beta.skills.versions.list('skill_missing', { betas: BETAS })),
+        404,
+      );
+      pass('unknown Skill and its version collection -> 404');
 
       // Add a second version.
       const v2 = await client.beta.skills.versions.create(skill.id, {
@@ -67,22 +117,64 @@ async function main() {
       assert.equal(v1.description, 'says hi');
       pass('beta.skills.versions.retrieve');
 
+      const latest = await client.beta.skills.versions.retrieve('latest', {
+        skill_id: skill.id,
+        betas: BETAS,
+      });
+      assert.equal(latest.version, '2');
+      const byId = await client.beta.skills.versions.retrieve(v2.id, {
+        skill_id: skill.id,
+        betas: BETAS,
+      });
+      assert.equal(byId.version, '2');
+      await expectStatus(
+        () => client.beta.skills.versions.retrieve('404', { skill_id: skill.id, betas: BETAS }),
+        404,
+      );
+      pass('latest, immutable version id, and missing version references are distinct');
+
       const download = await client.beta.skills.versions.download('2', { skill_id: skill.id, betas: BETAS });
       const body = await download.text();
       assert.ok(body.includes('Say a warm hi'), 'download returns the version content');
       pass('beta.skills.versions.download');
 
+      const missingFile = await fetch(
+        `${baseUrl}/v1/skills/${skill.id}/versions/2/files/references/missing.md`,
+      );
+      assert.equal(missingFile.status, 404);
+      const missingVersionFile = await fetch(
+        `${baseUrl}/v1/skills/${skill.id}/versions/404/files/references/missing.md`,
+      );
+      assert.equal(missingVersionFile.status, 404);
+      await expectStatus(
+        () => client.beta.skills.versions.download('404', { skill_id: skill.id, betas: BETAS }),
+        404,
+      );
+      pass('unknown bundle file/content/version -> 404');
+
       const delVer = await client.beta.skills.versions.delete('1', { skill_id: skill.id, betas: BETAS });
       assert.equal(delVer.type, 'skill_version_deleted');
       pass('beta.skills.versions.delete');
 
+      await expectStatus(
+        () => client.beta.skills.versions.delete('1', { skill_id: skill.id, betas: BETAS }),
+        404,
+      );
+      await expectStatus(
+        () => client.beta.skills.versions.delete('2', { skill_id: skill.id, betas: BETAS }),
+        400,
+      );
+      pass('retired version stays absent and the sole live version cannot be deleted');
+
       const delSkill = await client.beta.skills.delete(skill.id, { betas: BETAS });
       assert.equal(delSkill.type, 'skill_deleted');
-      await assert.rejects(
-        () => client.beta.skills.retrieve(skill.id, { betas: BETAS }),
-        (err) => err.status === 404,
+      await expectStatus(() => client.beta.skills.retrieve(skill.id, { betas: BETAS }), 404);
+      await expectStatus(() => client.beta.skills.delete(skill.id, { betas: BETAS }), 404);
+      await expectStatus(
+        () => drain(client.beta.skills.versions.list(skill.id, { betas: BETAS })),
+        404,
       );
-      pass('beta.skills.delete -> SkillDeleteResponse; retrieve 404s after');
+      pass('beta.skills.delete -> SkillDeleteResponse; repeated reads/deletes 404');
     });
 
     console.log('E2E PASS: the skills family round-trips through the official @anthropic-ai/sdk.');
