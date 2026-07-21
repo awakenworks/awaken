@@ -356,8 +356,10 @@ mod tests {
 
     /// A scripted [`CommandExec`]: a handler maps `(bin, args)` to a canned output,
     /// and every invocation's argv is recorded so tests can assert what was run.
+    type CommandHandler = dyn Fn(&[String]) -> CmdOutput + Send + Sync;
+
     struct FakeExec {
-        handler: Box<dyn Fn(&[String]) -> CmdOutput + Send + Sync>,
+        handler: Box<CommandHandler>,
         calls: Mutex<Vec<Vec<String>>>,
     }
 

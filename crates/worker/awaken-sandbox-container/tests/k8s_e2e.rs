@@ -356,6 +356,7 @@ async fn a_pod_agent_speaks_the_wire_over_a_port_forward() {
 
     // Clean up: stop the forward and reap the Pod before asserting.
     let _ = forward.kill();
+    let _ = forward.wait();
     let _ = pc::Sandbox::dispose(&sandbox).await;
     let _ = kubectl(&["delete", "pod", &pod, "--ignore-not-found", "--now"]);
 
@@ -461,6 +462,7 @@ async fn inline_content_reaches_the_pod_as_a_configmap_volume() {
     }
 
     let _ = forward.kill();
+    let _ = forward.wait();
     let _ = pc::Sandbox::dispose(&sandbox).await;
     let _ = kubectl(&["delete", "pod", &pod, "--ignore-not-found", "--now"]);
 
@@ -577,6 +579,7 @@ async fn a_file_resolved_from_the_blob_source_reaches_the_pod() {
     }
 
     let _ = forward.kill();
+    let _ = forward.wait();
     let _ = pc::Sandbox::dispose(&sandbox).await;
     let _ = kubectl(&["delete", "pod", &pod, "--ignore-not-found", "--now"]);
 
@@ -677,6 +680,7 @@ async fn a_binary_file_reaches_the_pod_via_configmap_binary_data() {
     }
 
     let _ = forward.kill();
+    let _ = forward.wait();
     let _ = pc::Sandbox::dispose(&sandbox).await;
     let _ = kubectl(&["delete", "pod", &pod, "--ignore-not-found", "--now"]);
 

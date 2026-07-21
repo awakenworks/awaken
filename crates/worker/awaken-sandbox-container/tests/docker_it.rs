@@ -82,14 +82,11 @@ async fn docker_open_channel_dials_the_published_agent_port() {
     // Retry while the in-container listener binds.
     let mut opened = None;
     for _ in 0..25 {
-        match rt.open_channel(&id).await {
-            Ok(mut chan) => {
-                if chan.write_all(b"ping").await.is_ok() {
-                    opened = Some(());
-                    break;
-                }
-            }
-            Err(_) => {}
+        if let Ok(mut chan) = rt.open_channel(&id).await
+            && chan.write_all(b"ping").await.is_ok()
+        {
+            opened = Some(());
+            break;
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
