@@ -213,7 +213,7 @@ impl SharedHost {
         &self,
         thread: &str,
         agent: Option<&str>,
-        adopted: Option<LocalSandbox>,
+        adopted: Option<crate::session_environment::SessionEnvironment>,
     ) -> Result<Arc<SessionCtx>, HostError> {
         self.ctx_for_snapshot_with_sandbox(thread, agent, None, adopted)
             .await
@@ -227,7 +227,7 @@ impl SharedHost {
         thread: &str,
         agent: Option<&str>,
         published_snapshot: Option<awaken_runtime_contract::ExecutableAgentSnapshot>,
-        adopted: Option<LocalSandbox>,
+        adopted: Option<crate::session_environment::SessionEnvironment>,
     ) -> Result<Arc<SessionCtx>, HostError> {
         let mut sessions = self.sessions.lock().await;
         if let Some(ctx) = sessions.get(thread) {
@@ -249,8 +249,8 @@ impl SharedHost {
         let env = Arc::new(match adopted {
             Some(env) => env,
             None => self
-                .provider
-                .create_sandbox(&self.sandbox_spec(thread))
+                .session_provider
+                .create(&self.sandbox_spec(thread))
                 .await
                 .map_err(|e| HostError::internal(e.to_string()))?,
         });
@@ -337,7 +337,7 @@ impl SharedHost {
         // Resolving per run — not once at session build — means a per-turn model
         // switch needs no session rebuild, and a database-less worker runs the
         // configured model without a session-level registry.
-        let mut runtime = build_runtime(self.llm.clone(), &env);
+        let mut runtime = build_runtime(self.llm.clone(), env.as_ref());
         if apply_base_gate {
             runtime = runtime.with_gate(base_gate.clone());
         }

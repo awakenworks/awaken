@@ -22,7 +22,10 @@ use tokio::process::Command as TokioCommand;
 use std::sync::Arc;
 
 use crate::provider::{LocalProcess, resolve_source, restrict_to_owner, verify};
-use crate::{IsolatedRoot, content_fingerprint};
+use crate::{
+    DiscoveredSkillFile, IsolatedRoot, content_fingerprint, list_files_at, namespace_raw_tools,
+    provision_repo_at, push_repo_at, scan_skill_dir_at,
+};
 
 fn err(e: impl ToString) -> pc::SandboxError {
     pc::SandboxError::new(e.to_string())
@@ -496,6 +499,50 @@ impl NamespaceSandbox {
         for mount in mounts {
             mount.teardown().await;
         }
+    }
+
+    /// Native hand tools bound to this same environment. Shell is always wrapped
+    /// in bwrap; path tools remain rooted through the shared lexical jail.
+    pub fn rooted_tools(&self) -> Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>> {
+        namespace_raw_tools(
+            self.root.clone(),
+            matches!(self.network, pc::NetworkPolicy::None),
+        )
+    }
+
+    pub fn provision_repo(
+        &self,
+        logical: &str,
+        url: &str,
+        git_ref: Option<&str>,
+        token: Option<&str>,
+    ) -> Result<(), pc::SandboxError> {
+        provision_repo_at(&self.root, logical, url, git_ref, token).map_err(err)
+    }
+
+    pub fn push_repo(&self, logical: &str, token: Option<&str>) -> Result<bool, pc::SandboxError> {
+        push_repo_at(&self.root, logical, token).map_err(err)
+    }
+
+    pub fn list_files(&self, subdir: &str) -> Vec<(String, Vec<u8>)> {
+        list_files_at(&self.root, subdir)
+    }
+
+    pub fn scan_skill_dir(&self, subdir: &str) -> Vec<DiscoveredSkillFile> {
+        scan_skill_dir_at(&self.root, subdir)
+    }
+
+    pub fn materialize_inline(
+        &self,
+        logical: &str,
+        contents: &[u8],
+    ) -> Result<(), pc::SandboxError> {
+        let path = self.root.resolve(logical).map_err(err)?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(err)?;
+        }
+        std::fs::write(&path, contents).map_err(err)?;
+        restrict_to_owner(&path)
     }
 
     /// The rendered launcher argv for `command` (bwrap wrapping the program).

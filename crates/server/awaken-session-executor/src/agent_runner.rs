@@ -34,7 +34,9 @@ use awaken_runtime_contract::llm::{LlmExecutor, ThreadUsage};
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::tool::RawTool;
-use awaken_sandbox_local::{LocalProvider, LocalSandbox};
+use awaken_sandbox_local::LocalProvider;
+#[cfg(test)]
+use awaken_sandbox_local::LocalSandbox;
 
 use crate::agent_catalog::AgentCatalog;
 use crate::config::{build_runtime, latest_assistant_text, server_config};
@@ -44,7 +46,9 @@ use crate::config::{build_runtime, latest_assistant_text, server_config};
 /// requests isolation. Sandbox placement does not alter Run semantics.
 pub(crate) enum AgentRunSandbox<'a> {
     /// Reuse the parent agent's live sandbox — the default (`与主 agent 共用`).
-    Shared(&'a LocalSandbox),
+    Shared(&'a crate::session_environment::SessionEnvironment),
+    #[cfg(test)]
+    SharedLocal(&'a LocalSandbox),
     /// Create a fresh, isolated sandbox for this Agent Run via the given provider.
     Fresh(&'a LocalProvider),
 }
@@ -235,9 +239,13 @@ pub(crate) async fn run_configured_agent_until_boundary(
                 .map_err(|error| AgentRunError::Provisioning(error.to_string()))?,
         ),
         AgentRunSandbox::Shared(_) => None,
+        #[cfg(test)]
+        AgentRunSandbox::SharedLocal(_) => None,
     };
-    let env: &LocalSandbox = match &sandbox {
-        AgentRunSandbox::Shared(shared) => shared,
+    let env: &dyn crate::config::RuntimeToolSource = match &sandbox {
+        AgentRunSandbox::Shared(shared) => *shared,
+        #[cfg(test)]
+        AgentRunSandbox::SharedLocal(shared) => *shared,
         AgentRunSandbox::Fresh(_) => created
             .as_ref()
             .expect("a Fresh Agent Run created a sandbox"),
@@ -437,9 +445,13 @@ pub(crate) async fn run_configured_agent(
                 .map_err(|error| AgentRunError::Provisioning(error.to_string()))?,
         ),
         AgentRunSandbox::Shared(_) => None,
+        #[cfg(test)]
+        AgentRunSandbox::SharedLocal(_) => None,
     };
-    let env: &LocalSandbox = match &sandbox {
-        AgentRunSandbox::Shared(shared) => shared,
+    let env: &dyn crate::config::RuntimeToolSource = match &sandbox {
+        AgentRunSandbox::Shared(shared) => *shared,
+        #[cfg(test)]
+        AgentRunSandbox::SharedLocal(shared) => *shared,
         AgentRunSandbox::Fresh(_) => created
             .as_ref()
             .expect("a Fresh Agent Run created a sandbox"),
@@ -927,7 +939,7 @@ mod tests {
         // under the fresh provider's base (`默认共用`).
         run_configured_agent(
             &catalog,
-            AgentRunSandbox::Shared(&parent),
+            AgentRunSandbox::SharedLocal(&parent),
             Arc::new(InstructionEchoModel),
             "assistant",
             "sub-a",
@@ -1041,7 +1053,7 @@ mod tests {
         let first = run_agent_until_boundary(
             Arc::new(PermissionModel),
             execution(scheduler),
-            AgentRunSandbox::Shared(&sandbox),
+            AgentRunSandbox::SharedLocal(&sandbox),
             ChildRunRequest {
                 run_id: child_run_id.clone(),
                 origin: origin.clone(),
@@ -1076,7 +1088,7 @@ mod tests {
         let recovered_boundary = run_agent_until_boundary(
             Arc::new(PermissionModel),
             execution(replacement.clone()),
-            AgentRunSandbox::Shared(&sandbox),
+            AgentRunSandbox::SharedLocal(&sandbox),
             ChildRunRequest {
                 run_id: child_run_id.clone(),
                 origin: origin.clone(),
@@ -1102,7 +1114,7 @@ mod tests {
         let second = run_agent_until_boundary(
             Arc::new(PermissionModel),
             execution(replacement),
-            AgentRunSandbox::Shared(&sandbox),
+            AgentRunSandbox::SharedLocal(&sandbox),
             ChildRunRequest {
                 run_id: child_run_id.clone(),
                 origin: origin.clone(),
@@ -1134,7 +1146,7 @@ mod tests {
                 owner: "replacement-worker-3".to_string(),
                 claimed_commit: None,
             }),
-            AgentRunSandbox::Shared(&sandbox),
+            AgentRunSandbox::SharedLocal(&sandbox),
             ChildRunRequest {
                 run_id: RunId("child-run-1".into()),
                 origin: DelegationOrigin::root_for_agent(
