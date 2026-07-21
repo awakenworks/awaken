@@ -133,13 +133,23 @@ async function main() {
     const releaseFailure = await upload('release-failure', 'release.txt');
     const contended = await upload('contended-fence', 'contended.txt');
     const lateReference = await upload('late-reference', 'late.txt');
+    const durableBlockers = await upload('durable-blockers', 'blockers.txt');
+    const corruptReference = await upload('corrupt-reference', 'corrupt-reference.txt');
+    const alreadyOwned = await upload('already-owned-fence', 'already-owned.txt');
     const skillId = `fault-skill-${process.pid}`;
     assert.equal((await json('POST', 'skills', {
       id: skillId,
       content: `---\nname: ${skillId}\ndescription: fault recovery\n---\nRecover safely.`,
     })).status, 200);
 
-    for (const fileId of [releaseFailure, contended, lateReference]) {
+    for (const fileId of [
+      releaseFailure,
+      contended,
+      lateReference,
+      durableBlockers,
+      corruptReference,
+      alreadyOwned,
+    ]) {
       assert.equal((await json('DELETE', `files/${fileId}`)).status, 200);
     }
     assert.equal((await json('DELETE', `skills/${skillId}`)).status, 200);
@@ -153,6 +163,8 @@ async function main() {
     );
     const tombstone = fs.readFileSync(skillAggregate);
     fs.writeFileSync(skillAggregate, '{broken-skill-aggregate');
+    const alreadyOwnedIntent = intentFor(directory, alreadyOwned);
+    assert.ok(alreadyOwnedIntent, 'the logical delete durably scheduled reclamation');
 
     // The three triggers/rows model distinct production races at durable seams:
     // a foreign reclaimer already owns one identity; a reference appears after
@@ -162,6 +174,19 @@ async function main() {
       `
         INSERT INTO resource_reclamation_fences(resource_kind, resource_id, intent_id)
           VALUES ('file', ${sqlQuote(contended)}, 'external-reclaimer');
+        INSERT INTO resource_reclamation_fences(resource_kind, resource_id, intent_id)
+          VALUES ('file', ${sqlQuote(alreadyOwned)}, ${sqlQuote(alreadyOwnedIntent.intent_id)});
+        INSERT INTO resource_references(
+          workspace_id, resource_kind, resource_id, reference_kind, reference_id
+        ) VALUES
+          (${sqlQuote(WORKSPACE)}, 'file', ${sqlQuote(durableBlockers)}, 'logical_lifecycle', 'logical-1'),
+          (${sqlQuote(WORKSPACE)}, 'file', ${sqlQuote(durableBlockers)}, 'workspace_ownership', 'owner-1'),
+          (${sqlQuote(WORKSPACE)}, 'file', ${sqlQuote(durableBlockers)}, 'agent_binding', 'agent-1'),
+          (${sqlQuote(WORKSPACE)}, 'file', ${sqlQuote(durableBlockers)}, 'artifact', 'artifact-1'),
+          (${sqlQuote(WORKSPACE)}, 'file', ${sqlQuote(durableBlockers)}, 'runtime_handle', 'runtime-1'),
+          (${sqlQuote(WORKSPACE)}, 'file', ${sqlQuote(durableBlockers)}, 'extraction_intent', 'extract-1'),
+          (${sqlQuote(WORKSPACE)}, 'file', ${sqlQuote(durableBlockers)}, 'retention_hold', 'hold-1'),
+          (${sqlQuote(WORKSPACE)}, 'file', ${sqlQuote(corruptReference)}, 'future_unknown_kind', 'bad-1');
         CREATE TRIGGER inject_late_reference
           AFTER INSERT ON resource_reclamation_fences
           WHEN NEW.resource_id = ${sqlQuote(lateReference)}
@@ -186,7 +211,7 @@ async function main() {
     await ready(server);
     const failed = await waitFor(
       directory,
-      [releaseFailure, contended, lateReference, skillId],
+      [releaseFailure, contended, lateReference, durableBlockers, corruptReference, skillId],
       (intent) => intent.status === 'pending' && intent.attempts >= 1,
     );
     const byResource = new Map(failed.map((intent) => [intent.target.resource_id, intent]));
@@ -198,6 +223,19 @@ async function main() {
       ),
     );
     assert.match(byResource.get(skillId).last_error, /expected value|key must be a string/u);
+    assert.deepEqual(
+      byResource.get(durableBlockers).blockers.map((blocker) => blocker.kind).sort(),
+      [
+        'agent_binding',
+        'artifact',
+        'extraction_intent',
+        'logical_lifecycle',
+        'retention_hold',
+        'runtime_handle',
+        'workspace_ownership',
+      ],
+    );
+    assert.match(byResource.get(corruptReference).last_error, /unknown resource reference kind/u);
 
     // Remove only the injected faults. The coordinator must reuse each durable
     // intent/fence and complete; no API delete is repeated.
@@ -210,6 +248,8 @@ async function main() {
         DELETE FROM resource_references
           WHERE resource_id = ${sqlQuote(lateReference)}
             AND reference_id = 'late-session-reference';
+        DELETE FROM resource_references
+          WHERE resource_id IN (${sqlQuote(durableBlockers)}, ${sqlQuote(corruptReference)});
         DELETE FROM resource_reclamation_fences
           WHERE resource_id = ${sqlQuote(contended)}
             AND intent_id = 'external-reclaimer';
@@ -217,7 +257,15 @@ async function main() {
     );
     const completed = await waitFor(
       directory,
-      [releaseFailure, contended, lateReference, skillId],
+      [
+        releaseFailure,
+        contended,
+        lateReference,
+        durableBlockers,
+        corruptReference,
+        alreadyOwned,
+        skillId,
+      ],
       (intent) => intent.status === 'completed',
     );
     assert.ok(completed.every((intent) => intent.receipt !== null));
