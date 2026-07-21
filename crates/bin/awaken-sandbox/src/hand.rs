@@ -20,12 +20,12 @@ use awaken_ext_builtin_tools::executable_hand_tools;
 use awaken_tool_relay::{HandSession, serve_hand};
 use tokio::io::{AsyncRead, AsyncWrite};
 
-struct StdioChannel {
-    read: tokio::io::Stdin,
-    write: tokio::io::Stdout,
+struct StdioChannel<R = tokio::io::Stdin, W = tokio::io::Stdout> {
+    read: R,
+    write: W,
 }
 
-impl AsyncRead for StdioChannel {
+impl<R: AsyncRead + Unpin, W: Unpin> AsyncRead for StdioChannel<R, W> {
     fn poll_read(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
@@ -35,7 +35,7 @@ impl AsyncRead for StdioChannel {
     }
 }
 
-impl AsyncWrite for StdioChannel {
+impl<R: Unpin, W: AsyncWrite + Unpin> AsyncWrite for StdioChannel<R, W> {
     fn poll_write(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
@@ -239,6 +239,19 @@ async fn run_nats(url: &str, subject: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn stdio_channel_forwards_flush_and_shutdown_to_its_writer() {
+        use tokio::io::AsyncWriteExt as _;
+
+        let mut channel = StdioChannel {
+            read: tokio::io::empty(),
+            write: tokio::io::sink(),
+        };
+        channel.write_all(b"framed reply").await.unwrap();
+        channel.flush().await.unwrap();
+        channel.shutdown().await.unwrap();
+    }
 
     #[test]
     fn parse_hand_args_reads_unix_and_tcp_binds() {
