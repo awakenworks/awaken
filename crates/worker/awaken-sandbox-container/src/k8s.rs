@@ -11,9 +11,10 @@
 //! out) — all via [`crate::net`]. Compile-verified here; running requires a cluster.
 
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
-use awaken_agent_channel::{AgentChannel, AgentTransport};
+use awaken_agent_channel::{AgentChannel, AgentTransport, SplitChannel};
 use awaken_provisioning_contract as pc;
 use k8s_openapi::api::core::v1::{
     Capabilities, ConfigMap, ConfigMapVolumeSource, Container, EmptyDirVolumeSource, EnvVar, Pod,
@@ -21,16 +22,157 @@ use k8s_openapi::api::core::v1::{
     Volume, VolumeMount,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference, Status};
 use kube::api::{AttachParams, DeleteParams, ListParams, PostParams};
 use kube::{Api, Client};
 use std::collections::BTreeMap;
 
 use crate::net::TcpAgentTransport;
-use crate::{BindPlan, ContainerPlan, ContainerRuntime, ContainerState, RuntimeError};
+use crate::{
+    BindPlan, ContainerPlan, ContainerRuntime, ContainerState, RuntimeAgentProcess, RuntimeError,
+};
+
+static EXEC_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 fn backend(e: impl std::fmt::Display) -> RuntimeError {
     RuntimeError::Backend(e.to_string())
+}
+
+struct K8sExecState {
+    completion: Option<tokio::task::JoinHandle<Option<Status>>>,
+    status: Option<pc::ExitStatus>,
+}
+
+struct K8sExecProcess {
+    id: String,
+    pod: String,
+    pid_file: String,
+    pods: Api<Pod>,
+    state: tokio::sync::Mutex<K8sExecState>,
+}
+
+fn k8s_exit_status(status: Option<Status>) -> pc::ExitStatus {
+    let success = status.as_ref().and_then(|status| status.status.as_deref()) == Some("Success");
+    let code = status
+        .and_then(|status| status.details)
+        .and_then(|details| details.causes)
+        .and_then(|causes| {
+            causes.into_iter().find_map(|cause| {
+                (cause.reason.as_deref() == Some("ExitCode"))
+                    .then_some(cause.message)
+                    .flatten()
+            })
+        })
+        .and_then(|message| message.parse::<i32>().ok())
+        .or(Some(if success { 0 } else { 1 }));
+    pc::ExitStatus {
+        code,
+        signaled: false,
+    }
+}
+
+fn k8s_exec_argv(id: &str, command: pc::Command) -> Result<(String, Vec<String>), RuntimeError> {
+    if command.argv.is_empty() {
+        return Err(backend("exec command argv is empty"));
+    }
+    let pid_file = format!("/tmp/{id}.pid");
+    let mut argv = vec!["env".to_string()];
+    for var in command.env {
+        let pc::EnvValue::Inline { value } = var.value else {
+            return Err(backend(format!(
+                "exec env {} is not materialized inline",
+                var.name
+            )));
+        };
+        argv.push(format!("{}={value}", var.name));
+    }
+    argv.extend([
+        "sh".into(),
+        "-c".into(),
+        "pid_file=$1; cwd=$2; shift 2; printf '%s' \"$$\" > \"$pid_file\"; \
+         if [ -n \"$cwd\" ]; then cd -- \"$cwd\" || exit 126; fi; exec \"$@\""
+            .into(),
+        "awaken-exec".into(),
+        pid_file.clone(),
+        command.cwd,
+    ]);
+    argv.extend(command.argv);
+    Ok((pid_file, argv))
+}
+
+#[async_trait]
+impl pc::ProcessHandle for K8sExecProcess {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    async fn wait(&self) -> Result<pc::ExitStatus, pc::SandboxError> {
+        let mut state = self.state.lock().await;
+        if let Some(status) = &state.status {
+            return Ok(status.clone());
+        }
+        let completion = state
+            .completion
+            .take()
+            .ok_or_else(|| pc::SandboxError::new("k8s exec completion is unavailable"))?;
+        let status = completion
+            .await
+            .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+        let status = k8s_exit_status(status);
+        state.status = Some(status.clone());
+        Ok(status)
+    }
+
+    async fn poll(&self) -> Result<Option<pc::ExitStatus>, pc::SandboxError> {
+        let mut state = self.state.lock().await;
+        if let Some(status) = &state.status {
+            return Ok(Some(status.clone()));
+        }
+        let Some(completion) = state.completion.as_ref() else {
+            return Err(pc::SandboxError::new("k8s exec completion is unavailable"));
+        };
+        if !completion.is_finished() {
+            return Ok(None);
+        }
+        let completion = state.completion.take().expect("checked above");
+        let status = completion
+            .await
+            .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+        let status = k8s_exit_status(status);
+        state.status = Some(status.clone());
+        Ok(Some(status))
+    }
+
+    async fn signal(&self, signal: pc::Signal) -> Result<(), pc::SandboxError> {
+        let name = match signal {
+            pc::Signal::Term => "TERM",
+            pc::Signal::Kill => "KILL",
+            pc::Signal::Int => "INT",
+        };
+        let script = format!(
+            "pid=$(cat -- '{}') && kill -{} \"$pid\"",
+            self.pid_file.replace('\'', "'\\''"),
+            name
+        );
+        let mut attached = self
+            .pods
+            .exec(
+                &self.pod,
+                vec!["sh", "-c", &script],
+                &AttachParams::default().container("agent").stderr(false),
+            )
+            .await
+            .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+        let status = attached
+            .take_status()
+            .ok_or_else(|| pc::SandboxError::new("k8s signal exec has no status"))?
+            .await;
+        if k8s_exit_status(status).code == Some(0) {
+            Ok(())
+        } else {
+            Err(pc::SandboxError::new("k8s exec signal failed"))
+        }
+    }
 }
 
 /// The single ConfigMap data key each inline-content mount is stored under; the Pod
@@ -670,6 +812,98 @@ impl ContainerRuntime for K8sRuntime {
             .metadata
             .name
             .ok_or_else(|| backend("created pod has no name"))
+    }
+
+    async fn spawn(
+        &self,
+        container_id: &str,
+        command: pc::Command,
+    ) -> Result<Box<dyn pc::ProcessHandle>, RuntimeError> {
+        if command.stdio == pc::Stdio::Piped {
+            return Err(backend(
+                "piped container exec requires the agent-channel capability",
+            ));
+        }
+        let id = format!(
+            "k8s-exec-{}-{}",
+            std::process::id(),
+            EXEC_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        );
+        let (pid_file, argv) = k8s_exec_argv(&id, command)?;
+        let pods = self.pods();
+        let mut attached = pods
+            .exec(
+                container_id,
+                argv,
+                &AttachParams::default()
+                    .container("agent")
+                    .stdin(false)
+                    .stdout(false)
+                    .stderr(false),
+            )
+            .await
+            .map_err(backend)?;
+        let completion = attached
+            .take_status()
+            .ok_or_else(|| backend("k8s exec has no completion status"))?;
+        Ok(Box::new(K8sExecProcess {
+            id,
+            pod: container_id.to_string(),
+            pid_file,
+            pods,
+            state: tokio::sync::Mutex::new(K8sExecState {
+                completion: Some(tokio::spawn(completion)),
+                status: None,
+            }),
+        }))
+    }
+
+    async fn spawn_agent(
+        &self,
+        container_id: &str,
+        command: pc::Command,
+    ) -> Result<RuntimeAgentProcess, RuntimeError> {
+        let id = format!(
+            "k8s-agent-exec-{}-{}",
+            std::process::id(),
+            EXEC_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        );
+        let (pid_file, argv) = k8s_exec_argv(&id, command)?;
+        let pods = self.pods();
+        let mut attached = pods
+            .exec(
+                container_id,
+                argv,
+                &AttachParams::default()
+                    .container("agent")
+                    .stdin(true)
+                    .stdout(true)
+                    .stderr(false),
+            )
+            .await
+            .map_err(backend)?;
+        let stdin = attached
+            .stdin()
+            .ok_or_else(|| backend("k8s agent exec has no stdin"))?;
+        let stdout = attached
+            .stdout()
+            .ok_or_else(|| backend("k8s agent exec has no stdout"))?;
+        let completion = attached
+            .take_status()
+            .ok_or_else(|| backend("k8s agent exec has no completion status"))?;
+        Ok(RuntimeAgentProcess {
+            process: Box::new(K8sExecProcess {
+                id,
+                pod: container_id.to_string(),
+                pid_file,
+                pods,
+                state: tokio::sync::Mutex::new(K8sExecState {
+                    completion: Some(tokio::spawn(completion)),
+                    status: None,
+                }),
+            }),
+            channel: Box::new(SplitChannel::new(stdout, stdin)),
+        })
     }
 
     async fn open_channel(

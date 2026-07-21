@@ -1,42 +1,26 @@
-//! Real Docker end-to-end: launch a process-as-container agent in a `busybox` image,
-//! publish + dial its port, and exchange the newline ACP wire — proving the Docker
-//! `ContainerRuntime` + `create_container`/`open_channel` path against a live daemon.
+//! Real Docker end-to-end: create one long-lived Session environment, exec a stdio
+//! agent inside it, and exchange the newline ACP wire over that exact exec process.
 //!
 //! Gated on the `docker` feature AND a reachable daemon: it self-skips (does not fail)
 //! when Docker is absent, so a machine without it still passes `cargo test`.
 #![cfg(feature = "docker")]
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use awaken_provisioning_contract as pc;
 use awaken_sandbox_container::ContainerProvider;
 use awaken_sandbox_container::docker::DockerRuntime;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-/// The fixture agent, as a `busybox nc` command: listen on the agent port and, per
-/// connection, read the prompt line and reply with the newline-wire message + turn_end
-/// (the same stand-in the namespace-tier ACP e2e uses, bridged onto a TCP socket).
-/// The short post-terminal delay prevents BusyBox `nc -k -e` from resetting the
-/// connection before the host drains the final frame.
-fn agent_argv(port: u16) -> Vec<String> {
+fn agent_argv() -> Vec<String> {
     let script = "read _p; \
         printf '%s\\n' '{\"type\":\"message\",\"text\":\"sandboxed reply\"}'; \
         printf '%s\\n' '{\"type\":\"turn_end\",\"reason\":\"natural_end\"}'; \
         sleep 0.1";
-    vec![
-        "nc".into(),
-        "-lk".into(),
-        "-p".into(),
-        port.to_string(),
-        "-e".into(),
-        "sh".into(),
-        "-c".into(),
-        script.into(),
-    ]
+    vec!["sh".into(), "-c".into(), script.into()]
 }
 
-fn spec(scope: &str, port: u16) -> pc::SandboxSpec {
+fn spec(scope: &str) -> pc::SandboxSpec {
     pc::SandboxSpec {
         scope: scope.into(),
         isolation: pc::IsolationClass::Container,
@@ -46,8 +30,7 @@ fn spec(scope: &str, port: u16) -> pc::SandboxSpec {
         outputs_path: "/mnt/session/outputs".into(),
         limits: pc::ResourceLimits::default(),
         lease_ttl_secs: None,
-        // Process-as-container: the agent argv IS the container's main command.
-        extra: Some(serde_json::json!({ "command": agent_argv(port) })),
+        extra: None,
     }
 }
 
@@ -86,49 +69,21 @@ async fn a_containerized_agent_speaks_the_wire_over_a_published_port() {
 
     // Create the container running the agent; retry the dial while it boots + nc binds.
     let sandbox = provider
-        .create_container(&spec(&scope, port))
+        .create_container(&spec(&scope))
         .await
         .expect("create container");
-
-    // Retry the WHOLE exchange (open + write + read), not just the dial: Docker's
-    // port-proxy accepts a connection the instant the container starts, but the `nc`
-    // agent inside takes a moment to bind :8080 — so an early dial "succeeds" yet the
-    // proxied read returns empty (the backend isn't listening yet). Re-opening a fresh
-    // channel per attempt until the reply arrives makes the first-turn cold-start
-    // deterministic (a warm agent answers on the first attempt).
+    let mut agent = sandbox
+        .spawn_agent(pc::Command {
+            stdio: pc::Stdio::Piped,
+            ..pc::Command::new(agent_argv())
+        })
+        .await
+        .expect("exec stdio agent");
+    agent.channel.write_all(b"hello\n").await.unwrap();
+    agent.channel.flush().await.unwrap();
     let mut got = String::new();
-    for _ in 0..50 {
-        let Ok(mut channel) = awaken_agent_channel::AgentTransport::open_channel(&sandbox).await
-        else {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            continue;
-        };
-        if channel.write_all(b"hello\n").await.is_err() {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            continue;
-        }
-        channel.flush().await.ok();
-        let mut buf = vec![0u8; 512];
-        let mut this = String::new();
-        for _ in 0..20 {
-            match tokio::time::timeout(Duration::from_secs(1), channel.read(&mut buf)).await {
-                Ok(Ok(0)) => break,
-                Ok(Ok(n)) => {
-                    this.push_str(&String::from_utf8_lossy(&buf[..n]));
-                    if this.contains("turn_end") {
-                        break;
-                    }
-                }
-                _ => break,
-            }
-        }
-        if this.contains("turn_end") {
-            got = this;
-            break;
-        }
-        // Empty/partial reply → the agent wasn't ready; back off and re-open.
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    agent.channel.read_to_string(&mut got).await.unwrap();
+    assert_eq!(agent.process.wait().await.unwrap().code, Some(0));
 
     // Clean up the container before asserting, so a failure still reaps it.
     let _ = pc::Sandbox::dispose(&sandbox).await;

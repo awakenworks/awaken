@@ -20,7 +20,7 @@ use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
 use awaken_provisioning_contract::SandboxProvider;
 use awaken_sandbox_container::docker::DockerRuntime;
-use awaken_sandbox_container::{ContainerProvider, ContainerRuntime, EgressProxy};
+use awaken_sandbox_container::{ContainerProvider, ContainerRuntime, EgressProxy, command_of};
 
 const AGENT_PORT: u16 = 8080;
 
@@ -80,11 +80,15 @@ async fn run_to_exit(
     let _ = rt.remove(&format!("awaken-{scope}")).await;
 
     let sandbox = provider.create(spec).await.expect("create real container");
-    // Process-as-container: `spawn` returns a handle to the main process (the probe).
+    let command = command_of(spec);
+    assert!(
+        !command.is_empty(),
+        "test spec must declare an exec command"
+    );
     let proc = sandbox
-        .spawn(pc::Command::new(["true"]))
+        .spawn(pc::Command::new(command))
         .await
-        .expect("handle");
+        .expect("exec command");
 
     let mut code = None;
     for _ in 0..50 {
@@ -556,15 +560,17 @@ async fn a_peer_provider_re_adopts_a_live_container_from_its_durable_handle() {
         handle.sandbox_id,
         "the adopted sandbox is the SAME one (same id), not a fresh create"
     );
-    // Its main process is still running (poll = None) — state survived the crash.
+    // The environment is still ready and accepts a new exec — state survived the
+    // crash independently of any one attempt process.
+    assert_eq!(
+        adopted.status().await.expect("environment status"),
+        pc::SandboxStatus::Ready
+    );
     let proc = adopted
         .spawn(pc::Command::new(["true"]))
         .await
-        .expect("handle to the still-running main process");
-    assert!(
-        proc.poll().await.expect("poll").is_none(),
-        "the adopted container is still running (its state survived worker A's crash)"
-    );
+        .expect("exec after adoption");
+    assert_eq!(proc.wait().await.expect("wait").code, Some(0));
 
     // Teardown reaps it; a later adopt of the now-gone handle fails closed.
     adopted
