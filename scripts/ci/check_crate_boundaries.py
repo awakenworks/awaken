@@ -1236,7 +1236,6 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-agent-contract",
         "awaken-runtime-contract",
         "awaken-runtime",
-        # Oneshot-forwarding + the worker-facing HTTP dispatch-transport middleware.
         "tower",
         # dev-only: the files/models routers were extracted to this sibling adapter;
         # runtime-host's files + resource-composition HTTP tests drive them.
@@ -1321,8 +1320,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     "awaken-resource-reclaimer": {"awaken-resource-contract", "async-trait", "tokio"},
     "awaken-resource-store": {"awaken-resource-contract", "async-trait", "rusqlite", "serde_json", "tempfile", "tokio"},
     # Single-machine assembly binary: the composition root. Since the service
-    # layer moved to awaken-runtime-host; this bin composes host/protocol/management routers.
-    # modes; it names no runtime/ext/store crate directly. Nothing depends on it.
+    # layer moved to awaken-runtime-host; it composes host/protocol/management router modes.
     # Test-only scenario host (Stage A): the mock models + build_*_router scenario
     # assemblies extracted from awaken-server. Depends on the product crate
     # for its now-pub assembly helpers + production executors.
@@ -1522,6 +1520,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # Stage C: the Worker role delegates to the production database-less worker.
         "awaken-worker",
         "awaken-runtime-host",
+        "awaken-resource-store",
         # The ACP executor: the composition root wires an `acp:*` backend into the Serve
         # host by config (AWAKEN_ACP_ARGV), which the runtime-host plane does not do itself.
         "awaken-run-executor-acp",

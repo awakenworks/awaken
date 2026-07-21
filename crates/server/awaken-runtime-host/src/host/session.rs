@@ -632,6 +632,10 @@ impl SharedHost {
         // credential-bearing MCP relay routes. A future Session reusing the opaque
         // thread id must start from an empty projection and be authorized/staged
         // again; resource state never outlives its Session boundary in these maps.
+        let reference_result = self
+            .clear_session_references(thread)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()));
         self.thread_workspaces
             .lock()
             .expect("thread workspaces")
@@ -655,6 +659,6 @@ impl SharedHost {
             relay.remove_routes(thread);
         }
 
-        dispose_result
+        dispose_result.and(reference_result)
     }
 }

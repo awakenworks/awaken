@@ -902,6 +902,16 @@ async fn management_router_over(
         // Resolve a session's model to a real executor from the config plane (M2):
         // an unconfigured/unresolvable model falls back to the scenario model above.
         .with_inference_materializer(inference_materializer);
+    let lifecycle_path = host_builder
+        .storage_dir()
+        .map(|directory| directory.join("resource-lifecycle.db"));
+    let host_builder = match lifecycle_path {
+        Some(path) => host_builder.with_resource_lifecycle(Arc::new(
+            awaken_resource_store::SqliteResourceStore::open(path)
+                .expect("open durable resource lifecycle store"),
+        )),
+        None => host_builder,
+    };
     host_builder.install_memory_extraction_repository(memory_extractions);
     awaken_server::install_platform_memory_data_plane(&host_builder);
     // Production ACP wiring (`acp:*` threads): `AWAKEN_ACP_CLI` / `AWAKEN_ACP_ARGV`

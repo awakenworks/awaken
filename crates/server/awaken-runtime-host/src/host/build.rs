@@ -120,8 +120,8 @@ impl SharedHost {
                 ),
                 None => Arc::new(awaken_file_store::InMemoryFileStore::new()),
             },
-            resource_ownership: crate::resource_ownership::ResourceOwnership::open(
-                store_dir.as_deref(),
+            resource_lifecycle: Arc::new(
+                crate::resource_lifecycle::EphemeralResourceLifecycle::default(),
             ),
             memory_stores,
             memory_mounter: std::sync::RwLock::new(None),
@@ -163,6 +163,24 @@ impl SharedHost {
     /// about those repositories.
     pub fn storage_dir(&self) -> Option<&std::path::Path> {
         self.store_dir.as_deref()
+    }
+
+    /// Replace the ephemeral resource-lifecycle adapter. Composition roots use
+    /// this for SQLite/Postgres/cloud implementations; the runtime sees only the
+    /// resource contract and remains independent of IAM and storage technology.
+    #[must_use]
+    pub fn with_resource_lifecycle(
+        mut self,
+        repository: Arc<dyn awaken_protocol_managed::resource_plane::ResourceLifecycleRepository>,
+    ) -> Self {
+        self.resource_lifecycle = repository;
+        self
+    }
+
+    pub fn resource_lifecycle(
+        &self,
+    ) -> Arc<dyn awaken_protocol_managed::resource_plane::ResourceLifecycleRepository> {
+        self.resource_lifecycle.clone()
     }
 
     pub(crate) fn register_thread_workspace(&self, thread: &str, workspace: &str) {

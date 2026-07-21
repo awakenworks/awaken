@@ -470,6 +470,15 @@ pub trait ResourceReferenceIndex: Send + Sync {
         &self,
         record: &ResourceReferenceRecord,
     ) -> Result<bool, ResourcePurgeError>;
+    /// Atomically replace every reference owned by one application holder. This
+    /// prevents a manifest replacement from exposing either missing or stale
+    /// safety edges across a crash.
+    async fn replace_references(
+        &self,
+        kind: ResourceReferenceKind,
+        reference_id: &str,
+        records: Vec<ResourceReferenceRecord>,
+    ) -> Result<(), ResourcePurgeError>;
     async fn references(
         &self,
         target: &ResourceTarget,
@@ -482,6 +491,13 @@ pub trait ResourceReferenceIndex: Send + Sync {
         resource_id: &str,
     ) -> Result<Vec<ResourceReferenceRecord>, ResourcePurgeError>;
 }
+
+/// Composition convenience for one adapter implementing both durable lifecycle
+/// ports. It adds no behavior and keeps callers dependent on the two segregated
+/// interfaces above.
+pub trait ResourceLifecycleRepository: ResourcePurgeRepository + ResourceReferenceIndex {}
+
+impl<T> ResourceLifecycleRepository for T where T: ResourcePurgeRepository + ResourceReferenceIndex {}
 
 /// One independently replaceable safety predicate. Composition can combine
 /// catalog lifecycle, binding indexes, runtime handles and retention sources

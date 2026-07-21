@@ -8,12 +8,26 @@ use std::sync::Arc;
 
 use crate::host::SharedHost;
 use awaken_file_store::FileStore;
+use awaken_protocol_managed::resource_plane::{
+    PutResourcePurgeOutcome, ResourceKind, ResourcePurgeError, ResourcePurgeIntent,
+    ResourceReference, ResourceReferenceKind, ResourceReferenceRecord, ResourceTarget,
+};
 use awaken_provisioning_contract as pc;
 use awaken_runtime_contract::resolved::ToolDescriptor;
 
 /// The sandbox-absolute outputs dir (must be absolute for `prepare_environment`);
 /// resolved under the root to `<root>/outputs`, which `list_files("outputs")` reads.
 const OUTPUTS_PATH: &str = "/outputs";
+
+fn file_grant(workspace: &str, id: &str) -> ResourceReferenceRecord {
+    ResourceReferenceRecord {
+        target: ResourceTarget::new(workspace, ResourceKind::File, id),
+        reference: ResourceReference {
+            kind: ResourceReferenceKind::WorkspaceGrant,
+            reference_id: workspace.to_string(),
+        },
+    }
+}
 
 /// A bare Workdir spec for an ephemeral sub-run sandbox (judge / delegate / compact /
 /// skill fork): scoped to the thread, no staged resource mounts, host-shared network.
@@ -161,20 +175,130 @@ impl SharedHost {
         self.file_store.clone()
     }
 
-    pub fn grant_file(&self, workspace: &str, id: &str) {
-        self.resource_ownership.grant("file", id, workspace);
+    pub async fn grant_file(&self, workspace: &str, id: &str) -> Result<bool, ResourcePurgeError> {
+        self.resource_lifecycle
+            .add_reference(file_grant(workspace, id))
+            .await
     }
 
-    pub fn owns_file(&self, workspace: &str, id: &str) -> bool {
-        self.resource_ownership.owns("file", id, workspace)
+    pub async fn owns_file(&self, workspace: &str, id: &str) -> Result<bool, ResourcePurgeError> {
+        Ok(self
+            .resource_lifecycle
+            .references(&ResourceTarget::new(workspace, ResourceKind::File, id))
+            .await?
+            .iter()
+            .any(|reference| reference.kind == ResourceReferenceKind::WorkspaceGrant))
     }
 
-    pub fn revoke_file(&self, workspace: &str, id: &str) -> bool {
-        self.resource_ownership.revoke("file", id, workspace)
+    pub async fn revoke_file(&self, workspace: &str, id: &str) -> Result<bool, ResourcePurgeError> {
+        self.resource_lifecycle
+            .remove_reference(&file_grant(workspace, id))
+            .await
     }
 
-    pub fn file_has_any_owner(&self, id: &str) -> bool {
-        self.resource_ownership.has_any_owner("file", id)
+    pub async fn file_has_any_reference(&self, id: &str) -> Result<bool, ResourcePurgeError> {
+        Ok(!self
+            .resource_lifecycle
+            .references_for_resource(ResourceKind::File, id)
+            .await?
+            .is_empty())
+    }
+
+    /// Persist physical cleanup work after the caller has committed logical deny.
+    pub async fn request_resource_purge(
+        &self,
+        target: ResourceTarget,
+        config_version: Option<u64>,
+        requested_at_unix_ms: u64,
+        not_before_unix_ms: u64,
+    ) -> Result<PutResourcePurgeOutcome, ResourcePurgeError> {
+        let key = format!(
+            "{}:{}:{}:{:?}",
+            target.workspace_id, target.resource_id, requested_at_unix_ms, config_version
+        );
+        let intent = ResourcePurgeIntent::new(
+            format!("purge:{:?}:{key}", target.kind),
+            key,
+            target,
+            config_version,
+            requested_at_unix_ms,
+            not_before_unix_ms,
+        )?;
+        self.resource_lifecycle.put(intent).await
+    }
+
+    pub async fn request_file_purge(
+        &self,
+        workspace: &str,
+        id: &str,
+        requested_at_unix_ms: u64,
+    ) -> Result<PutResourcePurgeOutcome, ResourcePurgeError> {
+        self.request_resource_purge(
+            ResourceTarget::new(workspace, ResourceKind::File, id),
+            None,
+            requested_at_unix_ms,
+            requested_at_unix_ms,
+        )
+        .await
+    }
+
+    pub(crate) async fn replace_session_references(
+        &self,
+        workspace: &str,
+        thread: &str,
+        resources: &awaken_protocol_managed::ResolvedSessionResources,
+    ) -> Result<(), ResourcePurgeError> {
+        use awaken_protocol_managed::ResolvedInputSource;
+
+        let reference = |target| ResourceReferenceRecord {
+            target,
+            reference: ResourceReference {
+                kind: ResourceReferenceKind::SessionBinding,
+                reference_id: thread.to_string(),
+            },
+        };
+        let mut records = Vec::with_capacity(
+            resources.inputs.len() + resources.skills.as_ref().map_or(0, Vec::len),
+        );
+        for input in &resources.inputs {
+            let target = match &input.source {
+                ResolvedInputSource::File { file_id } => {
+                    ResourceTarget::new(workspace, ResourceKind::File, file_id.as_str())
+                }
+                ResolvedInputSource::MemoryStore {
+                    memory_store_id, ..
+                } => ResourceTarget::new(
+                    workspace,
+                    ResourceKind::MemoryStore,
+                    memory_store_id.as_str(),
+                ),
+                ResolvedInputSource::Repository { repository_id, .. } => {
+                    ResourceTarget::new(workspace, ResourceKind::Repository, repository_id.as_str())
+                }
+            };
+            records.push(reference(target));
+        }
+        if let Some(skills) = &resources.skills {
+            records.extend(skills.iter().map(|skill| {
+                reference(ResourceTarget::new(
+                    workspace,
+                    ResourceKind::Skill,
+                    &skill.skill_id,
+                ))
+            }));
+        }
+        self.resource_lifecycle
+            .replace_references(ResourceReferenceKind::SessionBinding, thread, records)
+            .await
+    }
+
+    pub(crate) async fn clear_session_references(
+        &self,
+        thread: &str,
+    ) -> Result<(), ResourcePurgeError> {
+        self.resource_lifecycle
+            .replace_references(ResourceReferenceKind::SessionBinding, thread, Vec::new())
+            .await
     }
 
     /// Realize a thread's resolved Repository inputs into its freshly-created
@@ -315,8 +439,9 @@ impl SharedHost {
         for (path, bytes) in env.list_files("outputs") {
             if let Ok(id) = self.file_store.put(&bytes).await {
                 let workspace = self.thread_workspace(thread);
-                self.grant_file(&workspace, &id);
-                out.push((id, path));
+                if self.grant_file(&workspace, &id).await.is_ok() {
+                    out.push((id, path));
+                }
             }
         }
         out

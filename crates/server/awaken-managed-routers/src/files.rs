@@ -94,7 +94,13 @@ async fn upload_file(
     let size = bytes.len();
     match host.file_store().put(&bytes).await {
         Ok(id) => {
-            host.grant_file(&workspace, &id);
+            if let Err(error) = host.grant_file(&workspace, &id).await {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": error.to_string() })),
+                )
+                    .into_response();
+            }
             (
                 StatusCode::OK,
                 Json(json!({
@@ -124,7 +130,7 @@ async fn get_file(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let workspace = request_workspace(&host, scope);
-    if !host.owns_file(&workspace, &id) {
+    if !host.owns_file(&workspace, &id).await.unwrap_or(false) {
         return (
             StatusCode::NOT_FOUND,
             Json(json!({ "error": "file not found" })),
@@ -166,29 +172,31 @@ async fn delete_file(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let workspace = request_workspace(&host, scope);
-    if !host.revoke_file(&workspace, &id) {
+    let revoked = match host.revoke_file(&workspace, &id).await {
+        Ok(revoked) => revoked,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": error.to_string() })),
+            )
+                .into_response();
+        }
+    };
+    if !revoked {
         return (
             StatusCode::NOT_FOUND,
             Json(json!({ "error": "file not found" })),
         )
             .into_response();
     }
-    if host.file_has_any_owner(&id) {
-        return (
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default();
+    match host.request_file_purge(&workspace, &id, now).await {
+        Ok(_) => (
             StatusCode::OK,
             Json(json!({ "id": id, "type": "file_deleted" })),
-        )
-            .into_response();
-    }
-    match host.file_store().delete(&id).await {
-        Ok(true) => (
-            StatusCode::OK,
-            Json(json!({ "id": id, "type": "file_deleted" })),
-        )
-            .into_response(),
-        Ok(false) => (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": format!("file `{id}` not found") })),
         )
             .into_response(),
         Err(e) => (
@@ -206,7 +214,7 @@ async fn download_file(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let workspace = request_workspace(&host, scope);
-    if !host.owns_file(&workspace, &id) {
+    if !host.owns_file(&workspace, &id).await.unwrap_or(false) {
         return (StatusCode::NOT_FOUND, "not found").into_response();
     }
     match host.file_store().get(&id).await {

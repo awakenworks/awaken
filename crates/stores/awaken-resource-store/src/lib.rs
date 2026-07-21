@@ -138,6 +138,24 @@ impl ResourceReferenceIndex for InMemoryResourceStore {
             .remove(record))
     }
 
+    async fn replace_references(
+        &self,
+        kind: ResourceReferenceKind,
+        reference_id: &str,
+        records: Vec<ResourceReferenceRecord>,
+    ) -> Result<(), ResourcePurgeError> {
+        validate_replacement(kind, reference_id, &records)?;
+        let mut references = self
+            .references
+            .lock()
+            .map_err(|error| storage(error.to_string()))?;
+        references.retain(|record| {
+            record.reference.kind != kind || record.reference.reference_id != reference_id
+        });
+        references.extend(records);
+        Ok(())
+    }
+
     async fn references(
         &self,
         target: &ResourceTarget,
@@ -384,6 +402,38 @@ impl ResourceReferenceIndex for SqliteResourceStore {
             == 1)
     }
 
+    async fn replace_references(
+        &self,
+        kind: ResourceReferenceKind,
+        reference_id: &str,
+        records: Vec<ResourceReferenceRecord>,
+    ) -> Result<(), ResourcePurgeError> {
+        validate_replacement(kind, reference_id, &records)?;
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| storage(error.to_string()))?;
+        transaction
+            .execute(
+                "DELETE FROM resource_references WHERE reference_kind = ?1 AND reference_id = ?2",
+                params![reference_kind_name(kind), reference_id],
+            )
+            .map_err(|error| storage(error.to_string()))?;
+        for record in records {
+            transaction
+                .execute(
+                    "INSERT INTO resource_references
+                     (workspace_id, resource_kind, resource_id, reference_kind, reference_id)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    reference_params(&record),
+                )
+                .map_err(|error| storage(error.to_string()))?;
+        }
+        transaction
+            .commit()
+            .map_err(|error| storage(error.to_string()))
+    }
+
     async fn references(
         &self,
         target: &ResourceTarget,
@@ -469,6 +519,27 @@ fn validate_reference(record: &ResourceReferenceRecord) -> Result<(), ResourcePu
         return Err(ResourcePurgeError::Invalid(
             "resource reference fields must not be empty".into(),
         ));
+    }
+    Ok(())
+}
+
+fn validate_replacement(
+    kind: ResourceReferenceKind,
+    reference_id: &str,
+    records: &[ResourceReferenceRecord],
+) -> Result<(), ResourcePurgeError> {
+    if reference_id.trim().is_empty() {
+        return Err(ResourcePurgeError::Invalid(
+            "replacement reference_id must not be empty".into(),
+        ));
+    }
+    for record in records {
+        validate_reference(record)?;
+        if record.reference.kind != kind || record.reference.reference_id != reference_id {
+            return Err(ResourcePurgeError::Invalid(
+                "replacement rows must belong to the requested holder".into(),
+            ));
+        }
     }
     Ok(())
 }
@@ -625,6 +696,36 @@ mod tests {
                 .unwrap()
                 .len(),
             1
+        );
+        let replacement = ResourceReferenceRecord {
+            target: ResourceTarget::new("workspace-c", ResourceKind::File, "hash-2"),
+            reference: ResourceReference {
+                kind: ResourceReferenceKind::SessionBinding,
+                reference_id: "session-1".into(),
+            },
+        };
+        store
+            .replace_references(
+                ResourceReferenceKind::SessionBinding,
+                "session-1",
+                vec![replacement.clone()],
+            )
+            .await
+            .unwrap();
+        store
+            .replace_references(
+                ResourceReferenceKind::SessionBinding,
+                "session-1",
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            store
+                .references(&replacement.target)
+                .await
+                .unwrap()
+                .is_empty()
         );
         assert_eq!(
             store.get("purge-1").await.unwrap().unwrap().status,
