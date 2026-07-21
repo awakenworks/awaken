@@ -415,8 +415,16 @@ async function main(): Promise<void> {
     const repository = seedRepository(secondDirectory);
     const session = await json('POST', scoped(WORKSPACE, 'sessions'), {
       agent: AGENT, environment_id: 'env_local',
+      resources: [{
+        type: 'github_repository',
+        url: repository,
+        authorization_token: 'repository-create-token', // awaken-allow: secret
+        initial_branch: 'main',
+        mount_path: '/workspace/create-time-repository',
+      }],
     });
     assert.equal(session.status, 200, JSON.stringify(session.body));
+    assert.equal(session.body.resources[0].type, 'github_repository');
     const repositoryResource = await json(
       'POST',
       scoped(WORKSPACE, `sessions/${session.body.id}/resources`),
