@@ -61,6 +61,9 @@ fn tmpfs_for(plan: &ContainerPlan) -> HashMap<String, String> {
 }
 
 #[cfg(test)]
+// Keep these pure host-config tests beside the two assembly helpers they specify;
+// the feature-gated Docker adapter follows below.
+#[allow(clippy::items_after_test_module)]
 mod cgroup_host_config_tests {
     use super::*;
 
