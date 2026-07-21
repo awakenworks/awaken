@@ -154,6 +154,13 @@ export const BEHAVIORS = {
   revise(parsed) {
     const users = allUserText(parsed);
     if (users.includes('Evaluate this Outcome input')) {
+      if (users.includes('INVALID_JUDGE_OUTPUT')) return text('not a grade object');
+      if (users.includes('FORCE_FAILED_DECISION')) {
+        return text(JSON.stringify({
+          result: 'failed',
+          explanation: 'native judge rejected the deliverable terminally',
+        }));
+      }
       const satisfied = users.includes('FINAL answer');
       return text(JSON.stringify({
         result: satisfied ? 'satisfied' : 'needs_revision',
@@ -349,7 +356,7 @@ export function startFakeAnthropic(apiKey, opts = {}) {
   } = opts;
   const reply_of = BEHAVIORS[behavior];
   if (!reply_of) throw new Error(`unknown fake-anthropic behavior: ${behavior}`);
-  const state = { requests: [], unauthorized: 0, attempts: 0, received: 0 };
+  const state = { requests: [], arrivals: [], unauthorized: 0, attempts: 0, received: 0 };
   const server = http.createServer((req, res) => {
     let body = '';
     req.on('data', (c) => (body += c));
@@ -358,6 +365,15 @@ export function startFakeAnthropic(apiKey, opts = {}) {
       // this externally observable socket fact to kill a worker while inference
       // is genuinely in flight, without peeking into the Rust process.
       state.received += 1;
+      const arrival = JSON.parse(body || '{}');
+      const arrivalUsers = allUserText(arrival);
+      state.arrivals.push(
+        arrivalUsers.includes('Evaluate this Outcome input') ? 'outcome-judge'
+          : arrivalUsers.includes('Revise the deliverable') ? 'outcome-revision'
+            : arrivalUsers.includes('iteration limit was reached') ? 'outcome-ack'
+              : arrivalUsers.includes('Work toward this Outcome') ? 'outcome-initial'
+                : 'other',
+      );
       const responseDelay = state.received === 1 ? firstDelayMs || delayMs : delayMs;
       if (responseDelay > 0) await new Promise((r) => setTimeout(r, responseDelay));
       const presented = req.headers['x-api-key'] ?? (req.headers.authorization ?? '').replace(/^Bearer /, '');
@@ -421,6 +437,7 @@ export function startFakeAnthropic(apiKey, opts = {}) {
         resolve({
           url: `http://127.0.0.1:${port}`,
           requests: state.requests,
+          arrivals: state.arrivals,
           get unauthorized() {
             return state.unauthorized;
           },

@@ -84,7 +84,13 @@ impl OutcomeGrader for AgentGrader<'_> {
             .await
             .map_err(|error| OutcomeGraderError::Execution(error.to_string()))?;
         let run_id = grader_run_id(&input.outcome_id, input.iteration);
-        let (state, new_messages) = if let Some(state) = ctx.commit.run_state(&run_id) {
+        // A crash can leave only the Run's `Running` fact committed. That is not
+        // reusable output: redrive the same deterministic id so the coordinator
+        // preserves one logical Run while inference completes. Awaiting/Ended
+        // states are settled observations and must not be executed again.
+        let (state, new_messages) = if let Some(state) = ctx.commit.run_state(&run_id)
+            && state != RunState::Running
+        {
             (state, ctx.commit.committed_messages(&thread_id))
         } else {
             // Make the Judge's live cancellation visible through the Worker
