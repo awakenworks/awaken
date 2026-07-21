@@ -165,6 +165,13 @@ The Session application state records `SessionResourceActivation` as
 record, not a new product resource aggregate, and contains no secret or live
 handle.
 
+The implemented `SessionResourceState` keeps the applied manifest, an optional
+pending manifest, a sequential revision, and the per-binding activation records
+in one persisted Session value. Prepared/Releasing commits precede external IO;
+Active/Released commits follow it. Startup reconciliation reads the separately
+persisted trusted owner envelope and never imports a principal, role, API key,
+PDP decision, or policy document into this state machine.
+
 ### D6: Each resource reclaims according to its own invariant
 
 - File deletion revokes a Workspace grant first. Physical blob GC requires no

@@ -913,6 +913,12 @@ async fn management_router_over(
         .with_session_repo(sessions)
         .with_lifecycle_sink(webhook_sink),
     );
+    let reconciled_resource_activations = managed_state.reconcile_resource_activations().await;
+    if reconciled_resource_activations > 0 {
+        eprintln!(
+            "reconciled {reconciled_resource_activations} durable Session resource activation(s)"
+        );
+    }
     deployment_state.bind_launcher(managed_state.clone());
     // Drive cron Deployments in production. The state mints due runs and launches
     // them through the exact same Session port as the manual `/run` action.

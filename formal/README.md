@@ -129,6 +129,9 @@ production logic.
   stale, skipped, zero, or conflicting revision is rejected without mutation.
   Authorization is deliberately outside this state machine and remains an edge
   admission concern.
+- `SessionResourceActivation.tla` covers durable prepare-before-IO activation,
+  exact revision issuance, commit/rollback, terminal release, and the rule that
+  a terminated Session can never reactivate a pending resource generation.
 - `WorkerReplacement.tla` composes authored route resolution, dispatch-time
   candidate pinning, worker claims, credential materialization, execution and
   settlement with concurrent route change, rotation, revocation, worker crash,
@@ -204,6 +207,7 @@ graphs with zero invariant violations and zero states left on the queue:
 | ConfigActivation | 85 | 35 | 9 |
 | ResourceBindingEffect | 21 | 10 | 6 |
 | AgentInputRevision | 297 | 65 | 9 |
+| SessionResourceActivation | 61 | 39 | 9 |
 | ManagementAuditIntent | 15 | 8 | 5 |
 | CredentialInventory | 7 | 4 | 3 |
 | WorkerReplacement | 452,881 | 98,160 | 16 |

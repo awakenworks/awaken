@@ -441,7 +441,10 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
             })
             .expect("query pending Session resource activations")
             .map(|row| decode(row.expect("read managed session")).expect("decode managed session"))
-            .filter(|session| session.resources.needs_reconciliation())
+            .filter(|session| {
+                session.resources.needs_reconciliation()
+                    || (session.status != "idle" && session.resources.has_active())
+            })
             .collect()
     }
 
@@ -710,7 +713,7 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
             })
             .expect("decode managed session")
         })
-        .filter(|session| session.resources.needs_reconciliation())
+        .filter(|session| session.resources.needs_reconciliation() || (session.status != "idle" && session.resources.has_active()))
         .collect()
     }
 

@@ -876,6 +876,67 @@ C111 → E106(成功) ∨ ModelUnresolved     C112=不兼容 → E107     C112=�
 
 ---
 
+## 模块 M14 · Session 资源激活与回收
+
+`awaken-session-contract::SessionResourceState`、Managed Session
+`activate_inputs`/`reconcile_resource_activations`、`awaken-session-store`
+
+### 因(C113–C117)
+
+| ID | 因 | 锚点 |
+|---|---|---|
+| C113 | 创建或动态替换产生新的 resolved manifest | `SessionResourceState::prepare` |
+| C114 | Host 对待应用 manifest 物化成功 | `activate_inputs` / `prepare_session` |
+| C115 | 物化失败；子分支旧 manifest 回滚成功 vs 回滚也失败 | `activate_inputs` |
+| C116 | 进程重启时存在 Prepared/Releasing 或终态仍有 Active | `pending_resource_sessions` |
+| C117 | Session 终止；子分支 sandbox/兼容 Repo 清理成功 vs 失败 | `release_terminal_resources` |
+
+### 果(E111–E115)
+
+| ID | 果 | 锚点 |
+|---|---|---|
+| E111 | 外部 IO 前 durable Prepared/Releasing；成功后 Active/Released | session contract + session store |
+| E112 | 同步失败且回滚成功：active manifest 不变，新 generation=Failed | Managed resources |
+| E113 | 回滚也失败：pending 与相同 revision 保留，禁止假装成功 | Managed resources |
+| E114 | 重启按 owner envelope 重试同一 pending revision；不重新解析 Agent/当前资源配置 | Managed sessions |
+| E115 | 终态永不再激活；清理失败保持 Releasing，成功后 Released；仅 Session 生成的兼容 Repo 被 tombstone | Managed sessions |
+
+### 因果图
+
+```text
+C113 -> E111
+C114=成功 -> Active
+C115=失败∧回滚成功 -> E112
+C115=失败∧回滚失败 -> E113
+C116 -> E114
+C117=清理成功 -> E115(Released)
+C117=清理失败 -> E115(Releasing)
+```
+
+授权前门只提供已经认证/授权的 owner scope；激活状态机不接收 principal、
+role、API key、PDP decision 或 policy。Workspace owner envelope 与资源状态
+分别持久化，跨 Workspace 可见性仍由边界 PEP 和 repository ownership fence
+负责。
+
+### 判定表 M14
+
+| 因\用例 | T101 | T102 | T103 | T104 | T105 | T106 |
+|---|---:|---:|---:|---:|---:|---:|
+| C113 新 manifest | 1 | 1 | 1 | 0 | 0 | 0 |
+| C114 物化成功 | 1 | 0 | 0 | 1 | 0 | 0 |
+| C115 回滚成功 | 0 | 1 | 0 | 0 | 0 | 0 |
+| C115 回滚失败 | 0 | 0 | 1 | 0 | 0 | 0 |
+| C116 重启有未结算状态 | 0 | 0 | 0 | 1 | 0 | 0 |
+| C117 终止且清理成功 | 0 | 0 | 0 | 0 | 1 | 0 |
+| C117 终止且清理失败 | 0 | 0 | 0 | 0 | 0 | 1 |
+| **E111 durable 两阶段** | 1 | 1 | 1 | 1 | 1 | 1 |
+| **E112 active 不变** | 0 | 1 | 0 | 0 | 0 | 0 |
+| **E113 pending 保留** | 0 | 0 | 1 | 0 | 0 | 0 |
+| **E114 同 revision 恢复** | 0 | 0 | 0 | 1 | 0 | 0 |
+| **E115 Released/Releasing** | 0 | 0 | 0 | 0 | 1 | 1 |
+
+---
+
 ## 汇总统计
 
 | 模块 | 因数 | 果数 | 判定表用例 |
@@ -893,12 +954,13 @@ C111 → E106(成功) ∨ ModelUnresolved     C112=不兼容 → E107     C112=�
 | M11 提交/检查点 | 7 (C91–C97) | 7 (E79–E85) | T75–T80 |
 | M12 协议前门 | 10 (C98–C107) | 10 (E86–E95) | T81–T90 |
 | M13 资源/配置 | 5 (C108–C112) | 15 (E96–E110) | T91–T100 |
-| **合计** | **112 因** | **110 果** | **~110 用例** |
+| M14 Session 资源激活 | 5 (C113–C117) | 5 (E111–E115) | T101–T106 |
+| **合计** | **117 因** | **115 果** | **~116 用例** |
 
 ## 覆盖与使用说明
 
 1. **判定表即测试清单**:每一列(T#)是一个可执行测试用例——置因、驱动被测符号、断言果。列已按 CE 图归约,消除了冗余组合。
-2. **约束消除组合爆炸**:O/E 约束(单值枚举)、R 要求边、M 遮蔽优先级共同把理论 2¹¹² 组合压到约 110 个有效用例。每个 M(遮蔽)边都配对照用例(如 T52 vs T54、M4 Deny 绝对、M6 三闸串行)专门验证优先级不被违反。
+2. **约束消除组合爆炸**:O/E 约束(单值枚举)、R 要求边、M 遮蔽优先级共同把理论 2¹¹⁷ 组合压到约 116 个有效用例。每个 M(遮蔽)边都配对照用例(如 T52 vs T54、M4 Deny 绝对、M6 三闸串行)专门验证优先级不被违反。
 3. **fail-closed 断言**:安全敏感模块(M4/M5/M6/M7/M9)的每个果都应额外断言"默认拒绝/默认封闭"分支——即因全假时落到 fail-closed 果,而非 fail-open。
 4. **已知功能空洞**:M12 列出的 A2A 带内拒绝、A2A 流式/推送、AG-UI 结构化错误、ACP 同步 HITL、MCP out-of-band 审批、webhook 永久错误分流——这些是设计缺口而非 bug,对应用例断言的是"当前遮蔽行为",发现口径改变时须同步更新本表。
 5. **多后端等价类**:M10/M11 的后端(fs/sqlite/pg、memory/pg、local/nats/pg-notify)为 O 约束等价类;`MemoryDispatchStore` 是 pg 必须匹配的可执行规格,建议以同一判定表跑参数化后端一致性测试。

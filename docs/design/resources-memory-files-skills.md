@@ -198,11 +198,16 @@ Agent/Skill configuration into an older Session.
 
 ```rust
 struct SessionResourceActivation {
+    activation_id: ActivationId,
     session_id: SessionId,
+    revision: u64,
     binding_id: BindingId,
     resource_id: InputResourceId,
+    access: ResourceAccess,
     state: ActivationState,
+    attempts: u32,
     lease_expires_at: Option<Timestamp>,
+    last_error: Option<String>,
 }
 
 enum ActivationState {
@@ -212,10 +217,21 @@ enum ActivationState {
     Released,
     Failed,
 }
+
+struct SessionResourceState {
+    revision: u64,
+    active: ResolvedSessionResources,
+    pending: Option<ResolvedSessionResources>,
+    activations: Vec<SessionResourceActivation>,
+}
 ```
 
 An activation record is Session application state used by crash recovery and
-reclamation. It stores neither a secret nor a process-local handle.
+reclamation. `pending` and its Prepared records are committed before Host or
+worker IO; `active` changes only after realization commits. A failed synchronous
+replacement first re-applies `active`; if rollback also fails, the pending state
+remains discoverable by the reclaimer. The record stores neither a secret nor a
+process-local handle.
 
 ## Resource Input Component Catalog
 
@@ -227,7 +243,7 @@ reclamation. It stores neither a secret nor a process-local handle.
 | `SessionInputResolver` | Existing | Session control plane | merge once, replace explicitly, validate mount paths, select current config versions, create `ResolvedSessionResources` and prompts | secret material, runtime loop, physical mounts |
 | front-door PEP | Existing/evolving | Server edge | authenticate, construct trusted Workspace target, call PDP, enforce obligations | resource content and domain policy implementation |
 | authorization PDP/PIP | External/shared authorization domain | IAM | decide principal/action/scope/resource facts under active policy | mounts, resource configuration, storage |
-| `SessionResourceCoordinator` | Target evolution of Host preparation | Session application/host | activation state, ordered provision/release, recovery handoff | Agent config loading, IAM policy language |
+| `SessionResourceCoordinator` | Existing in Managed Session application service | Session application/host | activation state, ordered provision/release, recovery handoff | Agent config loading, IAM policy language |
 | `FileStore` | Existing | File data plane | immutable content-addressed bytes | Workspace authorization; mutable overwrite |
 | `MemoryRepository` | Existing behavior behind `MemoryFs`; naming evolution remains | Memory data plane | scoped entries, CAS, atomic history, redaction, retention hooks | Agent/Session binding and IAM policy |
 | `MemoryRuntime` | Existing | Runtime Host | store-less recall selector/extractor capability and background-run drain | resource identity, default store, IAM policy |
@@ -235,7 +251,7 @@ reclamation. It stores neither a secret nor a process-local handle.
 | `RepositoryRealizer` | Target evolution of repo staging | Environment/host adapter | clone current remote config, construct working tree, mediate Git credentials | remote repository ownership or commit pinning |
 | `CredentialResolver`/Vault | Existing | Credential product domain | turn a credential binding into a short-lived lease and rotate/revoke it | Agent prompt, persisted Session secret material |
 | `SandboxProvider` | Existing | Environment provisioning | realize validated mounts/working trees and dispose them | product resource authoring and policy |
-| `ResourceReclaimer` | Target | Product/session operations | reconcile crashed activations, retention, reference checks, per-kind purge receipts | authorization decisions, remote Git deletion |
+| `ResourceReclaimer` | Existing for Session activation recovery; per-resource purge remains | Product/session operations | reconcile crashed activations, retention, reference checks, per-kind purge receipts | authorization decisions, remote Git deletion |
 
 The catalog names roles rather than forcing them into one crate. Local mode may
 compose several roles in one process; cloud mode may deploy them separately.
@@ -643,8 +659,6 @@ internal config version remains an awaken governance detail.
 
 ### Remaining additions
 
-- durable `SessionResourceActivation` records;
-- `SessionResourceCoordinator` and `ResourceReclaimer` roles;
 - resource-specific purge receipts and recovery tests.
 
 ## Failure Semantics

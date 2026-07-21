@@ -120,7 +120,10 @@ impl ManagedSessionRepository for InMemorySessionRepository {
             .rows
             .values()
             .map(|(session, _)| session)
-            .filter(|session| session.resources.needs_reconciliation())
+            .filter(|session| {
+                session.resources.needs_reconciliation()
+                    || (session.status != "idle" && session.resources.has_active())
+            })
             .cloned()
             .collect::<Vec<_>>();
         sessions.sort_by(|left, right| left.session_id.cmp(&right.session_id));
@@ -279,6 +282,7 @@ impl ScopedSessionStore for InMemoryScopedSessionStore {
             .iter()
             .filter(|((owner, _), session)| {
                 owner == &scope.0 && session.resources.needs_reconciliation()
+                    || (session.status != "idle" && session.resources.has_active())
             })
             .map(|(_, session)| session.clone())
             .collect::<Vec<_>>();

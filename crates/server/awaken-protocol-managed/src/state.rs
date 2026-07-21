@@ -506,6 +506,36 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn archive_persists_release_before_and_after_sandbox_teardown() {
+        let repo = Arc::new(InMemorySessionRepository::default());
+        let state =
+            ManagedState::new(EndSessionRecorder::default()).with_session_repo(repo.clone());
+        let request = serde_json::from_value(serde_json::json!({
+            "agent": "assistant",
+            "resources": [{
+                "type": "file",
+                "file_id": "immutable-file",
+                "mount_path": "/input.txt"
+            }]
+        }))
+        .unwrap();
+        let id = state.create_session(request, None).await.unwrap().id;
+        assert_eq!(
+            repo.get(&id).await.unwrap().resources.activations[0].state,
+            awaken_session_contract::ActivationState::Active
+        );
+
+        state.archive_session(&id).await.unwrap();
+        let durable = repo.get(&id).await.unwrap();
+        assert_eq!(durable.status, "terminated");
+        assert_eq!(
+            durable.resources.activations[0].state,
+            awaken_session_contract::ActivationState::Released
+        );
+        assert!(repo.pending_resource_sessions().await.is_empty());
+    }
+
     /// A runtime whose sandbox teardown always fails — to prove the terminal edges
     /// are BEST-EFFORT: a dispose failure is logged, never propagated, so it cannot
     /// resurrect a deleted session.
@@ -563,9 +593,19 @@ mod tests {
     /// error must never leave a "deleted" session alive.
     #[tokio::test]
     async fn delete_is_best_effort_when_sandbox_teardown_fails() {
-        let state = ManagedState::new(EndSessionFailer);
+        let repo = Arc::new(InMemorySessionRepository::default());
+        let state = ManagedState::new(EndSessionFailer).with_session_repo(repo.clone());
+        let request = serde_json::from_value(serde_json::json!({
+            "agent": "assistant",
+            "resources": [{
+                "type": "file",
+                "file_id": "immutable-file",
+                "mount_path": "/input.txt"
+            }]
+        }))
+        .unwrap();
         let id = state
-            .create_session(bare_create_params(), None)
+            .create_session(request, None)
             .await
             .expect("create")
             .id;
@@ -577,6 +617,14 @@ mod tests {
             matches!(state.get_session(&id), Err(StateError::NotFound)),
             "the session is gone even though its sandbox dispose errored"
         );
+        let durable = repo.get(&id).await.unwrap();
+        assert_eq!(durable.status, "deleted");
+        assert_eq!(
+            durable.resources.activations[0].state,
+            awaken_session_contract::ActivationState::Releasing,
+            "cleanup failure stays durable for ResourceReclaimer"
+        );
+        assert_eq!(repo.pending_resource_sessions().await, vec![durable]);
     }
 
     fn sample_persisted(id: &str) -> PersistedSession {
@@ -655,7 +703,7 @@ mod tests {
         let runtime = RehydrateFake::default();
         let restored = runtime.restored.clone();
         let order = runtime.order.clone();
-        let restarted = ManagedState::new(runtime).with_session_repo(repo);
+        let restarted = ManagedState::new(runtime).with_session_repo(repo.clone());
         restarted.ensure_session("sesn_1").await.expect("rehydrate");
         let session = restarted
             .get_session("sesn_1")
@@ -680,6 +728,68 @@ mod tests {
             &["resources", "history"],
             "the frozen manifest must be installed before opening runtime history"
         );
+        let durable = repo.get("sesn_1").await.unwrap();
+        assert_eq!(durable.resources.activations.len(), 1);
+        assert_eq!(
+            durable.resources.activations[0].state,
+            awaken_session_contract::ActivationState::Active,
+            "the first recovery adopts a durable activation record for a legacy manifest"
+        );
+    }
+
+    #[tokio::test]
+    async fn ensure_session_retries_and_commits_a_crash_interrupted_activation() {
+        let repo: Arc<dyn ManagedSessionRepository> =
+            Arc::new(InMemorySessionRepository::default());
+        let mut pending = sample_persisted("sesn_pending");
+        let desired = pending.resources.active.clone();
+        pending.resources = Default::default();
+        pending
+            .resources
+            .prepare("sesn_pending", desired.clone())
+            .unwrap();
+        pending.resources.start_attempt().unwrap();
+        repo.save(pending).await;
+
+        let runtime = RehydrateFake::default();
+        let restored = runtime.restored.clone();
+        let restarted = ManagedState::new(runtime).with_session_repo(repo.clone());
+        restarted
+            .ensure_session("sesn_pending")
+            .await
+            .expect("recover pending activation");
+
+        assert_eq!(restored.lock().unwrap().len(), 1);
+        assert_eq!(restored.lock().unwrap()[0].2, desired);
+        let durable = repo.get("sesn_pending").await.unwrap();
+        assert!(durable.resources.pending.is_none());
+        assert_eq!(durable.resources.active, desired);
+        assert_eq!(durable.resources.activations[0].attempts, 2);
+        assert_eq!(
+            durable.resources.activations[0].state,
+            awaken_session_contract::ActivationState::Active
+        );
+    }
+
+    #[tokio::test]
+    async fn resource_reclaimer_finishes_terminal_release_after_restart() {
+        let repo: Arc<dyn ManagedSessionRepository> =
+            Arc::new(InMemorySessionRepository::default());
+        let mut deleted = sample_persisted("sesn_deleted");
+        deleted.status = "deleted".into();
+        deleted.resources.adopt_legacy_active("sesn_deleted");
+        deleted.resources.begin_release().unwrap();
+        repo.save_owned("workspace-a", deleted).await;
+
+        let restarted = ManagedState::new(RehydrateFake::default()).with_session_repo(repo.clone());
+        assert_eq!(restarted.reconcile_resource_activations().await, 1);
+        let durable = repo.get("sesn_deleted").await.unwrap();
+        assert_eq!(durable.status, "deleted");
+        assert_eq!(
+            durable.resources.activations[0].state,
+            awaken_session_contract::ActivationState::Released
+        );
+        assert!(repo.pending_resource_sessions().await.is_empty());
     }
 
     #[tokio::test]
@@ -716,6 +826,19 @@ mod tests {
             )
             .await
             .expect("update");
+        let after_update = repo.get(&id).await.unwrap();
+        assert_eq!(after_update.resources.revision, 3);
+        assert_eq!(
+            after_update
+                .resources
+                .activations
+                .iter()
+                .filter(|activation| {
+                    activation.state == awaken_session_contract::ActivationState::Active
+                })
+                .count(),
+            1
+        );
 
         let restarted = ManagedState::new(RehydrateFake::default())
             .with_session_repo(repo.clone())
@@ -730,6 +853,16 @@ mod tests {
             .delete_resource(&id, &resource_id)
             .await
             .expect("detach");
+        let after_delete = repo.get(&id).await.unwrap();
+        assert_eq!(after_delete.resources.revision, 4);
+        assert!(
+            after_delete
+                .resources
+                .activations
+                .iter()
+                .all(|activation| activation.state
+                    != awaken_session_contract::ActivationState::Active)
+        );
         let second_restart = ManagedState::new(RehydrateFake::default())
             .with_session_repo(repo)
             .with_resource_catalog(catalog);

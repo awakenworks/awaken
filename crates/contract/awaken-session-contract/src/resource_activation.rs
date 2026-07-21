@@ -226,6 +226,33 @@ impl SessionResourceState {
         }
     }
 
+    /// A terminal Session was torn down while a replacement was pending. The
+    /// previous generation is released and the never-committed generation is
+    /// failed; no manifest becomes newly active after termination.
+    pub fn complete_terminal_release(&mut self, reason: impl Into<String>) {
+        self.pending = None;
+        let reason = reason.into();
+        for activation in &mut self.activations {
+            match activation.state {
+                ActivationState::Prepared => {
+                    activation.state = ActivationState::Failed;
+                    activation.last_error = Some(reason.clone());
+                }
+                ActivationState::Active | ActivationState::Releasing => {
+                    activation.state = ActivationState::Released;
+                }
+                ActivationState::Released | ActivationState::Failed => {}
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn has_active(&self) -> bool {
+        self.activations
+            .iter()
+            .any(|activation| activation.state == ActivationState::Active)
+    }
+
     #[must_use]
     pub fn needs_reconciliation(&self) -> bool {
         self.pending.is_some()
