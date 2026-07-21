@@ -71,9 +71,28 @@ pub(crate) fn agent_run_sandbox_spec(thread: &str) -> pc::SandboxSpec {
 pub(crate) struct StagedResources {
     pub mounts: Vec<pc::MountRequirement>,
     pub prompts: Vec<String>,
+    /// Resource-domain liveness checks repeated at each Session operation. These
+    /// carry only Workspace-owned resource identity and frozen config versions;
+    /// authorization was completed before staging.
+    pub binding_checks: Vec<ResourceBindingCheck>,
     /// Mutable Repository inputs, realized after the environment is created (not a
     /// byte mount). The plan is secret-free; its transport credential is transient.
     pub repositories: Vec<RepositoryActivation>,
+}
+
+#[derive(Clone)]
+pub(crate) enum ResourceBindingCheck {
+    File {
+        file_id: String,
+    },
+    MemoryStore {
+        memory_store_id: String,
+        config_version: awaken_protocol_managed::resource_plane::ConfigVersion,
+    },
+    Repository {
+        repository_id: String,
+        config_version: awaken_protocol_managed::resource_plane::ConfigVersion,
+    },
 }
 
 /// Runtime-only activation material for one already-resolved Repository config.
@@ -575,6 +594,7 @@ mod provisioning_registry_tests {
             StagedResources {
                 mounts: vec![resource_mount("a.md"), resource_mount("b.md")],
                 prompts: vec!["first".into()],
+                binding_checks: Vec::new(),
                 repositories: vec![repository_activation("repo-a")],
             },
         );
@@ -584,6 +604,7 @@ mod provisioning_registry_tests {
             StagedResources {
                 mounts: vec![resource_mount("c.md")],
                 prompts: vec!["second".into()],
+                binding_checks: Vec::new(),
                 repositories: Vec::new(),
             },
         );

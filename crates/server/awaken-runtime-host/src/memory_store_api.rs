@@ -183,7 +183,9 @@ fn catalog_error(error: ResourceCatalogError) -> axum::response::Response {
         ResourceCatalogError::AlreadyExists(_) | ResourceCatalogError::ConfigConflict { .. } => {
             StatusCode::CONFLICT
         }
-        ResourceCatalogError::NotFound(_) => StatusCode::NOT_FOUND,
+        ResourceCatalogError::NotFound(_) | ResourceCatalogError::ConfigNotFound { .. } => {
+            StatusCode::NOT_FOUND
+        }
         ResourceCatalogError::NotActive { .. } => StatusCode::CONFLICT,
         ResourceCatalogError::Invalid(_) => StatusCode::BAD_REQUEST,
         ResourceCatalogError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,

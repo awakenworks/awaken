@@ -34,56 +34,37 @@ fn bind_test_memory(host: &SharedHost, thread: &str, store_id: &str, writable: b
         Some(Arc::new(host.memory.bind(
             "default",
             handle,
-            Arc::new(TestResourceConfigSource),
+            Arc::new(TestResourceBindingValidator),
             &config,
             writable,
         ))),
     );
 }
 
-struct TestResourceConfigSource;
+struct TestResourceBindingValidator;
 
-impl awaken_resource_contract::ResourceConfigSource for TestResourceConfigSource {
-    fn resolve_memory_store(
+impl awaken_resource_contract::ResourceBindingValidator for TestResourceBindingValidator {
+    fn validate_memory_binding(
         &self,
-        workspace_id: &str,
-        id: &str,
-    ) -> Result<
-        awaken_resource_contract::MemoryStoreConfigVersion,
-        awaken_resource_contract::ResourceCatalogError,
-    > {
-        let _ = workspace_id;
-        Ok(awaken_resource_contract::MemoryStoreConfigVersion {
-            memory_store_id: id.into(),
-            version: awaken_resource_contract::ConfigVersion::INITIAL,
-            recall_policy: Default::default(),
-            extraction_policy: Default::default(),
-            retention_policy: Default::default(),
-        })
+        _workspace_id: &str,
+        _id: &str,
+        _version: awaken_resource_contract::ConfigVersion,
+    ) -> Result<(), awaken_resource_contract::ResourceCatalogError> {
+        Ok(())
     }
 
-    fn resolve_repository(
+    fn validate_repository_binding(
         &self,
-        workspace_id: &str,
-        id: &str,
-    ) -> Result<
-        awaken_resource_contract::RepositoryConfigVersion,
-        awaken_resource_contract::ResourceCatalogError,
-    > {
-        let _ = workspace_id;
-        Ok(awaken_resource_contract::RepositoryConfigVersion {
-            repository_id: id.into(),
-            version: awaken_resource_contract::ConfigVersion::INITIAL,
-            remote_url: "https://unused.example/repo.git".into(),
-            credential_binding: None,
-            initial_branch: None,
-            clone_policy: Default::default(),
-        })
+        _workspace_id: &str,
+        _id: &str,
+        _version: awaken_resource_contract::ConfigVersion,
+    ) -> Result<(), awaken_resource_contract::ResourceCatalogError> {
+        Ok(())
     }
 }
 
 fn managed_with_resource_source(host: Arc<SharedHost>) -> crate::ManagedHost {
-    crate::ManagedHost::new(host).with_resource_configs(Arc::new(TestResourceConfigSource))
+    crate::ManagedHost::new(host).with_resource_validator(Arc::new(TestResourceBindingValidator))
 }
 
 fn effective_resources(
@@ -1409,7 +1390,7 @@ async fn activation_applies_current_resource_state_as_a_deny_only_overlay() {
     catalog
         .set_memory_state(host.local_workspace(), &store_id, ResourceState::Suspended)
         .unwrap();
-    let managed = crate::ManagedHost::new(host.clone()).with_resource_configs(catalog);
+    let managed = crate::ManagedHost::new(host.clone()).with_resource_validator(catalog.clone());
     let mut init = bare_session("a", host.local_workspace());
     init.resources = manifest;
 
@@ -1453,11 +1434,11 @@ async fn memory_activation_enforces_catalog_workspace_without_iam_policy_logic()
             },
         )
         .unwrap();
-    let managed = crate::ManagedHost::new(host.clone()).with_resource_configs(catalog);
+    let managed = crate::ManagedHost::new(host.clone()).with_resource_validator(catalog);
     let mut init = bare_session("agent", "workspace-b");
     init.resources = effective_resources(vec![TestInput {
         kind: "memory_store".into(),
-        id: store_id,
+        id: store_id.clone(),
         mount_path: "/memory".into(),
         access: ResourceAccess::ReadWrite,
         instructions: None,
@@ -1955,7 +1936,7 @@ async fn runtime_stages_exactly_the_effective_resource_list() {
 async fn a_bound_resource_with_a_missing_backing_store_fails_the_session_closed() {
     use awaken_protocol_managed::SessionRuntime;
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
-    let managed = crate::ManagedHost::new(host.clone()).with_resource_configs(Arc::new(
+    let managed = crate::ManagedHost::new(host.clone()).with_resource_validator(Arc::new(
         awaken_config_resolver::InMemoryResourceCatalog::new(),
     ));
     let mut init = bare_session("a", host.local_workspace());
@@ -1973,6 +1954,101 @@ async fn a_bound_resource_with_a_missing_backing_store_fails_the_session_closed(
         result.is_err(),
         "a binding to a missing backing store must fail closed, not mount empty"
     );
+}
+
+#[tokio::test]
+async fn activation_validates_the_frozen_config_without_selecting_current_again() {
+    use awaken_protocol_managed::{ResolvedInputSource, SessionRuntime};
+    use awaken_resource_contract::{
+        ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, ResourceCatalog,
+        ResourceState,
+    };
+
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let workspace = host.local_workspace().to_string();
+    let store_id = test_memory_store_id();
+    let catalog = Arc::new(awaken_config_resolver::InMemoryResourceCatalog::new());
+    catalog
+        .create_memory_store(
+            MemoryStoreDefinition {
+                id: store_id.clone(),
+                workspace_id: workspace.clone(),
+                name: "memory".into(),
+                description: String::new(),
+                metadata: Default::default(),
+                state: ResourceState::Active,
+                current_config_version: ConfigVersion::INITIAL,
+            },
+            MemoryStoreConfigVersion {
+                memory_store_id: store_id.clone(),
+                version: ConfigVersion::INITIAL,
+                recall_policy: Default::default(),
+                extraction_policy: Default::default(),
+                retention_policy: Default::default(),
+            },
+        )
+        .unwrap();
+    catalog
+        .publish_memory_config(
+            &workspace,
+            ConfigVersion::INITIAL,
+            MemoryStoreConfigVersion {
+                memory_store_id: store_id.clone(),
+                version: ConfigVersion(2),
+                recall_policy: Default::default(),
+                extraction_policy: Default::default(),
+                retention_policy: Default::default(),
+            },
+        )
+        .unwrap();
+
+    let manifest = effective_resources(vec![TestInput {
+        kind: "memory_store".into(),
+        id: store_id.clone(),
+        mount_path: "/mnt/memory".into(),
+        access: ResourceAccess::ReadOnly,
+        instructions: None,
+        initial_branch: None,
+    }]);
+    let managed = crate::ManagedHost::new(host.clone()).with_resource_validator(catalog.clone());
+    let mut valid = bare_session("a", &workspace);
+    valid.resources = manifest.clone();
+    managed
+        .prepare_session("frozen-v1", valid)
+        .await
+        .expect("v1 remains valid after current advances to v2");
+
+    let mut missing = manifest;
+    let ResolvedInputSource::MemoryStore { config, .. } = &mut missing.inputs[0].source else {
+        panic!("expected MemoryStore input");
+    };
+    config.version = ConfigVersion(3);
+    let mut invalid = bare_session("a", &workspace);
+    invalid.resources = missing;
+    let error = managed
+        .prepare_session("missing-v3", invalid)
+        .await
+        .expect_err("an absent frozen config must fail closed");
+    assert!(error.message.contains("config version"));
+    assert!(host.sandbox_spec("missing-v3").mounts.is_empty());
+
+    catalog
+        .set_memory_state(&workspace, &store_id, ResourceState::Archived)
+        .unwrap();
+    let error = match managed
+        .run(
+            "a",
+            "frozen-v1",
+            vec![ContentBlock::Text {
+                text: "must not reach the model".into(),
+            }],
+        )
+        .await
+    {
+        Err(error) => error,
+        Ok(_) => panic!("live lifecycle state must deny a later operation"),
+    };
+    assert!(error.message.contains("not active"));
 }
 
 /// G5 — the effective resource reference crosses the node boundary, so a worker needs

@@ -313,7 +313,7 @@ pub struct BoundMemory {
     runtime: Arc<MemoryRuntime>,
     store: Arc<dyn MemoryStoreHandle>,
     platform: Arc<PlatformMemoryHandle>,
-    resource_configs: Arc<dyn awaken_protocol_managed::resource_plane::ResourceConfigSource>,
+    resource_validator: Arc<dyn awaken_protocol_managed::resource_plane::ResourceBindingValidator>,
     workspace_id: String,
     memory_store_id: String,
     memory_config_version: u64,
@@ -349,7 +349,9 @@ impl MemoryRuntime {
         self: &Arc<Self>,
         workspace_id: impl Into<String>,
         platform: Arc<PlatformMemoryHandle>,
-        resource_configs: Arc<dyn awaken_protocol_managed::resource_plane::ResourceConfigSource>,
+        resource_validator: Arc<
+            dyn awaken_protocol_managed::resource_plane::ResourceBindingValidator,
+        >,
         config: &awaken_protocol_managed::resource_plane::MemoryStoreConfigVersion,
         writable: bool,
     ) -> BoundMemory {
@@ -363,7 +365,7 @@ impl MemoryRuntime {
             runtime: self.clone(),
             store: platform.clone(),
             platform,
-            resource_configs,
+            resource_validator,
             workspace_id: workspace_id.into(),
             memory_store_id: config.memory_store_id.clone(),
             memory_config_version: config.version.0,
@@ -447,9 +449,12 @@ impl BoundMemory {
     }
 
     fn validate_live_resource(&self) -> Result<(), String> {
-        self.resource_configs
-            .resolve_memory_store(&self.workspace_id, &self.memory_store_id)
-            .map(|_| ())
+        self.resource_validator
+            .validate_memory_binding(
+                &self.workspace_id,
+                &self.memory_store_id,
+                awaken_protocol_managed::resource_plane::ConfigVersion(self.memory_config_version),
+            )
             .map_err(|error| error.to_string())
     }
 
@@ -744,15 +749,29 @@ impl BoundMemory {
         self.platform.plan_mutations(capture.take()).await
     }
 
-    /// The memory store (shared with the recall plugin, which reads it at
-    /// `BeforeInference`).
+    /// A live-validating Memory handle shared with the recall plugin. Returning
+    /// the underlying data-plane handle would let an already-bound Session bypass
+    /// a later suspend/archive transition.
     pub fn store(&self) -> Arc<dyn MemoryStoreHandle> {
-        self.store.clone()
+        Arc::new(self.clone())
     }
 
     /// The recall bounds (shared with the recall plugin).
     pub fn bounds(&self) -> RecallBounds {
         self.bounds.clone()
+    }
+}
+
+#[async_trait]
+impl MemoryStoreHandle for BoundMemory {
+    async fn write(&self, name: &str, content: &str) -> Result<String, String> {
+        self.validate_live_resource()?;
+        self.store.write(name, content).await
+    }
+
+    async fn entries(&self) -> Result<Vec<awaken_ext_memory::Entry>, String> {
+        self.validate_live_resource()?;
+        self.store.entries().await
     }
 }
 
@@ -833,13 +852,15 @@ impl crate::host::SharedHost {
         workspace_id: &str,
         config: &awaken_protocol_managed::resource_plane::MemoryStoreConfigVersion,
         access: awaken_protocol_managed::resource_plane::ResourceAccess,
-        resource_configs: Arc<dyn awaken_protocol_managed::resource_plane::ResourceConfigSource>,
+        resource_validator: Arc<
+            dyn awaken_protocol_managed::resource_plane::ResourceBindingValidator,
+        >,
     ) {
         let writable = access == awaken_protocol_managed::resource_plane::ResourceAccess::ReadWrite;
         let handle = self.platform_memory_handle(config.memory_store_id.clone(), writable);
         let bound = self
             .memory
-            .bind(workspace_id, handle, resource_configs, config, writable);
+            .bind(workspace_id, handle, resource_validator, config, writable);
         self.register_thread_memory(thread, Some(Arc::new(bound)));
     }
 
@@ -950,46 +971,34 @@ mod tests {
         let bound = runtime.bind(
             "ws-test",
             platform,
-            Arc::new(TestResourceConfigs),
+            Arc::new(TestResourceBindingValidator),
             &config,
             true,
         );
         (runtime, bound, repository, extractions)
     }
 
-    struct TestResourceConfigs;
+    struct TestResourceBindingValidator;
 
-    impl awaken_protocol_managed::resource_plane::ResourceConfigSource for TestResourceConfigs {
-        fn resolve_memory_store(
-            &self,
-            workspace_id: &str,
-            id: &str,
-        ) -> Result<
-            awaken_protocol_managed::resource_plane::MemoryStoreConfigVersion,
-            awaken_protocol_managed::resource_plane::ResourceCatalogError,
-        > {
-            use awaken_protocol_managed::resource_plane::{
-                ConfigVersion, MemoryStoreConfigVersion,
-            };
-            let _ = workspace_id;
-            Ok(MemoryStoreConfigVersion {
-                memory_store_id: id.into(),
-                version: ConfigVersion::INITIAL,
-                recall_policy: Default::default(),
-                extraction_policy: Default::default(),
-                retention_policy: Default::default(),
-            })
-        }
-
-        fn resolve_repository(
+    impl awaken_protocol_managed::resource_plane::ResourceBindingValidator
+        for TestResourceBindingValidator
+    {
+        fn validate_memory_binding(
             &self,
             _workspace_id: &str,
-            id: &str,
-        ) -> Result<
-            awaken_protocol_managed::resource_plane::RepositoryConfigVersion,
-            awaken_protocol_managed::resource_plane::ResourceCatalogError,
-        > {
-            Err(awaken_protocol_managed::resource_plane::ResourceCatalogError::NotFound(id.into()))
+            _id: &str,
+            _version: awaken_protocol_managed::resource_plane::ConfigVersion,
+        ) -> Result<(), awaken_protocol_managed::resource_plane::ResourceCatalogError> {
+            Ok(())
+        }
+
+        fn validate_repository_binding(
+            &self,
+            _workspace_id: &str,
+            _id: &str,
+            _version: awaken_protocol_managed::resource_plane::ConfigVersion,
+        ) -> Result<(), awaken_protocol_managed::resource_plane::ResourceCatalogError> {
+            Ok(())
         }
     }
 

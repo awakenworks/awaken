@@ -35,6 +35,21 @@ async function main() {
     assert.ok(session.id.startsWith('sesn_'), `session with resources: ${session.id}`);
     pass('session created with file + memory_store resources mounted');
 
+    // The Session froze config v1. Move the catalog's current pointer to v2
+    // before use: activation/use must validate v1, never re-resolve and substitute
+    // v2 into the already-created Session.
+    const configUpdate = await fetch(`${base}/v1/memory_stores/${mem.id}/config`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        expected_config_version: 1,
+        recall_policy: { enabled: false, max_results: 1 },
+        extraction_policy: { enabled: false },
+      }),
+    });
+    assert.equal(configUpdate.status, 200, await configUpdate.text());
+    pass('catalog advanced to config v2 after the Session froze v1');
+
     // A turn runs over the mounted session (the sandbox is realized).
     await client.beta.sessions.events.send(session.id, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'work with the files' }] }],
@@ -43,7 +58,28 @@ async function main() {
     const events = [];
     for await (const ev of client.beta.sessions.events.list(session.id, { betas: BETAS })) events.push(ev.type);
     assert.ok(events.includes('agent.message'), `the turn ran with resources mounted: ${events}`);
-    pass('a turn ran over a session with mounted file + memory_store resources');
+    pass('the v1 Session still ran after current config advanced to v2');
+
+    // Lifecycle state is deliberately live. Archiving the store must deny the
+    // next use even though the immutable v1 config still exists.
+    await client.beta.memoryStores.archive(mem.id, { betas: BETAS });
+    const agentMessagesBeforeDeny = events.filter((type) => type === 'agent.message').length;
+    await assert.rejects(
+      () =>
+        client.beta.sessions.events.send(session.id, {
+          events: [{ type: 'user.message', content: [{ type: 'text', text: 'try archived memory' }] }],
+          betas: BETAS,
+        }),
+      (error) => error.status === 400 && error.error?.error?.message?.includes('not active'),
+    );
+    const afterArchive = [];
+    for await (const ev of client.beta.sessions.events.list(session.id, { betas: BETAS })) afterArchive.push(ev);
+    assert.equal(
+      afterArchive.filter((ev) => ev.type === 'agent.message').length,
+      agentMessagesBeforeDeny,
+      'the denied turn never reaches the model',
+    );
+    pass('live lifecycle state denied reuse without changing the frozen config');
 
     // A missing file reference fails the mount closed.
     const bad = await fetch(`${base}/v1/sessions`, {

@@ -5,12 +5,16 @@ use std::collections::BTreeMap;
 
 use awaken_resource_contract::{
     ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, RepositoryConfigVersion,
-    RepositoryDefinition, ResourceCatalog, ResourceCatalogError, ResourceConfigSource,
-    ResourceState,
+    RepositoryDefinition, ResourceBindingValidator, ResourceCatalog, ResourceCatalogError,
+    ResourceConfigSource, ResourceState,
 };
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
+use crate::resource_catalog_validation::{
+    validate_initial, validate_live_definition, validate_memory_config, validate_publish,
+    validate_repository_config,
+};
 use crate::sqlite::{NS, SqliteAdminStore};
 
 const MEMORY: &str = "memory_store";
@@ -47,54 +51,6 @@ struct RepositoryRecord {
 
 fn storage(error: impl ToString) -> ResourceCatalogError {
     ResourceCatalogError::Storage(error.to_string())
-}
-
-fn validate_initial(
-    id: &str,
-    workspace_id: &str,
-    current: ConfigVersion,
-    config_id: &str,
-    config_version: ConfigVersion,
-) -> Result<(), ResourceCatalogError> {
-    if id.trim().is_empty() || workspace_id.trim().is_empty() {
-        return Err(ResourceCatalogError::Invalid(
-            "resource id and workspace id must be non-empty".into(),
-        ));
-    }
-    if id != config_id
-        || current != ConfigVersion::INITIAL
-        || config_version != ConfigVersion::INITIAL
-    {
-        return Err(ResourceCatalogError::Invalid(
-            "initial resource definition/config must agree at version 1".into(),
-        ));
-    }
-    Ok(())
-}
-
-fn validate_publish(
-    id: &str,
-    current: ConfigVersion,
-    expected: ConfigVersion,
-    next: ConfigVersion,
-) -> Result<(), ResourceCatalogError> {
-    if current != expected {
-        return Err(ResourceCatalogError::ConfigConflict {
-            id: id.into(),
-            expected,
-            current,
-        });
-    }
-    let required = current.checked_next().ok_or_else(|| {
-        ResourceCatalogError::Invalid(format!("resource `{id}` exhausted config versions"))
-    })?;
-    if next != required {
-        return Err(ResourceCatalogError::Invalid(format!(
-            "resource `{id}` config version must advance from {} to {}",
-            current.0, required.0
-        )));
-    }
-    Ok(())
 }
 
 impl SqliteAdminStore {
@@ -236,21 +192,14 @@ impl ResourceConfigSource for SqliteAdminStore {
             .catalog_record::<MemoryRecord>(MEMORY, id)
             .filter(|record| record.definition.workspace_id == workspace_id)
             .ok_or_else(|| ResourceCatalogError::NotFound(id.into()))?;
-        if record.definition.state != ResourceState::Active {
-            return Err(ResourceCatalogError::NotActive {
-                id: id.into(),
-                state: record.definition.state,
-            });
-        }
-        let config = record
-            .configs
-            .get(&record.definition.current_config_version)
-            .cloned()
-            .ok_or_else(|| {
-                ResourceCatalogError::Storage(format!(
-                    "MemoryStore `{id}` current config version is missing"
-                ))
-            })?;
+        validate_live_definition(id, record.definition.state)?;
+        let version = record.definition.current_config_version;
+        let config = record.configs.get(&version).cloned().ok_or_else(|| {
+            ResourceCatalogError::Storage(format!(
+                "MemoryStore `{id}` current config version is missing"
+            ))
+        })?;
+        validate_memory_config(id, version, &config)?;
         Ok(config)
     }
 
@@ -263,22 +212,61 @@ impl ResourceConfigSource for SqliteAdminStore {
             .catalog_record::<RepositoryRecord>(REPOSITORY, id)
             .filter(|record| record.definition.workspace_id == workspace_id)
             .ok_or_else(|| ResourceCatalogError::NotFound(id.into()))?;
-        if record.definition.state != ResourceState::Active {
-            return Err(ResourceCatalogError::NotActive {
-                id: id.into(),
-                state: record.definition.state,
-            });
-        }
-        let config = record
-            .configs
-            .get(&record.definition.current_config_version)
-            .cloned()
-            .ok_or_else(|| {
-                ResourceCatalogError::Storage(format!(
-                    "Repository `{id}` current config version is missing"
-                ))
-            })?;
+        validate_live_definition(id, record.definition.state)?;
+        let version = record.definition.current_config_version;
+        let config = record.configs.get(&version).cloned().ok_or_else(|| {
+            ResourceCatalogError::Storage(format!(
+                "Repository `{id}` current config version is missing"
+            ))
+        })?;
+        validate_repository_config(id, version, &config)?;
         Ok(config)
+    }
+}
+
+impl ResourceBindingValidator for SqliteAdminStore {
+    fn validate_memory_binding(
+        &self,
+        workspace_id: &str,
+        id: &str,
+        version: ConfigVersion,
+    ) -> Result<(), ResourceCatalogError> {
+        let record = self
+            .catalog_record::<MemoryRecord>(MEMORY, id)
+            .filter(|record| record.definition.workspace_id == workspace_id)
+            .ok_or_else(|| ResourceCatalogError::NotFound(id.into()))?;
+        validate_live_definition(id, record.definition.state)?;
+        let config =
+            record
+                .configs
+                .get(&version)
+                .ok_or_else(|| ResourceCatalogError::ConfigNotFound {
+                    id: id.into(),
+                    version,
+                })?;
+        validate_memory_config(id, version, config)
+    }
+
+    fn validate_repository_binding(
+        &self,
+        workspace_id: &str,
+        id: &str,
+        version: ConfigVersion,
+    ) -> Result<(), ResourceCatalogError> {
+        let record = self
+            .catalog_record::<RepositoryRecord>(REPOSITORY, id)
+            .filter(|record| record.definition.workspace_id == workspace_id)
+            .ok_or_else(|| ResourceCatalogError::NotFound(id.into()))?;
+        validate_live_definition(id, record.definition.state)?;
+        let config =
+            record
+                .configs
+                .get(&version)
+                .ok_or_else(|| ResourceCatalogError::ConfigNotFound {
+                    id: id.into(),
+                    version,
+                })?;
+        validate_repository_config(id, version, config)
     }
 }
 
@@ -599,8 +587,22 @@ mod tests {
                 .memory_config("workspace-a", "memory-1", ConfigVersion(3))
                 .is_none()
         );
+        reopened
+            .validate_memory_binding("workspace-a", "memory-1", ConfigVersion(1))
+            .unwrap();
+        reopened
+            .validate_memory_binding("workspace-a", "memory-1", ConfigVersion(2))
+            .unwrap();
+        assert!(matches!(
+            reopened.validate_memory_binding("workspace-a", "memory-1", ConfigVersion(3)),
+            Err(ResourceCatalogError::ConfigNotFound { .. })
+        ));
         assert!(matches!(
             reopened.resolve_repository("workspace-a", "repo-1"),
+            Err(ResourceCatalogError::NotActive { .. })
+        ));
+        assert!(matches!(
+            reopened.validate_repository_binding("workspace-a", "repo-1", ConfigVersion::INITIAL),
             Err(ResourceCatalogError::NotActive { .. })
         ));
         assert!(reopened.repository("workspace-b", "repo-1").is_none());

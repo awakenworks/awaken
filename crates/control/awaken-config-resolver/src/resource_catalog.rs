@@ -5,8 +5,8 @@ use std::sync::Mutex;
 
 use awaken_resource_contract::{
     ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, RepositoryConfigVersion,
-    RepositoryDefinition, ResourceCatalog, ResourceCatalogError, ResourceConfigSource,
-    ResourceState,
+    RepositoryDefinition, ResourceBindingValidator, ResourceCatalog, ResourceCatalogError,
+    ResourceConfigSource, ResourceState,
 };
 
 #[derive(Default)]
@@ -89,6 +89,11 @@ impl ResourceConfigSource for InMemoryResourceCatalog {
                     "MemoryStore `{id}` current config version is missing"
                 ))
             })?;
+        if config.memory_store_id != id || config.version != definition.current_config_version {
+            return Err(ResourceCatalogError::Storage(format!(
+                "MemoryStore `{id}` current config version is corrupt"
+            )));
+        }
         Ok(config)
     }
 
@@ -119,7 +124,82 @@ impl ResourceConfigSource for InMemoryResourceCatalog {
                     "Repository `{id}` current config version is missing"
                 ))
             })?;
+        if config.repository_id != id || config.version != definition.current_config_version {
+            return Err(ResourceCatalogError::Storage(format!(
+                "Repository `{id}` current config version is corrupt"
+            )));
+        }
         Ok(config)
+    }
+}
+
+impl ResourceBindingValidator for InMemoryResourceCatalog {
+    fn validate_memory_binding(
+        &self,
+        workspace_id: &str,
+        id: &str,
+        version: ConfigVersion,
+    ) -> Result<(), ResourceCatalogError> {
+        let state = self.0.lock().expect("resource catalog");
+        let definition = state
+            .memories
+            .get(id)
+            .filter(|definition| definition.workspace_id == workspace_id)
+            .ok_or_else(|| ResourceCatalogError::NotFound(id.into()))?;
+        if definition.state != ResourceState::Active {
+            return Err(ResourceCatalogError::NotActive {
+                id: id.into(),
+                state: definition.state,
+            });
+        }
+        let config = state
+            .memory_configs
+            .get(&(id.into(), version))
+            .ok_or_else(|| ResourceCatalogError::ConfigNotFound {
+                id: id.into(),
+                version,
+            })?;
+        if config.memory_store_id != id || config.version != version {
+            return Err(ResourceCatalogError::Storage(format!(
+                "MemoryStore `{id}` config version {} is corrupt",
+                version.0
+            )));
+        }
+        Ok(())
+    }
+
+    fn validate_repository_binding(
+        &self,
+        workspace_id: &str,
+        id: &str,
+        version: ConfigVersion,
+    ) -> Result<(), ResourceCatalogError> {
+        let state = self.0.lock().expect("resource catalog");
+        let definition = state
+            .repositories
+            .get(id)
+            .filter(|definition| definition.workspace_id == workspace_id)
+            .ok_or_else(|| ResourceCatalogError::NotFound(id.into()))?;
+        if definition.state != ResourceState::Active {
+            return Err(ResourceCatalogError::NotActive {
+                id: id.into(),
+                state: definition.state,
+            });
+        }
+        let config = state
+            .repository_configs
+            .get(&(id.into(), version))
+            .ok_or_else(|| ResourceCatalogError::ConfigNotFound {
+                id: id.into(),
+                version,
+            })?;
+        if config.repository_id != id || config.version != version {
+            return Err(ResourceCatalogError::Storage(format!(
+                "Repository `{id}` config version {} is corrupt",
+                version.0
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -434,6 +514,16 @@ mod tests {
                 .version,
             ConfigVersion(1)
         );
+        catalog
+            .validate_memory_binding("workspace-a", "memory-1", ConfigVersion(1))
+            .unwrap();
+        catalog
+            .validate_memory_binding("workspace-a", "memory-1", ConfigVersion(2))
+            .unwrap();
+        assert!(matches!(
+            catalog.validate_memory_binding("workspace-a", "memory-1", ConfigVersion(3)),
+            Err(ResourceCatalogError::ConfigNotFound { .. })
+        ));
     }
 
     #[test]
@@ -507,6 +597,16 @@ mod tests {
         let resolved = catalog.resolve_repository("workspace-a", "repo-1").unwrap();
         assert_eq!(resolved.version, ConfigVersion(2));
         assert_eq!(resolved.remote_url, "https://example.test/two.git");
+        catalog
+            .validate_repository_binding("workspace-a", "repo-1", ConfigVersion(1))
+            .unwrap();
+        catalog
+            .validate_repository_binding("workspace-a", "repo-1", ConfigVersion(2))
+            .unwrap();
+        assert!(matches!(
+            catalog.validate_repository_binding("workspace-b", "repo-1", ConfigVersion(1)),
+            Err(ResourceCatalogError::NotFound(_))
+        ));
     }
 
     #[test]

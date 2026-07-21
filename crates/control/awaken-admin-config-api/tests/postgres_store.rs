@@ -15,8 +15,8 @@ use awaken_config_resolver::{
 use awaken_credential_vault::CredentialBinding;
 use awaken_resource_contract::{
     ClonePolicy, ConfigVersion, ExtractionPolicy, MemoryStoreConfigVersion, MemoryStoreDefinition,
-    RecallPolicy, RepositoryConfigVersion, RepositoryDefinition, ResourceCatalog,
-    ResourceCatalogError, ResourceConfigSource, ResourceState, RetentionPolicy,
+    RecallPolicy, RepositoryConfigVersion, RepositoryDefinition, ResourceBindingValidator,
+    ResourceCatalog, ResourceCatalogError, ResourceConfigSource, ResourceState, RetentionPolicy,
 };
 use sqlx::Executor;
 use sqlx::postgres::PgPool;
@@ -210,6 +210,16 @@ async fn postgres_admin_store_serves_every_port() {
             .version,
         ConfigVersion(2)
     );
+    store
+        .validate_memory_binding("ws", "memory-1", ConfigVersion(1))
+        .unwrap();
+    store
+        .validate_memory_binding("ws", "memory-1", ConfigVersion(2))
+        .unwrap();
+    assert!(matches!(
+        store.validate_memory_binding("ws", "memory-1", ConfigVersion(3)),
+        Err(ResourceCatalogError::ConfigNotFound { .. })
+    ));
     assert!(store.memory_store("other", "memory-1").is_none());
     let mut updated = store.memory_store("ws", "memory-1").unwrap();
     updated.name = "Renamed".into();
@@ -224,6 +234,10 @@ async fn postgres_admin_store_serves_every_port() {
         .unwrap();
     assert!(matches!(
         store.resolve_repository("ws", "repo-1"),
+        Err(ResourceCatalogError::NotActive { .. })
+    ));
+    assert!(matches!(
+        store.validate_repository_binding("ws", "repo-1", ConfigVersion::INITIAL),
         Err(ResourceCatalogError::NotActive { .. })
     ));
 }

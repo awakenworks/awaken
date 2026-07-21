@@ -111,7 +111,7 @@ pub fn local_managed_state(
     }
     let managed = ManagedState::new(
         ManagedHost::new(host)
-            .with_resource_configs(catalog.clone())
+            .with_resource_validator(catalog.clone())
             .with_mcp(credentials, secrets, mcp_store),
     );
     let managed = match session_repo {

@@ -15,6 +15,7 @@ pub mod openapi;
 pub mod postgres;
 #[cfg(feature = "postgres")]
 mod postgres_resource_catalog;
+mod resource_catalog_validation;
 mod router;
 pub mod schema;
 #[cfg(feature = "sqlite")]

@@ -162,6 +162,14 @@ authorization envelope or duplicate the resource definition into Session state.
 Consequently an API/composition PEP can be embedded locally or backed by a remote
 IAM service without changing the catalog, resolver, or data-plane contracts.
 
+Activation and later Memory writes use the separate `ResourceBindingValidator`.
+It receives the trusted Workspace, resource id, and already-frozen
+`ConfigVersion`; it verifies current ownership/lifecycle plus the existence and
+identity of that exact immutable version, returning no configuration. Runtime
+therefore never calls `resolve_*` a second time and never substitutes the current
+version for the Session pin. This validator is a resource-invariant port, not a
+PEP or PDP: it has no principal, role, API key, policy, or allow/deny decision.
+
 ### D5: Lifecycle stages have explicit component owners
 
 | Stage | Owning component | Responsibility |
@@ -170,7 +178,7 @@ IAM service without changing the catalog, resolver, or data-plane contracts.
 | Bind | Agent configuration service / Managed Session adapter | persist Agent defaults or accept temporary Session attachments; carry identity, mount, access, instructions only |
 | Resolve | `SessionInputResolver` + Skill resource resolver in the Session control plane | merge inputs once; resolve current config/Skill versions; validate paths/collisions; produce secret-free `ResolvedSessionResources` |
 | Authorize | front-door PEP + authorization PDP/PIP | evaluate principal, action, Workspace, target facts, and active policy; return allow/deny/obligations |
-| Activate | `SessionResourceCoordinator` + `SandboxProvider` + per-kind realizer | create activation records; materialize File, open Memory, clone Repo; inject short-lived credentials |
+| Activate | `SessionResourceCoordinator` + `ResourceBindingValidator` + `SandboxProvider` + per-kind realizer | validate the exact frozen config without re-resolving current; create activation records; materialize File, open Memory, clone Repo; inject short-lived credentials |
 | Use | sandbox tools plus `FileStore`, `ScopedMemoryStore`, and Git/MCP adapters | enforce read/write capability and resource-specific consistency during the Session |
 | Release | `SessionResourceCoordinator` + sandbox manager | release handles and credentials, preserve governed outputs, dispose Session-local material |
 | Reclaim | `ResourceReclaimer` + per-kind repository/store | reconcile crashed activations; enforce retention; purge only after references and leases are gone |

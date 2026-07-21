@@ -149,6 +149,8 @@ pub enum ResourceCatalogError {
         expected: ConfigVersion,
         current: ConfigVersion,
     },
+    #[error("resource `{id}` config version {version:?} was not found")]
+    ConfigNotFound { id: String, version: ConfigVersion },
     #[error("invalid resource catalog write: {0}")]
     Invalid(String),
     #[error("resource catalog storage failure: {0}")]
@@ -172,9 +174,31 @@ pub trait ResourceConfigSource: Send + Sync {
     ) -> Result<RepositoryConfigVersion, ResourceCatalogError>;
 }
 
+/// Live resource-invariant check consumed at binding activation and use. This is
+/// intentionally separate from [`ResourceConfigSource`]: a Session selects a
+/// configuration exactly once, while the Runtime only verifies that the trusted
+/// Workspace still owns an active resource and that the frozen version remains
+/// intact. Authorization principals, policies, and decisions stay outside this
+/// port.
+pub trait ResourceBindingValidator: Send + Sync {
+    fn validate_memory_binding(
+        &self,
+        workspace_id: &str,
+        id: &str,
+        version: ConfigVersion,
+    ) -> Result<(), ResourceCatalogError>;
+
+    fn validate_repository_binding(
+        &self,
+        workspace_id: &str,
+        id: &str,
+        version: ConfigVersion,
+    ) -> Result<(), ResourceCatalogError>;
+}
+
 /// Secret-free Resource Catalog application port. Authorization decisions are made
 /// outside this boundary; Workspace ownership and lifecycle are intrinsic invariants.
-pub trait ResourceCatalog: ResourceConfigSource {
+pub trait ResourceCatalog: ResourceConfigSource + ResourceBindingValidator {
     fn create_memory_store(
         &self,
         definition: MemoryStoreDefinition,

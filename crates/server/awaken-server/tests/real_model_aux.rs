@@ -19,8 +19,8 @@ use std::time::Duration;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::RunState;
 use awaken_protocol_managed::resource_plane::{
-    ConfigVersion, MemoryStoreConfigVersion, RepositoryConfigVersion, ResourceAccess,
-    ResourceCatalogError, ResourceConfigSource,
+    ConfigVersion, MemoryStoreConfigVersion, ResourceAccess, ResourceBindingValidator,
+    ResourceCatalogError,
 };
 use awaken_provider_genai::GenaiExecutor;
 use awaken_server::SharedHost;
@@ -40,28 +40,23 @@ fn user(text: &str) -> Vec<Message> {
 
 fn bind_memory(host: &SharedHost, thread: &str, store: &str) {
     struct ActiveMemory;
-    impl ResourceConfigSource for ActiveMemory {
-        fn resolve_memory_store(
-            &self,
-            workspace_id: &str,
-            id: &str,
-        ) -> Result<MemoryStoreConfigVersion, ResourceCatalogError> {
-            let _ = workspace_id;
-            Ok(MemoryStoreConfigVersion {
-                memory_store_id: id.into(),
-                version: ConfigVersion::INITIAL,
-                recall_policy: Default::default(),
-                extraction_policy: Default::default(),
-                retention_policy: Default::default(),
-            })
-        }
-
-        fn resolve_repository(
+    impl ResourceBindingValidator for ActiveMemory {
+        fn validate_memory_binding(
             &self,
             _workspace_id: &str,
-            id: &str,
-        ) -> Result<RepositoryConfigVersion, ResourceCatalogError> {
-            Err(ResourceCatalogError::NotFound(id.into()))
+            _id: &str,
+            _version: ConfigVersion,
+        ) -> Result<(), ResourceCatalogError> {
+            Ok(())
+        }
+
+        fn validate_repository_binding(
+            &self,
+            _workspace_id: &str,
+            _id: &str,
+            _version: ConfigVersion,
+        ) -> Result<(), ResourceCatalogError> {
+            Ok(())
         }
     }
     host.bind_resolved_memory(

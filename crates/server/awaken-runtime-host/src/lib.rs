@@ -233,7 +233,7 @@ pub struct ManagedHost {
     host: Arc<SharedHost>,
     credentials: Option<CredentialInjector>,
     mcp: Option<ManagedMcp>,
-    resource_configs: Option<Arc<dyn awaken_resource_contract::ResourceConfigSource>>,
+    resource_validator: Option<Arc<dyn awaken_resource_contract::ResourceBindingValidator>>,
 }
 
 /// Runtime credential injection. This is independent of MCP and is also consumed
@@ -283,19 +283,20 @@ impl ManagedHost {
             host,
             credentials: None,
             mcp: None,
-            resource_configs: None,
+            resource_validator: None,
         }
     }
 
-    /// Wire the live resource-state/config read port used at activation. The
-    /// pinned config stays authoritative; this lookup only supplies the current
-    /// Workspace ownership and lifecycle deny overlay.
+    /// Wire the live resource-invariant port used at activation and Memory use.
+    /// Configuration was already selected by the Session control plane; this port
+    /// only validates trusted Workspace ownership, lifecycle state, and the frozen
+    /// config version. It does not make an authorization decision.
     #[must_use]
-    pub fn with_resource_configs(
+    pub fn with_resource_validator(
         mut self,
-        source: Arc<dyn awaken_resource_contract::ResourceConfigSource>,
+        validator: Arc<dyn awaken_resource_contract::ResourceBindingValidator>,
     ) -> Self {
-        self.resource_configs = Some(source);
+        self.resource_validator = Some(validator);
         self
     }
 
@@ -364,16 +365,30 @@ impl ManagedHost {
                         lifetime: awaken_provisioning_contract::MountLifetime::PerRun,
                         required: true,
                     });
+                staged
+                    .binding_checks
+                    .push(crate::provisioning::ResourceBindingCheck::File {
+                        file_id: file_id.to_string(),
+                    });
             }
             ResolvedInputSource::MemoryStore {
-                memory_store_id, ..
+                memory_store_id,
+                config,
             } => {
-                let source = self.resource_configs.as_ref().ok_or_else(|| {
-                    RunError::bad_request("memory resources require a configured Resource Catalog")
+                let validator = self.resource_validator.as_ref().ok_or_else(|| {
+                    RunError::bad_request(
+                        "memory resources require a configured resource binding validator",
+                    )
                 })?;
-                source
-                    .resolve_memory_store(workspace, memory_store_id.as_str())
+                validator
+                    .validate_memory_binding(workspace, memory_store_id.as_str(), config.version)
                     .map_err(|error| RunError::bad_request(error.to_string()))?;
+                staged.binding_checks.push(
+                    crate::provisioning::ResourceBindingCheck::MemoryStore {
+                        memory_store_id: memory_store_id.to_string(),
+                        config_version: config.version,
+                    },
+                );
                 // The worker realizes one governed store directory through its
                 // MemoryMounter. The resource plane never receives a principal,
                 // role, API key, or policy: the outer authorization/ACL seam has
@@ -395,14 +410,20 @@ impl ManagedHost {
                 repository_id,
                 config,
             } => {
-                let source = self.resource_configs.as_ref().ok_or_else(|| {
+                let validator = self.resource_validator.as_ref().ok_or_else(|| {
                     RunError::bad_request(
-                        "repository resources require a configured Resource Catalog",
+                        "repository resources require a configured resource binding validator",
                     )
                 })?;
-                source
-                    .resolve_repository(workspace, repository_id.as_str())
+                validator
+                    .validate_repository_binding(workspace, repository_id.as_str(), config.version)
                     .map_err(|error| RunError::bad_request(error.to_string()))?;
+                staged
+                    .binding_checks
+                    .push(crate::provisioning::ResourceBindingCheck::Repository {
+                        repository_id: repository_id.to_string(),
+                        config_version: config.version,
+                    });
                 let credential = match &config.credential_binding {
                     Some(binding) => {
                         let credentials = self.credentials.as_ref().ok_or_else(|| {
@@ -456,8 +477,9 @@ impl ManagedHost {
 
     /// Realize an already-resolved, secret-free manifest. The pinned Memory/
     /// Repository configuration in `inputs` remains authoritative; the per-item
-    /// lookup in `stage_resolved_input` is only the current ownership/state deny
-    /// overlay. No Agent binding or current config is composed here.
+    /// validation in `stage_resolved_input` checks only current ownership/state
+    /// and the frozen version's integrity. No Agent binding or current config is
+    /// composed here.
     async fn stage_effective_inputs(
         &self,
         thread: &str,
@@ -471,6 +493,7 @@ impl ManagedHost {
             let one = self.stage_resolved_input(workspace, input).await?;
             all.mounts.extend(one.mounts);
             all.prompts.extend(one.prompts);
+            all.binding_checks.extend(one.binding_checks);
             all.repositories.extend(one.repositories);
             if let awaken_protocol_managed::ResolvedInputSource::MemoryStore {
                 memory_store_id,
@@ -487,15 +510,15 @@ impl ManagedHost {
                 let handle = self
                     .host
                     .platform_memory_handle(memory_store_id.to_string(), writable);
-                let resource_configs = self.resource_configs.as_ref().ok_or_else(|| {
+                let resource_validator = self.resource_validator.as_ref().ok_or_else(|| {
                     RunError::bad_request(
-                        "Memory extraction requires a configured Resource Catalog",
+                        "Memory extraction requires a configured resource binding validator",
                     )
                 })?;
                 bound_memory = Some(Arc::new(self.host.memory.bind(
                     workspace,
                     handle,
-                    resource_configs.clone(),
+                    resource_validator.clone(),
                     config,
                     writable,
                 )));
@@ -528,6 +551,66 @@ impl ManagedHost {
             memory.reconcile(thread).await;
         }
         Ok(repository_mcp)
+    }
+
+    async fn validate_thread_resource_bindings(&self, thread: &str) -> Result<(), RunError> {
+        use crate::provisioning::ResourceBindingCheck;
+
+        let checks = self
+            .host
+            .thread_resources
+            .lock()
+            .expect("thread resources mutex poisoned")
+            .get(thread)
+            .map(|resources| resources.binding_checks.clone())
+            .unwrap_or_default();
+        if checks.is_empty() {
+            return Ok(());
+        }
+        let workspace = self.host.thread_workspace(thread);
+        for check in checks {
+            match check {
+                ResourceBindingCheck::File { file_id } => {
+                    if !self
+                        .host
+                        .owns_file(&workspace, &file_id)
+                        .await
+                        .map_err(|error| RunError::internal(error.to_string()))?
+                    {
+                        return Err(RunError::bad_request(format!(
+                            "file resource `{file_id}` is unavailable in this Workspace"
+                        )));
+                    }
+                }
+                ResourceBindingCheck::MemoryStore {
+                    memory_store_id,
+                    config_version,
+                } => self
+                    .resource_validator
+                    .as_ref()
+                    .ok_or_else(|| {
+                        RunError::bad_request(
+                            "memory resources require a configured resource binding validator",
+                        )
+                    })?
+                    .validate_memory_binding(&workspace, &memory_store_id, config_version)
+                    .map_err(|error| RunError::bad_request(error.to_string()))?,
+                ResourceBindingCheck::Repository {
+                    repository_id,
+                    config_version,
+                } => self
+                    .resource_validator
+                    .as_ref()
+                    .ok_or_else(|| {
+                        RunError::bad_request(
+                            "repository resources require a configured resource binding validator",
+                        )
+                    })?
+                    .validate_repository_binding(&workspace, &repository_id, config_version)
+                    .map_err(|error| RunError::bad_request(error.to_string()))?,
+            }
+        }
+        Ok(())
     }
 
     /// Wire the MCP stores so `prepare_session` materializes a session's MCP
@@ -644,6 +727,7 @@ impl SessionRuntime for ManagedHost {
         thread: &str,
         content: Vec<ContentBlock>,
     ) -> Result<StepOutcome, RunError> {
+        self.validate_thread_resource_bindings(thread).await?;
         let result = self
             .host
             .run(Some(agent), thread, vec![user_message(content)])
@@ -659,6 +743,7 @@ impl SessionRuntime for ManagedHost {
         content: Vec<ContentBlock>,
         sink: std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>,
     ) -> Result<StepOutcome, RunError> {
+        self.validate_thread_resource_bindings(thread).await?;
         // Same committed turn as `run`; `sink` mirrors in-flight `stream::Kind` so
         // the Managed adapter can project live `agent.message` previews.
         let result = self
@@ -675,6 +760,7 @@ impl SessionRuntime for ManagedHost {
         tool_use_id: &str,
         decision: ToolPermissionDecision,
     ) -> Result<StepOutcome, RunError> {
+        self.validate_thread_resource_bindings(thread).await?;
         let result = self
             .host
             .resume(
@@ -697,6 +783,7 @@ impl SessionRuntime for ManagedHost {
         content: &str,
         is_error: bool,
     ) -> Result<StepOutcome, RunError> {
+        self.validate_thread_resource_bindings(thread).await?;
         let result = self
             .host
             .resume(
