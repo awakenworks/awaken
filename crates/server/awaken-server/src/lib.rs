@@ -60,9 +60,13 @@ pub use worker_registry::{
 /// Authorization has already selected workspace/store/access before this adapter
 /// sees an opaque store id; no IAM vocabulary crosses this seam.
 pub fn install_platform_memory_data_plane(host: &SharedHost) {
-    host.install_memory_mounter(Arc::new(awaken_sandbox_memoryd::MemoryStoreMounter::new(
-        host.memory_repository(),
-    )));
+    // A Session may be replaced across Workdir/Namespace/Container workers. Use
+    // the portable copy projection at this shared composition seam so the binding
+    // remains realizable on every tier; the mounter still performs CAS-aware
+    // harvest on teardown through the same governed MemoryRepository.
+    host.install_memory_mounter(Arc::new(
+        awaken_sandbox_memoryd::MemoryStoreMounter::copy_only(host.memory_repository()),
+    ));
 }
 
 /// Build the production A2A attempt adapter behind the runtime's neutral port.

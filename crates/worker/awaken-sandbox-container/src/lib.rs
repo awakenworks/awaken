@@ -592,10 +592,99 @@ struct SecretWriteback {
     mount_path: String,
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct StagedMounts {
     guard: Option<StagingGuard>,
     secret_writebacks: Vec<SecretWriteback>,
+    memory: Vec<Box<dyn pc::MemoryMount>>,
+}
+
+impl std::fmt::Debug for StagedMounts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StagedMounts")
+            .field("guard", &self.guard)
+            .field("secret_writebacks", &self.secret_writebacks)
+            .field("memory_mounts", &self.memory.len())
+            .finish()
+    }
+}
+
+async fn stage_memory_binds(
+    spec: &pc::SandboxSpec,
+    plan: &mut ContainerPlan,
+    staged: &mut StagedMounts,
+    mounter: Option<Arc<dyn pc::MemoryMounter>>,
+) -> Result<(), pc::SandboxError> {
+    let memory: Vec<_> = spec
+        .mounts
+        .iter()
+        .filter_map(|mount| match &mount.source {
+            pc::MountSource::MemoryStore { store_id } => Some((mount, store_id)),
+            _ => None,
+        })
+        .collect();
+    if memory.is_empty() {
+        return Ok(());
+    }
+    let mounter = mounter
+        .ok_or_else(|| pc::SandboxError::new("container MemoryStore mount has no MemoryMounter"))?;
+    let root = staging_dir(&mut staged.guard, &spec.scope)?;
+    for (mount, store_id) in memory {
+        let host_path = root.join(format!("memory-{}", stage_name(&mount.mount_path)));
+        let handle = mounter.mount(store_id, &host_path, mount.access).await?;
+        #[cfg(unix)]
+        make_memory_tree_accessible(&host_path, mount.access)?;
+        plan.binds.push(BindPlan {
+            source_ref: host_path.to_string_lossy().into_owned(),
+            mount_path: mount.mount_path.clone(),
+            read_only: mount.access == pc::MountAccess::ReadOnly,
+            content: None,
+            content_bytes: None,
+            secret_content: None,
+            secret_writeback: false,
+            credential_file_path: None,
+        });
+        staged.memory.push(handle);
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn make_memory_tree_accessible(
+    root: &std::path::Path,
+    access: pc::MountAccess,
+) -> Result<(), pc::SandboxError> {
+    use std::os::unix::fs::PermissionsExt;
+    for entry in std::fs::read_dir(root).map_err(|e| pc::SandboxError::new(e.to_string()))? {
+        let path = entry
+            .map_err(|e| pc::SandboxError::new(e.to_string()))?
+            .path();
+        let metadata =
+            std::fs::symlink_metadata(&path).map_err(|e| pc::SandboxError::new(e.to_string()))?;
+        if metadata.is_dir() {
+            make_memory_tree_accessible(&path, access)?;
+        }
+        let mode = if metadata.is_dir() {
+            if access == pc::MountAccess::ReadWrite {
+                0o777
+            } else {
+                0o555
+            }
+        } else if access == pc::MountAccess::ReadWrite {
+            0o666
+        } else {
+            0o444
+        };
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))
+            .map_err(|e| pc::SandboxError::new(e.to_string()))?;
+    }
+    let mode = if access == pc::MountAccess::ReadWrite {
+        0o777
+    } else {
+        0o555
+    };
+    std::fs::set_permissions(root, std::fs::Permissions::from_mode(mode))
+        .map_err(|e| pc::SandboxError::new(e.to_string()))
 }
 
 /// The per-run host staging dir (created once, lazily), kept alive by the returned guard.
@@ -878,6 +967,7 @@ async fn resolve_and_stage(
     Ok(StagedMounts {
         guard,
         secret_writebacks,
+        memory: Vec::new(),
     })
 }
 
@@ -1094,6 +1184,13 @@ pub struct RuntimeAgentProcess {
 /// type beyond the value objects it must move.
 #[async_trait]
 pub trait ContainerRuntime: Send + Sync {
+    /// Kubernetes realizes MemoryStore mounts with its native sidecar/volume
+    /// topology. Local container engines need the provider's portable host-copy
+    /// bind instead.
+    fn has_native_memory_mounts(&self) -> bool {
+        false
+    }
+
     /// Whether a host-staged writable Secret remains readable after the process exits,
     /// allowing the provider to commit a CLI-refreshed credential back to its broker.
     /// Docker/Podman do; the Kubernetes ConfigMap projection does not.
@@ -1254,6 +1351,9 @@ pub struct ContainerProvider<R: ContainerRuntime> {
     /// Bidirectional broker used only for `MountSource::Secret`; durable writable
     /// mounts are committed through it after the agent process exits.
     secret_broker: Option<Arc<dyn pc::SecretBroker>>,
+    /// Neutral MemoryStore projection injected by the composition root. Interior
+    /// mutability lets an already-shared provider receive the platform adapter.
+    memory_mounter: std::sync::RwLock<Option<Arc<dyn pc::MemoryMounter>>>,
 }
 
 impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
@@ -1265,7 +1365,15 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             blobs: std::collections::HashMap::new(),
             file_store: None,
             secret_broker: None,
+            memory_mounter: std::sync::RwLock::new(None),
         }
+    }
+
+    pub fn install_memory_mounter(&self, mounter: Arc<dyn pc::MemoryMounter>) {
+        *self
+            .memory_mounter
+            .write()
+            .expect("container memory mounter lock poisoned") = Some(mounter);
     }
 
     /// Route `Allowlist` egress through the brokered `proxy` (the secretless-gateway
@@ -1329,7 +1437,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         // the seed then the injected BlobSource, hash-verified. Bytes are staged to a host
         // dir (bound by docker/podman) and recorded as `content` (projected by the k8s
         // ConfigMap path) — kept alive by the sandbox for the container's lifetime.
-        let staging = resolve_and_stage(
+        let mut staging = resolve_and_stage(
             spec,
             &mut plan.binds,
             &self.blobs,
@@ -1337,12 +1445,28 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             &self.secret_broker,
         )
         .await?;
+        if !self.runtime.has_native_memory_mounts() {
+            let mounter = self
+                .memory_mounter
+                .read()
+                .expect("container memory mounter lock poisoned")
+                .clone();
+            stage_memory_binds(spec, &mut plan, &mut staging, mounter).await?;
+        }
         // Realize egress: an Allowlist policy is routed through the brokered proxy
         // (its env is injected here); without a proxy an allowlist fails closed.
         let egress = egress_plan(&spec.network, self.egress_proxy.as_ref())
             .map_err(|e| err(RuntimeError::Backend(e.to_string())))?;
         plan.env.extend(egress.proxy_env);
-        let container_id = self.runtime.create(&spec.scope, &plan).await.map_err(err)?;
+        let container_id = match self.runtime.create(&spec.scope, &plan).await {
+            Ok(id) => id,
+            Err(error) => {
+                for mount in staging.memory.drain(..) {
+                    mount.teardown().await;
+                }
+                return Err(err(error));
+            }
+        };
         // Report each mount's realization: a byte mount is a Bind, a memory store is
         // a sidecar-FUSE. Built from spec.mounts directly (binds no longer align 1:1
         // now that memory stores are pulled out into sidecars).
@@ -1373,6 +1497,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 staging: std::sync::Mutex::new(staging.guard),
                 secret_writebacks: staging.secret_writebacks,
                 secret_broker: self.secret_broker.clone(),
+                memory: tokio::sync::Mutex::new(Some(staging.memory)),
                 writeback_done: tokio::sync::Mutex::new(false),
                 remove_done: tokio::sync::Mutex::new(false),
             }),
@@ -1467,6 +1592,10 @@ impl<R: ContainerRuntime + 'static> AgentContainerProvider for ContainerProvider
 
 #[async_trait]
 impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for ContainerProvider<R> {
+    fn install_memory_mounter(&self, mounter: Arc<dyn pc::MemoryMounter>) {
+        self.install_memory_mounter(mounter);
+    }
+
     async fn create_environment(
         &self,
         spec: &pc::SandboxSpec,
@@ -1577,6 +1706,8 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironment for ContainerSandbox<R>
 /// Backend-erased provider for Session-owned container environments.
 #[async_trait]
 pub trait ContainerEnvironmentProvider: Send + Sync {
+    fn install_memory_mounter(&self, _mounter: Arc<dyn pc::MemoryMounter>) {}
+
     async fn create_environment(
         &self,
         spec: &pc::SandboxSpec,
@@ -1592,6 +1723,7 @@ struct ContainerLifecycle {
     staging: std::sync::Mutex<Option<StagingGuard>>,
     secret_writebacks: Vec<SecretWriteback>,
     secret_broker: Option<Arc<dyn pc::SecretBroker>>,
+    memory: tokio::sync::Mutex<Option<Vec<Box<dyn pc::MemoryMount>>>>,
     writeback_done: tokio::sync::Mutex<bool>,
     remove_done: tokio::sync::Mutex<bool>,
 }
@@ -1602,6 +1734,7 @@ impl ContainerLifecycle {
             staging: std::sync::Mutex::new(None),
             secret_writebacks: Vec::new(),
             secret_broker: None,
+            memory: tokio::sync::Mutex::new(None),
             writeback_done: tokio::sync::Mutex::new(true),
             remove_done: tokio::sync::Mutex::new(false),
         }
@@ -1635,8 +1768,6 @@ impl ContainerLifecycle {
             }
         }
         *done = true;
-        // Releasing the guard removes the host staging namespace after persistence.
-        self.staging.lock().expect("staging mutex poisoned").take();
         Ok(())
     }
 
@@ -1648,6 +1779,12 @@ impl ContainerLifecycle {
         let mut done = self.remove_done.lock().await;
         if !*done {
             runtime.remove(container_id).await.map_err(err)?;
+            if let Some(memory) = self.memory.lock().await.take() {
+                for mount in memory {
+                    mount.teardown().await;
+                }
+            }
+            self.staging.lock().expect("staging mutex poisoned").take();
             *done = true;
         }
         Ok(())
