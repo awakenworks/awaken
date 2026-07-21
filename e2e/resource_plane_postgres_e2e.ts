@@ -123,7 +123,10 @@ const scoped = (workspace: string, suffix: string) =>
 async function json(method: string, url: string, body?: unknown) {
   const response = await fetch(url, {
     method,
-    headers: body === undefined ? {} : { 'content-type': 'application/json' },
+    headers: {
+      'anthropic-beta': 'managed-agents-2026-04-01',
+      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+    },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await response.text();
@@ -562,16 +565,41 @@ async function main(): Promise<void> {
     const repository = seedRepository(secondDirectory);
     const session = await json('POST', scoped(WORKSPACE, 'sessions'), {
       agent: AGENT, environment_id: 'env_local',
-      resources: [{
-        type: 'github_repository',
-        url: repository,
-        authorization_token: 'repository-create-token', // awaken-allow: secret
-        initial_branch: 'main',
-        mount_path: '/workspace/create-time-repository',
-      }],
+      resources: [
+        {
+          type: 'memory_store',
+          memory_store_id: memoryId,
+          mount_path: '/workspace/memory',
+        },
+        {
+          type: 'github_repository',
+          url: repository,
+          initial_branch: 'main',
+          mount_path: '/workspace/create-time-repository',
+        },
+      ],
     });
     assert.equal(session.status, 200, JSON.stringify(session.body));
-    assert.equal(session.body.resources[0].type, 'github_repository');
+    assert.deepEqual(
+      session.body.resources.map((resource: { type: string }) => resource.type),
+      ['memory_store', 'github_repository'],
+    );
+    const turn = await json(
+      'POST',
+      scoped(WORKSPACE, `sessions/${session.body.id}/events`),
+      {
+        events: [{
+          type: 'user.message',
+          content: [{ type: 'text', text: 'resolve the governed resource bindings' }],
+        }],
+      },
+    );
+    assert.equal(turn.status, 200, JSON.stringify(turn.body));
+    const realized = psql(
+      pg.container,
+      `SELECT count(*) FROM resource_lifecycle_references WHERE reference_id=${sqlLiteral(session.body.id)}`,
+    );
+    assert.ok(Number(realized) >= 2, 'the Session activated both frozen resource bindings');
     const repositoryResource = await json(
       'POST',
       scoped(WORKSPACE, `sessions/${session.body.id}/resources`),
