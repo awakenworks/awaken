@@ -26,6 +26,15 @@ fn session(id: &str, title: &str) -> PersistedSession {
         metadata: std::collections::BTreeMap::from([("k".into(), "v".into())]),
         environment_id: "env".into(),
         mcp_servers: vec![json!({ "name": "fs", "type": "stdio", "url": "x" })],
+        effective_inputs: serde_json::from_value(json!({
+            "inputs": [{
+                "binding_id": "input-file",
+                "source": { "kind": "file", "file_id": "file-1" },
+                "mount_path": "/mnt/input",
+                "access": "read_only"
+            }]
+        }))
+        .unwrap(),
         status: "idle".into(),
         archived_at: None,
     }
