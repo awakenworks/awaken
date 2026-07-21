@@ -349,6 +349,8 @@ impl SharedHost {
                 .unwrap_or(&self.plugin_config),
         );
         let apply_base_gate = !pre_authorized.is_empty() || authored_permission.is_some();
+        let permission =
+            crate::config::server_permission_policy(authored_permission.clone(), &pre_authorized);
         let base_gate = server_gate_with(authored_permission, &pre_authorized);
         // R1/R2: the runtime is built with the host default executor; each run then
         // resolves its *effective* model (its `model_ref_override`, else its snapshot
@@ -546,7 +548,7 @@ impl SharedHost {
         } else {
             None
         };
-        let config = crate::mcp::overlay_acp_mcp(
+        let mut config = crate::mcp::overlay_acp_mcp(
             config,
             &staged_mcp,
             is_acp,
@@ -554,6 +556,13 @@ impl SharedHost {
             relay,
             thread,
         );
+        // Resolve the Session's brain adapter once, before this immutable snapshot
+        // is retained or dispatched. Resume/recovery must route from the same pinned
+        // backend_ref; mutating only a transient first-attempt activation would make
+        // an ACP wait resume through Native and reopen current configuration.
+        if let Some(adapter) = self.acp.as_ref().and_then(|acp| acp.adapter_for(thread)) {
+            config.resolved_spec.model_binding.backend_ref = adapter;
+        }
         // Recover the session's position from committed truth: a durable store may
         // already hold this thread's history and an awaiting run (e.g. after a
         // restart). `consumed_rounds` starts past any prior outcome rounds so a new
@@ -569,7 +578,10 @@ impl SharedHost {
             state.awaiting_run = Some(run_id);
         }
         let runtime = Arc::new(runtime);
-        let acp_executor = self.acp.as_ref().map(|acp| acp.executor_for(env.clone()));
+        let acp_executor = self
+            .acp
+            .as_ref()
+            .map(|acp| acp.executor_for(env.clone(), permission));
         let attempt_executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor> =
             Arc::new(crate::run_exec::SessionAttemptExecutor::new(
                 runtime.clone(),
