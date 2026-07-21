@@ -176,7 +176,8 @@ impl DispatchQueue for SqliteDispatchStore {
                 tx.execute(
                     &format!(
                         "UPDATE {p}_dispatch SET status = 'superseded', lease_owner = NULL, \
-                         lease_until = NULL WHERE thread_id = ?1 AND status IN ('pending', 'awaiting')"
+                         lease_until = NULL WHERE thread_id = ?1 AND status IN ('pending', 'awaiting') \
+                         AND cancel_requested = 0"
                     ),
                     params![thread_id],
                 )
@@ -250,6 +251,7 @@ impl DispatchQueue for SqliteDispatchStore {
                         expires_ms: expires,
                         epoch: 1,
                     },
+                    cancellation_requested: false,
                     pending: Vec::new(),
                     recovered: false,
                     sandbox: None,
@@ -316,6 +318,7 @@ impl DispatchQueue for SqliteDispatchStore {
                         expires_ms: expires,
                         epoch: 1,
                     },
+                    cancellation_requested: false,
                     pending: Vec::new(),
                     recovered: false,
                     sandbox: None,
@@ -456,9 +459,9 @@ impl DispatchQueue for SqliteDispatchStore {
             // pending input, then a fresh pending run. SQLite has no SKIP LOCKED;
             // the IMMEDIATE transaction is the single-owner guard.
             let recovery = format!(
-                "SELECT run_id, request, sandbox FROM {p}_dispatch \
+                "SELECT run_id, request, sandbox, cancel_requested FROM {p}_dispatch \
                  WHERE status = 'running' AND lease_until IS NOT NULL AND lease_until < ?1 \
-                 ORDER BY created_at LIMIT 1"
+                 ORDER BY cancel_requested DESC, created_at LIMIT 1"
             );
             // Single-writer-per-thread (ADR-0022): a wake or fresh pick skips any
             // thread that already has a run in flight. Recovery (above) is exempt —
@@ -468,23 +471,23 @@ impl DispatchQueue for SqliteDispatchStore {
                  WHERE r.thread_id = d.thread_id AND r.status = 'running')"
             );
             let wake = format!(
-                "SELECT run_id, request, sandbox FROM {p}_dispatch d \
-                 WHERE d.status = 'awaiting' AND EXISTS ( \
+                "SELECT run_id, request, sandbox, cancel_requested FROM {p}_dispatch d \
+                 WHERE d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS ( \
                      SELECT 1 FROM {p}_pending pe WHERE pe.run_id = d.run_id \
-                     AND (pe.available_at IS NULL OR pe.available_at <= ?1)) \
+                     AND (pe.available_at IS NULL OR pe.available_at <= ?1))) \
                  AND {not_running} \
-                 ORDER BY d.created_at LIMIT 1"
+                 ORDER BY d.cancel_requested DESC, d.created_at LIMIT 1"
             );
             let fresh = format!(
-                "SELECT run_id, request, sandbox FROM {p}_dispatch d \
+                "SELECT run_id, request, sandbox, cancel_requested FROM {p}_dispatch d \
                  WHERE d.status = 'pending' AND {not_running} \
-                 ORDER BY d.priority DESC, d.created_at LIMIT 1"
+                 ORDER BY d.cancel_requested DESC, d.priority DESC, d.created_at LIMIT 1"
             );
 
             let row = |sql: &str,
                        bind_now: bool|
-             -> Result<Option<(String, String, Option<String>)>, DispatchError> {
-                let map = |r: &rusqlite::Row| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?));
+             -> Result<Option<(String, String, Option<String>, bool)>, DispatchError> {
+                let map = |r: &rusqlite::Row| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, i64>(3)? != 0));
                 if bind_now {
                     tx.query_row(sql, params![now_ms as i64], map)
                 } else {
@@ -507,7 +510,7 @@ impl DispatchQueue for SqliteDispatchStore {
                 }
             };
 
-            let Some((run_id, request_json, sandbox)) = picked else {
+            let Some((run_id, request_json, sandbox, cancellation_requested)) = picked else {
                 return Ok(None);
             };
             let request: RunDispatch =
@@ -582,6 +585,7 @@ impl DispatchQueue for SqliteDispatchStore {
                     expires_ms: expires,
                     epoch: lease_epoch as u64,
                 },
+                cancellation_requested,
                 pending,
                 recovered: recovery_pick,
                 sandbox,
@@ -603,14 +607,14 @@ impl DispatchQueue for SqliteDispatchStore {
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(reject)?;
             let sql = format!(
-                "SELECT d.run_id, d.request, d.sandbox, d.worker_assignment FROM {p}_dispatch d WHERE \
+                "SELECT d.run_id, d.request, d.sandbox, d.worker_assignment, d.cancel_requested FROM {p}_dispatch d WHERE \
                  (d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until < ?1) OR \
-                 (d.status = 'awaiting' AND EXISTS (SELECT 1 FROM {p}_pending pe \
+                 (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS (SELECT 1 FROM {p}_pending pe \
                    WHERE pe.run_id = d.run_id AND (pe.available_at IS NULL OR pe.available_at <= ?1)) \
-                   AND NOT EXISTS (SELECT 1 FROM {p}_dispatch r WHERE r.thread_id = d.thread_id AND r.status = 'running')) OR \
+                   ) AND NOT EXISTS (SELECT 1 FROM {p}_dispatch r WHERE r.thread_id = d.thread_id AND r.status = 'running')) OR \
                  (d.status = 'pending' AND NOT EXISTS (SELECT 1 FROM {p}_dispatch r \
                    WHERE r.thread_id = d.thread_id AND r.status = 'running')) \
-                 ORDER BY CASE WHEN d.status = 'running' THEN 0 WHEN d.status = 'awaiting' THEN 1 ELSE 2 END, \
+                 ORDER BY CASE WHEN d.cancel_requested = 1 THEN 0 WHEN d.status = 'running' THEN 1 WHEN d.status = 'awaiting' THEN 2 ELSE 3 END, \
                           d.priority DESC, d.created_at"
             );
             let selected = {
@@ -622,25 +626,28 @@ impl DispatchQueue for SqliteDispatchStore {
                             row.get::<_, String>(1)?,
                             row.get::<_, Option<String>>(2)?,
                             row.get::<_, Option<String>>(3)?,
+                            row.get::<_, i64>(4)? != 0,
                         ))
                     })
                     .map_err(reject)?;
                 let mut selected = None;
                 for row in rows {
-                    let (run_id, request_json, sandbox, previous_json) = row.map_err(reject)?;
+                    let (run_id, request_json, sandbox, previous_json, cancellation_requested) =
+                        row.map_err(reject)?;
                     let request: RunDispatch =
                         serde_json::from_str(&request_json).map_err(json_err)?;
                     let previous: Option<WorkerAssignment> = previous_json
                         .map(|value| serde_json::from_str(&value).map_err(json_err))
                         .transpose()?;
-                    if can_assign(
+                    if cancellation_requested
+                        || can_assign(
                         &worker,
                         &request.placement,
                         previous.as_ref(),
                         sandbox.is_some(),
                         now_ms,
-                    )
-                    .is_ok()
+                        )
+                        .is_ok()
                     {
                         selected = Some(run_id);
                         break;
@@ -681,14 +688,14 @@ impl DispatchQueue for SqliteDispatchStore {
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(reject)?;
             let sql = format!(
-                "SELECT d.run_id, d.request, d.sandbox, d.worker_assignment, d.status FROM {p}_dispatch d WHERE \
+                "SELECT d.run_id, d.request, d.sandbox, d.worker_assignment, d.status, d.cancel_requested FROM {p}_dispatch d WHERE \
                  (d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until < ?1) OR \
-                 (d.status = 'awaiting' AND EXISTS (SELECT 1 FROM {p}_pending pe \
+                 (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS (SELECT 1 FROM {p}_pending pe \
                    WHERE pe.run_id = d.run_id AND (pe.available_at IS NULL OR pe.available_at <= ?1)) \
-                   AND NOT EXISTS (SELECT 1 FROM {p}_dispatch r WHERE r.thread_id = d.thread_id AND r.status = 'running')) OR \
+                   ) AND NOT EXISTS (SELECT 1 FROM {p}_dispatch r WHERE r.thread_id = d.thread_id AND r.status = 'running')) OR \
                  (d.status = 'pending' AND NOT EXISTS (SELECT 1 FROM {p}_dispatch r \
                    WHERE r.thread_id = d.thread_id AND r.status = 'running')) \
-                 ORDER BY CASE WHEN d.status = 'running' THEN 0 WHEN d.status = 'awaiting' THEN 1 ELSE 2 END, \
+                 ORDER BY CASE WHEN d.cancel_requested = 1 THEN 0 WHEN d.status = 'running' THEN 1 WHEN d.status = 'awaiting' THEN 2 ELSE 3 END, \
                           d.priority DESC, d.created_at"
             );
             let selected = {
@@ -701,19 +708,21 @@ impl DispatchQueue for SqliteDispatchStore {
                             row.get::<_, Option<String>>(2)?,
                             row.get::<_, Option<String>>(3)?,
                             row.get::<_, String>(4)?,
+                            row.get::<_, i64>(5)? != 0,
                         ))
                     })
                     .map_err(reject)?;
                 let mut selected = None;
                 for row in rows {
-                    let (run_id, request_json, sandbox, previous_json, status) =
+                    let (run_id, request_json, sandbox, previous_json, status, cancellation_requested) =
                         row.map_err(reject)?;
                     let request: RunDispatch =
                         serde_json::from_str(&request_json).map_err(json_err)?;
                     let previous: Option<WorkerAssignment> = previous_json
                         .map(|value| serde_json::from_str(&value).map_err(json_err))
                         .transpose()?;
-                    if policy_selects_requester(
+                    if cancellation_requested
+                        || policy_selects_requester(
                         &request,
                         policy.as_ref(),
                         DispatchPlacement {
@@ -724,7 +733,8 @@ impl DispatchQueue for SqliteDispatchStore {
                             workers: &workers,
                             now_ms,
                         },
-                    )? {
+                        )?
+                    {
                         selected = Some(run_id);
                         break;
                     }
@@ -856,10 +866,10 @@ impl DispatchQueue for SqliteDispatchStore {
                         "SELECT COUNT(*) FROM {p}_dispatch d WHERE \
                          d.status = 'pending' OR \
                          (d.status = 'running' AND d.lease_until < ?1) OR \
-                         (d.status = 'awaiting' AND EXISTS (\
+                         (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS (\
                            SELECT 1 FROM {p}_pending i WHERE i.run_id = d.run_id \
                            AND (i.available_at IS NULL OR i.available_at <= ?1)\
-                         ))"
+                         )))"
                     ),
                     params![now_ms as i64],
                     |row| row.get(0),
@@ -1053,7 +1063,7 @@ impl DispatchQueue for SqliteDispatchStore {
         self.with_conn(move |conn, p| {
             let mut stmt = conn
                 .prepare(&format!(
-                    "SELECT run_id, thread_id, status, attempt_count FROM {p}_dispatch \
+                    "SELECT run_id, thread_id, status, attempt_count, cancel_requested FROM {p}_dispatch \
                      ORDER BY created_at"
                 ))
                 .map_err(reject)?;
@@ -1064,12 +1074,14 @@ impl DispatchQueue for SqliteDispatchStore {
                         r.get::<_, String>(1)?,
                         r.get::<_, String>(2)?,
                         r.get::<_, i64>(3)?,
+                        r.get::<_, i64>(4)? != 0,
                     ))
                 })
                 .map_err(reject)?;
             let mut out = Vec::new();
             for row in rows {
-                let (run_id, thread_id, status, attempt_count) = row.map_err(reject)?;
+                let (run_id, thread_id, status, attempt_count, cancellation_requested) =
+                    row.map_err(reject)?;
                 let state = DispatchState::from_db(&status).ok_or_else(|| {
                     DispatchError::Rejected(format!("unknown persisted dispatch state {status}"))
                 })?;
@@ -1077,6 +1089,7 @@ impl DispatchQueue for SqliteDispatchStore {
                     run_id: RunId(run_id),
                     thread_id: ThreadId(thread_id),
                     state,
+                    cancellation_requested,
                     attempt_count: attempt_count as u64,
                 });
             }
@@ -1113,7 +1126,7 @@ impl DispatchQueue for SqliteDispatchStore {
                 .query_row(
                     &format!(
                         "SELECT thread_id FROM {p}_dispatch \
-                         WHERE run_id = ?1 AND status IN ('pending', 'awaiting')"
+                         WHERE run_id = ?1 AND status IN ('pending', 'awaiting', 'running')"
                     ),
                     params![run_id],
                     |r| r.get::<_, String>(0),
@@ -1122,12 +1135,14 @@ impl DispatchQueue for SqliteDispatchStore {
                 .map_err(reject)?;
             if thread.is_some() {
                 tx.execute(
-                    &format!("DELETE FROM {p}_pending WHERE run_id = ?1"),
-                    params![run_id],
-                )
-                .map_err(reject)?;
-                tx.execute(
-                    &format!("DELETE FROM {p}_dispatch WHERE run_id = ?1"),
+                    &format!(
+                        "UPDATE {p}_dispatch SET cancel_requested = 1, \
+                         lease_epoch = lease_epoch + CASE WHEN status = 'running' THEN 1 ELSE 0 END, \
+                         lease_owner = CASE WHEN status = 'running' THEN NULL ELSE lease_owner END, \
+                         lease_until = CASE WHEN status = 'running' THEN NULL ELSE lease_until END, \
+                         status = CASE WHEN status = 'running' THEN 'pending' ELSE status END \
+                         WHERE run_id = ?1"
+                    ),
                     params![run_id],
                 )
                 .map_err(reject)?;
@@ -1145,6 +1160,7 @@ impl DispatchQueue for SqliteDispatchStore {
                 .query_row(
                     &format!(
                         "SELECT run_id FROM {p}_dispatch WHERE thread_id = ?1 AND status = 'awaiting' \
+                         AND cancel_requested = 0 \
                          ORDER BY created_at LIMIT 1"
                     ),
                     params![thread_id],
@@ -1474,34 +1490,43 @@ fn claim_exact_transaction(
     now_ms: u64,
     worker: Option<&WorkerSnapshot>,
 ) -> Result<Option<Claimed>, DispatchError> {
+    type PickedDispatch = (String, Option<String>, String, Option<String>, i64);
     let not_running = format!(
         "NOT EXISTS (SELECT 1 FROM {prefix}_dispatch r \
          WHERE r.thread_id = d.thread_id AND r.status = 'running')"
     );
     let sql = format!(
-        "SELECT d.request, d.sandbox, d.status, d.worker_assignment FROM {prefix}_dispatch d \
+        "SELECT d.request, d.sandbox, d.status, d.worker_assignment, d.cancel_requested FROM {prefix}_dispatch d \
          WHERE d.run_id = ?1 AND ( \
            (d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until < ?2) \
-           OR (d.status = 'awaiting' AND EXISTS ( \
+           OR (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS ( \
              SELECT 1 FROM {prefix}_pending pe WHERE pe.run_id = d.run_id \
-             AND (pe.available_at IS NULL OR pe.available_at <= ?2)) AND {not_running}) \
+             AND (pe.available_at IS NULL OR pe.available_at <= ?2))) AND {not_running}) \
            OR (d.status = 'pending' AND {not_running}) \
          ) LIMIT 1"
     );
-    let picked: Option<(String, Option<String>, String, Option<String>)> = tx
+    let picked: Option<PickedDispatch> = tx
         .query_row(&sql, params![requested_run, now_ms as i64], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
         })
         .optional()
         .map_err(reject)?;
-    let Some((request_json, sandbox, status, previous_json)) = picked else {
+    let Some((request_json, sandbox, status, previous_json, cancellation_requested)) = picked
+    else {
         return Ok(None);
     };
     let request: RunDispatch = serde_json::from_str(&request_json).map_err(json_err)?;
     let previous: Option<WorkerAssignment> = previous_json
         .map(|value| serde_json::from_str(&value).map_err(json_err))
         .transpose()?;
-    if let Some(worker) = worker
+    if cancellation_requested == 0
+        && let Some(worker) = worker
         && can_assign(
             worker,
             &request.placement,
@@ -1547,6 +1572,7 @@ fn claim_exact_transaction(
             expires_ms: expires,
             epoch: lease_epoch as u64,
         },
+        cancellation_requested: cancellation_requested != 0,
         pending: pending_for_run(tx, prefix, requested_run, now_ms)?,
         recovered: status == "running",
         sandbox,

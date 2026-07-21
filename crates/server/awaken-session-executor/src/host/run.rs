@@ -543,10 +543,11 @@ impl SharedHost {
                 ResumeResult::Input(content)
             };
             let before = ctx.commit.committed_messages(&ctx.thread_id).len();
+            let activation = ctx.resume_activation(&ticket);
             let command = ResumeCommand::from_ticket(&ticket, result, 0);
             let state = ctx
                 .ingress
-                .resume(command, ctx.context())
+                .resume(activation, command, ctx.context())
                 .await
                 .map_err(|e| HostError::internal(e.to_string()))?;
             let terminal_commit_id = run_id.0.clone();
@@ -577,10 +578,11 @@ impl SharedHost {
             }
         };
         let before = ctx.commit.committed_messages(&ctx.thread_id).len();
+        let activation = ctx.resume_activation(&ticket);
         let command = ResumeCommand::from_ticket(&ticket, result, 0);
         let state = ctx
             .ingress
-            .resume(command, ctx.context())
+            .resume(activation, command, ctx.context())
             .await
             .map_err(|e| HostError::internal(e.to_string()))?;
         let terminal_commit_id = run_id.0.clone();

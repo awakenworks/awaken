@@ -30,6 +30,16 @@ use crate::sandbox_source::{
     feature = "container-podman",
     feature = "container-k8s"
 ))]
+type ContainerCredential = (
+    Option<pc::MountRequirement>,
+    Option<Arc<dyn pc::SecretBroker>>,
+);
+
+#[cfg(any(
+    feature = "container-docker",
+    feature = "container-podman",
+    feature = "container-k8s"
+))]
 fn wrap<R: awaken_sandbox_container::ContainerRuntime + 'static>(
     provider: ContainerProvider<R>,
 ) -> Arc<dyn ContainerEnvironmentProvider> {
@@ -49,15 +59,7 @@ fn wrap<R: awaken_sandbox_container::ContainerRuntime + 'static>(
     feature = "container-podman",
     feature = "container-k8s"
 ))]
-fn credential(
-    source: &LaunchSource,
-) -> Result<
-    (
-        Option<pc::MountRequirement>,
-        Option<Arc<dyn pc::SecretBroker>>,
-    ),
-    String,
-> {
+fn credential(source: &LaunchSource) -> Result<ContainerCredential, String> {
     let projection = credential_projection(source)?;
     let mount = projection.as_ref().and_then(|(binding, _)| {
         source

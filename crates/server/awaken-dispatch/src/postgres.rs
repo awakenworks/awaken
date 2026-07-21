@@ -235,7 +235,8 @@ impl DispatchQueue for PostgresDispatchStore {
             epoch = max.unwrap_or(0) + 1;
             sqlx::query(&format!(
                 "UPDATE {p}_dispatch SET status = 'superseded', lease_owner = NULL, \
-                 lease_until = NULL WHERE thread_id = $1 AND status IN ('pending', 'awaiting')"
+                 lease_until = NULL WHERE thread_id = $1 AND status IN ('pending', 'awaiting') \
+                 AND cancel_requested = 0"
             ))
             .bind(&request.thread_id().0)
             .execute(&mut *tx)
@@ -303,6 +304,7 @@ impl DispatchQueue for PostgresDispatchStore {
                     expires_ms: expires,
                     epoch: epoch as u64,
                 },
+                cancellation_requested: false,
                 pending: Vec::new(),
                 recovered: false,
                 sandbox: None,
@@ -360,6 +362,7 @@ impl DispatchQueue for PostgresDispatchStore {
                     expires_ms: expires,
                     epoch: epoch as u64,
                 },
+                cancellation_requested: false,
                 pending: Vec::new(),
                 recovered: false,
                 sandbox: None,
@@ -477,9 +480,9 @@ impl DispatchQueue for PostgresDispatchStore {
         // input, then a fresh pending run. Each locks its row, skipping rows a
         // concurrent worker already holds.
         let recovery = format!(
-            "SELECT run_id, request, sandbox FROM {p}_dispatch \
+            "SELECT run_id, request, sandbox, cancel_requested FROM {p}_dispatch \
              WHERE status = 'running' AND lease_until IS NOT NULL AND lease_until < $1 \
-             ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1"
+             ORDER BY cancel_requested DESC, created_at FOR UPDATE SKIP LOCKED LIMIT 1"
         );
         // Single-writer-per-thread (ADR-0022): a wake or fresh pick skips any thread
         // that already has a run in flight. Recovery is exempt (it re-owns the SAME
@@ -490,17 +493,17 @@ impl DispatchQueue for PostgresDispatchStore {
              WHERE r.thread_id = d.thread_id AND r.status = 'running')"
         );
         let wake = format!(
-            "SELECT d.run_id, d.request, d.sandbox FROM {p}_dispatch d \
-             WHERE d.status = 'awaiting' AND EXISTS ( \
+            "SELECT d.run_id, d.request, d.sandbox, d.cancel_requested FROM {p}_dispatch d \
+             WHERE d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS ( \
                  SELECT 1 FROM {p}_pending pe WHERE pe.run_id = d.run_id \
-                 AND (pe.available_at IS NULL OR pe.available_at <= $1)) \
+                 AND (pe.available_at IS NULL OR pe.available_at <= $1))) \
              AND {not_running} \
-             ORDER BY d.created_at FOR UPDATE SKIP LOCKED LIMIT 1"
+             ORDER BY d.cancel_requested DESC, d.created_at FOR UPDATE SKIP LOCKED LIMIT 1"
         );
         let fresh = format!(
-            "SELECT d.run_id, d.request, d.sandbox FROM {p}_dispatch d \
+            "SELECT d.run_id, d.request, d.sandbox, d.cancel_requested FROM {p}_dispatch d \
              WHERE d.status = 'pending' AND {not_running} \
-             ORDER BY d.priority DESC, d.created_at \
+             ORDER BY d.cancel_requested DESC, d.priority DESC, d.created_at \
              FOR UPDATE SKIP LOCKED LIMIT 1"
         );
 
@@ -537,6 +540,7 @@ impl DispatchQueue for PostgresDispatchStore {
         let run_id: String = row.try_get("run_id").map_err(reject)?;
         let Json(request): Json<RunDispatch> = row.try_get("request").map_err(reject)?;
         let sandbox: Option<String> = row.try_get("sandbox").map_err(reject)?;
+        let cancellation_requested: i64 = row.try_get("cancel_requested").map_err(reject)?;
 
         let expires = now_ms + lease_ms;
         // Bump the fence token on every claim (fresh, wake, recovery) and read it
@@ -609,6 +613,7 @@ impl DispatchQueue for PostgresDispatchStore {
                 expires_ms: expires,
                 epoch: lease_epoch as u64,
             },
+            cancellation_requested: cancellation_requested != 0,
             pending,
             recovered: recovery_pick,
             assignment: None,
@@ -623,14 +628,14 @@ impl DispatchQueue for PostgresDispatchStore {
     ) -> Result<Option<Claimed>, DispatchError> {
         let p = NS;
         let rows = sqlx::query(&format!(
-            "SELECT d.run_id, d.request, d.sandbox, d.worker_assignment FROM {p}_dispatch d WHERE \
+            "SELECT d.run_id, d.request, d.sandbox, d.worker_assignment, d.cancel_requested FROM {p}_dispatch d WHERE \
              (d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until < $1) OR \
-             (d.status = 'awaiting' AND EXISTS (SELECT 1 FROM {p}_pending pe \
+             (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS (SELECT 1 FROM {p}_pending pe \
                WHERE pe.run_id = d.run_id AND (pe.available_at IS NULL OR pe.available_at <= $1)) \
-               AND NOT EXISTS (SELECT 1 FROM {p}_dispatch r WHERE r.thread_id = d.thread_id AND r.status = 'running')) OR \
+               ) AND NOT EXISTS (SELECT 1 FROM {p}_dispatch r WHERE r.thread_id = d.thread_id AND r.status = 'running')) OR \
              (d.status = 'pending' AND NOT EXISTS (SELECT 1 FROM {p}_dispatch r \
                WHERE r.thread_id = d.thread_id AND r.status = 'running')) \
-             ORDER BY CASE WHEN d.status = 'running' THEN 0 WHEN d.status = 'awaiting' THEN 1 ELSE 2 END, \
+             ORDER BY CASE WHEN d.cancel_requested = 1 THEN 0 WHEN d.status = 'running' THEN 1 WHEN d.status = 'awaiting' THEN 2 ELSE 3 END, \
                       d.priority DESC, d.created_at"
         ))
         .bind(now_ms as i64)
@@ -643,14 +648,16 @@ impl DispatchQueue for PostgresDispatchStore {
             let sandbox: Option<String> = row.try_get("sandbox").map_err(reject)?;
             let previous: Option<Json<WorkerAssignment>> =
                 row.try_get("worker_assignment").map_err(reject)?;
-            if can_assign(
-                worker,
-                &request.placement,
-                previous.as_ref().map(|value| &value.0),
-                sandbox.is_some(),
-                now_ms,
-            )
-            .is_ok()
+            let cancellation_requested: i64 = row.try_get("cancel_requested").map_err(reject)?;
+            if cancellation_requested != 0
+                || can_assign(
+                    worker,
+                    &request.placement,
+                    previous.as_ref().map(|value| &value.0),
+                    sandbox.is_some(),
+                    now_ms,
+                )
+                .is_ok()
             {
                 selected = Some(RunId(row.try_get("run_id").map_err(reject)?));
                 break;
@@ -683,14 +690,14 @@ impl DispatchQueue for PostgresDispatchStore {
     ) -> Result<Option<Claimed>, DispatchError> {
         let p = NS;
         let rows = sqlx::query(&format!(
-            "SELECT d.run_id, d.request, d.sandbox, d.worker_assignment, d.status FROM {p}_dispatch d WHERE \
+            "SELECT d.run_id, d.request, d.sandbox, d.worker_assignment, d.status, d.cancel_requested FROM {p}_dispatch d WHERE \
              (d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until < $1) OR \
-             (d.status = 'awaiting' AND EXISTS (SELECT 1 FROM {p}_pending pe \
+             (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS (SELECT 1 FROM {p}_pending pe \
                WHERE pe.run_id = d.run_id AND (pe.available_at IS NULL OR pe.available_at <= $1)) \
-               AND NOT EXISTS (SELECT 1 FROM {p}_dispatch r WHERE r.thread_id = d.thread_id AND r.status = 'running')) OR \
+               ) AND NOT EXISTS (SELECT 1 FROM {p}_dispatch r WHERE r.thread_id = d.thread_id AND r.status = 'running')) OR \
              (d.status = 'pending' AND NOT EXISTS (SELECT 1 FROM {p}_dispatch r \
                WHERE r.thread_id = d.thread_id AND r.status = 'running')) \
-             ORDER BY CASE WHEN d.status = 'running' THEN 0 WHEN d.status = 'awaiting' THEN 1 ELSE 2 END, \
+             ORDER BY CASE WHEN d.cancel_requested = 1 THEN 0 WHEN d.status = 'running' THEN 1 WHEN d.status = 'awaiting' THEN 2 ELSE 3 END, \
                       d.priority DESC, d.created_at"
         ))
         .bind(now_ms as i64)
@@ -704,18 +711,21 @@ impl DispatchQueue for PostgresDispatchStore {
             let previous: Option<Json<WorkerAssignment>> =
                 row.try_get("worker_assignment").map_err(reject)?;
             let status: String = row.try_get("status").map_err(reject)?;
-            if policy_selects_requester(
-                &request,
-                policy.as_ref(),
-                DispatchPlacement {
-                    recovered: status == "running",
-                    previous: previous.as_ref().map(|value| &value.0),
-                    sandbox_bound: sandbox.is_some(),
-                    requester: &requester.identity,
-                    workers: &workers,
-                    now_ms,
-                },
-            )? {
+            let cancellation_requested: i64 = row.try_get("cancel_requested").map_err(reject)?;
+            if cancellation_requested != 0
+                || policy_selects_requester(
+                    &request,
+                    policy.as_ref(),
+                    DispatchPlacement {
+                        recovered: status == "running",
+                        previous: previous.as_ref().map(|value| &value.0),
+                        sandbox_bound: sandbox.is_some(),
+                        requester: &requester.identity,
+                        workers: &workers,
+                        now_ms,
+                    },
+                )?
+            {
                 selected = Some(RunId(row.try_get("run_id").map_err(reject)?));
                 break;
             }
@@ -751,12 +761,12 @@ impl DispatchQueue for PostgresDispatchStore {
              WHERE r.thread_id = d.thread_id AND r.status = 'running')"
         );
         let sql = format!(
-            "SELECT d.run_id, d.request, d.sandbox, d.status FROM {p}_dispatch d \
+            "SELECT d.run_id, d.request, d.sandbox, d.status, d.cancel_requested FROM {p}_dispatch d \
              WHERE d.run_id = $1 AND ( \
                (d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until < $2) \
-               OR (d.status = 'awaiting' AND EXISTS ( \
+               OR (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS ( \
                  SELECT 1 FROM {p}_pending pe WHERE pe.run_id = d.run_id \
-                 AND (pe.available_at IS NULL OR pe.available_at <= $2)) AND {not_running}) \
+                 AND (pe.available_at IS NULL OR pe.available_at <= $2))) AND {not_running}) \
                OR (d.status = 'pending' AND {not_running}) \
              ) FOR UPDATE SKIP LOCKED LIMIT 1"
         );
@@ -773,6 +783,7 @@ impl DispatchQueue for PostgresDispatchStore {
         let Json(request): Json<RunDispatch> = row.try_get("request").map_err(reject)?;
         let sandbox: Option<String> = row.try_get("sandbox").map_err(reject)?;
         let status: String = row.try_get("status").map_err(reject)?;
+        let cancellation_requested: i64 = row.try_get("cancel_requested").map_err(reject)?;
         let recovery = status == "running";
         let expires = now_ms + lease_ms;
         let claimed = sqlx::query_scalar::<_, i64>(&format!(
@@ -837,6 +848,7 @@ impl DispatchQueue for PostgresDispatchStore {
                 expires_ms: expires,
                 epoch: lease_epoch as u64,
             },
+            cancellation_requested: cancellation_requested != 0,
             pending,
             recovered: status == "running",
             assignment: None,
@@ -915,10 +927,10 @@ impl DispatchQueue for PostgresDispatchStore {
             "SELECT COUNT(*) FROM {p}_dispatch d WHERE \
              d.status = 'pending' OR \
              (d.status = 'running' AND d.lease_until < $1) OR \
-             (d.status = 'awaiting' AND EXISTS (\
+             (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS (\
                SELECT 1 FROM {p}_pending i WHERE i.run_id = d.run_id \
                AND (i.available_at IS NULL OR i.available_at <= $1)\
-             ))"
+             )))"
         ))
         .bind(now_ms as i64)
         .fetch_one(&self.pool)
@@ -1093,7 +1105,7 @@ impl DispatchQueue for PostgresDispatchStore {
     async fn list_dispatches(&self) -> Result<Vec<DispatchSummary>, DispatchError> {
         let p = NS;
         let rows = sqlx::query(&format!(
-            "SELECT run_id, thread_id, status, attempt_count FROM {p}_dispatch \
+            "SELECT run_id, thread_id, status, attempt_count, cancel_requested FROM {p}_dispatch \
              ORDER BY created_at"
         ))
         .fetch_all(&self.pool)
@@ -1112,6 +1124,10 @@ impl DispatchQueue for PostgresDispatchStore {
                             ))
                         })?
                     },
+                    cancellation_requested: row
+                        .try_get::<i64, _>("cancel_requested")
+                        .map_err(reject)?
+                        != 0,
                     attempt_count: row.try_get::<i64, _>("attempt_count").map_err(reject)? as u64,
                 })
             })
@@ -1133,28 +1149,19 @@ impl DispatchQueue for PostgresDispatchStore {
 
     async fn cancel(&self, run_id: &RunId) -> Result<Option<ThreadId>, DispatchError> {
         let p = NS;
-        let mut tx = self.pool.begin().await.map_err(reject)?;
         let thread: Option<String> = sqlx::query_scalar(&format!(
-            "SELECT thread_id FROM {p}_dispatch \
-             WHERE run_id = $1 AND status IN ('pending', 'awaiting')"
+            "UPDATE {p}_dispatch SET cancel_requested = 1, \
+             lease_epoch = lease_epoch + CASE WHEN status = 'running' THEN 1 ELSE 0 END, \
+             lease_owner = CASE WHEN status = 'running' THEN NULL ELSE lease_owner END, \
+             lease_until = CASE WHEN status = 'running' THEN NULL ELSE lease_until END, \
+             status = CASE WHEN status = 'running' THEN 'pending' ELSE status END \
+             WHERE run_id = $1 AND status IN ('pending', 'awaiting', 'running') \
+             RETURNING thread_id"
         ))
         .bind(&run_id.0)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&self.pool)
         .await
         .map_err(reject)?;
-        if thread.is_some() {
-            sqlx::query(&format!("DELETE FROM {p}_pending WHERE run_id = $1"))
-                .bind(&run_id.0)
-                .execute(&mut *tx)
-                .await
-                .map_err(reject)?;
-            sqlx::query(&format!("DELETE FROM {p}_dispatch WHERE run_id = $1"))
-                .bind(&run_id.0)
-                .execute(&mut *tx)
-                .await
-                .map_err(reject)?;
-        }
-        tx.commit().await.map_err(reject)?;
         Ok(thread.map(ThreadId))
     }
 
@@ -1162,6 +1169,7 @@ impl DispatchQueue for PostgresDispatchStore {
         let p = NS;
         let run: Option<String> = sqlx::query_scalar(&format!(
             "SELECT run_id FROM {p}_dispatch WHERE thread_id = $1 AND status = 'awaiting' \
+             AND cancel_requested = 0 \
              ORDER BY created_at LIMIT 1"
         ))
         .bind(&thread_id.0)
@@ -1406,12 +1414,12 @@ async fn claim_exact_transaction(
          WHERE r.thread_id = d.thread_id AND r.status = 'running')"
     );
     let sql = format!(
-        "SELECT d.request, d.sandbox, d.status, d.worker_assignment FROM {p}_dispatch d \
+        "SELECT d.request, d.sandbox, d.status, d.worker_assignment, d.cancel_requested FROM {p}_dispatch d \
          WHERE d.run_id = $1 AND ( \
            (d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until < $2) \
-           OR (d.status = 'awaiting' AND EXISTS ( \
+           OR (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS ( \
              SELECT 1 FROM {p}_pending pe WHERE pe.run_id = d.run_id \
-             AND (pe.available_at IS NULL OR pe.available_at <= $2)) AND {not_running}) \
+             AND (pe.available_at IS NULL OR pe.available_at <= $2))) AND {not_running}) \
            OR (d.status = 'pending' AND {not_running}) \
          ) FOR UPDATE SKIP LOCKED LIMIT 1"
     );
@@ -1428,7 +1436,9 @@ async fn claim_exact_transaction(
     let previous: Option<Json<WorkerAssignment>> =
         row.try_get("worker_assignment").map_err(reject)?;
     let sandbox: Option<String> = row.try_get("sandbox").map_err(reject)?;
-    if let Some(worker) = worker
+    let cancellation_requested: i64 = row.try_get("cancel_requested").map_err(reject)?;
+    if cancellation_requested == 0
+        && let Some(worker) = worker
         && can_assign(
             worker,
             &request.placement,
@@ -1488,6 +1498,7 @@ async fn claim_exact_transaction(
             expires_ms: expires,
             epoch: lease_epoch as u64,
         },
+        cancellation_requested: cancellation_requested != 0,
         pending,
         recovered: status == "running",
         sandbox,

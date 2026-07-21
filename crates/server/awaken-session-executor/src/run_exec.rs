@@ -58,6 +58,106 @@ impl SessionAttemptExecutor {
     }
 }
 
+#[async_trait::async_trait]
+impl RunExecutor for SessionAttemptExecutor {
+    async fn execute(
+        &self,
+        activation: RunActivation,
+        context: RuntimeRunContext,
+    ) -> ExecutionResult<RunState> {
+        self.executor(&activation)?
+            .execute(activation, context)
+            .await
+    }
+}
+
+#[async_trait::async_trait]
+impl RunAttemptExecutor for SessionAttemptExecutor {
+    async fn resume(
+        &self,
+        activation: RunActivation,
+        command: ResumeCommand,
+        context: RuntimeRunContext,
+    ) -> ExecutionResult<RunState> {
+        self.executor(&activation)?
+            .resume(activation, command, context)
+            .await
+    }
+}
+
+impl SharedHost {
+    /// Execute `activation` for `thread`: the ACP executor when the session chose
+    /// an ACP runtime, else the native ingress (direct / durable / superseding).
+    ///
+    /// `sink`, when set, receives the engine's best-effort live progress — only
+    /// the in-process direct path wires it (the durable/ACP paths run elsewhere
+    /// and simply omit live events, degrading to the committed projection).
+    pub(crate) async fn execute_activation(
+        &self,
+        ctx: &Arc<SessionCtx>,
+        thread: &str,
+        mut activation: RunActivation,
+        supersede: bool,
+        sink: Option<Arc<dyn StreamSink>>,
+    ) -> Result<RunState, HostError> {
+        // Resolve the Session-level runtime selection into the activation BEFORE
+        // delivery. From here onward direct and durable ingress share the same
+        // snapshot-pinned executor router; ACP never bypasses enqueue/fencing.
+        if let Some(acp) = &self.acp
+            && let Some(adapter) = acp.adapter_for(thread)
+        {
+            activation.snapshot.resolved_spec.model_binding.backend_ref = adapter;
+        }
+        // The run's effective model — its per-run override (R5), else the model its
+        // snapshot binding names. Resolved to an executor per attempt at this seam
+        // (the direct path here; the durable path re-resolves on the claiming worker),
+        // so the runtime only ever receives an executor, never a model identity to
+        // look up — the provider owns how the model is reached (local credentials or a
+        // gateway offering).
+        if supersede {
+            // Durable + superseding: enqueue (marking prior pending superseded) and
+            // let the process pool drive it on this session's worker (O2).
+            self.submit_durable_foreground(ctx, activation, true).await
+        } else if ctx.durable {
+            // Durable: enqueue and await the pool driving it to a settled state. The
+            // session's own worker must not claim (it would grab foreign threads'
+            // runs on the shared queue); the pool is the sole claimer.
+            self.submit_durable_foreground(ctx, activation, false).await
+        } else {
+            // Native direct turn: the only path whose engine drains a live
+            // inbox in-process, so it is the only path that opens one. The
+            // inbox closes when the attempt returns — success or error — and
+            // unconsumed messages carry over to the thread's next attempt.
+            let mut context = ctx
+                .context_for(&activation)
+                .await
+                .map_err(|e| HostError::internal(e.to_string()))?
+                .with_live_inbox(ctx.open_live_inbox());
+            // Route this attempt's inference through the run's effective model,
+            // resolved through the host's InferenceExecutorMaterializer. `None` leaves the
+            // runtime's bound (host default) executor — a single-model deployment is
+            // unaffected.
+            if let Some(exec) = self
+                .inference_routing
+                .executor_for_activation(&activation)
+                .map_err(HostError::bad_request)?
+            {
+                context = context.with_model_executor(exec);
+            }
+            if let Some(sink) = sink {
+                context = context.with_stream_sink(sink);
+            }
+            let result = ctx
+                .ingress
+                .start(activation, context)
+                .await
+                .map_err(|e| HostError::internal(e.to_string()));
+            ctx.close_live_inbox();
+            result
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,105 +316,5 @@ mod tests {
             .await
             .expect_err("unwired A2A backend must fail closed");
         assert!(error.to_string().contains("A2A attempt routing"));
-    }
-}
-
-#[async_trait::async_trait]
-impl RunExecutor for SessionAttemptExecutor {
-    async fn execute(
-        &self,
-        activation: RunActivation,
-        context: RuntimeRunContext,
-    ) -> ExecutionResult<RunState> {
-        self.executor(&activation)?
-            .execute(activation, context)
-            .await
-    }
-}
-
-#[async_trait::async_trait]
-impl RunAttemptExecutor for SessionAttemptExecutor {
-    async fn resume(
-        &self,
-        activation: RunActivation,
-        command: ResumeCommand,
-        context: RuntimeRunContext,
-    ) -> ExecutionResult<RunState> {
-        self.executor(&activation)?
-            .resume(activation, command, context)
-            .await
-    }
-}
-
-impl SharedHost {
-    /// Execute `activation` for `thread`: the ACP executor when the session chose
-    /// an ACP runtime, else the native ingress (direct / durable / superseding).
-    ///
-    /// `sink`, when set, receives the engine's best-effort live progress — only
-    /// the in-process direct path wires it (the durable/ACP paths run elsewhere
-    /// and simply omit live events, degrading to the committed projection).
-    pub(crate) async fn execute_activation(
-        &self,
-        ctx: &Arc<SessionCtx>,
-        thread: &str,
-        mut activation: RunActivation,
-        supersede: bool,
-        sink: Option<Arc<dyn StreamSink>>,
-    ) -> Result<RunState, HostError> {
-        // Resolve the Session-level runtime selection into the activation BEFORE
-        // delivery. From here onward direct and durable ingress share the same
-        // snapshot-pinned executor router; ACP never bypasses enqueue/fencing.
-        if let Some(acp) = &self.acp
-            && let Some(adapter) = acp.adapter_for(thread)
-        {
-            activation.snapshot.resolved_spec.model_binding.backend_ref = adapter;
-        }
-        // The run's effective model — its per-run override (R5), else the model its
-        // snapshot binding names. Resolved to an executor per attempt at this seam
-        // (the direct path here; the durable path re-resolves on the claiming worker),
-        // so the runtime only ever receives an executor, never a model identity to
-        // look up — the provider owns how the model is reached (local credentials or a
-        // gateway offering).
-        if supersede {
-            // Durable + superseding: enqueue (marking prior pending superseded) and
-            // let the process pool drive it on this session's worker (O2).
-            self.submit_durable_foreground(ctx, activation, true).await
-        } else if ctx.durable {
-            // Durable: enqueue and await the pool driving it to a settled state. The
-            // session's own worker must not claim (it would grab foreign threads'
-            // runs on the shared queue); the pool is the sole claimer.
-            self.submit_durable_foreground(ctx, activation, false).await
-        } else {
-            // Native direct turn: the only path whose engine drains a live
-            // inbox in-process, so it is the only path that opens one. The
-            // inbox closes when the attempt returns — success or error — and
-            // unconsumed messages carry over to the thread's next attempt.
-            let mut context = ctx
-                .context_for(&activation)
-                .await
-                .map_err(|e| HostError::internal(e.to_string()))?
-                .with_live_inbox(ctx.open_live_inbox());
-            // Route this attempt's inference through the run's effective model,
-            // materialized through the host's InferenceExecutorMaterializer. `None` means
-            // this composition installed no materializer and explicitly uses its bound
-            // host executor; an installed materializer rejects an unusable pin fail-closed.
-            if let Some(exec) = self
-                .inference_routing
-                .executor_for_activation(&activation)
-                .map_err(HostError::bad_request)?
-            {
-                context = context.with_model_executor(exec);
-            }
-            if let Some(sink) = sink {
-                context = context.with_stream_sink(sink);
-            }
-            let result = ctx
-                .ingress
-                .start(activation, context)
-                .await
-                .map_err(|e| HostError::internal(e.to_string()));
-            ctx.close_live_inbox();
-            result
-        }
     }
 }

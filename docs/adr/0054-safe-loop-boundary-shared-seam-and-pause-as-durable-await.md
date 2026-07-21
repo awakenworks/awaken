@@ -164,6 +164,22 @@ Everything here is mechanical: the boundary folds input, awaits, or continues; a
 policy semantics enter the seam. The ACP CLI stays opaque — steer is injected only
 as the next prompt and its content is never interpreted (anti-corruption).
 
+### D6: ACP tool permission uses the same durable wait, not a held process
+
+An ACP `session/request_permission` evaluated as `RequireConfirmation` is projected
+to `AwaitReason::ToolPermission` with the policy correlation, ACP tool-call id, and
+neutral `PendingTool`. The driver answers the opaque process's outstanding request
+as cancelled, reaps that process, commits the ticket and negotiated ACP session id,
+and releases the dispatch lease. It never holds a process or lease while waiting for
+a person.
+
+Resume validates the ordinary `ResumeCommand` against that committed ticket. A
+replacement executor loads the durable ACP session id and sends one explicit
+continuation turn; a one-shot resolver applies the decision only to the exact held
+tool-call id. Any different or later request returns to current policy. This is the
+same at-least-once recovery posture as manual pause: opaque in-process ephemera is
+not durable, while correlation, authority, transcript, and session identity are.
+
 ## Consequences
 
 - **Steer / redirect works for every execution path** — direct-native (already),
@@ -182,6 +198,9 @@ as the next prompt and its content is never interpreted (anti-corruption).
 - **ACP persistent-session mode**: a pause→await→resume relaunches the CLI, losing
   any in-CLI ephemeral state (committed truth is intact). This is the inherent
   at-least-once / await-recovery residual, consistent with the rest of the runtime.
+- **ACP permission HITL is durable**: policy `Ask` no longer collapses to denial;
+  process/worker replacement consumes the same committed `ResumeTicket`, with the
+  decision scoped to the exact tool-call id.
 - `evaluate_boundary` is a decide-and-consume function, not a pure query — a small,
   documented tension with intent-revealing purity, accepted for cohesion.
 

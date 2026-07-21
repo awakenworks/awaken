@@ -29,8 +29,6 @@ use awaken_run_executor_acp::{
     AcpCli, AcpLaunch, AgentChannelSource, AgentSession, LaunchResolver, OpenError, project_launch,
 };
 use awaken_runtime_contract::activation::RunActivation;
-#[cfg(test)]
-use awaken_sandbox_container::AgentContainerProvider;
 use awaken_sandbox_local::NamespaceProvider;
 
 /// How a sandboxed/containerized ACP source obtains a run's CLI launch: a **fixed**
@@ -291,14 +289,16 @@ impl pc::SecretBroker for LocalCredentialFileBroker {
     feature = "container-podman",
     feature = "container-k8s"
 ))]
-type CredentialProjection = Option<(AcpCredentialBinding, Arc<dyn pc::SecretBroker>)>;
+type CredentialProjection = (AcpCredentialBinding, Arc<dyn pc::SecretBroker>);
 
 #[cfg(any(
     feature = "container-docker",
     feature = "container-podman",
     feature = "container-k8s"
 ))]
-pub(crate) fn credential_projection(source: &LaunchSource) -> Result<CredentialProjection, String> {
+pub(crate) fn credential_projection(
+    source: &LaunchSource,
+) -> Result<Option<CredentialProjection>, String> {
     let Some(raw_path) = std::env::var(crate::acp_provision::ACP_CREDENTIAL_FILE_ENV)
         .ok()
         .filter(|value| !value.trim().is_empty())
@@ -1262,33 +1262,6 @@ pub(crate) fn warm_pool_size() -> usize {
         .unwrap_or(0)
 }
 
-/// Route a concrete [`ContainerProvider`] through a [`WarmContainerPool`] when a warm
-/// size is configured; otherwise pass it straight through. Either way the result is
-/// an [`AgentContainerProvider`], so the container source is unchanged. The pool fills
-/// lazily (replenishes after the first session of a shape), so no capacity is
-/// provisioned until a shape is actually used.
-#[cfg(all(
-    test,
-    any(
-        feature = "container-docker",
-        feature = "container-podman",
-        feature = "container-k8s"
-    )
-))]
-fn warm_wrap<R: awaken_sandbox_container::ContainerRuntime + 'static>(
-    provider: awaken_sandbox_container::ContainerProvider<R>,
-) -> Arc<dyn AgentContainerProvider> {
-    let size = warm_pool_size();
-    if size > 0 {
-        Arc::new(awaken_sandbox_container::WarmContainerPool::new(
-            Arc::new(provider),
-            size,
-        ))
-    } else {
-        Arc::new(provider)
-    }
-}
-
 #[cfg(any(
     feature = "container-docker",
     feature = "container-podman",
@@ -1323,177 +1296,211 @@ pub(crate) fn spawn_container_reaper<R: awaken_sandbox_container::ContainerRunti
         .spawn(std::time::Duration::from_secs(interval));
 }
 
-/// Wrap a worker-configured [`AgentContainerProvider`] into a [`ContainerChannelSource`].
-#[cfg(all(
-    test,
-    any(
-        feature = "container-docker",
-        feature = "container-podman",
-        feature = "container-k8s"
-    )
-))]
-fn container_source(
-    provider: Arc<dyn AgentContainerProvider>,
-    source: LaunchSource,
-    egress: ThreadEgress,
-    resources: ThreadResources,
-    sandbox: ThreadSandbox,
-    credential: Option<AcpCredentialBinding>,
-) -> Arc<dyn AgentChannelSource> {
-    Arc::new(
-        ContainerChannelSource::from_source(provider, source)
-            .with_thread_egress(egress)
-            .with_thread_resources(resources)
-            .with_thread_sandbox(sandbox)
-            .with_credential(credential),
-    )
-}
-
-#[cfg(all(test, feature = "container-docker"))]
-fn build_docker_source(
-    image: Option<&str>,
-    source: LaunchSource,
-    egress: ThreadEgress,
-    resources: ThreadResources,
-    sandbox: ThreadSandbox,
-) -> Result<Arc<dyn AgentChannelSource>, String> {
-    let credential = credential_projection(&source)?;
-    let runtime = std::sync::Arc::new(
-        awaken_sandbox_container::docker::DockerRuntime::connect_local(CONTAINER_AGENT_PORT)
-            .map_err(|e| format!("docker runtime: {e}"))?,
-    );
-    // Sweep leaked containers of a crashed prior worker (startup + periodic).
-    spawn_container_reaper(runtime.clone());
-    let mut provider =
-        awaken_sandbox_container::ContainerProvider::new(runtime, container_image(image)?);
-    if let Some((_, broker)) = &credential {
-        provider = provider.with_secret_broker(broker.clone());
-    }
-    if let Some(proxy) = configured_container_egress_proxy() {
-        provider = provider.with_egress_proxy(proxy);
-    }
-    Ok(container_source(
-        warm_wrap(provider),
-        source,
-        egress,
-        resources,
-        sandbox,
-        credential.map(|(binding, _)| binding),
-    ))
-}
-
-#[cfg(all(test, not(feature = "container-docker")))]
-fn build_docker_source(
-    _image: Option<&str>,
-    _source: LaunchSource,
-    _egress: ThreadEgress,
-    _resources: ThreadResources,
-    _sandbox: ThreadSandbox,
-) -> Result<Arc<dyn AgentChannelSource>, String> {
-    Err("AWAKEN_SANDBOX_TIER=docker needs the `container-docker` feature".into())
-}
-
-#[cfg(all(test, feature = "container-podman"))]
-fn build_podman_source(
-    image: Option<&str>,
-    source: LaunchSource,
-    egress: ThreadEgress,
-    resources: ThreadResources,
-    sandbox: ThreadSandbox,
-) -> Result<Arc<dyn AgentChannelSource>, String> {
-    let credential = credential_projection(&source)?;
-    let runtime = std::sync::Arc::new(awaken_sandbox_container::podman::PodmanRuntime::new(
-        CONTAINER_AGENT_PORT,
-    ));
-    spawn_container_reaper(runtime.clone());
-    let mut provider =
-        awaken_sandbox_container::ContainerProvider::new(runtime, container_image(image)?);
-    if let Some((_, broker)) = &credential {
-        provider = provider.with_secret_broker(broker.clone());
-    }
-    if let Some(proxy) = configured_container_egress_proxy() {
-        provider = provider.with_egress_proxy(proxy);
-    }
-    Ok(container_source(
-        warm_wrap(provider),
-        source,
-        egress,
-        resources,
-        sandbox,
-        credential.map(|(binding, _)| binding),
-    ))
-}
-
-#[cfg(all(test, not(feature = "container-podman")))]
-fn build_podman_source(
-    _image: Option<&str>,
-    _source: LaunchSource,
-    _egress: ThreadEgress,
-    _resources: ThreadResources,
-    _sandbox: ThreadSandbox,
-) -> Result<Arc<dyn AgentChannelSource>, String> {
-    Err("AWAKEN_SANDBOX_TIER=podman needs the `container-podman` feature".into())
-}
-
-#[cfg(all(test, feature = "container-k8s"))]
-async fn build_k8s_source(
-    image: Option<&str>,
-    source: LaunchSource,
-    egress: ThreadEgress,
-    resources: ThreadResources,
-    sandbox: ThreadSandbox,
-) -> Result<Arc<dyn AgentChannelSource>, String> {
-    let credential = credential_projection(&source)?;
-    // The Pod's reachable agent address + namespace come from the worker's env; the
-    // Service/NodePort exposure is a cluster-deployment concern outside this process.
-    let namespace = std::env::var("AWAKEN_K8S_NAMESPACE").unwrap_or_else(|_| "default".into());
-    let addr = std::env::var("AWAKEN_K8S_AGENT_ADDR")
-        .map_err(|_| {
-            "AWAKEN_SANDBOX_TIER=k8s needs AWAKEN_K8S_AGENT_ADDR (the Pod's reachable ACP address)"
-                .to_string()
-        })?
-        .parse()
-        .map_err(|e| format!("bad AWAKEN_K8S_AGENT_ADDR: {e}"))?;
-    let runtime = awaken_sandbox_container::k8s::K8sRuntime::connect(namespace, addr)
-        .await
-        .map_err(|e| format!("k8s runtime: {e}"))?;
-    let mut provider = awaken_sandbox_container::ContainerProvider::new(
-        std::sync::Arc::new(runtime),
-        container_image(image)?,
-    );
-    if let Some((_, broker)) = &credential {
-        provider = provider.with_secret_broker(broker.clone());
-    }
-    if let Some(proxy) = configured_container_egress_proxy() {
-        provider = provider.with_egress_proxy(proxy);
-    }
-    Ok(container_source(
-        warm_wrap(provider),
-        source,
-        egress,
-        resources,
-        sandbox,
-        credential.map(|(binding, _)| binding),
-    ))
-}
-
-#[cfg(all(test, not(feature = "container-k8s")))]
-async fn build_k8s_source(
-    _image: Option<&str>,
-    _source: LaunchSource,
-    _egress: ThreadEgress,
-    _resources: ThreadResources,
-    _sandbox: ThreadSandbox,
-) -> Result<Arc<dyn AgentChannelSource>, String> {
-    Err("AWAKEN_SANDBOX_TIER=k8s needs the `container-k8s` feature".into())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn base() -> std::path::PathBuf {
         std::env::temp_dir().join(format!("awaken-sbxsrc-ut-{}", std::process::id()))
+    }
+
+    fn acp_activation(backend_ref: &str) -> RunActivation {
+        acp_activation_with_plugin_config(backend_ref, Default::default())
+    }
+
+    fn acp_activation_with_plugin_config(
+        backend_ref: &str,
+        plugin_config: std::collections::BTreeMap<String, serde_json::Value>,
+    ) -> RunActivation {
+        use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
+        use awaken_runtime_contract::snapshot::{
+            AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
+        };
+        RunActivation::new(
+            awaken_agent_contract::agent::run::Id("r".into()),
+            awaken_agent_contract::agent::thread::Id("t".into()),
+            ExecutableAgentSnapshot {
+                id: ExecutableAgentSnapshotId("s".into()),
+                metadata: Default::default(),
+                root_agent_id: AgentId("a".into()),
+                resolved_spec: ResolvedSpec {
+                    model_candidates: Vec::new(),
+                    catalog_fingerprint: CatalogFingerprint("fp".into()),
+                    instructions: String::new(),
+                    max_steps: 4,
+                    delegation_limits: Default::default(),
+                    model_binding: ModelBinding::new("prov", "m", backend_ref),
+                    tool_descriptors: Vec::new(),
+                    plugin_ids: Vec::new(),
+                    plugin_config,
+                    context_policy: Default::default(),
+                    tool_presentation: Default::default(),
+                },
+                fingerprint: CatalogFingerprint("fp".into()),
+            },
+            Vec::new(),
+        )
+    }
+
+    struct FakeResolver;
+
+    impl LaunchResolver for FakeResolver {
+        fn model(
+            &self,
+            _activation: &RunActivation,
+        ) -> Result<awaken_run_executor_acp::ResolvedModel, OpenError> {
+            Ok(awaken_run_executor_acp::ResolvedModel {
+                base_url: "http://model.invalid".into(),
+                model: "model".into(),
+                api_key: "leased-token".into(), // awaken-allow: secret
+            })
+        }
+    }
+
+    struct FakeProcess;
+
+    #[async_trait]
+    impl pc::ProcessHandle for FakeProcess {
+        fn id(&self) -> &str {
+            "agent"
+        }
+
+        async fn wait(&self) -> Result<pc::ExitStatus, pc::SandboxError> {
+            Ok(pc::ExitStatus {
+                code: Some(0),
+                signaled: false,
+            })
+        }
+
+        async fn poll(&self) -> Result<Option<pc::ExitStatus>, pc::SandboxError> {
+            Ok(None)
+        }
+
+        async fn signal(&self, _signal: pc::Signal) -> Result<(), pc::SandboxError> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct CapturingAgentSandbox {
+        command: Mutex<Option<pc::Command>>,
+        materialized: Mutex<Vec<(String, Vec<u8>)>>,
+    }
+
+    #[async_trait]
+    impl crate::session_environment::AgentSandbox for CapturingAgentSandbox {
+        fn is_container(&self) -> bool {
+            true
+        }
+
+        fn config_home(&self) -> &'static str {
+            SANDBOX_CONFIG_HOME
+        }
+
+        async fn materialize_inline(
+            &self,
+            logical: &str,
+            contents: &[u8],
+        ) -> Result<(), pc::SandboxError> {
+            self.materialized
+                .lock()
+                .unwrap()
+                .push((logical.to_string(), contents.to_vec()));
+            Ok(())
+        }
+
+        async fn spawn_agent(
+            &self,
+            command: pc::Command,
+        ) -> Result<
+            (
+                Box<dyn pc::ProcessHandle>,
+                Box<dyn awaken_run_executor_acp::AgentChannelType>,
+            ),
+            pc::SandboxError,
+        > {
+            *self.command.lock().unwrap() = Some(command);
+            let (channel, peer) = tokio::io::duplex(64);
+            tokio::spawn(async move {
+                let _peer = peer;
+            });
+            Ok((Box::new(FakeProcess), Box::new(channel)))
+        }
+    }
+
+    fn bound_projecting_source(
+        sandbox: Arc<CapturingAgentSandbox>,
+        cli_id: &str,
+    ) -> BoundLocalChannelSource {
+        let cli = awaken_run_executor_acp::acp_cli(cli_id).expect("known ACP CLI");
+        BoundLocalChannelSource {
+            sandbox,
+            launch: LaunchSource::Projected {
+                cli: Box::new(*cli),
+                resolver: Arc::new(FakeResolver),
+            },
+            codec: awaken_run_executor_acp::Codec::Acp,
+        }
+    }
+
+    #[tokio::test]
+    async fn bound_container_runs_the_selected_preinstalled_cli() {
+        let sandbox = Arc::new(CapturingAgentSandbox::default());
+        let source = bound_projecting_source(sandbox.clone(), "claude");
+
+        source
+            .open(&acp_activation("acp:claude"))
+            .await
+            .expect("open the bound container agent");
+
+        let command = sandbox.command.lock().unwrap();
+        assert_eq!(
+            command.as_ref().expect("agent was spawned").argv,
+            vec!["claude-agent-acp"],
+            "the bound container uses the catalog's preinstalled argv"
+        );
+    }
+
+    #[tokio::test]
+    async fn bound_container_delivers_session_new_mcp_servers() {
+        let sandbox = Arc::new(CapturingAgentSandbox::default());
+        let source = bound_projecting_source(sandbox, "claude");
+        let activation = acp_activation_with_plugin_config(
+            "acp:claude",
+            std::collections::BTreeMap::from([(
+                "acp".to_string(),
+                serde_json::json!({ "mcp_servers": [{
+                    "name": "github",
+                    "transport": { "kind": "http", "url": "https://mcp.invalid" },
+                    "credential": { "auth": "reference", "reference": "broker://github" }
+                }] }),
+            )]),
+        );
+
+        let session = source
+            .open(&activation)
+            .await
+            .expect("open bound ACP agent");
+        assert_eq!(session.mcp_session_servers.len(), 1);
+        assert_eq!(session.mcp_session_servers[0].name, "github");
+    }
+
+    #[tokio::test]
+    async fn bound_container_rejects_a_cli_other_than_the_one_it_serves() {
+        let sandbox = Arc::new(CapturingAgentSandbox::default());
+        let source = bound_projecting_source(sandbox.clone(), "claude");
+
+        let error = source
+            .open(&acp_activation("acp:codex"))
+            .await
+            .err()
+            .expect("a mismatched CLI must fail closed");
+
+        assert!(error.0.contains("acp:codex") && error.0.contains("acp:claude"));
+        assert!(
+            sandbox.command.lock().unwrap().is_none(),
+            "a mismatched run must not spawn in the SessionEnvironment"
+        );
     }
 
     #[test]
@@ -1731,246 +1738,6 @@ mod tests {
         assert!(e.denies("x"));
         e.set("x", false); // a later registration replaces the prior one
         assert!(!e.denies("x"));
-    }
-
-    /// A container provider stand-in — the spec-projection tests never open a
-    /// container, so `open_agent` is unreachable here (that path is covered in the
-    /// container crate's `open_agent` test against its scripted runtime).
-    struct UnusedContainerProvider;
-    #[async_trait]
-    impl AgentContainerProvider for UnusedContainerProvider {
-        async fn open_agent(
-            &self,
-            _spec: &pc::SandboxSpec,
-        ) -> Result<awaken_sandbox_container::AgentContainerSession, pc::SandboxError> {
-            unreachable!("spec-projection tests do not open a container")
-        }
-    }
-
-    fn container_source(
-        argv: Vec<String>,
-        env: Vec<(String, String)>,
-    ) -> (ContainerChannelSource, AcpLaunch) {
-        let launch = AcpLaunch::custom(argv, env);
-        let src = ContainerChannelSource::new(Arc::new(UnusedContainerProvider), launch.clone());
-        (src, launch)
-    }
-
-    #[test]
-    fn container_spec_is_process_as_container_on_the_container_tier() {
-        let (src, launch) = container_source(vec!["claude".into(), "--acp".into()], vec![]);
-        let spec = src.spec("t", &launch);
-        assert_eq!(spec.isolation, pc::IsolationClass::Container);
-        assert_eq!(spec.scope, "t");
-        // The agent argv IS the container's main command (not exec-into-idle).
-        assert_eq!(
-            spec.extra
-                .as_ref()
-                .and_then(|v| v.get("command"))
-                .and_then(|v| v.as_array())
-                .map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>()),
-            Some(vec!["claude", "--acp"])
-        );
-        // No egress registration → shares the host network.
-        assert!(matches!(spec.network, pc::NetworkPolicy::Unrestricted));
-    }
-
-    #[test]
-    fn container_spec_maps_deny_egress_to_no_network_and_env_to_inline_vars() {
-        let egress = ThreadEgress::new();
-        egress.set("iso", true);
-        let (src, launch) = container_source(vec!["claude".into()], vec![("K".into(), "V".into())]);
-        let src = src.with_thread_egress(egress);
-        let spec = src.spec("iso", &launch);
-        assert!(matches!(spec.network, pc::NetworkPolicy::None));
-        assert_eq!(spec.env.len(), 1);
-        assert_eq!(spec.env[0].name, "K");
-        assert!(matches!(spec.env[0].value, pc::EnvValue::Inline { .. }));
-    }
-
-    // ---- per-run CLI projection (the config-plane-selected ACP runtime) ----
-
-    /// A `LaunchResolver` stand-in — the projection reads the model through it.
-    struct FakeResolver;
-    impl LaunchResolver for FakeResolver {
-        fn model(
-            &self,
-            _a: &RunActivation,
-        ) -> Result<awaken_run_executor_acp::ResolvedModel, OpenError> {
-            Ok(awaken_run_executor_acp::ResolvedModel {
-                base_url: "http://x".into(),
-                model: "m".into(),
-                api_key: "k".into(),
-            })
-        }
-    }
-
-    /// A container process stand-in for the projection test (never polled for real).
-    struct FakeProc;
-    #[async_trait]
-    impl pc::ProcessHandle for FakeProc {
-        fn id(&self) -> &str {
-            "p"
-        }
-        async fn wait(&self) -> Result<pc::ExitStatus, pc::SandboxError> {
-            Ok(pc::ExitStatus {
-                code: Some(0),
-                signaled: false,
-            })
-        }
-        async fn poll(&self) -> Result<Option<pc::ExitStatus>, pc::SandboxError> {
-            Ok(None)
-        }
-        async fn signal(&self, _s: pc::Signal) -> Result<(), pc::SandboxError> {
-            Ok(())
-        }
-    }
-
-    /// Records the container command the source asked to run.
-    struct CapturingProvider(std::sync::Mutex<Option<Vec<String>>>);
-    #[async_trait]
-    impl AgentContainerProvider for CapturingProvider {
-        async fn open_agent(
-            &self,
-            spec: &pc::SandboxSpec,
-        ) -> Result<awaken_sandbox_container::AgentContainerSession, pc::SandboxError> {
-            let cmd = spec
-                .extra
-                .as_ref()
-                .and_then(|v| v.get("command"))
-                .and_then(|v| v.as_array())
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|x| x.as_str().map(String::from))
-                        .collect()
-                });
-            *self.0.lock().unwrap() = cmd;
-            let (ours, _peer) = tokio::io::duplex(64);
-            Ok(awaken_sandbox_container::AgentContainerSession {
-                channel: Box::new(ours),
-                process: Box::new(FakeProc),
-                handle: pc::SandboxHandle::new("container", "t"),
-            })
-        }
-    }
-
-    fn acp_activation(backend_ref: &str) -> RunActivation {
-        acp_activation_pc(backend_ref, Default::default())
-    }
-
-    fn acp_activation_pc(
-        backend_ref: &str,
-        plugin_config: std::collections::BTreeMap<String, serde_json::Value>,
-    ) -> RunActivation {
-        use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
-        use awaken_runtime_contract::snapshot::{
-            AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
-        };
-        RunActivation::new(
-            awaken_agent_contract::agent::run::Id("r".into()),
-            awaken_agent_contract::agent::thread::Id("t".into()),
-            ExecutableAgentSnapshot {
-                id: ExecutableAgentSnapshotId("s".into()),
-                metadata: Default::default(),
-                root_agent_id: AgentId("a".into()),
-                resolved_spec: ResolvedSpec {
-                    model_candidates: Vec::new(),
-                    catalog_fingerprint: CatalogFingerprint("fp".into()),
-                    instructions: String::new(),
-                    max_steps: 4,
-                    delegation_limits: Default::default(),
-                    // The config-plane selection: this agent runs on `acp:claude`.
-                    model_binding: ModelBinding::new("prov", "m", backend_ref),
-                    tool_descriptors: Vec::new(),
-                    plugin_ids: Vec::new(),
-                    plugin_config,
-                    context_policy: Default::default(),
-                    tool_presentation: Default::default(),
-                },
-                fingerprint: CatalogFingerprint("fp".into()),
-            },
-            Vec::new(),
-        )
-    }
-
-    #[tokio::test]
-    async fn a_projecting_container_source_delivers_session_new_mcp_servers() {
-        // MCP `session/new` servers reach the container tier in-band over the ACP wire —
-        // no container-interior filesystem needed (claude/gemini/opencode).
-        let captured = Arc::new(CapturingProvider(std::sync::Mutex::new(None)));
-        let cli = awaken_run_executor_acp::acp_cli("claude").unwrap();
-        let source = ContainerChannelSource::projecting(captured, *cli, Arc::new(FakeResolver));
-        let act = acp_activation_pc(
-            "acp:claude",
-            std::collections::BTreeMap::from([(
-                "acp".to_string(),
-                serde_json::json!({ "mcp_servers": [{
-                    "name": "gh",
-                    "transport": { "kind": "http", "url": "https://mcp" },
-                    "credential": { "auth": "reference", "reference": "broker://t" }
-                }] }),
-            )]),
-        );
-        let session = source
-            .open(&act)
-            .await
-            .expect("open the containerized agent");
-        assert_eq!(
-            session.mcp_session_servers.len(),
-            1,
-            "session/new MCP servers reach the container tier"
-        );
-        assert_eq!(session.mcp_session_servers[0].name, "gh");
-    }
-
-    #[tokio::test]
-    async fn a_projecting_container_source_runs_the_agents_selected_cli() {
-        let captured = Arc::new(CapturingProvider(std::sync::Mutex::new(None)));
-        let cli = awaken_run_executor_acp::acp_cli("claude").expect("claude is a known cli");
-        let resolver = Arc::new(FakeResolver);
-        let source = ContainerChannelSource::projecting(captured.clone(), *cli, resolver.clone());
-
-        // A run whose agent selected `acp:claude` in the config plane.
-        let act = acp_activation("acp:claude");
-        source
-            .open(&act)
-            .await
-            .expect("open the containerized agent");
-
-        // The container ran the row's preinstalled argv, not the host-oriented npx
-        // launcher — the config-plane CLI selection reached the container tier without
-        // a runtime package download.
-        let cmd = captured
-            .0
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("open_agent was called");
-        assert_eq!(cmd, vec!["claude-agent-acp"]);
-    }
-
-    #[tokio::test]
-    async fn a_run_for_a_different_cli_than_the_worker_serves_fails_closed() {
-        // This worker serves `acp:claude`; a run whose agent selected `acp:codex` must
-        // not silently run on claude — the declared ACP dialect is matched at open time.
-        let captured = Arc::new(CapturingProvider(std::sync::Mutex::new(None)));
-        let cli = awaken_run_executor_acp::acp_cli("claude").expect("claude");
-        let source =
-            ContainerChannelSource::projecting(captured.clone(), *cli, Arc::new(FakeResolver));
-
-        let err = source
-            .open(&acp_activation("acp:codex"))
-            .await
-            .err()
-            .expect("a CLI mismatch must fail closed");
-        assert!(
-            err.0.contains("acp:codex") && err.0.contains("acp:claude"),
-            "{err:?}"
-        );
-        assert!(
-            captured.0.lock().unwrap().is_none(),
-            "no container was created for the mismatched run"
-        );
     }
 
     #[tokio::test]

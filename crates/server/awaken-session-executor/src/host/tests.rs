@@ -1286,6 +1286,11 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
     host.run(None, "t-attach", user("hi"))
         .await
         .expect("first turn");
+    let environment_before = host
+        .session_environment("t-attach")
+        .await
+        .expect("session environment");
+    let handle_before = environment_before.handle();
     assert!(
         host.sessions.lock().await.contains_key("t-attach"),
         "the first turn caches the thread's sandbox ctx"
@@ -1312,6 +1317,16 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         !host.sessions.lock().await.contains_key("t-attach"),
         "attach evicts the cached ctx so the next turn rebuilds with the mount"
     );
+    assert_eq!(
+        host.session_environment_handle("t-attach").await,
+        Some(handle_before.clone()),
+        "runtime rebuild retains the one Session environment"
+    );
+    assert_eq!(
+        environment_before.list_files(".mnt").await.unwrap(),
+        vec![("data.txt".into(), b"hello-attached".to_vec())],
+        "the live environment receives the file before attach returns"
+    );
     // ... and the spec the next turn will build now carries the mount + its bytes.
     let spec = host.sandbox_spec("t-attach");
     assert_eq!(spec.mounts.len(), before + 1, "one more mount staged");
@@ -1324,6 +1339,15 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         carried_mount_bytes(spec.mounts.last().unwrap()),
         b"hello-attached"
     );
+
+    host.run(None, "t-attach", user("after attach"))
+        .await
+        .expect("runtime rebuild over retained environment");
+    let environment_after = host
+        .session_environment("t-attach")
+        .await
+        .expect("retained environment");
+    assert!(Arc::ptr_eq(&environment_before, &environment_after));
 
     // Detach removes exactly that mount again.
     managed
@@ -1340,6 +1364,18 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         !serde_json::to_string(&spec.mounts)
             .unwrap()
             .contains("data.txt")
+    );
+    assert!(
+        environment_after
+            .list_files(".mnt")
+            .await
+            .unwrap()
+            .is_empty(),
+        "detach removes the projected file from the same live environment"
+    );
+    assert_eq!(
+        host.session_environment_handle("t-attach").await,
+        Some(handle_before)
     );
 }
 
@@ -2727,6 +2763,10 @@ async fn end_session_disposes_the_threads_sandbox() {
     assert!(
         !host.sessions.lock().await.contains_key("t-end"),
         "end_session evicts the cached ctx"
+    );
+    assert!(
+        host.session_environment("t-end").await.is_none(),
+        "terminal end removes the independent environment owner"
     );
     // ... and the sandbox is ACTUALLY disposed: its workspace dir was reaped, so a
     // subsequent status reports Terminated (proving dispose ran, not just an evict).

@@ -23,8 +23,8 @@ use std::sync::Arc;
 
 use crate::provider::{LocalProcess, resolve_source, restrict_to_owner, verify};
 use crate::{
-    DiscoveredSkillFile, IsolatedRoot, content_fingerprint, list_files_at, namespace_raw_tools,
-    provision_repo_at, push_repo_at, scan_skill_dir_at,
+    DiscoveredSkillFile, IsolatedRoot, content_fingerprint, jailed_at, list_files_at,
+    namespace_raw_tools, provision_repo_at, push_repo_at, scan_skill_dir_at,
 };
 
 fn err(e: impl ToString) -> pc::SandboxError {
@@ -537,12 +537,24 @@ impl NamespaceSandbox {
         logical: &str,
         contents: &[u8],
     ) -> Result<(), pc::SandboxError> {
-        let path = self.root.resolve(logical).map_err(err)?;
+        let path = jailed_at(&self.root, logical).map_err(err)?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(err)?;
         }
         std::fs::write(&path, contents).map_err(err)?;
         restrict_to_owner(&path)
+    }
+
+    /// Remove one dynamically projected workspace path. Missing paths are an
+    /// idempotent success and lexical traversal is rejected by the shared jail.
+    pub fn remove_inline(&self, logical: &str) -> Result<(), pc::SandboxError> {
+        let path = self.root.resolve(logical).map_err(err)?;
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_dir() => std::fs::remove_dir_all(path).map_err(err),
+            Ok(_) => std::fs::remove_file(path).map_err(err),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(err(error)),
+        }
     }
 
     /// The rendered launcher argv for `command` (bwrap wrapping the program).
