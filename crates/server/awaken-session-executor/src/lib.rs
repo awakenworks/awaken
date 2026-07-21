@@ -227,16 +227,22 @@ fn to_step_outcome(result: RunResult) -> Result<StepOutcome, RunError> {
 /// to the same host.
 pub struct ManagedHost {
     host: Arc<SharedHost>,
+    credentials: Option<CredentialInjector>,
     mcp: Option<ManagedMcp>,
     resource_configs: Option<Arc<dyn awaken_resource_contract::ResourceConfigSource>>,
 }
 
-/// The session-ingress MCP wiring (ADR-0043 Phase 3): the stores
-/// `prepare_session` reads to materialize a binding's vault credential and the
-/// management plane's agent↔MCP config. Present only via [`ManagedHost::with_mcp`].
-struct ManagedMcp {
+/// Runtime credential injection. This is independent of MCP and is also consumed
+/// by Repository realization; persisted inputs carry references only.
+#[derive(Clone)]
+struct CredentialInjector {
     credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
     secrets: Arc<dyn awaken_credential_vault::SecretStore>,
+}
+
+/// The authored agent↔MCP configuration store. Credential materialization is
+/// delegated to [`CredentialInjector`] instead of being owned by this component.
+struct ManagedMcp {
     mcp_store: Arc<dyn awaken_config_resolver::McpStore>,
 }
 
@@ -271,6 +277,7 @@ impl ManagedHost {
     pub fn new(host: Arc<SharedHost>) -> Self {
         Self {
             host,
+            credentials: None,
             mcp: None,
             resource_configs: None,
         }
@@ -393,28 +400,36 @@ impl ManagedHost {
                 source
                     .resolve_repository(workspace, repository_id.as_str())
                     .map_err(|error| RunError::bad_request(error.to_string()))?;
-                let token = match &config.credential_binding {
+                let credential = match &config.credential_binding {
                     Some(binding) => {
-                        let mcp = self.mcp.as_ref().ok_or_else(|| {
+                        let credentials = self.credentials.as_ref().ok_or_else(|| {
                             RunError::bad_request(
                                 "repository credential requires a configured credential vault",
                             )
                         })?;
                         let source_id =
                             awaken_credential_vault::CredentialSourceId(binding.clone());
-                        let row = mcp.credentials.get(&source_id).await.map_err(|error| {
-                            RunError::bad_request(format!(
-                                "repository `{repository_id}` credential: {error}"
-                            ))
-                        })?;
-                        Some(
-                            awaken_credential_vault::materialize(&row, mcp.secrets.as_ref())
+                        let row =
+                            credentials
+                                .credentials
+                                .get(&source_id)
                                 .await
                                 .map_err(|error| {
                                     RunError::bad_request(format!(
                                         "repository `{repository_id}` credential: {error}"
                                     ))
-                                })?,
+                                })?;
+                        Some(
+                            awaken_credential_vault::materialize(
+                                &row,
+                                credentials.secrets.as_ref(),
+                            )
+                            .await
+                            .map_err(|error| {
+                                RunError::bad_request(format!(
+                                    "repository `{repository_id}` credential: {error}"
+                                ))
+                            })?,
                         )
                     }
                     None => None,
@@ -423,7 +438,7 @@ impl ManagedHost {
                     logical,
                     url: config.remote_url.clone(),
                     git_ref: config.initial_branch.clone(),
-                    token,
+                    credential,
                     access: mount_access,
                 });
             }
@@ -454,11 +469,11 @@ impl ManagedHost {
         let repository_mcp = all
             .repos
             .iter()
-            .filter(|repository| repository.token.is_some())
+            .filter(|repository| repository.credential.is_some())
             .map(|repository| crate::host::PreparedMcpServer {
                 name: format!("github:{}", repository.logical),
                 url: GITHUB_MCP_URL.to_string(),
-                bearer: repository.token.clone(),
+                bearer: repository.credential.clone(),
                 refresh: None,
             })
             .collect();
@@ -479,10 +494,25 @@ impl ManagedHost {
         secrets: Arc<dyn awaken_credential_vault::SecretStore>,
         mcp_store: Arc<dyn awaken_config_resolver::McpStore>,
     ) -> Self {
-        self.mcp = Some(ManagedMcp {
+        self.credentials = Some(CredentialInjector {
             credentials,
             secrets,
-            mcp_store,
+        });
+        self.mcp = Some(ManagedMcp { mcp_store });
+        self
+    }
+
+    /// Wire credential injection without enabling authored MCP configuration.
+    /// Repository realization uses this seam directly.
+    #[must_use]
+    pub fn with_credentials(
+        mut self,
+        credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
+        secrets: Arc<dyn awaken_credential_vault::SecretStore>,
+    ) -> Self {
+        self.credentials = Some(CredentialInjector {
+            credentials,
+            secrets,
         });
         self
     }
@@ -837,7 +867,11 @@ impl SessionRuntime for ManagedHost {
         let repo_mcp = self
             .stage_effective_inputs(thread, &init.workspace_id, &init.resources)
             .await?;
+        let Some(credentials) = &self.credentials else {
+            return Ok(());
+        };
         let Some(mcp) = &self.mcp else {
+            self.host.register_thread_mcp(thread, repo_mcp);
             return Ok(());
         };
         let mut prepared: Vec<crate::host::PreparedMcpServer> =
@@ -847,10 +881,10 @@ impl SessionRuntime for ManagedHost {
                 Some(source_id) => {
                     // Re-type the port's neutral id string into the vault's domain id.
                     let source_id = awaken_credential_vault::CredentialSourceId(source_id.clone());
-                    let row = mcp.credentials.get(&source_id).await.map_err(|e| {
+                    let row = credentials.credentials.get(&source_id).await.map_err(|e| {
                         RunError::bad_request(format!("mcp server `{}`: {e}", binding.name))
                     })?;
-                    let bearer = awaken_credential_vault::materialize(&row, &*mcp.secrets)
+                    let bearer = awaken_credential_vault::materialize(&row, &*credentials.secrets)
                         .await
                         .map_err(|e| {
                             RunError::bad_request(format!("mcp server `{}`: {e}", binding.name))
@@ -870,7 +904,7 @@ impl SessionRuntime for ManagedHost {
                                 r.refresh_token_ref.clone(),
                             ),
                             access_token_ref: access_token_ref.clone(),
-                            secrets: mcp.secrets.clone(),
+                            secrets: credentials.secrets.clone(),
                         }),
                         _ => None,
                     };
@@ -911,9 +945,9 @@ impl SessionRuntime for ManagedHost {
                 }
                 defs.push(def);
             }
-            let lookup = PrefetchedSourceLookup::for_defs(&defs, &*mcp.credentials).await;
+            let lookup = PrefetchedSourceLookup::for_defs(&defs, &*credentials.credentials).await;
             let resolved =
-                awaken_config_resolver::resolve_mcp_servers(&defs, &lookup, &*mcp.secrets)
+                awaken_config_resolver::resolve_mcp_servers(&defs, &lookup, &*credentials.secrets)
                     .await
                     .map_err(|e| {
                         RunError::internal(format!(

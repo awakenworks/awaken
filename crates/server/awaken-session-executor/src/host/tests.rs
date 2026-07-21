@@ -15,7 +15,6 @@ struct TestInput {
     mount_path: String,
     access: awaken_resource_contract::ResourceAccess,
     instructions: Option<String>,
-    auth_token: Option<String>,
     git_ref: Option<String>,
 }
 
@@ -99,10 +98,6 @@ fn effective_resources(
             .into_iter()
             .enumerate()
             .map(|(index, resource)| {
-                assert!(
-                    resource.auth_token.is_none(),
-                    "tests must represent credentials by Vault reference"
-                );
                 let source = match resource.kind.as_str() {
                     "file" => ResolvedInputSource::File {
                         file_id: FileId::from(resource.id.clone()),
@@ -765,7 +760,6 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         mount_path: "/data.txt".into(),
         access: ResourceAccess::ReadOnly,
         instructions: None,
-        auth_token: None,
         git_ref: None,
     };
     let attached = effective_resources(vec![res.clone()]);
@@ -951,7 +945,6 @@ async fn prepare_session_mounts_an_effective_memory_resource() {
                     mount_path: "/mnt/memory".into(),
                     access: ResourceAccess::ReadWrite,
                     instructions: None,
-                    auth_token: None,
                     git_ref: None,
                 })
                 .into_iter()
@@ -1045,7 +1038,6 @@ async fn activation_applies_current_resource_state_as_a_deny_only_overlay() {
         mount_path: "/mnt/memory".into(),
         access: ResourceAccess::ReadOnly,
         instructions: None,
-        auth_token: None,
         git_ref: None,
     }]);
     catalog
@@ -1092,7 +1084,6 @@ async fn prepare_session_mounts_effective_file_and_stages_effective_repo() {
                         mount_path: "/mnt/files/notes.txt".into(),
                         access: ResourceAccess::ReadOnly,
                         instructions: None,
-                        auth_token: None,
                         git_ref: None,
                     },
                     TestInput {
@@ -1101,7 +1092,6 @@ async fn prepare_session_mounts_effective_file_and_stages_effective_repo() {
                         mount_path: "/mnt/repo".into(),
                         access: ResourceAccess::ReadOnly,
                         instructions: None,
-                        auth_token: None,
                         git_ref: None,
                     },
                 ]),
@@ -1175,7 +1165,6 @@ async fn file_activation_rejects_bytes_that_do_not_match_the_file_id() {
         mount_path: "/mnt/input.bin".into(),
         access: ResourceAccess::ReadOnly,
         instructions: None,
-        auth_token: None,
         git_ref: None,
     }]);
 
@@ -1202,7 +1191,6 @@ async fn file_activation_enforces_workspace_ownership_without_iam_policy_logic()
         mount_path: "/mnt/input.txt".into(),
         access: ResourceAccess::ReadOnly,
         instructions: None,
-        auth_token: None,
         git_ref: None,
     }]);
 
@@ -1330,11 +1318,8 @@ async fn rotating_a_github_repository_token_re_keys_the_clone_and_mcp_bearer() {
     )
     .await
     .unwrap();
-    let managed = managed_with_resource_source(host.clone()).with_mcp(
-        credentials.clone(),
-        secrets.clone(),
-        Arc::new(awaken_config_resolver::InMemoryMcpStore::new()),
-    );
+    let managed = managed_with_resource_source(host.clone())
+        .with_credentials(credentials.clone(), secrets.clone());
     managed
         .prepare_session(
             "t-rot",
@@ -1365,7 +1350,7 @@ async fn rotating_a_github_repository_token_re_keys_the_clone_and_mcp_bearer() {
     };
     let clone_token = |h: &SharedHost| {
         h.thread_repos("t-rot")[0]
-            .token
+            .credential
             .as_ref()
             .map(|t| t.expose_secret().to_string())
     };
@@ -1457,7 +1442,6 @@ async fn told_equals_mounted_the_prompt_path_and_access_match_the_realized_mount
         mount_path: "/mnt/memory".into(),
         access: ResourceAccess::ReadOnly,
         instructions: None,
-        auth_token: None,
         git_ref: None,
     };
     let managed = managed_with_resource_source(host.clone());
@@ -1502,7 +1486,6 @@ async fn runtime_stages_exactly_the_effective_resource_list() {
         mount_path: "/mnt/memory".into(),
         access: ResourceAccess::ReadWrite,
         instructions: None,
-        auth_token: None,
         git_ref: None,
     }]);
     managed.prepare_session("t-g3", init).await.unwrap();
@@ -1542,7 +1525,6 @@ async fn a_bound_resource_with_a_missing_backing_store_fails_the_session_closed(
         mount_path: "/mnt/memory".into(),
         access: ResourceAccess::ReadWrite,
         instructions: None,
-        auth_token: None,
         git_ref: None,
     }]);
 
@@ -1574,7 +1556,6 @@ async fn an_effective_resource_mounts_on_a_worker_without_the_binding_repository
         mount_path: "/mnt/memory".into(),
         access: ResourceAccess::ReadOnly,
         instructions: None,
-        auth_token: None,
         git_ref: None,
     }]);
     managed_worker
