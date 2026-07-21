@@ -5,9 +5,9 @@
 # drain only 1 of a concurrent burst because `PostgresCommitCoordinator` allocated the
 # commit sequence from a per-process in-memory counter, so concurrent commits collided
 # on `runtime_commit_pkey`. Now the sequence is DB-atomic (advisory-lock + MAX+1), so
-# the fleet drains the whole burst exactly once. The script still scales the brain 1→N
-# to dodge a SEPARATE, still-open issue: scoped-migration's unlocked `ensure_ledger`
-# races on `pg_type_typname_nsp_index` when N pods cold-start a fresh DB together.
+# the fleet drains the whole burst exactly once. Fleet startup is also direct: the
+# composition-root Postgres advisory lock serializes first-boot migrations, so all
+# replicas may start together against a fresh database.
 # A fleet of brain pods behind one Service drains ONE shared Postgres dispatch queue.
 # We fire M concurrent durable submissions and then assert, AUTHORITATIVELY against
 # Postgres (not a per-pod cached projection), that every run was driven EXACTLY ONCE:
@@ -109,14 +109,7 @@ log "5/5 apply the fleet and drive the scaling + consistency scenario (M=$M)"
 kubectl -n "$NS" apply -f "$DEPLOY_DIR/scaling-postgres.yaml" >/dev/null
 echo "waiting for postgres..."
 kubectl -n "$NS" rollout status deploy/postgres --timeout=120s
-# Serialize the cold-start migration: bring up ONE brain first (it creates the
-# schema), THEN scale to the full fleet — otherwise N pods race in scoped-migration's
-# unlocked ledger bootstrap (CREATE TABLE IF NOT EXISTS → pg_type_typname_nsp_index).
-echo "seed one brain to run migrations, then scale to the fleet..."
-kubectl -n "$NS" scale deploy/brain --replicas=1 >/dev/null
-kubectl -n "$NS" rollout status deploy/brain --timeout=120s
-kubectl -n "$NS" scale deploy/brain --replicas=3 >/dev/null
-echo "waiting for the brain fleet (3 replicas)..."
+echo "waiting for the concurrently starting brain fleet (3 replicas)..."
 if ! kubectl -n "$NS" rollout status deploy/brain --timeout=150s; then
   err "brain fleet never became ready"; kubectl -n "$NS" get pods -o wide || true
   kubectl -n "$NS" logs deploy/brain --tail=25 || true; exit 1

@@ -98,14 +98,7 @@ kubectl -n "$NS" apply -f "$DEPLOY_DIR/nats-wake-postgres.yaml" >/dev/null
 echo "waiting for nats + postgres..."
 kubectl -n "$NS" rollout status deploy/nats --timeout=120s
 kubectl -n "$NS" rollout status deploy/postgres --timeout=120s
-# Serialize the cold-start migration: bring up ONE brain first (it creates the schema),
-# THEN scale to the full fleet — otherwise N pods race in scoped-migration's unlocked
-# ledger bootstrap (CREATE TABLE IF NOT EXISTS → pg_type_typname_nsp_index).
-echo "seed one brain to run migrations, then scale to the fleet..."
-kubectl -n "$NS" scale deploy/brain --replicas=1 >/dev/null
-kubectl -n "$NS" rollout status deploy/brain --timeout=120s
-kubectl -n "$NS" scale deploy/brain --replicas=3 >/dev/null
-echo "waiting for the brain fleet (3 replicas)..."
+echo "waiting for the concurrently starting brain fleet (3 replicas)..."
 if ! kubectl -n "$NS" rollout status deploy/brain --timeout=150s; then
   err "brain fleet never became ready"; kubectl -n "$NS" get pods -o wide || true
   kubectl -n "$NS" logs deploy/brain --tail=25 || true; exit 1

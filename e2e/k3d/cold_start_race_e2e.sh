@@ -1,27 +1,20 @@
 #!/usr/bin/env bash
 # Cold-start migration-race e2e (Oversight issue #24) on a real k3d cluster.
 #
-# THE RACE (verified, still OPEN in the awaken-foundation dep): `awaken-scoped-migration`'s
-# `ensure_ledger` creates the ledger tables with bare `CREATE TABLE IF NOT EXISTS`
-# OUTSIDE the per-bundle advisory lock (chicken-and-egg: the lock is keyed on a ledger
-# table that doesn't exist yet). Postgres `CREATE TABLE IF NOT EXISTS` is NOT
-# concurrency-safe for the table's implicit rowtype, so N replicas cold-starting
-# against a FRESH Postgres collide on `pg_type_typname_nsp_index` and a replica
-# crash-loops (operation `postgres_migration_ledger_schema`).
+# THE REGRESSION: `awaken-scoped-migration` creates its ledger before its per-bundle
+# lock exists. Concurrent first boots used to collide on Postgres's implicit rowtype
+# (`pg_type_typname_nsp_index`). The composition root now owns a database-wide startup
+# advisory lock around all repository migrations.
 #
-# THE WORKAROUND (what this test PINS as a regression guard): seed ONE replica, let it
-# migrate with no peer to race, THEN scale to N. `scaling_e2e.sh` already relies on it;
-# this test makes it a first-class, isolated PASS/FAIL and ships a repro harness for #24.
+# The historical seed-one path remains a regression guard, while the direct 0→3 path
+# is now a hard gate proving deployments no longer depend on that workaround.
 #
 # Two phases, each against a FRESH database (its own namespace + emptyDir Postgres):
 #   PHASE 1  WORKAROUND / REGRESSION GUARD (hard PASS/FAIL): seed 1 brain → migrate →
 #            scale to 3 → submit M concurrent durable runs → assert exactly-once in
 #            Postgres (total messages, distinct threads, bad=0). THIS is the pass gate.
-#   PHASE 2  NAIVE REPRO (diagnostic, NON-FATAL): fresh DB, 3 brain replicas 0→3 all at
-#            once, no seeding → observe whether a replica crash-loops / logs the
-#            `pg_type_typname_nsp_index` / `postgres_migration_ledger_schema` error
-#            within a bounded wait. The race is timing-dependent, so a no-repro run is
-#            NOT a failure — this phase documents/repros #24, it is not the gate.
+#   PHASE 2  CONCURRENT COLD START (hard PASS/FAIL): fresh DB, 3 brain replicas 0→3
+#            at once, no seeding → all Ready, no migration error, no restart.
 #
 # Requires: k3d, kubectl, docker (daemon up), rustc 1.96 (host build), node (e2e/).
 # Usage: e2e/k3d/cold_start_race_e2e.sh [M]   (default M=12, from repo root)
@@ -55,7 +48,9 @@ cleanup() {
 trap cleanup EXIT
 
 # psql on the postgres pod of a given namespace (authoritative truth); -tA = bare scalar.
-psql_scalar() { kubectl -n "$1" exec deploy/postgres -- env PGPASSWORD=test psql -U postgres -d awaken -tAc "$2" 2>/dev/null | tr -d '[:space:]'; }
+# Polling suppresses transient exec errors, while final assertions preserve stderr.
+psql_scalar() { kubectl -n "$1" exec deploy/postgres -- env PGPASSWORD=test psql -U postgres -d awaken -tAc "$2" | tr -d '[:space:]'; }
+psql_scalar_quiet() { psql_scalar "$1" "$2" 2>/dev/null; }
 
 log "1/5 build the server binary on the host (rustc 1.96)"
 RUSTUP_TOOLCHAIN=1.96.0 cargo build -q -p awaken-scenario-host --bin awaken-scenario-host
@@ -105,7 +100,8 @@ log "5/5 PHASE 1 — WORKAROUND (regression guard): seed 1 → migrate → scale
 # ============================================================================
 kubectl create namespace "$NS_GUARD" >/dev/null 2>&1 || true
 # Bring up Postgres FIRST (fresh emptyDir DB), then a SINGLE brain: the lone pod runs
-# scoped-migration's `ensure_ledger` + migrations with no peer to race. THIS is the fix.
+# scoped-migration's `ensure_ledger` + migrations with no peer to race. This preserves
+# the historical deployment path as a baseline; phase 2 proves it is no longer required.
 kubectl -n "$NS_GUARD" apply -f "$MANIFEST" -l app=postgres >/dev/null
 echo "waiting for postgres (phase 1)..."
 kubectl -n "$NS_GUARD" rollout status deploy/postgres --timeout=120s
@@ -140,7 +136,7 @@ log "phase 1: wait for the fleet to drain, then assert exactly-once in Postgres"
 WANT=$((M * 2))   # one echo turn commits 2 messages: User + Assistant
 GOT=0
 for _ in $(seq 1 60); do
-  GOT=$(psql_scalar "$NS_GUARD" "SELECT count(*) FROM runtime_message" || echo 0)
+  GOT=$(psql_scalar_quiet "$NS_GUARD" "SELECT count(*) FROM runtime_message" || echo 0)
   [ "${GOT:-0}" -ge "$WANT" ] && break
   sleep 2
 done
@@ -162,16 +158,15 @@ kill "$PF_PID" 2>/dev/null || true; PF_PID=""
 kubectl delete namespace "$NS_GUARD" --wait=false >/dev/null 2>&1 || true
 
 # ============================================================================
-log "PHASE 2 — NAIVE REPRO (diagnostic, NON-FATAL): 3 replicas cold-start a FRESH DB"
+log "PHASE 2 — CONCURRENT COLD START: 3 replicas migrate a FRESH DB safely"
 # ============================================================================
-REPRO_RESULT="race not triggered this run — it is timing-dependent"
 kubectl create namespace "$NS_REPRO" >/dev/null 2>&1 || true
 kubectl -n "$NS_REPRO" apply -f "$MANIFEST" -l app=postgres >/dev/null
 echo "waiting for postgres (phase 2, fresh DB)..."
 kubectl -n "$NS_REPRO" rollout status deploy/postgres --timeout=120s
 # Create the brain Deployment but hold it at 0 so NO pod migrates first, then jump
 # straight to 3: the ReplicaSet spawns all three at once against the fresh, ready,
-# UNMIGRATED Postgres — the exact naive deployment that races `ensure_ledger`.
+# UNMIGRATED Postgres — the formerly unsafe deployment now guarded at composition.
 kubectl -n "$NS_REPRO" apply -f "$MANIFEST" -l app=brain >/dev/null
 kubectl -n "$NS_REPRO" scale deploy/brain --replicas=0 >/dev/null
 for _ in $(seq 1 30); do
@@ -182,46 +177,40 @@ done
 echo "launching 3 brain replicas ALL AT ONCE against the fresh DB (no seeding)..."
 kubectl -n "$NS_REPRO" scale deploy/brain --replicas=3 >/dev/null
 
-# Bounded observation window: watch for a crash-looping replica or the ledger error.
-RACE=0
-CRASH_POD=""
 ERR_RE='pg_type_typname_nsp_index|postgres_migration_ledger_schema'
-for _ in $(seq 1 45); do
-  # Any replica with restarts and a CrashLoopBackOff/Error waiting reason?
-  while read -r pod restarts reason || [ -n "$pod" ]; do
-    [ -z "$pod" ] && continue
-    if [ "${restarts:-0}" != "0" ] || [ "$reason" = "CrashLoopBackOff" ] || [ "$reason" = "Error" ]; then
-      # Confirm it's the migration race (current OR previous container log).
-      L=$(kubectl -n "$NS_REPRO" logs "$pod" --tail=200 2>/dev/null; kubectl -n "$NS_REPRO" logs "$pod" -p --tail=200 2>/dev/null) || true
-      if echo "$L" | grep -Eq "$ERR_RE"; then RACE=1; CRASH_POD="$pod"; break; fi
-    fi
-  done < <(kubectl -n "$NS_REPRO" get pods -l app=brain \
-             -o 'custom-columns=N:.metadata.name,R:.status.containerStatuses[0].restartCount,W:.status.containerStatuses[0].state.waiting.reason' \
-             --no-headers 2>/dev/null || true)
-  [ "$RACE" -eq 1 ] && break
-  # Also stop early if the fleet went fully Ready without any race (nothing to see).
-  READY=$(kubectl -n "$NS_REPRO" get deploy/brain -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo 0)
-  [ "${READY:-0}" = "3" ] && break
-  sleep 2
-done
-
-if [ "$RACE" -eq 1 ]; then
-  REPRO_RESULT="RACE REPRODUCED — replica $CRASH_POD crash-looped on the unlocked ensure_ledger (issue #24)"
-  err "PHASE 2: RACE REPRODUCED on pod $CRASH_POD"
-  echo "---- crashing pod log evidence (matching lines) ----"
-  { kubectl -n "$NS_REPRO" logs "$CRASH_POD" --tail=200 2>/dev/null; kubectl -n "$NS_REPRO" logs "$CRASH_POD" -p --tail=200 2>/dev/null; } \
-    | grep -E "$ERR_RE" | head -8 || true
-  echo "----------------------------------------------------"
+if ! kubectl -n "$NS_REPRO" rollout status deploy/brain --timeout=150s; then
+  err "PHASE 2 FAIL: concurrent cold-start fleet never became ready"
   kubectl -n "$NS_REPRO" get pods -l app=brain -o wide || true
-else
-  ok "PHASE 2: $REPRO_RESULT"
-  echo "(the seed-1-then-scale workaround pinned by phase 1 is what avoids this — see issue #24)"
+  kubectl -n "$NS_REPRO" logs -l app=brain --all-containers --prefix --tail=200 || true
+  exit 1
 fi
+
+MIGRATION_ERROR=0
+while read -r pod || [ -n "$pod" ]; do
+  [ -z "$pod" ] && continue
+  L=$(kubectl -n "$NS_REPRO" logs "$pod" --tail=200 2>/dev/null; kubectl -n "$NS_REPRO" logs "$pod" -p --tail=200 2>/dev/null) || true
+  if echo "$L" | grep -Eq "$ERR_RE"; then
+    err "PHASE 2 FAIL: migration catalog race appeared in $pod"
+    echo "$L" | grep -E "$ERR_RE" | head -8 || true
+    MIGRATION_ERROR=1
+  fi
+done < <(kubectl -n "$NS_REPRO" get pods -l app=brain -o name | cut -d/ -f2)
+
+RESTARTS=$(kubectl -n "$NS_REPRO" get pods -l app=brain \
+  -o jsonpath='{range .items[*]}{.status.containerStatuses[0].restartCount}{"\n"}{end}' \
+  | awk '{sum += $1} END {print sum + 0}')
+if [ "$MIGRATION_ERROR" -ne 0 ] || [ "$RESTARTS" -ne 0 ]; then
+  err "PHASE 2 FAIL: migration_errors=$MIGRATION_ERROR container_restarts=$RESTARTS"
+  kubectl -n "$NS_REPRO" get pods -l app=brain -o wide || true
+  exit 1
+fi
+PHASE2_RESULT="all 3 replicas became Ready with 0 migration errors and 0 restarts"
+ok "PHASE 2 PASS: $PHASE2_RESULT"
 kubectl delete namespace "$NS_REPRO" --wait=false >/dev/null 2>&1 || true
 
 # ============================================================================
 log "RESULT"
 echo "phase 1 (regression guard): $ASSERT_LINE"
-echo "phase 2 (diagnostic):       $REPRO_RESULT"
-ok "\nCOLD START E2E PASS: the seed-1-then-scale workaround for issue #24 held — a 3-pod fleet drained $M concurrent durable runs exactly-once (no loss, no double-drive). [phase 2 is diagnostic-only]"
+echo "phase 2 (concurrent):       $PHASE2_RESULT"
+ok "\nCOLD START E2E PASS: both seed-then-scale and direct 0→3 startup are safe; the fleet drained $M concurrent durable runs exactly-once and concurrent migrations completed without a catalog race."
 exit 0
