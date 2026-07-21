@@ -373,7 +373,7 @@ impl SharedHost {
     /// environment. The narrow port receives only a secret-free plan and an ephemeral
     /// transport credential after authorization/config resolution. A failure aborts
     /// activation so the Session cannot run believing a working tree exists.
-    pub(crate) fn realize_thread_repositories(
+    pub(crate) async fn realize_thread_repositories(
         &self,
         thread: &str,
         realizer: &dyn pc::RepositoryRealizer,
@@ -394,6 +394,7 @@ impl SharedHost {
                         .as_ref()
                         .map(|value| value.expose_secret()),
                 )
+                .await
                 .map_err(|e| crate::host::HostError::internal(e.to_string()))?;
         }
         Ok(())
@@ -448,7 +449,8 @@ impl SharedHost {
                     .credential
                     .as_ref()
                     .map(|value| value.expose_secret()),
-            );
+            )
+            .await;
         }
     }
 
@@ -504,7 +506,7 @@ impl SharedHost {
             return Vec::new();
         };
         let mut out = Vec::new();
-        for (path, bytes) in env.list_files("outputs") {
+        for (path, bytes) in env.list_files("outputs").await.unwrap_or_default() {
             if let Ok(id) = self.file_store.put(&bytes).await {
                 let workspace = self.thread_workspace(thread);
                 if self.register_file_ownership(&workspace, &id).await.is_ok() {
@@ -693,7 +695,7 @@ mod provisioning_registry_tests {
                 ..Default::default()
             },
         );
-        let err = host.realize_thread_repositories("t", &env);
+        let err = host.realize_thread_repositories("t", &env).await;
         assert!(
             err.is_err(),
             "an unsafe repo mount must abort session start"

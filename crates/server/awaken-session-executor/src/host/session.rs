@@ -256,7 +256,8 @@ impl SharedHost {
         });
         // Clone any staged github_repository resources into the fresh sandbox,
         // host-side (ADR-0038); fail-closed so a bad repo aborts session start.
-        self.realize_thread_repositories(thread, env.as_ref())?;
+        self.realize_thread_repositories(thread, env.as_ref())
+            .await?;
         let thread_id = ThreadId(thread.to_string());
         let commit = Arc::new(self.build_commit(thread).await?);
         // Durable interrupted-stream checkpoints follow the commit's durability
@@ -437,6 +438,7 @@ impl SharedHost {
             self.agent_run_reuse_sandbox,
             &skills_subdir,
         )
+        .await
         .map_err(HostError::internal)?
         {
             runtime = runtime

@@ -8,7 +8,9 @@ use awaken_provisioning_contract as pc;
 use awaken_runtime_contract::llm::ToolCall;
 use awaken_runtime_contract::tool::ToolExecutor;
 use awaken_sandbox_container::docker::DockerRuntime;
-use awaken_sandbox_container::{ContainerProvider, ContainerRuntime, ContainerState};
+use awaken_sandbox_container::{
+    ContainerEnvironment, ContainerProvider, ContainerRuntime, ContainerState, EnvironmentFile,
+};
 use tokio::io::AsyncReadExt;
 
 #[tokio::test]
@@ -24,7 +26,14 @@ async fn native_acp_and_hand_share_one_production_container() {
     let spec = pc::SandboxSpec {
         scope,
         isolation: pc::IsolationClass::Container,
-        mounts: Vec::new(),
+        mounts: vec![pc::MountRequirement {
+            mount_id: "seed".into(),
+            source: pc::MountSource::Other(serde_json::json!({"content": "mounted-seed"})),
+            mount_path: "/workspace/.mnt/seed.txt".into(),
+            access: pc::MountAccess::ReadOnly,
+            lifetime: pc::MountLifetime::PerRun,
+            required: true,
+        }],
         env: Vec::new(),
         network: pc::NetworkPolicy::Unrestricted,
         outputs_path: "/mnt/session/outputs".into(),
@@ -44,6 +53,15 @@ async fn native_acp_and_hand_share_one_production_container() {
         .and_then(serde_json::Value::as_str)
         .expect("physical container id")
         .to_string();
+    assert_eq!(
+        ContainerEnvironment::read_files(&sandbox, "/workspace/.mnt")
+            .await
+            .unwrap(),
+        vec![EnvironmentFile {
+            path: "seed.txt".into(),
+            bytes: b"mounted-seed".to_vec(),
+        }]
+    );
 
     let mut write = pc::Command::new([
         "sh",
@@ -97,6 +115,37 @@ async fn native_acp_and_hand_share_one_production_container() {
         .await
         .expect("Native tool routed through the in-container hand");
     assert!(result.content.contains("real-hand-ok"));
+
+    let harvest = pc::Command::new([
+        "sh",
+        "-c",
+        "mkdir -p /workspace/outputs/nested && printf text > /workspace/outputs/z.txt && printf '\\000\\377' > /workspace/outputs/nested/binary",
+    ]);
+    assert_eq!(
+        pc::Sandbox::spawn(&sandbox, harvest)
+            .await
+            .unwrap()
+            .wait()
+            .await
+            .unwrap()
+            .code,
+        Some(0)
+    );
+    assert_eq!(
+        ContainerEnvironment::read_files(&sandbox, "/workspace/outputs")
+            .await
+            .unwrap(),
+        vec![
+            EnvironmentFile {
+                path: "nested/binary".into(),
+                bytes: vec![0, 0xff],
+            },
+            EnvironmentFile {
+                path: "z.txt".into(),
+                bytes: b"text".to_vec(),
+            },
+        ]
+    );
 
     hand_process.signal(pc::Signal::Term).await.unwrap();
     assert!(
