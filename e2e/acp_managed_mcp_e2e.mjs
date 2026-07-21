@@ -70,7 +70,24 @@ async function main() {
       pass('managed session (runtime acp:* + vault-bound mcp_servers) → host relay on session/new, secretless');
     });
 
-    console.log('E2E PASS: managed ACP × MCP host-relayed session/new injection end-to-end.');
+    // Compose the real-CLI twin through the same external API without launching the
+    // networked CLI. This keeps the real factory in the hermetic coverage gate and
+    // guards against reintroducing the obsolete trusted-inline override; the dynamic
+    // host-owned relay behavior itself is exercised above, while the live twin is exercised by
+    // acp_real_mcp_kimi_e2e.mjs when provider quota is available.
+    await withServer('acp-real-mcp', 38199, async (baseUrl) => {
+      const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
+      const session = await client.beta.sessions.create({
+        agent: 'assistant',
+        metadata: { 'awaken.runtime': 'acp:claude' },
+        betas: BETAS,
+      });
+      assert.equal(session.status, 'idle');
+      assert.equal(session.agent.id, 'assistant');
+      pass('real ACP factory composes behind the managed API without a trusted-inline MCP path');
+    });
+
+    console.log('E2E PASS: managed ACP × MCP host-relayed injection and real-CLI factory wiring.');
     process.exitCode = 0;
   } catch (err) {
     console.error('E2E FAIL:', err);
