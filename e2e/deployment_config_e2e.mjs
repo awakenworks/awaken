@@ -137,10 +137,10 @@ async function main() {
   );
   pass('the config gate refuses a durable ingress on a volatile (in-memory) queue');
 
-  // N4: AWAKEN_MGMT_IAM=embedded persists bearer tokens under <MGMT_DIR>/iam.sqlite; an
-  // in-memory token directory would evaporate on restart (every admin locked out or, worse,
-  // re-bootstrapped). Selecting embedded IAM without AWAKEN_MGMT_DIR fails closed at store
-  // assembly rather than silently running an ephemeral IAM.
+  // N4: self-managed IAM persists bearer tokens below AWAKEN_DEPLOYMENT_DATA_DIR; an
+  // in-memory data directory would evaporate on restart (every admin locked out or, worse,
+  // re-bootstrapped). Selecting embedded IAM without the canonical deployment data root
+  // fails closed at store assembly rather than silently running an ephemeral IAM.
   const iamNoDir = await runToExit(
     bin,
     { AWAKEN_ROLE: 'serve', AWAKEN_MGMT_IAM: 'embedded' },
@@ -148,7 +148,7 @@ async function main() {
   );
   assert.notEqual(iamNoDir.code, 0, 'embedded IAM without a data dir must refuse to boot');
   assert.ok(
-    iamNoDir.stderr.includes('AWAKEN_MGMT_IAM=embedded requires AWAKEN_MGMT_DIR'),
+    iamNoDir.stderr.includes('self-managed IAM requires AWAKEN_DEPLOYMENT_DATA_DIR'),
     `the refusal names the missing dir: ${iamNoDir.stderr}`,
   );
   pass('the config gate refuses embedded IAM with no data dir (would run an ephemeral token store)');
@@ -170,10 +170,11 @@ async function main() {
     let out = '';
     child.stdout.on('data', (c) => (out += c.toString()));
     child.stderr.on('data', (c) => (out += c.toString()));
+    const exited = new Promise((resolve) => child.once('exit', resolve));
     // Give it a moment to print the deprecation + config summary, then stop it.
     await new Promise((r) => setTimeout(r, 2500));
-    child.kill('SIGINT');
-    await new Promise((r) => child.on('exit', r));
+    if (child.exitCode === null) child.kill('SIGINT');
+    await exited;
     assert.ok(
       out.includes('deprecated') && out.includes('AWAKEN_UPSTREAM_URL'),
       `a legacy env name warns: ${out}`,
@@ -217,8 +218,11 @@ async function main() {
     assert.equal(afterDrain.status, 503, 'admin /readyz flips to 503 after drain');
     pass('the serve admin surface splits onto its own port (readyz/metrics/drain)');
   } finally {
-    serve.kill('SIGINT');
-    await new Promise((r) => serve.on('exit', r));
+    if (serve.exitCode === null) {
+      const exited = new Promise((resolve) => serve.once('exit', resolve));
+      serve.kill('SIGINT');
+      await exited;
+    }
   }
 
   console.log('E2E PASS: deployment config gate refuses bad shapes, warns on legacy names, and the admin surface splits onto its own port.');

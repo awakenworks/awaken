@@ -1,9 +1,9 @@
 // Managed-API ACP × MCP × vault e2e: a session that selects an external ACP CLI
 // runtime (`awaken.runtime: acp:*`) AND declares an inline `mcp_servers` bound to a
-// vault credential has its staged MCP server projected — α-secretless — into the CLI's
+// vault credential has its staged MCP server projected — secretless — into the CLI's
 // `session/new` request. Proves the whole D6→D5 chain end to end through the HTTP
 // managed API: session mcp_servers → prepare_session staging (vault-materialized bearer)
-// → α overlay (`session-mcp:<name>` reference, never the raw token) → `plugin_config.acp`
+// → host-owned loopback relay (never the raw token) → `plugin_config.acp`
 // → the ProjectingChannelSource's `session/new` injection over the REAL ACP JSON-RPC
 // codec. The fake CLI echoes what it saw on `session/new`, so the assertion is on the
 // bearer form that actually crossed to the agent. `AWAKEN_MODEL_MODE=acp-managed-mcp`.
@@ -29,7 +29,7 @@ async function agentTexts(client, sessionId) {
 async function main() {
   // The host connects to this MCP server in-process at prepare (tool discovery +
   // pre-authorization), so it must be reachable even though the ACP CLI has its own
-  // MCP client; the vault-materialized bearer is what the α overlay then references.
+  // MCP client; the vault-materialized bearer remains in the host-owned relay.
   const fixture = await startCalcFixture(CALC_TOKEN);
   try {
     await withServer('acp-managed-mcp', 38196, async (baseUrl) => {
@@ -61,16 +61,16 @@ async function main() {
       const texts = await agentTexts(client, session.id);
       const reply = texts.join(' ');
       // The fake CLI reports what crossed on `session/new`: the server name reached it,
-      // and the bearer is the α reference (`session-mcp:calc`), not the raw vault token.
+      // and its URL is the host-owned loopback relay, not the provider URL plus raw token.
       assert.ok(
-        texts.includes('mcp saw-calc alpha-ref'),
-        `session/new carried the MCP server with the α reference to the ACP CLI, got ${JSON.stringify(texts)}`,
+        texts.includes('mcp saw-calc host-relay'),
+        `session/new carried the MCP server through the host relay to the ACP CLI, got ${JSON.stringify(texts)}`,
       );
       assert.ok(!reply.includes(CALC_TOKEN), 'the raw vault token never reached the CLI');
-      pass('managed session (runtime acp:* + vault-bound mcp_servers) → α session-mcp reference on session/new, secretless');
+      pass('managed session (runtime acp:* + vault-bound mcp_servers) → host relay on session/new, secretless');
     });
 
-    console.log('E2E PASS: managed ACP × MCP α-secretless session/new injection end-to-end.');
+    console.log('E2E PASS: managed ACP × MCP host-relayed session/new injection end-to-end.');
     process.exitCode = 0;
   } catch (err) {
     console.error('E2E FAIL:', err);
