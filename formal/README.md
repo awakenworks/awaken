@@ -108,6 +108,12 @@ production logic.
 - `RemoteTool.tla`, `SessionOwnership.tla`, `CircuitBreaker.tla`, and
   `ConfigCAS.tla` cover durable operation identity, atomic ownership,
   generation-fenced permits, and optimistic config concurrency.
+- `RemoteAttempt.tla` covers the A2A root-attempt boundary: stable replay message
+  identity across the external-send/local-commit crash window, durable task and
+  endpoint pinning, reattachment without resend after the reference commit,
+  input/resume continuity, fail-closed endpoint mismatch, cancellation of the
+  pinned task, and terminal reference retirement. Remote peer deduplication is
+  deliberately retained as an external idempotency assumption.
 - `AuthzKernel.tla`, `LiveInbox.tla`, and `CheckpointRecovery.tla` cover total
   request classification, editable process-local input, and crash-safe streaming
   watermark/checkpoint behavior.
@@ -191,6 +197,7 @@ graphs with zero invariant violations and zero states left on the queue:
 | RuntimeImplementation | 1,323,147 | 619,008 | 24 |
 | RustCommitSystem | 4,494 | 1,277 | 9 |
 | RemoteTool | 421 | 200 | 10 |
+| RemoteAttempt | 701 | 356 | 16 |
 | AuthzKernel | 180 | 18 | 1 |
 | SessionOwnership | 768 | 169 | 7 |
 | CircuitBreaker | 1,573 | 478 | 10 |
