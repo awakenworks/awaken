@@ -189,8 +189,55 @@ pub(crate) async fn build(
 #[cfg(all(test, feature = "container-podman"))]
 mod tests {
     use super::*;
+    use awaken_run_executor_acp::{LaunchResolver, OpenError, ResolvedModel};
+    use awaken_runtime_contract::activation::RunActivation;
 
     struct Broker;
+
+    struct Resolver;
+
+    impl LaunchResolver for Resolver {
+        fn model(&self, _activation: &RunActivation) -> Result<ResolvedModel, OpenError> {
+            Ok(ResolvedModel {
+                base_url: String::new(),
+                model: String::new(),
+                api_key: String::new(),
+            })
+        }
+    }
+
+    struct EnvRestore(Vec<(&'static str, Option<std::ffi::OsString>)>);
+
+    impl EnvRestore {
+        fn set(values: &[(&'static str, Option<&str>)]) -> Self {
+            let previous = values
+                .iter()
+                .map(|(key, _)| (*key, std::env::var_os(key)))
+                .collect();
+            for (key, value) in values {
+                unsafe {
+                    match value {
+                        Some(value) => std::env::set_var(key, value),
+                        None => std::env::remove_var(key),
+                    }
+                }
+            }
+            Self(previous)
+        }
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            for (key, value) in self.0.drain(..) {
+                unsafe {
+                    match value {
+                        Some(value) => std::env::set_var(key, value),
+                        None => std::env::remove_var(key),
+                    }
+                }
+            }
+        }
+    }
 
     #[async_trait::async_trait]
     impl pc::SecretBroker for Broker {
@@ -237,6 +284,58 @@ mod tests {
                 Some(Arc::new(Broker)),
             )
             .is_ok()
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn projected_credentials_and_podman_build_are_wired_once() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let credential_file = temp.path().join("auth.json");
+        std::fs::write(&credential_file, b"synthetic-credential").unwrap();
+        std::fs::set_permissions(&credential_file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let credential_path = credential_file.to_string_lossy().into_owned();
+        let _env = EnvRestore::set(&[
+            (
+                crate::acp_provision::ACP_CREDENTIAL_FILE_ENV,
+                Some(&credential_path),
+            ),
+            (
+                "AWAKEN_CONTAINER_EGRESS_PROXY",
+                Some("http://127.0.0.1:7777"),
+            ),
+            ("AWAKEN_SANDBOX_WARM_POOL", Some("0")),
+            ("AWAKEN_SANDBOX_REAP", Some("0")),
+        ]);
+        let source = LaunchSource::Projected {
+            cli: Box::new(*awaken_run_executor_acp::acp_cli("claude").unwrap()),
+            resolver: Arc::new(Resolver),
+        };
+
+        let (mount, broker) = credential(&source).unwrap();
+        let mount = mount.expect("native credential mount");
+        assert_eq!(mount.mount_path, "/acp-config/.credentials.json");
+        assert!(broker.is_some());
+        assert!(
+            finish(
+                Arc::new(awaken_sandbox_container::podman::PodmanRuntime::new(8080)),
+                Some("busybox"),
+                broker,
+            )
+            .is_ok()
+        );
+
+        assert!(
+            build(SandboxTier::Local, Some("busybox"), &source)
+                .await
+                .is_err()
+        );
+        assert!(
+            build(SandboxTier::Podman, Some("busybox"), &source)
+                .await
+                .is_ok()
         );
     }
 }
