@@ -480,7 +480,7 @@ impl SharedHost {
     async fn persist_authored_skills(
         &self,
         workspace: &str,
-        env: &awaken_sandbox_local::LocalSandbox,
+        env: &crate::session_environment::SessionEnvironment,
     ) {
         for skill in env.scan_skill_dir(crate::skills::DEFAULT_SKILLS_SUBDIR) {
             self.skills
@@ -670,10 +670,12 @@ mod provisioning_registry_tests {
         // contract: that SandboxError surfaces as a HostError so a session never
         // starts believing a repo mounted when it did not.
         let tmp = tempfile::tempdir().unwrap();
-        let env = LocalProvider::new(tmp.path())
-            .create_sandbox(&agent_run_sandbox_spec("s"))
-            .await
-            .unwrap();
+        let env = crate::session_environment::SessionEnvironment::workdir(
+            LocalProvider::new(tmp.path())
+                .create_sandbox(&agent_run_sandbox_spec("s"))
+                .await
+                .unwrap(),
+        );
         let host = host();
         host.register_thread_resources(
             "t",
@@ -727,10 +729,12 @@ mod provisioning_registry_tests {
 
         // A real sandbox env with a skill authored under the workspace `skills/` dir.
         let base = dir.join("sbx");
-        let env = LocalProvider::new(&base)
-            .create_sandbox(&agent_run_sandbox_spec("t"))
-            .await
-            .unwrap();
+        let env = crate::session_environment::SessionEnvironment::workdir(
+            LocalProvider::new(&base)
+                .create_sandbox(&agent_run_sandbox_spec("t"))
+                .await
+                .unwrap(),
+        );
         let skill_dir = base.join("t").join("skills").join("notes");
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(

@@ -46,6 +46,7 @@ pub use resource_reclamation::HostResourceReclamation;
 pub use resource_scope::RequiredWorkspaceScope;
 mod run_exec;
 mod sandbox_source;
+mod session_environment;
 mod skill_catalog;
 mod skills;
 mod skills_api;

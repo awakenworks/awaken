@@ -46,7 +46,7 @@ use awaken_runtime_contract::tool::{ToolExecutor, ToolExecutorProvider, ToolOutp
 // (rooted tools, repos, artifacts) the host composes into each session's runtime.
 use awaken_protocol_managed::DelegatedRun;
 use awaken_provisioning_contract::Sandbox;
-use awaken_sandbox_local::{LocalProvider, LocalSandbox};
+use awaken_sandbox_local::LocalProvider;
 use awaken_store_fs::{FsCommitCoordinator, FsStreamCheckpointStore};
 use awaken_store_sqlite::SqliteCommitCoordinator;
 
@@ -130,6 +130,9 @@ pub struct SharedHost {
     /// ACP runtime backend (R3/R4): serves `acp:*` sessions on an external CLI.
     pub(crate) acp: Option<Arc<crate::acp_backend::AcpBackend>>,
     pub(crate) provider: LocalProvider,
+    /// Provider for the Session-owned environment shared by Native/ACP/children.
+    /// Kept separate from deliberately-fresh housekeeping sandboxes.
+    pub(crate) session_provider: crate::session_environment::SessionEnvironmentProvider,
     grader: Arc<dyn Grader>,
     pub(crate) client_tools: HashSet<String>,
     /// The skill offering (ADR-0036): the static configured set, the optional durable
