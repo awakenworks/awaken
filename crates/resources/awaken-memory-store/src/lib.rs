@@ -13,8 +13,8 @@
 pub mod repository;
 
 pub use repository::{
-    FilesystemMemoryRepository, MAX_MEMORY_BYTES, MemErr, Memory, MemoryEntry, MemoryRepository,
-    MemoryVersion, MemoryVersionOperation, VolatileMemoryRepository, sha256_hex,
+    FilesystemMemoryRepository, MAX_MEMORY_BYTES, MemErr, Memory, MemoryEntry, MemoryPurgeSummary,
+    MemoryRepository, MemoryVersion, MemoryVersionOperation, VolatileMemoryRepository, sha256_hex,
 };
 
 #[cfg(feature = "postgres")]

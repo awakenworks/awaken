@@ -77,6 +77,8 @@ pub(crate) struct SkillAggregate {
     pub versions: BTreeMap<u64, SkillVersion>,
     #[serde(default)]
     pub retired_versions: std::collections::BTreeSet<u64>,
+    #[serde(default)]
+    pub deleted: bool,
 }
 
 pub(crate) fn legacy_aggregate(workspace: &str, id: &str, content: &[u8]) -> SkillAggregate {
@@ -106,6 +108,7 @@ pub(crate) fn legacy_aggregate(workspace: &str, id: &str, content: &[u8]) -> Ski
             },
         )]),
         retired_versions: Default::default(),
+        deleted: false,
     }
 }
 
@@ -157,6 +160,9 @@ pub(crate) fn append_to(
     aggregate: &mut SkillAggregate,
     version: SkillVersion,
 ) -> Result<(), SkillStoreError> {
+    if aggregate.deleted {
+        return Err(SkillStoreError::NotFound(aggregate.definition.id.clone()));
+    }
     if version.skill_id != aggregate.definition.id
         || version.version != aggregate.definition.last_version.saturating_add(1)
         || version.bundle_sha256 != bundle_sha256(&version.files)
@@ -181,6 +187,9 @@ pub(crate) fn remove_version_from(
     aggregate: &mut SkillAggregate,
     version: u64,
 ) -> Result<bool, SkillStoreError> {
+    if aggregate.deleted {
+        return Ok(false);
+    }
     if !aggregate.versions.contains_key(&version) || aggregate.retired_versions.contains(&version) {
         return Ok(false);
     }
@@ -239,6 +248,7 @@ impl SkillStore for InMemorySkillStore {
                 definition,
                 versions: BTreeMap::from([(initial_version.version, initial_version)]),
                 retired_versions: Default::default(),
+                deleted: false,
             },
         );
         Ok(())
@@ -269,6 +279,7 @@ impl SkillStore for InMemorySkillStore {
             .unwrap()
             .get(workspace_id)
             .and_then(|ws| ws.get(skill_id))
+            .filter(|aggregate| !aggregate.deleted)
             .map(|aggregate| aggregate.definition.clone()))
     }
 
@@ -283,6 +294,7 @@ impl SkillStore for InMemorySkillStore {
             .get(workspace_id)
             .map(|ws| {
                 ws.values()
+                    .filter(|aggregate| !aggregate.deleted)
                     .map(|aggregate| aggregate.definition.clone())
                     .collect()
             })
@@ -315,6 +327,7 @@ impl SkillStore for InMemorySkillStore {
             .unwrap()
             .get(workspace_id)
             .and_then(|ws| ws.get(skill_id))
+            .filter(|aggregate| !aggregate.deleted)
             .map(|aggregate| {
                 aggregate
                     .versions
@@ -347,12 +360,40 @@ impl SkillStore for InMemorySkillStore {
         workspace_id: &str,
         skill_id: &str,
     ) -> Result<bool, SkillStoreError> {
-        Ok(self
-            .inner
-            .lock()
-            .unwrap()
+        let mut inner = self.inner.lock().unwrap();
+        let Some(aggregate) = inner
             .get_mut(workspace_id)
-            .is_some_and(|ws| ws.remove(skill_id).is_some()))
+            .and_then(|workspace| workspace.get_mut(skill_id))
+        else {
+            return Ok(false);
+        };
+        if aggregate.deleted {
+            return Ok(false);
+        }
+        aggregate.deleted = true;
+        Ok(true)
+    }
+
+    async fn purge_skill(
+        &self,
+        workspace_id: &str,
+        skill_id: &str,
+    ) -> Result<u64, SkillStoreError> {
+        let mut inner = self.inner.lock().unwrap();
+        let Some(workspace) = inner.get_mut(workspace_id) else {
+            return Ok(0);
+        };
+        let Some(aggregate) = workspace.get(skill_id) else {
+            return Ok(0);
+        };
+        if !aggregate.deleted {
+            return Err(SkillStoreError::Invalid(
+                "an active Skill cannot be physically reclaimed".into(),
+            ));
+        }
+        let versions = aggregate.versions.len() as u64;
+        workspace.remove(skill_id);
+        Ok(versions)
     }
 }
 
@@ -476,6 +517,7 @@ impl SkillStore for FsSkillStore {
             definition,
             versions: BTreeMap::from([(initial_version.version, initial_version)]),
             retired_versions: Default::default(),
+            deleted: false,
         })
     }
 
@@ -500,6 +542,7 @@ impl SkillStore for FsSkillStore {
     ) -> Result<Option<SkillDefinition>, SkillStoreError> {
         Ok(self
             .read_aggregate(workspace_id, skill_id)?
+            .filter(|aggregate| !aggregate.deleted)
             .map(|aggregate| aggregate.definition))
     }
 
@@ -526,7 +569,7 @@ impl SkillStore for FsSkillStore {
                     std::fs::read(path).map_err(|error| SkillStoreError::Io(error.to_string()))?;
                 let aggregate: SkillAggregate = serde_json::from_slice(&bytes)
                     .map_err(|error| SkillStoreError::Storage(error.to_string()))?;
-                if aggregate.definition.workspace_id == workspace_id {
+                if aggregate.definition.workspace_id == workspace_id && !aggregate.deleted {
                     out.push(aggregate.definition);
                 }
             }
@@ -553,6 +596,7 @@ impl SkillStore for FsSkillStore {
     ) -> Result<Vec<SkillVersion>, SkillStoreError> {
         Ok(self
             .read_aggregate(workspace_id, skill_id)?
+            .filter(|aggregate| !aggregate.deleted)
             .map(|aggregate| {
                 aggregate
                     .versions
@@ -587,9 +631,34 @@ impl SkillStore for FsSkillStore {
         skill_id: &str,
     ) -> Result<bool, SkillStoreError> {
         let _guard = self.gate.lock().unwrap();
+        let Some(mut aggregate) = self.read_aggregate(workspace_id, skill_id)? else {
+            return Ok(false);
+        };
+        if aggregate.deleted {
+            return Ok(false);
+        }
+        aggregate.deleted = true;
+        self.write_aggregate(&aggregate)?;
+        Ok(true)
+    }
+
+    async fn purge_skill(
+        &self,
+        workspace_id: &str,
+        skill_id: &str,
+    ) -> Result<u64, SkillStoreError> {
+        let _guard = self.gate.lock().unwrap();
+        let Some(aggregate) = self.read_aggregate(workspace_id, skill_id)? else {
+            return Ok(0);
+        };
+        if !aggregate.deleted {
+            return Err(SkillStoreError::Invalid(
+                "an active Skill cannot be physically reclaimed".into(),
+            ));
+        }
         match std::fs::remove_file(self.aggregate_path(workspace_id, skill_id)) {
-            Ok(()) => Ok(true),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Ok(()) => Ok(aggregate.versions.len() as u64),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
             Err(error) => Err(SkillStoreError::Io(error.to_string())),
         }
     }
@@ -631,6 +700,49 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("awaken-skillstore-{tag}-{stamp}"))
+    }
+
+    async fn tombstone_and_purge_conformance(store: &dyn SkillStore) {
+        let (definition, version) = aggregate("workspace", "retained");
+        store.create(definition, version.clone()).await.unwrap();
+        assert!(matches!(
+            store.purge_skill("workspace", "retained").await,
+            Err(SkillStoreError::Invalid(_))
+        ));
+        assert!(store.delete_skill("workspace", "retained").await.unwrap());
+        assert!(
+            store
+                .definition("workspace", "retained")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            store.version("workspace", "retained", 1).await.unwrap(),
+            Some(version),
+            "a retained Session pin survives logical deletion"
+        );
+        assert_eq!(store.purge_skill("workspace", "retained").await.unwrap(), 1);
+        assert!(
+            store
+                .version("workspace", "retained", 1)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(store.purge_skill("workspace", "retained").await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn in_memory_tombstone_and_purge_conformance() {
+        tombstone_and_purge_conformance(&InMemorySkillStore::new()).await;
+    }
+
+    #[tokio::test]
+    async fn filesystem_tombstone_and_purge_conformance() {
+        let root = scratch("purge");
+        tombstone_and_purge_conformance(&FsSkillStore::open(&root).unwrap()).await;
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[test]

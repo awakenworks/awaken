@@ -973,6 +973,7 @@ async fn management_router_over(
         .with_vaults(vault_state)
         .with_environments(env_state)
         .with_resource_catalog(resource_catalog.clone())
+        .with_resource_purge_scheduler(host.clone())
         // Share the SAME config plane `/v1/agents` reads, so a session inheriting a
         // published agent's model sees the authoritative config-plane truth (M2).
         .with_config_source(Arc::new(awaken_runtime_host::ConfigServiceAgentSource(

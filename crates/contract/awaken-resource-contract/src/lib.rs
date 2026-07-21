@@ -35,8 +35,9 @@ pub use input::{
 pub use lifecycle::{
     PutResourcePurgeOutcome, ResourceKind, ResourceLifecycleRepository, ResourcePhysicalReclaimer,
     ResourcePurgeError, ResourcePurgeEvidence, ResourcePurgeGuard, ResourcePurgeIntent,
-    ResourcePurgeReceipt, ResourcePurgeRepository, ResourcePurgeStatus, ResourceReference,
-    ResourceReferenceIndex, ResourceReferenceKind, ResourceReferenceRecord, ResourceTarget,
+    ResourcePurgeReceipt, ResourcePurgeRepository, ResourcePurgeScheduler, ResourcePurgeStatus,
+    ResourceReference, ResourceReferenceIndex, ResourceReferenceKind, ResourceReferenceRecord,
+    ResourceTarget,
 };
 
 // ---------------------------------------------------------------------------
@@ -185,12 +186,17 @@ pub trait SkillStore: Send + Sync {
         skill_id: &str,
         version: u64,
     ) -> Result<bool, SkillStoreError>;
-    /// Delete the complete Skill aggregate. Idempotent.
+    /// Tombstone the Skill aggregate. Ordinary authoring/resolution hides it but
+    /// pinned immutable versions remain readable until safe physical reclamation.
     async fn delete_skill(
         &self,
         workspace_id: &str,
         skill_id: &str,
     ) -> Result<bool, SkillStoreError>;
+    /// Physically remove a tombstoned Skill. Returns the number of immutable
+    /// versions reclaimed; repeated calls return zero.
+    async fn purge_skill(&self, workspace_id: &str, skill_id: &str)
+    -> Result<u64, SkillStoreError>;
 }
 
 /// JSON keeps binary files lossless without making the port depend on a wire
@@ -278,6 +284,13 @@ pub struct MemoryVersion {
     pub created_unix_nanos: u128,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub redacted_unix_nanos: Option<u128>,
+}
+
+/// Idempotent whole-store physical reclamation result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MemoryPurgeSummary {
+    pub heads_deleted: u64,
+    pub versions_deleted: u64,
 }
 
 /// A [`MemoryRepository`] failure.
@@ -368,4 +381,8 @@ pub trait MemoryRepository: Send + Sync {
         store: &str,
         version_id: &str,
     ) -> Result<Option<MemoryVersion>, MemErr>;
+    /// Physically remove every live head and immutable history row in `store`.
+    /// The lifecycle reclaimer calls this only after tombstone, retention,
+    /// activation and extraction guards pass. Repeated calls return zero counts.
+    async fn purge_store(&self, store: &str) -> Result<MemoryPurgeSummary, MemErr>;
 }

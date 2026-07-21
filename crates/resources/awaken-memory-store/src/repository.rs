@@ -26,8 +26,8 @@ use sha2::{Digest, Sha256};
 // contract crate. This module implements the port and re-exports them so
 // `awaken_memory_store::repository::Memory` and root re-exports resolve uniformly.
 pub use awaken_resource_contract::{
-    MAX_MEMORY_BYTES, MAX_PATH_BYTES, MemErr, Memory, MemoryEntry, MemoryRepository, MemoryVersion,
-    MemoryVersionOperation,
+    MAX_MEMORY_BYTES, MAX_PATH_BYTES, MemErr, Memory, MemoryEntry, MemoryPurgeSummary,
+    MemoryRepository, MemoryVersion, MemoryVersionOperation,
 };
 
 /// Lowercase hex SHA-256 of `content` — the CAS token (Anthropic wire is sha256).
@@ -398,6 +398,22 @@ impl MemoryRepository for VolatileMemoryRepository {
         }
         Ok(Some(version.clone()))
     }
+
+    async fn purge_store(&self, store: &str) -> Result<MemoryPurgeSummary, MemErr> {
+        let mut state = self.inner.lock().unwrap();
+        let heads_deleted = state
+            .records
+            .remove(store)
+            .map_or(0, |records| records.len() as u64);
+        let versions_deleted = state
+            .versions
+            .remove(store)
+            .map_or(0, |versions| versions.len() as u64);
+        Ok(MemoryPurgeSummary {
+            heads_deleted,
+            versions_deleted,
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -685,6 +701,20 @@ impl MemoryRepository for FilesystemMemoryRepository {
         let version = version.clone();
         self.write_state(store, &state).await?;
         Ok(Some(version))
+    }
+
+    async fn purge_store(&self, store: &str) -> Result<MemoryPurgeSummary, MemErr> {
+        let _guard = self.write_lock.lock().await;
+        let state = self.load_state(store).await?;
+        let summary = MemoryPurgeSummary {
+            heads_deleted: state.records.len() as u64,
+            versions_deleted: state.versions.len() as u64,
+        };
+        match tokio::fs::remove_dir_all(self.store_dir(store)).await {
+            Ok(()) => Ok(summary),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(summary),
+            Err(error) => Err(MemErr::Storage(error.to_string())),
+        }
     }
 }
 
@@ -1024,6 +1054,30 @@ mod tests {
         assert_eq!(updated.content.as_deref(), Some("two"));
     }
 
+    async fn purge_conformance(fs: &dyn MemoryRepository) {
+        fs.create("purge", "/a.md", "one").await.unwrap();
+        let updated = fs.get_by_path("purge", "/a.md").await.unwrap().unwrap();
+        fs.update("purge", &updated.id, "two", &updated.content_sha256)
+            .await
+            .unwrap();
+        assert_eq!(
+            fs.purge_store("purge").await.unwrap(),
+            MemoryPurgeSummary {
+                heads_deleted: 1,
+                versions_deleted: 2,
+            }
+        );
+        assert!(fs.list("purge", "/").await.unwrap().is_empty());
+        assert!(fs.list_versions("purge").await.unwrap().is_empty());
+        assert_eq!(
+            fs.purge_store("purge").await.unwrap(),
+            MemoryPurgeSummary {
+                heads_deleted: 0,
+                versions_deleted: 0,
+            }
+        );
+    }
+
     #[tokio::test]
     async fn in_memory_extended_conformance() {
         extended_conformance(&VolatileMemoryRepository::new()).await;
@@ -1035,10 +1089,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn in_memory_purge_conformance() {
+        purge_conformance(&VolatileMemoryRepository::new()).await;
+    }
+
+    #[tokio::test]
     async fn fs_extended_conformance() {
         let root = temp_root("ext");
         extended_conformance(&FilesystemMemoryRepository::open(&root).unwrap()).await;
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn fs_purge_conformance() {
+        let root = temp_root("purge");
+        purge_conformance(&FilesystemMemoryRepository::open(&root).unwrap()).await;
     }
 
     #[tokio::test]

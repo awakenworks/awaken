@@ -31,23 +31,42 @@ impl ResourcePurgeGuard for HostResourceReclamation {
     async fn blockers(
         &self,
         target: &ResourceTarget,
-        _config_version: Option<u64>,
+        config_version: Option<u64>,
         _now_unix_ms: u64,
     ) -> Result<Vec<ResourceReference>, ResourcePurgeError> {
         let lifecycle_blocker = match target.kind {
             ResourceKind::File => None,
-            ResourceKind::MemoryStore => self
+            ResourceKind::MemoryStore => match self
                 .catalog
                 .memory_store(&target.workspace_id, &target.resource_id)
-                .filter(|definition| definition.state != ResourceState::Deleted)
-                .map(|definition| format!("memory:{:?}", definition.state)),
+            {
+                Some(definition)
+                    if definition.state == ResourceState::Deleted
+                        && config_version == Some(definition.current_config_version.0) =>
+                {
+                    None
+                }
+                Some(definition) => Some(format!(
+                    "memory:{:?}:config:{}",
+                    definition.state, definition.current_config_version.0
+                )),
+                None => None,
+            },
             ResourceKind::Repository => self
                 .catalog
                 .repository(&target.workspace_id, &target.resource_id)
                 .filter(|definition| definition.state != ResourceState::Deleted)
                 .map(|definition| format!("repository:{:?}", definition.state)),
-            // Skill tombstoning is wired in the next per-kind adapter slice.
-            ResourceKind::Skill => Some("skill lifecycle is not tombstoned".into()),
+            ResourceKind::Skill => match self
+                .host
+                .skills
+                .definition(&target.workspace_id, &target.resource_id)
+                .await
+            {
+                Some(Ok(Some(_))) => Some("skill:active".into()),
+                Some(Err(error)) => return Err(ResourcePurgeError::Storage(error.to_string())),
+                Some(Ok(None)) | None => None,
+            },
         };
         let records = if target.kind == ResourceKind::File {
             self.host
@@ -74,6 +93,27 @@ impl ResourcePurgeGuard for HostResourceReclamation {
                 kind: ResourceReferenceKind::LogicalLifecycle,
                 reference_id,
             });
+        }
+        if target.kind == ResourceKind::MemoryStore {
+            let extractions = self
+                .host
+                .memory
+                .extraction_repository()
+                .recoverable_extractions(usize::MAX)
+                .await
+                .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
+            blockers.extend(
+                extractions
+                    .into_iter()
+                    .filter(|intent| {
+                        intent.workspace_id == target.workspace_id
+                            && intent.memory_store_id == target.resource_id
+                    })
+                    .map(|intent| ResourceReference {
+                        kind: ResourceReferenceKind::ExtractionIntent,
+                        reference_id: intent.intent_id,
+                    }),
+            );
         }
         Ok(blockers)
     }
@@ -114,9 +154,31 @@ impl ResourcePhysicalReclaimer for HostResourceReclamation {
             ResourceKind::Repository => Ok(ResourcePurgeEvidence::Repository {
                 local_realizations_deleted: 0,
             }),
-            ResourceKind::MemoryStore | ResourceKind::Skill => Err(ResourcePurgeError::Storage(
-                "physical adapter is not installed for this resource kind".into(),
-            )),
+            ResourceKind::MemoryStore => {
+                let summary = self
+                    .host
+                    .memory_stores
+                    .fs()
+                    .purge_store(&target.resource_id)
+                    .await
+                    .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
+                Ok(ResourcePurgeEvidence::MemoryStore {
+                    heads_deleted: summary.heads_deleted,
+                    versions_deleted: summary.versions_deleted,
+                })
+            }
+            ResourceKind::Skill => {
+                let versions_deleted = self
+                    .host
+                    .skills
+                    .purge(&target.workspace_id, &target.resource_id)
+                    .await
+                    .ok_or_else(|| {
+                        ResourcePurgeError::Storage("Skill repository is not installed".into())
+                    })?
+                    .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
+                Ok(ResourcePurgeEvidence::Skill { versions_deleted })
+            }
         }
     }
 }

@@ -238,13 +238,10 @@ impl ManagedState {
             if let awaken_session_contract::ResolvedInputSource::Repository {
                 repository_id, ..
             } = &input.source
-                && let Some(catalog) = &self.resource_catalog
             {
-                let _ = catalog.set_repository_state(
-                    &owner_scope,
-                    repository_id.as_str(),
-                    awaken_resource_contract::ResourceState::Deleted,
-                );
+                let _ = self
+                    .retire_repository(&owner_scope, repository_id.as_str())
+                    .await;
             }
             return Err(error);
         }

@@ -31,8 +31,8 @@ async fn run_migrations(pool: &PgPool) -> Result<(), PgStoreError> {
 
 use crate::repository::{now_nanos, under_prefix, validate_path, validate_size};
 use crate::{
-    MemErr, Memory, MemoryEntry, MemoryRepository, MemoryVersion, MemoryVersionOperation,
-    sha256_hex,
+    MemErr, Memory, MemoryEntry, MemoryPurgeSummary, MemoryRepository, MemoryVersion,
+    MemoryVersionOperation, sha256_hex,
 };
 
 fn mem_err(err: impl std::fmt::Display) -> MemErr {
@@ -631,5 +631,27 @@ impl MemoryRepository for PostgresMemoryRepository {
         }
         tx.commit().await.map_err(mem_err)?;
         Ok(Some(version))
+    }
+
+    async fn purge_store(&self, store: &str) -> Result<MemoryPurgeSummary, MemErr> {
+        let mut tx = self.pool.begin().await.map_err(mem_err)?;
+        let versions_deleted =
+            sqlx::query(&format!("DELETE FROM {NS}_versions WHERE store_id = $1"))
+                .bind(store)
+                .execute(&mut *tx)
+                .await
+                .map_err(mem_err)?
+                .rows_affected();
+        let heads_deleted = sqlx::query(&format!("DELETE FROM {NS}_memories WHERE store_id = $1"))
+            .bind(store)
+            .execute(&mut *tx)
+            .await
+            .map_err(mem_err)?
+            .rows_affected();
+        tx.commit().await.map_err(mem_err)?;
+        Ok(MemoryPurgeSummary {
+            heads_deleted,
+            versions_deleted,
+        })
     }
 }

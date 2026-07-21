@@ -141,6 +141,15 @@ impl MemoryRepository for InvalidatingMemoryRepository {
     ) -> Result<Option<MemoryVersion>, MemErr> {
         self.inner.redact_version(store, version_id).await
     }
+
+    async fn purge_store(
+        &self,
+        store: &str,
+    ) -> Result<awaken_memory_store::MemoryPurgeSummary, MemErr> {
+        let summary = self.inner.purge_store(store).await?;
+        self.invalidator.publish(store, "/");
+        Ok(summary)
+    }
 }
 
 #[cfg(test)]

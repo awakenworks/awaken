@@ -497,6 +497,19 @@ pub trait ResourceLifecycleRepository: ResourcePurgeRepository + ResourceReferen
 
 impl<T> ResourceLifecycleRepository for T where T: ResourcePurgeRepository + ResourceReferenceIndex {}
 
+/// Narrow application port used by resource owners which must schedule physical
+/// cleanup without depending on the reclaimer repository or worker protocol.
+#[async_trait]
+pub trait ResourcePurgeScheduler: Send + Sync {
+    async fn schedule_purge(
+        &self,
+        target: ResourceTarget,
+        config_version: Option<u64>,
+        requested_at_unix_ms: u64,
+        not_before_unix_ms: u64,
+    ) -> Result<PutResourcePurgeOutcome, ResourcePurgeError>;
+}
+
 /// One independently replaceable safety predicate. Composition can combine
 /// catalog lifecycle, binding indexes, runtime handles and retention sources
 /// without making a resource store depend on IAM or another bounded context.

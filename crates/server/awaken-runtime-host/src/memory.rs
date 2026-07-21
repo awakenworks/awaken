@@ -423,7 +423,7 @@ impl MemoryRuntime {
             })
     }
 
-    fn extraction_repository(&self) -> Arc<dyn MemoryExtractionRepository> {
+    pub(crate) fn extraction_repository(&self) -> Arc<dyn MemoryExtractionRepository> {
         self.extractions
             .read()
             .expect("Memory extraction repository lock poisoned")

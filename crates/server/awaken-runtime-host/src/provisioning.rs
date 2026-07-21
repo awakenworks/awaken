@@ -10,7 +10,8 @@ use crate::host::SharedHost;
 use awaken_file_store::FileStore;
 use awaken_protocol_managed::resource_plane::{
     PutResourcePurgeOutcome, ResourceKind, ResourcePurgeError, ResourcePurgeIntent,
-    ResourceReference, ResourceReferenceKind, ResourceReferenceRecord, ResourceTarget,
+    ResourcePurgeScheduler, ResourceReference, ResourceReferenceKind, ResourceReferenceRecord,
+    ResourceTarget,
 };
 use awaken_provisioning_contract as pc;
 use awaken_runtime_contract::resolved::ToolDescriptor;
@@ -26,6 +27,25 @@ fn file_grant(workspace: &str, id: &str) -> ResourceReferenceRecord {
             kind: ResourceReferenceKind::WorkspaceGrant,
             reference_id: workspace.to_string(),
         },
+    }
+}
+
+#[async_trait::async_trait]
+impl ResourcePurgeScheduler for SharedHost {
+    async fn schedule_purge(
+        &self,
+        target: ResourceTarget,
+        config_version: Option<u64>,
+        requested_at_unix_ms: u64,
+        not_before_unix_ms: u64,
+    ) -> Result<PutResourcePurgeOutcome, ResourcePurgeError> {
+        self.request_resource_purge(
+            target,
+            config_version,
+            requested_at_unix_ms,
+            not_before_unix_ms,
+        )
+        .await
     }
 }
 

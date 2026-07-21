@@ -14,6 +14,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use awaken_protocol_managed::resource_plane::{ResourceKind, ResourceTarget};
 use awaken_skill_store::{SkillBundleFile, SkillDefinition, SkillStoreError, SkillVersion};
 use awaken_tenancy::WorkspaceScope;
 use axum::extract::{Extension, FromRequest, Multipart, Path, State};
@@ -508,6 +509,29 @@ async fn delete_skill(
 ) -> axum::response::Response {
     let workspace = request_workspace(&state, scope);
     import_legacy_registry(&state, &workspace).await;
+    let definition = match state.host.skills.definition(&workspace, &id).await {
+        Some(Ok(Some(definition))) => definition,
+        Some(Err(error)) => return store_error(error),
+        Some(Ok(None)) | None => {
+            return err(StatusCode::NOT_FOUND, format!("skill `{id}` not found"));
+        }
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default();
+    if let Err(error) = state
+        .host
+        .request_resource_purge(
+            ResourceTarget::new(&workspace, ResourceKind::Skill, &id),
+            Some(definition.latest_version),
+            now,
+            now,
+        )
+        .await
+    {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
+    }
     match state.host.skills.delete(&workspace, &id).await {
         Some(Ok(true)) => (
             StatusCode::OK,
