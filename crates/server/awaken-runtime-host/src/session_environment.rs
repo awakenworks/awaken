@@ -687,6 +687,27 @@ mod tests {
             1
         );
         assert_eq!(environment.handle().provider_kind, "container");
+        assert!(AgentSandbox::is_container(&environment));
+        assert_eq!(AgentSandbox::config_home(&environment), "/acp-config");
+
+        AgentSandbox::materialize_inline(&environment, "/workspace/direct.bin", b"direct")
+            .await
+            .unwrap();
+        environment
+            .materialize_workspace_file("projected.bin", b"projected")
+            .await
+            .unwrap();
+        environment
+            .materialize_read_only_tree(
+                "generated-skills",
+                &[("skill/SKILL.md".into(), b"generated".to_vec())],
+            )
+            .await
+            .unwrap();
+        environment
+            .remove_workspace_path("projected.bin")
+            .await
+            .unwrap();
 
         let native = environment
             .sandbox()
@@ -722,6 +743,8 @@ mod tests {
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].id, "authored");
         assert_eq!(skills[0].dir, "skills/authored");
+        environment.refresh_skills().await.unwrap();
+        environment.stop_bound_processes().await;
         environment.dispose().await.unwrap();
     }
 
