@@ -14,6 +14,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38437);
 const WORKSPACE = `ephemeral-resource-${process.pid}`;
 const OTHER = `ephemeral-resource-other-${process.pid}`;
+const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 function binary() {
   const output = execSync('cargo build --quiet --message-format=json -p awaken-cli --bin awaken', {
@@ -107,6 +108,31 @@ async function main() {
     assert.equal((await json('DELETE', WORKSPACE, `files/${file.id}`)).status, 200);
     assert.equal((await fetch(scoped(WORKSPACE, `files/${file.id}/content`))).status, 404);
     assert.equal((await fetch(scoped(OTHER, `files/${file.id}/content`))).status, 200);
+
+    // The no-storage composition still runs the same authorization-independent
+    // lifecycle state machine over its in-memory adapter. A live Session edge
+    // must defer physical reclamation; archiving removes the edge and lets the
+    // background reconciler converge without a durable database.
+    const heldFile = await upload(WORKSPACE, 'ephemeral session-held bytes');
+    const heldSession = await json('POST', WORKSPACE, 'sessions', {
+      agent: 'assistant',
+      environment_id: 'env_local',
+    });
+    assert.equal(heldSession.status, 200, JSON.stringify(heldSession.body));
+    assert.equal(
+      (await json('POST', WORKSPACE, `sessions/${heldSession.body.id}/resources`, {
+        type: 'file',
+        file_id: heldFile.id,
+        mount_path: '/workspace/held.txt',
+      })).status,
+      200,
+    );
+    assert.equal((await json('DELETE', WORKSPACE, `files/${heldFile.id}`)).status, 200);
+    await sleep(5_500);
+    assert.equal(
+      (await json('POST', WORKSPACE, `sessions/${heldSession.body.id}/archive`)).status,
+      200,
+    );
 
     const createdStore = await json('POST', WORKSPACE, 'memory_stores', { name: 'volatile' });
     assert.equal(createdStore.status, 200);
@@ -263,6 +289,7 @@ async function main() {
     assert.equal((await json('DELETE', WORKSPACE, `skills/${skillId}`)).status, 200);
 
     assert.equal((await json('DELETE', OTHER, `files/${file.id}`)).status, 200);
+    await sleep(5_500);
     console.log('E2E PASS: production ephemeral resource adapters are scoped and lifecycle-complete.');
   } finally {
     await stop(server);
