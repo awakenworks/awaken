@@ -151,13 +151,12 @@ pub enum ResourcePurgeStatus {
     Pending,
     Claimed,
     Completed,
-    TerminalFailed,
 }
 
 impl ResourcePurgeStatus {
     #[must_use]
     pub fn is_terminal(self) -> bool {
-        matches!(self, Self::Completed | Self::TerminalFailed)
+        self == Self::Completed
     }
 }
 
@@ -398,20 +397,6 @@ impl ResourcePurgeIntent {
         }
         self.receipt = Some(receipt);
         self.status = ResourcePurgeStatus::Completed;
-        self.clear_claim();
-        self.bump_revision()
-    }
-
-    pub fn terminal_fail(
-        &mut self,
-        owner: &str,
-        generation: u64,
-        now_unix_ms: u64,
-        error: impl Into<String>,
-    ) -> Result<(), ResourcePurgeError> {
-        self.require_claim(owner, generation, now_unix_ms)?;
-        self.status = ResourcePurgeStatus::TerminalFailed;
-        self.last_error = Some(error.into());
         self.clear_claim();
         self.bump_revision()
     }

@@ -82,7 +82,6 @@ pub enum awaken_resource_contract::ResourcePurgeStatus
 pub awaken_resource_contract::ResourcePurgeStatus::Claimed
 pub awaken_resource_contract::ResourcePurgeStatus::Completed
 pub awaken_resource_contract::ResourcePurgeStatus::Pending
-pub awaken_resource_contract::ResourcePurgeStatus::TerminalFailed
 impl awaken_resource_contract::ResourcePurgeStatus
 pub fn awaken_resource_contract::ResourcePurgeStatus::is_terminal(self) -> bool
 pub enum awaken_resource_contract::ResourceReferenceKind
