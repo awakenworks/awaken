@@ -1298,12 +1298,10 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "async-trait",
         "axum",
         "serde",
-        # Durable ManagedSessionRepository backends (sqlite + postgres) over the
-        # `managed` scoped-migration bundle; the SQL drivers + the shared migrator.
+        # SQL drivers still used by the legacy skill importer and Postgres commit
+        # integration tests. Migration bundles belong to the extracted stores.
         "rusqlite",
         "sqlx",
-        "awaken-scoped-migration",
-        "awaken-scoped-migration-sqlite",
         "tempfile",
         "base64",
         "form_urlencoded",
