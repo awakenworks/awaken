@@ -125,6 +125,7 @@ const obligations: Obligation[] = [
   { id: 'D7-11', stage: '7 resource persistence', behavior: 'authorized logical delete remains physically deferred by a live Session reference without IAM coupling', scenario: 'resource_reclamation' },
   { id: 'D7-12', stage: '7 resource persistence', behavior: 'SQLite Memory behavior config publishes with CAS and survives process replacement without pinning content', scenario: 'resource_legacy_upgrade' },
   { id: 'D7-13', stage: '7 resource persistence', behavior: 'Postgres Memory behavior config publishes with CAS and is shared across nodes', scenario: 'resource_plane_postgres' },
+  { id: 'D7-13a', stage: '7 resource persistence', behavior: 'Postgres legacy Memory identities migrate without inferring ownership or replacing canonical history', scenario: 'resource_plane_postgres' },
   { id: 'D7-14', stage: '7 resource persistence', behavior: 'no-login/no-storage mode composes the volatile File, Memory, Skill, and lifecycle adapters under one explicit Workspace', scenario: 'resource_ephemeral' },
   { id: 'D7-15', stage: '7 resource persistence', behavior: 'one Memory API request atomically applies content plus rename-replace, while invalid paths and stale CAS leave head and history untouched', scenario: 'resource_ephemeral' },
   { id: 'D7-16', stage: '7 resource persistence', behavior: 'File, MemoryStore, and Skill adapters reject a missing trusted Workspace instead of inferring one from the Host', scenario: 'resource_scope_boundary' },
