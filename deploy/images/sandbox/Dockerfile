@@ -29,7 +29,8 @@ ARG ACP_NPM_PACKAGES="@agentclientprotocol/claude-agent-acp@0.44 @agentclientpro
 RUN npm install -g --no-audit --no-fund ${ACP_NPM_PACKAGES} \
     && npm cache clean --force
 
-# The execution-plane binary (host-built) as the bridge entrypoint.
+# The execution-plane binary (host-built with `hand`) supplies both the ACP bridge
+# entrypoint and the Session's attached `hand --stdio` exec process.
 ARG BIN=deploy/images/sandbox/.awaken-sandbox.bin
 COPY ${BIN} /usr/local/bin/awaken-sandbox
 

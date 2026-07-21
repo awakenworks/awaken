@@ -13,7 +13,7 @@ cleanup() { rm -f "$staged"; }
 trap cleanup EXIT
 
 cd "$repo"
-bin=$(cargo build --release -p awaken-sandbox --message-format=json 2>/dev/null \
+bin=$(cargo build --release -p awaken-sandbox --features hand --message-format=json 2>/dev/null \
   | python3 -c "import sys,json
 for line in sys.stdin:
     try: m=json.loads(line)
