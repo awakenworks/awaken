@@ -25,6 +25,17 @@ async function req(base, method, uri, token, body) {
   return { status: res.status };
 }
 
+async function apiKeyReq(base, method, uri, token, body) {
+  const headers = { 'x-api-key': token };
+  if (body !== undefined) headers['content-type'] = 'application/json';
+  const res = await fetch(`${base}${uri}`, {
+    method,
+    headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  return { status: res.status };
+}
+
 function routes(workspace) {
   return [
   ['GET', '/v1/config/catalog'],
@@ -62,6 +73,52 @@ async function main() {
       assert.equal(r.status, 401, `${m} ${uri} without token -> 401 (got ${r.status})`);
     }
     pass('every guarded config route rejects a missing credential -> 401');
+
+    // The resource PEP is a sibling of the Resource Catalog/stores. It maps the
+    // three resource families to centrally governed actions, asks IAM, and stamps
+    // only the trusted Workspace into the inner request.
+    const resourceReads = ['/v1/files', '/v1/skills', '/v1/memory_stores'];
+    for (const uri of resourceReads) {
+      assert.equal((await req(base, 'GET', uri)).status, 401, `${uri} missing token -> 401`);
+      const allowed = await req(base, 'GET', uri, token);
+      assert.ok(
+        allowed.status !== 401 && allowed.status !== 403,
+        `admin token reads ${uri} (got ${allowed.status})`,
+      );
+    }
+    const memory = await req(base, 'POST', '/v1/memory_stores', token, { name: 'authz-memory' });
+    assert.ok(memory.status !== 401 && memory.status !== 403, `admin writes MemoryStore: ${memory.status}`);
+    const skill = await req(base, 'POST', '/v1/skills', token, {
+      id: 'authz-skill',
+      content: '---\nname: authz-skill\ndescription: authz\n---\nUse safely.',
+    });
+    assert.ok(skill.status !== 401 && skill.status !== 403, `admin writes Skill: ${skill.status}`);
+    pass('resource PEP maps File/Skill/Memory reads and admin writes outside the stores');
+
+    const restrictedMint = await fetch(`${base}/v1/config/iam/tokens`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        workspace_id: workspace,
+        role: 'workspace_restricted_developer',
+      }),
+    });
+    assert.equal(restrictedMint.status, 201);
+    const restricted = (await restrictedMint.json()).token;
+    for (const uri of resourceReads) {
+      const read = await req(base, 'GET', uri, restricted);
+      assert.ok(read.status !== 401 && read.status !== 403, `read-only role reads ${uri}`);
+    }
+    assert.equal(
+      (await req(base, 'POST', '/v1/memory_stores', restricted, { name: 'denied' })).status,
+      403,
+      'read-only role cannot create a MemoryStore',
+    );
+    assert.ok(
+      (await apiKeyReq(base, 'GET', '/v1/files', restricted)).status < 400,
+      'x-api-key reaches the same resource PEP as Bearer',
+    );
+    pass('read-only resource authority is enforced at PEP for Bearer and x-api-key');
 
     // Token-admin edge: minting with an unknown role is rejected.
     const bad = await req(base, 'POST', '/v1/config/iam/tokens', token, {
