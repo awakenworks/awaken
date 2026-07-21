@@ -90,7 +90,10 @@ npm run test:fs
 npm run test:extended
 # The production `awaken` composition (not the scenario host) proves
 # catalog publication -> snapshot-pinned access -> credential materialization.
-node awaken_cli_e2e.mjs
+# `test:extended` uses 38411 immediately before this process. Give the CLI
+# composition a distinct port so a shutting-down scenario server cannot satisfy
+# its readiness probe and then disappear between requests.
+E2E_PORT=39411 node awaken_cli_e2e.mjs
 node runtime_embedded_e2e.mjs
 # Exercise the production cross-node worker-pool path as part of the same
 # changed-line evidence instead of leaving scenario-host worker code uncovered.
