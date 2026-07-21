@@ -2,8 +2,9 @@
 //!
 //! Implements [`ContainerRuntime`] over **kube** — the kube-apiserver via the SDK,
 //! never `kubectl`. Faithful to awaken-next's `K3sHandWorker` + this crate's
-//! [`crate::pod_plan`]: **process-as-container** (the Pod's container command is the
-//! agent, `restartPolicy: Never`), **native GC** (an `ownerReference` reaps orphans),
+//! [`crate::pod_plan`]: a **Session-owned Pod** (PID 1 retains its namespaces while
+//! attempts run through attached exec, `restartPolicy: Never`), **native GC** (an
+//! `ownerReference` reaps orphans),
 //! memory stores realized as **memoryd sidecars + emptyDir**, the untrusted agent
 //! **hardened** (no SA token, dropped caps) + labeled for a NetworkPolicy, and the
 //! stdio channel reached either by a direct **network dial** to the Service or, when
@@ -26,6 +27,7 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference,
 use kube::api::{AttachParams, DeleteParams, ListParams, PostParams};
 use kube::{Api, Client};
 use std::collections::BTreeMap;
+use tokio::io::AsyncReadExt;
 
 use crate::net::TcpAgentTransport;
 use crate::{
@@ -159,14 +161,23 @@ impl pc::ProcessHandle for K8sExecProcess {
             .exec(
                 &self.pod,
                 vec!["sh", "-c", &script],
-                &AttachParams::default().container("agent").stderr(false),
+                &AttachParams::default()
+                    .container("agent")
+                    .stdin(false)
+                    .stdout(true)
+                    .stderr(false),
             )
             .await
             .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+        let mut stdout = attached
+            .stdout()
+            .ok_or_else(|| pc::SandboxError::new("k8s signal exec has no stdout"))?;
         let status = attached
             .take_status()
-            .ok_or_else(|| pc::SandboxError::new("k8s signal exec has no status"))?
-            .await;
+            .ok_or_else(|| pc::SandboxError::new("k8s signal exec has no status"))?;
+        let mut ignored = Vec::new();
+        let (read, status) = tokio::join!(stdout.read_to_end(&mut ignored), status);
+        read.map_err(|error| pc::SandboxError::new(error.to_string()))?;
         if k8s_exit_status(status).code == Some(0) {
             Ok(())
         } else {
@@ -653,7 +664,8 @@ fn build_pod(
         let mut containers = vec![Container {
             name: "agent".into(),
             image: Some(plan.image.clone()),
-            // process-as-container: the agent argv is the container command.
+            // Session environment: PID 1 keeps the namespaces alive; attempt agents
+            // are attached exec processes created by `spawn_agent`.
             command: Some(plan.command.clone()),
             env: Some(agent_env),
             // Enforce the advertised resource caps as the container's limits.
@@ -838,21 +850,32 @@ impl ContainerRuntime for K8sRuntime {
                 &AttachParams::default()
                     .container("agent")
                     .stdin(false)
-                    .stdout(false)
+                    // kube requires at least one attached stdio stream. Keep stdout
+                    // attached and drain it in the completion task so a noisy command
+                    // cannot block before the remote status frame is delivered.
+                    .stdout(true)
                     .stderr(false),
             )
             .await
             .map_err(backend)?;
-        let completion = attached
+        let mut stdout = attached
+            .stdout()
+            .ok_or_else(|| backend("k8s exec has no stdout"))?;
+        let status = attached
             .take_status()
             .ok_or_else(|| backend("k8s exec has no completion status"))?;
+        let completion = tokio::spawn(async move {
+            let mut ignored = Vec::new();
+            let (_, status) = tokio::join!(stdout.read_to_end(&mut ignored), status);
+            status
+        });
         Ok(Box::new(K8sExecProcess {
             id,
             pod: container_id.to_string(),
             pid_file,
             pods,
             state: tokio::sync::Mutex::new(K8sExecState {
-                completion: Some(tokio::spawn(completion)),
+                completion: Some(completion),
                 status: None,
             }),
         }))
@@ -926,7 +949,6 @@ impl ContainerRuntime for K8sRuntime {
         container_id: &str,
         path: &str,
     ) -> Result<Option<Vec<u8>>, RuntimeError> {
-        use tokio::io::AsyncReadExt;
         let mut attached = self
             .pods()
             .exec(

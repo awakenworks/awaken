@@ -7,15 +7,15 @@
 //!
 //! Three decisions from the ADR amendment are made concrete and unit-testable here
 //! as **pure planners** (no daemon needed):
-//! - **process-as-container**: [`pod_plan`] sets the Pod's container command to the
-//!   agent argv rather than exec-ing into an idle Pod;
+//! - **Session-owned environment**: one durable container holds the workspace and
+//!   every Native/ACP attempt is an exec process inside it;
 //! - **native GC**: the Pod carries an `owner_uid` (an `ownerReference`) so an
 //!   orphaned sandbox is reaped by the platform, not a bespoke reaper;
 //! - **out-of-band artifacts**: outputs live on a volume ([`ContainerPlan::outputs_volume`]),
 //!   retrieved without streaming through the control plane.
 
 use async_trait::async_trait;
-use awaken_agent_channel::{AgentChannel, AgentTransport, ChannelError};
+use awaken_agent_channel::AgentChannel;
 use awaken_provisioning_contract as pc;
 use std::sync::Arc;
 
@@ -117,8 +117,8 @@ pub struct MemoryMount {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContainerPlan {
     pub image: String,
-    /// The agent process — the container's main command (process-as-container, NOT
-    /// exec-into-idle). Fixed at create, like a Pod's container command.
+    /// The Session environment's PID-1 command. Attempts execute separately through
+    /// [`ContainerRuntime::spawn`] / [`ContainerRuntime::spawn_agent`].
     pub command: Vec<String>,
     pub env: Vec<(String, String)>,
     pub binds: Vec<BindPlan>,
@@ -946,9 +946,9 @@ fn mount_ref(source: &pc::MountSource) -> String {
     }
 }
 
-/// The agent command for a process-as-container tier, read from `spec.extra.command`
-/// (a JSON array of strings). The container/pod runs this as its main process; an
-/// empty command is a caller error the provider rejects fail-closed.
+/// The attempt-agent command read from `spec.extra.command` (a JSON array of strings).
+/// The provider executes it inside the Session environment; an empty command is a
+/// caller error rejected fail-closed.
 #[must_use]
 pub fn command_of(spec: &pc::SandboxSpec) -> Vec<String> {
     spec.extra
@@ -1019,14 +1019,13 @@ fn rootfs_of(spec: &pc::SandboxSpec, default_image: &str) -> RootfsPlan {
     declared.unwrap_or_else(|| RootfsPlan::Image(image_of(spec, default_image)))
 }
 
-/// A neutral Kubernetes Pod plan (the k8s path). Encodes **process-as-container**
-/// (the container command *is* the agent) and **native GC** (an `owner_uid`
-/// ownerReference), with the outputs volume for out-of-band artifacts. Pure.
+/// A neutral Kubernetes Pod plan with native GC (an `owner_uid` ownerReference) and
+/// the outputs volume for out-of-band artifacts. Pure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PodPlan {
     pub name: String,
     pub image: String,
-    /// The agent process — the Pod's container command (NOT exec-into-idle).
+    /// The Session environment's PID-1 command.
     pub command: Vec<String>,
     pub env: Vec<(String, String)>,
     pub binds: Vec<BindPlan>,
@@ -1150,9 +1149,9 @@ pub trait ContainerRuntime: Send + Sync {
             "container runtime cannot reconnect to exec process".into(),
         ))
     }
-    /// Open a duplex channel to the running agent — bollard container attach for
-    /// Docker, a network dial (TCP / reverse-dial via `awaken-connection`) for a
-    /// firewalled Pod. This replaces exec-into-idle: the agent *is* the container.
+    /// Open a duplex channel to a runtime-managed network agent. Session-owned ACP
+    /// execution uses [`Self::spawn_agent`]; this lower-level capability remains for
+    /// adapters that explicitly host a network-speaking process.
     async fn open_channel(&self, container_id: &str)
     -> Result<Box<dyn AgentChannel>, RuntimeError>;
     async fn inspect(&self, container_id: &str) -> Result<ContainerState, RuntimeError>;
@@ -1299,10 +1298,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         self
     }
 
-    /// Realize a container running the process-as-container agent and return the
-    /// concrete [`ContainerSandbox`], so a caller can open its ACP channel via
-    /// [`AgentTransport`] — the container counterpart of
-    /// `LocalProvider::create_sandbox`. The trait `create` boxes this.
+    /// Realize a Session-owned container environment. The trait `create` boxes this.
     pub async fn create_container(
         &self,
         spec: &pc::SandboxSpec,
@@ -1382,33 +1378,6 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         })
     }
 
-    /// Open the ACP channel on an ALREADY-CREATED container and build the agent
-    /// session — the second half of [`open_agent`], split out so a warm pool can
-    /// pre-`create_container` (paying the cold-start cost off the request path) and
-    /// then attach the channel on hand-out. `create_container` + `open_agent_from`
-    /// == `open_agent`.
-    pub async fn open_agent_from(
-        &self,
-        sandbox: ContainerSandbox<R>,
-    ) -> Result<AgentContainerSession, pc::SandboxError> {
-        let channel = sandbox
-            .open_channel()
-            .await
-            .map_err(|e| err(RuntimeError::Backend(e.to_string())))?;
-        let handle = pc::Sandbox::handle(&sandbox);
-        let process: Box<dyn pc::ProcessHandle> = Box::new(ContainerProcess {
-            runtime: self.runtime.clone(),
-            container_id: sandbox.container_id.clone(),
-            lifecycle: sandbox.lifecycle.clone(),
-            remove_on_exit: true,
-        });
-        Ok(AgentContainerSession {
-            channel,
-            process,
-            handle,
-        })
-    }
-
     /// Re-adopt a concrete long-lived environment from its durable handle.
     pub async fn adopt_container(
         &self,
@@ -1440,17 +1409,16 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
     }
 }
 
-/// A running process-as-container agent, handed to the host's ACP
-/// [`AgentChannelSource`]: the duplex ACP `channel`, a `process` handle over the
-/// container's main process (the agent), and the durable `handle` for reattach.
+/// A running agent exec, handed to the host's ACP [`AgentChannelSource`]: the duplex
+/// channel, the exact exec process handle, and the environment handle for reattach.
 pub struct AgentContainerSession {
     pub channel: Box<dyn AgentChannel>,
     pub process: Box<dyn pc::ProcessHandle>,
     pub handle: pc::SandboxHandle,
 }
 
-/// Object-safe container seam for the host: realize a container running the ACP agent
-/// and open its channel, with the runtime backend (podman / docker / k8s) chosen
+/// Object-safe container seam for the host: realize a Session environment, execute
+/// the ACP agent inside it, and open its channel, with the backend chosen
 /// behind the `dyn` by **worker config** — so one host binary drives whichever backend
 /// a given worker is configured for. The counterpart of the Workdir/namespace
 /// `spawn_agent` path, for a user-supplied container image.
@@ -1534,10 +1502,8 @@ impl<R: ContainerRuntime + 'static> pc::SandboxProvider for ContainerProvider<R>
     }
 }
 
-/// A realized container running the process-as-container agent. Besides [`pc::Sandbox`]
-/// it implements [`AgentTransport`] ([`open_channel`](AgentTransport::open_channel)),
-/// so the host can attach the ACP bridge to the agent — the container counterpart of
-/// the Workdir/namespace `spawn_agent` seam.
+/// A realized Session-owned container environment. The opaque agent channel is
+/// returned together with the exact exec process by [`ContainerEnvironment::spawn_agent_process`].
 pub struct ContainerSandbox<R: ContainerRuntime> {
     runtime: Arc<R>,
     id: String,
@@ -1673,20 +1639,6 @@ impl ContainerLifecycle {
         Ok(())
     }
 
-    /// ACP containers are one-process-per-run. Once their channel has drained and
-    /// credential write-back is complete, remove them through the normal lifecycle;
-    /// the cross-restart reaper is only a crash-recovery safety net.
-    async fn remove_once<R: ContainerRuntime>(&self, runtime: &R, container_id: &str) {
-        let mut done = self.remove_done.lock().await;
-        if !*done {
-            // Cleanup must not turn an already-committed agent response into a failed
-            // run. A transient remove failure remains recoverable by the next worker's
-            // cross-restart reaper.
-            let _ = runtime.remove(container_id).await;
-            *done = true;
-        }
-    }
-
     async fn dispose_once<R: ContainerRuntime>(
         &self,
         runtime: &R,
@@ -1698,71 +1650,6 @@ impl ContainerLifecycle {
             *done = true;
         }
         Ok(())
-    }
-}
-
-/// A handle over the container's main process (the agent). On this tier the process
-/// lifecycle *is* the container lifecycle — wait/poll/signal act on the container.
-struct ContainerProcess<R: ContainerRuntime> {
-    runtime: Arc<R>,
-    container_id: String,
-    lifecycle: Arc<ContainerLifecycle>,
-    remove_on_exit: bool,
-}
-
-#[async_trait]
-impl<R: ContainerRuntime + 'static> pc::ProcessHandle for ContainerProcess<R> {
-    fn id(&self) -> &str {
-        &self.container_id
-    }
-    async fn wait(&self) -> Result<pc::ExitStatus, pc::SandboxError> {
-        let status = self.runtime.wait(&self.container_id).await.map_err(err)?;
-        self.lifecycle
-            .write_back_secrets(self.runtime.as_ref(), &self.container_id)
-            .await?;
-        if self.remove_on_exit {
-            self.lifecycle
-                .remove_once(self.runtime.as_ref(), &self.container_id)
-                .await;
-        }
-        Ok(status)
-    }
-    async fn poll(&self) -> Result<Option<pc::ExitStatus>, pc::SandboxError> {
-        let status = self.runtime.poll(&self.container_id).await.map_err(err)?;
-        if status.is_some() {
-            self.lifecycle
-                .write_back_secrets(self.runtime.as_ref(), &self.container_id)
-                .await?;
-            if self.remove_on_exit {
-                self.lifecycle
-                    .remove_once(self.runtime.as_ref(), &self.container_id)
-                    .await;
-            }
-        }
-        Ok(status)
-    }
-    async fn signal(&self, signal: pc::Signal) -> Result<(), pc::SandboxError> {
-        // A remote pod becomes unreadable after deletion, so durable credentials are
-        // harvested while the agent is still alive. The operation is idempotent.
-        self.lifecycle
-            .write_back_secrets(self.runtime.as_ref(), &self.container_id)
-            .await?;
-        self.runtime
-            .signal(&self.container_id, signal)
-            .await
-            .map_err(err)
-    }
-}
-
-/// The tool-transparent capability: the container sandbox hands the ACP bridge a
-/// duplex channel to its process-as-container agent (the same seam local uses).
-#[async_trait]
-impl<R: ContainerRuntime + 'static> AgentTransport for ContainerSandbox<R> {
-    async fn open_channel(&self) -> Result<Box<dyn AgentChannel>, ChannelError> {
-        self.runtime
-            .open_channel(&self.container_id)
-            .await
-            .map_err(|e| ChannelError::Setup(e.to_string()))
     }
 }
 
