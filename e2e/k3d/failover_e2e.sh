@@ -86,7 +86,8 @@ docker build --load -q -t "$IMAGE" -f "$DEPLOY_DIR/Dockerfile.server" "$DEPLOY_D
 log "3/5 create MULTI-node k3d cluster $CLUSTER (server + 2 agents)"
 k3d cluster delete "$CLUSTER" >/dev/null 2>&1 || true
 # 2 agents so the two anti-affinity'd brain replicas land on distinct nodes.
-k3d cluster create "$CLUSTER" --agents 2 --wait --timeout 180s >/dev/null
+k3d cluster create "$CLUSTER" --agents 2 --wait --timeout 180s \
+  --runtime-ulimit "nofile=65536:65536" >/dev/null
 
 log "4/5 side-load images into the cluster (k3d image import → all nodes)"
 # k3d image import handles the docker-save → containerd format across every node in

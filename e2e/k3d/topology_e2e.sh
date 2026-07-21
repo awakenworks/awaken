@@ -125,7 +125,8 @@ docker build --load -q -t "$IMAGE" -f "$DEPLOY_DIR/Dockerfile" "$DEPLOY_DIR" >/d
 
 log "3/5 create k3d cluster $CLUSTER (single node)"
 k3d cluster delete "$CLUSTER" >/dev/null 2>&1 || true
-k3d cluster create "$CLUSTER" --agents 0 --wait --timeout 180s >/dev/null
+k3d cluster create "$CLUSTER" --agents 0 --wait --timeout 180s \
+  --runtime-ulimit "nofile=65536:65536" >/dev/null
 
 log "4/5 side-load images into the node's containerd (offline cluster)"
 # The cluster nodes have no outbound internet, so containerd cannot pull ANY image
