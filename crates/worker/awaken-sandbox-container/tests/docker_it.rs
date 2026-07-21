@@ -96,3 +96,39 @@ async fn docker_open_channel_dials_the_published_agent_port() {
         "open_channel must reach the container's published agent port"
     );
 }
+
+#[tokio::test]
+async fn docker_exec_can_be_polled_reattached_signaled_and_waited() {
+    let Some(rt) = runtime().await else { return };
+    let _ = rt.remove("awaken-it-exec").await;
+    let id = rt
+        .create("it-exec", &plan(&["sleep", "30"]))
+        .await
+        .expect("create Session container");
+
+    let command = pc::Command {
+        argv: vec!["sh".into(), "-c".into(), "sleep 30".into()],
+        cwd: "/tmp".into(),
+        env: vec![pc::EnvVar {
+            name: "EXEC_MARKER".into(),
+            value: pc::EnvValue::Inline { value: "ok".into() },
+            visibility: pc::EnvVisibility::Process,
+        }],
+        stdio: pc::Stdio::Null,
+    };
+    let process = rt.spawn(&id, command).await.expect("spawn detached exec");
+    assert!(process.poll().await.unwrap().is_none());
+    let public_id = process.id().to_string();
+    let recovered = rt
+        .process(&id, &public_id)
+        .await
+        .expect("reattach the durable exec handle");
+    recovered.signal(pc::Signal::Term).await.unwrap();
+    assert!(recovered.wait().await.unwrap().code.is_some());
+    assert!(rt.process("wrong-container", &public_id).await.is_err());
+
+    let empty = pc::Command::new(Vec::<String>::new());
+    assert!(rt.spawn(&id, empty.clone()).await.is_err());
+    assert!(rt.spawn_agent(&id, empty).await.is_err());
+    let _ = rt.remove(&id).await;
+}
