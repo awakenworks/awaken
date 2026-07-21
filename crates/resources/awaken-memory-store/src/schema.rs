@@ -1,5 +1,5 @@
 //! The memory-store schema. One portable [`MigrationBundle`] under the
-//! `memory_store` namespace. V0002 defines the active path-addressed `MemoryFs`
+//! `memory_store` namespace. V0002 defines the active path-addressed `MemoryRepository`
 //! storage. V0001 is retained only so existing migration histories remain valid;
 //! its former workspace-scoped blob table has no production adapter or port.
 //!

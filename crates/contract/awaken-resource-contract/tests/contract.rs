@@ -133,7 +133,7 @@ fn hard_caps_are_pinned() {
     assert_eq!(MAX_PATH_BYTES, 1024);
 }
 
-// R7: `MemoryEntry` is the value `MemoryFs::list` returns for a directory listing.
+// R7: `MemoryEntry` is the value `MemoryRepository::list` returns for a directory listing.
 // It carries the same identity/version/size fields as a content-less `Memory`. Its
 // observable contract is its public field set plus value semantics (Clone, Eq), so
 // a silent field add/rename/retype must break a test here — pin them.
@@ -177,7 +177,7 @@ fn memory_entry_value_round_trips_and_pins_field_shape() {
 }
 
 // R7b: `MemoryEntry` derives `Serialize`/`Deserialize`, like `Memory` (lib.rs), so a
-// `Vec<MemoryEntry>` from `MemoryFs::list` crosses the managed/HTTP surfaces directly
+// `Vec<MemoryEntry>` from `MemoryRepository::list` crosses the managed/HTTP surfaces directly
 // (no re-projection through `Memory` or a bespoke adapter DTO). Its wire shape mirrors
 // a content-less `Memory`: the same field names, no `content`. Pin that round-trip.
 #[test]

@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use awaken_memory_store::{MemoryFs, SqliteMemoryFs};
+use awaken_memory_store::{MemoryRepository, SqliteMemoryRepository};
 use awaken_sandbox_memoryd::{fuse_available, harvest, materialize};
 
 /// The sidecar configuration read from the pod env (set by the k8s `pod_plan`).
@@ -84,8 +84,9 @@ pub async fn serve(cfg: &MemorydConfig, shutdown: impl Future<Output = ()>) -> R
     let db = db
         .to_str()
         .ok_or_else(|| format!("non-UTF-8 store path {}", db.display()))?;
-    let fs: Arc<dyn MemoryFs> =
-        Arc::new(SqliteMemoryFs::open(db).map_err(|e| format!("open memory store {db}: {e}"))?);
+    let fs: Arc<dyn MemoryRepository> = Arc::new(
+        SqliteMemoryRepository::open(db).map_err(|e| format!("open memory store {db}: {e}"))?,
+    );
 
     // FUSE only when both requested AND the node exposes it; otherwise fall back to the
     // portable copy path (never silently mount nothing, never hard-fail a locked node).
@@ -105,7 +106,7 @@ pub async fn serve(cfg: &MemorydConfig, shutdown: impl Future<Output = ()>) -> R
 /// FUSE realization: mount the store live at `mount_path`, hold until `shutdown`,
 /// then drain open fds and unmount.
 async fn serve_fuse(
-    fs: Arc<dyn MemoryFs>,
+    fs: Arc<dyn MemoryRepository>,
     store_id: &str,
     mount_path: PathBuf,
     shutdown: impl Future<Output = ()>,
@@ -132,7 +133,7 @@ async fn serve_fuse(
 /// harvest the agent's edits back. `pub` so the round-trip is unit-testable without a
 /// process or `/dev/fuse`.
 pub async fn serve_copy(
-    fs: &dyn MemoryFs,
+    fs: &dyn MemoryRepository,
     store_id: &str,
     mount_path: &std::path::Path,
     shutdown: impl Future<Output = ()>,

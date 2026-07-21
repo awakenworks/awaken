@@ -1,4 +1,4 @@
-//! Postgres [`MemoryFs`] over the crate's `memory_store` migration scope — the
+//! Postgres [`MemoryRepository`] over the crate's `memory_store` migration scope — the
 //! multi-node sibling of the SQLite backend over the same portable bundle.
 
 use sqlx::Row;
@@ -29,23 +29,24 @@ async fn run_migrations(pool: &PgPool) -> Result<(), PgStoreError> {
     Ok(())
 }
 
-use crate::memfs::{now_nanos, under_prefix, validate_path, validate_size};
+use crate::repository::{now_nanos, under_prefix, validate_path, validate_size};
 use crate::{
-    MemErr, Memory, MemoryEntry, MemoryFs, MemoryVersion, MemoryVersionOperation, sha256_hex,
+    MemErr, Memory, MemoryEntry, MemoryRepository, MemoryVersion, MemoryVersionOperation,
+    sha256_hex,
 };
 
 fn mem_err(err: impl std::fmt::Display) -> MemErr {
     MemErr::Storage(err.to_string())
 }
 
-/// A Postgres-backed [`MemoryFs`] (path-addressed, CAS). Compare-and-swap and rename
+/// A Postgres-backed [`MemoryRepository`] (path-addressed, CAS). Compare-and-swap and rename
 /// run in a transaction with `SELECT … FOR UPDATE`, so the optimistic-concurrency
 /// guarantee holds **across nodes** (the reason ADR-0057 chose Postgres).
-pub struct PgMemoryFs {
+pub struct PostgresMemoryRepository {
     pool: PgPool,
 }
 
-impl PgMemoryFs {
+impl PostgresMemoryRepository {
     /// Connect and apply the memory-store migrations (one-step convenience).
     pub async fn connect(url: &str) -> Result<Self, PgStoreError> {
         let pool = PgPool::connect(url)
@@ -189,7 +190,7 @@ async fn append_version(
 }
 
 #[async_trait::async_trait]
-impl MemoryFs for PgMemoryFs {
+impl MemoryRepository for PostgresMemoryRepository {
     async fn list(&self, store: &str, prefix: &str) -> Result<Vec<MemoryEntry>, MemErr> {
         let rows = sqlx::query(&format!(
             "SELECT id, path, sha, length(content) AS n, version, updated \

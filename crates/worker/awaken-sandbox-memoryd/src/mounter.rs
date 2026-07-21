@@ -4,8 +4,8 @@
 //! provider calls to realize a `MountSource::MemoryStore`. It exposes the store as a
 //! **live FUSE mount** where the kernel supports it ([`fuse_available`]), and
 //! otherwise falls back to a **copy** that is harvested back to the store on teardown
-//! (ADR-0053 D6). Both paths write through the same durable [`MemoryFs`], wrapped in
-//! an [`InvalidatingMemoryFs`] over one shared bus so a write in one sandbox drops the
+//! (ADR-0053 D6). Both paths write through the same durable [`MemoryRepository`], wrapped in
+//! an [`InvalidatingMemoryRepository`] over one shared bus so a write in one sandbox drops the
 //! path from every other sandbox's FUSE cache (the D5 coherence model, applied
 //! per-sandbox rather than via a single shared mount — no bind/namespace splice
 //! needed, so it works on the unprivileged Workdir tier).
@@ -13,19 +13,19 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use awaken_memory_store::MemoryFs;
+use awaken_memory_store::MemoryRepository;
 use awaken_provisioning_contract::{
     MemoryMount, MemoryMounter, MountAccess, Realization, SandboxError,
 };
 
 use crate::copy;
-use crate::invalidate::{InvalidatingMemoryFs, Invalidator, LocalInvalidator};
+use crate::invalidate::{InvalidatingMemoryRepository, Invalidator, LocalInvalidator};
 
-/// Realizes memory stores over one durable [`MemoryFs`], FUSE-first with a copy
+/// Realizes memory stores over one durable [`MemoryRepository`], FUSE-first with a copy
 /// fallback. Construct once per host and inject into the sandbox providers.
 pub struct MemoryStoreMounter {
     /// The durable store wrapped so every write publishes an invalidation.
-    fs: Arc<dyn MemoryFs>,
+    fs: Arc<dyn MemoryRepository>,
     /// The shared invalidation bus every FUSE mount subscribes to.
     bus: Arc<LocalInvalidator>,
     /// When false, never mount FUSE — always copy. Set for isolation tiers that
@@ -39,7 +39,7 @@ impl MemoryStoreMounter {
     /// Wrap `durable` (the resources-plane store) with the invalidation bus, FUSE
     /// where available. For the Workdir tier (host mount namespace).
     #[must_use]
-    pub fn new(durable: Arc<dyn MemoryFs>) -> Self {
+    pub fn new(durable: Arc<dyn MemoryRepository>) -> Self {
         Self::with_fuse(durable, true)
     }
 
@@ -47,14 +47,15 @@ impl MemoryStoreMounter {
     /// mount inside its isolation (bwrap/container). The store is materialized to
     /// plain files that bind into the namespace, and harvested back on teardown.
     #[must_use]
-    pub fn copy_only(durable: Arc<dyn MemoryFs>) -> Self {
+    pub fn copy_only(durable: Arc<dyn MemoryRepository>) -> Self {
         Self::with_fuse(durable, false)
     }
 
-    fn with_fuse(durable: Arc<dyn MemoryFs>, prefer_fuse: bool) -> Self {
+    fn with_fuse(durable: Arc<dyn MemoryRepository>, prefer_fuse: bool) -> Self {
         let bus = Arc::new(LocalInvalidator::default());
         let invalidator: Arc<dyn Invalidator> = bus.clone();
-        let fs: Arc<dyn MemoryFs> = Arc::new(InvalidatingMemoryFs::new(durable, invalidator));
+        let fs: Arc<dyn MemoryRepository> =
+            Arc::new(InvalidatingMemoryRepository::new(durable, invalidator));
         Self {
             fs,
             bus,
@@ -137,7 +138,7 @@ impl MemoryMount for FuseMount {
 
 /// A materialized copy; teardown harvests a writable copy back to the store.
 struct CopyMount {
-    fs: Arc<dyn MemoryFs>,
+    fs: Arc<dyn MemoryRepository>,
     store_id: String,
     host_path: PathBuf,
     writable: bool,
@@ -171,7 +172,7 @@ impl MemoryMount for CopyMount {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_memory_store::InMemoryFs;
+    use awaken_memory_store::VolatileMemoryRepository;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp(tag: &str) -> PathBuf {
@@ -187,7 +188,7 @@ mod tests {
         // Force the copy path by pointing at a store with content and a host dir; on a
         // host with FUSE the mounter would pick FUSE, so we drive the copy guard
         // directly to assert the harvest-on-teardown contract deterministically.
-        let durable = Arc::new(InMemoryFs::new());
+        let durable = Arc::new(VolatileMemoryRepository::new());
         durable.create("s", "/note.md", "v1").await.unwrap();
         let mounter = MemoryStoreMounter::new(durable.clone());
         let dir = temp("copy");
@@ -223,7 +224,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_read_only_copy_mount_does_not_harvest() {
-        let durable = Arc::new(InMemoryFs::new());
+        let durable = Arc::new(VolatileMemoryRepository::new());
         durable.create("s", "/note.md", "v1").await.unwrap();
         let mounter = MemoryStoreMounter::new(durable.clone());
         let dir = temp("ro");
@@ -261,7 +262,7 @@ mod tests {
         // written to store `alpha` must be INVISIBLE through store `beta`, even though
         // both realize over the same shared durable fs. `store_id` is a hard content
         // boundary — a peer store cannot see, or materialize, another's bytes.
-        let durable = Arc::new(InMemoryFs::new());
+        let durable = Arc::new(VolatileMemoryRepository::new());
         durable
             .create("alpha", "/secret.md", "alpha-only")
             .await
@@ -328,7 +329,7 @@ mod tests {
         // this deterministically exercises the PUBLIC `mount()` → copy branch (not the
         // CopyMount constructor the other tests drive) — the exact path the
         // namespace/no-FUSE tier uses.
-        let durable = Arc::new(InMemoryFs::new());
+        let durable = Arc::new(VolatileMemoryRepository::new());
         durable.create("s", "/note.md", "v1").await.unwrap();
         let mounter = MemoryStoreMounter::copy_only(durable.clone());
         let dir = temp("copyonly");
@@ -362,7 +363,7 @@ mod tests {
     async fn remount_starts_from_store_truth_and_drops_stale_projection_bytes() {
         use awaken_provisioning_contract::{MemoryMounter, MountAccess};
 
-        let durable = Arc::new(InMemoryFs::new());
+        let durable = Arc::new(VolatileMemoryRepository::new());
         durable.create("s", "/live.md", "truth").await.unwrap();
         let mounter = MemoryStoreMounter::copy_only(durable);
         let dir = temp("fresh-projection");

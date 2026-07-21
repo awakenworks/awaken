@@ -99,14 +99,14 @@ pub const RECALL_MSG_PREFIX: &str = "mem-recall-";
 /// only data-plane identity and maximum access; authorization policy remains at
 /// the edge that constructs it.
 pub(crate) struct PlatformMemoryHandle {
-    fs: Arc<dyn awaken_memory_store::MemoryFs>,
+    fs: Arc<dyn awaken_memory_store::MemoryRepository>,
     store_id: String,
     writable: bool,
 }
 
 impl PlatformMemoryHandle {
     pub(crate) fn new(
-        fs: Arc<dyn awaken_memory_store::MemoryFs>,
+        fs: Arc<dyn awaken_memory_store::MemoryRepository>,
         store_id: String,
         writable: bool,
     ) -> Self {
@@ -345,7 +345,7 @@ impl BoundMemory {
 impl crate::host::SharedHost {
     /// The Memory content data-plane port used by an outer composition root to
     /// construct a worker-side mounter. It carries no principal or policy state.
-    pub fn memory_fs(&self) -> Arc<dyn awaken_memory_store::MemoryFs> {
+    pub fn memory_repository(&self) -> Arc<dyn awaken_memory_store::MemoryRepository> {
         self.memory_stores.fs_handle()
     }
 
@@ -422,7 +422,7 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use awaken_ext_memory::MemoryDir;
-    use awaken_memory_store::MemoryFs as _;
+    use awaken_memory_store::MemoryRepository as _;
     use awaken_runtime_contract::llm::{
         AssistantOutput, ChatRequest, ChatResponse, Result as LlmResult, ToolCall,
     };
@@ -547,7 +547,7 @@ mod tests {
 
     #[tokio::test]
     async fn platform_handle_enforces_read_only_at_the_data_plane_boundary() {
-        let fs = Arc::new(awaken_memory_store::InMemoryFs::new());
+        let fs = Arc::new(awaken_memory_store::VolatileMemoryRepository::new());
         fs.create("store-a", "/existing.md", "safe").await.unwrap();
         let read_only = PlatformMemoryHandle::new(fs.clone(), "store-a".into(), false);
 

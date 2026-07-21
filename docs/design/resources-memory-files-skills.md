@@ -245,7 +245,7 @@ process-local handle.
 | authorization PDP/PIP | External/shared authorization domain | IAM | decide principal/action/scope/resource facts under active policy | mounts, resource configuration, storage |
 | `SessionResourceCoordinator` | Existing in Managed Session application service | Session application/host | activation state, ordered provision/release, recovery handoff | Agent config loading, IAM policy language |
 | `FileStore` | Existing | File data plane | immutable content-addressed bytes | Workspace authorization; mutable overwrite |
-| `MemoryRepository` | Existing behavior behind `MemoryFs`; naming evolution remains | Memory data plane | scoped entries, CAS, atomic history, redaction, retention hooks | Agent/Session binding and IAM policy |
+| `MemoryRepository` | Existing canonical port | Memory data plane | scoped entries, CAS, atomic history, redaction, retention hooks | Agent/Session binding and IAM policy |
 | `MemoryRuntime` | Existing | Runtime Host | store-less recall selector/extractor capability and background-run drain | resource identity, default store, IAM policy |
 | `BoundMemory` | Existing | Session Runtime | one resolved store handle + pinned policy + maximum access shared by recall/extraction | workspace lookup, current-config resolution, authorization |
 | `RepositoryRealizer` | Existing neutral port | Environment adapter | clone current remote config, construct working tree, publish Agent-authored commits with ephemeral transport credentials | remote repository ownership, authorization policy, or commit pinning |
@@ -525,7 +525,7 @@ Static dependency direction:
 ```text
 awaken-cli composition root
   +-- local/cloud Resource PEP ---> awaken-iam PDP/PIP/PAP
-  +-- resource routers ----------> ResourceCatalog / FileStore / MemoryFs / SkillStore
+  +-- resource routers ----------> ResourceCatalog / FileStore / MemoryRepository / SkillStore
 
 ResourceCatalog / stores -X-> IAM, principal, API key, role, policy
 ```
@@ -611,7 +611,7 @@ internal config version remains an awaken governance detail.
 - content-addressed immutable `FileStore` and its local/SQLite/Postgres/S3
   adapters;
 - Workspace-scoped resource ownership foundations;
-- `MemoryFs` aggregate repository: path model, CAS, atomic history/redaction,
+- `MemoryRepository` aggregate repository: path model, CAS, atomic history/redaction,
   monotonic ids, and local/SQLite/Postgres adapters;
 - Agent default resource configuration and Managed Session attachment ingress;
 - `SandboxProvider`, mount descriptors, and environment realization boundary;
@@ -644,13 +644,12 @@ internal config version remains an awaken governance detail.
 - Repository publication and authored-Skill persistence run only at binding
   replacement or Session release; `GET /v1/files` is a read-only artifact
   projection and no longer triggers unrelated resource writes.
+- the misleading `MemoryFs` family and `memfs` module are removed rather than
+  retained as aliases: the port is `MemoryRepository`, with
+  `VolatileMemoryRepository`, `FilesystemMemoryRepository`,
+  `SqliteMemoryRepository`, and `PostgresMemoryRepository` adapters.
 
-### Remaining rename or merge
-
-- rename the now-unified `MemoryFs` aggregate port to `MemoryRepository` when the
-  remaining extraction call sites have migrated.
-
-### Remaining deletion
+### Completed deletion
 
 - `MemoryBlobStore` and all blob backends;
 - legacy single-file Memory materialization and Host-global extraction directory;

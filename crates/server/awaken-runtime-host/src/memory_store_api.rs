@@ -6,7 +6,7 @@
 //! (retrieve / list / redact).
 //!
 //! Each **memory** is a path-addressed file with a `content_sha256` + CAS update in
-//! the durable [`awaken_memory_store::MemoryFs`] (ADR-0053). The same aggregate
+//! the durable [`awaken_memory_store::MemoryRepository`] (ADR-0053). The same aggregate
 //! repository serves API heads, write-through mounts, recall/extraction, and the
 //! `/memory_versions` history: every mutation and its version row commit together.
 //! There is no API-side history registry or Host-global memory directory. The
@@ -187,7 +187,7 @@ fn mint_memory_store_id() -> String {
 
 /// `POST /v1/memory_stores` — create a store. The SDK sends `{name, description?,
 /// metadata?}`; an empty body keeps the name empty. The Resource Catalog owns
-/// identity/existence while MemoryFs owns only path-addressed content.
+/// identity/existence while MemoryRepository owns only path-addressed content.
 async fn create_store(
     State(state): State<Arc<MemoryStoreApi>>,
     scope: Option<Extension<WorkspaceScope>>,
@@ -245,7 +245,7 @@ async fn create_store(
 }
 
 /// `GET /v1/memory_stores/:id` — the governed store definition. Mutable content
-/// is exposed only through `/memories`, the same MemoryFs used by execution.
+/// is exposed only through `/memories`, the same MemoryRepository used by execution.
 async fn get_store(
     State(state): State<Arc<MemoryStoreApi>>,
     scope: Option<Extension<WorkspaceScope>>,

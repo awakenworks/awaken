@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use awaken_memory_store::{MemoryFs, SqliteMemoryFs};
+use awaken_memory_store::{MemoryRepository, SqliteMemoryRepository};
 use awaken_sandbox::memoryd::{MemorydConfig, serve, serve_copy};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -20,7 +20,8 @@ async fn copy_cycle_materializes_then_harvests_agent_edits() {
     std::fs::create_dir_all(&mount).expect("mount dir");
 
     // A durable store seeded with one memory the sidecar will project as a file.
-    let fs = SqliteMemoryFs::open(store_dir.join("memory.db").to_str().unwrap()).expect("open");
+    let fs =
+        SqliteMemoryRepository::open(store_dir.join("memory.db").to_str().unwrap()).expect("open");
     fs.create("s", "/notes/todo.md", "hello")
         .await
         .expect("seed");
@@ -86,7 +87,7 @@ async fn serve_entrypoint_selects_copy_and_round_trips() {
     let db = store_dir.join("memory.db");
     // Seed the store db that `serve` will open (a separate connection, then dropped).
     {
-        let fs = SqliteMemoryFs::open(db.to_str().unwrap()).expect("seed open");
+        let fs = SqliteMemoryRepository::open(db.to_str().unwrap()).expect("seed open");
         fs.create("s", "/seed.md", "seeded").await.expect("seed");
     }
 
@@ -120,7 +121,7 @@ async fn serve_entrypoint_selects_copy_and_round_trips() {
     res.expect("serve completes cleanly");
 
     // The agent's new file was harvested into the durable store.
-    let fs = SqliteMemoryFs::open(db.to_str().unwrap()).expect("assert open");
+    let fs = SqliteMemoryRepository::open(db.to_str().unwrap()).expect("assert open");
     let harvested = fs
         .get_by_path("s", "/fresh.md")
         .await

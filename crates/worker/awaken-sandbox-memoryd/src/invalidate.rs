@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use awaken_memory_store::{MemErr, Memory, MemoryEntry, MemoryFs, MemoryVersion};
+use awaken_memory_store::{MemErr, Memory, MemoryEntry, MemoryRepository, MemoryVersion};
 use tokio::sync::broadcast;
 
 /// A `(store_id, path)` invalidation — "this path changed; drop it".
@@ -57,23 +57,23 @@ impl Invalidator for LocalInvalidator {
     }
 }
 
-/// Wrap a [`MemoryFs`] so every mutation publishes an invalidation — the write side
+/// Wrap a [`MemoryRepository`] so every mutation publishes an invalidation — the write side
 /// of cross-host coherence. Reads pass through unchanged (the durable store is the
 /// source of truth; the invalidation only prompts *other* hosts' caches to refetch).
-pub struct InvalidatingMemoryFs {
-    inner: Arc<dyn MemoryFs>,
+pub struct InvalidatingMemoryRepository {
+    inner: Arc<dyn MemoryRepository>,
     invalidator: Arc<dyn Invalidator>,
 }
 
-impl InvalidatingMemoryFs {
+impl InvalidatingMemoryRepository {
     #[must_use]
-    pub fn new(inner: Arc<dyn MemoryFs>, invalidator: Arc<dyn Invalidator>) -> Self {
+    pub fn new(inner: Arc<dyn MemoryRepository>, invalidator: Arc<dyn Invalidator>) -> Self {
         Self { inner, invalidator }
     }
 }
 
 #[async_trait::async_trait]
-impl MemoryFs for InvalidatingMemoryFs {
+impl MemoryRepository for InvalidatingMemoryRepository {
     async fn list(&self, store: &str, prefix: &str) -> Result<Vec<MemoryEntry>, MemErr> {
         self.inner.list(store, prefix).await
     }
@@ -146,13 +146,16 @@ impl MemoryFs for InvalidatingMemoryFs {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_memory_store::InMemoryFs;
+    use awaken_memory_store::VolatileMemoryRepository;
 
     #[tokio::test]
     async fn a_mutation_publishes_an_invalidation_others_receive() {
         let bus = Arc::new(LocalInvalidator::new(16));
         let mut rx = bus.subscribe();
-        let fs = InvalidatingMemoryFs::new(Arc::new(InMemoryFs::new()), bus.clone());
+        let fs = InvalidatingMemoryRepository::new(
+            Arc::new(VolatileMemoryRepository::new()),
+            bus.clone(),
+        );
 
         // create → the inner store holds it AND an invalidation is broadcast.
         let m = fs.create("s", "/a.md", "one").await.unwrap();
@@ -194,7 +197,10 @@ mod tests {
     async fn reads_pass_through_without_invalidating() {
         let bus = Arc::new(LocalInvalidator::new(16));
         let mut rx = bus.subscribe();
-        let fs = InvalidatingMemoryFs::new(Arc::new(InMemoryFs::new()), bus.clone());
+        let fs = InvalidatingMemoryRepository::new(
+            Arc::new(VolatileMemoryRepository::new()),
+            bus.clone(),
+        );
         fs.create("s", "/a.md", "x").await.unwrap();
         let _ = rx.recv().await.unwrap(); // drain the create
 
@@ -211,7 +217,10 @@ mod tests {
         // for a change that never landed.
         let bus = Arc::new(LocalInvalidator::new(16));
         let mut rx = bus.subscribe();
-        let fs = InvalidatingMemoryFs::new(Arc::new(InMemoryFs::new()), bus.clone());
+        let fs = InvalidatingMemoryRepository::new(
+            Arc::new(VolatileMemoryRepository::new()),
+            bus.clone(),
+        );
 
         let m = fs.create("s", "/a.md", "one").await.unwrap();
         assert_eq!(

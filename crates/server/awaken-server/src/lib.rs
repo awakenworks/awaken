@@ -54,12 +54,12 @@ pub use worker_registry::{
     init_postgres as init_postgres_worker_registry, inject as init_worker_registry,
 };
 
-/// Assemble the governed MemoryFs data plane with its worker-side mount adapter.
+/// Assemble the governed MemoryRepository data plane with its worker-side mount adapter.
 /// Authorization has already selected workspace/store/access before this adapter
 /// sees an opaque store id; no IAM vocabulary crosses this seam.
 pub fn install_platform_memory_data_plane(host: &SharedHost) {
     host.install_memory_mounter(Arc::new(awaken_sandbox_memoryd::MemoryStoreMounter::new(
-        host.memory_fs(),
+        host.memory_repository(),
     )));
 }
 

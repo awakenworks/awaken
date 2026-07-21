@@ -1,6 +1,6 @@
 //! Durable memory persistence for the resources plane.
 //!
-//! The [`MemoryFs`] port with pluggable in-memory, filesystem, SQLite, and Postgres
+//! The [`MemoryRepository`] port with pluggable in-memory, filesystem, SQLite, and Postgres
 //! backends. A store is addressed only by an opaque, globally unique id; workspace
 //! ownership and authorization deliberately remain outside this storage adapter in
 //! the resource catalog and authorization edge respectively.
@@ -8,13 +8,13 @@
 //! Recall, extraction, API history, and mounts all use this same store-scoped
 //! aggregate; there is no Host-global extraction directory.
 
-/// Path-addressed, CAS memory model (ADR-0053): the `MemoryFs` port a write-through
+/// Path-addressed, CAS memory model (ADR-0053): the `MemoryRepository` port a write-through
 /// FUSE mount projects.
-pub mod memfs;
+pub mod repository;
 
-pub use memfs::{
-    FsMemoryFs, InMemoryFs, MAX_MEMORY_BYTES, MemErr, Memory, MemoryEntry, MemoryFs, MemoryVersion,
-    MemoryVersionOperation, sha256_hex,
+pub use repository::{
+    FilesystemMemoryRepository, MAX_MEMORY_BYTES, MemErr, Memory, MemoryEntry, MemoryRepository,
+    MemoryVersion, MemoryVersionOperation, VolatileMemoryRepository, sha256_hex,
 };
 
 #[cfg(feature = "postgres")]
@@ -25,11 +25,11 @@ mod schema;
 mod sqlite;
 
 #[cfg(feature = "postgres")]
-pub use postgres::{PgMemoryFs, PgStoreError};
+pub use postgres::{PgStoreError, PostgresMemoryRepository};
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub use schema::{BUNDLE_ID, memory_store_bundle};
 #[cfg(feature = "sqlite")]
-pub use sqlite::{SqliteMemoryFs, StoreError};
+pub use sqlite::{SqliteMemoryRepository, StoreError};
 
 /// Reduce `name` to a safe single stem: keep alphanumerics, `-`, `_`; map every other
 /// run to a single `-`; never empty. So a crafted store/workspace id can name neither
