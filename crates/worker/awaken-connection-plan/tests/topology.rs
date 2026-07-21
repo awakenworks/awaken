@@ -1,9 +1,11 @@
 //! ADR-0045 first vertical slice: InProcess and Unix channels round-trip, and a
 //! plan carrying a credential reference serializes without any secret material.
 
+#[cfg(unix)]
+use awaken_connection_plan::bind_unix;
 use awaken_connection_plan::{
     ChannelFactory, ConnectionPlan, CredentialRef, DialAddr, DialPolicy, TokioChannelFactory,
-    bind_unix, in_process_pair,
+    in_process_pair,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -25,6 +27,7 @@ async fn in_process_pair_round_trips() {
 }
 
 #[tokio::test]
+#[cfg(unix)]
 async fn unix_direct_dial_round_trips() {
     let dir = std::env::temp_dir();
     let path = dir.join(format!("awaken-relay-test-{}.sock", std::process::id()));
@@ -324,6 +327,7 @@ async fn connect_with_retry_tries_at_least_once_with_zero_attempts() {
 }
 
 #[tokio::test]
+#[cfg(unix)]
 async fn bind_unix_replaces_a_stale_socket_file() {
     // A dropped UnixListener leaves its socket file on disk; bind_unix removes the
     // stale file best-effort before rebinding, so a restart at the same path works.

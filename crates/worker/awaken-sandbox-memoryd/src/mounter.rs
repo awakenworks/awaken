@@ -372,39 +372,6 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    #[cfg(target_os = "macos")]
-    #[tokio::test]
-    async fn default_mounter_automatically_uses_copy_and_harvests_on_macos() {
-        let durable = Arc::new(VolatileMemoryRepository::new());
-        durable.create("s", "/note.md", "before").await.unwrap();
-        let mounter = MemoryStoreMounter::new(durable.clone());
-        let dir = temp("macos-auto-copy");
-
-        let guard = mounter
-            .mount("s", &dir, MountAccess::ReadWrite)
-            .await
-            .unwrap();
-        assert_eq!(guard.realization(), Realization::Copy);
-        assert_eq!(
-            std::fs::read_to_string(dir.join("note.md")).unwrap(),
-            "before"
-        );
-        std::fs::write(dir.join("note.md"), "after").unwrap();
-        guard.teardown().await;
-
-        assert_eq!(
-            durable
-                .get_by_path("s", "/note.md")
-                .await
-                .unwrap()
-                .unwrap()
-                .content
-                .as_deref(),
-            Some("after")
-        );
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
     #[tokio::test]
     async fn recovered_copy_reconciles_surviving_files_without_a_live_guard() {
         let durable = Arc::new(VolatileMemoryRepository::new());
@@ -578,6 +545,38 @@ mod tests {
                 .as_deref(),
             Some("v2"),
             "copy_only mount harvested the edit back"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[tokio::test]
+    async fn default_mount_degrades_to_copy_and_harvests_off_linux() {
+        use awaken_provisioning_contract::{MemoryMounter, MountAccess};
+
+        let durable = Arc::new(VolatileMemoryRepository::new());
+        durable.create("s", "/note.md", "v1").await.unwrap();
+        let mounter = MemoryStoreMounter::new(durable.clone());
+        let dir = temp("platform-copy-fallback");
+
+        let guard = mounter
+            .mount("s", &dir, MountAccess::ReadWrite)
+            .await
+            .unwrap();
+        assert_eq!(guard.realization(), Realization::Copy);
+        assert_eq!(std::fs::read_to_string(dir.join("note.md")).unwrap(), "v1");
+
+        std::fs::write(dir.join("note.md"), "v2").unwrap();
+        guard.teardown().await;
+        assert_eq!(
+            durable
+                .get_by_path("s", "/note.md")
+                .await
+                .unwrap()
+                .unwrap()
+                .content
+                .as_deref(),
+            Some("v2")
         );
         std::fs::remove_dir_all(&dir).ok();
     }

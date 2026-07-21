@@ -669,11 +669,15 @@ impl ProcessHandle for ChildProcess {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use crate::AcpRunExecutor;
+    #[cfg(unix)]
     use awaken_agent_contract::agent::run::{EndCause, RunState};
+    #[cfg(unix)]
     use awaken_runtime_contract::execution::RunExecutor;
 
     // Reuse the fixture activation from the crate tests.
+    #[cfg(unix)]
     use crate::tests::activation;
 
     fn pc(section: serde_json::Value) -> BTreeMap<String, serde_json::Value> {
@@ -862,6 +866,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn spawn_clears_the_host_env_so_a_sentinel_never_reaches_the_child() {
         // G22, the highest-value missing security invariant: `spawn` uses `env_clear`,
         // so an ambient host secret in THIS (parent) process must NOT be inherited by
@@ -922,6 +927,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn drives_a_real_subprocess_acp_agent_end_to_end() {
         // A tiny ACP agent in shell: read the prompt line, emit a message + turn_end.
         let script = "read _prompt; \

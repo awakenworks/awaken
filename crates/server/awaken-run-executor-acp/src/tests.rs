@@ -1698,10 +1698,12 @@ fn projecting_source_plans_launch_from_resolved_model_and_host_env() {
 }
 
 /// A resolver that supplies a config-home dir under an arbitrary env key.
+#[cfg(unix)]
 struct ConfigHomeAt {
     key: &'static str,
     dir: String,
 }
+#[cfg(unix)]
 impl LaunchResolver for ConfigHomeAt {
     fn model(&self, _a: &RunActivation) -> std::result::Result<ResolvedModel, OpenError> {
         Ok(ResolvedModel {
@@ -1721,6 +1723,7 @@ impl LaunchResolver for ConfigHomeAt {
 /// host→plugin_config→config-file chain, secretlessly (α: a broker reference, never a raw
 /// secret). Uses a cheap spawnable command so no real CLI/creds are needed.
 #[tokio::test]
+#[cfg(unix)]
 async fn open_writes_the_codex_mcp_config_into_the_config_home() {
     let dir = std::env::temp_dir().join(format!("awaken-acpmcp-e2e-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -1774,7 +1777,7 @@ async fn open_writes_the_codex_mcp_config_into_the_config_home() {
 /// it: `saw-github` if the server name crossed, `alpha-ref` if `broker://gh` (the α
 /// reference) is the bearer. So the test asserts the D5 wire (plugin_config →
 /// `to_session_mcp_server` → `to_acp_mcp_servers` → `session/new`) actually reached the CLI.
-#[cfg(feature = "real-acp")]
+#[cfg(all(feature = "real-acp", unix))]
 const FAKE_ACP_MCP_ECHO_SCRIPT: &str = "while IFS= read -r line; do \
       case \"$line\" in \
         *'\"id\":1'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{}}}';; \
@@ -1797,6 +1800,7 @@ const FAKE_ACP_MCP_ECHO_SCRIPT: &str = "while IFS= read -r line; do \
 /// the official codec serializes `mcpServers` into `session/new`.
 #[cfg(feature = "real-acp")]
 #[tokio::test]
+#[cfg(unix)]
 async fn open_and_drive_inject_the_mcp_server_into_session_new_for_an_acp_session_cli() {
     // A claude row (AcpSession, session/new delivery) with a cheap JSON-RPC echo agent.
     let mut cli = *acp_cli("claude").expect("claude in the catalog");
@@ -1845,6 +1849,7 @@ async fn open_and_drive_inject_the_mcp_server_into_session_new_for_an_acp_sessio
 /// bearer it received so the test asserts β delivers the raw token (never a reference).
 #[cfg(feature = "real-acp")]
 #[tokio::test]
+#[cfg(unix)]
 async fn open_and_drive_inject_a_trusted_inline_mcp_credential_into_session_new() {
     // A JSON-RPC echo agent: classifies the `session/new` bearer as `beta-inline` when it
     // saw the raw secret `sk-trusted`, else `no-secret`.
@@ -1911,6 +1916,7 @@ async fn open_and_drive_inject_a_trusted_inline_mcp_credential_into_session_new(
 /// `None`).
 #[cfg(feature = "real-acp")]
 #[tokio::test]
+#[cfg(unix)]
 async fn acp_session_id_is_carried_across_the_per_turn_relaunch() {
     use awaken_runtime_contract::live_inbox::{LiveInbox, MessageOrigin};
 
@@ -2316,7 +2322,7 @@ fn every_backend_row_projects_a_launchable_process_through_the_source() {
 /// the single word `pong` and a natural `end_turn`. Handshake: `id:1` initialize,
 /// `id:2` session/new, `id:3` prompt → `session/update` chunk + result. Used to
 /// drive each catalog row hermetically over the official codec.
-#[cfg(feature = "real-acp")]
+#[cfg(all(feature = "real-acp", unix))]
 const PONG_ECHO: &str = "while IFS= read -r line; do \
       case \"$line\" in \
         *'\"id\":1'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{}}}';; \
@@ -2336,6 +2342,7 @@ const PONG_ECHO: &str = "while IFS= read -r line; do \
 /// serializes the `session/new`→prompt handshake the agent answers.
 #[cfg(feature = "real-acp")]
 #[tokio::test]
+#[cfg(unix)]
 async fn every_backend_row_drives_a_plain_turn_to_a_committed_reply() {
     for row in known_acp_clis() {
         let mut cli = *row;

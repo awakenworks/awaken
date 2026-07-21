@@ -11,6 +11,7 @@
 //! tools (read/write/edit/glob/grep/bash); [`serve_hand`] drives it until the peer hangs
 //! up. FAT role (tools + executor + transport) — behind the `hand` feature.
 
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
 use awaken_connection_plan::{
@@ -129,6 +130,7 @@ pub async fn serve(bind: HandBind) -> Result<(), String> {
             // the socket world-connectable — access is gated by the PRIVATE rendezvous
             // DIRECTORY the composition bind-mounts (0700), not by the socket, the
             // standard unix-rendezvous posture.
+            #[cfg(unix)]
             if let Err(e) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o777))
             {
                 eprintln!("awaken-sandbox hand: chmod {path}: {e} (brain may not connect)");

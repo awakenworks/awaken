@@ -3,6 +3,8 @@
 //! socket dialed from a `ConnectionPlan` — and commits the hand's output. The
 //! brain's in-process registry is never touched.
 
+#![cfg(unix)]
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
