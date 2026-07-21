@@ -190,11 +190,74 @@ async function main() {
       await sleep(400);
       extracted = grep(STORE_DIR, 'full chain ran');
     }
-    await stopServer(server);
     assert.ok(extracted, 'out-of-band extraction persisted a memory to the durable store');
     pass('out-of-band memory extraction saved a cross-session memory');
 
-    console.log('E2E PASS: full chain in one conversation — config → mounts → skill → memory + repo write-back → artifact (native, real wire).');
+    // The same production sandbox can author a Skill under `skills/<id>/SKILL.md`.
+    // Harvest persists it into the canonical SkillStore: identical bytes are a no-op,
+    // changed bytes append exactly one immutable version, and later Sessions see it.
+    const author = async (prompt) => {
+      const authored = await c.beta.sessions.create({
+        agent: 'assistant',
+        environment_id: 'env_local',
+        betas: BETAS,
+      });
+      await c.beta.sessions.events.send(authored.id, {
+        events: [{ type: 'user.message', content: [{ type: 'text', text: prompt }] }],
+        betas: BETAS,
+      });
+      const approved = new Set();
+      let authoredEvents = [];
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        await sleep(200);
+        authoredEvents = await listEvents(c, authored.id);
+        await approveGated(c, authored.id, authoredEvents, approved);
+        if (authoredEvents.some((event) =>
+          event.type === 'agent.message' &&
+          (event.content ?? []).some((content) => (content.text ?? '').includes(`authored ${prompt}`)),
+        )) break;
+      }
+      assert.ok(
+        authoredEvents.some((event) =>
+          event.type === 'agent.message' &&
+          (event.content ?? []).some((content) => (content.text ?? '').includes(`authored ${prompt}`)),
+        ),
+      );
+      await c.beta.sessions.delete(authored.id, { betas: BETAS });
+    };
+    const skillVersions = async () => {
+      const response = await c.get('/v1/skills/authored/versions');
+      return response.data ?? [];
+    };
+    await author('author-skill-v1');
+    assert.deepEqual((await skillVersions()).map((version) => version.version), ['1']);
+    await author('author-skill-v1');
+    assert.deepEqual(
+      (await skillVersions()).map((version) => version.version),
+      ['1'],
+      're-harvesting identical SKILL.md bytes is idempotent',
+    );
+    await author('author-skill-v2');
+    assert.deepEqual((await skillVersions()).map((version) => version.version), ['1', '2']);
+    const authoredLatest = await c.get('/v1/skills/authored/versions/latest');
+    assert.equal(authoredLatest.version, '2');
+    assert.match(
+      await (await fetch(`http://127.0.0.1:${PORT}/v1/skills/authored/versions/2/content`)).text(),
+      /AUTHORED_SKILL_V2/u,
+    );
+    const consumingSession = await c.beta.sessions.create({
+      agent: 'assistant',
+      environment_id: 'env_local',
+      betas: BETAS,
+    });
+    assert.ok(
+      (consumingSession.agent.skills ?? []).some((skill) => (skill.skill_id ?? skill) === 'authored'),
+      'a later Session advertises the durable authored Skill',
+    );
+    await c.beta.sessions.delete(consumingSession.id, { betas: BETAS });
+    pass('agent-authored Skill harvest is idempotent and appends immutable changed versions');
+
+    console.log('E2E PASS: full chain — config → mounts → skill → memory + repo write-back → artifact → authored Skill versions.');
   } finally {
     await stopServer(server);
     upstream.close();
