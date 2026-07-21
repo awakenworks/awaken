@@ -18,7 +18,7 @@ holds the rule), and the **Validation** (the test kind that proves it).
     coordinator and registry compiler remain target), G20 (executor result side;
     wait/resume channel values land with the durable channel impl), G21, G23, G26
     (indeterminate-result side; error-mapping adapters remain target), G27, G28,
-    G29, G30, G31, G32, G33, G34, G35.
+    G29, G30, G31, G32, G33, G34, G35, G36.
   - **Target** (the rule is accepted, but its enforcer is not yet built here, so
     it holds vacuously until the subsystem lands): G10/G19 (public protocol
     adapters), G11 (`ContinuationGuard`), G18 (config-publication coordinator and
@@ -28,7 +28,9 @@ holds the rule), and the **Validation** (the test kind that proves it).
     arrives), G22 (backend-binding negotiation), G25 (observability/eval), G26
     (error-mapping adapters and public DTO dependency checks — the
     indeterminate-result side is now active via `EndCause::Indeterminate` and
-    `terminal()` projection tests). A Target guardrail must gain a real enforcer
+    `terminal()` projection tests), G37 (typed resource input resolver and
+    Memory/Repository config-version repositories), and G38 (durable resource
+    activation reconciliation and per-kind reclamation). A Target guardrail must gain a real enforcer
     and test in the same change that first builds its subsystem.
   - **Retired**: G7 (`ExecutionBackend`/`BackendProfile`). That god-seam stays
     retired. Remote tool execution returned in ADR-0044 as the narrow `ToolExecutor`
@@ -79,6 +81,8 @@ holds the rule), and the **Validation** (the test kind that proves it).
 | G34 | Network topology is a serializable `ConnectionPlan` value object (ADR-0045) over the connection mechanism; it carries a `CredentialRef` only, never resolved secret material, and no product-hosting vocabulary. `ChannelFactory` maps a plan to a live channel with `InProcess` as the zero-cost degenerate arm, so one brain/hand code path spans laptop to fleet. | `awaken-connection-plan` `ConnectionPlan`/`DialAddr`/`Wiring`/`DialPolicy`/`CredentialRef`; material resolved host-side via `CredentialResolver` just before dial; `lefthook.yml` neutral-vocabulary deny-list covers the crate | no-secret-serialization test (plan serializes a ref, no `authorization`/`bearer` material); InProcess + Unix round-trip tests; `connect` fail-closed on a `Listen` plan |
 | G35 | An applied durable-dispatch `Done` atomically records one replayable completion fact and permanent run-id tombstone; a fenced settle records none, and completed run ids cannot be re-admitted. The fact carries no run outcome or product vocabulary. | `DispatchQueue::settle` plus `DispatchQueue::completion_events_after`; unique completion row in memory/SQLite/Postgres; enqueue and exact-new-run commands consult the tombstone | shared dispatch conformance suite proves atomic visibility, cursor replay/paging, fenced non-emission, and completed-run non-resurrection across all local backends (ADR-0060) |
 | G36 | Inference route and credential access are selected exactly once at scoped configuration publication and fingerprinted in `ExecutableAgentSnapshot`. Dispatch copies that snapshot; runtime may validate and materialize only a published candidate and may never enumerate catalog routes, choose another credential, or weaken its injection policy. | `CatalogInferenceAccessPublisher` outside runtime; `CredentialInferenceMaterializer` has no catalog/list dependency; `InferenceAccess` composes typed `CredentialAccess` | publication/materialization tests; crate-boundary check; `InferenceAccessPublication.tla` |
+| G37 | Resource input identity follows content lifecycle: File binds immutable `FileId`; Agent Memory/Repository bindings carry identity only; one Session-side resolution selects their immutable configuration versions without selecting Memory entry/head versions or Git commits. The effective manifest is secret-free, and current ownership, lifecycle state, authorization, and credential revocation may still deny use. | Target `SessionInputResolver`, typed `InputResourceId`/`EffectiveSessionInputs`, and immutable Memory/Repository configuration-version repositories; front-door PEP remains the authorization edge | typed-boundary tests; one-resolution/explicit-replacement tests; no-content-pin/no-secret serialization; cross-Workspace and post-revocation fail-closed tests (ADR-0063) |
+| G38 | Logical resource denial precedes physical reclamation. Cleanup is idempotent and may purge only after the resource-specific reference and activation conditions hold: shared File blobs have no remaining grant/reference, Memory has no live handle or extraction job, and Repository cleanup removes only awaken-local material, never the remote repository. | Target durable `SessionResourceActivation` state and `ResourceReclaimer` with per-kind store/reference checks and purge receipts | crash-recovery convergence; stale-lease fencing; no-live-reference purge properties; shared-File retention; Memory drain; Repository remote-preservation tests (ADR-0063) |
 
 ## DDD Review Checklist
 
