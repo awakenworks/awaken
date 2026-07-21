@@ -37,10 +37,10 @@ pub struct PersistedSession {
     /// The accepted MCP servers in the SDK wire shape (`{name, type, url}`) — the
     /// echo the agent object reports; never a credential.
     pub mcp_servers: Vec<Value>,
-    /// The exact, secret-free input manifest resolved at Session creation. Retry
-    /// and rehydration reuse this value and never re-read Agent defaults/current
-    /// Memory or Repository configuration.
-    pub effective_inputs: crate::ResolvedSessionResources,
+    /// Durable resource activation state. Its `active` manifest is the exact,
+    /// secret-free Session pin; `pending` and activation records make external
+    /// realization/release recoverable without importing authorization concepts.
+    pub resources: crate::SessionResourceState,
     /// Durable lifecycle projection used when a process rehydrates the session.
     pub status: String,
     pub archived_at: Option<String>,
@@ -97,6 +97,13 @@ pub trait ManagedSessionRepository: Send + Sync {
     /// The stored configuration for `session_id`, if any.
     async fn get(&self, session_id: &str) -> Option<PersistedSession>;
 
+    /// Sessions with a Prepared/Releasing resource transition. Implementations
+    /// must preserve their ordinary tenancy fence; the coordinator obtains the
+    /// already-trusted owner separately through [`Self::owner`].
+    async fn pending_resource_sessions(&self) -> Vec<PersistedSession> {
+        Vec::new()
+    }
+
     /// The atomically persisted owner scope of `session_id`, if the row exists.
     async fn owner(&self, _session_id: &str) -> Option<String> {
         None
@@ -150,6 +157,10 @@ pub trait ScopedSessionStore: Send + Sync {
     /// The session for `session_id` **within `scope`** — a row owned by another
     /// scope is invisible (the isolation fence), so this returns `None` for it.
     async fn get_scoped(&self, scope: &ScopeId, session_id: &str) -> Option<PersistedSession>;
+
+    async fn pending_resource_sessions_scoped(&self, _scope: &ScopeId) -> Vec<PersistedSession> {
+        Vec::new()
+    }
 }
 
 /// The decorator that makes tenancy an edge aspect: it implements the scope-free
@@ -229,5 +240,11 @@ impl<S: ScopedSessionStore> ManagedSessionRepository for ScopedSessionRepo<S> {
 
     async fn get(&self, session_id: &str) -> Option<PersistedSession> {
         self.inner.get_scoped(&self.scope, session_id).await
+    }
+
+    async fn pending_resource_sessions(&self) -> Vec<PersistedSession> {
+        self.inner
+            .pending_resource_sessions_scoped(&self.scope)
+            .await
     }
 }

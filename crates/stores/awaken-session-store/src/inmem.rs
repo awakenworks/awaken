@@ -112,6 +112,21 @@ impl ManagedSessionRepository for InMemorySessionRepository {
             .map(|(session, _)| session.clone())
     }
 
+    async fn pending_resource_sessions(&self) -> Vec<PersistedSession> {
+        let mut sessions = self
+            .state
+            .lock()
+            .expect("session repo mutex poisoned")
+            .rows
+            .values()
+            .map(|(session, _)| session)
+            .filter(|session| session.resources.needs_reconciliation())
+            .cloned()
+            .collect::<Vec<_>>();
+        sessions.sort_by(|left, right| left.session_id.cmp(&right.session_id));
+        sessions
+    }
+
     async fn owner(&self, session_id: &str) -> Option<String> {
         self.state
             .lock()
@@ -254,6 +269,22 @@ impl ScopedSessionStore for InMemoryScopedSessionStore {
             .get(&(scope.0.clone(), session_id.to_string()))
             .cloned()
     }
+
+    async fn pending_resource_sessions_scoped(&self, scope: &ScopeId) -> Vec<PersistedSession> {
+        let mut sessions = self
+            .state
+            .lock()
+            .expect("scoped session store mutex poisoned")
+            .rows
+            .iter()
+            .filter(|((owner, _), session)| {
+                owner == &scope.0 && session.resources.needs_reconciliation()
+            })
+            .map(|(_, session)| session.clone())
+            .collect::<Vec<_>>();
+        sessions.sort_by(|left, right| left.session_id.cmp(&right.session_id));
+        sessions
+    }
 }
 
 #[cfg(test)]
@@ -273,7 +304,7 @@ mod tests {
             environment_id: "env".into(),
             // The wire-echo shape the agent object reports — never a credential.
             mcp_servers: vec![json!({"name": "gh", "type": "url", "url": "https://mcp.example"})],
-            effective_inputs: Default::default(),
+            resources: Default::default(),
             status: "idle".into(),
             archived_at: None,
         }
@@ -348,7 +379,7 @@ mod scoped_tests {
             metadata: BTreeMap::new(),
             environment_id: "env".into(),
             mcp_servers: Vec::new(),
-            effective_inputs: Default::default(),
+            resources: Default::default(),
             status: "idle".into(),
             archived_at: None,
         }

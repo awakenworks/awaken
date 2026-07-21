@@ -26,15 +26,17 @@ fn session(id: &str, title: &str) -> PersistedSession {
         metadata: std::collections::BTreeMap::from([("k".into(), "v".into())]),
         environment_id: "env".into(),
         mcp_servers: vec![json!({ "name": "fs", "type": "stdio", "url": "x" })],
-        effective_inputs: serde_json::from_value(json!({
-            "inputs": [{
-                "binding_id": "input-file",
-                "source": { "kind": "file", "file_id": "file-1" },
-                "mount_path": "/mnt/input",
-                "access": "read_only"
-            }]
-        }))
-        .unwrap(),
+        resources: awaken_session_contract::SessionResourceState::from_legacy(
+            serde_json::from_value(json!({
+                "inputs": [{
+                    "binding_id": "input-file",
+                    "source": { "kind": "file", "file_id": "file-1" },
+                    "mount_path": "/mnt/input",
+                    "access": "read_only"
+                }]
+            }))
+            .unwrap(),
+        ),
         status: "idle".into(),
         archived_at: None,
     }
@@ -130,12 +132,33 @@ async fn lifecycle_outbox_tracks_every_committed_transition<R: ManagedSessionRep
     assert_eq!(r.pending_lifecycle().await, vec![deleted]);
 }
 
+/// Prepared/Releasing activations remain discoverable after a process crash;
+/// terminal Active/Released/Failed records do not create reconciliation work.
+async fn pending_resource_activation_index_is_durable<R: ManagedSessionRepository>(r: &R) {
+    let mut pending = session("sesn_pending", "pending");
+    let desired = pending.resources.active.clone();
+    pending.resources = Default::default();
+    pending
+        .resources
+        .prepare(&pending.session_id, desired)
+        .unwrap();
+    r.save_owned("ws_a", pending.clone()).await;
+
+    assert_eq!(r.pending_resource_sessions().await, vec![pending.clone()]);
+
+    pending.resources.start_attempt().unwrap();
+    pending.resources.commit().unwrap();
+    r.save_owned("ws_a", pending).await;
+    assert!(r.pending_resource_sessions().await.is_empty());
+}
+
 async fn run_suite<R: ManagedSessionRepository>(fresh: impl Fn() -> R) {
     save_get_round_trips(&fresh()).await;
     absent_id_reads_none(&fresh()).await;
     save_is_idempotent_upsert(&fresh()).await;
     save_owned_is_one_atomic_repository_fact(&fresh()).await;
     lifecycle_outbox_tracks_every_committed_transition(&fresh()).await;
+    pending_resource_activation_index_is_durable(&fresh()).await;
 }
 
 // ── Backend rows: each must pass the identical universal suite ───────────────────

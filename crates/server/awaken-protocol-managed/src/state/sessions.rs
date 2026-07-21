@@ -272,7 +272,7 @@ impl ManagedState {
         }
         // Sole composition/resolution point. Runtime receives this persisted,
         // secret-free manifest and never re-opens Agent or Resource config stores.
-        let mut effective_inputs = match self.resource_catalog.as_deref() {
+        let mut resolved_resources = match self.resource_catalog.as_deref() {
             Some(catalog) => awaken_session_contract::SessionInputResolver::resolve_inputs(
                 &owner_scope,
                 catalog,
@@ -288,14 +288,14 @@ impl ManagedState {
         }
         .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
         if let Some(view) = &config_view {
-            effective_inputs.skills = Some(
+            resolved_resources.skills = Some(
                 self.runtime
                     .resolve_session_skills(&owner_scope, &view.skill_ids)
                     .await
                     .map_err(StateError::Run)?,
             );
         }
-        let resource_dtos: Vec<serde_json::Value> = effective_inputs
+        let resource_dtos: Vec<serde_json::Value> = resolved_resources
             .inputs
             .iter()
             .map(|input| resolved_resource_dto(&id, input))
@@ -321,7 +321,7 @@ impl ManagedState {
                     workspace_id: owner_scope.clone(),
                     agent_id: agent_id.clone(),
                     mcp_servers: bindings,
-                    resources: effective_inputs.clone(),
+                    resources: resolved_resources.clone(),
                     model: selected_model.as_ref().map(|m| m.id.clone()),
                     runtime: req.awaken_runtime().map(str::to_string),
                     deny_egress,
@@ -422,7 +422,9 @@ impl ManagedState {
                     metadata: session.metadata.clone(),
                     environment_id: session.environment_id.clone(),
                     mcp_servers: session.agent.mcp_servers.clone(),
-                    effective_inputs: effective_inputs.clone(),
+                    resources: awaken_session_contract::SessionResourceState::from_legacy(
+                        resolved_resources.clone(),
+                    ),
                     status: "idle".to_string(),
                     archived_at: None,
                 },
@@ -435,7 +437,9 @@ impl ManagedState {
             SessionRecord {
                 agent_id,
                 session: session.clone(),
-                effective_inputs: effective_inputs.clone(),
+                resource_state: awaken_session_contract::SessionResourceState::from_legacy(
+                    resolved_resources.clone(),
+                ),
                 events: Vec::new(),
                 child_threads: Vec::new(),
             },
@@ -497,7 +501,7 @@ impl ManagedState {
             title,
             metadata,
             mcp_servers,
-            effective_inputs,
+            resource_state,
             status,
             archived_at,
         ) = match persisted {
@@ -508,7 +512,7 @@ impl ManagedState {
                 p.title,
                 p.metadata,
                 p.mcp_servers,
-                p.effective_inputs,
+                p.resources,
                 match p.status.as_str() {
                     "terminated" => "terminated",
                     _ => "idle",
@@ -550,7 +554,8 @@ impl ManagedState {
             archived_at,
             title,
             metadata,
-            resources: effective_inputs
+            resources: resource_state
+                .active
                 .inputs
                 .iter()
                 .map(|input| resolved_resource_dto(id, input))
@@ -591,7 +596,7 @@ impl ManagedState {
             .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
         if let Some(session) = &persisted {
             self.runtime
-                .apply_session_inputs(id, &owner_scope, &session.effective_inputs)
+                .apply_session_inputs(id, &owner_scope, &session.resources.active)
                 .await?;
         }
         let messages = self.runtime.committed_messages(id).await;
@@ -609,14 +614,14 @@ impl ManagedState {
         let agent_id = persisted
             .as_ref()
             .map_or_else(|| "assistant".to_string(), |p| p.agent_id.clone());
-        let effective_inputs = persisted
+        let resource_state = persisted
             .as_ref()
-            .map(|session| session.effective_inputs.clone())
+            .map(|session| session.resources.clone())
             .unwrap_or_default();
         let record = SessionRecord {
             agent_id,
             session: self.rehydrated_session(id, persisted),
-            effective_inputs,
+            resource_state,
             events,
             child_threads: Vec::new(),
         };

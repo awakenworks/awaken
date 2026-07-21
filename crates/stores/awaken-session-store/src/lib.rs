@@ -16,7 +16,10 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
-use awaken_session_contract::{ManagedSessionRepository, PersistedSession, SessionLifecycleFact};
+use awaken_session_contract::{
+    ManagedSessionRepository, PersistedSession, ResolvedSessionResources, SessionLifecycleFact,
+    SessionResourceState,
+};
 
 // The in-memory reference backends (plain + scoped) live here beside the durable
 // siblings (issue A / Phase 1); the ports + PersistedSession value + the
@@ -97,7 +100,7 @@ fn mcp_str(session: &PersistedSession) -> String {
 }
 
 fn effective_inputs_str(session: &PersistedSession) -> String {
-    serde_json::to_string(&session.effective_inputs).expect("effective Session inputs serialize")
+    serde_json::to_string(&session.resources).expect("Session resource state serializes")
 }
 
 fn lifecycle_str(fact: &SessionLifecycleFact) -> String {
@@ -141,6 +144,15 @@ struct EncodedSessionRow {
     archived_at: Option<String>,
 }
 
+fn decode_resource_state(data: &str) -> Result<SessionResourceState, serde_json::Error> {
+    let value: serde_json::Value = serde_json::from_str(data)?;
+    if value.get("inputs").is_some() {
+        return serde_json::from_value::<ResolvedSessionResources>(value)
+            .map(SessionResourceState::from_legacy);
+    }
+    serde_json::from_value(value)
+}
+
 fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_json::Error> {
     Ok(PersistedSession {
         session_id: row.session_id,
@@ -150,7 +162,7 @@ fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_json::Error>
         metadata: serde_json::from_str(&row.metadata_json)?,
         environment_id: row.environment_id,
         mcp_servers: serde_json::from_str(&row.mcp_json)?,
-        effective_inputs: serde_json::from_str(&row.effective_inputs_json)?,
+        resources: decode_resource_state(&row.effective_inputs_json)?,
         status: row.status,
         archived_at: row.archived_at,
     })
@@ -404,6 +416,35 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         )
     }
 
+    async fn pending_resource_sessions(&self) -> Vec<PersistedSession> {
+        let conn = self.conn.lock().expect("session store mutex poisoned");
+        let mut statement = conn
+            .prepare(
+                "SELECT session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, status, archived_at, effective_inputs_json
+                 FROM managed_session ORDER BY session_id",
+            )
+            .expect("prepare pending Session resource activations");
+        statement
+            .query_map([], |row| {
+                Ok(EncodedSessionRow {
+                    session_id: row.get(0)?,
+                    agent_id: row.get(1)?,
+                    model: row.get(2)?,
+                    title: row.get(3)?,
+                    metadata_json: row.get(4)?,
+                    environment_id: row.get(5)?,
+                    mcp_json: row.get(6)?,
+                    status: row.get(7)?,
+                    archived_at: row.get(8)?,
+                    effective_inputs_json: row.get(9)?,
+                })
+            })
+            .expect("query pending Session resource activations")
+            .map(|row| decode(row.expect("read managed session")).expect("decode managed session"))
+            .filter(|session| session.resources.needs_reconciliation())
+            .collect()
+    }
+
     async fn owner(&self, session_id: &str) -> Option<String> {
         let conn = self.conn.lock().expect("session store mutex poisoned");
         conn.query_row(
@@ -645,6 +686,34 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         )
     }
 
+    async fn pending_resource_sessions(&self) -> Vec<PersistedSession> {
+        sqlx::query(
+            "SELECT session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, status, archived_at, effective_inputs_json \
+             FROM managed_session ORDER BY session_id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .expect("read pending Session resource activations")
+        .into_iter()
+        .map(|row| {
+            decode(EncodedSessionRow {
+                session_id: row.get("session_id"),
+                agent_id: row.get("agent_id"),
+                model: row.get("model"),
+                title: row.get("title"),
+                metadata_json: row.get("metadata_json"),
+                environment_id: row.get("environment_id"),
+                mcp_json: row.get("mcp_json"),
+                status: row.get("status"),
+                archived_at: row.get("archived_at"),
+                effective_inputs_json: row.get("effective_inputs_json"),
+            })
+            .expect("decode managed session")
+        })
+        .filter(|session| session.resources.needs_reconciliation())
+        .collect()
+    }
+
     async fn owner(&self, session_id: &str) -> Option<String> {
         let row = sqlx::query("SELECT scope_id FROM managed_session WHERE session_id = $1")
             .bind(session_id)
@@ -672,15 +741,17 @@ mod tests {
             metadata,
             environment_id: "env_local".to_string(),
             mcp_servers: vec![serde_json::json!({"name":"calc","type":"url","url":"https://x"})],
-            effective_inputs: serde_json::from_value(serde_json::json!({
-                "inputs": [{
-                    "binding_id": "input-file",
-                    "source": { "kind": "file", "file_id": "file-1" },
-                    "mount_path": "/mnt/input",
-                    "access": "read_only"
-                }]
-            }))
-            .unwrap(),
+            resources: awaken_session_contract::SessionResourceState::from_legacy(
+                serde_json::from_value(serde_json::json!({
+                    "inputs": [{
+                        "binding_id": "input-file",
+                        "source": { "kind": "file", "file_id": "file-1" },
+                        "mount_path": "/mnt/input",
+                        "access": "read_only"
+                    }]
+                }))
+                .unwrap(),
+            ),
             status: "idle".into(),
             archived_at: None,
         }
@@ -778,6 +849,36 @@ mod tests {
             "the session config survives a restart"
         );
         assert!(reopened.get("sesn_missing").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn legacy_manifest_rows_upgrade_to_resource_state_on_read() {
+        let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
+        let legacy = serde_json::json!({
+            "inputs": [{
+                "binding_id": "legacy-file",
+                "source": { "kind": "file", "file_id": "file-old" },
+                "mount_path": "/legacy",
+                "access": "read_only"
+            }]
+        })
+        .to_string();
+        repo.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO managed_session
+                 (session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, effective_inputs_json)
+                 VALUES (?1, 'agent', 'model', NULL, '{}', 'env', '[]', ?2)",
+                params!["legacy", legacy],
+            )
+            .unwrap();
+
+        let loaded = repo.get("legacy").await.unwrap();
+        assert_eq!(loaded.resources.revision, 1);
+        assert_eq!(loaded.resources.active.inputs.len(), 1);
+        assert!(loaded.resources.activations.is_empty());
+        assert!(!loaded.resources.needs_reconciliation());
     }
 
     #[tokio::test]

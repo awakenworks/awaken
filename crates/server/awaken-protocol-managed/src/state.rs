@@ -64,7 +64,7 @@ struct SessionRecord {
     agent_id: String,
     session: Session,
     /// Durable source of truth for the runtime's currently applied input projection.
-    effective_inputs: awaken_session_contract::ResolvedSessionResources,
+    resource_state: awaken_session_contract::SessionResourceState,
     events: Vec<Event>,
     /// Subagent (multiagent delegate) child threads spawned in the session, each a
     /// projected `session_thread` object (parent = the primary thread). Enumerated
@@ -592,7 +592,7 @@ mod tests {
             mcp_servers: vec![
                 serde_json::json!({"name": "calc", "type": "url", "url": "https://x"}),
             ],
-            effective_inputs: sample_inputs(),
+            resources: awaken_session_contract::SessionResourceState::from_legacy(sample_inputs()),
             status: "idle".into(),
             archived_at: None,
         }

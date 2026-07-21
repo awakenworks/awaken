@@ -6,7 +6,8 @@ use super::*;
 impl ManagedState {
     fn refresh_resource_projection(record: &mut SessionRecord) {
         record.session.resources = record
-            .effective_inputs
+            .resource_state
+            .active
             .inputs
             .iter()
             .map(|input| resolved_resource_dto(&record.session.id, input))
@@ -24,11 +25,11 @@ impl ManagedState {
             .get(session_id)
             .await
             .ok_or(StateError::NotFound)?;
-        persisted.effective_inputs = inputs.clone();
+        persisted.resources.active = inputs.clone();
         self.sessions_repo.save_owned(owner_scope, persisted).await;
         let mut sessions = self.sessions.lock().unwrap();
         let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
-        record.effective_inputs = inputs;
+        record.resource_state.active = inputs;
         Self::refresh_resource_projection(record);
         Ok(())
     }
@@ -147,7 +148,8 @@ impl ManagedState {
             .unwrap()
             .get(id)
             .ok_or(StateError::NotFound)?
-            .effective_inputs
+            .resource_state
+            .active
             .clone();
         let mut suffix = current.inputs.len();
         let binding_id = loop {
@@ -233,7 +235,7 @@ impl ManagedState {
                 .iter()
                 .position(|resource| resource["id"] == resource_id)
                 .ok_or(StateError::NotFound)?;
-            (record.effective_inputs.clone(), index)
+            (record.resource_state.active.clone(), index)
         };
         let previous = current.inputs[index].clone();
         let mut replacement = previous.clone();
@@ -319,7 +321,7 @@ impl ManagedState {
                 .iter()
                 .position(|resource| resource["id"] == resource_id)
                 .ok_or(StateError::NotFound)?;
-            (record.effective_inputs.clone(), index)
+            (record.resource_state.active.clone(), index)
         };
         let input = &current.inputs[index];
         if matches!(
