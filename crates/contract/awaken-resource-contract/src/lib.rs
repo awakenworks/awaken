@@ -340,6 +340,18 @@ pub trait MemoryFs: Send + Sync {
     async fn rename(&self, store: &str, from: &str, to: &str) -> Result<Memory, MemErr>;
     /// Delete the memory at `path` (idempotent — deleting an absent path is `Ok`).
     async fn delete_by_path(&self, store: &str, path: &str) -> Result<(), MemErr>;
+    /// Delete `path` only while it is still the exact head observed by a caller.
+    /// Returns `false` when the path is already absent (the requested outcome is
+    /// already true). A different id or sha returns [`MemErr::Conflict`] carrying
+    /// the live head and never deletes it. This closes the create/delete ABA window
+    /// for materialized-copy reconciliation.
+    async fn delete_if_match(
+        &self,
+        store: &str,
+        path: &str,
+        base_id: &str,
+        base_sha: &str,
+    ) -> Result<bool, MemErr>;
     /// Ordered version history for this store.
     async fn list_versions(&self, store: &str) -> Result<Vec<MemoryVersion>, MemErr>;
     /// Redact one historical version's content. Returns `None` when the version

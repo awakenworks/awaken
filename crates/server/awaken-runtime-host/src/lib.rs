@@ -365,19 +365,6 @@ impl ManagedHost {
                 source
                     .resolve_memory_store(workspace, memory_store_id.as_str())
                     .map_err(|error| RunError::bad_request(error.to_string()))?;
-                let mut versions = std::collections::BTreeMap::new();
-                if input.access == ResourceAccess::ReadWrite {
-                    for entry in self
-                        .host
-                        .memory_stores
-                        .fs()
-                        .list(memory_store_id.as_str(), "/")
-                        .await
-                        .map_err(|error| RunError::bad_request(error.to_string()))?
-                    {
-                        versions.insert(entry.path, entry.content_sha256);
-                    }
-                }
                 // The worker realizes one governed store directory through its
                 // MemoryMounter. The resource plane never receives a principal,
                 // role, API key, or policy: the outer authorization/ACL seam has
@@ -394,13 +381,6 @@ impl ManagedHost {
                         lifetime: awaken_provisioning_contract::MountLifetime::PerRun,
                         required: true,
                     });
-                if input.access == ResourceAccess::ReadWrite {
-                    staged.memory_mounts.push(crate::provisioning::MemoryMount {
-                        store_id: memory_store_id.to_string(),
-                        logical: logical.clone(),
-                        versions,
-                    });
-                }
             }
             ResolvedInputSource::Repository {
                 repository_id,
@@ -477,7 +457,6 @@ impl ManagedHost {
             let one = self.stage_resolved_input(workspace, input).await?;
             all.mounts.extend(one.mounts);
             all.prompts.extend(one.prompts);
-            all.memory_mounts.extend(one.memory_mounts);
             all.repos.extend(one.repos);
             if let awaken_protocol_managed::ResolvedInputSource::MemoryStore {
                 memory_store_id,
@@ -617,12 +596,10 @@ impl SessionRuntime for ManagedHost {
     }
 
     async fn end_session(&self, thread: &str) -> Result<(), RunError> {
-        // Terminal edge (managed session delete/archive): flush in-sandbox memory
-        // edits and run-authored skills back to durable truth while the sandbox is
-        // still live, then evict the cached context and dispose the sandbox (shred
-        // secrets, reap the workspace). Mirrors the evict-rebuild harvest, but this
-        // edge REAPS the workspace rather than reusing it — the session is over.
-        self.host.harvest_thread_memory(thread).await;
+        // Terminal edge (managed session delete/archive): persist run-authored
+        // skills, then dispose the sandbox. Memory is owned by its MemoryMount
+        // guard: FUSE writes through live and copy realization performs one CAS
+        // harvest during teardown. There is no second Host-side write-back path.
         self.host.harvest_thread_skills(thread).await;
         self.host.end_session(thread).await.map_err(to_run_error)
     }
@@ -870,7 +847,6 @@ impl SessionRuntime for ManagedHost {
         inputs: &awaken_protocol_managed::ResolvedSessionResources,
     ) -> Result<(), RunError> {
         self.host.register_thread_workspace(thread, workspace_id);
-        self.host.harvest_thread_memory(thread).await;
         self.host.harvest_thread_skills(thread).await;
         self.host.harvest_thread_repo(thread).await;
         match &inputs.skills {

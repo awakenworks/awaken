@@ -115,8 +115,8 @@ production logic.
   atomic lifecycle/outbox commit, checkpointed erasure, and durable
   credential-intent recovery.
 - `MemoryCAS.tla`, `ToolResultProtocol.tla`, and `WorkerDrain.tla` cover memory
-  generation/rename safety, cross-protocol result correlation, and the drain
-  admission fence.
+  generation/rename/conditional-delete safety, cross-protocol result correlation,
+  and the drain admission fence.
 - `AuditCommit.tla` and `ConfigActivation.tla` cover transactional durable audit,
   replay fencing, and generation-fenced publication installation.
 - `ManagementAuditIntent.tla`, `CredentialInventory.tla`, and
@@ -200,7 +200,7 @@ graphs with zero invariant violations and zero states left on the queue:
 | WebhookOutbox | 10 | 6 | 4 |
 | ErasureSaga | 19 | 12 | 6 |
 | CredentialCreation | 14 | 8 | 5 |
-| MemoryCAS | 1,245 | 244 | 10 |
+| MemoryCAS | 3,511 | 563 | 11 |
 | ToolResultProtocol | 213 | 56 | 9 |
 | WorkerDrain | 15 | 11 | 8 |
 | AuditCommit | 10 | 6 | 4 |

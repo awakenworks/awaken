@@ -113,6 +113,23 @@ impl MemoryFs for InvalidatingMemoryFs {
         Ok(())
     }
 
+    async fn delete_if_match(
+        &self,
+        store: &str,
+        path: &str,
+        base_id: &str,
+        base_sha: &str,
+    ) -> Result<bool, MemErr> {
+        let deleted = self
+            .inner
+            .delete_if_match(store, path, base_id, base_sha)
+            .await?;
+        if deleted {
+            self.invalidator.publish(store, path);
+        }
+        Ok(deleted)
+    }
+
     async fn list_versions(&self, store: &str) -> Result<Vec<MemoryVersion>, MemErr> {
         self.inner.list_versions(store).await
     }

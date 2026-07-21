@@ -332,6 +332,42 @@ impl MemoryFs for InMemoryFs {
         Ok(())
     }
 
+    async fn delete_if_match(
+        &self,
+        store: &str,
+        path: &str,
+        base_id: &str,
+        base_sha: &str,
+    ) -> Result<bool, MemErr> {
+        let mut guard = self.inner.lock().unwrap();
+        let Some(current) = guard
+            .records
+            .get(store)
+            .and_then(|records| records.get(path))
+            .cloned()
+        else {
+            return Ok(false);
+        };
+        if current.id != base_id || current.sha != base_sha {
+            return Err(MemErr::Conflict {
+                current: Box::new(current.to_memory(true)),
+            });
+        }
+        guard
+            .records
+            .get_mut(store)
+            .expect("the store was observed under the same lock")
+            .remove(path);
+        self.append_version(
+            &mut guard,
+            store,
+            &current,
+            MemoryVersionOperation::Deleted,
+            None,
+        );
+        Ok(true)
+    }
+
     async fn list_versions(&self, store: &str) -> Result<Vec<MemoryVersion>, MemErr> {
         Ok(self
             .inner
@@ -598,6 +634,29 @@ impl MemoryFs for FsMemoryFs {
             self.write_state(store, &state).await?;
         }
         Ok(())
+    }
+
+    async fn delete_if_match(
+        &self,
+        store: &str,
+        path: &str,
+        base_id: &str,
+        base_sha: &str,
+    ) -> Result<bool, MemErr> {
+        let _guard = self.write_lock.lock().await;
+        let mut state = self.load_state(store).await?;
+        let Some(current) = state.records.get(path).cloned() else {
+            return Ok(false);
+        };
+        if current.id != base_id || current.sha != base_sha {
+            return Err(MemErr::Conflict {
+                current: Box::new(current.to_memory(true)),
+            });
+        }
+        state.records.remove(path);
+        Self::append_version(&mut state, &current, MemoryVersionOperation::Deleted, None);
+        self.write_state(store, &state).await?;
+        Ok(true)
     }
 
     async fn list_versions(&self, store: &str) -> Result<Vec<MemoryVersion>, MemErr> {

@@ -632,6 +632,12 @@ internal config version remains an awaken governance detail.
 - prompts are generated only from the resolved Session manifest;
 - the former Runtime-side Agent repository read/lowering and duplicate
   `EffectiveSessionInputs` name are removed.
+- Memory realization has one lifetime owner: `MemoryMount`; the Host-side
+  `StagedResources.memory_mounts`, polling harvest, and `harvest_thread_memory`
+  duplicate writer are removed;
+- copy fallback retains only transient `(path, id, sha)` heads captured at
+  materialization and reconciles with CAS update plus atomic `delete_if_match`;
+  concurrent durable heads are preserved and reported.
 
 ### Remaining rename or merge
 
@@ -644,10 +650,8 @@ internal config version remains an awaken governance detail.
 
 - `MemoryBlobStore` and all blob backends;
 - legacy single-file Memory materialization and Host-global extraction directory;
-- `with_memory(mem_dir)` and `memory_scope_root` (removed); the path-addressed
-  copy fallback may retain `harvest_thread_memory` only as a CAS realizer over the
-  same aggregate repository;
-- `StagedResources.memory_mounts` and last-writer-wins Memory write-back;
+- `with_memory(mem_dir)`, `memory_scope_root`, `StagedResources.memory_mounts`,
+  polling-route harvest, and Host `harvest_thread_memory` (removed);
 - API-local independent `VersionRepository` (removed; legacy rows are imported
   once into the aggregate repository without continued dual reads/writes);
 - raw repository URL support outside the legacy/protocol ingress adapter;

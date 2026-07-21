@@ -681,6 +681,71 @@ impl MemoryFs for SqliteMemoryFs {
         .await
     }
 
+    async fn delete_if_match(
+        &self,
+        store: &str,
+        path: &str,
+        base_id: &str,
+        base_sha: &str,
+    ) -> Result<bool, MemErr> {
+        let (store, path, base_id, base_sha) = (
+            store.to_string(),
+            path.to_string(),
+            base_id.to_string(),
+            base_sha.to_string(),
+        );
+        with_conn_mem(&self.conn, move |conn| {
+            let tx = conn.unchecked_transaction().map_err(mem_err)?;
+            let row = tx
+                .query_row(
+                    &format!(
+                        "SELECT id, content, sha, version, created, updated FROM {NS}_memories \
+                         WHERE store_id = ?1 AND path = ?2"
+                    ),
+                    params![store, path],
+                    |r| {
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, Vec<u8>>(1)?,
+                            r.get::<_, String>(2)?,
+                            r.get::<_, i64>(3)?,
+                            r.get::<_, i64>(4)?,
+                            r.get::<_, i64>(5)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(mem_err)?;
+            let Some((id, content, sha, version, created, updated)) = row else {
+                return Ok(false);
+            };
+            if id != base_id || sha != base_sha {
+                return Err(MemErr::Conflict {
+                    current: Box::new(row_memory(
+                        id, path, content, sha, version, created, updated,
+                    )?),
+                });
+            }
+            tx.execute(
+                &format!("DELETE FROM {NS}_memories WHERE store_id = ?1 AND path = ?2"),
+                params![store, path],
+            )
+            .map_err(mem_err)?;
+            append_version(
+                &tx,
+                &store,
+                &base_id,
+                MemoryVersionOperation::Deleted,
+                &path,
+                None,
+                now_nanos() as i64,
+            )?;
+            tx.commit().map_err(mem_err)?;
+            Ok(true)
+        })
+        .await
+    }
+
     async fn list_versions(&self, store: &str) -> Result<Vec<MemoryVersion>, MemErr> {
         let store = store.to_string();
         with_conn_mem(&self.conn, move |conn| {

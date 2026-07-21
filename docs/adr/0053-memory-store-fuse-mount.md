@@ -237,19 +237,21 @@ is to make them realize it, and to fill the currently-stubbed `Sandbox::attach`
   /mnt/memory/{store_id} }`. The provider itself takes no `fuser`/resources
   dependency; the realizer (a `server`-bucket `awaken-sandbox-memoryd` crate, D2)
   implements `MemoryMounter` and owns the `MountCoordinator` (D5).
-- **Host route migration is part of the slice.** The host drives the *legacy*
-  `LocalSandboxProvider` (copy-in `stage_one_resource` / harvest
-  `harvest_thread_memory`) for the memory-store family today. Realizing against the
-  contract means **routing the memory-store family through the contract provider**
-  and retiring the copy/harvest pair for it — the non-throwaway path, aligned to
-  ADR-0041's direction.
+- **The Host has no Memory write-back registry.** The memory-store family routes
+  through the neutral provider contract. A `MemoryMount` guard owns the complete
+  realization lifetime; FUSE writes through and copy-mode teardown reconciles its
+  own captured snapshot. There is no `StagedResources.memory_mounts`, polling-route
+  harvest, or `harvest_thread_memory` second writer.
 - **Capability-gated fallback (no FUSE → copy/harvest).** FUSE needs `/dev/fuse`,
   absent on macOS, in CI, and in unprivileged containers. `fuse_available()` gates
   the realization: when true, mount the live write-through FUSE; when false, the same
   path-addressed store is materialized the old way — `materialize` copies every
-  memory out to plain files at prepare, and `harvest` folds them back after the turn
-  (create new, CAS-update changed, skip unchanged). Both realizations back the one
-  durable `MemoryFs`, so a store is portable across FUSE-capable and FUSE-less hosts.
+  memory out to plain files at prepare while capturing `(path, id, sha)` heads.
+  Teardown creates new paths, updates changed paths against the captured head, and
+  deletes only captured paths through atomic `delete_if_match`. Concurrent durable
+  heads win and are reported; paths created after materialization are never deleted
+  as locally absent. Both realizations back the one durable `MemoryFs`, so a store is
+  portable across FUSE-capable and FUSE-less hosts.
 - **Workdir tier first, then the namespace splice.** The Workdir `LocalProvider`
   realizes the FUSE mount at the sandbox path with **no mount-namespace splice**
   (directly visible to rooted tools); this is the first integration target. The
@@ -274,8 +276,8 @@ is to make them realize it, and to fill the currently-stubbed `Sandbox::attach`
 
 ## Consequences
 
-- **Net consistency improvement over the status quo.** Today's copy-in/harvest is
-  last-writer-wins with zero CAS and full lost-update risk under concurrency. The
+- **Net consistency improvement over the retired implementation.** The former
+  Host copy-in/harvest path was last-writer-wins with full lost-update risk. The
   FUSE path makes **write-write no-lost-update a strong guarantee** (CAS) and, via
   the shared single mount, **reads coherent across concurrent mounts** on one host —
   both are guarantees the current path simply does not have.
@@ -302,7 +304,7 @@ is to make them realize it, and to fill the currently-stubbed `Sandbox::attach`
   or the store directly. The FUSE/copy realizer (`MemoryStoreMounter`) lives in
   `awaken-sandbox-memoryd` (worker) and is the only crate that links `fuser`; the
   composition root injects it.
-- **Delivered:** P0 (`MemoryFs` port + CAS store), P1 (the FUSE port, proven by a
+- **Delivered:** P0 (`MemoryFs` port + CAS store, including conditional delete), P1 (the FUSE port, proven by a
   real kernel-VFS integration test), P2/P2.5 (`MountCoordinator` + concurrency),
   P3 (95% changed-code coverage), P4 (the durable path-addressed store backs the
   `/memories` HTTP endpoints, with a restart-durable TS e2e), and P5 minus the bwrap

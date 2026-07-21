@@ -1288,7 +1288,6 @@ async fn prepare_session_mounts_an_effective_memory_resource() {
         memory_mount_store_id(&host.sandbox_spec("t-bound").mounts[0]),
         store_id
     );
-    assert_eq!(host.thread_memory_mounts("t-bound").len(), 1);
 
     let mut read_only = bare("a");
     read_only.resources.inputs[0].access = awaken_resource_contract::ResourceAccess::ReadOnly;
@@ -1299,10 +1298,6 @@ async fn prepare_session_mounts_an_effective_memory_resource() {
     assert_eq!(
         host.sandbox_spec("t-read-only").mounts[0].access,
         awaken_provisioning_contract::MountAccess::ReadOnly
-    );
-    assert!(
-        host.thread_memory_mounts("t-read-only").is_empty(),
-        "read-only Memory inputs must never enter the write-back/harvest set"
     );
 
     // An empty effective input set mounts nothing.
@@ -1863,18 +1858,21 @@ async fn runtime_stages_exactly_the_effective_resource_list() {
     managed.prepare_session("t-g3", init).await.unwrap();
 
     // Exactly one memory mount at that path, and it is the wire store S2.
-    let mounts = host.thread_memory_mounts("t-g3");
-    let at_path: Vec<_> = mounts
+    let spec = host.sandbox_spec("t-g3");
+    let at_path: Vec<_> = spec
+        .mounts
         .iter()
-        .filter(|mount| mount.logical == "mnt/memory")
+        .filter(|mount| mount.mount_path == ".mnt/mnt/memory")
         .collect();
     assert_eq!(
         at_path.len(),
         1,
-        "one mount wins the path, not both: {mounts:?}"
+        "one mount wins the path, not both: {:?}",
+        spec.mounts
     );
     assert_eq!(
-        at_path[0].store_id, s2,
+        memory_mount_store_id(at_path[0]),
+        s2,
         "the carried effective store is the only staged store"
     );
 
@@ -1941,9 +1939,10 @@ async fn an_effective_resource_mounts_on_a_worker_without_the_binding_repository
         store_id,
         "the effective input is sufficient for a DB-less worker"
     );
-    assert!(
-        db_less.thread_memory_mounts("t-g5-worker").is_empty(),
-        "a read-only Memory input is never registered for write-back"
+    assert_eq!(
+        db_less.sandbox_spec("t-g5-worker").mounts[0].access,
+        awaken_provisioning_contract::MountAccess::ReadOnly,
+        "the carried access is sufficient; no Host-side write-back registry exists"
     );
 }
 

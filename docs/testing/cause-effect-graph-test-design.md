@@ -814,7 +814,7 @@ C105=Block/Suspend → is_error(遮蔽执行)     C106 → E91     C107=2xx → 
 | ID | 因 | 锚点 |
 |---|---|---|
 | C108 | 文件 id 含 `../`/非法字符(`safe_id` 失败)/ 记忆·技能 id 净化为空 | file-store `get`;memory `sanitize_stem` |
-| C109 | CAS `update`:`base_sha` 不符——子分支 `new_sha==sha`(幂等 Ok)vs 否(`Conflict{current}`) | memory `update` |
+| C109 | CAS 变更：`update` 的 `base_sha` 不符（新 sha 相同则幂等，否则冲突）；copy conditional delete 的 `(id,sha)` 匹配 / stale / 已缺失 | memory `update` / `delete_if_match` / copy harvest |
 | C110 | MCP 两服务器净化后命名空间冲突 / 工具名净化为空组件 | mcp `add` / `resolve` |
 | C111 | 模型无 offering / dialect 不符 / offering 端点在 `disabled_endpoints` | resolver `resolve_offering`/`resolve_inference_toggled` |
 | C112 | CredentialBinding None/Exact/OneOfCredentialPool;作用域凭证 `provider_id`≠offering;跨租户源;池全冷却;写作用域≠行作用域 | resolver `resolve_credential`;config-store `ScopedConfigRegistry` |
@@ -826,7 +826,7 @@ C105=Block/Suspend → is_error(遮蔽执行)     C106 → E91     C107=2xx → 
 | E96 | 拒畸形 id→解析为空 `Ok(None)`/`Ok(false)`(绝不逃出 base) | file-store `get`/`delete` |
 | E97 | 内容寻址存储 + 去重(同哈希早返回);原子 temp+rename 发布 | file-store `put` |
 | E98 | 路径穿越写被夹在根下 `etc-passwd.bin`(`sanitize_stem`) | memory/skill store |
-| E99 | CAS 冲突返回活内容 `Conflict{current}`(不覆写);幂等 update 保 version | memory `update` |
+| E99 | CAS 冲突返回活 head 且不覆写；幂等 update 保 version；stale conditional delete 保留 head、已缺失 delete 为 no-op；copy 只删除物化快照内路径 | memory repository + copy harvest |
 | E100 | 校验先于变更:`TooLarge`/`InvalidPath`/`PathConflict`(size 检查先于 id 查找) | memfs `validate_size` |
 | E101 | 仅呈现两技能工具 `Skill`+`list_skills`(catalog-free 稳定哈希) | ext-skills `tool.rs` |
 | E102 | 路径触发后在 catalog 浮现条件技能;`model_invocable=false` 遮蔽激活(披露≠授权) | ext-skills `is_surfaced` |
@@ -842,7 +842,7 @@ C105=Block/Suspend → is_error(遮蔽执行)     C106 → E91     C107=2xx → 
 ### 因果图与约束
 
 ```
-C108 → E96 ∨ E98     C109=不符∧非幂等 → E99     C109=幂等 → 保 version     C110 → E104(拒/隔离)
+C108 → E96 ∨ E98     C109=不符∧非幂等 → E99     C109=幂等/已缺失 → no-op     C109=delete匹配 → 仅删除所见head     C110 → E104(拒/隔离)
 C111 → E106(成功) ∨ ModelUnresolved     C112=不兼容 → E107     C112=全冷却 → E108     C112=跨作用域写 → E109
 ```
 

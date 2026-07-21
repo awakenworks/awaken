@@ -7,9 +7,10 @@
 //! files back into the store after a turn (create new, CAS-update changed, skip
 //! unchanged). [`fuse_available`] is the capability check a provider gates on.
 
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use awaken_memory_store::MemoryFs;
+use awaken_memory_store::{MemErr, MemoryFs, sha256_hex};
 
 use crate::FuseError;
 
@@ -27,12 +28,59 @@ pub fn fuse_available() -> bool {
     on_path("fusermount") || on_path("fusermount3")
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CopyHead {
+    id: String,
+    sha256: String,
+}
+
+/// Exact store heads observed while a copy realization was materialized. This is
+/// transient mount state, not another resource/configuration model: it exists only
+/// so teardown can reconcile agent edits without clobbering concurrent writers.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CopySnapshot {
+    heads: BTreeMap<String, CopyHead>,
+}
+
+impl CopySnapshot {
+    /// Number of memories copied from the store.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.heads.len()
+    }
+
+    /// Whether no memories were copied from the store.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.heads.is_empty()
+    }
+}
+
+/// One local edit that could not be reconciled because the durable head changed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HarvestConflict {
+    pub path: String,
+    pub reason: &'static str,
+}
+
+/// Copy reconciliation outcome. Conflicts preserve the durable head and are
+/// explicit so the caller can surface/telemetry them rather than claiming success.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HarvestReport {
+    pub changed: usize,
+    pub conflicts: Vec<HarvestConflict>,
+}
+
 /// Copy every memory in `store` out to `root/<path>` (the no-FUSE materialization).
-/// Nested paths create their parent directories. Returns the number of memories
-/// written.
-pub async fn materialize(fs: &dyn MemoryFs, store: &str, root: &Path) -> Result<usize, FuseError> {
+/// Nested paths create their parent directories. Returns the exact observed heads
+/// needed for conflict-safe teardown.
+pub async fn materialize(
+    fs: &dyn MemoryFs,
+    store: &str,
+    root: &Path,
+) -> Result<CopySnapshot, FuseError> {
     let entries = fs.list(store, "/").await?;
-    let mut written = 0;
+    let mut snapshot = CopySnapshot::default();
     for entry in &entries {
         let Some(memory) = fs.get_by_path(store, &entry.path).await? else {
             continue;
@@ -43,57 +91,130 @@ pub async fn materialize(fs: &dyn MemoryFs, store: &str, root: &Path) -> Result<
         }
         std::fs::write(&dest, memory.content.unwrap_or_default())
             .map_err(|e| FuseError::Internal(e.to_string()))?;
-        written += 1;
+        snapshot.heads.insert(
+            entry.path.clone(),
+            CopyHead {
+                id: memory.id,
+                sha256: memory.content_sha256,
+            },
+        );
     }
-    Ok(written)
+    Ok(snapshot)
 }
 
-/// Walk `root` and fold each file back into `store`: create a new memory, CAS-update
-/// a changed one against its live sha, skip an unchanged one, and DELETE a memory whose
-/// file the agent removed from the copy dir. Returns the number of memories created,
-/// updated, or deleted. A file whose path the store rejects (non-UTF-8 name, `..`) is
-/// skipped rather than failing the whole harvest.
+/// Walk `root` and reconcile it against the heads captured by [`materialize`]. New
+/// files are created, changed files update against the captured id+sha, unchanged
+/// files are skipped, and removed files use an atomic delete-if-match. A concurrent
+/// head always wins and is reported as a conflict; a path created after materialize
+/// is never mistaken for a local deletion.
 ///
 /// The deletion pass gives the no-FUSE copy tier the same durable outcome as the live
 /// FUSE tier's `unlink` → `delete_by_path`: a memory materialized out to the copy dir
 /// but no longer present there is deleted from the store, so "rm note.md" sticks on
 /// both realization tiers.
-pub async fn harvest(fs: &dyn MemoryFs, store: &str, root: &Path) -> Result<usize, FuseError> {
+pub async fn harvest(
+    fs: &dyn MemoryFs,
+    store: &str,
+    root: &Path,
+    snapshot: &mut CopySnapshot,
+) -> Result<HarvestReport, FuseError> {
     let mut files = Vec::new();
     collect_files(root, root, &mut files);
-    let present: std::collections::HashSet<&str> =
-        files.iter().map(|(path, _)| path.as_str()).collect();
-    let mut changed = 0;
+    let present: HashSet<&str> = files.iter().map(|(path, _)| path.as_str()).collect();
+    let mut report = HarvestReport::default();
     for (path, host_path) in &files {
         let Ok(content) = std::fs::read_to_string(host_path) else {
             continue; // non-UTF-8 memory bytes are not our model — skip
         };
-        match fs.get_by_path(store, path).await? {
-            Some(current) => {
-                if current.content.as_deref() != Some(content.as_str()) {
-                    // CAS against the live head; a single-agent harvest never races.
-                    fs.update(store, &current.id, &content, &current.content_sha256)
-                        .await?;
-                    changed += 1;
+        match snapshot.heads.get(path).cloned() {
+            Some(base) => {
+                if sha256_hex(&content) == base.sha256 {
+                    continue;
+                }
+                match fs.update(store, &base.id, &content, &base.sha256).await {
+                    Ok(updated) => {
+                        snapshot.heads.insert(
+                            path.clone(),
+                            CopyHead {
+                                id: updated.id,
+                                sha256: updated.content_sha256,
+                            },
+                        );
+                        report.changed += 1;
+                    }
+                    Err(MemErr::Conflict { .. } | MemErr::NotFound(_)) => {
+                        report.conflicts.push(HarvestConflict {
+                            path: path.clone(),
+                            reason: "durable head changed",
+                        });
+                    }
+                    Err(error) => return Err(error.into()),
                 }
             }
-            None => {
-                // A path the store rejects (e.g. an odd filename) is skipped.
-                if fs.create(store, path, &content).await.is_ok() {
-                    changed += 1;
+            None => match fs.create(store, path, &content).await {
+                Ok(created) => {
+                    snapshot.heads.insert(
+                        path.clone(),
+                        CopyHead {
+                            id: created.id,
+                            sha256: created.content_sha256,
+                        },
+                    );
+                    report.changed += 1;
                 }
+                Err(MemErr::PathConflict(_)) => {
+                    let current = fs.get_by_path(store, path).await?;
+                    if let Some(current) = current
+                        && current.content_sha256 == sha256_hex(&content)
+                    {
+                        snapshot.heads.insert(
+                            path.clone(),
+                            CopyHead {
+                                id: current.id,
+                                sha256: current.content_sha256,
+                            },
+                        );
+                    } else {
+                        report.conflicts.push(HarvestConflict {
+                            path: path.clone(),
+                            reason: "path was concurrently created",
+                        });
+                    }
+                }
+                Err(MemErr::InvalidPath(_)) => report.conflicts.push(HarvestConflict {
+                    path: path.clone(),
+                    reason: "invalid memory path",
+                }),
+                Err(error) => return Err(error.into()),
+            },
+        }
+    }
+    // Only heads present in the original snapshot can be local deletions. Anything
+    // created in the durable store after materialization is outside this mount's
+    // write set and must survive.
+    let removed: Vec<_> = snapshot
+        .heads
+        .iter()
+        .filter(|(path, _)| !present.contains(path.as_str()))
+        .map(|(path, head)| (path.clone(), head.clone()))
+        .collect();
+    for (path, base) in removed {
+        match fs
+            .delete_if_match(store, &path, &base.id, &base.sha256)
+            .await
+        {
+            Ok(deleted) => {
+                snapshot.heads.remove(&path);
+                report.changed += usize::from(deleted);
             }
+            Err(MemErr::Conflict { .. }) => report.conflicts.push(HarvestConflict {
+                path,
+                reason: "removed path changed concurrently",
+            }),
+            Err(error) => return Err(error.into()),
         }
     }
-    // Deletion pass: a memory the agent removed from the materialized copy dir is
-    // deleted from the store, matching the FUSE `unlink` primitive the live tier uses.
-    for entry in fs.list(store, "/").await? {
-        if !present.contains(entry.path.as_str()) {
-            fs.delete_by_path(store, &entry.path).await?;
-            changed += 1;
-        }
-    }
-    Ok(changed)
+    Ok(report)
 }
 
 /// Recursively collect `(store_path, host_path)` for every file under `base`, where
@@ -153,8 +274,8 @@ mod tests {
             .unwrap();
         let dir = temp("mat");
 
-        let n = rt.block_on(materialize(&*fs, "s", &dir)).unwrap();
-        assert_eq!(n, 2);
+        let snapshot = rt.block_on(materialize(&*fs, "s", &dir)).unwrap();
+        assert_eq!(snapshot.len(), 2);
         assert_eq!(std::fs::read_to_string(dir.join("root.md")).unwrap(), "top");
         assert_eq!(
             std::fs::read_to_string(dir.join("notes/deep/a.md")).unwrap(),
@@ -170,18 +291,21 @@ mod tests {
         // Seed one memory; a round-trip will modify it and add another.
         let seed = rt.block_on(fs.create("s", "/keep.md", "v1")).unwrap();
         let dir = temp("harv");
-        rt.block_on(materialize(&*fs, "s", &dir)).unwrap();
+        let mut snapshot = rt.block_on(materialize(&*fs, "s", &dir)).unwrap();
 
         // Agent edits /keep.md, adds /new.md, and leaves an unchanged copy behind.
         std::fs::write(dir.join("keep.md"), "v2").unwrap();
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         std::fs::write(dir.join("sub/new.md"), "fresh").unwrap();
 
-        let changed = rt.block_on(harvest(&*fs, "s", &dir)).unwrap();
+        let report = rt
+            .block_on(harvest(&*fs, "s", &dir, &mut snapshot))
+            .unwrap();
         assert_eq!(
-            changed, 2,
+            report.changed, 2,
             "one updated + one created; the unchanged file is a no-op"
         );
+        assert!(report.conflicts.is_empty());
 
         let keep = rt
             .block_on(fs.get_by_path("s", "/keep.md"))
@@ -202,7 +326,12 @@ mod tests {
         );
 
         // A second harvest with no edits changes nothing (idempotent).
-        assert_eq!(rt.block_on(harvest(&*fs, "s", &dir)).unwrap(), 0);
+        assert_eq!(
+            rt.block_on(harvest(&*fs, "s", &dir, &mut snapshot))
+                .unwrap()
+                .changed,
+            0
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -211,11 +340,17 @@ mod tests {
         let rt = rt();
         let fs = Arc::new(InMemoryFs::new());
         let dir = temp("harv-bin");
+        let mut snapshot = CopySnapshot::default();
         std::fs::write(dir.join("ok.md"), "text").unwrap();
         std::fs::write(dir.join("blob.bin"), [0xFF, 0xFE, 0x00]).unwrap();
 
         // The UTF-8 file is folded in; the binary one is skipped, not fatal.
-        assert_eq!(rt.block_on(harvest(&*fs, "s", &dir)).unwrap(), 1);
+        assert_eq!(
+            rt.block_on(harvest(&*fs, "s", &dir, &mut snapshot))
+                .unwrap()
+                .changed,
+            1
+        );
         assert!(
             rt.block_on(fs.get_by_path("s", "/blob.bin"))
                 .unwrap()
@@ -235,12 +370,14 @@ mod tests {
         rt.block_on(fs.create("s", "/keep.md", "x")).unwrap();
         rt.block_on(fs.create("s", "/gone.md", "y")).unwrap();
         let dir = temp("del-parity");
-        rt.block_on(materialize(&*fs, "s", &dir)).unwrap();
+        let mut snapshot = rt.block_on(materialize(&*fs, "s", &dir)).unwrap();
 
         // The agent removes gone.md from the copy dir; the turn ends → harvest.
         std::fs::remove_file(dir.join("gone.md")).unwrap();
         assert_eq!(
-            rt.block_on(harvest(&*fs, "s", &dir)).unwrap(),
+            rt.block_on(harvest(&*fs, "s", &dir, &mut snapshot))
+                .unwrap()
+                .changed,
             1,
             "harvest folds the removed file back as one deletion"
         );
@@ -267,6 +404,91 @@ mod tests {
         let rt = rt();
         let fs = Arc::new(InMemoryFs::new());
         let missing = std::env::temp_dir().join("awaken-memcopy-does-not-exist-xyz");
-        assert_eq!(rt.block_on(harvest(&*fs, "s", &missing)).unwrap(), 0);
+        let mut snapshot = CopySnapshot::default();
+        assert_eq!(
+            rt.block_on(harvest(&*fs, "s", &missing, &mut snapshot))
+                .unwrap()
+                .changed,
+            0
+        );
+    }
+
+    #[test]
+    fn concurrent_update_wins_over_a_stale_local_edit() {
+        let rt = rt();
+        let fs = Arc::new(InMemoryFs::new());
+        let original = rt.block_on(fs.create("s", "/note.md", "v1")).unwrap();
+        let dir = temp("concurrent-update");
+        let mut snapshot = rt.block_on(materialize(&*fs, "s", &dir)).unwrap();
+
+        std::fs::write(dir.join("note.md"), "local-v2").unwrap();
+        rt.block_on(fs.update("s", &original.id, "remote-v2", &original.content_sha256))
+            .unwrap();
+
+        let report = rt
+            .block_on(harvest(&*fs, "s", &dir, &mut snapshot))
+            .unwrap();
+        assert_eq!(report.changed, 0);
+        assert_eq!(report.conflicts[0].path, "/note.md");
+        assert_eq!(
+            rt.block_on(fs.get_by_path("s", "/note.md"))
+                .unwrap()
+                .unwrap()
+                .content
+                .as_deref(),
+            Some("remote-v2"),
+            "copy reconciliation never clobbers the concurrent durable head"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn concurrent_create_is_not_deleted_as_locally_absent() {
+        let rt = rt();
+        let fs = Arc::new(InMemoryFs::new());
+        rt.block_on(fs.create("s", "/before.md", "before")).unwrap();
+        let dir = temp("concurrent-create");
+        let mut snapshot = rt.block_on(materialize(&*fs, "s", &dir)).unwrap();
+
+        rt.block_on(fs.create("s", "/remote.md", "remote")).unwrap();
+        let report = rt
+            .block_on(harvest(&*fs, "s", &dir, &mut snapshot))
+            .unwrap();
+        assert_eq!(report.changed, 0);
+        assert!(report.conflicts.is_empty());
+        assert!(
+            rt.block_on(fs.get_by_path("s", "/remote.md"))
+                .unwrap()
+                .is_some(),
+            "a path created after materialization is outside the local delete set"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn concurrent_update_blocks_a_stale_local_delete() {
+        let rt = rt();
+        let fs = Arc::new(InMemoryFs::new());
+        let original = rt.block_on(fs.create("s", "/note.md", "v1")).unwrap();
+        let dir = temp("concurrent-delete");
+        let mut snapshot = rt.block_on(materialize(&*fs, "s", &dir)).unwrap();
+
+        std::fs::remove_file(dir.join("note.md")).unwrap();
+        rt.block_on(fs.update("s", &original.id, "remote-v2", &original.content_sha256))
+            .unwrap();
+        let report = rt
+            .block_on(harvest(&*fs, "s", &dir, &mut snapshot))
+            .unwrap();
+        assert_eq!(report.changed, 0);
+        assert_eq!(report.conflicts[0].path, "/note.md");
+        assert_eq!(
+            rt.block_on(fs.get_by_path("s", "/note.md"))
+                .unwrap()
+                .unwrap()
+                .content
+                .as_deref(),
+            Some("remote-v2")
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

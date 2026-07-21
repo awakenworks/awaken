@@ -37,21 +37,9 @@ pub(crate) fn agent_run_sandbox_spec(thread: &str) -> pc::SandboxSpec {
 pub(crate) struct StagedResources {
     pub mounts: Vec<pc::MountRequirement>,
     pub prompts: Vec<String>,
-    /// Each read-write memory mount together with the path versions observed while
-    /// staging. `harvest_thread_memory` uses those versions as CAS bases. Empty for
-    /// file/repository mounts.
-    pub memory_mounts: Vec<MemoryMount>,
     /// github_repository resources (ADR-0038). Provisioned by a host-side `git clone`
     /// after the environment is created (not a byte mount) and pushed back on harvest.
     pub repos: Vec<RepoStage>,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct MemoryMount {
-    pub store_id: String,
-    pub logical: String,
-    /// Path → content SHA observed while staging. Harvest uses these as CAS bases.
-    pub versions: std::collections::BTreeMap<String, String>,
 }
 
 /// A staged github_repository: cloned host-side into the jailed `logical` path and
@@ -158,18 +146,6 @@ impl SharedHost {
             .unwrap_or_default()
     }
 
-    /// The memory mounts staged for `thread` (test-only observability, mirrors
-    /// [`Self::thread_repos`]).
-    #[cfg(test)]
-    pub(crate) fn thread_memory_mounts(&self, thread: &str) -> Vec<MemoryMount> {
-        self.thread_resources
-            .lock()
-            .unwrap()
-            .get(thread)
-            .map(|s| s.memory_mounts.clone())
-            .unwrap_or_default()
-    }
-
     /// The prompt fragments staged for `thread`'s bound resources (ADR-0038 A3a).
     pub(crate) fn thread_resource_prompts(&self, thread: &str) -> Vec<String> {
         self.thread_resources
@@ -199,67 +175,6 @@ impl SharedHost {
 
     pub fn file_has_any_owner(&self, id: &str) -> bool {
         self.resource_ownership.has_any_owner("file", id)
-    }
-
-    /// Harvest a thread's read-write MemoryStore directory back through the same
-    /// path-addressed CAS store used by recall, extraction, and the Memory API.
-    pub async fn harvest_thread_memory(&self, thread: &str) {
-        let (env, mounts) = {
-            let sessions = self.sessions.lock().await;
-            let env = sessions.get(thread).map(|ctx| ctx.env.clone());
-            let mounts = self
-                .thread_resources
-                .lock()
-                .unwrap()
-                .get(thread)
-                .map(|s| s.memory_mounts.clone())
-                .unwrap_or_default();
-            (env, mounts)
-        };
-        let Some(env) = env else {
-            return;
-        };
-        if mounts.is_empty() {
-            return;
-        }
-        let realized = env.list_files(".mnt");
-        for mount in mounts {
-            let prefix = format!("{}/", mount.logical.trim_end_matches('/'));
-            for (realized_path, bytes) in realized
-                .iter()
-                .filter(|(path, _)| path.starts_with(&prefix))
-            {
-                let Ok(content) = std::str::from_utf8(bytes) else {
-                    continue;
-                };
-                let path = format!("/{}", realized_path[prefix.len()..].trim_start_matches('/'));
-                let current = self
-                    .memory_stores
-                    .fs()
-                    .get_by_path(&mount.store_id, &path)
-                    .await
-                    .unwrap_or(None);
-                match (current, mount.versions.get(&path)) {
-                    (Some(current), Some(base_sha)) => {
-                        let _ = self
-                            .memory_stores
-                            .fs()
-                            .update(&mount.store_id, &current.id, content, base_sha)
-                            .await;
-                    }
-                    (None, None) => {
-                        let _ = self
-                            .memory_stores
-                            .fs()
-                            .create(&mount.store_id, &path, content)
-                            .await;
-                    }
-                    // Created/changed concurrently after staging: fail closed by
-                    // preserving current truth rather than clobbering it.
-                    _ => {}
-                }
-            }
-        }
     }
 
     /// Clone a thread's staged github_repository resources into its freshly-created
@@ -292,7 +207,7 @@ impl SharedHost {
     }
 
     /// Push a thread's github_repository commits back to their remotes (ADR-0038
-    /// write-back, symmetric to `harvest_thread_memory`): host-side `push` with the held
+    /// write-back): host-side `push` with the held
     /// token. The AGENT authors the commits (its own message + identity) in the jail; the
     /// host only pushes them (it alone holds the token) — it never fabricates a commit.
     ///
@@ -342,7 +257,7 @@ impl SharedHost {
     }
 
     /// Harvest a thread's run-authored skills into the durable catalog (ADR-0036 D6/D8,
-    /// symmetric to `harvest_thread_memory`): scan the workspace skill dir for skills the
+    /// scan the workspace skill dir for skills the
     /// agent authored this run — the self-authoring loop a Hermes-style agent runs — and
     /// persist each under its id, so a skill written in this session is delivered to the
     /// next one that opens against the same catalog. A no-op for a thread with no live
@@ -499,11 +414,6 @@ mod provisioning_registry_tests {
             StagedResources {
                 mounts: vec![resource_mount("a.md"), resource_mount("b.md")],
                 prompts: vec!["first".into()],
-                memory_mounts: vec![MemoryMount {
-                    store_id: "s1".into(),
-                    logical: "mem-a".into(),
-                    versions: Default::default(),
-                }],
                 repos: vec![repo_stage("repo-a")],
             },
         );
@@ -513,7 +423,6 @@ mod provisioning_registry_tests {
             StagedResources {
                 mounts: vec![resource_mount("c.md")],
                 prompts: vec!["second".into()],
-                memory_mounts: Vec::new(),
                 repos: Vec::new(),
             },
         );
@@ -524,7 +433,6 @@ mod provisioning_registry_tests {
             vec!["second".to_string()]
         );
         assert!(host.thread_repos("t").is_empty(), "old repo dropped");
-        assert!(host.thread_memory_mounts("t").is_empty());
     }
 
     #[test]
@@ -584,21 +492,16 @@ mod provisioning_registry_tests {
     #[tokio::test]
     async fn reverse_channels_are_safe_noops_without_a_live_session() {
         let host = host();
-        // Stage a memory mount + a repo, but never create a session for the thread:
-        // harvest/artifacts must early-return (no live env), not panic.
+        // Stage a repo, but never create a session for the thread: reverse channels
+        // must early-return (no live env), not panic. Memory write-through is owned
+        // by the MemoryMount guard and therefore has no Host-side reverse channel.
         host.register_thread_resources(
             "t",
             StagedResources {
-                memory_mounts: vec![MemoryMount {
-                    store_id: "s1".into(),
-                    logical: "mem.md".into(),
-                    versions: Default::default(),
-                }],
                 repos: vec![repo_stage("r")],
                 ..Default::default()
             },
         );
-        host.harvest_thread_memory("t").await; // no env → no store write
         host.harvest_thread_repo("t").await; // no env → no push
         host.harvest_thread_skills("t").await; // no env / no store → no persist
         assert!(host.session_artifacts("t").await.is_empty());
