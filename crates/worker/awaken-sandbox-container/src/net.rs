@@ -234,11 +234,12 @@ mod tests {
 
     #[tokio::test]
     async fn direct_dial_to_a_dead_port_fails_closed() {
-        // Bind then drop to obtain a certainly-closed port.
-        let addr = {
-            let l = TcpListener::bind(loopback()).await.unwrap();
-            l.local_addr().unwrap()
-        };
+        // Reserve a TCP address without listening. Keeping the socket alive makes
+        // the refusal deterministic: no parallel test can reuse the ephemeral port
+        // between discovery and dial (the former bind-then-drop test had that TOCTOU).
+        let reserved = tokio::net::TcpSocket::new_v4().unwrap();
+        reserved.bind(loopback()).unwrap();
+        let addr = reserved.local_addr().unwrap();
         assert!(TcpAgentTransport::new(addr).open_channel().await.is_err());
     }
 }
