@@ -115,6 +115,15 @@ credential access is pinned for that same execution Workspace. Ordinary Agents u
 the simpler path where both coordinates are equal. The installed catalog must never
 be keyed by Agent id alone.
 
+At HTTP composition, `WorkspaceScope` carries the authoring namespace and the
+separate request-local `ExecutionWorkspace` carries the real publication target.
+The local composition stamps its provisioned Workspace; an authenticated/cloud PEP
+stamps the Workspace it already resolved and authorized. Workspace-path rewriting
+may replace the authoring scope but preserves the execution target. Publishing from
+the reserved namespace without an explicit `ExecutionWorkspace` fails closed;
+`ConfigPlane::publish` likewise refuses the reserved namespace, so only the explicit
+two-coordinate seam can install it.
+
 This is bounded-context separation, not an authorization shortcut. The ingress PEP
 still decides whether the principal may manage the reserved configuration namespace;
 the configuration service receives only trusted coordinates. Resource stores and

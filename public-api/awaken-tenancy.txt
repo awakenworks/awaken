@@ -22,6 +22,7 @@ pub fn awaken_tenancy::Authority::verify_execution_scope(&self, &awaken_tenancy:
 pub struct awaken_tenancy::ExecutionScopeRef(pub awaken_tenancy::ScopeId)
 impl core::convert::AsRef<awaken_tenancy::ExecutionScopeRef> for awaken_tenancy::VerifiedExecutionScope
 pub fn awaken_tenancy::VerifiedExecutionScope::as_ref(&self) -> &awaken_tenancy::ExecutionScopeRef
+pub struct awaken_tenancy::ExecutionWorkspace(pub alloc::string::String)
 pub struct awaken_tenancy::ScopeId(pub alloc::string::String)
 impl awaken_tenancy::ScopeId
 pub fn awaken_tenancy::ScopeId::as_str(&self) -> &str

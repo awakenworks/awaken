@@ -15,11 +15,10 @@ use awaken_config_resolver::{AgentInputBindingRepository, InferenceAccessPublish
 use awaken_config_store::{
     AgentConfig, AgentConfigRevision, AuditedConfigWrite, ConfigRegistry, ConfigWrite,
     DEFAULT_SCOPE, ExecutableAgentSnapshot, ManagementAuditEntry, ManagementAuditRecord,
-    ManagementEffect, ModelSelection, ScopedConfig, ScopedConfigRegistry, StoredPublication,
-    ToolOverride,
+    ManagementEffect, ScopedConfig, ScopedConfigRegistry, StoredPublication,
 };
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_tenancy::ScopeId;
+use awaken_tenancy::{ExecutionWorkspace, ScopeId};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
@@ -28,10 +27,12 @@ use serde_json::{Value, json};
 
 use crate::binding_resolver::ModelResolver;
 use crate::installed_catalog::InstalledAgentCatalog;
+use crate::managed_agent::{agent_config_from_managed, managed_from_agent_config};
 use crate::publication::{
     PublishError, ValidationIssue, pin_inference_access, prepare_agent_publication,
     snapshot_metadata,
 };
+use crate::tool_catalog::RESERVED_ADMIN_SCOPE;
 use crate::tool_catalog::ToolCatalogSource;
 
 /// The config domain service: validate, store, publish, and expose the installed
@@ -493,6 +494,9 @@ impl ConfigPlane {
         scope: &ScopeId,
         id: &str,
     ) -> Result<StoredPublication, PublishError> {
+        if scope.as_str() == RESERVED_ADMIN_SCOPE {
+            return Err(PublishError::ExecutionWorkspaceRequired);
+        }
         self.publish_for_execution_workspace(scope, scope.as_str(), id)
             .await
     }
@@ -518,6 +522,9 @@ impl ConfigPlane {
 
     /// Re-resolve and re-publish an `Auto`-bound agent in `scope` (ADR-0052 D5).
     pub async fn reconcile(&self, scope: &ScopeId, id: &str) -> Result<bool, String> {
+        if scope.as_str() == RESERVED_ADMIN_SCOPE {
+            return Err(PublishError::ExecutionWorkspaceRequired.to_string());
+        }
         self.reconcile_for_execution_workspace(scope, scope.as_str(), id)
             .await
     }
@@ -569,8 +576,10 @@ fn request_scope(ext: Option<Extension<awaken_tenancy::WorkspaceScope>>) -> Scop
 async fn list_configs(
     State(plane): State<ConfigPlane>,
     scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
+    execution: Option<Extension<ExecutionWorkspace>>,
 ) -> (StatusCode, Json<Value>) {
     let scope = request_scope(scope);
+    let execution = publication_workspace(&scope, execution.as_ref());
     match plane.list(&scope).await {
         Ok(configs) => {
             let data: Vec<Value> = configs
@@ -578,7 +587,7 @@ async fn list_configs(
                 .map(|config| {
                     let published = plane
                         .service()
-                        .installed_in(scope.as_str(), &config.id)
+                        .installed_in(execution.unwrap_or(scope.as_str()), &config.id)
                         .is_some();
                     managed_from_agent_config(&config, published)
                 })
@@ -598,11 +607,16 @@ async fn get_config(
     State(plane): State<ConfigPlane>,
     Path(id): Path<String>,
     scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
+    execution: Option<Extension<ExecutionWorkspace>>,
 ) -> (StatusCode, Json<Value>) {
     let scope = request_scope(scope);
     match plane.get_versioned(&scope, &id).await {
         Ok(Some(versioned)) => {
-            let published = plane.service().installed_in(scope.as_str(), &id).is_some();
+            let execution = publication_workspace(&scope, execution.as_ref());
+            let published = plane
+                .service()
+                .installed_in(execution.unwrap_or(scope.as_str()), &id)
+                .is_some();
             let mut body = managed_from_agent_config(&versioned.config, published);
             body.as_object_mut()
                 .expect("managed config is an object")
@@ -694,137 +708,22 @@ async fn put_config(
     }
 }
 
-// ---- object model: the managed Agent object (+ our extensions) ----
-// The config plane's agent object is the SDK `/v1/agents` object shape — name,
-// model {id}, system, tools, mcp_servers, skills, multiagent, metadata — plus the
-// extension block that carries our differentiated value (plugins, plugin_config,
-// context_policy, max_steps). The runtime `AgentConfig` is the compile-input the
-// object maps to; these two functions are the only translation seam.
-
-fn managed_tool_id(v: &Value) -> Option<String> {
-    match v {
-        Value::String(s) => Some(s.clone()),
-        Value::Object(o) => o
-            .get("id")
-            .or_else(|| o.get("name"))
-            .and_then(Value::as_str)
-            .map(str::to_string),
-        _ => None,
-    }
-}
-
-/// Parse the managed-shaped agent object into the runtime compile-input. The
-/// `model` object carries only `{id}` (managed); it becomes a `Pinned` selection
-/// (provider/backend resolve downstream from the model id), so the console can
-/// author + publish without a model resolver wired into this server.
-fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig, String> {
-    let string = |k: &str| body.get(k).and_then(Value::as_str).map(str::to_string);
-    let model_ref = match body.get("model") {
-        Some(Value::String(s)) => s.clone(),
-        Some(Value::Object(o)) => o
-            .get("id")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string(),
-        _ => String::new(),
-    };
-    let array = |k: &str| {
-        body.get(k)
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default()
-    };
-    let context_policy = match body.get("context_policy").cloned() {
-        Some(v) => serde_json::from_value(v).map_err(|e| e.to_string())?,
-        None => Default::default(),
-    };
-    // Tool presentation overrides (ADR-0053): alias / description / defer per tool.
-    let tool_overrides: Vec<ToolOverride> = match body.get("tool_overrides").cloned() {
-        Some(v) => serde_json::from_value(v).map_err(|e| e.to_string())?,
-        None => Vec::new(),
-    };
-    let metadata = body
-        .get("metadata")
-        .and_then(Value::as_object)
-        .map(|o| {
-            o.iter()
-                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                .collect()
-        })
-        .unwrap_or_default();
-    Ok(AgentConfig {
-        id,
-        instructions: string("system").unwrap_or_default(),
-        max_steps: body.get("max_steps").and_then(Value::as_u64).unwrap_or(8) as usize,
-        delegation_limits: Default::default(),
-        model_binding: ModelSelection::pinned("", model_ref, ""),
-        tool_ids: array("tools").iter().filter_map(managed_tool_id).collect(),
-        plugin_ids: array("plugins")
-            .iter()
-            .filter_map(|v| v.as_str().map(str::to_string))
-            .collect(),
-        plugin_config: body
-            .get("plugin_config")
-            .and_then(Value::as_object)
-            .map(|o| o.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
-            .unwrap_or_default(),
-        context_policy,
-        tool_patterns: Vec::new(),
-        model_candidates: Vec::new(),
-        name: string("name"),
-        description: string("description"),
-        metadata,
-        mcp_servers: array("mcp_servers"),
-        skills: array("skills"),
-        multiagent: body.get("multiagent").filter(|v| !v.is_null()).cloned(),
-        tool_overrides,
-        recovery_policies: body
-            .get("recovery_policies")
-            .cloned()
-            .map(serde_json::from_value)
-            .transpose()
-            .map_err(|error| error.to_string())?
-            .unwrap_or_default(),
-        compaction: body
-            .get("compaction")
-            .filter(|v| !v.is_null())
-            .and_then(|v| serde_json::from_value(v.clone()).ok()),
-    })
-}
-
-/// Project the stored config back into the managed-shaped object (+ extensions +
-/// live `published` flag), so a read round-trips to the same object the SDK sees.
-fn managed_from_agent_config(cfg: &AgentConfig, published: bool) -> Value {
-    json!({
-        "id": cfg.id,
-        "type": "agent",
-        "name": cfg.name,
-        "description": cfg.description,
-        "model": { "id": cfg.model_binding.resolved().map(|b| b.model_ref.clone()).unwrap_or_default() },
-        "system": cfg.instructions,
-        "metadata": cfg.metadata,
-        "tools": cfg.tool_ids,
-        "recovery_policies": cfg.recovery_policies,
-        "mcp_servers": cfg.mcp_servers,
-        "skills": cfg.skills,
-        "multiagent": cfg.multiagent,
-        // extensions (our differentiated value, additive to the managed object):
-        "max_steps": cfg.max_steps,
-        "plugins": cfg.plugin_ids,
-        "plugin_config": cfg.plugin_config,
-        "context_policy": cfg.context_policy,
-        "tool_overrides": cfg.tool_overrides,
-        "compaction": cfg.compaction,
-        "published": published,
-    })
-}
-
 async fn publish(
     State(plane): State<ConfigPlane>,
     scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
+    execution: Option<Extension<ExecutionWorkspace>>,
     Path(id): Path<String>,
 ) -> (StatusCode, Json<Value>) {
-    match plane.publish(&request_scope(scope), &id).await {
+    let scope = request_scope(scope);
+    let result = match publication_workspace(&scope, execution.as_ref()) {
+        Some(workspace) => {
+            plane
+                .publish_for_execution_workspace(&scope, workspace, &id)
+                .await
+        }
+        None => Err(PublishError::ExecutionWorkspaceRequired),
+    };
+    match result {
         Ok(publication) => (
             StatusCode::OK,
             Json(json!({
@@ -847,13 +746,22 @@ async fn publish(
     }
 }
 
+fn publication_workspace<'a>(
+    scope: &'a ScopeId,
+    execution: Option<&'a Extension<ExecutionWorkspace>>,
+) -> Option<&'a str> {
+    (scope.as_str() != RESERVED_ADMIN_SCOPE)
+        .then(|| scope.as_str())
+        .or_else(|| execution.map(|Extension(workspace)| workspace.0.as_str()))
+}
+
 #[cfg(test)]
 mod resource_prompt_tests {
     use super::*;
     use awaken_config_resolver::{
         AgentInputConfig, BindingId, InputBinding, InputResourceId, MemoryStoreId, ResourceAccess,
     };
-    use awaken_config_store::{ConfigStoreError, SqliteConfigStore};
+    use awaken_config_store::{ConfigStoreError, ModelSelection, SqliteConfigStore};
     use awaken_runtime_contract::resolved::ContextPolicy;
 
     use crate::binding_resolver::{ModelResolver, ResolvedModel};
@@ -1218,8 +1126,13 @@ mod resource_prompt_tests {
     // F19c: the get_config handler returns 500 when the store read fails.
     #[tokio::test]
     async fn get_config_handler_returns_500_on_store_error() {
-        let (status, _body) =
-            super::get_config(State(failing_scoped_plane()), Path("a".to_string()), None).await;
+        let (status, _body) = super::get_config(
+            State(failing_scoped_plane()),
+            Path("a".to_string()),
+            None,
+            None,
+        )
+        .await;
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     }
 
@@ -1649,7 +1562,7 @@ mod resource_prompt_tests {
         let scope = ScopeId::from(DEFAULT_SCOPE);
         plane.put(&scope, &agent_config("mgmt")).await.unwrap();
         let (status, Json(body)) =
-            super::get_config(State(plane), Path("mgmt".to_string()), None).await;
+            super::get_config(State(plane), Path("mgmt".to_string()), None, None).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["id"], "mgmt");
     }
@@ -1659,7 +1572,7 @@ mod resource_prompt_tests {
         // F19b: absent (or cross-tenant) → 404, never disclosed.
         let plane = static_plane(None);
         let (status, _body) =
-            super::get_config(State(plane), Path("ghost".to_string()), None).await;
+            super::get_config(State(plane), Path("ghost".to_string()), None, None).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
@@ -1812,7 +1725,7 @@ mod resource_prompt_tests {
         let scope = ScopeId::from(DEFAULT_SCOPE);
         plane.put(&scope, &agent_config("mgmt")).await.unwrap();
         let (status, Json(body)) =
-            super::publish(State(plane), None, Path("mgmt".to_string())).await;
+            super::publish(State(plane), None, None, Path("mgmt".to_string())).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["installed"], json!(true));
     }
@@ -1823,7 +1736,8 @@ mod resource_prompt_tests {
         let plane = static_plane(None);
         let scope = ScopeId::from(DEFAULT_SCOPE);
         plane.put(&scope, &auto_config("mgmt")).await.unwrap();
-        let (status, _body) = super::publish(State(plane), None, Path("mgmt".to_string())).await;
+        let (status, _body) =
+            super::publish(State(plane), None, None, Path("mgmt".to_string())).await;
         assert_eq!(status, StatusCode::CONFLICT);
     }
 
@@ -1831,8 +1745,32 @@ mod resource_prompt_tests {
     async fn publish_handler_returns_400_on_other_publish_error() {
         // F23c: any other publish failure (here NotStored) stays a 400.
         let plane = static_plane(None);
-        let (status, _body) = super::publish(State(plane), None, Path("ghost".to_string())).await;
+        let (status, _body) =
+            super::publish(State(plane), None, None, Path("ghost".to_string())).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn reserved_publication_requires_an_explicit_execution_workspace() {
+        let plane = static_plane(None);
+        let scope = ScopeId::from(RESERVED_ADMIN_SCOPE);
+        plane.put(&scope, &agent_config("mgmt")).await.unwrap();
+
+        let error = plane.publish(&scope, "mgmt").await.unwrap_err();
+        assert!(matches!(error, PublishError::ExecutionWorkspaceRequired));
+
+        let publication = plane
+            .publish_for_execution_workspace(&scope, "workspace-real", "mgmt")
+            .await
+            .unwrap();
+        assert_eq!(publication.agent_id, "mgmt");
+        assert!(plane.service().installed_in("__admin", "mgmt").is_none());
+        assert!(
+            plane
+                .service()
+                .installed_in("workspace-real", "mgmt")
+                .is_some()
+        );
     }
 
     // ==== SEC: cross-scope isolation of the config registry ====
