@@ -66,6 +66,10 @@ impl awaken_admin_config_api::CredentialProbe for GenaiProbe {
 struct ManagementStores {
     /// Durable installation root used to persist the platform Workspace id.
     workspace_root: Option<std::path::PathBuf>,
+    /// Resource-plane consistency state. It is selected independently of IAM and
+    /// carries ownership/references/purge fences, never authorization policy.
+    resource_lifecycle:
+        Arc<dyn awaken_protocol_managed::resource_plane::ResourceLifecycleRepository>,
     catalog: Arc<dyn awaken_model_catalog::repo::CatalogRepo>,
     credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
     secrets: Arc<dyn awaken_credential_vault::SecretStore>,
@@ -135,6 +139,7 @@ fn in_memory_management_stores() -> ManagementStores {
     let sessions = Arc::new(awaken_protocol_managed::InMemorySessionRepository::default());
     ManagementStores {
         workspace_root: None,
+        resource_lifecycle: Arc::new(awaken_resource_store::InMemoryResourceStore::new()),
         catalog: Arc::new(awaken_model_catalog::repo::InMemoryCatalogRepo::new()),
         credentials: Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new()),
         secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
@@ -178,6 +183,10 @@ fn durable_management_stores(dir: &std::path::Path, key: &[u8; 32]) -> Managemen
     );
     ManagementStores {
         workspace_root: Some(dir.to_path_buf()),
+        resource_lifecycle: Arc::new(
+            awaken_resource_store::SqliteResourceStore::open(dir.join("resource-lifecycle.db"))
+                .expect("open resource-lifecycle.db under AWAKEN_MGMT_DIR"),
+        ),
         catalog: Arc::new(catalog),
         credentials: Arc::new(credentials),
         // The only durable secret path is sealed: `nonce ‖ ciphertext` under the
@@ -227,6 +236,8 @@ fn durable_management_stores(dir: &std::path::Path, key: &[u8; 32]) -> Managemen
 /// (Option A, shared-DB).
 async fn open_management_stores(
     cfg: awaken_control::ControlStoreConfig,
+    resource_lifecycle_backend: config::ResourceLifecycleStoreBackend,
+    workspace_root: std::path::PathBuf,
     key: &[u8; 32],
 ) -> ManagementStores {
     use awaken_control::StoreBackend;
@@ -240,6 +251,25 @@ async fn open_management_stores(
         }
     }
     let path = |p: &std::path::Path| p.to_string_lossy().into_owned();
+
+    let resource_lifecycle: Arc<
+        dyn awaken_protocol_managed::resource_plane::ResourceLifecycleRepository,
+    > = match resource_lifecycle_backend {
+        config::ResourceLifecycleStoreBackend::Sqlite(path) => {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).expect("create resource-lifecycle directory");
+            }
+            Arc::new(
+                awaken_resource_store::SqliteResourceStore::open(path)
+                    .expect("open resource lifecycle sqlite"),
+            )
+        }
+        config::ResourceLifecycleStoreBackend::Postgres(url) => Arc::new(
+            awaken_resource_store::PostgresResourceStore::connect(&url)
+                .await
+                .expect("connect resource lifecycle postgres"),
+        ),
+    };
 
     ensure_parent(&cfg.catalog);
     let catalog: Arc<dyn awaken_model_catalog::repo::CatalogRepo> = match &cfg.catalog {
@@ -399,7 +429,8 @@ async fn open_management_stores(
     };
 
     ManagementStores {
-        workspace_root: None,
+        workspace_root: Some(workspace_root),
+        resource_lifecycle,
         catalog,
         credentials,
         secrets,
@@ -519,8 +550,23 @@ pub async fn build_management_router_with_fallback(
             // Each control-plane store honors its own `AWAKEN_<COMPONENT>_DB` override
             // (SQLite path or shared Postgres), defaulting to `<dir>/<name>.db`.
             let cfg = awaken_control::ControlStoreConfig::from_env(std::path::Path::new(&dir));
+            let resource_lifecycle_backend =
+                config::ResourceLifecycleStoreBackend::from_env(std::path::Path::new(&dir));
+            let shared_runtime = std::env::var("AWAKEN_RUNTIME_DISPATCH_DATABASE_URL")
+                .is_ok_and(|value| !value.is_empty())
+                || std::env::var("AWAKEN_STORE").as_deref() == Ok("postgres")
+                || std::env::var("AWAKEN_DISPATCH_BACKEND").as_deref() == Ok("postgres");
+            resource_lifecycle_backend
+                .validate_runtime_shape(shared_runtime)
+                .unwrap_or_else(|error| panic!("{error}"));
             management_router_over(
-                open_management_stores(cfg, &key).await,
+                open_management_stores(
+                    cfg,
+                    resource_lifecycle_backend,
+                    std::path::PathBuf::from(&dir),
+                    &key,
+                )
+                .await,
                 iam,
                 remote_iam,
                 fallback_model,
@@ -665,6 +711,7 @@ async fn management_router_over(
 ) -> Router {
     let ManagementStores {
         workspace_root,
+        resource_lifecycle,
         catalog,
         credentials,
         secrets,
@@ -902,16 +949,7 @@ async fn management_router_over(
         // Resolve a session's model to a real executor from the config plane (M2):
         // an unconfigured/unresolvable model falls back to the scenario model above.
         .with_inference_materializer(inference_materializer);
-    let lifecycle_path = host_builder
-        .storage_dir()
-        .map(|directory| directory.join("resource-lifecycle.db"));
-    let host_builder = match lifecycle_path {
-        Some(path) => host_builder.with_resource_lifecycle(Arc::new(
-            awaken_resource_store::SqliteResourceStore::open(path)
-                .expect("open durable resource lifecycle store"),
-        )),
-        None => host_builder,
-    };
+    let host_builder = host_builder.with_resource_lifecycle(resource_lifecycle);
     host_builder.install_memory_extraction_repository(memory_extractions);
     awaken_server::install_platform_memory_data_plane(&host_builder);
     // Production ACP wiring (`acp:*` threads): `AWAKEN_ACP_CLI` / `AWAKEN_ACP_ARGV`

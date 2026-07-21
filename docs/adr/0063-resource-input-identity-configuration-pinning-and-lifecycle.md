@@ -205,6 +205,22 @@ catalog, reverse-reference, Agent-binding, Session-binding, retention, runtime,
 and extraction guards report no blocker. These guards contain resource facts only;
 authentication, API keys, roles, policy and PDP decisions remain at the PEP edge.
 
+Multi-node deletion additionally uses `ResourceReclamationFence`, keyed by the
+physical identity `(ResourceKind, resource_id)` rather than Workspace. Fence
+acquisition and the zero-reference check are one resource-store transaction;
+reference creation/replacement takes the same identity lock and fails closed while
+the durable fence exists. The coordinator re-runs independently owned guards after
+acquisition, performs idempotent physical deletion, releases the fence, and only
+then commits the receipt. A crash before release lets the same intent resume; a
+crash after release but before the receipt safely rechecks/repeats deletion.
+
+Embedded composition uses SQLite and cloud/multi-node composition uses Postgres,
+selected once by `AWAKEN_RESOURCE_LIFECYCLE_DB`. The transitional runtime-Postgres
+DSN fallback is accepted for compatibility, but operators should set the resource
+axis explicitly. This database contains only resource identities, Workspace
+ownership/reference edges, purge work, and consistency fences. It is not an IAM
+store and is never selected by identity mode, API-key type, role, or policy.
+
 ### D7: Memory has one data truth
 
 Mount, recall, extraction, Memory API, version history, and redaction operate on
@@ -297,6 +313,8 @@ The first coherent slice is:
   between the Managed adapter and Runtime Host.
 - Resource services stay independent of IAM language and product hierarchy.
 - Deletion and physical reclamation become safe, auditable, and recoverable.
+- A shared Postgres runtime cannot silently use a process-local/SQLite resource
+  fence; startup requires a shared resource-lifecycle backend.
 
 ### Negative and accepted
 

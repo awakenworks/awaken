@@ -33,6 +33,75 @@ pub enum Role {
     Hand,
 }
 
+/// Resource-plane lifecycle state backend. This selection is intentionally
+/// separate from IAM and from the runtime commit/dispatch stores: it persists
+/// intrinsic ownership, references, purge intents, and reclamation fences only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResourceLifecycleStoreBackend {
+    Sqlite(std::path::PathBuf),
+    Postgres(String),
+}
+
+impl ResourceLifecycleStoreBackend {
+    /// Resolve the one resource-lifecycle backend. An explicit
+    /// `AWAKEN_RESOURCE_LIFECYCLE_DB` Postgres URL selects the shared multi-node
+    /// adapter; another value is a SQLite path; absence preserves embedded mode.
+    pub fn from_env(data_dir: &std::path::Path) -> Self {
+        let explicit = std::env::var("AWAKEN_RESOURCE_LIFECYCLE_DB")
+            .ok()
+            .is_some_and(|value| !value.is_empty());
+        let resolved = Self::resolve(data_dir, |key| {
+            std::env::var(key).ok().filter(|value| !value.is_empty())
+        });
+        if !explicit && matches!(resolved, Self::Postgres(_)) {
+            eprintln!(
+                "shared resource lifecycle database inferred from the runtime Postgres DSN; \
+                 set AWAKEN_RESOURCE_LIFECYCLE_DB explicitly"
+            );
+        }
+        resolved
+    }
+
+    pub fn resolve(data_dir: &std::path::Path, lookup: impl Fn(&str) -> Option<String>) -> Self {
+        let selected = lookup("AWAKEN_RESOURCE_LIFECYCLE_DB").or_else(|| {
+            lookup("AWAKEN_RUNTIME_DISPATCH_DATABASE_URL").or_else(|| {
+                let shared_runtime = lookup("AWAKEN_STORE").as_deref() == Some("postgres")
+                    || lookup("AWAKEN_DISPATCH_BACKEND").as_deref() == Some("postgres");
+                shared_runtime
+                    .then(|| lookup("AWAKEN_DATABASE_URL"))
+                    .flatten()
+            })
+        });
+        match selected {
+            Some(value)
+                if value.starts_with("postgres://") || value.starts_with("postgresql://") =>
+            {
+                Self::Postgres(value)
+            }
+            Some(value) => Self::Sqlite(value.into()),
+            None => Self::Sqlite(data_dir.join("resource-lifecycle.db")),
+        }
+    }
+
+    #[must_use]
+    pub fn is_shared(&self) -> bool {
+        matches!(self, Self::Postgres(_))
+    }
+
+    /// A shared runtime must not advertise cross-process safety while resource
+    /// reference/fence state is local to one SQLite file.
+    pub fn validate_runtime_shape(&self, shared_runtime: bool) -> Result<(), &'static str> {
+        if shared_runtime && !self.is_shared() {
+            Err(
+                "a shared Postgres runtime requires a shared resource lifecycle store; \
+                 set AWAKEN_RESOURCE_LIFECYCLE_DB to a postgres:// URL",
+            )
+        } else {
+            Ok(())
+        }
+    }
+}
+
 impl Role {
     fn parse(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
@@ -498,5 +567,42 @@ mod tests {
         assert!(s.contains("role=serve"), "{s}");
         assert!(s.contains("dispatch=postgres"), "{s}");
         assert!(s.contains("local_pool=false"), "{s}");
+    }
+
+    #[test]
+    fn resource_lifecycle_backend_is_one_explicit_resource_plane_axis() {
+        let directory = std::path::Path::new("/var/lib/awaken");
+        assert_eq!(
+            ResourceLifecycleStoreBackend::resolve(directory, |_| None),
+            ResourceLifecycleStoreBackend::Sqlite(directory.join("resource-lifecycle.db"))
+        );
+        assert_eq!(
+            ResourceLifecycleStoreBackend::resolve(directory, |key| {
+                (key == "AWAKEN_RESOURCE_LIFECYCLE_DB").then(|| "postgres://db/resources".into())
+            }),
+            ResourceLifecycleStoreBackend::Postgres("postgres://db/resources".into())
+        );
+        assert_eq!(
+            ResourceLifecycleStoreBackend::resolve(directory, |key| {
+                (key == "AWAKEN_RESOURCE_LIFECYCLE_DB").then(|| "/mnt/resources.sqlite".into())
+            }),
+            ResourceLifecycleStoreBackend::Sqlite("/mnt/resources.sqlite".into())
+        );
+        let legacy = ResourceLifecycleStoreBackend::resolve(directory, |key| match key {
+            "AWAKEN_DISPATCH_BACKEND" => Some("postgres".into()),
+            "AWAKEN_DATABASE_URL" => Some("postgres://db/shared".into()),
+            _ => None,
+        });
+        assert_eq!(
+            legacy,
+            ResourceLifecycleStoreBackend::Postgres("postgres://db/shared".into())
+        );
+        assert!(legacy.is_shared());
+        assert!(legacy.validate_runtime_shape(true).is_ok());
+        assert!(
+            ResourceLifecycleStoreBackend::Sqlite("/tmp/resources.db".into())
+                .validate_runtime_shape(true)
+                .is_err()
+        );
     }
 }

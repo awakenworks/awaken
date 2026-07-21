@@ -252,6 +252,8 @@ process-local handle.
 | `CredentialResolver`/Vault | Existing | Credential product domain | turn a credential binding into a short-lived lease and rotate/revoke it | Agent prompt, persisted Session secret material |
 | `SandboxProvider` | Existing | Environment provisioning | realize validated mounts/working trees and dispose them | product resource authoring and policy |
 | `ResourceReclaimer` | Existing, durable and per-resource | Product/session operations | reconcile crashed activations and purge intents; retention, reference checks, fenced claims, per-kind receipts | authorization decisions, remote Git deletion |
+| `ResourceReclamationFence` | Existing resource lifecycle port | Resource consistency | atomically prove zero physical references, fence `(kind, resource_id)`, and reject racing reference writes | principal, role, policy, API key, Org/Project/WorkUnit |
+| `SqliteResourceStore` / `PostgresResourceStore` | Existing adapters | Resource persistence | persist purge intents, intrinsic references, and reclamation fences for embedded or multi-node deployment | IAM/PDP data and resource content bytes |
 
 The catalog names roles rather than forcing them into one crate. Local mode may
 compose several roles in one process; cloud mode may deploy them separately.
@@ -277,7 +279,8 @@ resource-specific repositories enforce their own intrinsic invariants.
 | Release | `SessionResourceCoordinator` | Sandbox manager, Vault, per-kind realizer | activation `Released`; sandbox-local material removed |
 | Reconcile crash | `ResourceReclaimer` | Session activation repository, workers | stale activation released or retried |
 | Archive/Delete | Resource Catalog service | PEP/PDP, resource repository | live deny state/tombstone before physical cleanup |
-| Purge | `ResourceReclaimer` | per-kind store and reference indexes | auditable purge receipt |
+| Fence physical identity | `ResourceReclaimer` | `ResourceReclamationFence`, reference writers | durable zero-reference fence; racing bindings fail closed |
+| Purge | `ResourceReclaimer` | per-kind store and reference indexes | idempotent physical deletion followed by auditable purge receipt |
 
 Resource services receive trusted Workspace coordinates and authorized operation
 intent. They do not receive API keys, roles, IAM syntax, Project, or WorkUnit.
@@ -685,6 +688,10 @@ internal config version remains an awaken governance detail.
   Repository, and Skill without importing IAM vocabulary;
 - the durable resource store owns purge work plus Workspace-scoped reverse
   references; Session manifest replacement updates its references atomically;
+- a physical-identity fence serializes zero-reference proof with every new
+  reference across processes; SQLite and Postgres implement the same port;
+- resource lifecycle persistence is selected once at composition by
+  `AWAKEN_RESOURCE_LIFECYCLE_DB`, independently of IAM/authentication mode;
 - File GC checks every Workspace ownership/reference before deleting shared bytes;
 - Memory GC requires the catalog tombstone, pinned config generation, retention,
   no Session/Agent binding, and no recoverable extraction before atomically
@@ -728,7 +735,7 @@ reconciler. It never silently marks the resource released.
 | Skill | binary bundle round-trip; traversal rejected; restart preserves history; v1 Session keeps v1 after v2 publication; hash mismatch fails closed |
 | Scope/auth | cross-Workspace File/Memory/Repo access fails closed; old config cannot bypass suspension/deletion/revocation |
 | Recovery | stale Prepared/Active/Releasing activations converge idempotently after restart |
-| Reclamation | no referenced File purge; Memory drains handles/jobs; Repository cleanup removes only local material |
+| Reclamation | no referenced File purge; a racing cross-node reference loses to or blocks the durable fence; crash resumes the same fence; Memory drains handles/jobs; Repository cleanup removes only local material |
 | Boundary | Runtime Core receives no product DTO, IAM policy, secret, absolute host path, Project, or WorkUnit |
 
 Formal checks should model the common state machine, live deny overlay, and the
