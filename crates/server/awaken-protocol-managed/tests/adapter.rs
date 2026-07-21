@@ -7,9 +7,11 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id, Message, Role};
 use awaken_agent_contract::agent::run::EndCause;
 use awaken_protocol_managed::{
-    AgentCapabilities, BuiltinTool, CustomTool, ManagedState, OutcomeIteration, OutcomeReport,
-    Pending, RunError, RunErrorKind, SessionRuntime, StepOutcome, ToolPermissionDecision, router,
+    AgentCapabilities, BuiltinTool, CustomTool, ManagedSessionRepository, ManagedState,
+    OutcomeIteration, OutcomeReport, Pending, RunError, RunErrorKind, SessionRuntime, StepOutcome,
+    ToolPermissionDecision, router,
 };
+use awaken_session_store::InMemorySessionRepository;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -119,6 +121,10 @@ struct FailingFake(RunErrorKind);
 
 #[async_trait::async_trait]
 impl SessionRuntime for FailingFake {
+    async fn session_environment_binding(&self, _thread: &str) -> Result<Option<String>, RunError> {
+        Ok(Some("opaque-failed-turn-binding".to_string()))
+    }
+
     async fn run(
         &self,
         _a: &str,
@@ -162,6 +168,41 @@ impl SessionRuntime for FailingFake {
     fn model(&self) -> String {
         "test-model".into()
     }
+}
+
+#[tokio::test]
+async fn failed_first_turn_still_persists_the_materialized_environment() {
+    let repo = Arc::new(InMemorySessionRepository::default());
+    let app = router(Arc::new(
+        ManagedState::new(FailingFake(RunErrorKind::Internal)).with_session_repo(repo.clone()),
+    ));
+    let id = create(&app).await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/v1/sessions/{id}/events"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({
+                        "events": [{
+                            "type": "user.message",
+                            "content": [{"type": "text", "text": "fail after materialization"}]
+                        }]
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        repo.get(&id)
+            .await
+            .and_then(|session| session.environment_binding),
+        Some("opaque-failed-turn-binding".to_string())
+    );
 }
 
 #[tokio::test]

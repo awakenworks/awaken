@@ -17,8 +17,8 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 use awaken_session_contract::{
-    ManagedSessionRepository, PersistedSession, ResolvedSessionResources, ScopedPersistedSession,
-    SessionLifecycleFact, SessionResourceState,
+    ManagedSessionRepository, PersistedSession, PersistedSessionRuntime, ResolvedSessionResources,
+    ScopedPersistedSession, SessionLifecycleFact, SessionResourceState,
 };
 
 mod extraction;
@@ -95,6 +95,16 @@ fn session_bundle() -> Result<MigrationBundle, MigrationError> {
                     data TEXT NOT NULL, \
                     created_at {timestamptz} NOT NULL DEFAULT {now})",
             )?,
+            Migration::new(
+                8,
+                "managed session runtime environment binding",
+                "ALTER TABLE {prefix}_session ADD COLUMN environment_binding TEXT",
+            )?,
+            Migration::new(
+                9,
+                "managed session secret-free runtime initialization pin",
+                "ALTER TABLE {prefix}_session ADD COLUMN runtime_json TEXT NOT NULL DEFAULT '{\"mcp_servers\":[],\"runtime\":null,\"deny_egress\":false,\"sandbox\":null}'",
+            )?,
         ],
     )
 }
@@ -109,6 +119,10 @@ fn mcp_str(session: &PersistedSession) -> String {
 
 fn effective_inputs_str(session: &PersistedSession) -> String {
     serde_json::to_string(&session.resources).expect("Session resource state serializes")
+}
+
+fn runtime_str(session: &PersistedSession) -> String {
+    serde_json::to_string(&session.runtime).expect("Session runtime pin serializes")
 }
 
 fn lifecycle_str(fact: &SessionLifecycleFact) -> String {
@@ -146,6 +160,8 @@ struct EncodedSessionRow {
     title: Option<String>,
     metadata_json: String,
     environment_id: String,
+    environment_binding: Option<String>,
+    runtime_json: String,
     mcp_json: String,
     effective_inputs_json: String,
     status: String,
@@ -169,6 +185,8 @@ fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_json::Error>
         title: row.title,
         metadata: serde_json::from_str(&row.metadata_json)?,
         environment_id: row.environment_id,
+        environment_binding: row.environment_binding,
+        runtime: serde_json::from_str::<PersistedSessionRuntime>(&row.runtime_json)?,
         mcp_servers: serde_json::from_str(&row.mcp_json)?,
         resources: decode_resource_state(&row.effective_inputs_json)?,
         status: row.status,
@@ -212,11 +230,12 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         let metadata_json = metadata_str(&session);
         let mcp_json = mcp_str(&session);
         let effective_inputs_json = effective_inputs_str(&session);
+        let runtime_json = runtime_str(&session);
         let conn = self.conn.lock().expect("session store mutex poisoned");
         conn.execute(
             "INSERT INTO managed_session
-                (session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, scope_id, status, archived_at, effective_inputs_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                (session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, scope_id, status, archived_at, effective_inputs_json, environment_binding, runtime_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(session_id) DO UPDATE SET
                 agent_id = excluded.agent_id,
                 model = excluded.model,
@@ -227,7 +246,9 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                 scope_id = excluded.scope_id,
                 status = excluded.status,
                 archived_at = excluded.archived_at,
-                effective_inputs_json = excluded.effective_inputs_json",
+                effective_inputs_json = excluded.effective_inputs_json,
+                environment_binding = excluded.environment_binding,
+                runtime_json = excluded.runtime_json",
             params![
                 session.session_id,
                 session.agent_id,
@@ -240,6 +261,8 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                 session.status,
                 session.archived_at,
                 effective_inputs_json,
+                session.environment_binding,
+                runtime_json,
             ],
         )
         .expect("persist managed session");
@@ -254,6 +277,7 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         let metadata_json = metadata_str(&session);
         let mcp_json = mcp_str(&session);
         let effective_inputs_json = effective_inputs_str(&session);
+        let runtime_json = runtime_str(&session);
         let fact_id = fact.id.clone();
         let fact_json = lifecycle_str(&fact);
         let mut conn = self.conn.lock().expect("session store mutex poisoned");
@@ -262,14 +286,16 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
             .expect("begin session lifecycle transaction");
         tx.execute(
             "INSERT INTO managed_session
-                (session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, scope_id, status, archived_at, effective_inputs_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                (session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, scope_id, status, archived_at, effective_inputs_json, environment_binding, runtime_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(session_id) DO UPDATE SET
                 agent_id = excluded.agent_id, model = excluded.model, title = excluded.title,
                 metadata_json = excluded.metadata_json, environment_id = excluded.environment_id,
                 mcp_json = excluded.mcp_json, scope_id = excluded.scope_id,
                 status = excluded.status, archived_at = excluded.archived_at,
-                effective_inputs_json = excluded.effective_inputs_json",
+                effective_inputs_json = excluded.effective_inputs_json,
+                environment_binding = excluded.environment_binding,
+                runtime_json = excluded.runtime_json",
             params![
                 session.session_id,
                 session.agent_id,
@@ -282,6 +308,8 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                 session.status,
                 session.archived_at,
                 effective_inputs_json,
+                session.environment_binding,
+                runtime_json,
             ],
         )
         .expect("persist managed session in lifecycle transaction");
@@ -377,7 +405,7 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         let conn = self.conn.lock().expect("session store mutex poisoned");
         let raw = conn
             .query_row(
-                "SELECT agent_id, model, title, metadata_json, environment_id, mcp_json, status, archived_at, effective_inputs_json
+                "SELECT agent_id, model, title, metadata_json, environment_id, mcp_json, status, archived_at, effective_inputs_json, environment_binding, runtime_json
                  FROM managed_session WHERE session_id = ?1",
                 params![session_id],
                 |row| {
@@ -391,6 +419,8 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                         row.get::<_, String>(6)?,
                         row.get::<_, Option<String>>(7)?,
                         row.get::<_, String>(8)?,
+                        row.get::<_, Option<String>>(9)?,
+                        row.get::<_, String>(10)?,
                     ))
                 },
             )
@@ -406,6 +436,8 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
             status,
             archived_at,
             effective_inputs_json,
+            environment_binding,
+            runtime_json,
         ) = raw;
         Some(
             decode(EncodedSessionRow {
@@ -417,6 +449,8 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                 environment_id,
                 mcp_json,
                 effective_inputs_json,
+                environment_binding,
+                runtime_json,
                 status,
                 archived_at,
             })
@@ -428,7 +462,7 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         let conn = self.conn.lock().expect("session store mutex poisoned");
         let mut statement = conn
             .prepare(
-                "SELECT scope_id, session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, status, archived_at, effective_inputs_json
+                "SELECT scope_id, session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, status, archived_at, effective_inputs_json, environment_binding, runtime_json
                  FROM managed_session ORDER BY session_id",
             )
             .expect("prepare pending Session resource activations");
@@ -447,6 +481,8 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                         status: row.get(8)?,
                         archived_at: row.get(9)?,
                         effective_inputs_json: row.get(10)?,
+                        environment_binding: row.get(11)?,
+                        runtime_json: row.get(12)?,
                     },
                 ))
             })
@@ -475,6 +511,18 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         )
         .optional()
         .expect("read managed session owner")
+    }
+
+    async fn bind_environment(&self, session_id: &str, binding: &str) -> bool {
+        self.conn
+            .lock()
+            .expect("session store mutex poisoned")
+            .execute(
+                "UPDATE managed_session SET environment_binding = ?2 WHERE session_id = ?1",
+                params![session_id, binding],
+            )
+            .expect("bind managed session environment")
+            > 0
     }
 }
 
@@ -509,8 +557,8 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
     async fn save_owned(&self, owner_scope: &str, session: PersistedSession) {
         sqlx::query(
             "INSERT INTO managed_session \
-                (session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, scope_id, status, archived_at, effective_inputs_json) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
+                (session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, scope_id, status, archived_at, effective_inputs_json, environment_binding, runtime_json) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) \
              ON CONFLICT (session_id) DO UPDATE SET \
                 agent_id = excluded.agent_id, \
                 model = excluded.model, \
@@ -519,7 +567,9 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
                 environment_id = excluded.environment_id, \
                 mcp_json = excluded.mcp_json, \
                 scope_id = excluded.scope_id, status = excluded.status, archived_at = excluded.archived_at, \
-                effective_inputs_json = excluded.effective_inputs_json",
+                effective_inputs_json = excluded.effective_inputs_json, \
+                environment_binding = excluded.environment_binding, \
+                runtime_json = excluded.runtime_json",
         )
         .bind(&session.session_id)
         .bind(&session.agent_id)
@@ -532,6 +582,8 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         .bind(&session.status)
         .bind(&session.archived_at)
         .bind(effective_inputs_str(&session))
+        .bind(&session.environment_binding)
+        .bind(runtime_str(&session))
         .execute(&self.pool)
         .await
         .expect("persist managed session");
@@ -550,14 +602,16 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
             .expect("begin session lifecycle transaction");
         sqlx::query(
             "INSERT INTO managed_session
-                (session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, scope_id, status, archived_at, effective_inputs_json)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                (session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, scope_id, status, archived_at, effective_inputs_json, environment_binding, runtime_json)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
              ON CONFLICT (session_id) DO UPDATE SET
                 agent_id = excluded.agent_id, model = excluded.model, title = excluded.title,
                 metadata_json = excluded.metadata_json, environment_id = excluded.environment_id,
                 mcp_json = excluded.mcp_json, scope_id = excluded.scope_id,
                 status = excluded.status, archived_at = excluded.archived_at,
-                effective_inputs_json = excluded.effective_inputs_json",
+                effective_inputs_json = excluded.effective_inputs_json,
+                environment_binding = excluded.environment_binding,
+                runtime_json = excluded.runtime_json",
         )
         .bind(&session.session_id)
         .bind(&session.agent_id)
@@ -570,6 +624,8 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         .bind(&session.status)
         .bind(&session.archived_at)
         .bind(effective_inputs_str(&session))
+        .bind(&session.environment_binding)
+        .bind(runtime_str(&session))
         .execute(&mut *tx)
         .await
         .expect("persist managed session in lifecycle transaction");
@@ -680,7 +736,7 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
 
     async fn get(&self, session_id: &str) -> Option<PersistedSession> {
         let row = sqlx::query(
-            "SELECT agent_id, model, title, metadata_json, environment_id, mcp_json, status, archived_at, effective_inputs_json \
+            "SELECT agent_id, model, title, metadata_json, environment_id, mcp_json, status, archived_at, effective_inputs_json, environment_binding, runtime_json \
              FROM managed_session WHERE session_id = $1",
         )
         .bind(session_id)
@@ -700,6 +756,8 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
                 environment_id: row.get("environment_id"),
                 mcp_json,
                 effective_inputs_json,
+                environment_binding: row.get("environment_binding"),
+                runtime_json: row.get("runtime_json"),
                 status: row.get("status"),
                 archived_at: row.get("archived_at"),
             })
@@ -709,7 +767,7 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
 
     async fn pending_resource_sessions(&self) -> Vec<ScopedPersistedSession> {
         sqlx::query(
-            "SELECT scope_id, session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, status, archived_at, effective_inputs_json \
+            "SELECT scope_id, session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, status, archived_at, effective_inputs_json, environment_binding, runtime_json \
              FROM managed_session ORDER BY session_id",
         )
         .fetch_all(&self.pool)
@@ -729,6 +787,8 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
                 status: row.get("status"),
                 archived_at: row.get("archived_at"),
                 effective_inputs_json: row.get("effective_inputs_json"),
+                environment_binding: row.get("environment_binding"),
+                runtime_json: row.get("runtime_json"),
             })
             .expect("decode managed session"),
         })
@@ -748,6 +808,17 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
             .expect("read managed session owner")?;
         Some(row.get("scope_id"))
     }
+
+    async fn bind_environment(&self, session_id: &str, binding: &str) -> bool {
+        sqlx::query("UPDATE managed_session SET environment_binding = $2 WHERE session_id = $1")
+            .bind(session_id)
+            .bind(binding)
+            .execute(&self.pool)
+            .await
+            .expect("bind managed session environment")
+            .rows_affected()
+            > 0
+    }
 }
 
 #[cfg(test)]
@@ -766,6 +837,8 @@ mod tests {
             title: Some("My session".to_string()),
             metadata,
             environment_id: "env_local".to_string(),
+            environment_binding: None,
+            runtime: Default::default(),
             mcp_servers: vec![serde_json::json!({"name":"calc","type":"url","url":"https://x"})],
             resources: awaken_session_contract::SessionResourceState::from_legacy(
                 serde_json::from_value(serde_json::json!({
@@ -886,6 +959,27 @@ mod tests {
         reopened.complete_lifecycle(&pending[0].id).await;
         reopened.complete_lifecycle(&pending[0].id).await;
         assert!(reopened.pending_lifecycle().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn environment_binding_survives_sqlite_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessions-binding.db");
+        let path = path.to_string_lossy().to_string();
+        {
+            let repo = SqliteManagedSessionRepository::open(&path).unwrap();
+            repo.save_owned("ws_a", sample("sesn_bound")).await;
+            assert!(repo.bind_environment("sesn_bound", "opaque-binding").await);
+        }
+        let reopened = SqliteManagedSessionRepository::open(&path).unwrap();
+        assert_eq!(
+            reopened
+                .get("sesn_bound")
+                .await
+                .and_then(|session| session.environment_binding),
+            Some("opaque-binding".to_string())
+        );
+        assert_eq!(reopened.owner("sesn_bound").await.as_deref(), Some("ws_a"));
     }
 
     #[tokio::test]

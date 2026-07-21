@@ -128,7 +128,7 @@ impl ManagedState {
                 });
             }
         }
-        let bindings = effective_mcp_servers
+        let bindings: Vec<McpServerBinding> = effective_mcp_servers
             .iter()
             .map(|server| {
                 let credential_source_id = self
@@ -312,6 +312,13 @@ impl ManagedState {
             title: req.title.clone(),
             metadata: req.metadata.clone(),
             environment_id: environment_id.clone(),
+            environment_binding: None,
+            runtime: awaken_session_contract::PersistedSessionRuntime {
+                mcp_servers: bindings.clone(),
+                runtime: req.awaken_runtime().map(str::to_string),
+                deny_egress,
+                sandbox: sandbox.clone(),
+            },
             mcp_servers: effective_mcp_servers
                 .iter()
                 .map(|server| serde_json::to_value(server).expect("mcp server wire serializes"))
@@ -476,6 +483,34 @@ impl ManagedState {
             return Some(scope);
         }
         self.sessions_repo.owner(session_id).await
+    }
+
+    /// Persist the runtime's opaque Session-environment identity after an
+    /// execution edge has materialized it. The repository performs a narrow
+    /// atomic column update, so this cannot roll back a concurrent resource or
+    /// lifecycle transition with an older aggregate snapshot.
+    pub(crate) async fn persist_session_environment_binding(
+        &self,
+        session_id: &str,
+    ) -> Result<(), StateError> {
+        let Some(binding) = self
+            .runtime
+            .session_environment_binding(session_id)
+            .await
+            .map_err(StateError::Run)?
+        else {
+            return Ok(());
+        };
+        if !self
+            .sessions_repo
+            .bind_environment(session_id, &binding)
+            .await
+        {
+            return Err(StateError::Run(RunError::internal(format!(
+                "cannot bind an environment to unknown Session `{session_id}`"
+            ))));
+        }
+        Ok(())
     }
 
     async fn reconcile_persisted_resources(
@@ -788,6 +823,34 @@ impl ManagedState {
             .is_some_and(|session| session.status == "deleted")
         {
             return Err(StateError::NotFound);
+        }
+        if let Some(session) = persisted.as_ref() {
+            // Rebuild every process-local projection from the Session's durable,
+            // secret-free pin before adopting its physical environment. This is
+            // the same preparation port used at creation: no parallel ACP/MCP or
+            // resource restoration path exists.
+            self.runtime
+                .prepare_session(
+                    id,
+                    SessionInit {
+                        workspace_id: owner_scope.clone(),
+                        agent_id: session.agent_id.clone(),
+                        mcp_servers: session.runtime.mcp_servers.clone(),
+                        resources: session.resources.active.clone(),
+                        model: Some(session.model.clone()),
+                        runtime: session.runtime.runtime.clone(),
+                        deny_egress: session.runtime.deny_egress,
+                        sandbox: session.runtime.sandbox.clone(),
+                    },
+                )
+                .await
+                .map_err(StateError::Run)?;
+            if let Some(binding) = session.environment_binding.as_deref() {
+                self.runtime
+                    .restore_session_environment(&session.agent_id, id, binding)
+                    .await
+                    .map_err(StateError::Run)?;
+            }
         }
         let messages = self.runtime.committed_messages(id).await;
         if messages.is_empty() {

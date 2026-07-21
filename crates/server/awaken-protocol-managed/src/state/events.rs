@@ -370,7 +370,13 @@ impl ManagedState {
                     let outcome = self
                         .runtime
                         .run_streaming(&agent_id, session_id, content.clone(), sink.clone())
-                        .await?;
+                        .await;
+                    // Context creation precedes execution, so even a failed first
+                    // turn may own a live environment. Persist that identity before
+                    // propagating the run error; otherwise retry after a process
+                    // crash could provision over the surviving workspace.
+                    self.persist_session_environment_binding(session_id).await?;
+                    let outcome = outcome?;
                     self.append_step(session_id, outcome, sink.take_allocated_ids())?;
                 }
                 InboundEvent::UserToolConfirmation {
@@ -442,6 +448,10 @@ impl ManagedState {
                     self.runtime.interrupt(session_id).await?;
                 }
             }
+            // A first execution may have materialized the Session-owned sandbox.
+            // Commit its opaque identity before the API acknowledges this event,
+            // so a later process adopts instead of provisioning over its workspace.
+            self.persist_session_environment_binding(session_id).await?;
         }
         // Refresh the session's accumulated token usage from the runtime's committed
         // tally, so a subsequent GET /v1/sessions reflects the tokens this turn spent.

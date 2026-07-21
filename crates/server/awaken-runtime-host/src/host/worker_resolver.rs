@@ -3,27 +3,6 @@
 
 use super::*;
 
-fn decode_binding(
-    encoded: &str,
-    expected_sandbox_id: &str,
-    run_id: &RunId,
-) -> Result<awaken_provisioning_contract::SandboxHandle, awaken_run_ingress::Error> {
-    let handle: awaken_provisioning_contract::SandboxHandle = serde_json::from_str(encoded)
-        .map_err(|e| {
-            HostWorkerResolver::execution_error(format!(
-                "run {} has invalid sandbox binding: {e}",
-                run_id.0
-            ))
-        })?;
-    if handle.sandbox_id != expected_sandbox_id {
-        return Err(HostWorkerResolver::execution_error(format!(
-            "run {} sandbox {} does not belong to thread {}",
-            run_id.0, handle.sandbox_id, expected_sandbox_id
-        )));
-    }
-    Ok(handle)
-}
-
 async fn adopt_bound_sandbox(
     host: &SharedHost,
     encoded: Option<&str>,
@@ -32,81 +11,13 @@ async fn adopt_bound_sandbox(
     recovery: awaken_run_ingress::WorkerRecoveryMode,
 ) -> Result<(Option<crate::session_environment::SessionEnvironment>, bool), awaken_run_ingress::Error>
 {
-    let Some(encoded) = encoded else {
-        return Ok((None, false));
-    };
-    let handle = decode_binding(encoded, expected_sandbox_id, run_id)?;
-    if let Some(environment) = host.session_environment(expected_sandbox_id).await {
-        let resident = environment.handle();
-        if resident != handle {
-            return Err(HostWorkerResolver::execution_error(format!(
-                "run {} is bound to sandbox {}, but resident session {} uses {}",
-                run_id.0, handle.sandbox_id, expected_sandbox_id, resident.sandbox_id
-            )));
-        }
-        match environment.status().await {
-            Ok(awaken_provisioning_contract::SandboxStatus::Ready) => {
-                // The environment registry, not SessionCtx, is the Session lifecycle
-                // owner. A runtime-context rebuild therefore reuses the live object
-                // and must not provider-adopt (which would spawn a second hand).
-                return Ok((None, false));
-            }
-            Ok(_) | Err(_)
-                if recovery
-                    == awaken_run_ingress::WorkerRecoveryMode::RebuildFromCommittedTruth =>
-            {
-                if !host
-                    .discard_session_environment(expected_sandbox_id, &environment)
-                    .await
-                {
-                    return Err(HostWorkerResolver::execution_error(format!(
-                        "run {} lost the sandbox recovery fence for thread {}",
-                        run_id.0, expected_sandbox_id
-                    )));
-                }
-                return Ok((None, true));
-            }
-            Ok(status) => {
-                return Err(HostWorkerResolver::execution_error(format!(
-                    "run {} sandbox {} is not ready ({status:?})",
-                    run_id.0, handle.sandbox_id
-                )));
-            }
-            Err(error) => {
-                return Err(HostWorkerResolver::execution_error(format!(
-                    "run {} could not inspect sandbox {}: {error}",
-                    run_id.0, handle.sandbox_id
-                )));
-            }
-        }
-    }
-    let adoption = async {
-        let sandbox = host
-            .session_provider
-            .adopt(&handle)
-            .await
-            .map_err(|e| HostWorkerResolver::execution_error(e.to_string()))?;
-        if sandbox
-            .status()
-            .await
-            .map_err(|e| HostWorkerResolver::execution_error(e.to_string()))?
-            != awaken_provisioning_contract::SandboxStatus::Ready
-        {
-            return Err(HostWorkerResolver::execution_error(format!(
-                "run {} sandbox {} is no longer available",
-                run_id.0, handle.sandbox_id
-            )));
-        }
-        Ok(sandbox)
-    }
-    .await;
-    match adoption {
-        Ok(sandbox) => Ok((Some(sandbox), false)),
-        Err(_) if recovery == awaken_run_ingress::WorkerRecoveryMode::RebuildFromCommittedTruth => {
-            Ok((None, true))
-        }
-        Err(error) => Err(error),
-    }
+    host.adopt_bound_session_environment(
+        expected_sandbox_id,
+        encoded,
+        recovery == awaken_run_ingress::WorkerRecoveryMode::RebuildFromCommittedTruth,
+    )
+    .await
+    .map_err(|error| HostWorkerResolver::execution_error(format!("run {}: {error}", run_id.0)))
 }
 
 /// Routes a claimed run to the worker that owns its thread, opening (or reusing)
@@ -313,24 +224,24 @@ mod tests {
         }
     }
 
-    #[test]
-    fn sandbox_binding_is_validated_before_provider_adoption() {
-        let run = RunId("run-binding".into());
-        assert!(decode_binding("not-json", "thread-a", &run).is_err());
+    #[tokio::test]
+    async fn sandbox_binding_is_validated_before_provider_adoption() {
+        let storage = tempfile::tempdir().expect("storage");
+        let host = SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
+        assert!(
+            host.adopt_bound_session_environment("thread-a", Some("not-json"), false)
+                .await
+                .is_err()
+        );
 
         let wrong = serde_json::to_string(&awaken_provisioning_contract::SandboxHandle::new(
             "local", "thread-b",
         ))
         .unwrap();
-        assert!(decode_binding(&wrong, "thread-a", &run).is_err());
-
-        let valid = serde_json::to_string(&awaken_provisioning_contract::SandboxHandle::new(
-            "local", "thread-a",
-        ))
-        .unwrap();
-        assert_eq!(
-            decode_binding(&valid, "thread-a", &run).unwrap().sandbox_id,
-            "thread-a"
+        assert!(
+            host.adopt_bound_session_environment("thread-a", Some(&wrong), false)
+                .await
+                .is_err()
         );
     }
 

@@ -51,4 +51,6 @@ pub use session::{
     LiveInboxSnapshot, McpServerBinding, OutcomeIteration, OutcomeReport, Pending, RunError,
     RunErrorKind, SessionInit, SessionRuntime, SessionUsage, StepOutcome, ToolPermissionDecision,
 };
-pub use session_repo::{ManagedSessionRepository, PersistedSession, ScopedPersistedSession};
+pub use session_repo::{
+    ManagedSessionRepository, PersistedSession, PersistedSessionRuntime, ScopedPersistedSession,
+};
