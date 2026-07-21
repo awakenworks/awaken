@@ -562,6 +562,12 @@ request + credential/path selection
   -> content operation / CAS / safe materialization
 ```
 
+The resource routers implement the last boundary with one shared
+`RequiredWorkspaceScope` extractor. It accepts only the `WorkspaceScope` already
+stamped by the composition edge and returns not found for a missing or empty
+value. File, MemoryStore, Skill, and ownership handlers therefore have no local
+Workspace fallback and no dependency on authentication or authorization values.
+
 The route-to-action map is PEP configuration: File uses `file.read/write`, Skill
 uses `skill.read/write`, and awaken's deliberately coarse MemoryStore governance
 uses `workspace.read/write`. Replacing that map or policy does not change a

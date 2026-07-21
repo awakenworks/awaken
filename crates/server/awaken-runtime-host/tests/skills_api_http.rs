@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use awaken_runtime_contract::llm::{ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult};
 use awaken_runtime_host::{SharedHost, skills_router};
+use awaken_tenancy::WorkspaceScope;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -43,6 +44,13 @@ static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 const BOUNDARY: &str = "X-SKILL-BOUNDARY";
 
+fn in_test_workspace(mut request: Request<Body>) -> Request<Body> {
+    request
+        .extensions_mut()
+        .insert(WorkspaceScope("test".into()));
+    request
+}
+
 fn multipart_skill(content: &str) -> Vec<u8> {
     let mut body = Vec::new();
     body.extend_from_slice(format!("--{BOUNDARY}\r\n").as_bytes());
@@ -56,32 +64,38 @@ fn multipart_skill(content: &str) -> Vec<u8> {
 }
 
 async fn post_multipart(router: &Router, uri: &str, content: &str) -> (StatusCode, Value) {
-    let req = Request::builder()
-        .method("POST")
-        .uri(uri)
-        .header(
-            "content-type",
-            format!("multipart/form-data; boundary={BOUNDARY}"),
-        )
-        .body(Body::from(multipart_skill(content)))
-        .unwrap();
+    let req = in_test_workspace(
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header(
+                "content-type",
+                format!("multipart/form-data; boundary={BOUNDARY}"),
+            )
+            .body(Body::from(multipart_skill(content)))
+            .unwrap(),
+    );
     read(router.clone().oneshot(req).await.unwrap()).await
 }
 
 async fn post_json(router: &Router, uri: &str, body: Value) -> (StatusCode, Value) {
-    let req = Request::builder()
-        .method("POST")
-        .uri(uri)
-        .header("content-type", "application/json")
-        .body(Body::from(serde_json::to_vec(&body).unwrap()))
-        .unwrap();
+    let req = in_test_workspace(
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap(),
+    );
     read(router.clone().oneshot(req).await.unwrap()).await
 }
 
 async fn get(router: &Router, uri: &str) -> (StatusCode, String) {
     let resp = router
         .clone()
-        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .oneshot(in_test_workspace(
+            Request::builder().uri(uri).body(Body::empty()).unwrap(),
+        ))
         .await
         .unwrap();
     let status = resp.status();
@@ -94,7 +108,9 @@ async fn get(router: &Router, uri: &str) -> (StatusCode, String) {
 async fn get_bytes(router: &Router, uri: &str) -> (StatusCode, Vec<u8>) {
     let response = router
         .clone()
-        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .oneshot(in_test_workspace(
+            Request::builder().uri(uri).body(Body::empty()).unwrap(),
+        ))
         .await
         .unwrap();
     let status = response.status();
@@ -105,11 +121,13 @@ async fn get_bytes(router: &Router, uri: &str) -> (StatusCode, Vec<u8>) {
 }
 
 async fn delete(router: &Router, uri: &str) -> (StatusCode, Value) {
-    let req = Request::builder()
-        .method("DELETE")
-        .uri(uri)
-        .body(Body::empty())
-        .unwrap();
+    let req = in_test_workspace(
+        Request::builder()
+            .method("DELETE")
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap(),
+    );
     read(router.clone().oneshot(req).await.unwrap()).await
 }
 
@@ -144,7 +162,7 @@ async fn multipart_bundle_preserves_binary_support_files() {
     body.extend_from_slice(&closing);
     let response = router
         .clone()
-        .oneshot(
+        .oneshot(in_test_workspace(
             Request::builder()
                 .method("POST")
                 .uri("/v1/skills")
@@ -154,7 +172,7 @@ async fn multipart_bundle_preserves_binary_support_files() {
                 )
                 .body(Body::from(body))
                 .unwrap(),
-        )
+        ))
         .await
         .unwrap();
     let (status, created) = read(response).await;
@@ -194,12 +212,12 @@ async fn sdk_multipart_create_list_retrieve_and_version_lifecycle() {
     let (status, got) = read(
         router
             .clone()
-            .oneshot(
+            .oneshot(in_test_workspace(
                 Request::builder()
                     .uri(format!("/v1/skills/{id}"))
                     .body(Body::empty())
                     .unwrap(),
-            )
+            ))
             .await
             .unwrap(),
     )
@@ -218,12 +236,12 @@ async fn sdk_multipart_create_list_retrieve_and_version_lifecycle() {
     let (status, versions) = read(
         router
             .clone()
-            .oneshot(
+            .oneshot(in_test_workspace(
                 Request::builder()
                     .uri(format!("/v1/skills/{id}/versions"))
                     .body(Body::empty())
                     .unwrap(),
-            )
+            ))
             .await
             .unwrap(),
     )
@@ -344,15 +362,17 @@ async fn error_arms_are_fail_closed() {
     let body = format!(
         "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"display_title\"\r\n\r\nX\r\n--{BOUNDARY}--\r\n"
     );
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/skills")
-        .header(
-            "content-type",
-            format!("multipart/form-data; boundary={BOUNDARY}"),
-        )
-        .body(Body::from(body))
-        .unwrap();
+    let req = in_test_workspace(
+        Request::builder()
+            .method("POST")
+            .uri("/v1/skills")
+            .header(
+                "content-type",
+                format!("multipart/form-data; boundary={BOUNDARY}"),
+            )
+            .body(Body::from(body))
+            .unwrap(),
+    );
     let (status, _) = read(router.clone().oneshot(req).await.unwrap()).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
@@ -366,4 +386,31 @@ async fn error_arms_are_fail_closed() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn skill_routes_require_a_preselected_workspace() {
+    let (router, dir) = router_with_store();
+    for request in [
+        Request::builder()
+            .uri("/v1/skills")
+            .body(Body::empty())
+            .unwrap(),
+        Request::builder()
+            .method("POST")
+            .uri("/v1/skills")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&json!({ "id": "hidden", "content": SKILL_V1 })).unwrap(),
+            ))
+            .unwrap(),
+    ] {
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    let (status, listing) = get(&router, "/v1/skills").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!listing.contains("hidden"));
+    let _ = std::fs::remove_dir_all(dir);
 }

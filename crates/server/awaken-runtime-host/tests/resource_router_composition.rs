@@ -10,6 +10,7 @@ use std::sync::Arc;
 use awaken_managed_routers::{default_models, files_router, models_router};
 use awaken_runtime_contract::llm::{ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult};
 use awaken_runtime_host::{SharedHost, memory_stores_router, skills_router};
+use awaken_tenancy::WorkspaceScope;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -24,11 +25,11 @@ impl LlmExecutor for NoLlm {
 }
 
 async fn status(app: &Router, uri: &str) -> StatusCode {
-    app.clone()
-        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
-        .await
-        .unwrap()
-        .status()
+    let mut request = Request::builder().uri(uri).body(Body::empty()).unwrap();
+    request
+        .extensions_mut()
+        .insert(WorkspaceScope("test".into()));
+    app.clone().oneshot(request).await.unwrap().status()
 }
 
 #[tokio::test]

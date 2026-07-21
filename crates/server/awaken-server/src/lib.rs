@@ -248,7 +248,7 @@ fn mount_with_managed_over(
     // single-tenant deployment resolves to the default scope and is never fenced.
     let memory_stores = memory_stores_router_with_catalog(host.clone(), resource_catalog.clone())
         .layer(axum::middleware::from_fn_with_state(
-            crate::resource_owner::ResourceOwners::over(resource_catalog),
+            crate::resource_owner::MemoryStoreOwnershipLookup::over(resource_catalog),
             crate::resource_owner::memory_store_ownership_guard,
         ));
     // The skills API (`/v1/skills`) over the host's durable delivered-skill catalog.

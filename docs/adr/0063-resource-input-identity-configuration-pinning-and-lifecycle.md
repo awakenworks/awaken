@@ -147,6 +147,13 @@ stores never receive a principal, credential, role, decision, or policy object.
 No-login local mode omits the PEP and injects the platform-provisioned default
 Workspace, preserving the same resource contracts without a fake identity.
 
+All File, MemoryStore, and Skill HTTP adapters consume the shared
+`RequiredWorkspaceScope` extractor. Missing or empty scope fails as not found;
+an adapter never falls back to `Host.local_workspace`, parses an API key, or
+constructs a Workspace. The local composition root stamps its hidden default
+Workspace once, while authenticated compositions stamp the Workspace selected by
+their PEP. Catalog ownership middleware consumes that stamp without rewriting it.
+
 ### D5: Lifecycle stages have explicit component owners
 
 | Stage | Owning component | Responsibility |

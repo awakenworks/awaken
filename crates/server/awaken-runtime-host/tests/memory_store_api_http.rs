@@ -40,13 +40,15 @@ async fn call(
     body: Option<Value>,
 ) -> (StatusCode, Value) {
     let builder = Request::builder().method(method).uri(uri);
-    let req = match body {
+    let mut req = match body {
         Some(v) => builder
             .header("content-type", "application/json")
             .body(Body::from(serde_json::to_vec(&v).unwrap()))
             .unwrap(),
         None => builder.body(Body::empty()).unwrap(),
     };
+    req.extensions_mut()
+        .insert(WorkspaceScope("test".to_string()));
     let resp = router.clone().oneshot(req).await.unwrap();
     let status = resp.status();
     let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
@@ -54,6 +56,32 @@ async fn call(
         .unwrap();
     let value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     (status, value)
+}
+
+#[tokio::test]
+async fn resource_routes_require_a_preselected_workspace() {
+    let router = router();
+    for (method, body) in [
+        ("GET", Body::empty()),
+        ("POST", Body::from(r#"{"name":"must-not-exist"}"#)),
+    ] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri("/v1/memory_stores")
+                    .header("content-type", "application/json")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method}");
+    }
+
+    let (_, listed) = call(&router, "GET", "/v1/memory_stores", None).await;
+    assert!(listed["data"].as_array().unwrap().is_empty());
 }
 
 async fn call_scoped(

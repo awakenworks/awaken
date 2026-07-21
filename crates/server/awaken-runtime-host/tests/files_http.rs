@@ -9,6 +9,7 @@ use std::sync::Arc;
 use awaken_managed_routers::files_router;
 use awaken_runtime_contract::llm::{ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult};
 use awaken_runtime_host::SharedHost;
+use awaken_tenancy::WorkspaceScope;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -30,6 +31,13 @@ fn router() -> Router {
 
 const BOUNDARY: &str = "X-AWAKEN-BOUNDARY";
 
+fn in_test_workspace(mut request: Request<Body>) -> Request<Body> {
+    request
+        .extensions_mut()
+        .insert(WorkspaceScope("test".into()));
+    request
+}
+
 /// A `multipart/form-data` body with a single `file` part.
 fn multipart_file(filename: &str, content: &[u8]) -> Vec<u8> {
     let mut body = Vec::new();
@@ -45,15 +53,17 @@ fn multipart_file(filename: &str, content: &[u8]) -> Vec<u8> {
 }
 
 async fn upload(router: &Router, filename: &str, content: &[u8]) -> (StatusCode, Value) {
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/files")
-        .header(
-            "content-type",
-            format!("multipart/form-data; boundary={BOUNDARY}"),
-        )
-        .body(Body::from(multipart_file(filename, content)))
-        .unwrap();
+    let req = in_test_workspace(
+        Request::builder()
+            .method("POST")
+            .uri("/v1/files")
+            .header(
+                "content-type",
+                format!("multipart/form-data; boundary={BOUNDARY}"),
+            )
+            .body(Body::from(multipart_file(filename, content)))
+            .unwrap(),
+    );
     let resp = router.clone().oneshot(req).await.unwrap();
     let status = resp.status();
     let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
@@ -68,7 +78,9 @@ async fn upload(router: &Router, filename: &str, content: &[u8]) -> (StatusCode,
 async fn get(router: &Router, uri: &str) -> (StatusCode, Vec<u8>) {
     let resp = router
         .clone()
-        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .oneshot(in_test_workspace(
+            Request::builder().uri(uri).body(Body::empty()).unwrap(),
+        ))
         .await
         .unwrap();
     let status = resp.status();
@@ -81,13 +93,13 @@ async fn get(router: &Router, uri: &str) -> (StatusCode, Vec<u8>) {
 async fn delete(router: &Router, uri: &str) -> (StatusCode, Value) {
     let resp = router
         .clone()
-        .oneshot(
+        .oneshot(in_test_workspace(
             Request::builder()
                 .method("DELETE")
                 .uri(uri)
                 .body(Body::empty())
                 .unwrap(),
-        )
+        ))
         .await
         .unwrap();
     let status = resp.status();
@@ -151,15 +163,17 @@ async fn error_arms_are_fail_closed() {
     let body = format!(
         "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"purpose\"\r\n\r\nagent\r\n--{BOUNDARY}--\r\n"
     );
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/files")
-        .header(
-            "content-type",
-            format!("multipart/form-data; boundary={BOUNDARY}"),
-        )
-        .body(Body::from(body))
-        .unwrap();
+    let req = in_test_workspace(
+        Request::builder()
+            .method("POST")
+            .uri("/v1/files")
+            .header(
+                "content-type",
+                format!("multipart/form-data; boundary={BOUNDARY}"),
+            )
+            .body(Body::from(body))
+            .unwrap(),
+    );
     let resp = router.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 
@@ -171,7 +185,7 @@ async fn error_arms_are_fail_closed() {
 }
 
 #[tokio::test]
-async fn list_without_scope_is_empty() {
+async fn list_without_session_scope_is_empty() {
     let router = router();
     // This server scopes files to a session, so a global list (no `scope_id`) is empty.
     let (status, body) = get(&router, "/v1/files").await;
@@ -185,4 +199,24 @@ async fn list_without_scope_is_empty() {
     assert_eq!(status, StatusCode::OK);
     let list: Value = serde_json::from_slice(&body).unwrap();
     assert!(list["data"].as_array().unwrap().is_empty(), "{list}");
+}
+
+#[tokio::test]
+async fn file_routes_require_a_preselected_workspace() {
+    let router = router();
+    for request in [
+        Request::builder()
+            .uri("/v1/files")
+            .body(Body::empty())
+            .unwrap(),
+        Request::builder()
+            .uri("/v1/files/file_unknown")
+            .body(Body::empty())
+            .unwrap(),
+    ] {
+        assert_eq!(
+            router.clone().oneshot(request).await.unwrap().status(),
+            StatusCode::NOT_FOUND
+        );
+    }
 }

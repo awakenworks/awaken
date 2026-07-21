@@ -6,15 +6,14 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Extension, Multipart, Path, Query, State};
+use axum::extract::{Multipart, Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::json;
 
-use awaken_runtime_host::SharedHost;
-use awaken_tenancy::WorkspaceScope as ResourceWorkspace;
+use awaken_runtime_host::{RequiredWorkspaceScope, SharedHost};
 
 /// Mount the Files API over the host's blob store.
 pub fn files_router(host: Arc<SharedHost>) -> Router {
@@ -25,22 +24,14 @@ pub fn files_router(host: Arc<SharedHost>) -> Router {
         .with_state(host)
 }
 
-fn request_workspace(host: &SharedHost, scope: Option<Extension<ResourceWorkspace>>) -> String {
-    scope.map_or_else(
-        || host.local_workspace().to_string(),
-        |Extension(scope)| scope.0,
-    )
-}
-
 /// `GET /v1/files?scope_id=<session>` — the session's output artifacts (ADR-0038):
 /// files the agent wrote under `outputs/`, harvested into the blob store. Without a
 /// `scope_id` the list is empty (this server scopes files to a session, not globally).
 async fn list_files(
     State(host): State<Arc<SharedHost>>,
-    scope: Option<Extension<ResourceWorkspace>>,
+    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let workspace = request_workspace(&host, scope);
     let data: Vec<_> = match q.get("scope_id").cloned() {
         Some(session)
             if host.registered_thread_workspace(&session).as_deref() == Some(&workspace) =>
@@ -69,10 +60,9 @@ async fn list_files(
 /// return their content id as `FileMetadata`. Idempotent (equal bytes → same id).
 async fn upload_file(
     State(host): State<Arc<SharedHost>>,
-    scope: Option<Extension<ResourceWorkspace>>,
+    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     mut multipart: Multipart,
 ) -> impl IntoResponse {
-    let workspace = request_workspace(&host, scope);
     let mut filename = "upload".to_string();
     let mut bytes: Option<Vec<u8>> = None;
     while let Ok(Some(field)) = multipart.next_field().await {
@@ -126,10 +116,9 @@ async fn upload_file(
 /// `GET /v1/files/{id}` — metadata (presence + size).
 async fn get_file(
     State(host): State<Arc<SharedHost>>,
-    scope: Option<Extension<ResourceWorkspace>>,
+    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let workspace = request_workspace(&host, scope);
     if !host.owns_file(&workspace, &id).await.unwrap_or(false) {
         return (
             StatusCode::NOT_FOUND,
@@ -166,10 +155,9 @@ async fn get_file(
 /// and binding/reference is gone.
 async fn delete_file(
     State(host): State<Arc<SharedHost>>,
-    scope: Option<Extension<ResourceWorkspace>>,
+    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let workspace = request_workspace(&host, scope);
     match host.owns_file(&workspace, &id).await {
         Ok(true) => {}
         Ok(false) => {
@@ -220,10 +208,9 @@ async fn delete_file(
 /// `GET /v1/files/{id}/content` — the raw bytes (what `files.download` reads).
 async fn download_file(
     State(host): State<Arc<SharedHost>>,
-    scope: Option<Extension<ResourceWorkspace>>,
+    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let workspace = request_workspace(&host, scope);
     if !host.owns_file(&workspace, &id).await.unwrap_or(false) {
         return (StatusCode::NOT_FOUND, "not found").into_response();
     }

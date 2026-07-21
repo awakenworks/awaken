@@ -16,8 +16,7 @@ use std::sync::Arc;
 
 use awaken_protocol_managed::resource_plane::{ResourceKind, ResourceTarget};
 use awaken_skill_store::{SkillBundleFile, SkillDefinition, SkillStoreError, SkillVersion};
-use awaken_tenancy::WorkspaceScope;
-use axum::extract::{Extension, FromRequest, Multipart, Path, State};
+use axum::extract::{FromRequest, Multipart, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
@@ -25,6 +24,7 @@ use axum::{Json, Router};
 use serde_json::{Value, json};
 
 use crate::host::SharedHost;
+use crate::resource_scope::RequiredWorkspaceScope;
 
 const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
 
@@ -244,13 +244,6 @@ fn err(status: StatusCode, message: impl Into<String>) -> axum::response::Respon
     (status, Json(json!({ "error": message.into() }))).into_response()
 }
 
-fn request_workspace(state: &SkillsApi, scope: Option<Extension<WorkspaceScope>>) -> String {
-    scope.map_or_else(
-        || state.host.local_workspace().to_string(),
-        |Extension(scope)| scope.0,
-    )
-}
-
 /// Collect a multipart body without decoding file bytes. Non-file text fields are
 /// read for `display_title`; bundle contents remain binary-safe end to end.
 async fn read_multipart(mut multipart: Multipart) -> (Option<String>, Vec<(String, Vec<u8>)>) {
@@ -362,11 +355,10 @@ fn store_error(error: SkillStoreError) -> axum::response::Response {
 /// contract. Both register a v1 and feed the runtime catalog.
 async fn create_skill(
     State(state): State<Arc<SkillsApi>>,
-    scope: Option<Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     headers: HeaderMap,
     body: axum::body::Body,
 ) -> axum::response::Response {
-    let workspace = request_workspace(&state, scope);
     import_legacy_registry(&state, &workspace).await;
     let content_type = headers
         .get(axum::http::header::CONTENT_TYPE)
@@ -467,9 +459,8 @@ async fn create_skill(
 /// uploaded before a restart still lists.
 async fn list_skills(
     State(state): State<Arc<SkillsApi>>,
-    scope: Option<Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
 ) -> impl IntoResponse {
-    let workspace = request_workspace(&state, scope);
     import_legacy_registry(&state, &workspace).await;
     let data = state
         .host
@@ -487,10 +478,9 @@ async fn list_skills(
 
 async fn retrieve_skill(
     State(state): State<Arc<SkillsApi>>,
-    scope: Option<Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
 ) -> axum::response::Response {
-    let workspace = request_workspace(&state, scope);
     import_legacy_registry(&state, &workspace).await;
     match state.host.skills.definition(&workspace, &id).await {
         Some(Ok(Some(definition))) => {
@@ -504,10 +494,9 @@ async fn retrieve_skill(
 
 async fn delete_skill(
     State(state): State<Arc<SkillsApi>>,
-    scope: Option<Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
 ) -> axum::response::Response {
-    let workspace = request_workspace(&state, scope);
     import_legacy_registry(&state, &workspace).await;
     let definition = match state.host.skills.definition(&workspace, &id).await {
         Some(Ok(Some(definition))) => definition,
@@ -547,11 +536,10 @@ async fn delete_skill(
 
 async fn create_version(
     State(state): State<Arc<SkillsApi>>,
-    scope: Option<Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
     multipart: Multipart,
 ) -> axum::response::Response {
-    let workspace = request_workspace(&state, scope);
     import_legacy_registry(&state, &workspace).await;
     let definition = match state.host.skills.definition(&workspace, &id).await {
         Some(Ok(Some(definition))) => definition,
@@ -588,10 +576,9 @@ async fn create_version(
 
 async fn list_versions(
     State(state): State<Arc<SkillsApi>>,
-    scope: Option<Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
 ) -> axum::response::Response {
-    let workspace = request_workspace(&state, scope);
     import_legacy_registry(&state, &workspace).await;
     match state.host.skills.versions(&workspace, &id).await {
         Some(Ok(versions)) if !versions.is_empty() => {
@@ -629,10 +616,9 @@ async fn find_version(
 
 async fn retrieve_version(
     State(state): State<Arc<SkillsApi>>,
-    scope: Option<Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path((id, version)): Path<(String, String)>,
 ) -> axum::response::Response {
-    let workspace = request_workspace(&state, scope);
     import_legacy_registry(&state, &workspace).await;
     match find_version(&state, &workspace, &id, &version).await {
         Ok(Some(version)) => (StatusCode::OK, Json(project_version(&version))).into_response(),
@@ -643,10 +629,9 @@ async fn retrieve_version(
 
 async fn delete_version(
     State(state): State<Arc<SkillsApi>>,
-    scope: Option<Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path((id, version)): Path<(String, String)>,
 ) -> axum::response::Response {
-    let workspace = request_workspace(&state, scope);
     import_legacy_registry(&state, &workspace).await;
     let found = match find_version(&state, &workspace, &id, &version).await {
         Ok(Some(version)) => version,
@@ -672,10 +657,9 @@ async fn delete_version(
 /// `GET /v1/skills/:id/versions/:version/content` — the version's raw SKILL.md.
 async fn version_content(
     State(state): State<Arc<SkillsApi>>,
-    scope: Option<Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path((id, version)): Path<(String, String)>,
 ) -> axum::response::Response {
-    let workspace = request_workspace(&state, scope);
     import_legacy_registry(&state, &workspace).await;
     match find_version(&state, &workspace, &id, &version).await {
         Ok(Some(version)) => match version.skill_md() {
@@ -691,10 +675,9 @@ async fn version_content(
 /// absolute paths are rejected by the same normalization used at ingestion.
 async fn version_file(
     State(state): State<Arc<SkillsApi>>,
-    scope: Option<Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path((id, version, path)): Path<(String, String, String)>,
 ) -> axum::response::Response {
-    let workspace = request_workspace(&state, scope);
     import_legacy_registry(&state, &workspace).await;
     let normalized = match normalize_bundle(vec![(path, Vec::new())]) {
         Ok(bundle) => bundle.into_keys().next().expect("one normalized path"),
@@ -714,6 +697,7 @@ async fn version_file(
 mod tests {
     use super::*;
     use awaken_runtime_contract::llm::{ChatRequest, ChatResponse};
+    use awaken_tenancy::WorkspaceScope;
     use axum::body::Body;
     use axum::http::Request;
     use tower::ServiceExt;
@@ -730,11 +714,11 @@ mod tests {
     }
 
     async fn get(router: &Router, uri: &str) -> (StatusCode, String) {
-        let resp = router
-            .clone()
-            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
-            .await
-            .unwrap();
+        let mut request = Request::builder().uri(uri).body(Body::empty()).unwrap();
+        request
+            .extensions_mut()
+            .insert(WorkspaceScope("test".into()));
+        let resp = router.clone().oneshot(request).await.unwrap();
         let status = resp.status();
         let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
             .await
