@@ -44,7 +44,9 @@ async function main() {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
       const acp = await client.beta.sessions.create({
-        agent: 'assistant', metadata: { 'awaken.runtime': 'acp:claude' },
+        // Select the exact adapter row this scenario serves. A different `acp:*`
+        // binding must fail closed instead of being silently executed by this worker.
+        agent: 'assistant', metadata: { 'awaken.runtime': 'acp:fake' },
         environment_id: 'env_local',
         betas: BETAS,
       });
