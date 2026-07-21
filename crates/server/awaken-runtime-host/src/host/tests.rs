@@ -2332,8 +2332,8 @@ async fn replacement_host_adopts_the_dispatch_sandbox_from_a_stable_root() {
 
     let replacement = SharedHost::new(Arc::new(OkModel), "stub").with_store_dir(storage.path());
     let adopted = replacement
-        .provider
-        .adopt_sandbox(&handle)
+        .session_provider
+        .adopt(&handle)
         .await
         .expect("adopt durable handle");
     assert_eq!(

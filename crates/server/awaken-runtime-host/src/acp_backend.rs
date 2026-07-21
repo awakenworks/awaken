@@ -238,14 +238,25 @@ impl crate::host::SharedHost {
         let tier = crate::resolve_sandbox_tier(dep.sandbox_tier, tier_explicit, &base)
             .await
             .unwrap_or_else(|e| panic!("configure the ACP sandbox tier: {e}"));
-        let egress = self.thread_egress();
-        let resources = self.thread_resources_handle();
-        let sandbox = self.thread_sandbox();
-        if tier == crate::SandboxTier::Local {
-            return self.with_bound_acp(source, None);
+        let mut host = self;
+        match tier {
+            crate::SandboxTier::Local => {
+                host.session_provider =
+                    crate::session_environment::SessionEnvironmentProvider::workdir(base.clone());
+                return host.with_bound_acp(source, None);
+            }
+            crate::SandboxTier::Namespace => {
+                host.session_provider =
+                    crate::session_environment::SessionEnvironmentProvider::namespace(base.clone());
+                return host.with_bound_acp(source, None);
+            }
+            _ => {}
         }
+        let egress = host.thread_egress();
+        let resources = host.thread_resources_handle();
+        let sandbox = host.thread_sandbox();
         let bindings = crate::AcpSandboxBindings::new(egress, resources, sandbox)
-            .with_memory_mounter(self.memory_mounter());
+            .with_memory_mounter(host.memory_mounter());
         let channel = crate::build_acp_channel_source(
             tier,
             dep.container_image.as_deref(),
@@ -255,7 +266,7 @@ impl crate::host::SharedHost {
         )
         .await
         .unwrap_or_else(|e| panic!("configure the ACP sandbox tier: {e}"));
-        self.with_acp(Arc::new(AcpRunExecutor::new(channel)))
+        host.with_acp(Arc::new(AcpRunExecutor::new(channel)))
     }
 
     /// The hub-backed launch observer for this host: republishes an ACP agent's

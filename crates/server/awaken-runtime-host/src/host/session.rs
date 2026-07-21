@@ -213,7 +213,7 @@ impl SharedHost {
         &self,
         thread: &str,
         agent: Option<&str>,
-        adopted: Option<LocalSandbox>,
+        adopted: Option<crate::session_environment::SessionEnvironment>,
     ) -> Result<Arc<SessionCtx>, HostError> {
         self.ctx_for_snapshot_with_sandbox(thread, agent, None, adopted)
             .await
@@ -227,7 +227,7 @@ impl SharedHost {
         thread: &str,
         agent: Option<&str>,
         published_snapshot: Option<awaken_runtime_contract::ExecutableAgentSnapshot>,
-        adopted: Option<LocalSandbox>,
+        adopted: Option<crate::session_environment::SessionEnvironment>,
     ) -> Result<Arc<SessionCtx>, HostError> {
         let mut sessions = self.sessions.lock().await;
         if let Some(ctx) = sessions.get(thread) {
@@ -246,16 +246,14 @@ impl SharedHost {
                 .await;
             return Ok(ctx);
         }
-        let env = Arc::new(crate::session_environment::SessionEnvironment::workdir(
-            match adopted {
-                Some(env) => env,
-                None => self
-                    .provider
-                    .create_sandbox(&self.sandbox_spec(thread))
-                    .await
-                    .map_err(|e| HostError::internal(e.to_string()))?,
-            },
-        ));
+        let env = Arc::new(match adopted {
+            Some(env) => env,
+            None => self
+                .session_provider
+                .create(&self.sandbox_spec(thread))
+                .await
+                .map_err(|e| HostError::internal(e.to_string()))?,
+        });
         // Clone any staged github_repository resources into the fresh sandbox,
         // host-side (ADR-0038); fail-closed so a bad repo aborts session start.
         self.realize_thread_repositories(thread, env.as_ref())?;
@@ -362,7 +360,7 @@ impl SharedHost {
         }
         // Delegation is a runtime concern: inject the executor so the kernel runs
         // `agent_run` as a sub-agent (native or remote), not the tool registry.
-        if let Some(service) = self.run_delegation(env.workdir_handle(), commit.clone())? {
+        if let Some(service) = self.run_delegation(env.clone(), commit.clone())? {
             runtime = runtime.with_run_delegation(service);
         }
         // Skills are fronted by two stable tools (ADR-0036); all skill behavior is
@@ -428,7 +426,7 @@ impl SharedHost {
         if let Some(wiring) = crate::skills::wire_skills(
             &filtered_specs,
             filtered_delivered,
-            env.workdir_handle(),
+            env.clone(),
             self.llm.clone(),
             &self.model_ref,
             thread,

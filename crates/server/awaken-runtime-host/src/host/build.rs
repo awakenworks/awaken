@@ -148,7 +148,10 @@ impl SharedHost {
             model_ref,
             inference_routing: crate::inference_routing::InferenceRouting::new(),
             acp: None,
-            provider: LocalProvider::new(sandbox_root),
+            provider: LocalProvider::new(sandbox_root.clone()),
+            session_provider: crate::session_environment::SessionEnvironmentProvider::workdir(
+                sandbox_root.clone(),
+            ),
             grader: Arc::new(KeywordGrader),
             client_tools: HashSet::new(),
             local_workspace: local_workspace.clone(),
@@ -525,6 +528,7 @@ impl SharedHost {
             )
             .expect("open durable Memory extraction repository"),
         ));
+        self.session_provider = self.session_provider.at_root(dir.join("sandboxes"));
         self.store_dir = Some(dir);
         self
     }
@@ -655,7 +659,7 @@ impl SharedHost {
     /// gives each delegate a fresh, isolated root instead.
     pub(crate) fn run_delegation(
         &self,
-        sandbox: Arc<LocalSandbox>,
+        sandbox: Arc<crate::session_environment::SessionEnvironment>,
         commit: Arc<crate::store::HostCommit>,
     ) -> Result<Option<Arc<dyn RunDelegationService>>, HostError> {
         if self.delegates.is_empty() {

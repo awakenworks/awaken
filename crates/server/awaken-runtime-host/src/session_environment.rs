@@ -10,7 +10,70 @@ use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
 use awaken_run_executor_acp::AgentChannelType;
 use awaken_runtime_contract::tool::RawTool;
-use awaken_sandbox_local::{DiscoveredSkillFile, LocalSandbox};
+use awaken_sandbox_local::{
+    DiscoveredSkillFile, LocalProvider, LocalSandbox, NamespaceProvider, NamespaceSandbox,
+};
+
+/// Creates/adopts the one Session environment while auxiliary housekeeping Runs
+/// may continue using their deliberately-fresh LocalProvider.
+pub(crate) enum SessionEnvironmentProvider {
+    Workdir(LocalProvider),
+    Namespace(NamespaceProvider),
+}
+
+impl SessionEnvironmentProvider {
+    pub(crate) fn workdir(base: impl Into<std::path::PathBuf>) -> Self {
+        Self::Workdir(LocalProvider::new(base))
+    }
+
+    pub(crate) fn namespace(base: impl Into<std::path::PathBuf>) -> Self {
+        Self::Namespace(NamespaceProvider::new(base))
+    }
+
+    pub(crate) fn at_root(&self, base: impl Into<std::path::PathBuf>) -> Self {
+        let base = base.into();
+        match self {
+            Self::Workdir(_) => Self::workdir(base),
+            Self::Namespace(_) => Self::namespace(base),
+        }
+    }
+
+    pub(crate) async fn create(
+        &self,
+        spec: &pc::SandboxSpec,
+    ) -> Result<SessionEnvironment, pc::SandboxError> {
+        match self {
+            Self::Workdir(provider) => provider
+                .create_sandbox(spec)
+                .await
+                .map(SessionEnvironment::workdir),
+            Self::Namespace(provider) => {
+                let mut spec = spec.clone();
+                spec.isolation = pc::IsolationClass::Namespace;
+                provider
+                    .create_sandbox(&spec)
+                    .await
+                    .map(SessionEnvironment::namespace)
+            }
+        }
+    }
+
+    pub(crate) async fn adopt(
+        &self,
+        handle: &pc::SandboxHandle,
+    ) -> Result<SessionEnvironment, pc::SandboxError> {
+        match self {
+            Self::Workdir(provider) => provider
+                .adopt_sandbox(handle)
+                .await
+                .map(SessionEnvironment::workdir),
+            Self::Namespace(provider) => provider
+                .adopt_sandbox(handle)
+                .await
+                .map(SessionEnvironment::namespace),
+        }
+    }
+}
 
 /// Segregated capability needed by the ACP channel adapter. Keeping it beside
 /// the Session owner avoids teaching the neutral provisioning contract about
@@ -54,6 +117,7 @@ impl AgentSandbox for LocalSandbox {
 /// One realized sandbox shared by every Run attempt in a Session.
 pub(crate) enum SessionEnvironment {
     Workdir(Arc<LocalSandbox>),
+    Namespace(Arc<NamespaceSandbox>),
 }
 
 impl SessionEnvironment {
@@ -62,18 +126,15 @@ impl SessionEnvironment {
         Self::Workdir(Arc::new(sandbox))
     }
 
-    /// Transitional access for child/skill composition. It returns the same live
-    /// instance and therefore cannot create a second sandbox.
     #[must_use]
-    pub(crate) fn workdir_handle(&self) -> Arc<LocalSandbox> {
-        match self {
-            Self::Workdir(sandbox) => sandbox.clone(),
-        }
+    pub(crate) fn namespace(sandbox: NamespaceSandbox) -> Self {
+        Self::Namespace(Arc::new(sandbox))
     }
 
     pub(crate) fn rooted_tools(&self) -> Vec<Arc<dyn RawTool>> {
         match self {
             Self::Workdir(sandbox) => sandbox.rooted_tools(),
+            Self::Namespace(sandbox) => sandbox.rooted_tools(),
         }
     }
 
@@ -86,6 +147,7 @@ impl SessionEnvironment {
     ) -> Result<(), pc::SandboxError> {
         match self {
             Self::Workdir(sandbox) => sandbox.provision_repo(logical, url, git_ref, token),
+            Self::Namespace(sandbox) => sandbox.provision_repo(logical, url, git_ref, token),
         }
     }
 
@@ -96,18 +158,21 @@ impl SessionEnvironment {
     ) -> Result<bool, pc::SandboxError> {
         match self {
             Self::Workdir(sandbox) => sandbox.push_repo(logical, token),
+            Self::Namespace(sandbox) => sandbox.push_repo(logical, token),
         }
     }
 
     pub(crate) fn list_files(&self, subdir: &str) -> Vec<(String, Vec<u8>)> {
         match self {
             Self::Workdir(sandbox) => sandbox.list_files(subdir),
+            Self::Namespace(sandbox) => sandbox.list_files(subdir),
         }
     }
 
     pub(crate) fn scan_skill_dir(&self, subdir: &str) -> Vec<DiscoveredSkillFile> {
         match self {
             Self::Workdir(sandbox) => sandbox.scan_skill_dir(subdir),
+            Self::Namespace(sandbox) => sandbox.scan_skill_dir(subdir),
         }
     }
 
@@ -118,6 +183,7 @@ impl SessionEnvironment {
     ) -> Result<(), pc::SandboxError> {
         match self {
             Self::Workdir(sandbox) => sandbox.materialize_inline(logical, contents),
+            Self::Namespace(sandbox) => sandbox.materialize_inline(logical, contents),
         }
     }
 
@@ -127,6 +193,7 @@ impl SessionEnvironment {
     ) -> Result<(Box<dyn pc::ProcessHandle>, Box<dyn AgentChannelType>), pc::SandboxError> {
         match self {
             Self::Workdir(sandbox) => sandbox.spawn_agent(command).await,
+            Self::Namespace(sandbox) => sandbox.spawn_agent(command).await,
         }
     }
 }
@@ -156,12 +223,14 @@ impl pc::Sandbox for SessionEnvironment {
     fn id(&self) -> &str {
         match self {
             Self::Workdir(sandbox) => pc::Sandbox::id(sandbox.as_ref()),
+            Self::Namespace(sandbox) => pc::Sandbox::id(sandbox.as_ref()),
         }
     }
 
     fn handle(&self) -> pc::SandboxHandle {
         match self {
             Self::Workdir(sandbox) => pc::Sandbox::handle(sandbox.as_ref()),
+            Self::Namespace(sandbox) => pc::Sandbox::handle(sandbox.as_ref()),
         }
     }
 
@@ -171,6 +240,7 @@ impl pc::Sandbox for SessionEnvironment {
     ) -> Result<Box<dyn pc::ProcessHandle>, pc::SandboxError> {
         match self {
             Self::Workdir(sandbox) => pc::Sandbox::spawn(sandbox.as_ref(), command).await,
+            Self::Namespace(sandbox) => pc::Sandbox::spawn(sandbox.as_ref(), command).await,
         }
     }
 
@@ -180,24 +250,28 @@ impl pc::Sandbox for SessionEnvironment {
     ) -> Result<pc::RealizedMount, pc::SandboxError> {
         match self {
             Self::Workdir(sandbox) => pc::Sandbox::attach(sandbox.as_ref(), requirement).await,
+            Self::Namespace(sandbox) => pc::Sandbox::attach(sandbox.as_ref(), requirement).await,
         }
     }
 
     async fn artifacts(&self) -> Result<Vec<pc::Artifact>, pc::SandboxError> {
         match self {
             Self::Workdir(sandbox) => pc::Sandbox::artifacts(sandbox.as_ref()).await,
+            Self::Namespace(sandbox) => pc::Sandbox::artifacts(sandbox.as_ref()).await,
         }
     }
 
     async fn read_artifact(&self, id: &str) -> Result<Vec<u8>, pc::SandboxError> {
         match self {
             Self::Workdir(sandbox) => pc::Sandbox::read_artifact(sandbox.as_ref(), id).await,
+            Self::Namespace(sandbox) => pc::Sandbox::read_artifact(sandbox.as_ref(), id).await,
         }
     }
 
     fn realized(&self) -> &[pc::RealizedMount] {
         match self {
             Self::Workdir(sandbox) => pc::Sandbox::realized(sandbox.as_ref()),
+            Self::Namespace(sandbox) => pc::Sandbox::realized(sandbox.as_ref()),
         }
     }
 
@@ -207,24 +281,28 @@ impl pc::Sandbox for SessionEnvironment {
     ) -> Result<Box<dyn pc::ProcessHandle>, pc::SandboxError> {
         match self {
             Self::Workdir(sandbox) => pc::Sandbox::process(sandbox.as_ref(), process_id).await,
+            Self::Namespace(sandbox) => pc::Sandbox::process(sandbox.as_ref(), process_id).await,
         }
     }
 
     async fn status(&self) -> Result<pc::SandboxStatus, pc::SandboxError> {
         match self {
             Self::Workdir(sandbox) => pc::Sandbox::status(sandbox.as_ref()).await,
+            Self::Namespace(sandbox) => pc::Sandbox::status(sandbox.as_ref()).await,
         }
     }
 
     async fn renew_lease(&self) -> Result<(), pc::SandboxError> {
         match self {
             Self::Workdir(sandbox) => pc::Sandbox::renew_lease(sandbox.as_ref()).await,
+            Self::Namespace(sandbox) => pc::Sandbox::renew_lease(sandbox.as_ref()).await,
         }
     }
 
     async fn dispose(&self) -> Result<(), pc::SandboxError> {
         match self {
             Self::Workdir(sandbox) => pc::Sandbox::dispose(sandbox.as_ref()).await,
+            Self::Namespace(sandbox) => pc::Sandbox::dispose(sandbox.as_ref()).await,
         }
     }
 }
@@ -233,9 +311,9 @@ impl pc::Sandbox for SessionEnvironment {
 mod tests {
     use super::*;
     use awaken_provisioning_contract::{
-        IsolationClass, NetworkPolicy, ResourceLimits, Sandbox, SandboxProvider, SandboxSpec,
+        IsolationClass, NetworkPolicy, ResourceLimits, Sandbox, SandboxSpec,
     };
-    use awaken_sandbox_local::LocalProvider;
+    use awaken_sandbox_local::{LocalProvider, NamespaceProvider};
     use tokio::io::AsyncReadExt;
 
     fn spec() -> SandboxSpec {
@@ -281,6 +359,36 @@ mod tests {
         channel.read_to_string(&mut output).await.unwrap();
         assert_eq!(agent.wait().await.unwrap().code, Some(0));
         assert_eq!(output, "shared-state");
+
+        environment.dispose().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn namespace_native_process_and_agent_channel_share_one_live_environment() {
+        let base = tempfile::tempdir().unwrap();
+        let mut namespace_spec = spec();
+        namespace_spec.scope = "session-namespace".into();
+        namespace_spec.isolation = IsolationClass::Namespace;
+        let namespace = NamespaceProvider::new(base.path())
+            .create_sandbox(&namespace_spec)
+            .await
+            .unwrap();
+        let environment = SessionEnvironment::namespace(namespace);
+        assert_eq!(environment.handle().provider_kind, "bwrap");
+
+        let mut native_command =
+            pc::Command::new(["/bin/sh", "-c", "printf namespace-state > marker"]);
+        native_command.cwd = "/workspace".into();
+        let native = environment.spawn(native_command).await.unwrap();
+        assert_eq!(native.wait().await.unwrap().code, Some(0));
+
+        let mut agent_command = pc::Command::new(["/bin/sh", "-c", "cat marker"]);
+        agent_command.cwd = "/workspace".into();
+        let (agent, mut channel) = environment.spawn_agent(agent_command).await.unwrap();
+        let mut output = String::new();
+        channel.read_to_string(&mut output).await.unwrap();
+        assert_eq!(agent.wait().await.unwrap().code, Some(0));
+        assert_eq!(output, "namespace-state");
 
         environment.dispose().await.unwrap();
     }

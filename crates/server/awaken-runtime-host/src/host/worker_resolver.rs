@@ -30,15 +30,16 @@ async fn adopt_bound_sandbox(
     expected_sandbox_id: &str,
     run_id: &RunId,
     recovery: awaken_run_ingress::WorkerRecoveryMode,
-) -> Result<(Option<LocalSandbox>, bool), awaken_run_ingress::Error> {
+) -> Result<(Option<crate::session_environment::SessionEnvironment>, bool), awaken_run_ingress::Error>
+{
     let Some(encoded) = encoded else {
         return Ok((None, false));
     };
     let handle = decode_binding(encoded, expected_sandbox_id, run_id)?;
     let adoption = async {
         let sandbox = host
-            .provider
-            .adopt_sandbox(&handle)
+            .session_provider
+            .adopt(&handle)
             .await
             .map_err(|e| HostWorkerResolver::execution_error(e.to_string()))?;
         if sandbox
@@ -91,7 +92,7 @@ impl HostWorkerResolver {
         thread_id: &awaken_agent_contract::agent::thread::Id,
         agent_id: Option<&str>,
         published_snapshot: Option<awaken_runtime_contract::ExecutableAgentSnapshot>,
-        sandbox: Option<LocalSandbox>,
+        sandbox: Option<crate::session_environment::SessionEnvironment>,
     ) -> Result<Arc<awaken_run_ingress::DispatchWorker<AnyDispatchStore>>, awaken_run_ingress::Error>
     {
         let agent = agent_id.filter(|a| !a.is_empty());

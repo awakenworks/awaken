@@ -20,7 +20,7 @@ use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::permission::ToolGateHook;
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
-use awaken_sandbox_local::{LocalProvider, LocalSandbox};
+use awaken_sandbox_local::LocalProvider;
 use awaken_skill_store::SkillVersion;
 
 /// The default workspace subdir the agent authors skills under, scanned live so a
@@ -33,7 +33,7 @@ const DELIVERED_SKILLS_SUBDIR: &str = ".skills";
 /// workspace skill dir live, returning neutral file data. The host owns this bridge
 /// so `awaken-ext-skills` stays sandbox-unaware and the root stays hidden.
 struct EnvSkillSource {
-    env: Arc<LocalSandbox>,
+    env: Arc<crate::session_environment::SessionEnvironment>,
     subdir: String,
 }
 
@@ -80,7 +80,7 @@ struct ForkAgentTool {
     model_ref: String,
     provider: LocalProvider,
     /// The parent agent's sandbox, shared with the fork by default.
-    sandbox: Arc<LocalSandbox>,
+    sandbox: Arc<crate::session_environment::SessionEnvironment>,
     /// Reuse the parent sandbox (default) vs. a fresh, isolated one.
     reuse_sandbox: bool,
 }
@@ -99,7 +99,7 @@ impl RawTool for ForkAgentTool {
         // port surfaces only the reply text).
         let name = format!("skill-{}", request.agent_id);
         let sandbox = if self.reuse_sandbox {
-            crate::agent_runner::AgentRunSandbox::Shared(&self.sandbox)
+            crate::agent_runner::AgentRunSandbox::Shared(self.sandbox.as_ref())
         } else {
             crate::agent_runner::AgentRunSandbox::Fresh(&self.provider)
         };
@@ -142,7 +142,7 @@ pub(crate) struct SkillWiring {
 pub(crate) fn wire_skills(
     configured: &[SkillSpec],
     delivered: Option<Vec<SkillVersion>>,
-    env: Arc<LocalSandbox>,
+    env: Arc<crate::session_environment::SessionEnvironment>,
     llm: Arc<dyn LlmExecutor>,
     model_ref: &str,
     session_id: &str,
@@ -329,12 +329,12 @@ mod tests {
         // tagged AgentCreated (ADR-0036 D6/D8), without rebuilding or exposing root.
         let base = std::env::temp_dir().join(format!("awaken-authored-{}", std::process::id()));
         let provider = LocalProvider::new(&base);
-        let env = Arc::new(
+        let env = Arc::new(crate::session_environment::SessionEnvironment::workdir(
             provider
                 .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("t"))
                 .await
                 .unwrap(),
-        );
+        ));
 
         let registry = SourceSkillRegistry::new(
             Arc::new(EnvSkillSource {
@@ -370,12 +370,12 @@ mod tests {
         // `plugin_config.skills_dir`) is discovered there — the dir is not hardcoded.
         let base = std::env::temp_dir().join(format!("awaken-skilldir-{}", std::process::id()));
         std::fs::remove_dir_all(&base).ok();
-        let env = Arc::new(
+        let env = Arc::new(crate::session_environment::SessionEnvironment::workdir(
             LocalProvider::new(&base)
                 .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("t"))
                 .await
                 .unwrap(),
-        );
+        ));
         let registry = SourceSkillRegistry::new(
             Arc::new(EnvSkillSource {
                 env: env.clone(),

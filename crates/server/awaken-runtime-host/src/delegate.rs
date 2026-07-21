@@ -19,7 +19,7 @@ use awaken_runtime_contract::delegation::{
 };
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::resume::ResumeResult;
-use awaken_sandbox_local::{LocalProvider, LocalSandbox};
+use awaken_sandbox_local::LocalProvider;
 
 use crate::agent_runner::{AgentRunBoundary, AgentRunSandbox, ChildRunRequest, RunScheduler};
 use serde_json::Value;
@@ -116,7 +116,7 @@ pub(crate) struct HostRunDelegationService {
     provider: Arc<LocalProvider>,
     /// The parent agent's sandbox, shared with a native delegate by default so the two
     /// collaborate in one workspace (`默认共用`); bypassed when `reuse_sandbox` is off.
-    sandbox: Arc<LocalSandbox>,
+    sandbox: Arc<crate::session_environment::SessionEnvironment>,
     /// Whether a native delegate reuses the parent sandbox (default) or gets a fresh,
     /// isolated one. Sandbox placement does not change child Run semantics.
     reuse_sandbox: bool,
@@ -133,7 +133,7 @@ impl HostRunDelegationService {
         llm: Arc<dyn LlmExecutor>,
         model_ref: String,
         provider: Arc<LocalProvider>,
-        sandbox: Arc<LocalSandbox>,
+        sandbox: Arc<crate::session_environment::SessionEnvironment>,
         reuse_sandbox: bool,
         delegates: Delegates,
         scheduler: Option<RunScheduler>,
@@ -175,7 +175,7 @@ impl HostRunDelegationService {
         context: awaken_runtime_contract::runtime_context::RuntimeRunContext,
     ) -> Result<DelegationStep, DelegationExecutionError> {
         let sandbox = if self.reuse_sandbox {
-            AgentRunSandbox::Shared(&self.sandbox)
+            AgentRunSandbox::Shared(self.sandbox.as_ref())
         } else {
             AgentRunSandbox::Fresh(&self.provider)
         };
@@ -429,12 +429,12 @@ mod durable_cancel_tests {
     async fn replacement_process_cancels_an_awaiting_native_child_idempotently() {
         let root = tempfile::tempdir().expect("sandbox root");
         let provider = Arc::new(LocalProvider::new(root.path()));
-        let sandbox = Arc::new(
+        let sandbox = Arc::new(crate::session_environment::SessionEnvironment::workdir(
             provider
                 .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("parent"))
                 .await
                 .expect("parent sandbox"),
-        );
+        ));
         let store = Arc::new(
             AnyDispatchStore::open_sqlite_in_memory().expect("durable child dispatch store"),
         );
