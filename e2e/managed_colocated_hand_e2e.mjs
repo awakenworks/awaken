@@ -112,6 +112,18 @@ async function exerciseStdioHand(handBin) {
   assert.match(JSON.stringify(reply.result.output), /STDIO-HAND-OK/);
 }
 
+async function rejectInvalidHandArgs(handBin) {
+  const child = spawn(handBin, ['hand', '--invalid'], { stdio: ['ignore', 'ignore', 'pipe'] });
+  let stderr = '';
+  child.stderr.on('data', (chunk) => (stderr += chunk));
+  const exit = await new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('exit', (code, signal) => resolve({ code, signal }));
+  });
+  assert.notEqual(exit.code, 0, `invalid hand arguments fail: ${JSON.stringify(exit)}`);
+  assert.match(stderr, /hand requires `--stdio`/);
+}
+
 async function listEvents(client, sessionId) {
   const events = [];
   for await (const ev of client.beta.sessions.events.list(sessionId, { betas: BETAS })) events.push(ev);
@@ -179,6 +191,8 @@ async function main() {
     });
     await exerciseStdioHand(handBin);
     console.log('  ok: the same execution-plane hand served a framed tool call over stdio');
+    await rejectInvalidHandArgs(handBin);
+    console.log('  ok: invalid hand transport arguments fail closed before serving');
   } finally {
     delete process.env.AWAKEN_REMOTE_HAND_UNIX;
     hand.kill('SIGINT');
