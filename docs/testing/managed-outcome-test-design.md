@@ -21,6 +21,9 @@ not inferred from conversational prose.
 | syntax/negative partition | prose-wrapped, missing, empty, unknown-field Grade JSON | strict parser rejects | `awaken-ext-goal` and Host tests |
 | recovery transition | crash after committed Worker Run | stable Run is reused without another inference | `outcome_controller` restart test |
 | concurrency/stale write | stale aggregate version under the Session owner | transition rejected; evaluation not duplicated | `outcome_state` version-guard tests |
+| interruption phase | Worker / Judge / final acknowledgment in flight | terminal `interrupted`; no later Grade | `managed_outcome_recovery_e2e.ts` |
+| Judge decision/schema | terminal `failed` / malformed JSON | failed evaluation / fail-closed stable error | `managed_outcome_recovery_e2e.ts` |
+| crash boundary | SIGKILL after Worker commit, during Judge inference | recover Judge; never repeat committed Worker | `managed_outcome_recovery_e2e.ts` |
 | command transition | interrupt in live phase and repeat after terminal | first wins, terminal state is idempotent | Outcome domain and Host interrupt tests |
 
 The backend matrix is exhaustive rather than pairwise-reduced because two binary
