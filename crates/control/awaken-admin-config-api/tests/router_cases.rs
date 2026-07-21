@@ -587,3 +587,28 @@ async fn oauth_credentials_accept_only_the_allowlisted_gcloud_helper() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{problem}");
     assert_eq!(problem["code"], "credential_invalid");
 }
+
+/// Agent input bindings are a versioned aggregate resolved at Session creation.
+/// Invalid revisions fail at the write boundary and never enter the repository.
+#[tokio::test]
+async fn agent_input_bindings_reject_non_positive_versions() {
+    let h = harness();
+    for version in [-1, 0] {
+        let (status, problem) = call(
+            &h.app,
+            "PUT",
+            "/v1/config/agents/agent-1/resources",
+            Some(json!({
+                "agent_id": "ignored-body-id",
+                "resources": [],
+                "version": version
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{problem}");
+        assert_eq!(problem["code"], "invalid_request");
+    }
+
+    let (status, problem) = call(&h.app, "GET", "/v1/config/agents/agent-1/resources", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{problem}");
+}

@@ -21,7 +21,9 @@ use tokio::process::Command as TokioCommand;
 
 use std::sync::Arc;
 
-use crate::provider::{LocalProcess, resolve_source, restrict_to_owner, verify};
+use crate::provider::{
+    LocalProcess, materialize_read_only_tree_at, resolve_source, restrict_to_owner, verify,
+};
 use crate::{
     DiscoveredSkillFile, IsolatedRoot, content_fingerprint, jailed_at, list_files_at,
     namespace_raw_tools, provision_repo_at, push_repo_at, scan_skill_dir_at,
@@ -499,6 +501,15 @@ pub struct NamespaceSandbox {
 }
 
 impl NamespaceSandbox {
+    /// Materialize an immutable runtime-owned tree through the shared lexical jail.
+    pub fn materialize_read_only_tree(
+        &self,
+        subdir: &str,
+        files: &[(String, Vec<u8>)],
+    ) -> Result<(), pc::SandboxError> {
+        materialize_read_only_tree_at(&self.root, subdir, files)
+    }
+
     /// Tear down every live memory mount (harvest a copy / unmount a FUSE), draining
     /// the guard list so a later dispose is a no-op.
     pub async fn release_memory_mounts(&self) {
