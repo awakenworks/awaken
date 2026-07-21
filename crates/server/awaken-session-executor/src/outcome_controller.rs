@@ -277,7 +277,11 @@ impl SharedHost {
         kind: WorkerRunKind,
         run_id: awaken_agent_contract::agent::run::Id,
     ) -> Result<WorkerExecution, HostError> {
-        if let Some(state) = ctx.commit.run_state(&run_id) {
+        // Reuse only a settled Run. `Running` may be the durable start fact left
+        // by a killed process; redrive that same stable id to finish it.
+        if let Some(state) = ctx.commit.run_state(&run_id)
+            && state != RunState::Running
+        {
             let transcript = ctx.commit.committed_messages(&ctx.thread_id);
             let input_id = worker_input_id(&aggregate.state.outcome_id, iteration);
             let message_start = transcript
@@ -341,7 +345,9 @@ impl SharedHost {
         aggregate: &Aggregate,
         run_id: awaken_agent_contract::agent::run::Id,
     ) -> Result<RunState, HostError> {
-        if let Some(state) = ctx.commit.run_state(&run_id) {
+        if let Some(state) = ctx.commit.run_state(&run_id)
+            && state != RunState::Running
+        {
             return Ok(state);
         }
         self.execute_snapshot(
