@@ -113,7 +113,7 @@ Anthropic Outcome is a product specialization:
 
 | Product concept | Neutral mapping |
 |---|---|
-| `user.define_outcome` | `GoalSpec` / thread-scoped goal state |
+| `user.define_outcome` | `outcome::Definition` / durable Worker Thread Outcome state |
 | outcome evaluation span | continuation verdict fact / trace projection |
 | `satisfied`, `needs_revision`, etc. | product mapping of opaque `GoalOutcome` detail |
 | max iterations | goal extension policy and runtime backstop |

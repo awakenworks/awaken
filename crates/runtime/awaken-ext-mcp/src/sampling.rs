@@ -56,7 +56,7 @@ pub struct SamplingError(pub String);
 
 /// Runs one model completion for a server-initiated `sampling/createMessage`.
 /// The host implements this over the runtime's model, keeping this crate free of
-/// a kernel dependency (the same inversion `awaken-ext-goal` uses for its judge).
+/// a kernel dependency (the same inversion used by Runtime Host auxiliary agents).
 #[async_trait]
 pub trait SamplingHandler: Send + Sync {
     async fn create_message(

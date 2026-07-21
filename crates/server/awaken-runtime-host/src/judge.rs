@@ -1,11 +1,8 @@
-//! The goal judge as an ordinary, configurable agent.
+//! Outcome Judge Agent execution and the shared auxiliary Agent tool.
 //!
-//! The outcome loop (`awaken-ext-goal`) grades a deliverable through a
-//! `DelegateRunner`; here that runner resolves a `judge` entry from an
-//! [`AgentCatalog`] and runs it through the shared Agent Run substrate, exactly like
-//! the memory and compact agents. So the judge's model, instructions, and window
-//! are configured per-agent rather than hard-coded — the same "just an agent"
-//! substrate, now covering evaluation too.
+//! The Runtime Host resolves a pinned Judge snapshot and executes it through the
+//! same backend-neutral Run boundary as a Worker. Compaction and memory selection
+//! still use the ordinary auxiliary-Agent tool below.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -53,14 +50,12 @@ pub fn default_judge_agent(
 /// Direct Agent-backed Grader. It executes the pinned Judge snapshot through the
 /// same backend-neutral Run boundary as a user turn, on a deterministic fresh
 /// Thread, then strictly parses the complete final assistant reply.
-#[allow(dead_code)] // Constructed by OutcomeController in ADR-0064 P5.
 pub(crate) struct AgentGrader<'a> {
     pub(crate) host: &'a SharedHost,
     pub(crate) snapshot: &'a ExecutableAgentSnapshot,
     pub(crate) worker_context: &'a SessionCtx,
 }
 
-#[allow(dead_code)] // Called by AgentGrader once P5 wires the controller.
 fn grading_prompt(input: &GradingInput) -> Result<String, OutcomeGraderError> {
     serde_json::to_string(input)
         .map(|payload| {
@@ -141,23 +136,20 @@ impl OutcomeGrader for AgentGrader<'_> {
     }
 }
 
-/// Ordinary Agent-backed tool used by the judge, compactor, and memory selector.
+/// Ordinary Agent-backed tool used by the compactor and memory selector.
 /// A developer can provide another `RawTool` with the same `AgentRunArgs` shape;
 /// no subagent-specific Runtime contract exists.
-/// over the same model, driven to completion; its last assistant line is the
-/// judge's reply. The judge sees only its prompt (a fresh window), so its
-/// verdict is not biased by the doer's working state.
-pub(crate) struct HostAgentTool {
+pub(crate) struct AuxAgentTool {
     pub(crate) llm: Arc<dyn LlmExecutor>,
     pub(crate) provider: LocalProvider,
-    /// Aux agents (judge, and — as D5 lands — compactor/memory) are resolved by id
-    /// from here, so their model/instructions/window are configured per-agent.
+    /// Compactor and memory agents are resolved by id from here, so their
+    /// model/instructions/window are configured per-agent.
     pub(crate) catalog: Arc<AgentCatalog>,
     pub(crate) seq: AtomicU64,
 }
 
 #[async_trait::async_trait]
-impl RawTool for HostAgentTool {
+impl RawTool for AuxAgentTool {
     fn id(&self) -> &str {
         AGENT_RUN
     }
@@ -167,8 +159,8 @@ impl RawTool for HostAgentTool {
             .map_err(|error| ToolError::InvalidArguments(error.to_string()))?;
         let n = self.seq.fetch_add(1, Ordering::SeqCst);
         let name = format!("{}-agent-run-{n}", request.agent_id);
-        // Every sub-run behind this port is out-of-band housekeeping (judge,
-        // compaction, memory selection), not the doer's turn — its usage stays
+        // Every sub-run behind this port is out-of-band housekeeping (compaction
+        // or memory selection), not the Worker's turn — its usage stays
         // isolated on its own sub-thread rather than folding into the parent tally.
         let (text, _usage) = crate::agent_runner::run_configured_agent(
             &self.catalog,

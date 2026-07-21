@@ -63,7 +63,7 @@ placement-, and scheduling-agnostic ([ADR-0034](../adr/0034-runtime-axis-model-a
 | `awaken-ext-builtin-tools` | `bash`/`read`/`write`/`edit`/`glob`/`grep` as in-process `RawTool`s | ✅ |
 | relay `RawTool` | a `RawTool` whose `invoke` speaks MCP to this environment's relay; the kernel sees an ordinary tool | 🔨 |
 | `awaken-ext-permission` | Claude-Code-style rules; a **client-executed tool is a suspending gate** | ✅ (client-tool gate 🔨) |
-| `awaken-ext-goal` | `GoalSpec`, grader child-run, `GoalOutcome`; drives an **above-kernel** re-dispatch loop | 🔨 |
+| `awaken-ext-goal` | Pure Outcome definition, lifecycle, grading input, and decisions; Runtime Host drives the **above-kernel** Run loop | 🔨 |
 
 ### E — Sandbox / tool relay (host composition; `awaken-sandbox-*`, `awaken-mcp-relay`) 🔨
 
@@ -95,7 +95,7 @@ feature.
 | Component | Owns |
 |---|---|
 | 3 endpoints (`events` POST / GET / stream) | the only layer that names Anthropic / `managed` vocabulary |
-| inbound mapping | public event → `RunActivation` / `ResumeCommand` / `GoalSpec` / `LiveCommand` |
+| inbound mapping | public event → `RunActivation` / `ResumeCommand` / `outcome::Definition` / `LiveCommand` |
 | outbound projection | committed `EventRecord` → public SSE event |
 | public-id ledger | `evt_*` / `toolu_*` ⇄ neutral `correlation_id` |
 
@@ -143,7 +143,7 @@ and [protocol-adapter-boundaries.md](protocol-adapter-boundaries.md).
    adapter project_event -> SSE: agent.message / agent.tool_* / session.status_idle{stop_reason}
 
 ⑥ outcome (above-kernel re-dispatch; no in-kernel guard)
-   user.define_outcome -> GoalSpec (thread-scoped)
+   user.define_outcome -> outcome::Definition (thread-scoped)
    a run terminates -> above-kernel coordinator reads committed facts -> grader child-run scores
       -> needs_revision: re-dispatch a round with feedback (bounded by max_iterations)
       -> satisfied/exhausted: project span.outcome_evaluation_* + status_idle

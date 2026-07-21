@@ -174,7 +174,6 @@ impl SharedHost {
             session_provider: crate::session_environment::SessionEnvironmentProvider::workdir(
                 sandbox_root.clone(),
             ),
-            grader: Arc::new(KeywordGrader),
             judge_snapshot: None,
             client_tools: HashSet::new(),
             local_workspace: local_workspace.clone(),
@@ -524,15 +523,7 @@ impl SharedHost {
     pub fn with_judge(mut self, judge_agent_id: impl Into<String>) -> Self {
         let id = judge_agent_id.into();
         let snapshot = default_judge_agent(&self.model_ref, &id, DEFAULT_JUDGE_INSTRUCTIONS);
-        self.judge_snapshot = Some(snapshot.clone());
-        let catalog = Arc::new(AgentCatalog::new().with_agent(snapshot));
-        let agent_tool = Arc::new(HostAgentTool {
-            llm: self.llm.clone(),
-            provider: LocalProvider::new(sub_base("judge")),
-            catalog,
-            seq: AtomicU64::new(0),
-        });
-        self.grader = Arc::new(AgentToolGrader::new(agent_tool, id));
+        self.judge_snapshot = Some(snapshot);
         self
     }
 

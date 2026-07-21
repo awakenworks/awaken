@@ -5,7 +5,7 @@
 //! as request-only context — lives in `awaken-ext-compact` (a bounded context).
 //! This module wires that onto the host's aux-agent substrate: [`compact_runner`]
 //! builds an ordinary Agent-backed tool over the `compactor` Agent,
-//! also used by the goal judge). The plugin seeds it with the older slice at
+//! also used by memory selection). The plugin seeds it with the older slice at
 //! `BeforeInference` (once per run, cached), the same shape as memory's
 //! [`AgentSelector`](crate::memory::AgentSelector).
 //!
@@ -23,7 +23,7 @@ use awaken_runtime_contract::tool::RawTool;
 use awaken_sandbox_local::LocalProvider;
 
 use crate::agent_catalog::AgentCatalog;
-use crate::judge::HostAgentTool;
+use crate::judge::AuxAgentTool;
 
 // The config pieces the host wires (registering the default compactor agent).
 pub use awaken_ext_compact::{DEFAULT_COMPACT_INSTRUCTIONS, default_compact_agent};
@@ -50,7 +50,7 @@ pub(crate) fn compact_runner(llm: Arc<dyn LlmExecutor>, model_ref: &str) -> Arc<
     let base = std::env::temp_dir()
         .join("awaken-server")
         .join(format!("{}-compact", std::process::id()));
-    Arc::new(HostAgentTool {
+    Arc::new(AuxAgentTool {
         llm,
         provider: LocalProvider::new(base),
         catalog,

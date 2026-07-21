@@ -25,7 +25,6 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
-use awaken_ext_goal::{AgentToolGrader, Grader, KeywordGrader};
 use awaken_ext_skills::{SkillRegistry, SkillSpec};
 use awaken_file_store::FileStore;
 use awaken_run_ingress::{
@@ -91,7 +90,6 @@ pub(crate) fn now_ms() -> u64 {
 
 pub use crate::mcp::PreparedMcpServer;
 
-use crate::judge::HostAgentTool;
 use crate::provisioning::StagedResources;
 
 mod build;
@@ -139,7 +137,6 @@ pub struct SharedHost {
     /// Provider for the Session-owned environment shared by Native/ACP/children.
     /// Kept separate from deliberately-fresh housekeeping sandboxes.
     pub(crate) session_provider: crate::session_environment::SessionEnvironmentProvider,
-    grader: Arc<dyn Grader>,
     pub(crate) judge_snapshot: Option<ExecutableAgentSnapshot>,
     pub(crate) client_tools: HashSet<String>,
     /// The skill offering (ADR-0036): the static configured set, the optional durable
