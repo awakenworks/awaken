@@ -24,7 +24,9 @@ pub mod mounter;
 #[cfg(feature = "fuse")]
 pub use coordinator::FuseMountFactory;
 pub use coordinator::{Mount, MountCoordinator, MountFactory};
-pub use copy::{fuse_available, harvest, materialize};
+pub use copy::{
+    CopySnapshot, HarvestConflict, HarvestReport, fuse_available, harvest, materialize,
+};
 #[cfg(feature = "fuse")]
 pub use fuse::{spawn_mount, spawn_mount_with_invalidations};
 pub use invalidate::{InvalidatingMemoryFs, Invalidation, Invalidator, LocalInvalidator};

@@ -1,13 +1,13 @@
 // Memory_store RESOURCE durability across a real process restart (ADR-0038).
 //
 // The ADR-0038 MemoryStore family gives a session a stable, mutable id it mounts
-// read-write: the agent edits the realized file and the host harvests the write
-// back under the same id, so a memory written in one session is visible to the
+// read-write: the agent edits the realized file and the MemoryMount guard reconciles
+// the copy at Session release under the same id, so a memory written in one session is visible to the
 // next. This test proves that write-back is *durable* — it must survive the server
 // process dying, not just live in one process's heap.
 //
 // Flow: create a memory store, run a session whose deterministic model writes a
-// marker into the mount (harvested on turn end), assert the `/memories` content
+// marker into the mount, release the Session, assert the `/memories` content
 // reflects it, then KILL the server and start a fresh one over the SAME storage
 // dir. The marker must still be there. A purely in-memory store loses it on
 // restart — that is the completeness gap this test exists to catch.
@@ -37,7 +37,7 @@ const listEvents = async (sid) => {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Approve every gated (`ask`) tool call not yet approved — `write` parks for a
-// confirmation, so releasing it lets the harvest run.
+// confirmation, so releasing it lets the turn complete before Session release.
 async function approveGated(sid, evs, approved) {
   for (const e of evs) {
     if (e.type === 'agent.tool_use' && e.evaluated_permission === 'ask' && !approved.has(e.id)) {
@@ -59,24 +59,13 @@ async function memContent(id) {
   }
 }
 
-// `GET /v1/files?scope_id=<session>` is the reverse-channel trigger: it harvests a
-// session's read-write memory mounts back into their stores before listing output
-// artifacts. Poking it forces the write-back to run.
-async function harvest(sid) {
-  try {
-    await client.get(`/v1/files?scope_id=${sid}`);
-  } catch {
-    /* ignore */
-  }
-}
-
 async function main() {
   fs.rmSync(STORE_DIR, { recursive: true, force: true });
   fs.mkdirSync(STORE_DIR, { recursive: true });
   const servers = [];
   const upstream = await startUpstream('memoryResource');
   try {
-    // ---- server A: write into a mounted memory store; host harvests it ----
+    // ---- server A: write into a mounted memory store; release reconciles it ----
     const a = spawnServer('memory-resource', PORT, { AWAKEN_STORAGE_DIR: STORE_DIR, ...realServerEnv('memoryResource', upstream, { mode: 'memory-resource' }) });
     servers.push(a.server);
     await waitForPort(PORT);
@@ -95,21 +84,29 @@ async function main() {
       betas: BETAS,
     });
 
-    // Drive the write -> approve -> harvest loop until the store reflects the marker.
+    // Drive write -> approval until the turn completes, then release the mount once.
     const approved = new Set();
-    let harvested = '';
+    let completed = false;
     for (let i = 0; i < 40; i += 1) {
       await sleep(400);
-      await approveGated(session.id, await listEvents(session.id), approved);
-      await harvest(session.id);
+      const events = await listEvents(session.id);
+      await approveGated(session.id, events, approved);
+      completed = events.some((event) => event.type === 'agent.message');
+      if (completed) break;
+    }
+    assert.ok(completed, 'the memory-writing turn completed');
+    await client.beta.sessions.delete(session.id, { betas: BETAS });
+    let harvested = '';
+    for (let i = 0; i < 20; i += 1) {
       harvested = await memContent(mem.id);
       if (harvested.includes(MARKER)) break;
+      await sleep(200);
     }
     assert.ok(
       harvested.includes(MARKER),
       `server A harvested the write into the memory store: ${JSON.stringify(harvested)}`,
     );
-    pass('write -> harvest landed the marker in the memory store (pre-restart)');
+    pass('Session release reconciled the Memory mount into the store (pre-restart)');
 
     // ---- restart: kill A, start B over the SAME storage dir ----
     await stopServer(a.server);

@@ -101,7 +101,7 @@ impl MemoryMounter for MemoryStoreMounter {
 
         // No FUSE (macOS / CI / unprivileged container): copy the store out now and
         // harvest a writable mount back on teardown.
-        copy::materialize(&*self.fs, store_id, host_path)
+        let snapshot = copy::materialize(&*self.fs, store_id, host_path)
             .await
             .map_err(sandbox_err)?;
         Ok(Box::new(CopyMount {
@@ -109,6 +109,7 @@ impl MemoryMounter for MemoryStoreMounter {
             store_id: store_id.to_string(),
             host_path: host_path.to_path_buf(),
             writable: access == MountAccess::ReadWrite,
+            snapshot,
         }))
     }
 }
@@ -140,6 +141,7 @@ struct CopyMount {
     store_id: String,
     host_path: PathBuf,
     writable: bool,
+    snapshot: copy::CopySnapshot,
 }
 
 #[async_trait::async_trait]
@@ -149,10 +151,19 @@ impl MemoryMount for CopyMount {
     }
 
     async fn teardown(self: Box<Self>) {
-        if self.writable
-            && let Err(e) = copy::harvest(&*self.fs, &self.store_id, &self.host_path).await
-        {
-            tracing::warn!(store = %self.store_id, error = %e, "memory copy harvest failed");
+        if self.writable {
+            let mut snapshot = self.snapshot;
+            match copy::harvest(&*self.fs, &self.store_id, &self.host_path, &mut snapshot).await {
+                Ok(report) if !report.conflicts.is_empty() => tracing::warn!(
+                    store = %self.store_id,
+                    conflicts = ?report.conflicts,
+                    "memory copy harvest preserved concurrent durable heads"
+                ),
+                Err(error) => {
+                    tracing::warn!(store = %self.store_id, %error, "memory copy harvest failed");
+                }
+                Ok(_) => {}
+            }
         }
     }
 }
@@ -181,7 +192,7 @@ mod tests {
         let mounter = MemoryStoreMounter::new(durable.clone());
         let dir = temp("copy");
 
-        copy::materialize(&*mounter.fs, "s", &dir).await.unwrap();
+        let snapshot = copy::materialize(&*mounter.fs, "s", &dir).await.unwrap();
         assert_eq!(std::fs::read_to_string(dir.join("note.md")).unwrap(), "v1");
 
         // Agent edits the file; the writable copy guard harvests it back.
@@ -191,6 +202,7 @@ mod tests {
             store_id: "s".into(),
             host_path: dir.clone(),
             writable: true,
+            snapshot,
         });
         assert_eq!(guard.realization(), Realization::Copy);
         guard.teardown().await;
@@ -215,7 +227,7 @@ mod tests {
         durable.create("s", "/note.md", "v1").await.unwrap();
         let mounter = MemoryStoreMounter::new(durable.clone());
         let dir = temp("ro");
-        copy::materialize(&*mounter.fs, "s", &dir).await.unwrap();
+        let snapshot = copy::materialize(&*mounter.fs, "s", &dir).await.unwrap();
 
         // A read-only edit on disk must NOT propagate back.
         std::fs::write(dir.join("note.md"), "tampered").unwrap();
@@ -224,6 +236,7 @@ mod tests {
             store_id: "s".into(),
             host_path: dir.clone(),
             writable: false,
+            snapshot,
         });
         guard.teardown().await;
 

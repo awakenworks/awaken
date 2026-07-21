@@ -137,20 +137,29 @@ pub async fn serve_copy(
     mount_path: &std::path::Path,
     shutdown: impl Future<Output = ()>,
 ) -> Result<(), String> {
-    let written = materialize(fs, store_id, mount_path)
+    let mut snapshot = materialize(fs, store_id, mount_path)
         .await
         .map_err(|e| format!("materialize store {store_id}: {e}"))?;
+    let written = snapshot.len();
     eprintln!(
         "awaken-sandbox memoryd: materialized {written} memories of store {store_id} to {} (copy mode)",
         mount_path.display()
     );
     shutdown.await;
-    let changed = harvest(fs, store_id, mount_path)
+    let report = harvest(fs, store_id, mount_path, &mut snapshot)
         .await
         .map_err(|e| format!("harvest store {store_id}: {e}"))?;
     eprintln!(
-        "awaken-sandbox memoryd: harvested {changed} changed memories back to store {store_id}"
+        "awaken-sandbox memoryd: harvested {} changed memories back to store {store_id}",
+        report.changed
     );
+    if !report.conflicts.is_empty() {
+        eprintln!(
+            "awaken-sandbox memoryd: preserved {} concurrent durable heads: {:?}",
+            report.conflicts.len(),
+            report.conflicts
+        );
+    }
     Ok(())
 }
 

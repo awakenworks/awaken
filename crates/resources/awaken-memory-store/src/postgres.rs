@@ -523,6 +523,63 @@ impl MemoryFs for PgMemoryFs {
         Ok(())
     }
 
+    async fn delete_if_match(
+        &self,
+        store: &str,
+        path: &str,
+        base_id: &str,
+        base_sha: &str,
+    ) -> Result<bool, MemErr> {
+        let mut tx = self.pool.begin().await.map_err(mem_err)?;
+        let row = sqlx::query(&format!(
+            "SELECT id, content, sha, version, created, updated FROM {NS}_memories \
+             WHERE store_id = $1 AND path = $2 FOR UPDATE"
+        ))
+        .bind(store)
+        .bind(path)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(mem_err)?;
+        let Some(row) = row else {
+            return Ok(false);
+        };
+        let id: String = row.get("id");
+        let sha: String = row.get("sha");
+        if id != base_id || sha != base_sha {
+            return Err(MemErr::Conflict {
+                current: Box::new(to_memory(
+                    id,
+                    path.to_string(),
+                    row.get("content"),
+                    sha,
+                    row.get("version"),
+                    row.get("created"),
+                    row.get("updated"),
+                )?),
+            });
+        }
+        sqlx::query(&format!(
+            "DELETE FROM {NS}_memories WHERE store_id = $1 AND path = $2"
+        ))
+        .bind(store)
+        .bind(path)
+        .execute(&mut *tx)
+        .await
+        .map_err(mem_err)?;
+        append_version(
+            &mut tx,
+            store,
+            base_id,
+            MemoryVersionOperation::Deleted,
+            path,
+            None,
+            now_nanos() as i64,
+        )
+        .await?;
+        tx.commit().await.map_err(mem_err)?;
+        Ok(true)
+    }
+
     async fn list_versions(&self, store: &str) -> Result<Vec<MemoryVersion>, MemErr> {
         sqlx::query(&format!(
             "SELECT id, memory_id, operation, path, content, created, redacted \

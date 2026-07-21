@@ -272,7 +272,7 @@ impl ManagedState {
         }
         // Sole composition/resolution point. Runtime receives this persisted,
         // secret-free manifest and never re-opens Agent or Resource config stores.
-        let mut effective_inputs = match self.resource_catalog.as_deref() {
+        let mut resolved_resources = match self.resource_catalog.as_deref() {
             Some(catalog) => awaken_session_contract::SessionInputResolver::resolve_inputs(
                 &owner_scope,
                 catalog,
@@ -288,14 +288,14 @@ impl ManagedState {
         }
         .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
         if let Some(view) = &config_view {
-            effective_inputs.skills = Some(
+            resolved_resources.skills = Some(
                 self.runtime
                     .resolve_session_skills(&owner_scope, &view.skill_ids)
                     .await
                     .map_err(StateError::Run)?,
             );
         }
-        let resource_dtos: Vec<serde_json::Value> = effective_inputs
+        let resource_dtos: Vec<serde_json::Value> = resolved_resources
             .inputs
             .iter()
             .map(|input| resolved_resource_dto(&id, input))
@@ -314,14 +314,51 @@ impl ManagedState {
             ),
             None => (false, None),
         };
-        self.runtime
+        // Validate the advertised tool surface before persisting an activation or
+        // touching a Host. A definition error cannot strand Prepared resources.
+        let caps = self.runtime.capabilities_for(&id);
+        for tool in &caps.custom_tools {
+            project::validate_custom_tool(tool)
+                .map_err(|msg| StateError::Run(RunError::bad_request(msg)))?;
+        }
+        let resolved_model = selected_model
+            .clone()
+            .unwrap_or_else(|| ModelConfig::new(self.runtime.model()));
+        let mut durable_resources = awaken_session_contract::SessionResourceState::default();
+        durable_resources
+            .prepare(&id, resolved_resources.clone())
+            .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
+        durable_resources
+            .start_attempt()
+            .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
+        let mut persisted = PersistedSession {
+            session_id: id.clone(),
+            agent_id: agent_id.clone(),
+            model: resolved_model.id.clone(),
+            title: req.title.clone(),
+            metadata: req.metadata.clone(),
+            environment_id: environment_id.clone(),
+            mcp_servers: effective_mcp_servers
+                .iter()
+                .map(|server| serde_json::to_value(server).expect("mcp server wire serializes"))
+                .collect(),
+            resources: durable_resources,
+            status: "preparing".to_string(),
+            archived_at: None,
+        };
+        // The activation intent and owner fence commit before Host/worker IO.
+        self.sessions_repo
+            .save_owned(&owner_scope, persisted.clone())
+            .await;
+        if let Err(error) = self
+            .runtime
             .prepare_session(
                 &id,
                 SessionInit {
                     workspace_id: owner_scope.clone(),
                     agent_id: agent_id.clone(),
                     mcp_servers: bindings,
-                    resources: effective_inputs.clone(),
+                    resources: resolved_resources.clone(),
                     model: selected_model.as_ref().map(|m| m.id.clone()),
                     runtime: req.awaken_runtime().map(str::to_string),
                     deny_egress,
@@ -329,29 +366,26 @@ impl ManagedState {
                 },
             )
             .await
-            .map_err(StateError::Run)?;
-        // A session assigned to a self-hosted environment is dispatched through that
-        // environment's work queue — the control plane enqueues it as `session` work
-        // for an external worker to claim and run (the session still exists here; the
-        // work item is how a polling worker discovers and drives it).
-        if let Some(envs) = self.environments.as_ref()
-            && envs.is_self_hosted(&environment_id).await
         {
-            envs.enqueue_session_work(&environment_id, &id).await;
+            persisted.status = "activation_failed".to_string();
+            persisted
+                .resources
+                .note_retryable_failure(error.to_string())
+                .map_err(|state_error| {
+                    StateError::Run(RunError::internal(state_error.to_string()))
+                })?;
+            self.sessions_repo
+                .save_owned(&owner_scope, persisted.clone())
+                .await;
+            self.release_terminal_resources(&id, Some(&owner_scope), &[])
+                .await;
+            return Err(StateError::Run(error));
         }
-        // Enumerate the runtime's provisioned surface so the agent object reports what
-        // the run can actually do (built-in toolset, custom tools, skills, delegates),
-        // not an empty set. The wire shaping lives in `project`; the host supplies
-        // neutral data.
-        let caps = self.runtime.capabilities_for(&id);
-        // Fail closed on a custom tool the real Managed API would reject at
-        // definition time (charset / reserved `mcp__` prefix / `$ref`·`oneOf` /
-        // length), so an invalid tool surfaces here as a 400 instead of silently
-        // diverging from Anthropic at the first turn.
-        for tool in &caps.custom_tools {
-            project::validate_custom_tool(tool)
-                .map_err(|msg| StateError::Run(RunError::bad_request(msg)))?;
-        }
+        persisted
+            .resources
+            .commit()
+            .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
+        persisted.status = "idle".to_string();
         let deployment_id = req.metadata.get("awaken.deployment_id").cloned();
         let session = Session {
             id: id.clone(),
@@ -363,9 +397,7 @@ impl ManagedState {
                 // R6: echo the session's actual model — the `agent_with_overrides`
                 // override, else the legacy `metadata.awaken.model`, else the host
                 // default — so the client sees which model the session runs.
-                model: selected_model
-                    .clone()
-                    .unwrap_or_else(|| ModelConfig::new(self.runtime.model())),
+                model: resolved_model,
                 name: agent_id.clone(),
                 description: None,
                 system: None,
@@ -412,22 +444,7 @@ impl ManagedState {
             lifecycle_event::SESSION_IDLED,
         );
         self.sessions_repo
-            .save_owned_with_lifecycle(
-                &owner_scope,
-                PersistedSession {
-                    session_id: id.clone(),
-                    agent_id: agent_id.clone(),
-                    model: session.agent.model.id.clone(),
-                    title: session.title.clone(),
-                    metadata: session.metadata.clone(),
-                    environment_id: session.environment_id.clone(),
-                    mcp_servers: session.agent.mcp_servers.clone(),
-                    effective_inputs: effective_inputs.clone(),
-                    status: "idle".to_string(),
-                    archived_at: None,
-                },
-                created_fact.clone(),
-            )
+            .save_owned_with_lifecycle(&owner_scope, persisted.clone(), created_fact.clone())
             .await;
         self.owners.lock().unwrap().insert(id.clone(), owner_scope);
         self.sessions.lock().unwrap().insert(
@@ -435,11 +452,19 @@ impl ManagedState {
             SessionRecord {
                 agent_id,
                 session: session.clone(),
-                effective_inputs: effective_inputs.clone(),
+                resource_state: persisted.resources,
                 events: Vec::new(),
                 child_threads: Vec::new(),
             },
         );
+        // Dispatch only after the active activation and Session lifecycle fact are
+        // durable. A worker can never claim a work item whose resource intent is
+        // still merely Prepared.
+        if let Some(envs) = self.environments.as_ref()
+            && envs.is_self_hosted(&environment_id).await
+        {
+            envs.enqueue_session_work(&environment_id, &id).await;
+        }
         // Project the committed create as a lifecycle fact: a fresh session is idle,
         // so fan out `session.status_idled` (the webhook catalog name — past-tense
         // fact, distinct from the SSE `session.status_idle` transition) to any
@@ -479,6 +504,162 @@ impl ManagedState {
         self.sessions_repo.owner(session_id).await
     }
 
+    async fn reconcile_persisted_resources(
+        &self,
+        owner_scope: &str,
+        mut session: PersistedSession,
+    ) -> Result<PersistedSession, StateError> {
+        let session_id = session.session_id.clone();
+        if session.status == "idle" {
+            if let Some(desired) = session.resources.pending.clone() {
+                session
+                    .resources
+                    .start_attempt()
+                    .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
+                self.sessions_repo
+                    .save_owned(owner_scope, session.clone())
+                    .await;
+                if let Err(error) = self
+                    .runtime
+                    .apply_session_inputs(&session_id, owner_scope, &desired)
+                    .await
+                {
+                    session
+                        .resources
+                        .note_retryable_failure(error.to_string())
+                        .map_err(|state_error| {
+                            StateError::Run(RunError::internal(state_error.to_string()))
+                        })?;
+                    self.sessions_repo.save_owned(owner_scope, session).await;
+                    return Err(StateError::Run(error));
+                }
+                session
+                    .resources
+                    .commit()
+                    .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
+                self.sessions_repo
+                    .save_owned(owner_scope, session.clone())
+                    .await;
+                return Ok(session);
+            }
+
+            if session.resources.activations.iter().any(|activation| {
+                activation.state == awaken_session_contract::ActivationState::Releasing
+            }) {
+                return Err(StateError::Run(RunError::internal(
+                    "resource activation has Releasing records without a pending manifest",
+                )));
+            }
+            self.runtime
+                .apply_session_inputs(&session_id, owner_scope, &session.resources.active)
+                .await?;
+            if session.resources.activations.is_empty() {
+                session.resources.adopt_legacy_active(&session_id);
+                self.sessions_repo
+                    .save_owned(owner_scope, session.clone())
+                    .await;
+            }
+            return Ok(session);
+        }
+
+        // A non-live Session never resumes a Prepared generation. Persist the
+        // release intent, tear down idempotently, then terminalize every record.
+        if session.resources.pending.is_none() {
+            session
+                .resources
+                .begin_release()
+                .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
+        }
+        self.sessions_repo
+            .save_owned(owner_scope, session.clone())
+            .await;
+        self.runtime
+            .end_session(&session_id)
+            .await
+            .map_err(StateError::Run)?;
+        if !self.retire_session_repositories(owner_scope, &session_id, &session.resources) {
+            return Err(StateError::Run(RunError::internal(
+                "Session-scoped Repository cleanup remains pending",
+            )));
+        }
+        session
+            .resources
+            .complete_terminal_release("Session terminated before activation completed");
+        self.sessions_repo
+            .save_owned(owner_scope, session.clone())
+            .await;
+        Ok(session)
+    }
+
+    fn retire_session_repositories(
+        &self,
+        owner_scope: &str,
+        session_id: &str,
+        resources: &awaken_session_contract::SessionResourceState,
+    ) -> bool {
+        let Some(catalog) = &self.resource_catalog else {
+            return true;
+        };
+        let prefix = format!("managed:{session_id}:repository:");
+        let mut ids = std::collections::BTreeSet::new();
+        for manifest in std::iter::once(&resources.active).chain(resources.pending.iter()) {
+            for input in &manifest.inputs {
+                if let awaken_session_contract::ResolvedInputSource::Repository {
+                    repository_id,
+                    ..
+                } = &input.source
+                    && repository_id.as_str().starts_with(&prefix)
+                {
+                    ids.insert(repository_id.to_string());
+                }
+            }
+        }
+        let mut retired = true;
+        for repository_id in ids {
+            if let Err(error) = catalog.set_repository_state(
+                owner_scope,
+                &repository_id,
+                awaken_resource_contract::ResourceState::Deleted,
+            ) {
+                retired = false;
+                tracing::warn!(
+                    session = session_id,
+                    repository = %repository_id,
+                    error = ?error,
+                    "Session-scoped Repository cleanup remains pending"
+                );
+            }
+        }
+        retired
+    }
+
+    /// ResourceReclaimer entry point. Composition roots call this after durable
+    /// stores and the Runtime Host are wired. It scans only Session application
+    /// state; authorization principals and policy objects never cross this seam.
+    pub async fn reconcile_resource_activations(&self) -> usize {
+        let pending = self.sessions_repo.pending_resource_sessions().await;
+        let mut settled = 0;
+        for session in pending {
+            let owner_scope = self
+                .sessions_repo
+                .owner(&session.session_id)
+                .await
+                .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
+            match self
+                .reconcile_persisted_resources(&owner_scope, session.clone())
+                .await
+            {
+                Ok(_) => settled += 1,
+                Err(error) => tracing::warn!(
+                    session = %session.session_id,
+                    error = ?error,
+                    "Session resource reconciliation remains pending"
+                ),
+            }
+        }
+        settled
+    }
+
     /// A session object reconstructed for a rehydrated (post-restart) session.
     /// When the durable repo holds the session's config it is restored faithfully;
     /// otherwise (a session created before the repo existed, or a purely in-memory
@@ -497,7 +678,7 @@ impl ManagedState {
             title,
             metadata,
             mcp_servers,
-            effective_inputs,
+            resource_state,
             status,
             archived_at,
         ) = match persisted {
@@ -508,7 +689,7 @@ impl ManagedState {
                 p.title,
                 p.metadata,
                 p.mcp_servers,
-                p.effective_inputs,
+                p.resources,
                 match p.status.as_str() {
                     "terminated" => "terminated",
                     _ => "idle",
@@ -550,7 +731,8 @@ impl ManagedState {
             archived_at,
             title,
             metadata,
-            resources: effective_inputs
+            resources: resource_state
+                .active
                 .inputs
                 .iter()
                 .map(|input| resolved_resource_dto(id, input))
@@ -578,21 +760,23 @@ impl ManagedState {
         // would transiently resolve today's Agent/Skill configuration and could both
         // drift from the Session pin and mutate its sandbox before the pin is known.
         let persisted = self.sessions_repo.get(id).await;
-        if persisted
-            .as_ref()
-            .is_some_and(|session| session.status == "deleted")
-        {
-            return Err(StateError::NotFound);
-        }
         let owner_scope = self
             .sessions_repo
             .owner(id)
             .await
             .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
-        if let Some(session) = &persisted {
-            self.runtime
-                .apply_session_inputs(id, &owner_scope, &session.effective_inputs)
-                .await?;
+        let persisted = match persisted {
+            Some(session) => Some(
+                self.reconcile_persisted_resources(&owner_scope, session)
+                    .await?,
+            ),
+            None => None,
+        };
+        if persisted
+            .as_ref()
+            .is_some_and(|session| session.status == "deleted")
+        {
+            return Err(StateError::NotFound);
         }
         let messages = self.runtime.committed_messages(id).await;
         if messages.is_empty() {
@@ -609,14 +793,14 @@ impl ManagedState {
         let agent_id = persisted
             .as_ref()
             .map_or_else(|| "assistant".to_string(), |p| p.agent_id.clone());
-        let effective_inputs = persisted
+        let resource_state = persisted
             .as_ref()
-            .map(|session| session.effective_inputs.clone())
+            .map(|session| session.resources.clone())
             .unwrap_or_default();
         let record = SessionRecord {
             agent_id,
             session: self.rehydrated_session(id, persisted),
-            effective_inputs,
+            resource_state,
             events,
             child_threads: Vec::new(),
         };
@@ -725,6 +909,7 @@ impl ManagedState {
     /// is a 404 (delete removes the session; it does not tombstone it as archive
     /// does).
     pub async fn delete_session(&self, id: &str) -> Result<(), StateError> {
+        let _resource_guard = self.resource_mutations.lock().await;
         // Snapshot before the durable commit, but do not remove the visible record
         // until the repository has atomically stored its tombstone and outbox fact.
         let child_threads = {
@@ -763,7 +948,8 @@ impl ManagedState {
         // thread is the session id, and each spawned child agent thread gets its own.
         // Best-effort teardown: the session IS deleted from the client's view
         // regardless, so a dispose failure must not resurrect a deleted session.
-        self.end_session_sandboxes(id, &child_threads).await;
+        self.release_terminal_resources(id, owner.as_deref(), &child_threads)
+            .await;
         // Project the deletion as a lifecycle fact so a webhook subscriber is
         // notified, mirroring create's `session.status_idled` and archive's
         // `session.status_terminated`. The owner is resolved from the persisted
@@ -786,15 +972,17 @@ impl ManagedState {
     /// a dispose failure is logged, never propagated (it must not resurrect the
     /// session). `SessionRuntime::end_session` is a no-op for a thread that never
     /// materialized a sandbox, so deriving child ids is safe.
-    async fn end_session_sandboxes(&self, id: &str, child_threads: &[serde_json::Value]) {
+    async fn end_session_sandboxes(&self, id: &str, child_threads: &[serde_json::Value]) -> bool {
         let mut threads: Vec<String> = vec![id.to_string()];
         for child in child_threads {
             if let Some(child_run_id) = child["id"].as_str() {
                 threads.push(child_run_id.to_string());
             }
         }
+        let mut released = true;
         for thread in threads {
             if let Err(err) = self.runtime.end_session(&thread).await {
+                released = false;
                 tracing::warn!(
                     session = id,
                     thread = %thread,
@@ -802,6 +990,37 @@ impl ManagedState {
                     "session teardown: sandbox dispose failed (best-effort)"
                 );
             }
+        }
+        released
+    }
+
+    async fn release_terminal_resources(
+        &self,
+        id: &str,
+        owner_scope: Option<&str>,
+        child_threads: &[serde_json::Value],
+    ) {
+        let Some(mut persisted) = self.sessions_repo.get(id).await else {
+            let _ = self.end_session_sandboxes(id, child_threads).await;
+            return;
+        };
+        let owner_scope = owner_scope.unwrap_or(DEFAULT_SCOPE);
+        if persisted.resources.pending.is_none()
+            && let Err(error) = persisted.resources.begin_release()
+        {
+            tracing::warn!(session = id, error = ?error, "could not persist resource release intent");
+            return;
+        }
+        self.sessions_repo
+            .save_owned(owner_scope, persisted.clone())
+            .await;
+        if self.end_session_sandboxes(id, child_threads).await
+            && self.retire_session_repositories(owner_scope, id, &persisted.resources)
+        {
+            persisted
+                .resources
+                .complete_terminal_release("Session terminated");
+            self.sessions_repo.save_owned(owner_scope, persisted).await;
         }
     }
 
@@ -811,6 +1030,7 @@ impl ManagedState {
     /// terminal transition (not just the mutated status field). Idempotent: a
     /// re-archive returns the same terminal record without a second event.
     pub async fn archive_session(&self, id: &str) -> Result<Session, StateError> {
+        let _resource_guard = self.resource_mutations.lock().await;
         let (newly_terminated, child_threads) = {
             let sessions = self.sessions.lock().unwrap();
             let record = sessions.get(id).ok_or(StateError::NotFound)?;
@@ -850,7 +1070,8 @@ impl ManagedState {
         // sandbox — but only on the transition, so a re-archive (idempotent) does
         // not re-dispose. The record survives as a tombstone; only the sandbox goes.
         if newly_terminated {
-            self.end_session_sandboxes(id, &child_threads).await;
+            self.release_terminal_resources(id, owner.as_deref(), &child_threads)
+                .await;
         }
         // Project the terminal transition as a lifecycle fact, mirroring create's
         // `session.status_idled`. The owning workspace is resolved from the session's

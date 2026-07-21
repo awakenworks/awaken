@@ -12,9 +12,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    AgentMcpConfig, AgentResourceConfig, InferenceProfile, McpServerDef, WebhookEndpointDef,
-};
+use crate::{AgentInputConfig, AgentMcpConfig, InferenceProfile, McpServerDef, WebhookEndpointDef};
 
 /// A store for authored [`InferenceProfile`]s (an admin-plane aggregate). Sync +
 /// in-memory by default; a durable backend can implement the same port.
@@ -210,15 +208,56 @@ impl WebhookStore for InMemoryWebhookStore {
 /// Repository for an Agent's default input bindings. Workspace is mandatory on
 /// every operation: ownership is an intrinsic aggregate key, while caller identity
 /// and policy remain outside this port.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum AgentInputRepositoryError {
+    #[error("Agent input revision must be positive, got {0}")]
+    InvalidRevision(i64),
+    #[error("Agent input revision conflict: current {current}, attempted {attempted}")]
+    RevisionConflict { current: i64, attempted: i64 },
+    #[error("Agent input repository storage failure: {0}")]
+    Storage(String),
+}
+
+/// Validate the aggregate revision transition. `Ok(false)` is an idempotent
+/// replay and therefore requires no write.
+pub fn validate_agent_input_revision(
+    current: Option<&AgentInputConfig>,
+    next: &AgentInputConfig,
+) -> Result<bool, AgentInputRepositoryError> {
+    if next.revision < 1 {
+        return Err(AgentInputRepositoryError::InvalidRevision(next.revision));
+    }
+    match current {
+        Some(current) if current == next => Ok(false),
+        Some(current) if next.revision == current.revision + 1 => Ok(true),
+        Some(current) => Err(AgentInputRepositoryError::RevisionConflict {
+            current: current.revision,
+            attempted: next.revision,
+        }),
+        None if next.revision == 1 => Ok(true),
+        None => Err(AgentInputRepositoryError::RevisionConflict {
+            current: 0,
+            attempted: next.revision,
+        }),
+    }
+}
+
 pub trait AgentInputBindingRepository: Send + Sync {
-    fn put_agent_inputs(&self, workspace_id: &str, config: AgentResourceConfig);
-    fn get_agent_inputs(&self, workspace_id: &str, agent_id: &str) -> Option<AgentResourceConfig>;
+    /// Apply revision 1 to a new aggregate or exactly current+1 to an existing
+    /// aggregate. Replaying byte-equivalent state at the current revision is
+    /// idempotent; stale/skipped revisions fail closed.
+    fn put_agent_inputs(
+        &self,
+        workspace_id: &str,
+        config: AgentInputConfig,
+    ) -> Result<(), AgentInputRepositoryError>;
+    fn get_agent_inputs(&self, workspace_id: &str, agent_id: &str) -> Option<AgentInputConfig>;
 }
 
 /// Default in-memory Agent-input repository, keyed by `(Workspace, Agent)`.
 #[derive(Default)]
 pub struct InMemoryAgentInputBindingRepository(
-    std::sync::Mutex<HashMap<(String, String), AgentResourceConfig>>,
+    std::sync::Mutex<HashMap<(String, String), AgentInputConfig>>,
 );
 
 impl InMemoryAgentInputBindingRepository {
@@ -229,13 +268,20 @@ impl InMemoryAgentInputBindingRepository {
 }
 
 impl AgentInputBindingRepository for InMemoryAgentInputBindingRepository {
-    fn put_agent_inputs(&self, workspace_id: &str, config: AgentResourceConfig) {
-        self.0
-            .lock()
-            .expect("agent resource configs")
-            .insert((workspace_id.to_string(), config.agent_id.clone()), config);
+    fn put_agent_inputs(
+        &self,
+        workspace_id: &str,
+        config: AgentInputConfig,
+    ) -> Result<(), AgentInputRepositoryError> {
+        let key = (workspace_id.to_string(), config.agent_id.clone());
+        let mut rows = self.0.lock().expect("agent input configs");
+        if !validate_agent_input_revision(rows.get(&key), &config)? {
+            return Ok(());
+        }
+        rows.insert(key, config);
+        Ok(())
     }
-    fn get_agent_inputs(&self, workspace_id: &str, agent_id: &str) -> Option<AgentResourceConfig> {
+    fn get_agent_inputs(&self, workspace_id: &str, agent_id: &str) -> Option<AgentInputConfig> {
         self.0
             .lock()
             .expect("agent resource configs")
@@ -247,46 +293,84 @@ impl AgentInputBindingRepository for InMemoryAgentInputBindingRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ResourceAccess, ResourceBinding, ResourceKind};
+    use crate::{BindingId, FileId, InputBinding, InputResourceId, ResourceAccess};
 
     #[test]
     fn agent_inputs_are_isolated_by_workspace_even_for_the_same_agent_id() {
         let store = InMemoryAgentInputBindingRepository::new();
-        let config = |resource_id: &str| AgentResourceConfig {
+        let config = |resource_id: &str| AgentInputConfig {
             agent_id: "shared-agent".into(),
-            resources: vec![ResourceBinding {
-                kind: ResourceKind::File,
-                resource_id: resource_id.into(),
+            inputs: vec![InputBinding {
+                binding_id: BindingId::from("input"),
+                target: InputResourceId::File(FileId::from(resource_id)),
                 mount_path: "/workspace/input.txt".into(),
                 access: ResourceAccess::ReadOnly,
                 instructions: None,
             }],
-            version: 1,
+            revision: 1,
         };
 
-        store.put_agent_inputs("workspace-a", config("file-a"));
-        store.put_agent_inputs("workspace-b", config("file-b"));
+        store
+            .put_agent_inputs("workspace-a", config("file-a"))
+            .unwrap();
+        store
+            .put_agent_inputs("workspace-b", config("file-b"))
+            .unwrap();
 
         assert_eq!(
             store
                 .get_agent_inputs("workspace-a", "shared-agent")
                 .unwrap()
-                .resources[0]
-                .resource_id,
+                .inputs[0]
+                .target
+                .id(),
             "file-a"
         );
         assert_eq!(
             store
                 .get_agent_inputs("workspace-b", "shared-agent")
                 .unwrap()
-                .resources[0]
-                .resource_id,
+                .inputs[0]
+                .target
+                .id(),
             "file-b"
         );
         assert!(
             store
                 .get_agent_inputs("workspace-c", "shared-agent")
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn agent_input_revisions_are_sequential_and_replays_are_idempotent() {
+        let store = InMemoryAgentInputBindingRepository::new();
+        let config = |revision| AgentInputConfig {
+            agent_id: "agent".into(),
+            inputs: Vec::new(),
+            revision,
+        };
+
+        store.put_agent_inputs("workspace", config(1)).unwrap();
+        store.put_agent_inputs("workspace", config(1)).unwrap();
+        assert_eq!(
+            store.put_agent_inputs("workspace", config(3)),
+            Err(AgentInputRepositoryError::RevisionConflict {
+                current: 1,
+                attempted: 3,
+            })
+        );
+        store.put_agent_inputs("workspace", config(2)).unwrap();
+        assert_eq!(
+            store.put_agent_inputs("workspace", config(1)),
+            Err(AgentInputRepositoryError::RevisionConflict {
+                current: 2,
+                attempted: 1,
+            })
+        );
+        assert_eq!(
+            store.put_agent_inputs("new-workspace", config(0)),
+            Err(AgentInputRepositoryError::InvalidRevision(0))
         );
     }
 

@@ -48,7 +48,7 @@ export async function run({ page, goto, intro, beat, clearCaption, checkpoint, a
     },
   });
   await page.request.put(`http://127.0.0.1:38080/v1/config/agents/${AGENT}/resources`, {
-    data: { agent_id: AGENT, version: 1, resources: [{ kind: "memory_store", resource_id: store.id, mount_path: "/mnt/memory/project", access: "read_write" }] },
+    data: { agent_id: AGENT, revision: 1, inputs: [{ binding_id: "memory", target: { kind: "memory_store", id: store.id }, mount_path: "/mnt/memory/project", access: "read_write" }] },
   });
   const environment = await (await page.request.post("http://127.0.0.1:38080/v1/environments", {
     data: { name: "Claude Code · locked", config: { type: "cloud", runtime: "acp:claude", sandbox: { isolation: "namespace", network: { mode: "none" }, limits: {} } } },

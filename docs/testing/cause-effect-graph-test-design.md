@@ -814,7 +814,7 @@ C105=Block/Suspend → is_error(遮蔽执行)     C106 → E91     C107=2xx → 
 | ID | 因 | 锚点 |
 |---|---|---|
 | C108 | 文件 id 含 `../`/非法字符(`safe_id` 失败)/ 记忆·技能 id 净化为空 | file-store `get`;memory `sanitize_stem` |
-| C109 | CAS `update`:`base_sha` 不符——子分支 `new_sha==sha`(幂等 Ok)vs 否(`Conflict{current}`) | memory `update` |
+| C109 | CAS 变更：`update` 的 `base_sha` 不符（新 sha 相同则幂等，否则冲突）；copy conditional delete 的 `(id,sha)` 匹配 / stale / 已缺失 | memory `update` / `delete_if_match` / copy harvest |
 | C110 | MCP 两服务器净化后命名空间冲突 / 工具名净化为空组件 | mcp `add` / `resolve` |
 | C111 | 模型无 offering / dialect 不符 / offering 端点在 `disabled_endpoints` | resolver `resolve_offering`/`resolve_inference_toggled` |
 | C112 | CredentialBinding None/Exact/OneOfCredentialPool;作用域凭证 `provider_id`≠offering;跨租户源;池全冷却;写作用域≠行作用域 | resolver `resolve_credential`;config-store `ScopedConfigRegistry` |
@@ -826,7 +826,7 @@ C105=Block/Suspend → is_error(遮蔽执行)     C106 → E91     C107=2xx → 
 | E96 | 拒畸形 id→解析为空 `Ok(None)`/`Ok(false)`(绝不逃出 base) | file-store `get`/`delete` |
 | E97 | 内容寻址存储 + 去重(同哈希早返回);原子 temp+rename 发布 | file-store `put` |
 | E98 | 路径穿越写被夹在根下 `etc-passwd.bin`(`sanitize_stem`) | memory/skill store |
-| E99 | CAS 冲突返回活内容 `Conflict{current}`(不覆写);幂等 update 保 version | memory `update` |
+| E99 | CAS 冲突返回活 head 且不覆写；幂等 update 保 version；stale conditional delete 保留 head、已缺失 delete 为 no-op；copy 只删除物化快照内路径 | memory repository + copy harvest |
 | E100 | 校验先于变更:`TooLarge`/`InvalidPath`/`PathConflict`(size 检查先于 id 查找) | memfs `validate_size` |
 | E101 | 仅呈现两技能工具 `Skill`+`list_skills`(catalog-free 稳定哈希) | ext-skills `tool.rs` |
 | E102 | 路径触发后在 catalog 浮现条件技能;`model_invocable=false` 遮蔽激活(披露≠授权) | ext-skills `is_surfaced` |
@@ -837,16 +837,16 @@ C105=Block/Suspend → is_error(遮蔽执行)     C106 → E91     C107=2xx → 
 | E107 | 拒认证他 provider 的 env/不兼容凭证 `IncompatibleCredential`(作用域 provider_id) | resolver `can_consume` |
 | E108 | 池成员冷却轮换 / 全冷却→`NoEligibleCredential{cooled}`;跨模型故障转移 | resolver `eligible_order` |
 | E109 | 拒跨作用域配置写(no-op)/ 隐藏跨作用域读(scoped SQL 守卫) | config-store |
-| E110 | 内容寻址编译 `fingerprint_of` sha256(排除 name/description);编译期把资源提示渲入系统提示 | config-resolver `compose_instructions` |
+| E110 | 内容寻址编译 `fingerprint_of` sha256(排除 name/description);Agent 输入在 Session 创建时一次合并/解析，提示只从 `ResolvedSessionResources` 生成 | config-resolver + session-contract |
 
 ### 因果图与约束
 
 ```
-C108 → E96 ∨ E98     C109=不符∧非幂等 → E99     C109=幂等 → 保 version     C110 → E104(拒/隔离)
+C108 → E96 ∨ E98     C109=不符∧非幂等 → E99     C109=幂等/已缺失 → no-op     C109=delete匹配 → 仅删除所见head     C110 → E104(拒/隔离)
 C111 → E106(成功) ∨ ModelUnresolved     C112=不兼容 → E107     C112=全冷却 → E108     C112=跨作用域写 → E109
 ```
 
-- **O**{CredentialBinding None/Exact/Pool};**O**{ToolMatcher Exact/Glob/Regex};**O**{ApiDialect Anthropic/OpenAi/Gemini};ResourceKind 每 binding 单变体。
+- **O**{CredentialBinding None/Exact/Pool};**O**{ToolMatcher Exact/Glob/Regex};**O**{ApiDialect Anthropic/OpenAi/Gemini};InputResourceId(File/MemoryStore/Repository) 每 binding 单变体。
 - **R**:条件技能浮现(E102)要求 `PathActivations` 接线 ∧ 匹配 glob;`IncompatibleCredential`(E107)要求 offering_provider 存在 ∧ 源 `provider_id` 有作用域(无作用域/env 源 `provider_id=None` 对任何 provider 通过 `can_consume`)。
 - **M**:编译优先级 **UnknownTool 遮蔽 UnresolvedModel**(工具先解析);`mcp__` 前缀目标遮蔽"目标未选中"检查(MCP override 恒编译);净化为空遮蔽该工具投影但不遮服务器;命名空间冲突遮蔽第二服务器;`validate_size` 遮蔽 `NotFound`;delivered provenance 戳记遮蔽自声明 frontmatter;`model_invocable=false` 遮蔽激活;否定算子作用于缺失字段→NoMatch(文档化 fail-open 钉)。
 
@@ -876,6 +876,72 @@ C111 → E106(成功) ∨ ModelUnresolved     C112=不兼容 → E107     C112=�
 
 ---
 
+## 模块 M14 · Session 资源激活与回收
+
+`awaken-session-contract::SessionResourceState`、Managed Session
+`activate_inputs`/`reconcile_resource_activations`、`awaken-session-store`
+
+### 因(C113–C118)
+
+| ID | 因 | 锚点 |
+|---|---|---|
+| C113 | 创建或动态替换产生新的 resolved manifest | `SessionResourceState::prepare` |
+| C114 | Host 对待应用 manifest 物化成功 | `activate_inputs` / `prepare_session` |
+| C115 | 物化失败；子分支旧 manifest 回滚成功 vs 回滚也失败 | `activate_inputs` |
+| C116 | 进程重启时存在 Prepared/Releasing 或终态仍有 Active | `pending_resource_sessions` |
+| C117 | Session 终止；子分支 sandbox/兼容 Repo 清理成功 vs 失败 | `release_terminal_resources` |
+| C118 | Active Session 调用 `GET /v1/files?scope_id=...` | Files router |
+
+### 果(E111–E116)
+
+| ID | 果 | 锚点 |
+|---|---|---|
+| E111 | 外部 IO 前 durable Prepared/Releasing；成功后 Active/Released | session contract + session store |
+| E112 | 同步失败且回滚成功：active manifest 不变，新 generation=Failed | Managed resources |
+| E113 | 回滚也失败：pending 与相同 revision 保留，禁止假装成功 | Managed resources |
+| E114 | 重启按 owner envelope 重试同一 pending revision；不重新解析 Agent/当前资源配置 | Managed sessions |
+| E115 | 终态永不再激活；清理失败保持 Releasing，成功后 Released；仅 Session 生成的兼容 Repo 被 tombstone | Managed sessions |
+| E116 | Files GET 只投影 Artifact，不 publish Repository、不持久化 authored Skill | Files router + Session release |
+
+### 因果图
+
+```text
+C113 -> E111
+C114=成功 -> Active
+C115=失败∧回滚成功 -> E112
+C115=失败∧回滚失败 -> E113
+C116 -> E114
+C117=清理成功 -> E115(Released)
+C117=清理失败 -> E115(Releasing)
+C118 -> E116(read-only)
+```
+
+授权前门只提供已经认证/授权的 owner scope；激活状态机不接收 principal、
+role、API key、PDP decision 或 policy。Workspace owner envelope 与资源状态
+分别持久化，跨 Workspace 可见性仍由边界 PEP 和 repository ownership fence
+负责。
+
+### 判定表 M14
+
+| 因\用例 | T101 | T102 | T103 | T104 | T105 | T106 | T107 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| C113 新 manifest | 1 | 1 | 1 | 0 | 0 | 0 | 0 |
+| C114 物化成功 | 1 | 0 | 0 | 1 | 0 | 0 | 0 |
+| C115 回滚成功 | 0 | 1 | 0 | 0 | 0 | 0 | 0 |
+| C115 回滚失败 | 0 | 0 | 1 | 0 | 0 | 0 | 0 |
+| C116 重启有未结算状态 | 0 | 0 | 0 | 1 | 0 | 0 | 0 |
+| C117 终止且清理成功 | 0 | 0 | 0 | 0 | 1 | 0 | 0 |
+| C117 终止且清理失败 | 0 | 0 | 0 | 0 | 0 | 1 | 0 |
+| C118 Files GET | 0 | 0 | 0 | 0 | 0 | 0 | 1 |
+| **E111 durable 两阶段** | 1 | 1 | 1 | 1 | 1 | 1 | 0 |
+| **E112 active 不变** | 0 | 1 | 0 | 0 | 0 | 0 | 0 |
+| **E113 pending 保留** | 0 | 0 | 1 | 0 | 0 | 0 | 0 |
+| **E114 同 revision 恢复** | 0 | 0 | 0 | 1 | 0 | 0 | 0 |
+| **E115 Released/Releasing** | 0 | 0 | 0 | 0 | 1 | 1 | 0 |
+| **E116 Files GET 无资源写副作用** | 0 | 0 | 0 | 0 | 0 | 0 | 1 |
+
+---
+
 ## 汇总统计
 
 | 模块 | 因数 | 果数 | 判定表用例 |
@@ -893,12 +959,13 @@ C111 → E106(成功) ∨ ModelUnresolved     C112=不兼容 → E107     C112=�
 | M11 提交/检查点 | 7 (C91–C97) | 7 (E79–E85) | T75–T80 |
 | M12 协议前门 | 10 (C98–C107) | 10 (E86–E95) | T81–T90 |
 | M13 资源/配置 | 5 (C108–C112) | 15 (E96–E110) | T91–T100 |
-| **合计** | **112 因** | **110 果** | **~110 用例** |
+| M14 Session 资源激活 | 6 (C113–C118) | 6 (E111–E116) | T101–T107 |
+| **合计** | **118 因** | **116 果** | **~117 用例** |
 
 ## 覆盖与使用说明
 
 1. **判定表即测试清单**:每一列(T#)是一个可执行测试用例——置因、驱动被测符号、断言果。列已按 CE 图归约,消除了冗余组合。
-2. **约束消除组合爆炸**:O/E 约束(单值枚举)、R 要求边、M 遮蔽优先级共同把理论 2¹¹² 组合压到约 110 个有效用例。每个 M(遮蔽)边都配对照用例(如 T52 vs T54、M4 Deny 绝对、M6 三闸串行)专门验证优先级不被违反。
+2. **约束消除组合爆炸**:O/E 约束(单值枚举)、R 要求边、M 遮蔽优先级共同把理论 2¹¹⁸ 组合压到约 117 个有效用例。每个 M(遮蔽)边都配对照用例(如 T52 vs T54、M4 Deny 绝对、M6 三闸串行)专门验证优先级不被违反。
 3. **fail-closed 断言**:安全敏感模块(M4/M5/M6/M7/M9)的每个果都应额外断言"默认拒绝/默认封闭"分支——即因全假时落到 fail-closed 果,而非 fail-open。
 4. **已知功能空洞**:M12 列出的 A2A 带内拒绝、A2A 流式/推送、AG-UI 结构化错误、ACP 同步 HITL、MCP out-of-band 审批、webhook 永久错误分流——这些是设计缺口而非 bug,对应用例断言的是"当前遮蔽行为",发现口径改变时须同步更新本表。
 5. **多后端等价类**:M10/M11 的后端(fs/sqlite/pg、memory/pg、local/nats/pg-notify)为 O 约束等价类;`MemoryDispatchStore` 是 pg 必须匹配的可执行规格,建议以同一判定表跑参数化后端一致性测试。

@@ -115,14 +115,23 @@ production logic.
   atomic lifecycle/outbox commit, checkpointed erasure, and durable
   credential-intent recovery.
 - `MemoryCAS.tla`, `ToolResultProtocol.tla`, and `WorkerDrain.tla` cover memory
-  generation/rename safety, cross-protocol result correlation, and the drain
-  admission fence.
+  generation/rename/conditional-delete safety, cross-protocol result correlation,
+  and the drain admission fence.
 - `AuditCommit.tla` and `ConfigActivation.tla` cover transactional durable audit,
   replay fencing, and generation-fenced publication installation.
 - `ManagementAuditIntent.tla`, `CredentialInventory.tla`, and
   `ResourceBindingEffect.tla` cover audit-before-write admission for stores that
   cannot share the config transaction, namespace-fenced orphan cleanup, and the
   durable external-effect journal used for resource bindings.
+- `AgentInputRevision.tla` covers the resource-plane revision protocol for an
+  Agent's input configuration: a changed configuration must be the exact next
+  revision, an identical current revision is an idempotent replay, and every
+  stale, skipped, zero, or conflicting revision is rejected without mutation.
+  Authorization is deliberately outside this state machine and remains an edge
+  admission concern.
+- `SessionResourceActivation.tla` covers durable prepare-before-IO activation,
+  exact revision issuance, commit/rollback, terminal release, and the rule that
+  a terminated Session can never reactivate a pending resource generation.
 - `WorkerReplacement.tla` composes authored route resolution, dispatch-time
   candidate pinning, worker claims, credential materialization, execution and
   settlement with concurrent route change, rotation, revocation, worker crash,
@@ -191,12 +200,14 @@ graphs with zero invariant violations and zero states left on the queue:
 | WebhookOutbox | 10 | 6 | 4 |
 | ErasureSaga | 19 | 12 | 6 |
 | CredentialCreation | 14 | 8 | 5 |
-| MemoryCAS | 1,245 | 244 | 10 |
+| MemoryCAS | 3,511 | 563 | 11 |
 | ToolResultProtocol | 213 | 56 | 9 |
 | WorkerDrain | 15 | 11 | 8 |
 | AuditCommit | 10 | 6 | 4 |
 | ConfigActivation | 85 | 35 | 9 |
 | ResourceBindingEffect | 21 | 10 | 6 |
+| AgentInputRevision | 297 | 65 | 9 |
+| SessionResourceActivation | 61 | 39 | 9 |
 | ManagementAuditIntent | 15 | 8 | 5 |
 | CredentialInventory | 7 | 4 | 3 |
 | WorkerReplacement | 452,881 | 98,160 | 16 |

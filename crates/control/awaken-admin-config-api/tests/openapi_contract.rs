@@ -55,7 +55,7 @@ fn document_shape_and_schema_components() {
         "InferenceProfile",
         "McpServerDef",
         "AgentMcpConfig",
-        "AgentResourceConfig",
+        "AgentInputConfig",
         "EnterCredentialRequest",
         "ValidateCredentialRequest",
         "ResolveRequest",

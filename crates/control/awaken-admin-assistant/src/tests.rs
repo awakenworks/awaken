@@ -75,7 +75,7 @@ impl DraftValidator for FakeValidator {
 #[derive(Default)]
 struct MemDraftStore {
     configs: Mutex<HashMap<String, AgentConfig>>,
-    resources: Mutex<HashMap<String, Vec<ResourceSpec>>>,
+    resources: Mutex<HashMap<String, Vec<InputSpec>>>,
     audits: Mutex<HashMap<String, (AdminAuditEvent, bool)>>,
 }
 
@@ -125,18 +125,14 @@ impl DraftStore for MemDraftStore {
     async fn get(&self, id: &str) -> Result<Option<AgentConfig>, String> {
         Ok(self.configs.lock().unwrap().get(id).cloned())
     }
-    async fn put_resources(
-        &self,
-        agent_id: &str,
-        resources: Vec<ResourceSpec>,
-    ) -> Result<(), String> {
+    async fn put_resources(&self, agent_id: &str, resources: Vec<InputSpec>) -> Result<(), String> {
         self.resources
             .lock()
             .unwrap()
             .insert(agent_id.to_string(), resources);
         Ok(())
     }
-    async fn get_resources(&self, agent_id: &str) -> Result<Vec<ResourceSpec>, String> {
+    async fn get_resources(&self, agent_id: &str) -> Result<Vec<InputSpec>, String> {
         Ok(self
             .resources
             .lock()
@@ -154,7 +150,7 @@ impl MemDraftStore {
     fn is_empty(&self) -> bool {
         self.configs.lock().unwrap().is_empty()
     }
-    fn stored_resources(&self, id: &str) -> Vec<ResourceSpec> {
+    fn stored_resources(&self, id: &str) -> Vec<InputSpec> {
         self.resources
             .lock()
             .unwrap()
@@ -451,7 +447,7 @@ async fn patch_agent_replaces_the_whole_resource_set() {
                 "id": "r",
                 "patch": {
                     "resources": [
-                        { "kind": "github_repository", "resource_id": "repo_1", "access": "read_only" }
+                        { "kind": "repository", "resource_id": "repo_1", "access": "read_only" }
                     ]
                 }
             }),
@@ -461,7 +457,7 @@ async fn patch_agent_replaces_the_whole_resource_set() {
     assert!(!out.is_error, "{}", out.content);
     let bound = h.store.stored_resources("r");
     assert_eq!(bound.len(), 1);
-    assert_eq!(bound[0].kind, "github_repository");
+    assert_eq!(bound[0].kind, "repository");
     assert_eq!(bound[0].resource_id, "repo_1");
     assert_eq!(bound[0].access.as_deref(), Some("read_only"));
 }
@@ -1076,17 +1072,13 @@ impl DraftStore for FaultyStore {
     async fn get(&self, id: &str) -> Result<Option<AgentConfig>, String> {
         self.inner.get(id).await
     }
-    async fn put_resources(
-        &self,
-        agent_id: &str,
-        resources: Vec<ResourceSpec>,
-    ) -> Result<(), String> {
+    async fn put_resources(&self, agent_id: &str, resources: Vec<InputSpec>) -> Result<(), String> {
         if self.fail_put_resources {
             return Err("resource store offline".into());
         }
         self.inner.put_resources(agent_id, resources).await
     }
-    async fn get_resources(&self, agent_id: &str) -> Result<Vec<ResourceSpec>, String> {
+    async fn get_resources(&self, agent_id: &str) -> Result<Vec<InputSpec>, String> {
         self.inner.get_resources(agent_id).await
     }
 }
