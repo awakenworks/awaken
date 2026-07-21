@@ -111,14 +111,27 @@ impl InferenceRouting {
         let Some(materializer) = &self.materializer else {
             return Ok(None);
         };
-        let legacy_access = InferenceAccess::host_executor(activation.effective_model_ref());
         let access = activation
             .snapshot
             .metadata
             .inference_access
             .as_ref()
-            .unwrap_or(&legacy_access);
-        Ok(materializer.materialize(activation, access))
+            .ok_or_else(|| {
+                format!(
+                    "snapshot `{}` has no publication-pinned inference access",
+                    activation.snapshot.id.0
+                )
+            })?;
+        materializer
+            .materialize(activation, access)
+            .map(Some)
+            .ok_or_else(|| {
+                format!(
+                    "snapshot `{}` pinned inference access cannot materialize model `{}`",
+                    activation.snapshot.id.0,
+                    activation.effective_model_ref()
+                )
+            })
     }
 }
 
@@ -147,12 +160,16 @@ mod tests {
     }
 
     fn activation(model_ref: &str) -> RunActivation {
+        let metadata = awaken_runtime_contract::AgentSnapshotMetadata {
+            inference_access: Some(InferenceAccess::host_executor(model_ref)),
+            ..Default::default()
+        };
         RunActivation::new(
             RunId("run".into()),
             ThreadId("thread".into()),
             ExecutableAgentSnapshot {
                 id: ExecutableAgentSnapshotId("snapshot".into()),
-                metadata: Default::default(),
+                metadata,
                 root_agent_id: AgentId("agent".into()),
                 resolved_spec: ResolvedSpec {
                     catalog_fingerprint: CatalogFingerprint("catalog".into()),
@@ -219,13 +236,12 @@ mod tests {
                 .unwrap(),
             &fast
         ));
-        // An unknown ref → None → the caller falls back to the runtime's bound default.
-        assert!(
-            binding
-                .executor_for_activation(&activation("no-such"))
-                .unwrap()
-                .is_none()
-        );
+        // An unknown published ref is rejected; it cannot fall back to the host model.
+        let error = match binding.executor_for_activation(&activation("no-such")) {
+            Ok(_) => panic!("unknown pinned model must be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.contains("cannot materialize model `no-such`"));
     }
 
     #[test]
@@ -264,6 +280,21 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn installed_materializer_rejects_a_snapshot_without_pinned_access() {
+        let mut binding = InferenceRouting::new();
+        binding.set_materializer(Arc::new(MapProvider(HashMap::new())));
+        let mut activation = activation("model-a");
+        activation.snapshot.metadata.inference_access = None;
+
+        let error = match binding.executor_for_activation(&activation) {
+            Ok(_) => panic!("snapshot without pinned access must be rejected"),
+            Err(error) => error,
+        };
+
+        assert!(error.contains("no publication-pinned inference access"));
     }
 
     #[test]

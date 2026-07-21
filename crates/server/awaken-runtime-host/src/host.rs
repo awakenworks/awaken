@@ -120,8 +120,9 @@ pub struct SharedHost {
     /// Trusted workspace recorded for each prepared thread/session.
     pub(crate) thread_workspaces: std::sync::Mutex<HashMap<String, String>>,
     /// The host DEFAULT executor: used by auxiliary sub-agents (judge, compactor,
-    /// memory) and as the fallback when no [`InferenceExecutorMaterializer`] resolves a thread's
-    /// model. The main run resolves its executor per thread via `resolve_executor`.
+    /// memory) and by an explicitly local composition with no
+    /// [`InferenceExecutorMaterializer`]. Once a materializer is installed, a rejected
+    /// publication pin fails closed instead of falling back to this executor.
     pub(crate) llm: Arc<dyn LlmExecutor>,
     pub(crate) model_ref: String,
     /// Per-thread model→executor routing (R1/R2). See [`crate::inference_routing`].

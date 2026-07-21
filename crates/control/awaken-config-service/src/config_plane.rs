@@ -28,8 +28,10 @@ use axum::{Extension, Json, Router};
 use serde_json::{Value, json};
 
 use crate::binding_resolver::ModelResolver;
-use crate::compaction::apply_compaction;
-use crate::publication::{PublishError, ResolvedAgentConfig, ValidationIssue, snapshot_metadata};
+use crate::publication::{
+    PublishError, ValidationIssue, pin_inference_access, prepare_agent_publication,
+    snapshot_metadata,
+};
 use crate::tool_catalog::ToolCatalogSource;
 
 /// The config domain service: validate, store, publish, and expose the installed
@@ -147,7 +149,7 @@ impl ConfigService {
     /// the edge resolves the catalog for the request scope).
     pub fn validate(
         &self,
-        workspace: &str,
+        _workspace: &str,
         config: &AgentConfig,
         catalog: &[ToolDescriptor],
     ) -> Result<(), ValidationIssue> {
@@ -155,18 +157,17 @@ impl ConfigService {
         // (`CompileError::field_path`), so the UI projects the issue to the right section
         // instead of parsing a free-text string. An auto-model that can't resolve is a
         // `model` issue; a compile failure carries its own field.
-        let resolved = self
-            .resolve_agent_config(
-                workspace,
-                AgentConfigRevision {
-                    config: config.clone(),
-                    revision: 0,
-                },
-            )
-            .map_err(|e| ValidationIssue {
-                path: "model".to_string(),
-                message: e.to_string(),
-            })?;
+        let resolved = prepare_agent_publication(
+            self.model_resolver.as_deref(),
+            AgentConfigRevision {
+                config: config.clone(),
+                revision: 0,
+            },
+        )
+        .map_err(|e| ValidationIssue {
+            path: "model".to_string(),
+            message: e.to_string(),
+        })?;
         awaken_config_store::compile_resolved(
             &resolved.config,
             catalog,
@@ -244,23 +245,15 @@ impl ConfigService {
             .map_err(|e| PublishError::Store(e.to_string()))?
             .ok_or_else(|| PublishError::NotStored(id.to_string()))?;
         let source_revision = versioned.revision;
-        let mut resolved = self.resolve_agent_config(workspace, versioned)?;
-        if let Some(publisher) = &self.inference_access_publisher {
-            let models = resolved
-                .config
-                .model_binding
-                .resolved()
-                .into_iter()
-                .chain(resolved.config.model_candidates.iter())
-                .cloned()
-                .collect::<Vec<_>>();
-            resolved.inference_access = Some(
-                publisher
-                    .resolve_access(workspace, &models)
-                    .await
-                    .map_err(PublishError::Unresolvable)?,
-            );
-        }
+        let mut resolved = prepare_agent_publication(self.model_resolver.as_deref(), versioned)?;
+        resolved.inference_access = Some(
+            pin_inference_access(
+                self.inference_access_publisher.as_deref(),
+                workspace,
+                &resolved,
+            )
+            .await?,
+        );
         let snapshot = awaken_config_store::compile_resolved(
             &resolved.config,
             catalog,
@@ -290,78 +283,6 @@ impl ConfigService {
             );
         }
         Ok(publication)
-    }
-
-    /// Read every configuration input once and pin the exact result. No runtime or
-    /// worker path is allowed to repeat this work.
-    fn resolve_agent_config(
-        &self,
-        _workspace: &str,
-        source: AgentConfigRevision,
-    ) -> Result<ResolvedAgentConfig, PublishError> {
-        let source_revision = source.revision;
-        let mut config = source.config;
-        if crate::binding_resolver::needs_resolution(&config.model_binding) {
-            let resolver = self
-                .model_resolver
-                .as_ref()
-                .ok_or_else(|| PublishError::Unresolvable("no model resolver wired".into()))?;
-            let resolved = resolver
-                .resolve_auto()
-                .map_err(PublishError::Unresolvable)?;
-            config.model_binding = ModelSelection::Pinned(resolved.primary);
-            config.model_candidates = resolved.candidates;
-        }
-        // Compaction is the AGENT's policy over the model's capability: derive the effective
-        // trigger from the resolved model (`context_window` − output headroom, the agent may
-        // override) and stamp it into both realizations (native compact ext + ACP CLI). Baked
-        // into the content-addressed config at publish, re-baked by the reconciler on a catalog
-        // change. An unresolved model / no window simply leaves the authored config untouched.
-        if let Some(resolver) = self.model_resolver.as_ref()
-            && let Some(model_id) = config.model_binding.resolved().map(|b| b.model_ref.clone())
-        {
-            let strategy = config.compaction.clone().unwrap_or_default();
-            apply_compaction(
-                &mut config.plugin_config,
-                &strategy,
-                resolver.context_window(&model_id),
-                resolver.max_output_tokens(&model_id),
-            );
-        }
-        let mut inputs = vec![awaken_runtime_contract::ResolvedInputRef {
-            kind: "agent_config".into(),
-            id: config.id.clone(),
-            version: awaken_runtime_contract::ResolvedInputVersion::Revision(source_revision),
-        }];
-        let model_bytes = serde_json::to_vec(&(
-            config.model_binding.resolved(),
-            &config.model_candidates,
-            &config.compaction,
-        ))
-        .map_err(|error| PublishError::Unresolvable(error.to_string()))?;
-        inputs.push(awaken_runtime_contract::ResolvedInputRef {
-            kind: "model_binding".into(),
-            id: config
-                .model_binding
-                .resolved()
-                .map(|binding| binding.model_ref.clone())
-                .unwrap_or_default(),
-            version: awaken_runtime_contract::ResolvedInputVersion::ContentHash(
-                awaken_runtime_contract::content_fingerprint(&model_bytes)
-                    .map_err(|error| PublishError::Unresolvable(error.to_string()))?,
-            ),
-        });
-        let manifest = awaken_runtime_contract::ResolutionManifest::new(inputs)
-            .map_err(|error| PublishError::Unresolvable(error.to_string()))?;
-        Ok(ResolvedAgentConfig {
-            source: awaken_runtime_contract::AgentConfigRevisionRef {
-                agent_id: awaken_runtime_contract::snapshot::AgentId(config.id.clone()),
-                revision: source_revision,
-            },
-            config,
-            manifest,
-            inference_access: None,
-        })
     }
 
     /// Re-resolve and re-publish an `Auto`-bound agent (ADR-0052 D5), reading and
@@ -966,16 +887,15 @@ mod resource_prompt_tests {
     }
 
     fn resolve_config(service: &ConfigService, config: AgentConfig) -> AgentConfig {
-        service
-            .resolve_agent_config(
-                DEFAULT_SCOPE,
-                AgentConfigRevision {
-                    config,
-                    revision: 1,
-                },
-            )
-            .unwrap()
-            .config
+        prepare_agent_publication(
+            service.model_resolver.as_deref(),
+            AgentConfigRevision {
+                config,
+                revision: 1,
+            },
+        )
+        .unwrap()
+        .config
     }
 
     struct FakeResolver;
@@ -1057,6 +977,30 @@ mod resource_prompt_tests {
         assert_eq!(access.scope_id.as_deref(), Some("workspace-a"));
         assert_eq!(access.reference, "credential-workspace-a");
         assert_eq!(publication.fingerprint, publication.snapshot.fingerprint.0);
+    }
+
+    #[tokio::test]
+    async fn local_publication_pins_host_access_instead_of_deferring_to_runtime() {
+        let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+        let plane = ConfigPlane::new(
+            Arc::new(ConfigService::new()),
+            store,
+            Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
+        );
+        let scope = ScopeId::from("workspace-a");
+        plane.put(&scope, &agent_config("agent-a")).await.unwrap();
+
+        let publication = plane.publish(&scope, "agent-a").await.unwrap();
+        let model_ref = &publication.snapshot.resolved_spec.model_binding.model_ref;
+        let access = publication
+            .snapshot
+            .metadata
+            .inference_access
+            .as_ref()
+            .and_then(|access| access.for_model(model_ref))
+            .expect("local publication pins host access");
+
+        assert!(access.is_host_executor_for(model_ref));
     }
 
     fn static_plane(resolver: Option<Arc<dyn ModelResolver>>) -> ConfigPlane {

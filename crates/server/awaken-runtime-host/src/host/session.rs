@@ -172,8 +172,8 @@ impl SharedHost {
     }
 
     /// Wrap this host's `InferenceExecutorMaterializer` (if installed) into the neutral
-    /// `model_ref → executor` closure a worker's `WorkerContext` carries, so a
-    /// database-less worker resolves the run's configured model per attempt (R1).
+    /// published-access → executor closure a worker's `WorkerContext` carries, so a
+    /// database-less worker materializes the run's configured model per attempt (R1).
     /// `None` when no provider is installed — the worker stays on the runtime's bound
     /// default (a single-model deployment is unaffected).
     pub(crate) fn worker_inference_materializer(
@@ -182,15 +182,7 @@ impl SharedHost {
         self.inference_routing.materializer().map(|materializer| {
             let resolve: awaken_run_ingress::InferenceMaterializerFn =
                 Arc::new(move |activation| {
-                    let legacy_access = awaken_runtime_contract::InferenceAccess::host_executor(
-                        activation.effective_model_ref(),
-                    );
-                    let access = activation
-                        .snapshot
-                        .metadata
-                        .inference_access
-                        .as_ref()
-                        .unwrap_or(&legacy_access);
+                    let access = activation.snapshot.metadata.inference_access.as_ref()?;
                     materializer.materialize(activation, access)
                 });
             resolve
