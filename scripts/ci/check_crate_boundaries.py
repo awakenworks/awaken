@@ -449,11 +449,10 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "sqlx",
         "awaken-scoped-migration",
         "awaken-scoped-migration-sqlite",
-        # ADR-0053 path-addressed MemoryRepository: content hashing + durable record format.
+        # ADR-0053 path-addressed MemoryRepository: content hashing + legacy-version import.
         "sha2",
-        "serde",
         "serde_json",
-        # dev-only: conformance + reopen-from-file persistence tests.
+        # dev-only: SQLite conformance tests open temporary database files.
         "tempfile",
     },
     # ADR-0053: the write-through memory-store FUSE server. A `server`-bucket crate
