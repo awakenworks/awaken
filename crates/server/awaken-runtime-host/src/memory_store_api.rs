@@ -16,8 +16,8 @@ use std::sync::Arc;
 
 use awaken_memory_store::{MemErr, MemoryVersion, MemoryVersionOperation};
 use awaken_protocol_managed::resource_plane::{
-    ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, ResourceKind, ResourceState,
-    ResourceTarget,
+    ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, ResourceCatalogError,
+    ResourceKind, ResourceState, ResourceTarget,
 };
 use awaken_tenancy::WorkspaceScope;
 use axum::body::Bytes;
@@ -100,6 +100,16 @@ fn project_def(def: &MemoryStoreDefinition) -> Value {
     })
 }
 
+fn project_config(config: &MemoryStoreConfigVersion) -> Value {
+    json!({
+        "memory_store_id": config.memory_store_id,
+        "version": config.version.0,
+        "recall_policy": config.recall_policy,
+        "extraction_policy": config.extraction_policy,
+        "retention_policy": config.retention_policy,
+    })
+}
+
 struct MemoryStoreApi {
     host: Arc<SharedHost>,
     /// Unified resource definition/configuration/lifecycle repository consumed by
@@ -131,6 +141,14 @@ pub fn memory_stores_router_with_catalog(
             "/v1/memory_stores/{id}",
             get(get_store).post(update_store).delete(delete_store),
         )
+        .route(
+            "/v1/memory_stores/{id}/config",
+            get(get_store_config).post(publish_store_config),
+        )
+        .route(
+            "/v1/memory_stores/{id}/config_versions/{version}",
+            get(get_store_config_version),
+        )
         .route("/v1/memory_stores/{id}/archive", post(archive_store))
         .route(
             "/v1/memory_stores/{id}/memories",
@@ -158,6 +176,19 @@ fn err(status: StatusCode, message: impl Into<String>) -> axum::response::Respon
 
 fn not_found(what: &str) -> axum::response::Response {
     err(StatusCode::NOT_FOUND, format!("{what} not found"))
+}
+
+fn catalog_error(error: ResourceCatalogError) -> axum::response::Response {
+    let status = match error {
+        ResourceCatalogError::AlreadyExists(_) | ResourceCatalogError::ConfigConflict { .. } => {
+            StatusCode::CONFLICT
+        }
+        ResourceCatalogError::NotFound(_) => StatusCode::NOT_FOUND,
+        ResourceCatalogError::NotActive { .. } => StatusCode::CONFLICT,
+        ResourceCatalogError::Invalid(_) => StatusCode::BAD_REQUEST,
+        ResourceCatalogError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    err(status, error.to_string())
 }
 
 fn request_workspace(state: &MemoryStoreApi, scope: Option<Extension<WorkspaceScope>>) -> String {
@@ -309,6 +340,123 @@ async fn update_store(
         return err(StatusCode::CONFLICT, error.to_string());
     }
     (StatusCode::OK, Json(projected)).into_response()
+}
+
+/// Return the currently selected immutable MemoryStore configuration. Mutable
+/// Memory entries are deliberately absent: only recall/extraction/retention
+/// behavior is versioned here.
+async fn get_store_config(
+    State(state): State<Arc<MemoryStoreApi>>,
+    scope: Option<Extension<WorkspaceScope>>,
+    Path(id): Path<String>,
+) -> axum::response::Response {
+    let workspace = request_workspace(&state, scope);
+    let Some(definition) = state.catalog.memory_store(&workspace, &id) else {
+        return not_found("memory_store");
+    };
+    let Some(config) =
+        state
+            .catalog
+            .memory_config(&workspace, &id, definition.current_config_version)
+    else {
+        return err(
+            StatusCode::CONFLICT,
+            "current MemoryStore config is missing",
+        );
+    };
+    (StatusCode::OK, Json(project_config(&config))).into_response()
+}
+
+/// Read an immutable historical configuration by ordinal. This is configuration
+/// audit/retry data, not a snapshot of mutable Memory content.
+async fn get_store_config_version(
+    State(state): State<Arc<MemoryStoreApi>>,
+    scope: Option<Extension<WorkspaceScope>>,
+    Path((id, version)): Path<(String, String)>,
+) -> axum::response::Response {
+    let Ok(version) = version.parse::<u64>() else {
+        return err(StatusCode::BAD_REQUEST, "config version must be an integer");
+    };
+    let workspace = request_workspace(&state, scope);
+    let Some(config) = state
+        .catalog
+        .memory_config(&workspace, &id, ConfigVersion(version))
+    else {
+        return not_found("memory_store config");
+    };
+    (StatusCode::OK, Json(project_config(&config))).into_response()
+}
+
+/// Publish the next immutable MemoryStore configuration with an explicit CAS
+/// fence. Policy values are resource behavior, not authorization policy.
+async fn publish_store_config(
+    State(state): State<Arc<MemoryStoreApi>>,
+    scope: Option<Extension<WorkspaceScope>>,
+    Path(id): Path<String>,
+    Json(body): Json<Value>,
+) -> axum::response::Response {
+    let workspace = request_workspace(&state, scope);
+    let Some(definition) = state.catalog.memory_store(&workspace, &id) else {
+        return not_found("memory_store");
+    };
+    let Some(expected) = body
+        .get("expected_config_version")
+        .and_then(Value::as_u64)
+        .map(ConfigVersion)
+    else {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "expected_config_version must be an integer",
+        );
+    };
+    let Some(mut config) =
+        state
+            .catalog
+            .memory_config(&workspace, &id, definition.current_config_version)
+    else {
+        return err(
+            StatusCode::CONFLICT,
+            "current MemoryStore config is missing",
+        );
+    };
+    if !["recall_policy", "extraction_policy", "retention_policy"]
+        .iter()
+        .any(|key| body.get(key).is_some())
+    {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "config update has no policy fields",
+        );
+    }
+    if let Some(value) = body.get("recall_policy") {
+        config.recall_policy = match serde_json::from_value(value.clone()) {
+            Ok(policy) => policy,
+            Err(error) => return err(StatusCode::BAD_REQUEST, error.to_string()),
+        };
+    }
+    if let Some(value) = body.get("extraction_policy") {
+        config.extraction_policy = match serde_json::from_value(value.clone()) {
+            Ok(policy) => policy,
+            Err(error) => return err(StatusCode::BAD_REQUEST, error.to_string()),
+        };
+    }
+    if let Some(value) = body.get("retention_policy") {
+        config.retention_policy = match serde_json::from_value(value.clone()) {
+            Ok(policy) => policy,
+            Err(error) => return err(StatusCode::BAD_REQUEST, error.to_string()),
+        };
+    }
+    let Some(next) = expected.checked_next() else {
+        return err(StatusCode::BAD_REQUEST, "config version is exhausted");
+    };
+    config.version = next;
+    match state
+        .catalog
+        .publish_memory_config(&workspace, expected, config.clone())
+    {
+        Ok(()) => (StatusCode::OK, Json(project_config(&config))).into_response(),
+        Err(error) => catalog_error(error),
+    }
 }
 
 async fn delete_store(

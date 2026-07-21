@@ -265,6 +265,14 @@ MemoryStore binding has no recall or extraction. The removed
 `with_memory(mem_dir)`/`memory_scope_root` path is not a fallback in local mode;
 local mode provisions and binds a normal store under its hidden default Workspace.
 
+Memory behavior is mutable configuration, not mutable content and not IAM policy.
+The Workspace-scoped Memory management API reads current or historical config and
+publishes recall/extraction/retention changes with an explicit
+`expected_config_version` CAS. Publication appends one immutable config and moves
+the current pointer atomically; it never snapshots Memory entries. Descriptive
+definition updates remain a separate operation so a rejected CAS has no partial
+metadata side effect.
+
 Reliable extraction is Session application work, not part of the Memory resource
 aggregate and not an authorization decision. A durable `MemoryExtractionIntent`
 freezes the terminal commit, Workspace/store/config binding, transcript, and the

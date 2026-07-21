@@ -247,6 +247,28 @@ async function main(): Promise<void> {
     const memoryStores = await json('GET', scoped(WORKSPACE, 'memory_stores'));
     assert.equal(memoryStores.status, 200);
     assert.ok(memoryStores.body.data.some((item: { id: string }) => item.id === memoryId));
+    const initialMemoryConfig = await json('GET', scoped(WORKSPACE, `memory_stores/${memoryId}/config`));
+    assert.equal(initialMemoryConfig.status, 200);
+    assert.equal(initialMemoryConfig.body.version, 1);
+    const publishedMemoryConfig = await json(
+      'POST',
+      scoped(WORKSPACE, `memory_stores/${memoryId}/config`),
+      {
+        expected_config_version: 1,
+        recall_policy: { enabled: true, max_results: 19 },
+        extraction_policy: { enabled: false },
+        retention_policy: { retention_days: 2 },
+      },
+    );
+    assert.equal(publishedMemoryConfig.status, 200);
+    assert.equal(publishedMemoryConfig.body.version, 2);
+    assert.equal(
+      (await json('POST', scoped(WORKSPACE, `memory_stores/${memoryId}/config`), {
+        expected_config_version: 1,
+        recall_policy: { enabled: false, max_results: 1 },
+      })).status,
+      409,
+    );
     const patchedStore = await json('POST', scoped(WORKSPACE, `memory_stores/${memoryId}`), {
       description: 'persisted catalog update',
       metadata: { phase: 'updated', remove_me: null },
@@ -340,6 +362,16 @@ async function main(): Promise<void> {
     const restoredStore = await json('GET', scoped(WORKSPACE, `memory_stores/${memoryId}`));
     assert.equal(restoredStore.body.description, 'persisted catalog update');
     assert.deepEqual(restoredStore.body.metadata, { phase: 'updated' });
+    const restoredMemoryConfig = await json(
+      'GET',
+      scoped(WORKSPACE, `memory_stores/${memoryId}/config`),
+    );
+    assert.equal(restoredMemoryConfig.body.version, 2);
+    assert.equal(restoredMemoryConfig.body.recall_policy.max_results, 19);
+    assert.equal(
+      (await json('GET', scoped(WORKSPACE, `memory_stores/${memoryId}/config_versions/1`))).body.version,
+      1,
+    );
     const versions = await json('GET', scoped(WORKSPACE, `memory_stores/${memoryId}/memory_versions`));
     assert.equal(versions.status, 200);
     assert.ok(versions.body.data.length >= 2);

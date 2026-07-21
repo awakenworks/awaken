@@ -386,6 +386,10 @@ The Resource Catalog creates a Workspace-owned `MemoryStore`, publishes config
 v1, and ensures the Memory data plane recognizes the logical store id. Config
 updates append an immutable version and atomically advance
 `current_config_version`. They do not copy or version the store's content.
+The Workspace-scoped management boundary exposes current/historical config reads
+and publishes the next policy version only with `expected_config_version` CAS;
+descriptive metadata updates remain separate, so a failed config CAS cannot
+partially mutate the resource definition.
 
 ### Bind and resolve
 

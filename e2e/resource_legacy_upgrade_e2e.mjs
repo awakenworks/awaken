@@ -122,6 +122,18 @@ async function raw(pathname) {
   });
 }
 
+async function rawJson(method, pathname, body) {
+  const response = await fetch(`http://127.0.0.1:${PORT}${pathname}`, {
+    method,
+    headers: {
+      'content-type': 'application/json',
+      'x-api-key': 'e2e-dummy',
+    },
+    body: JSON.stringify(body),
+  });
+  return { status: response.status, body: await response.json() };
+}
+
 async function assertImportedSkill() {
   const c = client();
   const list = await c.get('/v1/skills');
@@ -153,15 +165,25 @@ async function assertImportedSkill() {
   assert.equal(await support.text(), 'legacy-support-file');
 }
 
-async function createMemory() {
+async function createMemory(publishConfig = false) {
   const c = client();
   const store = await c.beta.memoryStores.create({ betas: BETAS });
+  if (publishConfig) {
+    const published = await rawJson('POST', `/v1/memory_stores/${store.id}/config`, {
+      expected_config_version: 1,
+      recall_policy: { enabled: true, max_results: 17 },
+      extraction_policy: { enabled: false },
+    });
+    assert.equal(published.status, 200);
+    assert.equal(published.body.version, 2);
+  }
   const memory = await c.beta.memoryStores.memories.create(store.id, {
     path: '/new.md',
     content: 'new-memory',
     betas: BETAS,
   });
   assert.match(memory.memory_version_id, /^memver_mem_/);
+  return store.id;
 }
 
 async function main() {
@@ -181,7 +203,7 @@ async function main() {
     servers.push(first.server);
     await waitForPort(PORT);
     await assertImportedSkill();
-    await createMemory();
+    const configuredStore = await createMemory(true);
     pass('legacy Memory history and two-version Skill aggregate imported once');
 
     await stopServer(first.server);
@@ -204,6 +226,12 @@ async function main() {
     servers.push(second.server);
     await waitForPort(PORT);
     await assertImportedSkill();
+    const restoredConfig = await raw(`/v1/memory_stores/${configuredStore}/config`);
+    assert.equal(restoredConfig.status, 200);
+    const restoredConfigBody = await restoredConfig.json();
+    assert.equal(restoredConfigBody.version, 2);
+    assert.equal(restoredConfigBody.recall_policy.max_results, 17);
+    assert.equal(restoredConfigBody.extraction_policy.enabled, false);
     await createMemory();
     pass('replacement process rebuilt neither resource from the removed legacy database');
 
