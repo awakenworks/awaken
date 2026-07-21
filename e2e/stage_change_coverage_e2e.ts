@@ -37,6 +37,7 @@ const scenarios: Scenario[] = [
   { id: 'durable_cancel', file: 'e2e/durable_worker_cancel_e2e.mjs' },
   { id: 'dispatch_metrics', file: 'e2e/dispatch_metrics_export_e2e.mjs' },
   { id: 'sandbox', file: 'e2e/sandbox_provisioning_e2e.mjs' },
+  { id: 'memoryd_copy', file: 'e2e/memoryd_copy_lifecycle_e2e.mjs' },
   { id: 'mcp_stdio', file: 'e2e/mcp_server_core_e2e.ts' },
   { id: 'mcp_http', file: 'e2e/mcp_streamable_http_e2e.ts' },
   { id: 'resource_plane_postgres', file: 'e2e/resource_plane_postgres_e2e.ts', postgres: true },
@@ -103,6 +104,10 @@ const obligations: Obligation[] = [
   { id: 'D7-01', stage: '7 resource persistence', behavior: 'File, Memory, Skill, and lifecycle adapters select one shared backend family', scenario: 'resource_plane_postgres' },
   { id: 'D7-02', stage: '7 resource persistence', behavior: 'resource data survives process and local-directory replacement', scenario: 'resource_plane_postgres' },
   { id: 'D7-03', stage: '7 resource persistence', behavior: 'cross-Workspace access fails closed without IAM data in resource storage', scenario: 'resource_plane_postgres' },
+  { id: 'D7-04', stage: '7 resource persistence', behavior: 'copy realization creates Memory heads through the real memoryd process', scenario: 'memoryd_copy' },
+  { id: 'D7-05', stage: '7 resource persistence', behavior: 'copy realization reconciles update/delete/create through CAS-aware harvest', scenario: 'memoryd_copy' },
+  { id: 'D7-06', stage: '7 resource persistence', behavior: 'copy realization survives process replacement over one durable SQLite store', scenario: 'memoryd_copy' },
+  { id: 'D7-07', stage: '7 resource persistence', behavior: 'non-UTF-8 files never become mutable Memory content', scenario: 'memoryd_copy' },
 
   { id: 'D8-01', stage: '8 neutral MCP server core', behavior: 'newest and older protocol versions negotiate', scenario: 'mcp_stdio' },
   { id: 'D8-02', stage: '8 neutral MCP server core', behavior: 'unsupported version returns invalid params', scenario: 'mcp_stdio' },
