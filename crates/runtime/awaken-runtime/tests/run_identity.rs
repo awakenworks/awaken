@@ -1,4 +1,4 @@
-//! A caller-supplied child Run id changes identity, not Runtime behavior.
+//! A caller-supplied Run id changes identity, not Runtime behavior.
 
 use std::sync::Arc;
 
@@ -41,7 +41,7 @@ fn context(store: &Arc<MemoryCommitCoordinator>) -> RuntimeRunContext {
 }
 
 #[tokio::test]
-async fn explicit_child_identity_preserves_the_ordinary_run_lifecycle() {
+async fn explicit_identity_preserves_the_ordinary_run_lifecycle() {
     let direct_store = Arc::new(MemoryCommitCoordinator::new());
     let direct = Runtime::new().with_llm(Arc::new(FixedModel));
     let direct_state = direct
@@ -55,43 +55,43 @@ async fn explicit_child_identity_preserves_the_ordinary_run_lifecycle() {
         .await
         .expect("direct Run");
 
-    let child_store = Arc::new(MemoryCommitCoordinator::new());
-    let child = Runtime::new().with_llm(Arc::new(FixedModel));
-    let child_id = RunId("stable-child-run".into());
-    let child_state = child
+    let explicit_store = Arc::new(MemoryCommitCoordinator::new());
+    let explicit = Runtime::new().with_llm(Arc::new(FixedModel));
+    let explicit_id = RunId("stable-explicit-run".into());
+    let explicit_state = explicit
         .run_to_completion_with_id(
             &config(),
-            child_id.clone(),
-            "child-thread",
+            explicit_id.clone(),
+            "explicit-thread",
             "work",
-            context(&child_store),
+            context(&explicit_store),
             |_| ResumeResult::allow(),
         )
         .await
-        .expect("child Run");
+        .expect("explicit Run");
 
     assert_eq!(direct_state, RunState::Ended(EndCause::NaturalEnd));
-    assert_eq!(child_state, direct_state);
+    assert_eq!(explicit_state, direct_state);
 
     let direct_truth = direct_store.committed();
-    let child_truth = child_store.committed();
+    let explicit_truth = explicit_store.committed();
     let direct_messages: Vec<_> = direct_truth
         .messages
         .iter()
         .map(|message| (message.role, message.text_content()))
         .collect();
-    let child_messages: Vec<_> = child_truth
+    let explicit_messages: Vec<_> = explicit_truth
         .messages
         .iter()
         .map(|message| (message.role, message.text_content()))
         .collect();
-    assert_eq!(child_messages, direct_messages);
-    assert_eq!(child_truth.run_facts.len(), direct_truth.run_facts.len());
+    assert_eq!(explicit_messages, direct_messages);
+    assert_eq!(explicit_truth.run_facts.len(), direct_truth.run_facts.len());
     assert!(
-        child_truth
+        explicit_truth
             .run_facts
             .iter()
-            .all(|fact| fact.run_id == child_id),
-        "every child fact uses the caller-supplied first-class identity"
+            .all(|fact| fact.run_id == explicit_id),
+        "every fact uses the caller-supplied first-class identity"
     );
 }

@@ -741,8 +741,6 @@ impl BoundMemory {
             None,
             None,
             None,
-            None,
-            None,
         )
         .await
         .map_err(|error| error.to_string())?;
