@@ -218,13 +218,6 @@ pub struct SharedHost {
     /// by one storage-dir durability rule and grouped behind one type that owns that
     /// construction invariant. See [`crate::memory_stores`].
     pub(crate) memory_stores: crate::memory_stores::MemoryStores,
-    /// The control-plane registry of memory-store **identity** (id/name/description/
-    /// metadata/archived), ADR-0038. A different bounded context from the content
-    /// stores above: it lives beside its siblings (`McpStore`, `WebhookStore`) in
-    /// `awaken-config-resolver` and is injected by the composition root with the durable
-    /// admin backend so a store's identity survives a restart and the admin assistant
-    /// can enumerate stores. Defaults to a process-lifetime in-memory registry.
-    pub(crate) memory_registry: Arc<dyn awaken_config_resolver::MemoryStoreRegistry>,
     /// An optional tool gate that replaces the default authorization gate on every
     /// thread's runtime. Used to exercise scheduled actions (ADR-0020, slice E): a
     /// gate that defers tool calls as `ScheduledAction`s so the durable dispatch

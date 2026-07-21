@@ -21,7 +21,7 @@ pub struct AgentConfigView {
     pub skill_ids: Vec<String>,
     /// Resources bound to the published Agent. The runtime mounts these at Session
     /// preparation; protocol projections expose the same effective inputs.
-    pub resources: Vec<crate::SessionResource>,
+    pub resources: Vec<awaken_resource_contract::InputBinding>,
 }
 
 /// A source of config-plane agent projections. A **port**: the host implements it

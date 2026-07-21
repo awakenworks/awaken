@@ -1,56 +1,205 @@
-//! Live-session resource CRUD for [`ManagedState`]: mount/list/get/update/detach.
+//! Live-session typed input CRUD. The persisted `EffectiveSessionInputs` aggregate
+//! is authoritative; runtime mounts and wire DTOs are projections of that value.
 
 use super::*;
 
 impl ManagedState {
-    /// `GET /v1/sessions/{id}/resources` — the session's mounted resources.
+    fn refresh_resource_projection(record: &mut SessionRecord) {
+        record.session.resources = record
+            .effective_inputs
+            .inputs
+            .iter()
+            .map(|input| resolved_resource_dto(&record.session.id, input))
+            .collect();
+    }
+
+    async fn persist_inputs(
+        &self,
+        session_id: &str,
+        owner_scope: &str,
+        inputs: awaken_session_contract::EffectiveSessionInputs,
+    ) -> Result<(), StateError> {
+        let mut persisted = self
+            .sessions_repo
+            .get(session_id)
+            .await
+            .ok_or(StateError::NotFound)?;
+        persisted.effective_inputs = inputs.clone();
+        self.sessions_repo.save_owned(owner_scope, persisted).await;
+        let mut sessions = self.sessions.lock().unwrap();
+        let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
+        record.effective_inputs = inputs;
+        Self::refresh_resource_projection(record);
+        Ok(())
+    }
+
+    async fn resolve_live_input(
+        &self,
+        session_id: &str,
+        owner_scope: &str,
+        binding_id: String,
+        parsed: &ParsedSessionInput,
+    ) -> Result<awaken_session_contract::ResolvedInput, StateError> {
+        let repository_id = if let ParsedInputTarget::Repository {
+            remote_url,
+            authorization_token,
+            initial_branch,
+        } = &parsed.target
+        {
+            let catalog = self.resource_catalog.as_ref().ok_or_else(|| {
+                StateError::Run(RunError::bad_request(
+                    "repository resources require a configured Resource Catalog",
+                ))
+            })?;
+            let repository_id = format!("managed:{session_id}:repository:{binding_id}");
+            let credential_binding = match authorization_token {
+                Some(token) => {
+                    let vaults = self.vaults.as_ref().ok_or_else(|| {
+                        StateError::Run(RunError::bad_request(
+                            "repository authorization requires a configured credential vault",
+                        ))
+                    })?;
+                    Some(
+                        vaults
+                            .enter_session_bearer(owner_scope, token.clone())
+                            .await
+                            .map_err(|error| {
+                                StateError::Run(RunError::bad_request(format!(
+                                    "repository credential could not be stored: {error}"
+                                )))
+                            })?
+                            .0,
+                    )
+                }
+                None => None,
+            };
+            catalog
+                .create_repository(
+                    awaken_resource_contract::RepositoryDefinition {
+                        id: repository_id.clone(),
+                        workspace_id: owner_scope.to_string(),
+                        name: "Live Session repository".into(),
+                        description: "Managed compatibility Session input".into(),
+                        metadata: Default::default(),
+                        state: awaken_resource_contract::ResourceState::Active,
+                        current_config_version: awaken_resource_contract::ConfigVersion::INITIAL,
+                    },
+                    awaken_resource_contract::RepositoryConfigVersion {
+                        repository_id: repository_id.clone(),
+                        version: awaken_resource_contract::ConfigVersion::INITIAL,
+                        remote_url: remote_url.clone(),
+                        credential_binding,
+                        initial_branch: initial_branch.clone(),
+                        clone_policy: awaken_resource_contract::ClonePolicy::default(),
+                    },
+                )
+                .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
+            Some(awaken_resource_contract::RepositoryId::from(repository_id))
+        } else {
+            None
+        };
+        let binding = input_binding(binding_id, parsed, repository_id);
+        let attachment = awaken_session_contract::SessionInputAttachment {
+            binding,
+            replaces: None,
+        };
+        let catalog = self.resource_catalog.as_deref().ok_or_else(|| {
+            StateError::Run(RunError::bad_request(
+                "live resources require a configured Resource Catalog",
+            ))
+        })?;
+        awaken_session_contract::SessionInputResolver::resolve_inputs(
+            owner_scope,
+            catalog,
+            &[],
+            &[attachment],
+        )
+        .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?
+        .inputs
+        .pop()
+        .ok_or_else(|| StateError::Run(RunError::internal("resolved input is empty")))
+    }
+
     pub fn list_resources(&self, id: &str) -> Result<Vec<serde_json::Value>, StateError> {
         let sessions = self.sessions.lock().unwrap();
         let record = sessions.get(id).ok_or(StateError::NotFound)?;
         Ok(record.session.resources.clone())
     }
 
-    /// `POST /v1/sessions/{id}/resources` — mount a resource on a live session,
-    /// minting an id. `file` and `github_repository` are attachable here; a
-    /// `memory_store` is bound at session creation only (Managed Agents contract),
-    /// so adding one to a running session fails closed with a 400.
-    ///
-    /// The mount is realized: the runtime stages it and evicts the thread's cached
-    /// sandbox so the NEXT turn rebuilds with the resource present — not merely a
-    /// record edit. The session record then echoes the resource for list/get/delete.
     pub async fn create_resource(
         &self,
         id: &str,
         body: serde_json::Value,
     ) -> Result<serde_json::Value, StateError> {
-        // The session must exist (checked without holding the lock across the await).
-        {
-            let sessions = self.sessions.lock().unwrap();
-            sessions.get(id).ok_or(StateError::NotFound)?;
-        }
-        if body.get("type").and_then(|t| t.as_str()) == Some("memory_store") {
-            return Err(StateError::Run(RunError::bad_request(MEMORY_CREATE_ONLY)));
-        }
-        let res = parse_session_resource(&body).ok_or_else(|| {
+        let _guard = self.resource_mutations.lock().await;
+        let parsed = parse_session_input(&body).ok_or_else(|| {
             StateError::Run(RunError::bad_request(
                 "resource must be a file or github_repository with its backing id",
             ))
         })?;
-        // Make it real before recording it: stage into the host + evict the cached
-        // sandbox. A staging failure fails the request (fail closed, no record edit).
-        self.runtime
-            .attach_resource(id, res.clone())
+        if matches!(parsed.target, ParsedInputTarget::MemoryStore(_)) {
+            return Err(StateError::Run(RunError::bad_request(MEMORY_CREATE_ONLY)));
+        }
+        let owner_scope = self.resolve_owner(id).await.ok_or(StateError::NotFound)?;
+        let current = self
+            .sessions
+            .lock()
+            .unwrap()
+            .get(id)
+            .ok_or(StateError::NotFound)?
+            .effective_inputs
+            .clone();
+        let mut suffix = current.inputs.len();
+        let binding_id = loop {
+            let candidate = format!("session:{id}:live:{suffix}");
+            if current
+                .inputs
+                .iter()
+                .all(|input| input.binding_id.as_str() != candidate)
+            {
+                break candidate;
+            }
+            suffix += 1;
+        };
+        current
+            .validate_new_binding(
+                &awaken_resource_contract::BindingId::from(binding_id.clone()),
+                &parsed.mount_path,
+            )
+            .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
+        let input = self
+            .resolve_live_input(id, &owner_scope, binding_id, &parsed)
+            .await?;
+        let next = current
+            .attach(input.clone())
+            .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
+        if let Err(error) = self
+            .runtime
+            .apply_session_inputs(id, &owner_scope, &next)
             .await
-            .map_err(StateError::Run)?;
-        let mut sessions = self.sessions.lock().unwrap();
-        let record = sessions.get_mut(id).ok_or(StateError::NotFound)?;
-        let n = record.session.resources.len();
-        let dto = resource_dto(id, n, &res);
-        record.session.resources.push(dto.clone());
-        Ok(dto)
+        {
+            if let awaken_session_contract::ResolvedInputSource::Repository {
+                repository_id, ..
+            } = &input.source
+                && let Some(catalog) = &self.resource_catalog
+            {
+                let _ = catalog.set_repository_state(
+                    &owner_scope,
+                    repository_id.as_str(),
+                    awaken_resource_contract::ResourceState::Deleted,
+                );
+            }
+            return Err(StateError::Run(error));
+        }
+        self.persist_inputs(id, &owner_scope, next).await?;
+        self.sessions
+            .lock()
+            .unwrap()
+            .get(id)
+            .and_then(|record| record.session.resources.last().cloned())
+            .ok_or(StateError::NotFound)
     }
 
-    /// `GET /v1/sessions/{id}/resources/{resource_id}`.
     pub fn get_resource(
         &self,
         id: &str,
@@ -62,102 +211,143 @@ impl ManagedState {
             .session
             .resources
             .iter()
-            .find(|r| r["id"] == resource_id)
+            .find(|resource| resource["id"] == resource_id)
             .cloned()
             .ok_or(StateError::NotFound)
     }
 
-    /// `POST /v1/sessions/{id}/resources/{resource_id}` — merge a JSON patch. An
-    /// `authorization_token` patch on a github_repository ROTATES the live credential
-    /// (re-keys the host-held clone token + the injected GitHub MCP bearer via the runtime),
-    /// and is NEVER stored in / echoed from the record (host-side only, Managed Agents shape).
     pub async fn update_resource(
         &self,
         id: &str,
         resource_id: &str,
         patch: serde_json::Value,
     ) -> Result<serde_json::Value, StateError> {
-        // Reconstruct the target resource with the new token under a short lock (dropped
-        // before the await), so the runtime can re-key the live credential.
-        let rotate: Option<SessionResource> = {
+        let _guard = self.resource_mutations.lock().await;
+        let owner_scope = self.resolve_owner(id).await.ok_or(StateError::NotFound)?;
+        let (current, index) = {
             let sessions = self.sessions.lock().unwrap();
             let record = sessions.get(id).ok_or(StateError::NotFound)?;
-            let resource = record
+            let index = record
                 .session
                 .resources
                 .iter()
-                .find(|r| r["id"] == resource_id)
+                .position(|resource| resource["id"] == resource_id)
                 .ok_or(StateError::NotFound)?;
-            patch
-                .get("authorization_token")
-                .and_then(|t| t.as_str())
-                .and_then(|token| {
-                    parse_session_resource(resource).map(|mut r| {
-                        r.auth_token = Some(token.to_string());
-                        r
-                    })
-                })
+            (record.effective_inputs.clone(), index)
         };
-        if let Some(res) = rotate {
-            self.runtime
-                .rotate_resource_token(id, res)
+        let previous = current.inputs[index].clone();
+        let mut replacement = previous.clone();
+        if let Some(path) = patch.get("mount_path").and_then(serde_json::Value::as_str) {
+            replacement.mount_path = path.to_string();
+        }
+        if let Some(value) = patch.get("instructions") {
+            replacement.instructions = value.as_str().map(str::to_string);
+        }
+        // Validate all side-effect-free fields before sealing a new credential or
+        // publishing a Repository config version.
+        current
+            .replace(replacement.clone())
+            .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
+        if let Some(token) = patch
+            .get("authorization_token")
+            .and_then(serde_json::Value::as_str)
+        {
+            let awaken_session_contract::ResolvedInputSource::Repository {
+                repository_id,
+                config: pinned,
+            } = &previous.source
+            else {
+                return Err(StateError::Run(RunError::bad_request(
+                    "authorization_token is valid only for github_repository",
+                )));
+            };
+            let vaults = self.vaults.as_ref().ok_or_else(|| {
+                StateError::Run(RunError::bad_request(
+                    "repository authorization requires a configured credential vault",
+                ))
+            })?;
+            let credential = vaults
+                .enter_session_bearer(&owner_scope, token.to_string())
                 .await
-                .map_err(StateError::Run)?;
+                .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
+            let catalog = self.resource_catalog.as_ref().ok_or_else(|| {
+                StateError::Run(RunError::bad_request("Resource Catalog is not configured"))
+            })?;
+            let definition = catalog
+                .repository(&owner_scope, repository_id.as_str())
+                .ok_or(StateError::NotFound)?;
+            let mut next_config = pinned.clone();
+            next_config.version = definition
+                .current_config_version
+                .checked_next()
+                .ok_or_else(|| {
+                    StateError::Run(RunError::bad_request("config version exhausted"))
+                })?;
+            next_config.credential_binding = Some(credential.0);
+            catalog
+                .publish_repository_config(
+                    &owner_scope,
+                    definition.current_config_version,
+                    next_config.clone(),
+                )
+                .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
+            replacement.source = awaken_session_contract::ResolvedInputSource::Repository {
+                repository_id: repository_id.clone(),
+                config: next_config,
+            };
         }
-        // Merge the patch into the stored DTO — but NEVER the token (host-side only, never
-        // echoed): it was rotated into the runtime above, not recorded.
-        let mut sessions = self.sessions.lock().unwrap();
-        let record = sessions.get_mut(id).ok_or(StateError::NotFound)?;
-        let resource = record
-            .session
-            .resources
-            .iter_mut()
-            .find(|r| r["id"] == resource_id)
-            .ok_or(StateError::NotFound)?;
-        if let (Some(target), Some(patch)) = (resource.as_object_mut(), patch.as_object()) {
-            for (k, v) in patch {
-                if k == "authorization_token" {
-                    continue;
-                }
-                target.insert(k.clone(), v.clone());
-            }
-        }
-        Ok(resource.clone())
+        let next = current
+            .replace(replacement.clone())
+            .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
+        self.runtime
+            .apply_session_inputs(id, &owner_scope, &next)
+            .await
+            .map_err(StateError::Run)?;
+        self.persist_inputs(id, &owner_scope, next).await?;
+        self.get_resource(id, resource_id)
     }
 
-    /// `DELETE /v1/sessions/{id}/resources/{resource_id}` — detach a `file` or
-    /// `github_repository` from a live session. A `memory_store` binds at session
-    /// creation and cannot be removed from a running session (Managed Agents
-    /// contract), so detaching one fails closed with a 400.
     pub async fn delete_resource(&self, id: &str, resource_id: &str) -> Result<(), StateError> {
-        // Resolve the target (existence + kind) under the lock, dropped before the
-        // await. `memory_store` cannot be detached from a running session.
-        let res = {
+        let _guard = self.resource_mutations.lock().await;
+        let owner_scope = self.resolve_owner(id).await.ok_or(StateError::NotFound)?;
+        let (current, index) = {
             let sessions = self.sessions.lock().unwrap();
             let record = sessions.get(id).ok_or(StateError::NotFound)?;
-            let target = record
+            let index = record
                 .session
                 .resources
                 .iter()
-                .find(|r| r["id"] == resource_id)
+                .position(|resource| resource["id"] == resource_id)
                 .ok_or(StateError::NotFound)?;
-            if target.get("type").and_then(|t| t.as_str()) == Some("memory_store") {
-                return Err(StateError::Run(RunError::bad_request(MEMORY_CREATE_ONLY)));
-            }
-            parse_session_resource(target)
+            (record.effective_inputs.clone(), index)
         };
-        // The runtime flushes write-back while the old sandbox is still live, drops
-        // this resource's mount, and evicts the cached sandbox so the next turn
-        // rebuilds without it. Then the record drops the entry.
-        if let Some(res) = res {
-            self.runtime
-                .detach_resource(id, res)
-                .await
-                .map_err(StateError::Run)?;
+        let input = &current.inputs[index];
+        if matches!(
+            input.source,
+            awaken_session_contract::ResolvedInputSource::MemoryStore { .. }
+        ) {
+            return Err(StateError::Run(RunError::bad_request(MEMORY_CREATE_ONLY)));
         }
-        let mut sessions = self.sessions.lock().unwrap();
-        let record = sessions.get_mut(id).ok_or(StateError::NotFound)?;
-        record.session.resources.retain(|r| r["id"] != resource_id);
+        let (next, removed) = current
+            .detach(&input.binding_id)
+            .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
+        self.runtime
+            .apply_session_inputs(id, &owner_scope, &next)
+            .await
+            .map_err(StateError::Run)?;
+        self.persist_inputs(id, &owner_scope, next).await?;
+        if let awaken_session_contract::ResolvedInputSource::Repository { repository_id, .. } =
+            removed.source
+            && let Some(catalog) = &self.resource_catalog
+        {
+            catalog
+                .set_repository_state(
+                    &owner_scope,
+                    repository_id.as_str(),
+                    awaken_resource_contract::ResourceState::Deleted,
+                )
+                .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
+        }
         Ok(())
     }
 }

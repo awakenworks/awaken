@@ -1,12 +1,6 @@
-//! The session-mounted resource cluster (ADR-0038): the neutral
-//! [`SessionResource`], its wire parse form, and the DTO projection.
+//! Managed wire parsing and projection for typed Session inputs.
 
 use super::*;
-
-// The neutral [`SessionResource`] now lives in `awaken-session-contract`; this module
-// keeps the Managed wire parse form + the DTO projection over it. Re-exported so
-// existing `crate::state::SessionResource` paths keep resolving.
-pub use awaken_session_contract::{ResourceAccess, SessionResource};
 
 #[derive(Debug, Clone, Copy, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -15,7 +9,7 @@ enum WireAccess {
     ReadWrite,
 }
 
-impl From<WireAccess> for ResourceAccess {
+impl From<WireAccess> for awaken_resource_contract::ResourceAccess {
     fn from(value: WireAccess) -> Self {
         match value {
             WireAccess::ReadOnly => Self::ReadOnly,
@@ -87,44 +81,55 @@ enum WireCheckout {
     },
     // Accepted so the full SDK payload deserializes, but not yet wired to the clone
     // (the host checks out a branch ref; a `sha` clones the default branch). Parsed,
-    // deliberately not consumed — see `into_session_resource`.
+    // deliberately not consumed — mutable repositories are not commit-pinned.
     Commit {
         #[allow(dead_code)]
         sha: String,
     },
 }
 
+#[derive(Debug, Clone)]
+pub(crate) enum ParsedInputTarget {
+    File(awaken_resource_contract::FileId),
+    MemoryStore(awaken_resource_contract::MemoryStoreId),
+    Repository {
+        remote_url: String,
+        authorization_token: Option<String>,
+        initial_branch: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ParsedSessionInput {
+    pub target: ParsedInputTarget,
+    pub mount_path: String,
+    pub access: awaken_resource_contract::ResourceAccess,
+    pub instructions: Option<String>,
+}
+
 impl WireResource {
-    /// Lower to the neutral crate-boundary [`SessionResource`], defaulting the mount
-    /// path per kind (mirroring the Managed defaults).
-    fn into_session_resource(self) -> SessionResource {
+    fn into_parsed_input(self) -> ParsedSessionInput {
         match self {
             WireResource::File {
                 file_id,
                 mount_path,
                 instructions,
-            } => SessionResource {
-                kind: "file".into(),
+            } => ParsedSessionInput {
+                target: ParsedInputTarget::File(file_id.clone().into()),
                 mount_path: mount_path.unwrap_or_else(|| format!("/mnt/session/uploads/{file_id}")),
-                id: file_id,
-                access: ResourceAccess::ReadOnly,
+                access: awaken_resource_contract::ResourceAccess::ReadOnly,
                 instructions,
-                auth_token: None,
-                git_ref: None,
             },
             WireResource::MemoryStore {
                 memory_store_id,
                 mount_path,
                 instructions,
                 access,
-            } => SessionResource {
-                kind: "memory_store".into(),
+            } => ParsedSessionInput {
+                target: ParsedInputTarget::MemoryStore(memory_store_id.into()),
                 mount_path: mount_path.unwrap_or_else(|| "/mnt/memory/store".into()),
-                id: memory_store_id,
                 access: access.unwrap_or(WireAccess::ReadWrite).into(),
                 instructions,
-                auth_token: None,
-                git_ref: None,
             },
             WireResource::GithubRepository {
                 url,
@@ -132,69 +137,108 @@ impl WireResource {
                 instructions,
                 authorization_token,
                 checkout,
-            } => SessionResource {
-                // Repo default mirrors Managed Agents: /workspace/<repo-name>.
+            } => ParsedSessionInput {
                 mount_path: mount_path.unwrap_or_else(|| format!("/workspace/{}", repo_name(&url))),
-                kind: "github_repository".into(),
-                id: url,
-                access: ResourceAccess::ReadWrite,
-                instructions,
-                auth_token: authorization_token,
-                git_ref: match checkout {
-                    Some(WireCheckout::Branch { name }) => Some(name),
-                    Some(WireCheckout::Commit { .. }) | None => None,
+                target: ParsedInputTarget::Repository {
+                    remote_url: url,
+                    authorization_token,
+                    initial_branch: match checkout {
+                        Some(WireCheckout::Branch { name }) => Some(name),
+                        Some(WireCheckout::Commit { .. }) | None => None,
+                    },
                 },
+                access: awaken_resource_contract::ResourceAccess::ReadWrite,
+                instructions,
             },
         }
     }
 }
 
-/// Parse one wire `resources[]` entry into a neutral [`SessionResource`]. `None` for
-/// a malformed/unknown entry (the caller decides: session-create drops it; the live
-/// `resources.add` path turns it into a 400). Shared by both paths.
-pub(crate) fn parse_session_resource(v: &serde_json::Value) -> Option<SessionResource> {
+pub(crate) fn parse_session_input(v: &serde_json::Value) -> Option<ParsedSessionInput> {
     serde_json::from_value::<WireResource>(v.clone())
         .ok()
-        .map(WireResource::into_session_resource)
+        .map(WireResource::into_parsed_input)
 }
 
-/// Project a [`SessionResource`] to an official `BetaManagedAgentsSessionResource`
-/// wire entry with a stable id (`{session}:resource:{n}`), so both create-time
-/// backfill and live `resources.add` emit an SDK-decodable, uniformly-addressable
-/// resource. The auth token is never echoed.
-pub(crate) fn resource_dto(session_id: &str, n: usize, res: &SessionResource) -> serde_json::Value {
+/// Lower a parsed Managed resource into the shared typed binding language. The
+/// caller supplies the platform id for a compatibility Repository after it has
+/// created that Session-scoped catalog definition.
+pub(crate) fn input_binding(
+    binding_id: String,
+    input: &ParsedSessionInput,
+    repository_id: Option<awaken_resource_contract::RepositoryId>,
+) -> awaken_resource_contract::InputBinding {
+    use awaken_resource_contract::{BindingId, InputBinding, InputResourceId};
+
+    let target = match &input.target {
+        ParsedInputTarget::File(file_id) => InputResourceId::File(file_id.clone()),
+        ParsedInputTarget::MemoryStore(memory_store_id) => {
+            InputResourceId::MemoryStore(memory_store_id.clone())
+        }
+        ParsedInputTarget::Repository { .. } => InputResourceId::Repository(
+            repository_id.expect("Managed Repository lowering supplies a platform id"),
+        ),
+    };
+    InputBinding {
+        binding_id: BindingId::new(binding_id),
+        target,
+        mount_path: input.mount_path.clone(),
+        access: input.access,
+        instructions: input.instructions.clone(),
+    }
+}
+
+/// Project one frozen resolved input back to the Managed Session wire. Internal
+/// config versions remain an awaken implementation detail; credentials are never
+/// echoed.
+pub(crate) fn resolved_resource_dto(
+    session_id: &str,
+    input: &awaken_session_contract::ResolvedInput,
+) -> serde_json::Value {
+    use awaken_session_contract::ResolvedInputSource;
     use serde_json::json;
+
     let mut obj = serde_json::Map::new();
-    obj.insert("id".into(), json!(format!("{session_id}:resource:{n}")));
-    obj.insert("type".into(), json!(res.kind));
-    obj.insert("mount_path".into(), json!(res.mount_path));
+    obj.insert(
+        "id".into(),
+        json!(format!(
+            "{session_id}:resource:{}",
+            input.binding_id.as_str()
+        )),
+    );
+    obj.insert("mount_path".into(), json!(input.mount_path));
     obj.insert("created_at".into(), json!(PROCESSED_AT));
     obj.insert("updated_at".into(), json!(PROCESSED_AT));
-    match res.kind.as_str() {
-        "file" => {
-            obj.insert("file_id".into(), json!(res.id));
+    match &input.source {
+        ResolvedInputSource::File { file_id } => {
+            obj.insert("type".into(), json!("file"));
+            obj.insert("file_id".into(), json!(file_id.as_str()));
         }
-        "memory_store" => {
-            obj.insert("memory_store_id".into(), json!(res.id));
+        ResolvedInputSource::MemoryStore {
+            memory_store_id, ..
+        } => {
+            obj.insert("type".into(), json!("memory_store"));
+            obj.insert("memory_store_id".into(), json!(memory_store_id.as_str()));
             obj.insert(
                 "access".into(),
-                json!(match res.access {
-                    ResourceAccess::ReadOnly => "read_only",
-                    ResourceAccess::ReadWrite => "read_write",
+                json!(match input.access {
+                    awaken_resource_contract::ResourceAccess::ReadOnly => "read_only",
+                    awaken_resource_contract::ResourceAccess::ReadWrite => "read_write",
                 }),
             );
-            if let Some(i) = &res.instructions {
-                obj.insert("instructions".into(), json!(i));
+            if let Some(instructions) = &input.instructions {
+                obj.insert("instructions".into(), json!(instructions));
             }
         }
-        "github_repository" => {
-            obj.insert("url".into(), json!(res.id));
-            if let Some(r) = &res.git_ref {
-                obj.insert("checkout".into(), json!({ "type": "branch", "name": r }));
+        ResolvedInputSource::Repository { config, .. } => {
+            obj.insert("type".into(), json!("github_repository"));
+            obj.insert("url".into(), json!(config.remote_url));
+            if let Some(branch) = &config.initial_branch {
+                obj.insert(
+                    "checkout".into(),
+                    json!({ "type": "branch", "name": branch }),
+                );
             }
-        }
-        _ => {
-            obj.insert("resource_id".into(), json!(res.id));
         }
     }
     serde_json::Value::Object(obj)
