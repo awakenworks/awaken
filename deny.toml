@@ -115,6 +115,9 @@ wrappers = [
     "awaken-run-ingress-testkit",
     "awaken-run-ingress",
     "awaken-sandbox-local",
+    # Dev-only production-image Session test drives ToolCall through the real
+    # remote hand; production container code stays below runtime-contract.
+    "awaken-sandbox-container",
     # The execution-plane binary's `hand` role (feature-gated) drives ToolCall through
     # the remote executor; dev-dep for its integration test (C5, ADR-0044/0045).
     "awaken-sandbox",

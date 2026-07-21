@@ -84,7 +84,7 @@ impl LaunchSource {
 
     /// The config-plane-selected [`AcpCli`] this source serves, if projecting. `None`
     /// for a fixed argv (which carries no catalog row, so no MCP projection).
-    fn cli(&self) -> Option<&AcpCli> {
+    pub(crate) fn cli(&self) -> Option<&AcpCli> {
         match self {
             LaunchSource::Fixed(_) => None,
             LaunchSource::Projected { cli, .. } => Some(cli.as_ref()),
@@ -184,7 +184,7 @@ const SANDBOX_WORKSPACE: &str = "/workspace";
 /// The fixed interior config-home a `ConfigFileToml` CLI (codex) reads its MCP config
 /// from: the projected `config.toml` is mounted here (`MountSource::Inline`) and the
 /// CLI's config-home env (e.g. `CODEX_HOME`) points at it.
-const SANDBOX_CONFIG_HOME: &str = "/acp-config";
+pub(crate) const SANDBOX_CONFIG_HOME: &str = "/acp-config";
 
 #[cfg(any(
     test,
@@ -214,7 +214,7 @@ static ACP_CREDENTIAL_WRITE_SEQ: std::sync::atomic::AtomicU64 =
     feature = "container-k8s"
 ))]
 #[derive(Debug, Clone)]
-struct AcpCredentialBinding {
+pub(crate) struct AcpCredentialBinding {
     reference: String,
 }
 
@@ -298,7 +298,7 @@ type CredentialProjection = Option<(AcpCredentialBinding, Arc<dyn pc::SecretBrok
     feature = "container-podman",
     feature = "container-k8s"
 ))]
-fn credential_projection(source: &LaunchSource) -> Result<CredentialProjection, String> {
+pub(crate) fn credential_projection(source: &LaunchSource) -> Result<CredentialProjection, String> {
     let Some(raw_path) = std::env::var(crate::acp_provision::ACP_CREDENTIAL_FILE_ENV)
         .ok()
         .filter(|value| !value.trim().is_empty())
@@ -739,6 +739,20 @@ impl BoundLocalChannelSource {
 impl AgentChannelSource for BoundLocalChannelSource {
     async fn open(&self, activation: &RunActivation) -> Result<AgentSession, OpenError> {
         let mut launch = self.launch.resolve(activation)?;
+        if self.sandbox.is_container()
+            && let Some(cli) = self.launch.cli()
+        {
+            launch.argv = cli
+                .container_argv
+                .iter()
+                .map(|part| (*part).to_string())
+                .collect();
+            launch.env.retain(|(key, _)| key != cli.config_home_env);
+            launch.env.push((
+                cli.config_home_env.to_string(),
+                self.sandbox.config_home().to_string(),
+            ));
+        }
         let injection = match self.launch.cli() {
             Some(cli) => awaken_run_executor_acp::mcp_injection(
                 cli,
@@ -751,7 +765,7 @@ impl AgentChannelSource for BoundLocalChannelSource {
             && let Some((mount, (env_key, env_val))) = acp_config_mount(
                 cli,
                 injection.config_file.clone(),
-                WORKDIR_CONFIG_HOME,
+                self.sandbox.config_home(),
                 false,
             )
         {
@@ -762,6 +776,7 @@ impl AgentChannelSource for BoundLocalChannelSource {
             };
             self.sandbox
                 .materialize_inline(&mount.mount_path, contents.as_bytes())
+                .await
                 .map_err(|error| OpenError(format!("materialize ACP config: {error}")))?;
             launch.env.retain(|(key, _)| *key != env_key);
             launch.env.push((env_key, env_val));
@@ -818,7 +833,7 @@ fn acp_config_mount(
     feature = "container-podman",
     feature = "container-k8s"
 ))]
-fn acp_credential_mount(
+pub(crate) fn acp_credential_mount(
     cli: &AcpCli,
     binding: &AcpCredentialBinding,
     config_home: &str,
@@ -846,6 +861,7 @@ fn acp_credential_mount(
 /// (process-as-container), then opens the ACP channel to it. The container counterpart
 /// of [`SandboxChannelSource`]; the composition root wires whichever a given worker is
 /// configured for, so one host binary drives any backend.
+#[cfg(test)]
 pub struct ContainerChannelSource {
     provider: Arc<dyn AgentContainerProvider>,
     launch: LaunchSource,
@@ -856,6 +872,7 @@ pub struct ContainerChannelSource {
     credential: Option<AcpCredentialBinding>,
 }
 
+#[cfg(test)]
 impl ContainerChannelSource {
     /// A source whose containers are realized by `provider` (the worker's configured
     /// runtime backend + default image). Defaults to the newline stand-in wire; a real
@@ -1002,6 +1019,7 @@ impl ContainerChannelSource {
 }
 
 #[async_trait]
+#[cfg(test)]
 impl AgentChannelSource for ContainerChannelSource {
     async fn open(&self, activation: &RunActivation) -> Result<AgentSession, OpenError> {
         let thread = activation.thread_id.0.as_str();
@@ -1080,6 +1098,7 @@ impl AgentChannelSource for ContainerChannelSource {
 /// The TCP port a containerized agent publishes its ACP wire on — the image's
 /// entrypoint binds it, the runtime dials it. A fixed convention for now.
 #[cfg(any(feature = "container-docker", feature = "container-podman"))]
+#[cfg(test)]
 const CONTAINER_AGENT_PORT: u16 = 8080;
 
 /// Build the ACP [`AgentChannelSource`] a worker serves, from its configured
@@ -1117,7 +1136,7 @@ impl AcpSandboxBindings {
 
 pub async fn build_acp_channel_source(
     tier: crate::deployment_config::SandboxTier,
-    image: Option<&str>,
+    _image: Option<&str>,
     source: LaunchSource,
     bindings: AcpSandboxBindings,
     namespace_base: std::path::PathBuf,
@@ -1153,9 +1172,10 @@ pub async fn build_acp_channel_source(
             }
             Ok(Arc::new(channel))
         }
-        SandboxTier::Docker => build_docker_source(image, source, egress, resources, sandbox),
-        SandboxTier::Podman => build_podman_source(image, source, egress, resources, sandbox),
-        SandboxTier::K8s => build_k8s_source(image, source, egress, resources, sandbox).await,
+        SandboxTier::Docker | SandboxTier::Podman | SandboxTier::K8s => Err(
+            "container ACP is bound through the SessionEnvironment; a per-attempt channel source is forbidden"
+                .into(),
+        ),
     }
 }
 
@@ -1220,7 +1240,7 @@ fn allow_local_fallback() -> bool {
     feature = "container-podman",
     feature = "container-k8s"
 ))]
-fn container_image(image: Option<&str>) -> Result<String, String> {
+pub(crate) fn container_image(image: Option<&str>) -> Result<String, String> {
     image
         .filter(|s| !s.is_empty())
         .map(str::to_string)
@@ -1235,7 +1255,7 @@ fn container_image(image: Option<&str>) -> Result<String, String> {
     feature = "container-podman",
     feature = "container-k8s"
 ))]
-fn warm_pool_size() -> usize {
+pub(crate) fn warm_pool_size() -> usize {
     std::env::var("AWAKEN_SANDBOX_WARM_POOL")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -1247,10 +1267,13 @@ fn warm_pool_size() -> usize {
 /// an [`AgentContainerProvider`], so the container source is unchanged. The pool fills
 /// lazily (replenishes after the first session of a shape), so no capacity is
 /// provisioned until a shape is actually used.
-#[cfg(any(
-    feature = "container-docker",
-    feature = "container-podman",
-    feature = "container-k8s"
+#[cfg(all(
+    test,
+    any(
+        feature = "container-docker",
+        feature = "container-podman",
+        feature = "container-k8s"
+    )
 ))]
 fn warm_wrap<R: awaken_sandbox_container::ContainerRuntime + 'static>(
     provider: awaken_sandbox_container::ContainerProvider<R>,
@@ -1271,7 +1294,7 @@ fn warm_wrap<R: awaken_sandbox_container::ContainerRuntime + 'static>(
     feature = "container-podman",
     feature = "container-k8s"
 ))]
-fn configured_container_egress_proxy() -> Option<awaken_sandbox_container::EgressProxy> {
+pub(crate) fn configured_container_egress_proxy() -> Option<awaken_sandbox_container::EgressProxy> {
     std::env::var("AWAKEN_CONTAINER_EGRESS_PROXY")
         .ok()
         .filter(|url| !url.trim().is_empty())
@@ -1286,7 +1309,7 @@ fn configured_container_egress_proxy() -> Option<awaken_sandbox_container::Egres
 /// native GC reaps them (its `list_managed` is empty → a reaper there is a no-op).
 /// Called once per host from the composition seam, so exactly one loop runs.
 #[cfg(any(feature = "container-docker", feature = "container-podman"))]
-fn spawn_container_reaper<R: awaken_sandbox_container::ContainerRuntime + 'static>(
+pub(crate) fn spawn_container_reaper<R: awaken_sandbox_container::ContainerRuntime + 'static>(
     runtime: Arc<R>,
 ) {
     if std::env::var("AWAKEN_SANDBOX_REAP").as_deref() == Ok("0") {
@@ -1301,10 +1324,13 @@ fn spawn_container_reaper<R: awaken_sandbox_container::ContainerRuntime + 'stati
 }
 
 /// Wrap a worker-configured [`AgentContainerProvider`] into a [`ContainerChannelSource`].
-#[cfg(any(
-    feature = "container-docker",
-    feature = "container-podman",
-    feature = "container-k8s"
+#[cfg(all(
+    test,
+    any(
+        feature = "container-docker",
+        feature = "container-podman",
+        feature = "container-k8s"
+    )
 ))]
 fn container_source(
     provider: Arc<dyn AgentContainerProvider>,
@@ -1323,7 +1349,7 @@ fn container_source(
     )
 }
 
-#[cfg(feature = "container-docker")]
+#[cfg(all(test, feature = "container-docker"))]
 fn build_docker_source(
     image: Option<&str>,
     source: LaunchSource,
@@ -1356,7 +1382,7 @@ fn build_docker_source(
     ))
 }
 
-#[cfg(not(feature = "container-docker"))]
+#[cfg(all(test, not(feature = "container-docker")))]
 fn build_docker_source(
     _image: Option<&str>,
     _source: LaunchSource,
@@ -1367,7 +1393,7 @@ fn build_docker_source(
     Err("AWAKEN_SANDBOX_TIER=docker needs the `container-docker` feature".into())
 }
 
-#[cfg(feature = "container-podman")]
+#[cfg(all(test, feature = "container-podman"))]
 fn build_podman_source(
     image: Option<&str>,
     source: LaunchSource,
@@ -1398,7 +1424,7 @@ fn build_podman_source(
     ))
 }
 
-#[cfg(not(feature = "container-podman"))]
+#[cfg(all(test, not(feature = "container-podman")))]
 fn build_podman_source(
     _image: Option<&str>,
     _source: LaunchSource,
@@ -1409,7 +1435,7 @@ fn build_podman_source(
     Err("AWAKEN_SANDBOX_TIER=podman needs the `container-podman` feature".into())
 }
 
-#[cfg(feature = "container-k8s")]
+#[cfg(all(test, feature = "container-k8s"))]
 async fn build_k8s_source(
     image: Option<&str>,
     source: LaunchSource,
@@ -1451,7 +1477,7 @@ async fn build_k8s_source(
     ))
 }
 
-#[cfg(not(feature = "container-k8s"))]
+#[cfg(all(test, not(feature = "container-k8s")))]
 async fn build_k8s_source(
     _image: Option<&str>,
     _source: LaunchSource,

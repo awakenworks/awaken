@@ -1168,13 +1168,14 @@ mod tests {
                 .count(),
             2
         );
-        // one pod-scoped emptyDir per store, PLUS the 2 writable-rootfs dirs (outputs+/tmp).
+        // one pod-scoped emptyDir per store, plus the three writable-rootfs dirs
+        // (workspace, outputs, and /tmp).
         let volumes = spec.volumes.as_ref().unwrap();
-        assert_eq!(volumes.len(), 2 + 2);
+        assert_eq!(volumes.len(), 2 + 3);
         assert!(volumes.iter().all(|v| v.empty_dir.is_some()));
         // the agent mounts both memory volumes + the writable dirs + carries limits.
         let agent = &spec.containers[0];
-        assert_eq!(agent.volume_mounts.as_ref().unwrap().len(), 2 + 2);
+        assert_eq!(agent.volume_mounts.as_ref().unwrap().len(), 2 + 3);
         assert!(agent.resources.is_some());
         // the sidecar names the store + mount path + image (the privilege lives here).
         let sc = spec
@@ -1375,10 +1376,11 @@ mod tests {
     fn build_pod_without_memory_mounts_is_a_single_container() {
         let pod = build_pod("r", &plan_with_memory(Vec::new()), &None, "m", None, false);
         let spec = pod.spec.unwrap();
-        // No memoryd sidecar, but the agent still gets the 2 writable-rootfs emptyDirs.
+        // No memoryd sidecar, but the agent still gets the three writable-rootfs
+        // emptyDirs (workspace, outputs, and /tmp).
         assert_eq!(spec.containers.len(), 1);
-        assert_eq!(spec.volumes.as_ref().unwrap().len(), 2);
-        assert_eq!(spec.containers[0].volume_mounts.as_ref().unwrap().len(), 2);
+        assert_eq!(spec.volumes.as_ref().unwrap().len(), 3);
+        assert_eq!(spec.containers[0].volume_mounts.as_ref().unwrap().len(), 3);
     }
 
     fn memoryd_sidecar(spec: &PodSpec) -> &Container {

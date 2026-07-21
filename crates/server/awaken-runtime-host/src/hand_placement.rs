@@ -38,6 +38,14 @@ impl HandPlacement {
         self.remote_hand = Some(hand);
     }
 
+    /// Pin tool execution to a hand that lives inside the Session environment.
+    /// An external placement provider must not override it, otherwise Native calls
+    /// would silently leave the sandbox shared with ACP.
+    pub(crate) fn bind_environment_hand(&mut self, hand: Arc<dyn ToolExecutor>) {
+        self.remote_hand = Some(hand);
+        self.provider = None;
+    }
+
     /// Wire a per-run placement provider (ADR-0046).
     pub(crate) fn set_provider(&mut self, provider: Arc<dyn ToolExecutorProvider>) {
         self.provider = Some(provider);

@@ -25,6 +25,7 @@ pub mod mcp_export;
 pub mod model_resolver;
 pub mod no_model;
 pub mod placement;
+mod relay_hand;
 pub mod resource_scope_fence;
 pub mod webhooks;
 mod worker_registry;
@@ -50,6 +51,7 @@ pub use awaken_runtime_host::{
     content_fingerprint, durable_ops_router, memory_stores_router,
     memory_stores_router_with_catalog, parse_skill_md, skills_router,
 };
+pub use relay_hand::relay_hand_executor_factory;
 pub use worker_registry::{
     init_postgres as init_postgres_worker_registry, inject as init_worker_registry,
 };

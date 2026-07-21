@@ -21,6 +21,8 @@ use std::sync::Arc;
 
 mod environment_owned;
 use environment_owned::EnvironmentOwnedProcess;
+mod podman_plan;
+pub use podman_plan::{RootfsError, RootfsPlan, podman_run_argv, rootfs_plan};
 
 /// Container-tier capabilities: OS-enforced isolation strong enough to host an
 /// opaque agent, with the guarantees bwrap could not give (allowlist egress,
@@ -358,16 +360,27 @@ mod cgroup_caps_tests {
             .filter(|(_, a)| *a == "--tmpfs")
             .filter_map(|(i, _)| argv.get(i + 1).map(String::as_str))
             .collect();
-        assert!(tmpfs.contains(&"/mnt/session/outputs"));
-        assert!(tmpfs.contains(&"/tmp"));
+        assert!(tmpfs.iter().any(|value| value.starts_with("/workspace:")));
+        assert!(
+            tmpfs
+                .iter()
+                .any(|value| value.starts_with("/mnt/session/outputs:"))
+        );
+        assert!(tmpfs.iter().any(|value| value.starts_with("/tmp:")));
+        assert!(tmpfs.iter().all(|value| value.contains("mode=1777")));
     }
 
     #[test]
-    fn writable_dirs_are_outputs_and_tmp_deduped() {
+    fn writable_dirs_are_workspace_outputs_and_tmp_deduped() {
         let mut plan = podman_plan();
-        assert_eq!(writable_dirs(&plan), vec!["/mnt/session/outputs", "/tmp"]);
+        assert_eq!(
+            writable_dirs(&plan),
+            vec!["/workspace", "/mnt/session/outputs", "/tmp"]
+        );
         plan.outputs_volume = "/tmp".into();
-        assert_eq!(writable_dirs(&plan), vec!["/tmp"]); // deduped
+        assert_eq!(writable_dirs(&plan), vec!["/workspace", "/tmp"]);
+        plan.outputs_volume = "/workspace".into();
+        assert_eq!(writable_dirs(&plan), vec!["/workspace", "/tmp"]);
     }
 
     #[test]
@@ -375,6 +388,7 @@ mod cgroup_caps_tests {
         let argv = podman_run_argv("run-1", &podman_plan(), &RootfsPlan::Image("img:2".into()));
         assert!(argv.starts_with(&["run".into(), "-d".into(), "--init".into()]));
         assert_eq!(arg_after(&argv, "--name"), Some("run-1"));
+        assert_eq!(arg_after(&argv, "--entrypoint"), Some(""));
         // network None → --network none
         assert_eq!(arg_after(&argv, "--network"), Some("none"));
         // cgroup: swap pinned to memory, cpus decimal, pids
@@ -385,7 +399,7 @@ mod cgroup_caps_tests {
         // env + read-only bind
         assert_eq!(arg_after(&argv, "-e"), Some("TZ=UTC"));
         assert_eq!(arg_after(&argv, "-v"), Some("/host/data:/data:ro"));
-        // process-as-container: the image then the agent command are the tail
+        // Session environment: the image then the PID-1 keepalive are the tail.
         assert_eq!(&argv[argv.len() - 3..], &["img:2", "claude", "--acp"]);
     }
 
@@ -468,159 +482,19 @@ fn network_of(policy: &pc::NetworkPolicy) -> NetworkMode {
 }
 
 /// The sandbox paths that must stay writable under a **read-only rootfs**: the
-/// outputs volume the agent writes artifacts to, and a scratch `/tmp`. Declared
+/// Session workspace, the outputs volume the agent writes artifacts to, and a
+/// scratch `/tmp`. Declared
 /// resource mounts are realized separately (as binds/volumes). Pure, so every
 /// adapter renders the same writable set atop the same hardening.
 #[must_use]
 pub fn writable_dirs(plan: &ContainerPlan) -> Vec<String> {
-    let mut dirs = vec![plan.outputs_volume.clone()];
-    if plan.outputs_volume != "/tmp" {
-        dirs.push("/tmp".to_string());
+    let mut dirs = vec!["/workspace".to_string()];
+    for path in [plan.outputs_volume.as_str(), "/tmp"] {
+        if !dirs.iter().any(|entry| entry == path) {
+            dirs.push(path.to_string());
+        }
     }
     dirs
-}
-
-/// The concrete rootfs a container/rootless-podman runtime must realize from a
-/// declared [`pc::EnvironmentKind`]. Pure, so the (fork-exec, daemonless) adapter
-/// only has to translate it into `podman run` flags.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RootfsPlan {
-    /// Borrow the default image's userland (no custom root).
-    HostUserland,
-    /// An OCI image reference.
-    Image(String),
-    /// A private root bound from a host directory template.
-    RootDir {
-        path_template: String,
-        /// A writable base forces single-active use of the environment.
-        writable: bool,
-    },
-    /// A private root unpacked from a tarball reference.
-    RootTarball { reference: String, writable: bool },
-}
-
-/// Why a declared environment has no container-tier rootfs realization.
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
-pub enum RootfsError {
-    /// `Scope`/`LocalDir` are non-container tiers — the container provider must not
-    /// silently run them as a borrowed-userland container.
-    #[error("environment kind has no container-tier rootfs realization")]
-    NotAContainerRootfs,
-}
-
-/// Map a declared environment kind onto its container-tier rootfs, fail-closed. A
-/// `Scope`/`LocalDir` kind is rejected (those belong to the workdir/namespace tiers),
-/// so the container provider never realizes an environment it was not asked for.
-pub fn rootfs_plan(kind: &pc::EnvironmentKind) -> Result<RootfsPlan, RootfsError> {
-    match kind {
-        // The namespace/bwrap tier borrows the host userland; on the container tier
-        // that means the default image supplies it.
-        pc::EnvironmentKind::Sandbox => Ok(RootfsPlan::HostUserland),
-        pc::EnvironmentKind::Image { reference } => Ok(RootfsPlan::Image(reference.clone())),
-        pc::EnvironmentKind::IsolatedRoot {
-            base,
-            writable_base,
-        } => Ok(match base {
-            pc::RootfsSource::Dir { path_template } => RootfsPlan::RootDir {
-                path_template: path_template.clone(),
-                writable: *writable_base,
-            },
-            pc::RootfsSource::Tarball { reference } => RootfsPlan::RootTarball {
-                reference: reference.clone(),
-                writable: *writable_base,
-            },
-        }),
-        pc::EnvironmentKind::Scope | pc::EnvironmentKind::LocalDir { .. } => {
-            Err(RootfsError::NotAContainerRootfs)
-        }
-    }
-}
-
-/// Render the argv for a **rootless podman** `run` of a process-as-container agent —
-/// the daemonless, worker-parented executor for the `Image`/`IsolatedRoot` tiers.
-/// Pure and deterministic (like [`crate::pod_plan`] / `bubblewrap_argv`), so the
-/// flag mapping is unit-testable without podman installed; the [`PodmanRuntime`]
-/// adapter only fork-execs the result.
-///
-/// - `--init` reaps the agent's children (PID 1); `-d` detaches so the worker owns it.
-/// - Resource caps reuse [`CgroupCaps`] (swap pinned to the memory cap).
-/// - `rootfs`: an `Image` runs the OCI reference; an `IsolatedRoot` runs `--rootfs`
-///   over a private directory (read-only bases use the `:O` overlay so the base is
-///   untouched). A `RootTarball` must be unpacked to a directory by the adapter
-///   first; the `reference` is then that path.
-#[must_use]
-pub fn podman_run_argv(name: &str, plan: &ContainerPlan, rootfs: &RootfsPlan) -> Vec<String> {
-    let mut a: Vec<String> = ["run", "-d", "--init", "--name", name]
-        .into_iter()
-        .map(String::from)
-        .collect();
-
-    // The discovery label the cross-restart reaper (`crate::reaper`) filters on.
-    a.extend(["--label".into(), format!("{REAPER_LABEL}=1")]);
-
-    // Harden the untrusted agent: a read-only rootfs, with the writable app paths
-    // (outputs + scratch `/tmp`) provided as tmpfs. Declared mounts stay writable via
-    // their own `-v` binds below.
-    a.push("--read-only".into());
-    for dir in writable_dirs(plan) {
-        a.extend(["--tmpfs".into(), dir]);
-    }
-
-    match &plan.network {
-        NetworkMode::Open => {}
-        NetworkMode::None => a.extend(["--network".into(), "none".into()]),
-        // Allowlist is enforced at the brokered proxy (its env is in plan.env); the
-        // container itself keeps default bridge egress to reach that proxy.
-        NetworkMode::Allowlist(_) => a.extend(["--network".into(), "bridge".into()]),
-    }
-
-    let caps = CgroupCaps::from_limits(&plan.limits);
-    if let Some(m) = caps.memory_bytes {
-        a.extend(["--memory".into(), m.to_string()]);
-        // Pin swap to the memory cap (the swap-escape close).
-        a.extend(["--memory-swap".into(), m.to_string()]);
-    }
-    if let Some(c) = plan.limits.cpu_millis {
-        a.extend(["--cpus".into(), format!("{}.{:03}", c / 1000, c % 1000)]);
-    }
-    if let Some(p) = caps.pids {
-        a.extend(["--pids-limit".into(), p.to_string()]);
-    }
-    if let Some(size) = caps.disk_size {
-        a.extend(["--storage-opt".into(), format!("size={size}")]);
-    }
-
-    for (k, v) in &plan.env {
-        a.extend(["-e".into(), format!("{k}={v}")]);
-    }
-    for b in &plan.binds {
-        let ro = if b.read_only { ":ro" } else { "" };
-        a.extend([
-            "-v".into(),
-            format!("{}:{}{ro}", b.source_ref, b.mount_path),
-        ]);
-    }
-
-    // The rootfs / image the agent runs on.
-    match rootfs {
-        RootfsPlan::HostUserland => a.push(plan.image.clone()),
-        RootfsPlan::Image(image) => a.push(image.clone()),
-        RootfsPlan::RootDir {
-            path_template,
-            writable,
-        }
-        | RootfsPlan::RootTarball {
-            reference: path_template,
-            writable,
-        } => {
-            let overlay = if *writable { "" } else { ":O" };
-            a.extend(["--rootfs".into(), format!("{path_template}{overlay}")]);
-        }
-    }
-
-    // Process-as-container: the agent argv is the container's main command.
-    a.extend(plan.command.iter().cloned());
-    a
 }
 
 /// A brokered egress chokepoint the sandbox routes through. The host allowlist is
@@ -1689,6 +1563,7 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
             .map_err(err)
     }
 
+    #[cfg(feature = "connection")]
     fn bind_scope(mut self, scope: impl Into<String>) -> Self {
         self.id = scope.into();
         self

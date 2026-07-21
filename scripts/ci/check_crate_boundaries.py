@@ -1184,6 +1184,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # in a distributed build); the neutral crate names none of them.
     "awaken-sandbox-container": {
         "awaken-provisioning-contract",
+        # Dev-only Session proof drives ToolExecutor through the real hand wire.
+        "awaken-runtime-contract",
+        "awaken-tool-relay",
         # The container tier is tool-transparent: it hands the ACP bridge an
         # AgentChannel (network duplex) to the process-as-container agent.
         "awaken-agent-channel",
@@ -1387,6 +1390,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # the in-memory queue while exercising the server's worker registry.
         "awaken-run-ingress",
         "awaken-runtime-host",
+        # Outer composition owns the hand relay; runtime-host exposes only its port.
+        "awaken-tool-relay",
         "awaken-worker-registry",
         "awaken-managed-routers",
         # dev-only: the a2a-loopback e2e wraps its mock transports in the A2A

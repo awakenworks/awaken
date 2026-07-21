@@ -1034,7 +1034,9 @@ async fn management_router_over(
     // Production ACP wiring (`acp:*` threads): `AWAKEN_ACP_CLI` / `AWAKEN_ACP_ARGV`
     // realized in `AWAKEN_SANDBOX_TIER`. The one shared helper both the server and
     // worker roots call, so they never drift (ADR-0057).
-    let host_builder = host_builder.with_acp_from_env().await;
+    let host_builder = host_builder
+        .with_acp_from_env(awaken_server::relay_hand_executor_factory())
+        .await;
     // Last-mile backend wiring the management plane does not assemble itself, injected
     // by the composition root (a scenario that serves external-CLI sessions).
     let host_builder = match customize_host {

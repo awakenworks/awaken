@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use awaken_agent_channel::{AgentChannel, AgentTransport, SplitChannel};
@@ -27,6 +28,8 @@ use crate::{
     ContainerPlan, ContainerRuntime, ContainerState, ManagedContainer, REAPER_LABEL,
     REAPER_OWNER_LABEL, RuntimeAgentProcess, RuntimeError, runtime_container_name,
 };
+
+static EXEC_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 fn backend(e: impl std::fmt::Display) -> RuntimeError {
     RuntimeError::Backend(e.to_string())
@@ -50,9 +53,37 @@ struct DockerExecProcess {
     docker: Docker,
     container_id: String,
     exec_id: String,
+    public_id: String,
+    pid_file: Option<String>,
 }
 
 impl DockerExecProcess {
+    fn new(docker: Docker, container_id: &str, exec_id: String, pid_file: String) -> Self {
+        let public_id = format!("{exec_id}|{pid_file}");
+        Self {
+            docker,
+            container_id: container_id.to_string(),
+            exec_id,
+            public_id,
+            pid_file: Some(pid_file),
+        }
+    }
+
+    fn recovered(docker: Docker, container_id: &str, public_id: &str) -> Self {
+        let (exec_id, pid_file) = public_id
+            .split_once('|')
+            .map_or((public_id, None), |(exec_id, pid_file)| {
+                (exec_id, Some(pid_file.to_string()))
+            });
+        Self {
+            docker,
+            container_id: container_id.to_string(),
+            exec_id: exec_id.to_string(),
+            public_id: public_id.to_string(),
+            pid_file,
+        }
+    }
+
     async fn status(&self) -> Result<Option<pc::ExitStatus>, pc::SandboxError> {
         let state = self
             .docker
@@ -72,7 +103,7 @@ impl DockerExecProcess {
 #[async_trait]
 impl pc::ProcessHandle for DockerExecProcess {
     fn id(&self) -> &str {
-        &self.exec_id
+        &self.public_id
     }
 
     async fn wait(&self) -> Result<pc::ExitStatus, pc::SandboxError> {
@@ -89,15 +120,12 @@ impl pc::ProcessHandle for DockerExecProcess {
     }
 
     async fn signal(&self, signal: pc::Signal) -> Result<(), pc::SandboxError> {
-        let state = self
-            .docker
-            .inspect_exec(&self.exec_id)
-            .await
-            .map_err(|error| pc::SandboxError::new(error.to_string()))?;
-        let pid = state
-            .pid
-            .filter(|pid| *pid > 0)
-            .ok_or_else(|| pc::SandboxError::new("docker exec process has no live pid"))?;
+        if self.status().await?.is_some() {
+            return Ok(());
+        }
+        let pid_file = self.pid_file.as_ref().ok_or_else(|| {
+            pc::SandboxError::new("legacy docker exec handle has no in-container pid reference")
+        })?;
         let name = match signal {
             pc::Signal::Term => "TERM",
             pc::Signal::Kill => "KILL",
@@ -109,27 +137,69 @@ impl pc::ProcessHandle for DockerExecProcess {
                 &self.container_id,
                 CreateExecOptions {
                     cmd: Some(vec![
-                        "kill".to_string(),
-                        format!("-{name}"),
-                        pid.to_string(),
+                        "sh".to_string(),
+                        "-c".to_string(),
+                        "pid=$(cat -- \"$1\") && kill -\"$2\" \"$pid\"".to_string(),
+                        "awaken-signal".to_string(),
+                        pid_file.clone(),
+                        name.to_string(),
                     ]),
+                    attach_stdout: Some(true),
+                    attach_stderr: Some(true),
                     ..Default::default()
                 },
             )
             .await
             .map_err(|error| pc::SandboxError::new(error.to_string()))?;
-        self.docker
+        let mut output = match self
+            .docker
             .start_exec(
                 &request.id,
                 Some(StartExecOptions {
-                    detach: true,
                     ..Default::default()
                 }),
             )
             .await
+            .map_err(|error| pc::SandboxError::new(error.to_string()))?
+        {
+            StartExecResults::Attached { output, .. } => output,
+            StartExecResults::Detached => {
+                return Err(pc::SandboxError::new(
+                    "docker returned detached result for signal exec",
+                ));
+            }
+        };
+        while let Some(frame) = output.next().await {
+            frame.map_err(|error| pc::SandboxError::new(error.to_string()))?;
+        }
+        let state = self
+            .docker
+            .inspect_exec(&request.id)
+            .await
             .map_err(|error| pc::SandboxError::new(error.to_string()))?;
-        Ok(())
+        if state.exit_code == Some(0) {
+            Ok(())
+        } else {
+            Err(pc::SandboxError::new(format!(
+                "docker exec signal failed with {:?}",
+                state.exit_code
+            )))
+        }
     }
+}
+
+fn wrapped_exec_argv(command: Vec<String>) -> (String, Vec<String>) {
+    let sequence = EXEC_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let pid_file = format!("/tmp/awaken-exec-{sequence}.pid");
+    let mut argv = vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        "pid_file=$1; shift; printf '%s' \"$$\" > \"$pid_file\"; exec \"$@\"".to_string(),
+        "awaken-exec".to_string(),
+        pid_file.clone(),
+    ];
+    argv.extend(command);
+    (pid_file, argv)
 }
 
 /// Map neutral resource limits onto a bollard `HostConfig`'s cgroup fields (limits
@@ -158,7 +228,10 @@ fn cgroup_host_config(limits: &pc::ResourceLimits) -> HostConfig {
 fn tmpfs_for(plan: &ContainerPlan) -> HashMap<String, String> {
     crate::writable_dirs(plan)
         .into_iter()
-        .map(|d| (d, "rw,noexec,nosuid,size=64m".to_string()))
+        // OCI images commonly run as a non-root UID. A tmpfs mount is created as
+        // root:root regardless of the image's baked directory ownership, so make
+        // these single-tenant scratch mounts writable without assuming a UID.
+        .map(|d| (d, "rw,noexec,nosuid,mode=1777,size=64m".to_string()))
         .collect()
 }
 
@@ -449,7 +522,12 @@ impl ContainerRuntime for DockerRuntime {
         labels.insert(REAPER_OWNER_LABEL.to_string(), self.owner_id.clone());
         let config = Config {
             image: Some(plan.image.clone()),
-            // Process-as-container: the agent argv IS the container command.
+            // A Session environment owns PID 1 and execs every attempt into the
+            // resulting namespaces.  Never inherit an image entrypoint here: the
+            // production sandbox image still carries the legacy standalone ACP
+            // entrypoint, which would otherwise receive the keepalive argv as
+            // arguments and exit immediately.
+            entrypoint: Some(Vec::new()),
             cmd: Some(plan.command.clone()),
             env: Some(env),
             exposed_ports: Some(exposed_ports),
@@ -485,12 +563,13 @@ impl ContainerRuntime for DockerRuntime {
         }
         let env = exec_env(&command)?;
         let working_dir = (!command.cwd.is_empty()).then_some(command.cwd.clone());
+        let (pid_file, argv) = wrapped_exec_argv(command.argv);
         let request = self
             .docker
             .create_exec(
                 container_id,
                 CreateExecOptions {
-                    cmd: Some(command.argv),
+                    cmd: Some(argv),
                     env: Some(env),
                     working_dir,
                     ..Default::default()
@@ -510,11 +589,12 @@ impl ContainerRuntime for DockerRuntime {
             .await
             .map_err(backend)?
         {
-            StartExecResults::Detached => Ok(Box::new(DockerExecProcess {
-                docker: self.docker.clone(),
-                container_id: container_id.to_string(),
-                exec_id: request.id,
-            })),
+            StartExecResults::Detached => Ok(Box::new(DockerExecProcess::new(
+                self.docker.clone(),
+                container_id,
+                request.id,
+                pid_file,
+            ))),
             StartExecResults::Attached { .. } => {
                 Err(backend("docker returned attached result for detached exec"))
             }
@@ -531,6 +611,7 @@ impl ContainerRuntime for DockerRuntime {
         }
         let env = exec_env(&command)?;
         let working_dir = (!command.cwd.is_empty()).then_some(command.cwd.clone());
+        let (pid_file, argv) = wrapped_exec_argv(command.argv);
         let request = self
             .docker
             .create_exec(
@@ -539,7 +620,7 @@ impl ContainerRuntime for DockerRuntime {
                     attach_stdin: Some(true),
                     attach_stdout: Some(true),
                     attach_stderr: Some(false),
-                    cmd: Some(command.argv),
+                    cmd: Some(argv),
                     env: Some(env),
                     working_dir,
                     ..Default::default()
@@ -568,11 +649,12 @@ impl ContainerRuntime for DockerRuntime {
             }
         });
         Ok(RuntimeAgentProcess {
-            process: Box::new(DockerExecProcess {
-                docker: self.docker.clone(),
-                container_id: container_id.to_string(),
-                exec_id: request.id,
-            }),
+            process: Box::new(DockerExecProcess::new(
+                self.docker.clone(),
+                container_id,
+                request.id,
+                pid_file,
+            )),
             channel: Box::new(SplitChannel::new(output_reader, input)),
         })
     }
@@ -582,9 +664,10 @@ impl ContainerRuntime for DockerRuntime {
         container_id: &str,
         process_id: &str,
     ) -> Result<Box<dyn pc::ProcessHandle>, RuntimeError> {
+        let process = DockerExecProcess::recovered(self.docker.clone(), container_id, process_id);
         let state = self
             .docker
-            .inspect_exec(process_id)
+            .inspect_exec(&process.exec_id)
             .await
             .map_err(backend)?;
         if state.container_id.as_deref() != Some(container_id) {
@@ -592,11 +675,7 @@ impl ContainerRuntime for DockerRuntime {
                 "exec {process_id} does not belong to container {container_id}"
             )));
         }
-        Ok(Box::new(DockerExecProcess {
-            docker: self.docker.clone(),
-            container_id: container_id.to_string(),
-            exec_id: process_id.to_string(),
-        }))
+        Ok(Box::new(process))
     }
 
     async fn open_channel(

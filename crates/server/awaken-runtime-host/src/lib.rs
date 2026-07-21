@@ -21,6 +21,7 @@ mod commit_backend;
 mod commit_ingest;
 mod compact;
 mod config;
+mod container_environment;
 mod data_subject_api;
 mod delegate;
 mod deployment_config;
@@ -47,6 +48,7 @@ pub use resource_scope::RequiredWorkspaceScope;
 mod run_exec;
 mod sandbox_source;
 mod session_environment;
+pub use session_environment::HandExecutorFactory;
 mod skill_catalog;
 mod skills;
 mod skills_api;
@@ -98,9 +100,8 @@ pub use crate::hub::{ThreadEvent, ThreadEventHub};
 pub use crate::memory_store_api::{memory_stores_router, memory_stores_router_with_catalog};
 pub use crate::redact::PiiRedactor;
 pub use crate::sandbox_source::{
-    AcpSandboxBindings, BoundLocalChannelSource, ContainerChannelSource, LaunchSource,
-    SandboxChannelSource, ThreadEgress, ThreadResources, ThreadSandbox,
-    build_acp_channel_source, resolve_sandbox_tier,
+    AcpSandboxBindings, BoundLocalChannelSource, LaunchSource, SandboxChannelSource, ThreadEgress,
+    ThreadResources, ThreadSandbox, build_acp_channel_source, resolve_sandbox_tier,
 };
 pub use crate::skills_api::skills_router;
 // The config data plane (ADR-0036/slice A): the service + its router + the
