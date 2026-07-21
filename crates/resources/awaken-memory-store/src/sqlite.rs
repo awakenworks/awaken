@@ -829,7 +829,7 @@ mod migration_seam_tests {
 }
 
 #[cfg(test)]
-mod memfs_tests {
+mod memory_repository_tests {
     use super::*;
 
     #[tokio::test]
@@ -1096,7 +1096,7 @@ mod memfs_tests {
 
     #[tokio::test]
     async fn sqlite_memory_repository_survives_reopen() {
-        let dir = std::env::temp_dir().join(format!("awaken-sqlmemfs-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("awaken-sql-memory-{}", std::process::id()));
         std::fs::create_dir_all(&dir).ok();
         let path = dir.join("m.db");
         let path_str = path.to_str().unwrap();

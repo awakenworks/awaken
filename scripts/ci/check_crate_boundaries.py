@@ -107,7 +107,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # dev-only: property-based verification of the WorkState wire bijection (ADR-0059).
         "proptest",
     },
-    # Resources-plane ports (FileStore / MemoryFs / SkillStore) +
+    # Resources-plane ports (FileStore / MemoryRepository / SkillStore) +
     # the value/error types in their signatures — mirrors awaken-provisioning-contract.
     # A foundation leaf: no backend, SQL driver, or filesystem, so an adapter reusing
     # these stores depends on the traits alone. The backends re-export it.
@@ -437,17 +437,17 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # no runtime, authorization, workspace, principal, role, or provider type.
     "awaken-memory-store": {
         # The port-only contract this crate implements and re-exports
-        # (MemoryFs + Memory/MemoryEntry/MemErr).
+        # (MemoryRepository + Memory/MemoryEntry/MemErr).
         "awaken-resource-contract",
         "async-trait",
         "thiserror",
         "tokio",
         "rusqlite",
-        # feature `postgres`: the multi-node MemoryFs backend.
+        # feature `postgres`: the multi-node MemoryRepository backend.
         "sqlx",
         "awaken-scoped-migration",
         "awaken-scoped-migration-sqlite",
-        # ADR-0053 path-addressed MemoryFs: content hashing + durable record format.
+        # ADR-0053 path-addressed MemoryRepository: content hashing + durable record format.
         "sha2",
         "serde",
         "serde_json",
@@ -455,7 +455,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tempfile",
     },
     # ADR-0053: the write-through memory-store FUSE server. A `server`-bucket crate
-    # (it depends on the resources-tier `MemoryFs` and links `fuser`), realizing the
+    # (it depends on the resources-tier `MemoryRepository` and links `fuser`), realizing the
     # provisioning-contract `MountSource::MemoryStore` → `Realization::Fuse`.
     "awaken-sandbox-memoryd": {
         "awaken-memory-store",
@@ -1414,7 +1414,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-protocol-transport",
         "awaken-provider-genai",
         "awaken-memory-store",
-        # Composition-only adapter: runtime-host exposes MemoryFs + MemoryMounter
+        # Composition-only adapter: runtime-host exposes MemoryRepository + MemoryMounter
         # ports; awaken-server installs the FUSE/copy implementation without
         # coupling the host substrate to the worker implementation crate.
         "awaken-sandbox-memoryd",
