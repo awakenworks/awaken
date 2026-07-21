@@ -281,7 +281,15 @@ impl RemoteManagementAuthz {
             .with_audience(audience)
             .with_issuer(issuer);
         config.service_token = Some(service_token.unwrap_or_else(|| user_token.clone()));
-        let handle = connect_remote(&config).map_err(|error| error.to_string())?;
+        // `connect_remote` performs the one-time JWKS fetch through reqwest's
+        // blocking client. This constructor is called by an async composition
+        // root, where creating/dropping that client's private runtime would panic.
+        // Isolate trust-anchor establishment on an ordinary OS thread; request-time
+        // PDP calls are already dispatched through `spawn_blocking` by the PEPs.
+        let handle = std::thread::spawn(move || connect_remote(&config))
+            .join()
+            .map_err(|_| "cloud IAM connection worker panicked".to_string())?
+            .map_err(|error| error.to_string())?;
         Ok(Arc::new(Self {
             gate: handle.gate,
             user_token,
