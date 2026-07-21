@@ -137,6 +137,44 @@ async function main() {
       0,
     );
 
+    // Authorization has already allowed the logical File deletion, but a live
+    // Session binding is intrinsic resource state and independently blocks physical
+    // reclamation. The reclaimer consumes only that reference edge; after Session
+    // archive removes it, the same durable intent converges without an IAM query.
+    const boundFile = await upload(WS_A, 'session-bound-content');
+    const boundSession = await json('POST', scoped(WS_A, 'sessions'), {
+      agent: 'assistant', environment_id: 'env_local',
+    });
+    assert.equal(boundSession.status, 200, JSON.stringify(boundSession.body));
+    const binding = await json(
+      'POST',
+      scoped(WS_A, `sessions/${boundSession.body.id}/resources`),
+      { type: 'file', file_id: boundFile, mount_path: '/workspace/bound.txt' },
+    );
+    assert.equal(binding.status, 200, JSON.stringify(binding.body));
+    assert.equal((await json('DELETE', scoped(WS_A, `files/${boundFile}`))).status, 200);
+    await sleep(5_500);
+    assert.ok(
+      !receipts(directory).some(
+        (intent) => intent.target.resource_id === boundFile && intent.status === 'completed',
+      ),
+      'live Session binding defers the physical purge',
+    );
+    assert.equal(
+      scalar(
+        path.join(directory, 'files.db'),
+        `SELECT count(*) FROM file_store_blob WHERE id='${boundFile}'`,
+      ),
+      1,
+      'logical denial does not remove bytes while an intrinsic reference remains',
+    );
+    assert.equal(
+      (await json('POST', scoped(WS_A, `sessions/${boundSession.body.id}/archive`))).status,
+      200,
+    );
+    const boundReceipt = await waitReceipt(directory, 'file', boundFile);
+    assert.equal(boundReceipt.receipt.evidence.blob_deleted, true);
+
     // Equal bytes share one blob. Removing A cannot delete bytes still owned
     // to B; revoking B subsequently permits physical GC.
     const sharedA = await upload(WS_A, 'shared-content');
