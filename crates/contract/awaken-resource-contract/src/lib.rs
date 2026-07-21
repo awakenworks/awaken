@@ -20,12 +20,16 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 mod catalog;
+mod input;
 
 pub use catalog::{
     ClonePolicy, ConfigVersion, ExtractionPolicy, MemoryStoreConfigVersion, MemoryStoreDefinition,
     RecallPolicy, RepositoryConfigVersion, RepositoryDefinition, ResolvedMemoryStoreConfig,
     ResolvedRepositoryConfig, ResourceCatalog, ResourceCatalogError, ResourceState,
     RetentionPolicy,
+};
+pub use input::{
+    BindingId, FileId, InputBinding, InputResourceId, MemoryStoreId, RepositoryId, ResourceAccess,
 };
 
 // ---------------------------------------------------------------------------
