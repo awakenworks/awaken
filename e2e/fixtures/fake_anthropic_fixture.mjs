@@ -306,8 +306,10 @@ export const BEHAVIORS = {
     if (!hasTool(parsed, 'agent_run')) return text('researched: 42');
     const results = toolResults(parsed);
     if (results.length === 0) {
-      const agentId = firstUserText(parsed).includes('ghost') ? 'ghost' : 'researcher';
-      return tool('d1', 'agent_run', { agent_id: agentId, input: 'do the research' });
+      const requested = firstUserText(parsed);
+      const agentId = requested.includes('ghost') ? 'ghost' : 'researcher';
+      const input = requested.includes('delegate lifecycle:') ? requested : 'do the research';
+      return tool('d1', 'agent_run', { agent_id: agentId, input });
     }
     return text(`delegate said: ${toolResultText(results[results.length - 1])}`);
   },

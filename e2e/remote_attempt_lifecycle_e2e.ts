@@ -271,6 +271,52 @@ function committedState(root: string, thread: string): string {
   );
 }
 
+function rewriteLatestTaskReference(
+  root: string,
+  thread: string,
+  rewrite: (command: any) => void,
+): void {
+  const database = path.join(root, `${thread}.db`);
+  const encoded = execFileSync(
+    'sqlite3',
+    [
+      database,
+      `SELECT id || char(9) || data FROM runtime_state_command
+       WHERE thread_id = '${thread.replaceAll("'", "''")}'
+         AND json_extract(data, '$.key') = '__a2a_task'
+         AND json_type(data, '$.action.Set') = 'object'
+       ORDER BY id DESC LIMIT 1`,
+    ],
+    { encoding: 'utf8' },
+  ).trim();
+  const separator = encoded.indexOf('\t');
+  assert.ok(separator > 0, `durable A2A task reference exists for ${thread}: ${encoded}`);
+  const id = Number(encoded.slice(0, separator));
+  const command = JSON.parse(encoded.slice(separator + 1));
+  rewrite(command);
+  const data = JSON.stringify(command).replaceAll("'", "''");
+  const changed = execFileSync(
+    'sqlite3',
+    [database, `UPDATE runtime_state_command SET data = '${data}' WHERE id = ${id}; SELECT changes();`],
+    { encoding: 'utf8' },
+  ).trim();
+  assert.equal(changed, '1', `rewrote exactly one A2A task reference for ${thread}`);
+}
+
+async function expectResumeFailure(thread: string, marker: string): Promise<void> {
+  const response = await api('POST', `/v1/sessions/${thread}/events`, {
+    events: [
+      {
+        type: 'user.custom_tool_result',
+        custom_tool_use_id: 'input-task',
+        content: [{ type: 'text', text: marker }],
+        is_error: false,
+      },
+    ],
+  });
+  assert.equal(response.status, 500, `${marker} failed closed: ${JSON.stringify(response.body)}`);
+}
+
 function taskReferenceCleared(root: string, thread: string): boolean {
   const commands = committedState(root, thread)
     .trim()
@@ -436,6 +482,38 @@ async function main(): Promise<void> {
       `cancel addressed the pinned remote task exactly once; sent=${JSON.stringify(peer.sent)} reads=${JSON.stringify(peer.reads)}`,
     );
     await waitForDispatchGone(cancelThread, cancelSubmit.body.run_id);
+    await publishRemote(peer.endpoint);
+
+    // A crash may expose old/corrupt continuation data written by a previous
+    // binary or operator. Recovery must never invent a remote identity, switch
+    // endpoint, or silently start a fresh task. Inject the damage directly into
+    // this throwaway durable store: no production-only diagnostic API exists.
+    const corruptions = await Promise.all(
+      ['missing endpoint', 'missing task', 'missing context', 'endpoint mismatch', 'missing reference'].map(async (marker) => {
+        const thread = await createSession();
+        await sendText(thread, 'need remote input');
+        return { marker, thread };
+      }),
+    );
+    const corruptionKilled = new Promise<void>((resolve) => server.once('exit', () => resolve()));
+    server.kill('SIGKILL');
+    await corruptionKilled;
+    for (const { marker, thread } of corruptions) {
+      rewriteLatestTaskReference(storage, thread, (command) => {
+        if (marker === 'missing endpoint') delete command.action.Set.endpoint;
+        else if (marker === 'missing task') delete command.action.Set.task_id;
+        else if (marker === 'missing context') delete command.action.Set.context_id;
+        else if (marker === 'endpoint mismatch') command.action.Set.endpoint = 'http://127.0.0.1:1';
+        else command.action = 'Remove';
+      });
+    }
+    server = spawnServer('config', PORT, environment).server;
+    await waitForPort(PORT, 180_000, server);
+    for (const { marker, thread } of corruptions) await expectResumeFailure(thread, marker);
+    assert.ok(
+      !peer.sent.some((message) => corruptions.some(({ marker }) => message.text === marker)),
+      'invalid durable continuations never reached the remote peer',
+    );
     await publishRemote(peer.endpoint);
 
     // 4) Cancellation while a root remote attempt is actively polling uses the
