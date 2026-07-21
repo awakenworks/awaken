@@ -128,13 +128,35 @@ async function json(method: string, url: string, body?: unknown) {
   return { status: response.status, body: text ? JSON.parse(text) : null };
 }
 
-async function upload(content: string): Promise<string> {
+async function upload(content: string, workspace = WORKSPACE): Promise<string> {
   const form = new FormData();
   form.append('purpose', 'agent');
   form.append('file', new Blob([content]), 'shared.txt');
-  const response = await fetch(scoped(WORKSPACE, 'files'), { method: 'POST', body: form });
+  const response = await fetch(scoped(workspace, 'files'), { method: 'POST', body: form });
   assert.equal(response.status, 200);
   return (await response.json()).id;
+}
+
+async function uploadSkillVersion(route: string, marker: string, binary?: Uint8Array) {
+  const form = new FormData();
+  form.append(
+    'file',
+    new Blob([
+      `---\nname: shared-skill-${process.pid}\ndescription: shared resource test\n---\n${marker}`,
+    ], { type: 'text/markdown' }),
+    'SKILL.md',
+  );
+  if (binary !== undefined) {
+    form.append(
+      'file',
+      new Blob([binary], { type: 'application/octet-stream' }),
+      'assets/data.bin',
+    );
+  }
+  const response = await fetch(scoped(WORKSPACE, route), { method: 'POST', body: form });
+  const body = await response.json().catch(() => ({}));
+  assert.equal(response.status, 200, `${route}: ${JSON.stringify(body)}`);
+  return body;
 }
 
 function assertNoLocalResourceTruth(directory: string): void {
@@ -160,20 +182,103 @@ async function main(): Promise<void> {
   try {
     await ready();
     const fileId = await upload('shared postgres file bytes');
-    const memoryStore = await json('POST', scoped(WORKSPACE, 'memory_stores'), { name: 'shared-memory' });
+    assert.equal(
+      await upload('shared postgres file bytes'),
+      fileId,
+      'equal immutable bytes are idempotent inside a Workspace',
+    );
+    const fileMetadata = await json('GET', scoped(WORKSPACE, `files/${fileId}`));
+    assert.equal(fileMetadata.status, 200);
+    assert.equal(fileMetadata.body.size_bytes, 'shared postgres file bytes'.length);
+
+    const memoryStore = await json('POST', scoped(WORKSPACE, 'memory_stores'), {
+      name: 'shared-memory',
+      description: 'before restart',
+      metadata: { phase: 'created', remove_me: 'yes' },
+    });
     assert.equal(memoryStore.status, 200);
     const memoryId = memoryStore.body.id;
+    const memoryStores = await json('GET', scoped(WORKSPACE, 'memory_stores'));
+    assert.equal(memoryStores.status, 200);
+    assert.ok(memoryStores.body.data.some((item: { id: string }) => item.id === memoryId));
+    const patchedStore = await json('POST', scoped(WORKSPACE, `memory_stores/${memoryId}`), {
+      description: 'persisted catalog update',
+      metadata: { phase: 'updated', remove_me: null },
+    });
+    assert.equal(patchedStore.status, 200);
+    assert.deepEqual(patchedStore.body.metadata, { phase: 'updated' });
+    assert.equal(
+      (await json('POST', scoped(WORKSPACE, `memory_stores/${memoryId}/memories`), {
+        content: 'missing path',
+      })).status,
+      400,
+    );
     const memory = await json('POST', scoped(WORKSPACE, `memory_stores/${memoryId}/memories`), {
       path: '/fact.md',
       content: 'shared postgres memory',
     });
     assert.equal(memory.status, 200);
+    const memoryEntryId = memory.body.id;
+    const initialSha = memory.body.content_sha256;
+    assert.equal(
+      (await json('POST', scoped(WORKSPACE, `memory_stores/${memoryId}/memories`), {
+        path: '/fact.md',
+        content: 'conflicting create',
+      })).status,
+      409,
+    );
+    assert.equal(
+      (await json('POST', scoped(WORKSPACE, `memory_stores/${memoryId}/memories/${memoryEntryId}`), {
+        content: 'must not win',
+        precondition: { content_sha256: 'stale' },
+      })).status,
+      409,
+    );
+    const updatedMemory = await json(
+      'POST',
+      scoped(WORKSPACE, `memory_stores/${memoryId}/memories/${memoryEntryId}`),
+      {
+        path: '/renamed-fact.md',
+        content: 'shared postgres memory v2',
+        precondition: { content_sha256: initialSha },
+      },
+    );
+    assert.equal(updatedMemory.status, 200);
+    assert.equal(updatedMemory.body.path, '/renamed-fact.md');
+    const basicMemories = await json(
+      'GET',
+      `${scoped(WORKSPACE, `memory_stores/${memoryId}/memories`)}?path_prefix=/&view=basic`,
+    );
+    assert.equal(basicMemories.status, 200);
+    assert.equal(basicMemories.body.data[0].path, '/renamed-fact.md');
+    assert.equal(basicMemories.body.data[0].content, null);
+    assert.equal(
+      (await json('GET', scoped(WORKSPACE, `memory_stores/${memoryId}/memories/${memoryEntryId}`))).status,
+      200,
+    );
+
     const skill = await json('POST', scoped(WORKSPACE, 'skills'), {
       id: `shared-skill-${process.pid}`,
       content: `---\nname: shared-skill-${process.pid}\ndescription: shared resource test\n---\nUse safely.`,
     });
     assert.equal(skill.status, 200);
     const skillId = skill.body.id;
+    assert.equal(
+      (await json('POST', scoped(WORKSPACE, 'skills'), {
+        id: skillId,
+        content: `---\nname: ${skillId}\ndescription: duplicate\n---\nduplicate`,
+      })).status,
+      409,
+    );
+    const binaryFixture = Uint8Array.from([0, 159, 146, 150, 255, 13, 0, 10]);
+    const skillV2 = await uploadSkillVersion(
+      `skills/${skillId}/versions`,
+      'shared postgres skill v2',
+      binaryFixture,
+    );
+    assert.equal(skillV2.version, '2');
+    const skills = await json('GET', scoped(WORKSPACE, 'skills'));
+    assert.ok(skills.body.data.some((item: { id: string }) => item.id === skillId));
     await stop(server);
     assertNoLocalResourceTruth(firstDirectory);
 
@@ -184,17 +289,78 @@ async function main(): Promise<void> {
     assert.equal(await fileResponse.text(), 'shared postgres file bytes');
     const memories = await json('GET', scoped(WORKSPACE, `memory_stores/${memoryId}/memories`));
     assert.equal(memories.status, 200);
-    assert.equal(memories.body.data[0].content, 'shared postgres memory');
+    assert.equal(memories.body.data[0].content, 'shared postgres memory v2');
+    assert.equal(memories.body.data[0].path, '/renamed-fact.md');
+    const restoredStore = await json('GET', scoped(WORKSPACE, `memory_stores/${memoryId}`));
+    assert.equal(restoredStore.body.description, 'persisted catalog update');
+    assert.deepEqual(restoredStore.body.metadata, { phase: 'updated' });
     const versions = await json('GET', scoped(WORKSPACE, `memory_stores/${memoryId}/memory_versions`));
     assert.equal(versions.status, 200);
-    assert.equal(versions.body.data.length, 1);
+    assert.ok(versions.body.data.length >= 2);
+    const firstVersionId = versions.body.data[0].id;
+    assert.equal(
+      (await json('GET', scoped(WORKSPACE, `memory_stores/${memoryId}/memory_versions/${firstVersionId}`))).status,
+      200,
+    );
+    const redacted = await json(
+      'POST',
+      scoped(WORKSPACE, `memory_stores/${memoryId}/memory_versions/${firstVersionId}/redact`),
+    );
+    assert.equal(redacted.status, 200);
+    assert.equal(redacted.body.content, null);
+    assert.notEqual(redacted.body.redacted_at, null);
     assert.equal((await json('GET', scoped(WORKSPACE, `skills/${skillId}`))).status, 200);
+    const skillVersions = await json('GET', scoped(WORKSPACE, `skills/${skillId}/versions`));
+    assert.equal(skillVersions.status, 200);
+    assert.equal(skillVersions.body.data.length, 2);
+    const latestSkill = await json('GET', scoped(WORKSPACE, `skills/${skillId}/versions/latest`));
+    assert.equal(latestSkill.status, 200);
+    assert.equal(latestSkill.body.version, '2');
+    const skillContent = await fetch(scoped(WORKSPACE, `skills/${skillId}/versions/2/content`));
+    assert.equal(skillContent.status, 200);
+    assert.match(await skillContent.text(), /shared postgres skill v2/u);
+    const skillBinary = await fetch(
+      scoped(WORKSPACE, `skills/${skillId}/versions/2/files/assets/data.bin`),
+    );
+    assert.equal(skillBinary.status, 200);
+    assert.deepEqual(new Uint8Array(await skillBinary.arrayBuffer()), binaryFixture);
 
     // Workspace routing/ownership is intrinsic resource state. It fails closed
     // without putting a principal, role, token, or policy inside any content port.
     assert.equal((await fetch(scoped(OTHER_WORKSPACE, `files/${fileId}/content`))).status, 404);
     assert.equal((await json('GET', scoped(OTHER_WORKSPACE, `memory_stores/${memoryId}`))).status, 404);
     assert.equal((await json('GET', scoped(OTHER_WORKSPACE, `skills/${skillId}`))).status, 404);
+
+    // The immutable File blob may have more than one Workspace ownership edge.
+    // Removing one edge must deny that Workspace immediately without deleting
+    // bytes still owned by another Workspace.
+    assert.equal(await upload('shared postgres file bytes', OTHER_WORKSPACE), fileId);
+    assert.equal((await fetch(scoped(OTHER_WORKSPACE, `files/${fileId}/content`))).status, 200);
+    assert.equal((await json('DELETE', scoped(WORKSPACE, `files/${fileId}`))).status, 200);
+    assert.equal((await fetch(scoped(WORKSPACE, `files/${fileId}/content`))).status, 404);
+    assert.equal((await fetch(scoped(OTHER_WORKSPACE, `files/${fileId}/content`))).status, 200);
+    assert.equal((await json('DELETE', scoped(OTHER_WORKSPACE, `files/${fileId}`))).status, 200);
+
+    assert.equal(
+      (await json('DELETE', scoped(WORKSPACE, `memory_stores/${memoryId}/memories/${memoryEntryId}`))).status,
+      200,
+    );
+    assert.equal(
+      (await json('GET', scoped(WORKSPACE, `memory_stores/${memoryId}/memories/${memoryEntryId}`))).status,
+      404,
+    );
+    assert.equal((await json('DELETE', scoped(WORKSPACE, `memory_stores/${memoryId}`))).status, 200);
+    const deletedStore = await json('GET', scoped(WORKSPACE, `memory_stores/${memoryId}`));
+    assert.equal(deletedStore.status, 200);
+    assert.notEqual(deletedStore.body.archived_at, null);
+    assert.equal(
+      (await json('GET', scoped(WORKSPACE, `memory_stores/${memoryId}/memories`))).status,
+      404,
+    );
+    assert.equal((await json('DELETE', scoped(WORKSPACE, `skills/${skillId}/versions/1`))).status, 200);
+    assert.equal((await json('GET', scoped(WORKSPACE, `skills/${skillId}/versions/1`))).status, 404);
+    assert.equal((await json('DELETE', scoped(WORKSPACE, `skills/${skillId}`))).status, 200);
+    assert.equal((await json('GET', scoped(WORKSPACE, `skills/${skillId}`))).status, 404);
     assertNoLocalResourceTruth(secondDirectory);
 
     const tables = psql(
