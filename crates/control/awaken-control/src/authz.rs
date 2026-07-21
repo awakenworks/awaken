@@ -168,10 +168,19 @@ const WORKSPACE_READ: &str = "workspace.read";
 const WORKSPACE_WRITE: &str = "workspace.write";
 const APIKEY_READ: &str = "apikey.read";
 const APIKEY_WRITE: &str = "apikey.write";
+const FILE_READ: &str = "file.read";
+const FILE_WRITE: &str = "file.write";
+const SKILL_READ: &str = "skill.read";
+const SKILL_WRITE: &str = "skill.write";
 const MANAGEMENT_POLICY_NAMESPACE: &str = "awaken.runtime.management";
+const RESOURCE_POLICY_NAMESPACE: &str = "awaken.runtime.resources";
 
 fn qualify_action(action: &str) -> ActionKey {
     ActionKey::in_namespace(&NamespaceId(MANAGEMENT_POLICY_NAMESPACE.to_owned()), action)
+}
+
+fn qualify_resource_action(action: &str) -> ActionKey {
+    ActionKey::in_namespace(&NamespaceId(RESOURCE_POLICY_NAMESPACE.to_owned()), action)
 }
 
 fn qualify_role(role: &str) -> RoleId {
@@ -180,6 +189,23 @@ fn qualify_role(role: &str) -> RoleId {
         RoleId(role.to_owned())
     } else {
         RoleId(format!("{prefix}{role}"))
+    }
+}
+
+fn qualify_resource_role(role: &str) -> RoleId {
+    let prefix = format!("{RESOURCE_POLICY_NAMESPACE}:");
+    if role.starts_with(&prefix) {
+        RoleId(role.to_owned())
+    } else {
+        RoleId(format!("{prefix}{role}"))
+    }
+}
+
+fn persisted_role(role: &str) -> RoleId {
+    if role.contains(':') {
+        RoleId(role.to_owned())
+    } else {
+        qualify_role(role)
     }
 }
 
@@ -280,6 +306,18 @@ impl RemoteManagementAuthz {
             AuthorizationRequest::direct(principal, qualify_action(action), scope),
         )
     }
+
+    fn authorize_resource(
+        &self,
+        principal: PrincipalRef,
+        action: &str,
+        scope: ScopeRef,
+    ) -> AuthorizationDecision {
+        IamClient::authorize(
+            &self.gate,
+            AuthorizationRequest::direct(principal, qualify_resource_action(action), scope),
+        )
+    }
 }
 
 /// A mint request for a workspace-scoped service token (operator embeddings
@@ -328,6 +366,14 @@ impl ManagementAuthz {
         let issued = ApiTokenMinter::new(OsEntropy)
             .mint(directory, authz.policy_mut(), request)
             .map_err(|err| err.to_string())?;
+        let resource_binding = RoleBinding {
+            principal: principal.clone(),
+            role: qualify_resource_role(&spec.role),
+            scope: ScopeRef::Workspace {
+                workspace_id: WorkspaceId(spec.workspace_id.clone()),
+            },
+        };
+        authz.policy_mut().bind_role(resource_binding.clone());
         // Persist through the SqlStore ports, mirroring exactly what mint wrote
         // into the live engine: the token row and the principal→role binding at
         // the token's workspace scope.
@@ -344,6 +390,8 @@ impl ManagementAuthz {
             },
         )
         .map_err(|err| format!("persist role binding: {err}"))?;
+        RoleBindingRepo::add(&self.store, resource_binding)
+            .map_err(|err| format!("persist resource role binding: {err}"))?;
         Ok(issued)
     }
 
@@ -415,17 +463,22 @@ impl ManagementAuthz {
     }
 
     /// The mint-time role of `token`, derived from its principal's persisted
-    /// binding at the token's workspace (mint wrote exactly that pair; the
-    /// bootstrap principal's extra Global binding carries the same role).
+    /// management-domain binding at the token's workspace. Resource-domain
+    /// bindings are deliberately ignored: the two PAP namespaces may evolve
+    /// independently even though they share the same principal and scope.
     fn role_of(&self, token: &ApiToken) -> Option<String> {
         let bindings = RoleBindingRepo::list_for_principal(&self.store, &token.principal)
             .expect("list principal bindings");
-        bindings
+        let management_bindings: Vec<_> = bindings
+            .iter()
+            .filter(|binding| binding.role.0.starts_with(MANAGEMENT_POLICY_NAMESPACE))
+            .collect();
+        management_bindings
             .iter()
             .find(|b| {
                 matches!(&b.scope, ScopeRef::Workspace { workspace_id } if workspace_id == &token.workspace)
             })
-            .or_else(|| bindings.first())
+            .or_else(|| management_bindings.first())
             .map(|b| local_role(&b.role.0).to_owned())
     }
 
@@ -462,6 +515,17 @@ impl ManagementAuthz {
         scope: ScopeRef,
     ) -> AuthorizationDecision {
         let request = AuthorizationRequest::direct(principal, qualify_action(action), scope);
+        self.gate.authorize(request)
+    }
+
+    fn authorize_resource(
+        &self,
+        principal: PrincipalRef,
+        action: &str,
+        scope: ScopeRef,
+    ) -> AuthorizationDecision {
+        let request =
+            AuthorizationRequest::direct(principal, qualify_resource_action(action), scope);
         self.gate.authorize(request)
     }
 
@@ -549,6 +613,19 @@ pub fn embedded_iam_for_tenant(
         },
     )
     .expect("ensure the bootstrap principal's org admin binding");
+    RoleBindingRepo::add(
+        &store,
+        RoleBinding {
+            principal: PrincipalRef::Service {
+                service_id: BOOTSTRAP_PRINCIPAL.to_string(),
+            },
+            role: qualify_resource_role("admin"),
+            scope: ScopeRef::Org {
+                org_id: OrgId(org_id.to_owned()),
+            },
+        },
+    )
+    .expect("ensure the bootstrap principal's resource org admin binding");
 
     let mut directory = ApiTokenDirectory::new();
     let mut engine = AuthzApi::new();
@@ -643,6 +720,87 @@ pub fn embedded_iam_for_tenant(
             .expect("activate built-in management profile");
     }
 
+    // Resource authorization is an independent PAP document/namespace. It reuses
+    // the same principals, role bindings, scope graph, and PDP, but can be replaced
+    // without changing management actions or any File/Memory/Skill service.
+    let resource_namespace = NamespaceId(RESOURCE_POLICY_NAMESPACE.to_owned());
+    if profiles
+        .active(&resource_namespace)
+        .expect("read active resource profile")
+        .is_some()
+    {
+        profiles
+            .hydrate(&mut engine, &resource_namespace)
+            .expect("hydrate active resource profile");
+    } else {
+        let patterns = ["workspace.*", "file.*", "skill.*"];
+        let mut resource_grants = Vec::new();
+        for role in named_role_catalog(&now) {
+            for (index, pattern) in role.action_patterns.iter().enumerate() {
+                if !patterns
+                    .iter()
+                    .any(|prefix| pattern.0.starts_with(prefix.trim_end_matches('*')))
+                {
+                    continue;
+                }
+                resource_grants.push(GrantSnapshot {
+                    id: format!(
+                        "{RESOURCE_POLICY_NAMESPACE}:grant:role:{}:{index}",
+                        role.id.0
+                    ),
+                    subject: GrantSubjectRef::Role {
+                        role_id: qualify_resource_role(&role.id.0).0,
+                    },
+                    action_pattern: qualify_resource_action(&pattern.0).0,
+                    scope: ScopeRef::Global,
+                    effect: GrantEffect::Allow,
+                });
+            }
+        }
+        let draft = profiles
+            .create_draft(CreateAuthorizationProfile {
+                namespace: resource_namespace.clone(),
+                document: AuthorizationProfileDocument {
+                    resource_model: ResourceModelRegistration {
+                        actions: patterns
+                            .iter()
+                            .map(|pattern| qualify_resource_action(pattern))
+                            .collect(),
+                        ..ResourceModelRegistration::default()
+                    },
+                    action_scope_rules: patterns
+                        .iter()
+                        .map(|pattern| ActionScopeRule {
+                            action_pattern: qualify_resource_action(pattern).0,
+                            allowed_scope_kinds: vec![ScopeKind::Workspace],
+                        })
+                        .collect(),
+                    grants: resource_grants,
+                    ..AuthorizationProfileDocument::default()
+                },
+                created_at: now.clone(),
+            })
+            .expect("create built-in resource profile");
+        let validation = profiles
+            .validate(&resource_namespace, draft.revision)
+            .expect("validate built-in resource profile");
+        assert!(
+            validation.valid,
+            "invalid built-in resource profile: {:?}",
+            validation.errors
+        );
+        profiles
+            .activate(
+                &mut engine,
+                &resource_namespace,
+                draft.revision,
+                ActivateAuthorizationProfile {
+                    expected_active_revision: None,
+                },
+            )
+            .expect("activate built-in resource profile");
+    }
+
     engine.policy_mut().scope_graph_mut().assign_workspace(
         WorkspaceId(workspace_id.to_owned()),
         OrgId(org_id.to_owned()),
@@ -673,7 +831,7 @@ pub fn embedded_iam_for_tenant(
         }
         engine.policy_mut().bind_role(RoleBinding {
             principal: binding.principal,
-            role: qualify_role(&binding.role.0),
+            role: persisted_role(&binding.role.0),
             scope: binding.scope,
         });
     }
@@ -1038,6 +1196,112 @@ pub async fn cloud_management_guard(
     }
 }
 
+/// Resource-plane PEP for embedded IAM. This layer is applied by the outer
+/// composition root, not by File/Memory/Skill services: it authenticates, asks the
+/// shared IAM PDP, and stamps only the trusted Workspace for inner ownership and
+/// data-invariant checks. Routes outside the resource families pass through so
+/// their own protocol-specific PEP can remain independent.
+pub async fn resource_guard(
+    State(authz): State<Arc<ManagementAuthz>>,
+    mut req: Request,
+    next: Next,
+) -> Response {
+    let Some(action) = resource_action_for(req.method(), req.uri().path()) else {
+        return next.run(req).await;
+    };
+    let Some(presented) = bearer_token(req.headers()) else {
+        return unauthorized("missing resource API token (Authorization: Bearer or x-api-key)");
+    };
+    let (principal, workspace) = match authz.authenticate(&presented) {
+        Ok(identity) => identity,
+        Err(AuthReject::Expired) => return unauthorized("API token is expired"),
+        Err(AuthReject::Revoked) => return unauthorized("API token is revoked"),
+        Err(AuthReject::Invalid) => return unauthorized("invalid API token"),
+    };
+    if let Some(tenancy) = req
+        .extensions()
+        .get::<awaken_authz_enforce::RequestTenancy>()
+        && tenancy.workspace_id != workspace.0
+    {
+        return forbidden("workspace path does not match the API token's workspace");
+    }
+    match authz.authorize_resource(
+        principal,
+        action,
+        ScopeRef::Workspace {
+            workspace_id: workspace.clone(),
+        },
+    ) {
+        AuthorizationDecision::Allow => {
+            req.extensions_mut()
+                .insert(awaken_tenancy::WorkspaceScope(workspace.0));
+            next.run(req).await
+        }
+        AuthorizationDecision::RequireApproval => {
+            forbidden("this resource action requires approval and was not executed")
+        }
+        AuthorizationDecision::Deny => {
+            forbidden("the API token's role does not authorize this resource action")
+        }
+    }
+}
+
+/// Resource-plane PEP for Awaken Cloud IAM. Identity/token acquisition and PDP
+/// transport stay in awaken-iam; inner resource services receive only the resolved
+/// Workspace scope after an explicit allow.
+pub async fn cloud_resource_guard(
+    State(authz): State<Arc<RemoteManagementAuthz>>,
+    mut req: Request,
+    next: Next,
+) -> Response {
+    let Some(action) = resource_action_for(req.method(), req.uri().path()) else {
+        return next.run(req).await;
+    };
+    let principal = match authz.authenticate(bearer_token(req.headers())) {
+        Ok(principal) => principal,
+        Err(AuthReject::Expired) => return unauthorized("cloud access token is expired"),
+        Err(AuthReject::Revoked) => return unauthorized("cloud access token is revoked"),
+        Err(AuthReject::Invalid) => return unauthorized("invalid cloud access token"),
+    };
+    let workspace = req
+        .extensions()
+        .get::<awaken_authz_enforce::RequestTenancy>()
+        .map(|scope| scope.workspace_id.clone())
+        .or_else(|| {
+            req.extensions()
+                .get::<awaken_tenancy::WorkspaceScope>()
+                .map(|scope| scope.0.clone())
+        });
+    let Some(workspace) = workspace else {
+        return forbidden("no trusted workspace context was resolved");
+    };
+    let target = ScopeRef::Workspace {
+        workspace_id: WorkspaceId(workspace.clone()),
+    };
+    let authz_for_pdp = authz.clone();
+    let principal_for_pdp = principal.clone();
+    let decision = match tokio::task::spawn_blocking(move || {
+        authz_for_pdp.authorize_resource(principal_for_pdp, action, target)
+    })
+    .await
+    {
+        Ok(decision) => decision,
+        Err(_) => return forbidden("cloud IAM authorization transport failed"),
+    };
+    match decision {
+        AuthorizationDecision::Allow => {
+            req.extensions_mut().insert(principal);
+            req.extensions_mut()
+                .insert(awaken_tenancy::WorkspaceScope(workspace));
+            next.run(req).await
+        }
+        AuthorizationDecision::RequireApproval => {
+            forbidden("this resource action requires approval and was not executed")
+        }
+        AuthorizationDecision::Deny => forbidden("cloud IAM denied this resource action"),
+    }
+}
+
 /// The presented credential: `Authorization: Bearer <token>` (the documented
 /// form) or `x-api-key: <token>` (what the Anthropic SDK sends for `apiKey`).
 fn bearer_token(headers: &HeaderMap) -> Option<String> {
@@ -1236,6 +1500,25 @@ fn action_for(method: &Method, path: &str) -> Option<RouteAuthz> {
             _,
             "ack" | "heartbeat" | "stop",
         ] if !read => scoped(WORKSPACE_WRITE),
+        _ => None,
+    }
+}
+
+/// Map only resource families owned by the platform resource plane. This table
+/// belongs to the application PEP, not to the resource stores. MemoryStore uses
+/// the coarse Workspace vocabulary awaken intentionally exposes; File and Skill
+/// reuse the standard preset namespaces already managed by awaken-iam.
+fn resource_action_for(method: &Method, path: &str) -> Option<&'static str> {
+    let read = matches!(*method, Method::GET | Method::HEAD);
+    let segments: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+    match segments.as_slice() {
+        ["v1", "files", ..] => Some(if read { FILE_READ } else { FILE_WRITE }),
+        ["v1", "skills", ..] => Some(if read { SKILL_READ } else { SKILL_WRITE }),
+        ["v1", "memory_stores", ..] => Some(if read {
+            WORKSPACE_READ
+        } else {
+            WORKSPACE_WRITE
+        }),
         _ => None,
     }
 }

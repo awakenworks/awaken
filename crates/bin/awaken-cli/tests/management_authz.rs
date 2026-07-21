@@ -102,6 +102,78 @@ async fn missing_and_garbage_tokens_are_rejected_with_401() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn resource_plane_is_guarded_without_entering_resource_services() {
+    let dir = tempfile::tempdir().unwrap();
+    let (app, iam) = build_secured_management_router(dir.path(), &KEY).await;
+
+    for uri in ["/v1/files", "/v1/memory_stores", "/v1/skills"] {
+        let (status, error) = call(&app, "GET", uri, None, None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri}: {error}");
+        assert_eq!(error["error"]["type"], json!("authentication_error"));
+    }
+
+    // The standard workspace_user policy can read File/Skill and Workspace-scoped
+    // Memory resources, but cannot mutate any of them.
+    let user = iam
+        .mint_service_token(TokenSpec {
+            token_id: "tok_resource_reader".into(),
+            service_id: "resource-reader".into(),
+            workspace_id: BOOTSTRAP_WORKSPACE.into(),
+            role: "workspace_user".into(),
+            created_at: None,
+            expires_at: None,
+        })
+        .unwrap();
+    for uri in ["/v1/files", "/v1/memory_stores", "/v1/skills"] {
+        let (status, body) = call(&app, "GET", uri, Some(&user), None).await;
+        assert_eq!(status, StatusCode::OK, "{uri}: {body}");
+    }
+    for uri in ["/v1/files", "/v1/memory_stores", "/v1/skills"] {
+        let (status, error) = call(&app, "POST", uri, Some(&user), Some(json!({}))).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{uri}: {error}");
+        assert_eq!(error["error"]["type"], json!("permission_error"));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn resource_pep_stamps_token_scope_and_rejects_foreign_path_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    let (app, _iam) = build_secured_management_router(dir.path(), &KEY).await;
+    let token = admin_token(dir.path());
+
+    let (status, store) = call(
+        &app,
+        "POST",
+        "/v1/memory_stores",
+        Some(&token),
+        Some(json!({ "name": "governed" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{store}");
+    let id = store["id"].as_str().expect("memory store id");
+    let (status, fetched) = call(
+        &app,
+        "GET",
+        &format!("/v1/memory_stores/{id}"),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{fetched}");
+
+    let (status, error) = call(
+        &app,
+        "GET",
+        "/v1/workspaces/wrkspc_other/memory_stores",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{error}");
+    assert_eq!(error["error"]["type"], json!("permission_error"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn an_expired_token_fails_authentication_with_401() {
     let dir = tempfile::tempdir().unwrap();
     let (app, iam) = build_secured_management_router(dir.path(), &KEY).await;
@@ -542,6 +614,12 @@ async fn minted_tokens_survive_a_restart_over_the_same_directory() {
     )
     .await;
     assert_eq!(s, StatusCode::OK);
+
+    // The independently namespaced resource role binding was hydrated too;
+    // persistence of management authorization must not be mistaken for
+    // persistence of resource authorization.
+    let (s, files) = call(&app, "GET", "/v1/files", Some(&developer), None).await;
+    assert_eq!(s, StatusCode::OK, "{files}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
