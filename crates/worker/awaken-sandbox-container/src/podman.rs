@@ -596,6 +596,8 @@ impl ContainerRuntime for PodmanRuntime {
 mod tests {
     use std::sync::Mutex;
 
+    use awaken_provisioning_contract::ProcessHandle;
+
     use crate::{NetworkMode, RootfsPlan};
 
     use super::*;
@@ -831,5 +833,53 @@ mod tests {
             *fake.calls.lock().unwrap().last().unwrap(),
             vec!["rm", "-f", "cid"]
         );
+    }
+
+    fn exec_process(child: Option<Child>, bin: &str) -> PodmanExecProcess {
+        PodmanExecProcess {
+            id: "exec-test".into(),
+            container_id: "container-test".into(),
+            bin: bin.into(),
+            pid_file: "/tmp/does-not-matter-for-scripted-bin".into(),
+            state: tokio::sync::Mutex::new(PodmanExecState {
+                child,
+                status: None,
+            }),
+        }
+    }
+
+    #[tokio::test]
+    async fn exec_process_wait_and_poll_cache_the_terminal_status() {
+        let child = OsCommand::new("sh")
+            .args(["-c", "exit 7"])
+            .spawn()
+            .expect("spawn fixture");
+        let process = exec_process(Some(child), "true");
+        assert_eq!(process.id(), "exec-test");
+        assert_eq!(process.wait().await.unwrap().code, Some(7));
+        assert_eq!(process.wait().await.unwrap().code, Some(7));
+        assert_eq!(process.poll().await.unwrap().unwrap().code, Some(7));
+    }
+
+    #[tokio::test]
+    async fn exec_process_poll_reports_running_then_terminal() {
+        let child = OsCommand::new("sh")
+            .args(["-c", "sleep 0.05; exit 3"])
+            .spawn()
+            .expect("spawn fixture");
+        let process = exec_process(Some(child), "true");
+        assert_eq!(process.poll().await.unwrap(), None);
+        assert_eq!(process.wait().await.unwrap().code, Some(3));
+    }
+
+    #[tokio::test]
+    async fn detached_exec_process_fails_closed_and_signal_propagates_status() {
+        let detached = exec_process(None, "true");
+        assert!(detached.wait().await.is_err());
+        assert!(detached.poll().await.is_err());
+        detached.signal(pc::Signal::Term).await.unwrap();
+
+        let failing_signal = exec_process(None, "false");
+        assert!(failing_signal.signal(pc::Signal::Int).await.is_err());
     }
 }

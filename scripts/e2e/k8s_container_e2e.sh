@@ -68,6 +68,7 @@ docker save "${FIXTURE_IMAGE}" | docker exec -i "${NODE}" ctr -n k8s.io images i
 docker exec "${NODE}" crictl images 2>/dev/null | grep -E "pause|awaken-bb" || true
 
 log "running the k8s e2e test"
+AWAKEN_K8S_E2E=1 cargo test -p awaken-sandbox-container --features k8s --test k8s_it -- --nocapture
 AWAKEN_K8S_E2E=1 cargo test -p awaken-sandbox-container --features k8s --test k8s_e2e -- --nocapture
 
 log "k8s container e2e PASSED"

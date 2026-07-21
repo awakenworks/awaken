@@ -14,7 +14,7 @@ use awaken_sandbox_container::{
 
 fn plan(cmd: &[&str]) -> ContainerPlan {
     ContainerPlan {
-        image: "busybox:latest".into(),
+        image: "awaken-bb:1".into(),
         command: cmd.iter().map(|s| s.to_string()).collect(),
         env: Vec::new(),
         binds: Vec::new(),

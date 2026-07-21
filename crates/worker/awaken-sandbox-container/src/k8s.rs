@@ -1068,7 +1068,67 @@ impl ContainerRuntime for K8sRuntime {
 
 #[cfg(test)]
 mod tests {
+    use awaken_provisioning_contract::ProcessHandle;
+
     use super::*;
+
+    fn exec_process(completion: Option<tokio::task::JoinHandle<Option<Status>>>) -> K8sExecProcess {
+        let rt = K8sRuntime::for_test("127.0.0.1:9000".parse().unwrap());
+        K8sExecProcess {
+            id: "k8s-exec-test".into(),
+            pod: "pod-test".into(),
+            pid_file: "/tmp/pid".into(),
+            pods: rt.pods(),
+            state: tokio::sync::Mutex::new(K8sExecState {
+                completion,
+                status: None,
+            }),
+        }
+    }
+
+    fn success_status(code: i32) -> Status {
+        Status {
+            status: Some(if code == 0 { "Success" } else { "Failure" }.into()),
+            details: Some(
+                k8s_openapi::apimachinery::pkg::apis::meta::v1::StatusDetails {
+                    causes: Some(vec![
+                        k8s_openapi::apimachinery::pkg::apis::meta::v1::StatusCause {
+                            reason: Some("ExitCode".into()),
+                            message: Some(code.to_string()),
+                            ..Default::default()
+                        },
+                    ]),
+                    ..Default::default()
+                },
+            ),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn exec_wait_and_poll_cache_the_remote_completion_status() {
+        let process = exec_process(Some(tokio::spawn(async { Some(success_status(7)) })));
+        assert_eq!(process.id(), "k8s-exec-test");
+        assert_eq!(process.wait().await.unwrap().code, Some(7));
+        assert_eq!(process.wait().await.unwrap().code, Some(7));
+        assert_eq!(process.poll().await.unwrap().unwrap().code, Some(7));
+    }
+
+    #[tokio::test]
+    async fn exec_poll_distinguishes_running_missing_and_finished_status() {
+        let process = exec_process(Some(tokio::spawn(async {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            Some(success_status(0))
+        })));
+        assert_eq!(process.poll().await.unwrap(), None);
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        assert_eq!(process.poll().await.unwrap().unwrap().code, Some(0));
+
+        let missing = exec_process(None);
+        assert!(missing.poll().await.is_err());
+        assert!(missing.wait().await.is_err());
+        assert_eq!(k8s_exit_status(None).code, Some(1));
+    }
 
     #[tokio::test]
     async fn builder_methods_set_every_field_and_pod_delegates_to_build_pod() {
@@ -1093,6 +1153,7 @@ mod tests {
         let rt = K8sRuntime::for_test("127.0.0.1:9000".parse().unwrap());
         assert!(rt.artifacts("pod").await.unwrap().is_empty());
         assert!(rt.touch_lease("pod").await.is_ok());
+        assert!(rt.read_artifact("pod", "artifact").await.is_err());
     }
 
     #[test]
