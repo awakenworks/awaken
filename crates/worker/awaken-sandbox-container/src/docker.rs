@@ -396,10 +396,11 @@ mod cgroup_host_config_tests {
     }
 
     #[tokio::test]
-    async fn artifacts_are_out_of_band_and_touch_lease_is_a_noop() {
+    async fn artifacts_are_out_of_band_and_a_missing_lease_target_fails_closed() {
         let rt = DockerRuntime::connect_local(8080).unwrap();
         assert!(rt.artifacts("cid").await.unwrap().is_empty());
-        assert!(rt.touch_lease("cid").await.is_ok());
+        assert!(rt.touch_lease("cid").await.is_err());
+        assert!(rt.adopted.lock().unwrap().is_empty());
     }
 }
 
@@ -418,6 +419,10 @@ pub struct DockerRuntime {
     docker: Docker,
     agent_port: u16,
     owner_id: String,
+    /// Containers adopted by this runtime incarnation. Docker labels are immutable,
+    /// so a renewed/adopted lease is fenced in memory and merged with label ownership
+    /// when the crash reaper lists candidates.
+    adopted: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
 impl DockerRuntime {
@@ -428,6 +433,7 @@ impl DockerRuntime {
             docker,
             agent_port,
             owner_id: crate::runtime_owner_id(),
+            adopted: std::sync::Mutex::new(std::collections::HashSet::new()),
         })
     }
 
@@ -437,6 +443,7 @@ impl DockerRuntime {
             docker,
             agent_port,
             owner_id: crate::runtime_owner_id(),
+            adopted: std::sync::Mutex::new(std::collections::HashSet::new()),
         }
     }
 
@@ -786,13 +793,22 @@ impl ContainerRuntime for DockerRuntime {
         Ok(buf)
     }
 
-    async fn touch_lease(&self, _container_id: &str) -> Result<(), RuntimeError> {
-        // Docker has no native lease/TTL; a lightweight reaper watches lease labels.
+    async fn touch_lease(&self, container_id: &str) -> Result<(), RuntimeError> {
+        // Docker labels cannot be updated. Confirm liveness before protecting an
+        // adopted id in this runtime's ownership set.
+        if self.inspect(container_id).await? != ContainerState::Running {
+            return Err(RuntimeError::NotFound(container_id.into()));
+        }
+        self.adopted
+            .lock()
+            .unwrap()
+            .insert(container_id.to_string());
         Ok(())
     }
 
     async fn remove(&self, container_id: &str) -> Result<(), RuntimeError> {
-        self.docker
+        let result = self
+            .docker
             .remove_container(
                 container_id,
                 Some(RemoveContainerOptions {
@@ -801,7 +817,11 @@ impl ContainerRuntime for DockerRuntime {
                 }),
             )
             .await
-            .map_err(backend)
+            .map_err(backend);
+        if result.is_ok() {
+            self.adopted.lock().unwrap().remove(container_id);
+        }
+        result
     }
 
     async fn list_managed(&self) -> Result<Vec<ManagedContainer>, RuntimeError> {
@@ -833,13 +853,15 @@ impl ContainerRuntime for DockerRuntime {
                     .created
                     .map(|created| now.saturating_sub(created.max(0) as u64))
                     .unwrap_or(0);
+                let owned_by_label = c
+                    .labels
+                    .as_ref()
+                    .and_then(|labels| labels.get(REAPER_OWNER_LABEL))
+                    == Some(&self.owner_id);
+                let owned_by_adoption = self.adopted.lock().unwrap().contains(&id);
                 Some(ManagedContainer {
                     id,
-                    owned_by_current_runtime: c
-                        .labels
-                        .as_ref()
-                        .and_then(|labels| labels.get(REAPER_OWNER_LABEL))
-                        == Some(&self.owner_id),
+                    owned_by_current_runtime: owned_by_label || owned_by_adoption,
                     running,
                     age_secs,
                 })

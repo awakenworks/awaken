@@ -231,12 +231,16 @@ impl SharedHost {
     ) -> Result<Arc<SessionCtx>, HostError> {
         let mut sessions = self.sessions.lock().await;
         if let Some(ctx) = sessions.get(thread) {
-            if let Some(adopted) = &adopted
-                && ctx.env.handle() != adopted.handle()
-            {
-                return Err(HostError::internal(format!(
-                    "thread {thread} is already bound to a different sandbox"
-                )));
+            if let Some(adopted) = adopted {
+                if ctx.env.handle() != adopted.handle() {
+                    return Err(HostError::internal(format!(
+                        "thread {thread} is already bound to a different sandbox"
+                    )));
+                }
+                // A concurrent cold resolver may have adopted while this context was
+                // becoming resident. Stop only that wrapper's hand process; disposing
+                // it would tear down the shared underlying sandbox.
+                adopted.stop_bound_processes().await;
             }
             let ctx = ctx.clone();
             drop(sessions);
@@ -246,18 +250,46 @@ impl SharedHost {
                 .await;
             return Ok(ctx);
         }
-        let env = Arc::new(match adopted {
-            Some(env) => env,
-            None => self
-                .session_provider
-                .create(&self.sandbox_spec(thread))
+        let retained = self.session_environments.lock().await.get(thread).cloned();
+        let (env, needs_provision, needs_registration) = match (retained, adopted) {
+            (Some(existing), Some(adopted)) => {
+                if existing.handle() != adopted.handle() {
+                    return Err(HostError::internal(format!(
+                        "thread {thread} is already bound to a different sandbox"
+                    )));
+                }
+                adopted.stop_bound_processes().await;
+                (existing, false, false)
+            }
+            (Some(existing), None) => (existing, false, false),
+            // The adopted environment already contains its Session workspace and
+            // repositories. Re-cloning would both fail and destroy continuity.
+            (None, Some(adopted)) => (Arc::new(adopted), false, true),
+            (None, None) => (
+                Arc::new(
+                    self.session_provider
+                        .create(&self.sandbox_spec(thread))
+                        .await
+                        .map_err(|e| HostError::internal(e.to_string()))?,
+                ),
+                true,
+                true,
+            ),
+        };
+        if needs_provision {
+            // Clone staged repositories only for a physically new environment.
+            // Rebuilding SessionCtx must not re-clone over a live Session workspace.
+            if let Err(error) = self.realize_thread_repositories(thread, env.as_ref()).await {
+                let _ = awaken_provisioning_contract::Sandbox::dispose(env.as_ref()).await;
+                return Err(error);
+            }
+        }
+        if needs_registration {
+            self.session_environments
+                .lock()
                 .await
-                .map_err(|e| HostError::internal(e.to_string()))?,
-        });
-        // Clone any staged github_repository resources into the fresh sandbox,
-        // host-side (ADR-0038); fail-closed so a bad repo aborts session start.
-        self.realize_thread_repositories(thread, env.as_ref())
-            .await?;
+                .insert(thread.to_string(), env.clone());
+        }
         let thread_id = ThreadId(thread.to_string());
         let commit = Arc::new(self.build_commit(thread).await?);
         // Durable interrupted-stream checkpoints follow the commit's durability
@@ -626,22 +658,81 @@ impl SharedHost {
         Ok(ctx)
     }
 
+    /// Evict only the rebuildable runtime context. The independently-owned
+    /// SessionEnvironment remains live, so model/token/file projection changes do
+    /// not fork or discard the workspace.
+    pub(crate) async fn evict_session_runtime(&self, thread: &str) {
+        self.sessions.lock().await.remove(thread);
+    }
+
+    pub(crate) async fn session_environment(
+        &self,
+        thread: &str,
+    ) -> Option<Arc<crate::session_environment::SessionEnvironment>> {
+        self.session_environments.lock().await.get(thread).cloned()
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn session_environment_handle(
+        &self,
+        thread: &str,
+    ) -> Option<awaken_provisioning_contract::SandboxHandle> {
+        self.session_environment(thread)
+            .await
+            .map(|env| env.handle())
+    }
+
+    /// Forget a dead environment only when it is still the exact `Arc` observed
+    /// by the recovery attempt. Object identity plus the full durable handle is
+    /// the ABA fence: a stale recovery task must never evict a replacement that
+    /// has already been installed for the same thread/sandbox id.
+    pub(crate) async fn discard_session_environment(
+        &self,
+        thread: &str,
+        expected: &Arc<crate::session_environment::SessionEnvironment>,
+    ) -> bool {
+        let mut sessions = self.sessions.lock().await;
+        let mut environments = self.session_environments.lock().await;
+        let still_observed = environments.get(thread).is_some_and(|current| {
+            Arc::ptr_eq(current, expected) && current.handle() == expected.handle()
+        });
+        if !still_observed {
+            return false;
+        }
+        let removed = environments.remove(thread);
+        if sessions.get(thread).is_some_and(|ctx| {
+            Arc::ptr_eq(&ctx.env, expected) && ctx.env.handle() == expected.handle()
+        }) {
+            sessions.remove(thread);
+        }
+        drop(environments);
+        drop(sessions);
+        if let Some(environment) = removed {
+            // The provider object may represent an unavailable external
+            // sandbox. Only stop processes owned by this wrapper here; normal
+            // terminal disposal remains the responsibility of `end_session`.
+            environment.stop_bound_processes().await;
+            true
+        } else {
+            false
+        }
+    }
+
     /// End a session's sandbox lifecycle at a terminal edge (managed session
     /// delete/archive): evict the cached context and dispose the sandbox at the OS
     /// boundary (shred materialized secrets, reap the per-thread workspace dir).
     /// Idempotent — a thread with no live session is a no-op.
     ///
-    /// This is the ONLY place a session's sandbox is reaped. The evict-to-rebuild
-    /// edges (`rebind_model`/`apply_session_inputs`)
-    /// remove the cached context WITHOUT disposing, so the next turn's `ctx_for`
-    /// rebuilds over the same `base/<thread>` workspace (ADR-0038 continuity); a
-    /// terminal end must instead reap it. Repository publication and authored-Skill
+    /// This is the ONLY place a Session-owned environment is reaped. Runtime-context
+    /// rebuilds retain it in `session_environments`; a terminal end removes that owner
+    /// entry and disposes exactly once. Repository publication and authored-Skill
     /// persistence run at the caller's release boundary before this method; Memory
     /// copy reconciliation is owned by `Sandbox::dispose` through its mount guard.
     pub(crate) async fn end_session(&self, thread: &str) -> Result<(), HostError> {
         let ctx = self.sessions.lock().await.remove(thread);
-        let dispose_result = if let Some(ctx) = ctx {
-            awaken_provisioning_contract::Sandbox::dispose(&*ctx.env)
+        let env = self.session_environments.lock().await.remove(thread);
+        let dispose_result = if let Some(env) = env.or_else(|| ctx.map(|ctx| ctx.env.clone())) {
+            awaken_provisioning_contract::Sandbox::dispose(&*env)
                 .await
                 .map_err(|e| HostError::internal(e.to_string()))
         } else {

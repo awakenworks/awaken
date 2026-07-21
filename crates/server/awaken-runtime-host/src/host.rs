@@ -152,6 +152,11 @@ pub struct SharedHost {
     pub(crate) plugin_ids: Vec<String>,
     pub(crate) plugin_config: std::collections::BTreeMap<String, serde_json::Value>,
     pub(crate) sessions: tokio::sync::Mutex<HashMap<String, Arc<SessionCtx>>>,
+    /// Session-owned execution environments live independently from the rebuildable
+    /// runtime context. Model/resource/token changes evict `SessionCtx` but retain this
+    /// one environment, so Native, ACP and Hand keep the same workspace and handle.
+    pub(crate) session_environments:
+        tokio::sync::Mutex<HashMap<String, Arc<crate::session_environment::SessionEnvironment>>>,
     pub(crate) hub: Arc<ThreadEventHub>,
     /// When set, each thread commits to a durable SQLite database at
     /// `store_dir/<thread>.db`, so an awaiting run survives a process restart. When

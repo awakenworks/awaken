@@ -10,14 +10,14 @@ use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
 use awaken_run_executor_acp::AgentChannelType;
 use awaken_runtime_contract::tool::{RawTool, ToolExecutor};
-use awaken_sandbox_local::{
-    DiscoveredSkillFile, LocalProvider, LocalSandbox, NamespaceProvider, NamespaceSandbox,
-};
+use awaken_sandbox_local::{DiscoveredSkillFile, LocalSandbox, NamespaceSandbox};
 
 mod container_files;
 mod container_repositories;
 mod container_skills;
+mod provider;
 use container_skills::{ContainerSkillCache, RefreshingHandExecutor};
+pub(crate) use provider::SessionEnvironmentProvider;
 
 /// Composition port that binds a live hand channel to the runtime's neutral tool
 /// executor. The framing implementation belongs to an outer composition crate;
@@ -28,117 +28,6 @@ pub trait HandExecutorFactory: Send + Sync {
         channel: Box<dyn AgentChannelType>,
         operation_scope: &str,
     ) -> Arc<dyn ToolExecutor>;
-}
-
-/// Creates/adopts the one Session environment while auxiliary housekeeping Runs
-/// may continue using their deliberately-fresh LocalProvider.
-pub(crate) enum SessionEnvironmentProvider {
-    Workdir(LocalProvider),
-    Namespace(NamespaceProvider),
-    Container {
-        provider: Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>,
-        extra_mounts: Vec<pc::MountRequirement>,
-        hand_factory: Arc<dyn HandExecutorFactory>,
-    },
-}
-
-impl SessionEnvironmentProvider {
-    pub(crate) fn workdir(base: impl Into<std::path::PathBuf>) -> Self {
-        Self::Workdir(LocalProvider::new(base))
-    }
-
-    pub(crate) fn namespace(base: impl Into<std::path::PathBuf>) -> Self {
-        Self::Namespace(NamespaceProvider::new(base))
-    }
-
-    pub(crate) fn container(
-        provider: Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>,
-        extra_mounts: Vec<pc::MountRequirement>,
-        hand_factory: Arc<dyn HandExecutorFactory>,
-    ) -> Self {
-        Self::Container {
-            provider,
-            extra_mounts,
-            hand_factory,
-        }
-    }
-
-    pub(crate) fn at_root(&self, base: impl Into<std::path::PathBuf>) -> Self {
-        let base = base.into();
-        match self {
-            Self::Workdir(_) => Self::workdir(base),
-            Self::Namespace(_) => Self::namespace(base),
-            Self::Container {
-                provider,
-                extra_mounts,
-                hand_factory,
-            } => Self::Container {
-                provider: provider.clone(),
-                extra_mounts: extra_mounts.clone(),
-                hand_factory: hand_factory.clone(),
-            },
-        }
-    }
-
-    pub(crate) async fn create(
-        &self,
-        spec: &pc::SandboxSpec,
-    ) -> Result<SessionEnvironment, pc::SandboxError> {
-        match self {
-            Self::Workdir(provider) => provider
-                .create_sandbox(spec)
-                .await
-                .map(SessionEnvironment::workdir),
-            Self::Namespace(provider) => {
-                let mut spec = spec.clone();
-                spec.isolation = pc::IsolationClass::Namespace;
-                provider
-                    .create_sandbox(&spec)
-                    .await
-                    .map(SessionEnvironment::namespace)
-            }
-            Self::Container {
-                provider,
-                extra_mounts,
-                hand_factory,
-            } => {
-                let mut spec = spec.clone();
-                spec.isolation = pc::IsolationClass::Container;
-                spec.mounts.extend(extra_mounts.iter().cloned());
-                for mount in &mut spec.mounts {
-                    if !mount.mount_path.starts_with('/') {
-                        mount.mount_path = container_files::workspace_path(&mount.mount_path)?;
-                    }
-                }
-                let environment = provider.create_environment(&spec).await?;
-                SessionEnvironment::container(environment, hand_factory.as_ref()).await
-            }
-        }
-    }
-
-    pub(crate) async fn adopt(
-        &self,
-        handle: &pc::SandboxHandle,
-    ) -> Result<SessionEnvironment, pc::SandboxError> {
-        match self {
-            Self::Workdir(provider) => provider
-                .adopt_sandbox(handle)
-                .await
-                .map(SessionEnvironment::workdir),
-            Self::Namespace(provider) => provider
-                .adopt_sandbox(handle)
-                .await
-                .map(SessionEnvironment::namespace),
-            Self::Container {
-                provider,
-                hand_factory,
-                ..
-            } => {
-                let environment = provider.adopt_environment(handle).await?;
-                SessionEnvironment::container(environment, hand_factory.as_ref()).await
-            }
-        }
-    }
 }
 
 /// Segregated capability needed by the ACP channel adapter. Keeping it beside
@@ -356,6 +245,49 @@ impl SessionEnvironment {
         }
     }
 
+    /// Project a control-plane file into the already-live workspace. This is used
+    /// for the Managed API's file-only dynamic attach and deliberately retains the
+    /// Session environment instead of creating a second sandbox lifecycle.
+    pub(crate) async fn materialize_workspace_file(
+        &self,
+        logical: &str,
+        contents: &[u8],
+    ) -> Result<(), pc::SandboxError> {
+        match self {
+            Self::Workdir(sandbox) => sandbox.materialize_inline(logical, contents),
+            Self::Namespace(sandbox) => sandbox.materialize_inline(logical, contents),
+            Self::Container { sandbox, .. } => {
+                let path = container_files::logical_path(logical)?;
+                container_files::write(sandbox.as_ref(), &path, contents).await
+            }
+        }
+    }
+
+    /// Remove a dynamically projected workspace path. It is idempotent and path
+    /// jailed on every tier, so detach cannot escape the Session workspace.
+    pub(crate) async fn remove_workspace_path(
+        &self,
+        logical: &str,
+    ) -> Result<(), pc::SandboxError> {
+        match self {
+            Self::Workdir(sandbox) => sandbox.remove_inline(logical),
+            Self::Namespace(sandbox) => sandbox.remove_inline(logical),
+            Self::Container { sandbox, .. } => {
+                container_files::remove(sandbox.as_ref(), logical).await
+            }
+        }
+    }
+
+    /// Stop only the process bindings created while constructing this wrapper.
+    /// Used when an adoption races a resident environment with the same handle;
+    /// disposing here would incorrectly destroy the shared underlying container.
+    pub(crate) async fn stop_bound_processes(&self) {
+        if let Self::Container { hand_process, .. } = self {
+            let _ = hand_process.signal(pc::Signal::Term).await;
+            let _ = hand_process.wait().await;
+        }
+    }
+
     pub(crate) async fn spawn_agent(
         &self,
         command: pc::Command,
@@ -553,10 +485,12 @@ mod tests {
     #[derive(Default)]
     struct FakeContainerProvider {
         creates: std::sync::atomic::AtomicUsize,
+        renews: Arc<std::sync::atomic::AtomicUsize>,
         shared: Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>>,
     }
 
     struct FakeContainer {
+        renews: Arc<std::sync::atomic::AtomicUsize>,
         shared: Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>>,
     }
 
@@ -624,6 +558,7 @@ mod tests {
             self.creates
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(Arc::new(FakeContainer {
+                renews: self.renews.clone(),
                 shared: self.shared.clone(),
             }))
         }
@@ -634,6 +569,7 @@ mod tests {
         ) -> Result<Arc<dyn awaken_sandbox_container::ContainerEnvironment>, pc::SandboxError>
         {
             Ok(Arc::new(FakeContainer {
+                renews: self.renews.clone(),
                 shared: self.shared.clone(),
             }))
         }
@@ -748,6 +684,8 @@ mod tests {
         }
 
         async fn renew_lease(&self) -> Result<(), pc::SandboxError> {
+            self.renews
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(())
         }
 
@@ -886,6 +824,26 @@ mod tests {
         environment.dispose().await.unwrap();
     }
 
+    #[tokio::test]
+    async fn adopting_a_container_renews_its_ownership_before_use() {
+        let provider = Arc::new(FakeContainerProvider::default());
+        let environments = SessionEnvironmentProvider::container(
+            provider.clone(),
+            Vec::new(),
+            Arc::new(FakeHandExecutorFactory),
+        );
+        let adopted = environments
+            .adopt(&pc::SandboxHandle::new("container", "session-container"))
+            .await
+            .expect("adopt environment");
+        assert_eq!(
+            provider.renews.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "adoption refreshes ownership before starting the replacement hand"
+        );
+        adopted.dispose().await.unwrap();
+    }
+
     #[cfg(feature = "container-docker")]
     #[tokio::test]
     async fn docker_environment_transfers_repo_and_harvests_files_without_exposing_token() {
@@ -936,6 +894,19 @@ mod tests {
             .provision_repo("workspace/repo", remote.to_str().unwrap(), None, None)
             .await
             .unwrap();
+        environment
+            .materialize_workspace_file(".mnt/live.txt", b"live")
+            .await
+            .unwrap();
+        assert_eq!(
+            environment.list_files(".mnt").await.unwrap(),
+            vec![("live.txt".into(), b"live".to_vec())]
+        );
+        environment
+            .remove_workspace_path(".mnt/live.txt")
+            .await
+            .unwrap();
+        assert!(environment.list_files(".mnt").await.unwrap().is_empty());
 
         let change = environment
             .spawn(pc::Command::new([

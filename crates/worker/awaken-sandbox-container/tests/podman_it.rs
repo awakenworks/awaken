@@ -166,6 +166,60 @@ async fn podman_reports_the_agent_exit_code() {
 }
 
 #[tokio::test]
+async fn podman_peer_adoption_renews_reaper_ownership() {
+    let Some(runtime_a) = runtime().await else {
+        return;
+    };
+    let runtime_a = Arc::new(runtime_a);
+    let provider_a = ContainerProvider::new(runtime_a, "docker.io/library/busybox:latest");
+    let spec = pc::SandboxSpec {
+        scope: "pod-adopt".into(),
+        isolation: pc::IsolationClass::Container,
+        mounts: Vec::new(),
+        env: Vec::new(),
+        network: pc::NetworkPolicy::Unrestricted,
+        outputs_path: "/mnt/session/outputs".into(),
+        limits: Default::default(),
+        lease_ttl_secs: None,
+        extra: Some(serde_json::json!({ "command": ["sleep", "30"] })),
+    };
+    let handle = {
+        let sandbox = provider_a.create(&spec).await.expect("create by worker A");
+        sandbox.handle()
+    };
+
+    let Some(runtime_b) = runtime().await else {
+        return;
+    };
+    let runtime_b = Arc::new(runtime_b);
+    let provider_b = ContainerProvider::new(runtime_b.clone(), "docker.io/library/busybox:latest");
+    let adopted = provider_b.adopt(&handle).await.expect("peer adoption");
+    adopted
+        .renew_lease()
+        .await
+        .expect("renew adopted ownership");
+    let physical_id = handle
+        .extra
+        .as_ref()
+        .and_then(|extra| extra["container_id"].as_str())
+        .expect("physical container id");
+    assert!(
+        runtime_b
+            .list_managed()
+            .await
+            .unwrap()
+            .into_iter()
+            .any(|container| container.owned_by_current_runtime),
+        "the peer runtime protects the canonical id returned by podman ps"
+    );
+    assert_eq!(
+        runtime_b.inspect(physical_id).await.unwrap(),
+        ContainerState::Running
+    );
+    adopted.dispose().await.unwrap();
+}
+
+#[tokio::test]
 async fn podman_rotates_and_persists_a_native_credential_file() {
     let Some(rt) = runtime().await else { return };
     let initial = br#"{"claudeAiOauth":{"accessToken":"old","refreshToken":"old"}}"#;

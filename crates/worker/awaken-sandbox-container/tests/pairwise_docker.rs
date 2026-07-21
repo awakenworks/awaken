@@ -550,7 +550,7 @@ async fn a_peer_provider_re_adopts_a_live_container_from_its_durable_handle() {
 
     // Worker B: a fresh provider over the SAME daemon re-adopts the SAME container.
     // adopt's internal `inspect` succeeding is itself the proof the container survived.
-    let (provider_b, _rt_b) = setup().await.expect("peer provider");
+    let (provider_b, rt_b) = setup().await.expect("peer provider");
     let adopted = provider_b
         .adopt(&handle)
         .await
@@ -565,6 +565,23 @@ async fn a_peer_provider_re_adopts_a_live_container_from_its_durable_handle() {
     assert_eq!(
         adopted.status().await.expect("environment status"),
         pc::SandboxStatus::Ready
+    );
+    adopted
+        .renew_lease()
+        .await
+        .expect("replacement claims reaper ownership");
+    let physical_id = handle
+        .extra
+        .as_ref()
+        .and_then(|extra| extra["container_id"].as_str())
+        .expect("physical container id");
+    assert!(
+        rt_b.list_managed()
+            .await
+            .unwrap()
+            .into_iter()
+            .any(|container| container.id == physical_id && container.owned_by_current_runtime),
+        "the replacement runtime's reaper must fence its adopted live container"
     );
     let proc = adopted
         .spawn(pc::Command::new(["true"]))

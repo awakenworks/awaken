@@ -81,6 +81,30 @@ pub(super) async fn write(
     }
 }
 
+pub(super) async fn remove(
+    sandbox: &dyn awaken_sandbox_container::ContainerEnvironment,
+    logical: &str,
+) -> Result<(), pc::SandboxError> {
+    let path = logical_path(logical)?;
+    let process = sandbox
+        .spawn(pc::Command {
+            argv: vec!["rm".into(), "-rf".into(), "--".into(), path],
+            cwd: "/workspace".into(),
+            env: Vec::new(),
+            stdio: pc::Stdio::Null,
+        })
+        .await?;
+    let status = process.wait().await?;
+    if status.code == Some(0) {
+        Ok(())
+    } else {
+        Err(pc::SandboxError::new(format!(
+            "container workspace removal exited {:?}",
+            status.code
+        )))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
