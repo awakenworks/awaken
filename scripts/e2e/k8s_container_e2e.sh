@@ -28,7 +28,12 @@ trap cleanup EXIT
 
 log "creating k3d cluster ${CLUSTER}"
 if ! k3d cluster list 2>/dev/null | grep -q "^${CLUSTER}\b"; then
-  k3d cluster create "${CLUSTER}" --wait --timeout 150s
+  # Keep the disposable test node usable on large developer disks: k3s defaults to
+  # a percentage threshold that can taint the node while hundreds of GiB remain.
+  # Other repository k3d gates use the same 2% floor.
+  EVICT="eviction-hard=imagefs.available<2%,nodefs.available<2%"
+  k3d cluster create "${CLUSTER}" --wait --timeout 150s \
+    --k3s-arg "--kubelet-arg=$EVICT@server:*"
 fi
 k3d kubeconfig merge "${CLUSTER}" --output "$KUBECONFIG_FILE" --overwrite >/dev/null
 export KUBECONFIG="$KUBECONFIG_FILE"
