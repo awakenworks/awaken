@@ -1,13 +1,12 @@
-//! Tenant ownership for the id-addressed memory stores (ADR-0053 / ADR-0051).
+//! Workspace partition fence for id-addressed MemoryStores (ADR-0053 / ADR-0051).
 //!
 //! Memory stores (`/v1/memory_stores/{id}`, and the `/memories`, `/memory_versions`
 //! subresources) are id-addressed. The Resource Catalog owns the Workspace fence;
 //! this middleware only applies that intrinsic invariant before subresource handlers.
 //!
-//! This is the data-plane sibling of the config-resource ownership guard, which lives
-//! in the authoring plane (`awaken-control`). Scope selection belongs to the outer
-//! composition/PEP layer; this module only consumes the selected Workspace and
-//! checks the catalog invariant.
+//! Scope selection and authorization belong to the outer composition/PEP layer.
+//! This module only consumes the selected Workspace and checks the catalog's
+//! intrinsic partition invariant.
 
 use std::sync::Arc;
 
@@ -18,19 +17,19 @@ use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 
-/// Intrinsic ownership adapter over the resource catalog. Ownership is aggregate
+/// Intrinsic Workspace fence over the Resource Catalog. The partition is aggregate
 /// state, not middleware cache, so it survives restarts and is shared by every
 /// process using the same repository. This is not an authorization policy engine.
 #[derive(Clone)]
-pub struct MemoryStoreOwnershipLookup(Arc<dyn ResourceCatalog>);
+pub struct MemoryStoreScopeFence(Arc<dyn ResourceCatalog>);
 
-impl MemoryStoreOwnershipLookup {
+impl MemoryStoreScopeFence {
     #[must_use]
     pub fn over(catalog: Arc<dyn ResourceCatalog>) -> Self {
         Self(catalog)
     }
 
-    fn owns(&self, scope: &str, id: &str) -> bool {
+    fn contains(&self, scope: &str, id: &str) -> bool {
         self.0.memory_store(scope, id).is_some()
     }
 }
@@ -48,8 +47,8 @@ fn not_found() -> Response {
 
 /// Fence cross-tenant access to a memory store. Collection create/list handlers
 /// receive the trusted Workspace and query/write the same Catalog directly.
-pub async fn memory_store_ownership_guard(
-    State(owners): State<MemoryStoreOwnershipLookup>,
+pub async fn memory_store_scope_fence(
+    State(fence): State<MemoryStoreScopeFence>,
     request: Request,
     next: Next,
 ) -> Response {
@@ -58,7 +57,7 @@ pub async fn memory_store_ownership_guard(
     };
     let path = request.uri().path().to_string();
     if let Some(id) = memory_store_id(&path) {
-        if !owners.owns(scope, &id) {
+        if !fence.contains(scope, &id) {
             return not_found();
         }
         return next.run(request).await;
@@ -139,7 +138,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_ownership_fences_by_scope() {
+    fn catalog_partition_fences_by_scope() {
         let catalog = Arc::new(InMemoryResourceCatalog::new());
         catalog
             .create_memory_store(
@@ -161,9 +160,9 @@ mod tests {
                 },
             )
             .unwrap();
-        let owners = MemoryStoreOwnershipLookup::over(catalog);
-        assert!(owners.owns("tenant-a", "memstore_1"));
-        assert!(!owners.owns("tenant-b", "memstore_1"));
-        assert!(!owners.owns("tenant-a", "unknown"));
+        let fence = MemoryStoreScopeFence::over(catalog);
+        assert!(fence.contains("tenant-a", "memstore_1"));
+        assert!(!fence.contains("tenant-b", "memstore_1"));
+        assert!(!fence.contains("tenant-a", "unknown"));
     }
 }
