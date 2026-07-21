@@ -148,6 +148,7 @@ impl SharedHost {
             model_ref,
             inference_routing: crate::inference_routing::InferenceRouting::new(),
             acp: None,
+            remote_attempt_executor: None,
             provider: LocalProvider::new(sandbox_root.clone()),
             session_provider: crate::session_environment::SessionEnvironmentProvider::workdir(
                 sandbox_root.clone(),
@@ -200,6 +201,17 @@ impl SharedHost {
             // deployment opts into β with `with_trusted_acp_mcp`.
             mcp_trusted_inline: false,
         }
+    }
+
+    /// Install the adapter that drives snapshot-selected remote attempts. The
+    /// host depends only on the neutral attempt port; A2A construction remains a
+    /// composition-root responsibility.
+    pub fn with_remote_attempt_executor(
+        mut self,
+        executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>,
+    ) -> Self {
+        self.remote_attempt_executor = Some(executor);
+        self
     }
 
     /// Platform-managed local workspace used when no authenticated/path scope

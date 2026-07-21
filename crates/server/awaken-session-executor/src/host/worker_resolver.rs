@@ -188,6 +188,25 @@ impl HostWorkerResolver {
             commit,
             claimed.lease.owner.clone(),
         );
+        if matches!(
+            awaken_runtime_contract::resolved::Backend::from_ref(
+                &claimed
+                    .request
+                    .activation
+                    .snapshot
+                    .resolved_spec
+                    .model_binding
+                    .backend_ref
+            ),
+            awaken_runtime_contract::resolved::Backend::Remote { .. }
+        ) {
+            let executor = host.remote_attempt_executor.clone().ok_or_else(|| {
+                Self::execution_error(
+                    "remote cancellation requires a configured remote attempt executor",
+                )
+            })?;
+            worker.install_attempt_executor(executor);
+        }
         if let Some(upstream) = &host.upstream {
             let mut remote = crate::commit_ingest::RemoteClaimedRunCommit::new(upstream.base_url())
                 .with_client(upstream.client().clone());

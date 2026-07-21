@@ -1,9 +1,9 @@
-//! Run-execution routing (R3/R4): drive a thread's activation on the native
-//! ingress or, when the session selected an ACP runtime, on the ACP executor.
+//! Run-execution routing (R3/R4): drive a thread's activation on the Native,
+//! ACP, or A2A executor selected by its immutable snapshot.
 //!
 //! Both commit through the thread's coordinator and return a `RunState`, so the
-//! caller's `finish_step` projection is identical either way — the ACP brain is a
-//! peer `RunExecutor`, not a parallel code path.
+//! caller's `finish_step` projection is identical either way — ACP and A2A brains
+//! are peer `RunAttemptExecutor` implementations, not parallel lifecycle paths.
 
 use std::sync::Arc;
 
@@ -24,23 +24,26 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 pub(crate) struct SessionAttemptExecutor {
     native: Arc<dyn RunAttemptExecutor>,
     acp: Option<Arc<dyn RunAttemptExecutor>>,
+    a2a: Option<Arc<dyn RunAttemptExecutor>>,
 }
 
 impl SessionAttemptExecutor {
     pub(crate) fn new(
         native: Arc<awaken_runtime::Runtime>,
         acp: Option<Arc<awaken_run_executor_acp::AcpRunExecutor>>,
+        remote: Option<Arc<dyn RunAttemptExecutor>>,
     ) -> Self {
         let native: Arc<dyn RunAttemptExecutor> = native;
         let acp = acp.map(|executor| executor as Arc<dyn RunAttemptExecutor>);
-        Self::from_executors(native, acp)
+        Self::from_executors(native, acp, remote)
     }
 
     fn from_executors(
         native: Arc<dyn RunAttemptExecutor>,
         acp: Option<Arc<dyn RunAttemptExecutor>>,
+        a2a: Option<Arc<dyn RunAttemptExecutor>>,
     ) -> Self {
-        Self { native, acp }
+        Self { native, acp, a2a }
     }
 
     fn executor(&self, activation: &RunActivation) -> ExecutionResult<&dyn RunAttemptExecutor> {
@@ -51,9 +54,11 @@ impl SessionAttemptExecutor {
                     "Run snapshot selects ACP but this worker has no ACP executor".to_string(),
                 )
             }),
-            Backend::Remote { endpoint } => Err(ExecutionError::Execution(format!(
-                "Run snapshot selects remote Agent {endpoint:?}, but A2A attempt routing is not installed"
-            ))),
+            Backend::Remote { endpoint } => self.a2a.as_deref().ok_or_else(|| {
+                ExecutionError::Execution(format!(
+                    "Run snapshot selects remote Agent {endpoint:?}, but A2A attempt routing is not installed"
+                ))
+            }),
         }
     }
 }
@@ -81,6 +86,16 @@ impl RunAttemptExecutor for SessionAttemptExecutor {
     ) -> ExecutionResult<RunState> {
         self.executor(&activation)?
             .resume(activation, command, context)
+            .await
+    }
+
+    async fn cancel(
+        &self,
+        activation: RunActivation,
+        context: RuntimeRunContext,
+    ) -> ExecutionResult<()> {
+        self.executor(&activation)?
+            .cancel(activation, context)
             .await
     }
 }
@@ -174,6 +189,7 @@ mod tests {
     struct RecordingExecutor {
         executes: AtomicUsize,
         resumes: AtomicUsize,
+        cancels: AtomicUsize,
         cause: &'static str,
     }
 
@@ -182,6 +198,7 @@ mod tests {
             Self {
                 executes: AtomicUsize::new(0),
                 resumes: AtomicUsize::new(0),
+                cancels: AtomicUsize::new(0),
                 cause,
             }
         }
@@ -213,6 +230,15 @@ mod tests {
         ) -> ExecutionResult<RunState> {
             self.resumes.fetch_add(1, Ordering::SeqCst);
             Ok(self.state())
+        }
+
+        async fn cancel(
+            &self,
+            _activation: RunActivation,
+            _context: RuntimeRunContext,
+        ) -> ExecutionResult<()> {
+            self.cancels.fetch_add(1, Ordering::SeqCst);
+            Ok(())
         }
     }
 
@@ -265,9 +291,11 @@ mod tests {
     async fn snapshot_backend_routes_fresh_and_resume_attempts() {
         let native = Arc::new(RecordingExecutor::new("native"));
         let acp = Arc::new(RecordingExecutor::new("acp"));
+        let a2a = Arc::new(RecordingExecutor::new("a2a"));
         let router = SessionAttemptExecutor::from_executors(
             native.clone(),
             Some(acp.clone() as Arc<dyn RunAttemptExecutor>),
+            Some(a2a.clone() as Arc<dyn RunAttemptExecutor>),
         );
 
         let native_activation = activation("awaken");
@@ -295,12 +323,34 @@ mod tests {
         assert_eq!(native.resumes.load(Ordering::SeqCst), 0);
         assert_eq!(acp.executes.load(Ordering::SeqCst), 0);
         assert_eq!(acp.resumes.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            router
+                .execute(
+                    activation("a2a:https://agent.example"),
+                    RuntimeRunContext::new(),
+                )
+                .await
+                .unwrap(),
+            RunState::Ended(EndCause::Stopped("a2a".into()))
+        );
+        assert_eq!(a2a.executes.load(Ordering::SeqCst), 1);
+
+        router
+            .cancel(
+                activation("a2a:https://agent.example"),
+                RuntimeRunContext::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(a2a.cancels.load(Ordering::SeqCst), 1);
+        assert_eq!(native.cancels.load(Ordering::SeqCst), 0);
+        assert_eq!(acp.cancels.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
     async fn unavailable_snapshot_backend_fails_closed() {
         let native = Arc::new(RecordingExecutor::new("native"));
-        let router = SessionAttemptExecutor::from_executors(native, None);
+        let router = SessionAttemptExecutor::from_executors(native, None, None);
 
         let error = router
             .execute(activation("acp:claude"), RuntimeRunContext::new())

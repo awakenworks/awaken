@@ -465,6 +465,17 @@ staged per-process at `prepare_session` and are not in the snapshot, so a
 db-less worker misses them for every kind (fix: carry rendered resource state in
 the snapshot, or fetch through an explicit resource-delivery port).
 
+A2A is not a fire-and-forget exception to this lifecycle. Its executor implements
+the same `RunAttemptExecutor` used by Native and ACP. Immediately after the first
+`message:send`, it commits the returned endpoint/task/context identity as Run-scoped
+state before polling. A cold replacement therefore reattaches with `tasks/get`, an
+awaiting run resumes on the committed context, and durable cancellation addresses
+the committed task before the local `Cancelled` commit. Poll and cancel delivery
+failures leave dispatch retryable; no recovery path sends a second initial message.
+Terminal settlement removes the opaque reference. The peer-execution and
+`agent_run` delegation adapters share one A2A task driver so lifecycle semantics do
+not fork at the wire edge (G39).
+
 ### D10 — Lifecycle end: supersede → disable → archive → erase
 
 The flow so far stops at "run"; an agent's end of life becomes explicit, each

@@ -17,12 +17,6 @@ use awaken_runtime_contract::delegation::{DelegationExecutionError, DelegationSt
 use awaken_runtime_contract::llm::ThreadUsage;
 use serde_json::{Value, json};
 
-/// Bound on task polling before giving up, so a stuck remote cannot hang a delegation
-/// forever.
-const MAX_TASK_POLLS: usize = 600;
-/// Delay between task polls while a remote task is still `working`.
-const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
-
 /// Drives one registered A2A remote agent (bound to its `transport`) as a neutral
 /// [`RemoteAgent`]. The composition root builds one per remote `agent_id`.
 pub struct A2aRemoteAgent {
@@ -50,6 +44,39 @@ impl RemoteAgent for A2aRemoteAgent {
             self.transport.as_ref(),
             agent_id,
             request_id,
+            input,
+            cancellation,
+        )
+        .await
+    }
+
+    async fn resume(
+        &self,
+        agent_id: &str,
+        request_id: &str,
+        execution_reference: &Value,
+        input: &str,
+        cancellation: Option<&CancellationToken>,
+    ) -> Result<DelegationStep, DelegationExecutionError> {
+        let task_id = execution_reference
+            .get("task_id")
+            .and_then(Value::as_str)
+            .filter(|task_id| !task_id.is_empty())
+            .ok_or_else(|| {
+                DelegationExecutionError::new("remote A2A resume is missing its durable task_id")
+            })?;
+        let context_id = execution_reference
+            .get("context_id")
+            .and_then(Value::as_str)
+            .filter(|context_id| !context_id.is_empty())
+            .ok_or_else(|| {
+                DelegationExecutionError::new("remote A2A resume is missing its durable context_id")
+            })?;
+        remote_message(
+            self.transport.as_ref(),
+            agent_id,
+            context_id,
+            &format!("delegation-resume-{request_id}-{task_id}"),
             input,
             cancellation,
         )
@@ -131,7 +158,11 @@ fn step_from_task(agent_id: &str, task: Task) -> Result<DelegationStep, Delegati
             usage: ThreadUsage::default(),
         }),
         TaskState::InputRequired | TaskState::AuthRequired => Ok(DelegationStep::Awaiting {
-            continuation: json!({ "agent_id": agent_id, "task_id": task.id }),
+            continuation: json!({
+                "agent_id": agent_id,
+                "task_id": task.id,
+                "context_id": task.context_id,
+            }),
         }),
         TaskState::Failed => Err(DelegationExecutionError::new("remote A2A agent failed")),
         TaskState::Rejected => Err(DelegationExecutionError::new(
@@ -146,9 +177,9 @@ fn step_from_task(agent_id: &str, task: Task) -> Result<DelegationStep, Delegati
     }
 }
 
-/// Run one remote-agent turn: `message:send`, poll `working` to a terminal state
-/// (bounded, cancellation-aware; a parent interrupt cancels the remote task), then
-/// map the task to a step.
+/// Run one remote-agent turn: `message:send`, poll active states to a terminal or
+/// await boundary (bounded and cancellation-aware; a parent interrupt cancels the
+/// remote task), then map the task to a step.
 async fn remote_run(
     transport: &dyn Transport,
     agent_id: &str,
@@ -160,40 +191,44 @@ async fn remote_run(
     // durable request instead of spawning a second task.
     let context_id = format!("deleg-{request_id}");
     let message_id = format!("delegation-message-{request_id}");
-    let mut task = a2a::send_message(transport, Some(agent_id), &context_id, &message_id, input)
+    remote_message(
+        transport,
+        agent_id,
+        &context_id,
+        &message_id,
+        input,
+        cancellation,
+    )
+    .await
+}
+
+async fn remote_message(
+    transport: &dyn Transport,
+    agent_id: &str,
+    context_id: &str,
+    message_id: &str,
+    input: &str,
+    cancellation: Option<&CancellationToken>,
+) -> Result<DelegationStep, DelegationExecutionError> {
+    let task = a2a::send_message(transport, Some(agent_id), context_id, message_id, input)
         .await
         .map_err(execution_error)?;
-
-    let mut polls = 0usize;
-    while matches!(task.status.state, TaskState::Working) {
-        if cancellation.is_some_and(CancellationToken::is_cancelled) {
-            a2a::cancel_task(transport, &task.id).await;
+    let task = match crate::task_driver::poll_to_boundary(transport, task, cancellation).await {
+        Ok(task) => task,
+        Err(crate::task_driver::PollError::Cancelled) => {
             return Err(DelegationExecutionError::new(
                 "remote A2A delegation was cancelled",
             ));
         }
-        if polls >= MAX_TASK_POLLS {
-            break;
+        Err(crate::task_driver::PollError::Timeout) => {
+            return Err(DelegationExecutionError::new(
+                "remote A2A task did not reach a terminal state in time",
+            ));
         }
-        polls += 1;
-        task = a2a::get_task(transport, &task.id)
-            .await
-            .map_err(execution_error)?;
-        if matches!(task.status.state, TaskState::Working) {
-            match cancellation {
-                Some(token) => {
-                    tokio::select! {
-                        _ = tokio::time::sleep(POLL_INTERVAL) => {}
-                        _ = token.cancelled() => {
-                            a2a::cancel_task(transport, &task.id).await;
-                            return Err(DelegationExecutionError::new("remote A2A delegation was cancelled"));
-                        }
-                    }
-                }
-                None => tokio::time::sleep(POLL_INTERVAL).await,
-            }
+        Err(crate::task_driver::PollError::Client(error)) => {
+            return Err(execution_error(error));
         }
-    }
+    };
     step_from_task(agent_id, task)
 }
 
@@ -211,6 +246,25 @@ mod tests {
         seen: Mutex<Vec<(String, String)>>,
         status: u16,
         reply: String,
+    }
+
+    struct BodyTransport {
+        body: Mutex<Option<String>>,
+        reply: String,
+    }
+
+    #[async_trait]
+    impl Transport for BodyTransport {
+        async fn request(
+            &self,
+            _method: &str,
+            _path: &str,
+            body: Option<Vec<u8>>,
+        ) -> std::result::Result<Response, String> {
+            *self.body.lock().unwrap() =
+                body.map(|body| String::from_utf8_lossy(&body).into_owned());
+            Ok(Response::new(200, self.reply.clone().into_bytes()))
+        }
     }
 
     #[async_trait]
@@ -343,5 +397,33 @@ mod tests {
                 .is_err()
         );
         assert_eq!(transport.seen.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn resume_uses_the_committed_context_and_a_wait_specific_message_id() {
+        let transport = Arc::new(BodyTransport {
+            body: Mutex::new(None),
+            reply: r#"{"task":{"id":"remote-done","contextId":"ctx-7","status":{"state":"completed","message":{"messageId":"m","role":"agent","parts":[{"text":"done"}]}}}}"#.into(),
+        });
+        let delegate = A2aRemoteAgent::new(transport.clone());
+
+        let step = RemoteAgent::resume(
+            &delegate,
+            "researcher",
+            "child-1",
+            &json!({
+                "task_id": "remote-wait-7",
+                "context_id": "ctx-7",
+            }),
+            "README.md",
+            None,
+        )
+        .await
+        .expect("follow-up reaches the same conversation");
+        assert!(matches!(step, DelegationStep::Ended { ref text, .. } if text == "done"));
+        let body = transport.body.lock().unwrap().clone().unwrap();
+        assert!(body.contains(r#""contextId":"ctx-7""#));
+        assert!(body.contains(r#""messageId":"delegation-resume-child-1-remote-wait-7""#));
+        assert!(body.contains(r#""text":"README.md""#));
     }
 }

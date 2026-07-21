@@ -315,6 +315,23 @@ pub trait RemoteAgent: Send + Sync {
         cancellation: Option<&CancellationToken>,
     ) -> Result<DelegationStep, DelegationExecutionError>;
 
+    /// Continue the exact remote execution named by a previously committed
+    /// opaque reference. The default preserves compatibility for adapters whose
+    /// stable `request_id` alone reconnects; task-oriented adapters override it
+    /// so follow-up input uses the retained task/context instead of starting a
+    /// second conversation.
+    async fn resume(
+        &self,
+        agent_id: &str,
+        request_id: &str,
+        execution_reference: &Value,
+        input: &str,
+        cancellation: Option<&CancellationToken>,
+    ) -> Result<DelegationStep, DelegationExecutionError> {
+        let _ = execution_reference;
+        self.run(agent_id, request_id, input, cancellation).await
+    }
+
     async fn card(&self, agent_id: &str) -> Result<Value, DelegationExecutionError>;
 
     /// Idempotently cancel the remote child addressed by the durable execution
