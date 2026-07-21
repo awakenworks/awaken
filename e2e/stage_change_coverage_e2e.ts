@@ -71,6 +71,7 @@ const scenarios: Scenario[] = [
   { id: 'remote_attempt', file: 'e2e/remote_attempt_lifecycle_e2e.ts' },
   { id: 'remote_child_lifecycle', file: 'e2e/delegated_remote_lifecycle_e2e.ts' },
   { id: 'acp_permission', file: 'e2e/acp_permission_resume_e2e.mjs' },
+  { id: 'acp_control', file: 'e2e/acp_control_lifecycle_e2e.ts' },
 ];
 
 const obligations: Obligation[] = [
@@ -187,6 +188,9 @@ const obligations: Obligation[] = [
   { id: 'D7-13', stage: '7 governed ACP attempt', behavior: 'ACP permission asks use the Session policy and commit a durable resume ticket', scenario: 'acp_permission' },
   { id: 'D7-14', stage: '7 governed ACP attempt', behavior: 'Managed approval resumes only the exact pending ACP tool call', scenario: 'acp_permission' },
   { id: 'D7-15', stage: '7 governed ACP attempt', behavior: 'Managed denial selects the ACP agent reject option and terminates cleanly', scenario: 'acp_permission' },
+  { id: 'D7-16', stage: '7 governed ACP attempt', behavior: 'live control pauses an ACP attempt at a safe boundary and commits a ManualPause ticket', scenario: 'acp_control' },
+  { id: 'D7-17', stage: '7 governed ACP attempt', behavior: 'durable text resume validates and resumes exactly the paused ACP Run', scenario: 'acp_control' },
+  { id: 'D7-18', stage: '7 governed ACP attempt', behavior: 'a continuation relaunch failure is committed instead of losing queued input', scenario: 'acp_control' },
 
   { id: 'D8-01', stage: '8 neutral MCP server core', behavior: 'newest and older protocol versions negotiate', scenario: 'mcp_stdio' },
   { id: 'D8-02', stage: '8 neutral MCP server core', behavior: 'unsupported version returns invalid params', scenario: 'mcp_stdio' },
