@@ -46,7 +46,7 @@ use awaken_server::{ResolvedExecutorError, executor_from_resolved, mount_with_ma
 /// Resource Catalog is shared by the Memory API, Managed ACL, and runtime
 /// activation. Authorization remains outside this helper.
 fn mount(host: Arc<SharedHost>) -> Router {
-    let catalog = Arc::new(awaken_config_resolver::InMemoryResourceCatalog::new());
+    let catalog = scenario_resource_catalog();
     let managed = Arc::new(
         ManagedState::new(ManagedHost::new(host.clone()).with_resource_configs(catalog.clone()))
             .with_resource_catalog(catalog.clone()),
@@ -142,7 +142,7 @@ pub fn build_memory_resource_router() -> Router {
         Arc::new(crate::models::MemoryResourceModel),
         "memory-resource",
     );
-    let host = with_scenario_memory_registry(SharedHost::new(model, model_ref));
+    let host = SharedHost::new(model, model_ref);
     mount(Arc::new(host))
 }
 
@@ -178,18 +178,16 @@ pub fn build_full_chain_router() -> Router {
     std::fs::create_dir_all(&mem_dir).expect("create memory dir");
     let greet = SkillSpec::new("greet", "Greet", "say hello", "GREETING-FROM-SKILL");
     let (model, model_ref) = scenario_model(Arc::new(EchoModel), "full-chain");
-    let host = with_scenario_memory_registry(SharedHost::new(model, model_ref))
+    let host = SharedHost::new(model, model_ref)
         .with_memory(mem_dir)
         .with_skills(vec![greet]);
     mount(Arc::new(host))
 }
 
-/// Give resource-focused scenario compositions the same durable identity repository
-/// that the production management composition injects. The blob bytes alone are not
-/// enough to recover tenant ownership after a restart: the memory-store definition is
-/// the aggregate that records its owning workspace. Without a durable registry the
-/// ownership PEP correctly fails closed, making an otherwise durable blob unreachable.
-fn with_scenario_memory_registry(host: SharedHost) -> SharedHost {
+/// Give scenario compositions the same durable resource catalog the production
+/// management composition injects. It owns definition/configuration/lifecycle only;
+/// authentication and policy remain outside this resource-plane adapter.
+fn scenario_resource_catalog() -> Arc<dyn awaken_protocol_managed::ResourceCatalog> {
     let root = std::env::var("AWAKEN_MGMT_DIR")
         .ok()
         .filter(|value| !value.trim().is_empty())
@@ -199,14 +197,14 @@ fn with_scenario_memory_registry(host: SharedHost) -> SharedHost {
                 .filter(|value| !value.trim().is_empty())
         });
     let Some(root) = root else {
-        return host;
+        return Arc::new(awaken_config_resolver::InMemoryResourceCatalog::new());
     };
     let root = std::path::PathBuf::from(root);
     std::fs::create_dir_all(&root).expect("create scenario resource registry directory");
-    let registry =
+    let catalog =
         awaken_admin_config_api::SqliteAdminStore::open(&root.join("admin.db").to_string_lossy())
-            .expect("open durable scenario memory-store registry");
-    host.with_memory_registry(Arc::new(registry))
+            .expect("open durable scenario resource catalog");
+    Arc::new(catalog)
 }
 
 /// A router with context compaction (the compaction e2e): a low threshold folds
@@ -681,9 +679,7 @@ pub fn build_resolved_router(
 
 /// Build the server router backed by the kernel with the given model.
 pub fn build_router(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> Router {
-    mount(Arc::new(with_scenario_memory_registry(SharedHost::new(
-        llm, model_ref,
-    ))))
+    mount(Arc::new(SharedHost::new(llm, model_ref)))
 }
 
 /// A plain host over the real wire for the model-pool failover e2e (#1). The

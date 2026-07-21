@@ -24,6 +24,23 @@ struct MemoryRecord {
     configs: BTreeMap<ConfigVersion, MemoryStoreConfigVersion>,
 }
 
+/// Upgrade-only shape written by the removed `MemoryStoreRegistry`. Empty-owner
+/// rows remain quarantined because assigning ownership implicitly is unsafe.
+#[derive(Debug, Deserialize)]
+struct LegacyMemoryStoreDef {
+    id: String,
+    #[serde(default)]
+    workspace_id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    metadata: BTreeMap<String, String>,
+    #[serde(default)]
+    archived: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RepositoryRecord {
     definition: RepositoryDefinition,
@@ -83,6 +100,62 @@ fn validate_publish(
 }
 
 impl PostgresAdminStore {
+    /// Idempotently import owned legacy rows into the Resource Catalog. The old
+    /// table is never consulted by normal reads after this startup migration.
+    pub(crate) fn migrate_legacy_memory_stores(&self) -> Result<(), ResourceCatalogError> {
+        let sql = format!("SELECT data FROM {NS}_memory_store ORDER BY id");
+        let pool = self.pool.clone();
+        let rows = block(&self.handle, move || async move {
+            sqlx::query(&sql)
+                .fetch_all(&pool)
+                .await
+                .map_err(storage)?
+                .into_iter()
+                .map(|row| {
+                    let Json(value): Json<LegacyMemoryStoreDef> =
+                        row.try_get("data").map_err(storage)?;
+                    Ok(value)
+                })
+                .collect::<Result<Vec<_>, ResourceCatalogError>>()
+        })?;
+        for legacy in rows {
+            if legacy.workspace_id.trim().is_empty()
+                || self
+                    .catalog_record::<MemoryRecord>(MEMORY, &legacy.id)
+                    .is_some()
+            {
+                continue;
+            }
+            let id = legacy.id;
+            match self.create_memory_store(
+                MemoryStoreDefinition {
+                    id: id.clone(),
+                    workspace_id: legacy.workspace_id,
+                    name: legacy.name,
+                    description: legacy.description,
+                    metadata: legacy.metadata,
+                    state: if legacy.archived {
+                        ResourceState::Archived
+                    } else {
+                        ResourceState::Active
+                    },
+                    current_config_version: ConfigVersion::INITIAL,
+                },
+                MemoryStoreConfigVersion {
+                    memory_store_id: id,
+                    version: ConfigVersion::INITIAL,
+                    recall_policy: Default::default(),
+                    extraction_policy: Default::default(),
+                    retention_policy: Default::default(),
+                },
+            ) {
+                Ok(()) | Err(ResourceCatalogError::AlreadyExists(_)) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    }
+
     fn catalog_record<T>(&self, kind: &str, id: &str) -> Option<T>
     where
         T: serde::de::DeserializeOwned + Send + 'static,
@@ -264,6 +337,58 @@ impl ResourceCatalog for PostgresAdminStore {
         self.catalog_record::<MemoryRecord>(MEMORY, id)
             .filter(|record| record.definition.workspace_id == workspace_id)
             .map(|record| record.definition)
+    }
+
+    fn list_memory_stores(&self, workspace_id: &str) -> Vec<MemoryStoreDefinition> {
+        let sql = format!("SELECT data FROM {NS}_resource_catalog WHERE kind = $1 ORDER BY id");
+        let pool = self.pool.clone();
+        let workspace_id = workspace_id.to_string();
+        block(&self.handle, move || async move {
+            sqlx::query(&sql)
+                .bind(MEMORY)
+                .fetch_all(&pool)
+                .await
+                .expect("list resource catalog")
+                .into_iter()
+                .map(|row| {
+                    let Json(record): Json<MemoryRecord> =
+                        row.try_get("data").expect("decode resource catalog");
+                    record
+                })
+                .filter(|record| {
+                    record.definition.workspace_id == workspace_id
+                        && !matches!(
+                            record.definition.state,
+                            ResourceState::Archived | ResourceState::Deleted
+                        )
+                })
+                .map(|record| record.definition)
+                .collect()
+        })
+    }
+
+    fn update_memory_store(
+        &self,
+        definition: MemoryStoreDefinition,
+    ) -> Result<(), ResourceCatalogError> {
+        let id = definition.id.clone();
+        let update_id = id.clone();
+        self.update_catalog_record::<MemoryRecord, _>(MEMORY, &id, move |record| {
+            if record.definition.workspace_id != definition.workspace_id {
+                return Err(ResourceCatalogError::NotFound(update_id));
+            }
+            if record.definition.state != definition.state
+                || record.definition.current_config_version != definition.current_config_version
+            {
+                return Err(ResourceCatalogError::Invalid(
+                    "definition update cannot change lifecycle or config version".into(),
+                ));
+            }
+            record.definition.name = definition.name;
+            record.definition.description = definition.description;
+            record.definition.metadata = definition.metadata;
+            Ok(())
+        })
     }
 
     fn memory_config(

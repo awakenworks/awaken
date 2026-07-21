@@ -71,11 +71,6 @@ struct ManagementStores {
     secrets: Arc<dyn awaken_credential_vault::SecretStore>,
     profiles: Arc<dyn awaken_admin_config_api::InferenceProfileStore>,
     mcp: Arc<dyn awaken_admin_config_api::McpStore>,
-    /// Memory-store identity registry (ADR-0038): the durable id/name/metadata aggregate,
-    /// the same admin store as `mcp`/`profiles`, a distinct port. Injected into the host
-    /// so a store survives a restart, and into the capability inventory so the admin
-    /// assistant can enumerate stores.
-    memory_registry: Arc<dyn awaken_admin_config_api::MemoryStoreRegistry>,
     resources: Arc<dyn awaken_config_resolver::ResourceStore>,
     resource_catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
     /// Authored webhook endpoints (ADR-0048), an id-addressed config resource beside
@@ -141,7 +136,6 @@ fn in_memory_management_stores() -> ManagementStores {
         secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
         profiles: Arc::new(awaken_admin_config_api::InMemoryProfileStore::new()),
         mcp: Arc::new(awaken_admin_config_api::InMemoryMcpStore::new()),
-        memory_registry: Arc::new(awaken_admin_config_api::InMemoryMemoryStoreRegistry::new()),
         resources: Arc::new(awaken_admin_config_api::InMemoryResourceStore::new()),
         resource_catalog: Arc::new(awaken_config_resolver::InMemoryResourceCatalog::new()),
         webhooks: Arc::new(awaken_admin_config_api::InMemoryWebhookStore::new()),
@@ -185,9 +179,6 @@ fn durable_management_stores(dir: &std::path::Path, key: &[u8; 32]) -> Managemen
         )),
         profiles: admin.clone(),
         mcp: admin.clone(),
-        // Memory-store identity is one more secret-free table under the `admin` bundle,
-        // so the same admin store serves the registry port (durable across a restart).
-        memory_registry: admin.clone(),
         resources: admin.clone(),
         resource_catalog: admin.clone(),
         // Webhook endpoints share admin.db (one more secret-free table under the
@@ -300,7 +291,6 @@ async fn open_management_stores(
     ensure_parent(&cfg.admin);
     let admin_profiles: Arc<dyn awaken_admin_config_api::InferenceProfileStore>;
     let admin_mcp: Arc<dyn awaken_admin_config_api::McpStore>;
-    let admin_memory: Arc<dyn awaken_admin_config_api::MemoryStoreRegistry>;
     let admin_webhooks: Arc<dyn awaken_admin_config_api::WebhookStore>;
     let admin_resources: Arc<dyn awaken_config_resolver::ResourceStore>;
     let admin_catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>;
@@ -312,7 +302,6 @@ async fn open_management_stores(
             );
             admin_profiles = admin.clone();
             admin_mcp = admin.clone();
-            admin_memory = admin.clone();
             admin_resources = admin.clone();
             admin_catalog = admin.clone();
             admin_webhooks = admin;
@@ -331,7 +320,6 @@ async fn open_management_stores(
             );
             admin_profiles = admin.clone();
             admin_mcp = admin.clone();
-            admin_memory = admin.clone();
             admin_resources = admin.clone();
             admin_catalog = admin.clone();
             admin_webhooks = admin;
@@ -401,7 +389,6 @@ async fn open_management_stores(
         secrets,
         profiles: admin_profiles,
         mcp: admin_mcp,
-        memory_registry: admin_memory,
         resources: admin_resources,
         resource_catalog: admin_catalog,
         webhooks: admin_webhooks,
@@ -666,7 +653,6 @@ async fn management_router_over(
         secrets,
         profiles,
         mcp: mcp_store,
-        memory_registry,
         resources: resource_store,
         resource_catalog,
         webhooks: webhook_store,
@@ -796,11 +782,11 @@ async fn management_router_over(
         awaken_skill_store::FsSkillStore::open(skill_dir).expect("open durable skill store root"),
     );
     // The LIVE data-plane resource inventory (ADR-0038): memory-store ids from the durable
-    // registry (the same admin backend the host writes identity through, so this stays
+    // Resource Catalog (the same aggregate Session resolution reads, so this stays
     // consistent) + skill ids from the shared skill store. Unlike before, this is now
     // reachable at wire time because both handles are assembled by the composition root.
     let resource_inventory = Arc::new(awaken_control::HostResourceInventory::new(
-        memory_registry.clone(),
+        resource_catalog.clone(),
         skill_store.clone(),
         platform_workspace.clone(),
     ));
@@ -882,15 +868,14 @@ async fn management_router_over(
     // The data plane: the host runs the server model, resolves a session's agent to
     // its installed config, and carries the management tool executables so the
     // reserved-scope assistant can call them. It shares the SAME skill store and
-    // memory-store identity registry the capability inventory reads, so a skill or memory
-    // store the host serves is exactly what the assistant enumerates, and identity
-    // survives a restart.
+    // Resource Catalog the capability inventory reads, so a skill or memory store the
+    // host serves is exactly what the assistant enumerates, and identity survives a
+    // restart.
     let host_builder = SharedHost::new(model, model_ref)
         .with_local_workspace(platform_workspace.clone())
         .with_config_service(config_service.clone())
         .with_admin_tools(admin_execs)
         .with_skill_store_backend(skill_store)
-        .with_memory_registry(memory_registry)
         // Resolve a session's model to a real executor from the config plane (M2):
         // an unconfigured/unresolvable model falls back to the scenario model above.
         .with_inference_materializer(inference_materializer);

@@ -48,9 +48,8 @@ pub mod stores;
 pub mod telemetry;
 pub use resource_catalog::InMemoryResourceCatalog;
 pub use stores::{
-    InMemoryMcpStore, InMemoryMemoryStoreRegistry, InMemoryProfileStore, InMemoryResourceStore,
-    InMemoryWebhookStore, InferenceProfileStore, McpStore, MemoryStoreDef, MemoryStoreRegistry,
-    ResourceStore, WebhookOutboxEvent, WebhookStore,
+    InMemoryMcpStore, InMemoryProfileStore, InMemoryResourceStore, InMemoryWebhookStore,
+    InferenceProfileStore, McpStore, ResourceStore, WebhookOutboxEvent, WebhookStore,
 };
 pub use telemetry::{RedactionMode, TelemetryCeiling};
 

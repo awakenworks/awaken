@@ -193,6 +193,15 @@ pub trait ResourceCatalog: ResourceConfigSource {
         initial_config: MemoryStoreConfigVersion,
     ) -> Result<(), ResourceCatalogError>;
     fn memory_store(&self, workspace_id: &str, id: &str) -> Option<MemoryStoreDefinition>;
+    /// Definitions owned by one Workspace, sorted by id. Archived/deleted rows
+    /// remain available by id but are excluded from this ordinary inventory.
+    fn list_memory_stores(&self, workspace_id: &str) -> Vec<MemoryStoreDefinition>;
+    /// Update descriptive fields of an existing definition without changing its
+    /// owner, lifecycle state, or current config pointer.
+    fn update_memory_store(
+        &self,
+        definition: MemoryStoreDefinition,
+    ) -> Result<(), ResourceCatalogError>;
     fn memory_config(
         &self,
         workspace_id: &str,

@@ -30,8 +30,10 @@ use axum::{Json, Router};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use awaken_config_resolver::MemoryStoreDef;
 use awaken_memory_store::MemErr;
+use awaken_protocol_managed::resource_plane::{
+    ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, ResourceState,
+};
 use awaken_tenancy::WorkspaceScope;
 
 use crate::host::SharedHost;
@@ -98,11 +100,11 @@ fn project_memory(mem: &awaken_memory_store::Memory, store_id: &str) -> Value {
     })
 }
 
-/// Project a durable [`MemoryStoreDef`] (the identity aggregate, source of truth for a
+/// Project a durable [`MemoryStoreDefinition`] (the identity aggregate, source of truth for a
 /// store's name/description/metadata) onto the SDK memory-store object. The
 /// `created_at`/`updated_at` are stable object constants (the def carries no clock);
 /// `archived_at` is stamped from the def's archived flag.
-fn project_def(def: &MemoryStoreDef) -> Value {
+fn project_def(def: &MemoryStoreDefinition) -> Value {
     json!({
         "id": def.id,
         "type": "memory_store",
@@ -111,32 +113,19 @@ fn project_def(def: &MemoryStoreDef) -> Value {
         "name": def.name,
         "description": def.description,
         "metadata": def.metadata,
-        "archived_at": if def.archived { Some(OBJECT_AT) } else { None },
+        "archived_at": if matches!(def.state, ResourceState::Archived | ResourceState::Deleted) {
+            Some(OBJECT_AT)
+        } else {
+            None
+        },
     })
-}
-
-/// A default (metadata-empty) def for `id` — used when the durable content blob answers
-/// but the identity registry has no row (e.g. an id minted before the registry existed).
-fn default_def(id: &str) -> MemoryStoreDef {
-    MemoryStoreDef {
-        id: id.to_string(),
-        workspace_id: String::new(),
-        name: String::new(),
-        description: String::new(),
-        metadata: BTreeMap::new(),
-        archived: false,
-    }
 }
 
 struct MemoryStoreApi {
     host: Arc<SharedHost>,
-    /// The durable identity registry (id/name/metadata/archived): the control-plane
-    /// aggregate that survives a restart and is enumerable from the admin plane.
-    registry: Arc<dyn awaken_config_resolver::MemoryStoreRegistry>,
-    /// Unified resource configuration/lifecycle catalog consumed by Session
-    /// resolution. It contains no authorization policy; the HTTP PEP has already
-    /// supplied the trusted Workspace scope.
-    catalog: Option<Arc<dyn awaken_protocol_managed::ResourceCatalog>>,
+    /// Unified resource definition/configuration/lifecycle repository consumed by
+    /// both this API and Session resolution. It contains no authorization policy.
+    catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
     /// Durable append-only history adapter (ephemeral only when the whole host is).
     versions: VersionRepository,
 }
@@ -265,11 +254,14 @@ impl VersionRepository {
     }
 }
 
-/// Mount the memory-store API over the host's mutable memory stores. Identity is read
-/// and written through the host's [`MemoryStoreRegistry`](awaken_config_resolver::MemoryStoreRegistry)
-/// (the durable admin backend when the composition root wired one, else ephemeral).
+/// Mount the memory-store API over an ephemeral resource catalog. Product
+/// composition roots must use [`memory_stores_router_with_catalog`] so API and
+/// Session resolution share one definition/configuration/lifecycle truth.
 pub fn memory_stores_router(host: Arc<SharedHost>) -> Router {
-    memory_stores_router_over(host, None)
+    memory_stores_router_with_catalog(
+        host,
+        Arc::new(awaken_config_resolver::InMemoryResourceCatalog::new()),
+    )
 }
 
 /// Mount the Memory API over the same Resource Catalog used by Session
@@ -279,17 +271,8 @@ pub fn memory_stores_router_with_catalog(
     host: Arc<SharedHost>,
     catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
 ) -> Router {
-    memory_stores_router_over(host, Some(catalog))
-}
-
-fn memory_stores_router_over(
-    host: Arc<SharedHost>,
-    catalog: Option<Arc<dyn awaken_protocol_managed::ResourceCatalog>>,
-) -> Router {
-    let registry = host.memory_registry();
     let state = Arc::new(MemoryStoreApi {
         host,
-        registry,
         catalog,
         versions: VersionRepository::open(),
     });
@@ -335,6 +318,13 @@ fn request_workspace(state: &MemoryStoreApi, scope: Option<Extension<WorkspaceSc
     )
 }
 
+fn active_store_exists(state: &MemoryStoreApi, workspace: &str, id: &str) -> bool {
+    state
+        .catalog
+        .memory_store(workspace, id)
+        .is_some_and(|definition| definition.state == ResourceState::Active)
+}
+
 // ---- Store routes ----------------------------------------------------------
 
 /// `POST /v1/memory_stores` — create a store. The SDK sends `{name, description?,
@@ -352,7 +342,7 @@ async fn create_store(
     };
     let workspace = request_workspace(&state, scope);
     let id = state.host.create_memory_store_in(&workspace).await;
-    let def = MemoryStoreDef {
+    let def = MemoryStoreDefinition {
         id: id.clone(),
         workspace_id: workspace,
         name: parsed
@@ -374,32 +364,20 @@ async fn create_store(
                     .collect()
             })
             .unwrap_or_default(),
-        archived: false,
+        state: ResourceState::Active,
+        current_config_version: ConfigVersion::INITIAL,
     };
     let projected = project_def(&def);
-    // Persist the identity through the durable registry (survives a restart).
-    state.registry.put_memory_store(def.clone());
-    if let Some(catalog) = &state.catalog
-        && let Err(error) = catalog.create_memory_store(
-            awaken_protocol_managed::resource_plane::MemoryStoreDefinition {
-                id: id.clone(),
-                workspace_id: def.workspace_id.clone(),
-                name: def.name.clone(),
-                description: def.description.clone(),
-                metadata: def.metadata.clone(),
-                state: awaken_protocol_managed::resource_plane::ResourceState::Active,
-                current_config_version:
-                    awaken_protocol_managed::resource_plane::ConfigVersion::INITIAL,
-            },
-            awaken_protocol_managed::resource_plane::MemoryStoreConfigVersion {
-                memory_store_id: id,
-                version: awaken_protocol_managed::resource_plane::ConfigVersion::INITIAL,
-                recall_policy: Default::default(),
-                extraction_policy: Default::default(),
-                retention_policy: Default::default(),
-            },
-        )
-    {
+    if let Err(error) = state.catalog.create_memory_store(
+        def,
+        MemoryStoreConfigVersion {
+            memory_store_id: id,
+            version: ConfigVersion::INITIAL,
+            recall_policy: Default::default(),
+            extraction_policy: Default::default(),
+            retention_policy: Default::default(),
+        },
+    ) {
         return err(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("memory_store catalog write failed: {error}"),
@@ -410,8 +388,7 @@ async fn create_store(
 
 /// `GET /v1/memory_stores/:id` — the SDK store object PLUS the legacy mount-blob
 /// `content` / `size_bytes` (extra fields the SDK decoder ignores). Works after a
-/// restart even when the in-memory registry is empty: the durable blob still
-/// answers, with default metadata.
+/// restart because the definition and content backends are both durable.
 async fn get_store(
     State(state): State<Arc<MemoryStoreApi>>,
     scope: Option<Extension<WorkspaceScope>>,
@@ -419,11 +396,10 @@ async fn get_store(
 ) -> axum::response::Response {
     let workspace = request_workspace(&state, scope);
     let blob = state.host.memory_get_in(&workspace, &id).await;
-    let def = state.registry.get_memory_store(&id);
-    if blob.is_none() && def.is_none() {
+    let Some(def) = state.catalog.memory_store(&workspace, &id) else {
         return not_found("memory_store");
-    }
-    let mut obj = project_def(&def.unwrap_or_else(|| default_def(&id)));
+    };
+    let mut obj = project_def(&def);
     // Legacy mount-blob fields (additive; the SDK ignores them).
     let bytes = blob.unwrap_or_default();
     obj["content"] = json!(String::from_utf8_lossy(&bytes));
@@ -431,11 +407,14 @@ async fn get_store(
     (StatusCode::OK, Json(obj)).into_response()
 }
 
-async fn list_stores(State(state): State<Arc<MemoryStoreApi>>) -> impl IntoResponse {
-    // The registry already returns non-archived defs sorted by id.
+async fn list_stores(
+    State(state): State<Arc<MemoryStoreApi>>,
+    scope: Option<Extension<WorkspaceScope>>,
+) -> impl IntoResponse {
+    let workspace = request_workspace(&state, scope);
     let data: Vec<Value> = state
-        .registry
-        .list_memory_stores()
+        .catalog
+        .list_memory_stores(&workspace)
         .iter()
         .map(project_def)
         .collect();
@@ -447,10 +426,12 @@ async fn list_stores(State(state): State<Arc<MemoryStoreApi>>) -> impl IntoRespo
 
 async fn update_store(
     State(state): State<Arc<MemoryStoreApi>>,
+    scope: Option<Extension<WorkspaceScope>>,
     Path(id): Path<String>,
     Json(body): Json<Value>,
 ) -> axum::response::Response {
-    let Some(mut def) = state.registry.get_memory_store(&id) else {
+    let workspace = request_workspace(&state, scope);
+    let Some(mut def) = state.catalog.memory_store(&workspace, &id) else {
         return not_found("memory_store");
     };
     // `description`: empty string clears it (SDK convention).
@@ -472,32 +453,27 @@ async fn update_store(
         }
     }
     let projected = project_def(&def);
-    // Persist the merged identity back through the durable registry.
-    state.registry.put_memory_store(def);
+    if let Err(error) = state.catalog.update_memory_store(def) {
+        return err(StatusCode::CONFLICT, error.to_string());
+    }
     (StatusCode::OK, Json(projected)).into_response()
 }
 
 async fn delete_store(
     State(state): State<Arc<MemoryStoreApi>>,
+    scope: Option<Extension<WorkspaceScope>>,
     Path(id): Path<String>,
 ) -> axum::response::Response {
-    // The registry port is put/get/list (no hard delete, mirroring `McpStore`); a delete
-    // is a soft archive on the identity (the durable content blob is never destroyed
-    // here either), so the store drops out of the listing. 404 when the id is unknown.
-    let Some(mut def) = state.registry.get_memory_store(&id) else {
+    let workspace = request_workspace(&state, scope);
+    if state.catalog.memory_store(&workspace, &id).is_none() {
         return not_found("memory_store");
-    };
-    def.archived = true;
-    if let Some(catalog) = &state.catalog
-        && let Err(error) = catalog.set_memory_state(
-            &def.workspace_id,
-            &id,
-            awaken_protocol_managed::resource_plane::ResourceState::Deleted,
-        )
+    }
+    if let Err(error) = state
+        .catalog
+        .set_memory_state(&workspace, &id, ResourceState::Deleted)
     {
         return err(StatusCode::CONFLICT, error.to_string());
     }
-    state.registry.put_memory_store(def);
     (
         StatusCode::OK,
         Json(json!({ "id": id, "type": "memory_store_deleted" })),
@@ -507,23 +483,21 @@ async fn delete_store(
 
 async fn archive_store(
     State(state): State<Arc<MemoryStoreApi>>,
+    scope: Option<Extension<WorkspaceScope>>,
     Path(id): Path<String>,
 ) -> axum::response::Response {
-    let Some(mut def) = state.registry.get_memory_store(&id) else {
+    let workspace = request_workspace(&state, scope);
+    let Some(mut def) = state.catalog.memory_store(&workspace, &id) else {
         return not_found("memory_store");
     };
-    def.archived = true;
-    if let Some(catalog) = &state.catalog
-        && let Err(error) = catalog.set_memory_state(
-            &def.workspace_id,
-            &id,
-            awaken_protocol_managed::resource_plane::ResourceState::Archived,
-        )
+    if let Err(error) = state
+        .catalog
+        .set_memory_state(&workspace, &id, ResourceState::Archived)
     {
         return err(StatusCode::CONFLICT, error.to_string());
     }
+    def.state = ResourceState::Archived;
     let projected = project_def(&def);
-    state.registry.put_memory_store(def);
     (StatusCode::OK, Json(projected)).into_response()
 }
 
@@ -591,11 +565,10 @@ async fn create_memory(
         .get("content")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    // Store existence is checked against the DURABLE mount blob (survives a restart),
-    // not the in-memory registry — so a store created before a restart still accepts
-    // memories after it.
     let workspace = request_workspace(&state, scope);
-    if state.host.memory_get_in(&workspace, &id).await.is_none() {
+    if !active_store_exists(&state, &workspace, &id)
+        || state.host.memory_get_in(&workspace, &id).await.is_none()
+    {
         return not_found("memory_store");
     }
     // The durable path-addressed store is the source of truth for the head.
@@ -626,11 +599,14 @@ async fn create_memory(
 
 async fn list_memories(
     State(state): State<Arc<MemoryStoreApi>>,
+    scope: Option<Extension<WorkspaceScope>>,
     Path(id): Path<String>,
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> axum::response::Response {
-    // The durable store is the source of truth; no registry dependency, so a listing
-    // works after a restart even though the in-memory registry is empty.
+    let workspace = request_workspace(&state, scope);
+    if !active_store_exists(&state, &workspace, &id) {
+        return not_found("memory_store");
+    }
     let prefix = q.get("path_prefix").map(String::as_str).unwrap_or("/");
     let basic = q.get("view").map(String::as_str) == Some("basic");
     let entries = match state.host.memory_stores.fs().list(&id, prefix).await {
@@ -675,8 +651,13 @@ async fn list_memories(
 
 async fn get_memory(
     State(state): State<Arc<MemoryStoreApi>>,
+    scope: Option<Extension<WorkspaceScope>>,
     Path((id, mid)): Path<(String, String)>,
 ) -> axum::response::Response {
+    let workspace = request_workspace(&state, scope);
+    if !active_store_exists(&state, &workspace, &id) {
+        return not_found("memory_store");
+    }
     let Some(path) = path_of(&state, &id, &mid).await else {
         return not_found("memory");
     };
@@ -692,9 +673,14 @@ async fn get_memory(
 /// swap in the store. Appends a `modified` version.
 async fn update_memory(
     State(state): State<Arc<MemoryStoreApi>>,
+    scope: Option<Extension<WorkspaceScope>>,
     Path((id, mid)): Path<(String, String)>,
     Json(body): Json<Value>,
 ) -> axum::response::Response {
+    let workspace = request_workspace(&state, scope);
+    if !active_store_exists(&state, &workspace, &id) {
+        return not_found("memory_store");
+    }
     let Some(path) = path_of(&state, &id, &mid).await else {
         return not_found("memory");
     };
@@ -755,8 +741,13 @@ async fn update_memory(
 
 async fn delete_memory(
     State(state): State<Arc<MemoryStoreApi>>,
+    scope: Option<Extension<WorkspaceScope>>,
     Path((id, mid)): Path<(String, String)>,
 ) -> axum::response::Response {
+    let workspace = request_workspace(&state, scope);
+    if !active_store_exists(&state, &workspace, &id) {
+        return not_found("memory_store");
+    }
     let Some(path) = path_of(&state, &id, &mid).await else {
         return not_found("memory");
     };
@@ -787,17 +778,14 @@ fn collect_versions(log: &[MemoryVersion]) -> Vec<MemoryVersion> {
     versions
 }
 
-/// Whether a store id exists (durable identity registry, else the durable content blob so
-/// a store minted before the registry existed still answers).
-async fn store_exists(state: &MemoryStoreApi, id: &str) -> bool {
-    state.registry.get_memory_store(id).is_some() || state.host.memory_get(id).await.is_some()
-}
-
+/// Whether the resource catalog contains this store in the trusted Workspace.
 async fn list_versions(
     State(state): State<Arc<MemoryStoreApi>>,
+    scope: Option<Extension<WorkspaceScope>>,
     Path(id): Path<String>,
 ) -> axum::response::Response {
-    if !store_exists(&state, &id).await {
+    let workspace = request_workspace(&state, scope);
+    if !active_store_exists(&state, &workspace, &id) {
         return not_found("memory_store");
     }
     let log = state.versions.list(&id);
@@ -814,9 +802,11 @@ async fn list_versions(
 
 async fn get_version(
     State(state): State<Arc<MemoryStoreApi>>,
+    scope: Option<Extension<WorkspaceScope>>,
     Path((id, vid)): Path<(String, String)>,
 ) -> axum::response::Response {
-    if !store_exists(&state, &id).await {
+    let workspace = request_workspace(&state, scope);
+    if !active_store_exists(&state, &workspace, &id) {
         return not_found("memory_store");
     }
     let log = state.versions.list(&id);
@@ -830,9 +820,14 @@ async fn get_version(
 /// stamp `redacted_at` and drop its content.
 async fn redact_version(
     State(state): State<Arc<MemoryStoreApi>>,
+    scope: Option<Extension<WorkspaceScope>>,
     Path((id, vid)): Path<(String, String)>,
     _query: Query<std::collections::HashMap<String, String>>,
 ) -> axum::response::Response {
+    let workspace = request_workspace(&state, scope);
+    if !active_store_exists(&state, &workspace, &id) {
+        return not_found("memory_store");
+    }
     if let Some(version) = state.versions.redact(&id, &vid) {
         return (StatusCode::OK, Json(version.project(&id))).into_response();
     }

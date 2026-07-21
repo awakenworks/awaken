@@ -32,15 +32,14 @@ pub use sqlite::SqliteAdminStore;
 // type). The authoring HTTP surface writes through these ports; the SQLite backend
 // (`SqliteAdminStore`) implements them.
 pub use awaken_config_resolver::{
-    InMemoryMcpStore, InMemoryMemoryStoreRegistry, InMemoryProfileStore, InMemoryResourceStore,
-    InMemoryWebhookStore, InferenceProfileStore, McpStore, MemoryStoreDef, MemoryStoreRegistry,
-    ResourceStore, WebhookStore,
+    InMemoryMcpStore, InMemoryProfileStore, InMemoryResourceStore, InMemoryWebhookStore,
+    InferenceProfileStore, McpStore, ResourceStore, WebhookStore,
 };
 pub use router::{
-    AdminState, CooldownRequest, CredentialProbe, CredentialValidation, EnterCredentialRequest,
-    PoolEligibleView, ProbeStatus, ResolveAgentMcpRequest, ResolveProfileRequest, ResolveRequest,
-    ResolvedCandidatesView, ResolvedInferenceView, ResolvedMcpServerView,
-    ValidateCredentialRequest, admin_router,
+    AdminState, CooldownRequest, CredentialProbe, CredentialSourceView, CredentialValidation,
+    EnterCredentialRequest, PoolEligibleView, ProbeStatus, ResolveAgentMcpRequest,
+    ResolveProfileRequest, ResolveRequest, ResolvedCandidatesView, ResolvedInferenceView,
+    ResolvedMcpServerView, ValidateCredentialRequest, admin_router,
 };
 
 /// The API surface version this crate serves.

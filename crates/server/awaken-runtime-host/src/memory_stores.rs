@@ -7,11 +7,10 @@
 //! store's bytes); `fs` is the path-addressed CAS [`MemoryFs`] backing the `/memories`
 //! endpoints.
 //!
-//! The memory-store *identity* registry (`MemoryStoreRegistry`) is deliberately NOT
-//! here: it is a control-plane concern that lives beside its true siblings
-//! (`McpStore`, `WebhookStore`, …) in `awaken-config-resolver`, is injected rather than
-//! storage-dir-constructed, and has a different lifecycle — so it stays a separate
-//! `SharedHost` field. The cohesion axis is identity-vs-content, not memory-vs-other.
+//! Resource definition/configuration/lifecycle lives in the platform
+//! `ResourceCatalog`, injected at the server composition root. The runtime host owns
+//! only content backends; it does not own an authorization policy or a second identity
+//! registry.
 
 use std::path::Path;
 use std::sync::Arc;

@@ -14,8 +14,7 @@ use awaken_admin_assistant::{
     PlatformCapabilities, PluginInfo, ResourceInventory, ResourceSpec, admin_assistant_config,
 };
 use awaken_config_resolver::{
-    AgentResourceConfig, McpStore, MemoryStoreRegistry, ResourceAccess, ResourceBinding,
-    ResourceKind, ResourceStore,
+    AgentResourceConfig, McpStore, ResourceAccess, ResourceBinding, ResourceKind, ResourceStore,
 };
 use awaken_config_service::{ConfigPlane, RESERVED_ADMIN_SCOPE};
 use awaken_config_store::{AgentConfig, DEFAULT_SCOPE, ManagementEffect};
@@ -173,11 +172,11 @@ impl EnvironmentAuthor for EnvironmentStateAuthor {
 /// The LIVE data-plane resource inventory (ADR-0038 memory stores + skills) behind the
 /// [`ResourceInventory`] port, so the [`CatalogCapabilityReader`] can report real memory
 /// store + skill ids without `awaken-control` depending on the runtime host. Memory-store
-/// identity comes from the durable [`MemoryStoreRegistry`] (the same admin backend the
-/// host writes through), and skills from the [`awaken_skill_store::SkillStore`]. Carries
-/// only ids — never a secret.
+/// definitions come from the durable [`awaken_protocol_managed::ResourceCatalog`]
+/// shared by authoring and Session resolution, and skills from the
+/// [`awaken_skill_store::SkillStore`]. Carries only ids — never a secret or policy.
 pub struct HostResourceInventory {
-    memory: Arc<dyn MemoryStoreRegistry>,
+    memory: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
     skills: Arc<dyn awaken_skill_store::SkillStore>,
     /// Platform-provisioned workspace used to address the skill catalog.
     skill_workspace: String,
@@ -187,7 +186,7 @@ impl HostResourceInventory {
     /// Build the inventory from the two live handles and an edge-provisioned
     /// workspace coordinate. The adapter never invents a tenant.
     pub fn new(
-        memory: Arc<dyn MemoryStoreRegistry>,
+        memory: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
         skills: Arc<dyn awaken_skill_store::SkillStore>,
         skill_workspace: impl Into<String>,
     ) -> Self {
@@ -202,11 +201,10 @@ impl HostResourceInventory {
 #[async_trait]
 impl ResourceInventory for HostResourceInventory {
     async fn memory_stores(&self) -> Vec<String> {
-        // Non-archived store ids from the durable registry (sorted by id).
+        // Active/suspended store ids from the durable catalog (sorted by id).
         self.memory
-            .list_memory_stores()
+            .list_memory_stores(&self.skill_workspace)
             .into_iter()
-            .filter(|def| def.workspace_id == self.skill_workspace)
             .map(|d| d.id)
             .collect()
     }
@@ -657,27 +655,39 @@ mod tests {
     /// two data-plane sources the `CatalogCapabilityReader` folds in when wired.
     #[tokio::test]
     async fn host_inventory_reports_put_memory_stores_and_skills() {
-        use awaken_config_resolver::{InMemoryMemoryStoreRegistry, MemoryStoreDef};
+        use awaken_config_resolver::InMemoryResourceCatalog;
+        use awaken_protocol_managed::resource_plane::{
+            ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, ResourceCatalog,
+            ResourceState,
+        };
         use awaken_skill_store::{InMemorySkillStore, SkillStore};
 
-        let registry = Arc::new(InMemoryMemoryStoreRegistry::new());
-        registry.put_memory_store(MemoryStoreDef {
-            id: "mem-1".into(),
-            workspace_id: DEFAULT_SCOPE.into(),
-            name: "Prefs".into(),
-            description: String::new(),
-            metadata: std::collections::BTreeMap::new(),
-            archived: false,
-        });
-        // An archived store must NOT be enumerated.
-        registry.put_memory_store(MemoryStoreDef {
-            id: "mem-gone".into(),
-            workspace_id: DEFAULT_SCOPE.into(),
-            name: "Old".into(),
-            description: String::new(),
-            metadata: std::collections::BTreeMap::new(),
-            archived: true,
-        });
+        let registry = Arc::new(InMemoryResourceCatalog::new());
+        for (id, state) in [
+            ("mem-1", ResourceState::Active),
+            ("mem-gone", ResourceState::Archived),
+        ] {
+            registry
+                .create_memory_store(
+                    MemoryStoreDefinition {
+                        id: id.into(),
+                        workspace_id: DEFAULT_SCOPE.into(),
+                        name: "Prefs".into(),
+                        description: String::new(),
+                        metadata: std::collections::BTreeMap::new(),
+                        state,
+                        current_config_version: ConfigVersion::INITIAL,
+                    },
+                    MemoryStoreConfigVersion {
+                        memory_store_id: id.into(),
+                        version: ConfigVersion::INITIAL,
+                        recall_policy: Default::default(),
+                        extraction_policy: Default::default(),
+                        retention_policy: Default::default(),
+                    },
+                )
+                .unwrap();
+        }
         let skills = Arc::new(InMemorySkillStore::new());
         skills.put(DEFAULT_SCOPE, "greet", "# greet").await.unwrap();
 

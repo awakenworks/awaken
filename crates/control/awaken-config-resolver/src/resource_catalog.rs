@@ -160,6 +160,46 @@ impl ResourceCatalog for InMemoryResourceCatalog {
             .cloned()
     }
 
+    fn list_memory_stores(&self, workspace_id: &str) -> Vec<MemoryStoreDefinition> {
+        self.0
+            .lock()
+            .expect("resource catalog")
+            .memories
+            .values()
+            .filter(|definition| {
+                definition.workspace_id == workspace_id
+                    && !matches!(
+                        definition.state,
+                        ResourceState::Archived | ResourceState::Deleted
+                    )
+            })
+            .cloned()
+            .collect()
+    }
+
+    fn update_memory_store(
+        &self,
+        definition: MemoryStoreDefinition,
+    ) -> Result<(), ResourceCatalogError> {
+        let mut state = self.0.lock().expect("resource catalog");
+        let current = state
+            .memories
+            .get_mut(&definition.id)
+            .filter(|current| current.workspace_id == definition.workspace_id)
+            .ok_or_else(|| ResourceCatalogError::NotFound(definition.id.clone()))?;
+        if current.state != definition.state
+            || current.current_config_version != definition.current_config_version
+        {
+            return Err(ResourceCatalogError::Invalid(
+                "definition update cannot change lifecycle or config version".into(),
+            ));
+        }
+        current.name = definition.name;
+        current.description = definition.description;
+        current.metadata = definition.metadata;
+        Ok(())
+    }
+
     fn memory_config(
         &self,
         workspace_id: &str,
@@ -413,6 +453,38 @@ mod tests {
             catalog.resolve_memory_store("workspace-a", "memory-1"),
             Err(ResourceCatalogError::NotActive { .. })
         ));
+    }
+
+    #[test]
+    fn memory_inventory_and_metadata_update_preserve_intrinsic_invariants() {
+        let catalog = InMemoryResourceCatalog::new();
+        catalog
+            .create_memory_store(memory_definition("workspace-a"), memory_config(1))
+            .unwrap();
+        let mut other = memory_definition("workspace-b");
+        other.id = "memory-b".into();
+        let mut other_config = memory_config(1);
+        other_config.memory_store_id = other.id.clone();
+        catalog.create_memory_store(other, other_config).unwrap();
+
+        let mut updated = catalog.memory_store("workspace-a", "memory-1").unwrap();
+        updated.name = "Renamed".into();
+        updated.metadata.insert("purpose".into(), "recall".into());
+        catalog.update_memory_store(updated.clone()).unwrap();
+        assert_eq!(catalog.list_memory_stores("workspace-a"), vec![updated]);
+        assert_eq!(catalog.list_memory_stores("workspace-b").len(), 1);
+
+        let mut illegal = catalog.memory_store("workspace-a", "memory-1").unwrap();
+        illegal.workspace_id = "workspace-b".into();
+        assert!(matches!(
+            catalog.update_memory_store(illegal),
+            Err(ResourceCatalogError::NotFound(_))
+        ));
+        catalog
+            .set_memory_state("workspace-a", "memory-1", ResourceState::Archived)
+            .unwrap();
+        assert!(catalog.list_memory_stores("workspace-a").is_empty());
+        assert!(catalog.memory_store("workspace-a", "memory-1").is_some());
     }
 
     #[test]

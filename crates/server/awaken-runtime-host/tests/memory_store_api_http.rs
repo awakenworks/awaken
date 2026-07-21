@@ -11,8 +11,9 @@
 
 use std::sync::Arc;
 
+use awaken_protocol_managed::WorkspaceScope;
 use awaken_runtime_contract::llm::{ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult};
-use awaken_runtime_host::{SharedHost, memory_stores_router};
+use awaken_runtime_host::{SharedHost, memory_stores_router, memory_stores_router_with_catalog};
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -50,6 +51,33 @@ async fn call(
     let resp = router.clone().oneshot(req).await.unwrap();
     let status = resp.status();
     let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, value)
+}
+
+async fn call_scoped(
+    router: &Router,
+    workspace: &str,
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
+    let builder = Request::builder().method(method).uri(uri);
+    let mut request = match body {
+        Some(value) => builder
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&value).unwrap()))
+            .unwrap(),
+        None => builder.body(Body::empty()).unwrap(),
+    };
+    request
+        .extensions_mut()
+        .insert(WorkspaceScope(workspace.to_string()));
+    let response = router.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
     let value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
@@ -185,6 +213,60 @@ async fn unknown_store_is_fail_closed_on_every_verb() {
             StatusCode::NOT_FOUND,
             "{method} {suffix} on unknown store"
         );
+    }
+}
+
+#[tokio::test]
+async fn workspace_and_lifecycle_are_intrinsic_resource_guards() {
+    let host = Arc::new(SharedHost::new(Arc::new(NoLlm), "test"));
+    let catalog = Arc::new(awaken_config_resolver::InMemoryResourceCatalog::new());
+    let router = memory_stores_router_with_catalog(host, catalog);
+    let (status, created) = call_scoped(
+        &router,
+        "workspace-a",
+        "POST",
+        "/v1/memory_stores",
+        Some(json!({"name": "private"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let id = created["id"].as_str().unwrap();
+
+    let (status, list) =
+        call_scoped(&router, "workspace-b", "GET", "/v1/memory_stores", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(list["data"].as_array().unwrap().is_empty());
+    for suffix in ["", "/memories", "/memory_versions"] {
+        let (status, _) = call_scoped(
+            &router,
+            "workspace-b",
+            "GET",
+            &format!("/v1/memory_stores/{id}{suffix}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "cross-workspace {suffix}");
+    }
+
+    let (status, _) = call_scoped(
+        &router,
+        "workspace-a",
+        "POST",
+        &format!("/v1/memory_stores/{id}/archive"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    for suffix in ["/memories", "/memory_versions"] {
+        let (status, _) = call_scoped(
+            &router,
+            "workspace-a",
+            "GET",
+            &format!("/v1/memory_stores/{id}{suffix}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "archived {suffix}");
     }
 }
 

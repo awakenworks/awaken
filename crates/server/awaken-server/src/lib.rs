@@ -63,8 +63,11 @@ pub fn mount(host: Arc<SharedHost>) -> Router {
     // store and their secret is sealed in the vault, so a webhook needs the config
     // plane. The plain mount has neither, so it wires no sink — a bare host emits no
     // webhooks (identical to an unconfigured plane before).
-    let state = ManagedState::new(ManagedHost::new(host.clone()));
-    mount_with_managed(host, Arc::new(state))
+    let catalog = Arc::new(awaken_config_resolver::InMemoryResourceCatalog::new());
+    let state =
+        ManagedState::new(ManagedHost::new(host.clone()).with_resource_configs(catalog.clone()))
+            .with_resource_catalog(catalog.clone());
+    mount_with_managed_and_resource_catalog(host, Arc::new(state), catalog)
 }
 
 /// The deployment role this process runs as — the single role axis, selected by
@@ -135,7 +138,11 @@ mod role_tests {
 /// a vault-aware `ManagedState` over an MCP-wired `ManagedHost` (ADR-0043 Phase
 /// 3); every other mode goes through [`mount`], whose state is the plain host.
 pub fn mount_with_managed(host: Arc<SharedHost>, managed_state: Arc<ManagedState>) -> Router {
-    mount_with_managed_over(host, managed_state, None)
+    mount_with_managed_over(
+        host,
+        managed_state,
+        Arc::new(awaken_config_resolver::InMemoryResourceCatalog::new()),
+    )
 }
 
 /// Assemble the data plane with the same secret-free Resource Catalog used by
@@ -146,13 +153,13 @@ pub fn mount_with_managed_and_resource_catalog(
     managed_state: Arc<ManagedState>,
     resource_catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
 ) -> Router {
-    mount_with_managed_over(host, managed_state, Some(resource_catalog))
+    mount_with_managed_over(host, managed_state, resource_catalog)
 }
 
 fn mount_with_managed_over(
     host: Arc<SharedHost>,
     managed_state: Arc<ManagedState>,
-    resource_catalog: Option<Arc<dyn awaken_protocol_managed::ResourceCatalog>>,
+    resource_catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
 ) -> Router {
     // Spawn the process-level dispatch pool once when durable ingress is enabled
     // (O2): it is the sole claimer of the shared queue and drives every session's
@@ -187,14 +194,11 @@ fn mount_with_managed_over(
     // Tenant ownership for memory stores (ADR-0053 / ADR-0051): fence cross-tenant
     // access to a store (and its memories/versions) by the scope that created it. A
     // single-tenant deployment resolves to the default scope and is never fenced.
-    let memory_stores = match resource_catalog {
-        Some(catalog) => memory_stores_router_with_catalog(host.clone(), catalog),
-        None => memory_stores_router(host.clone()),
-    }
-    .layer(axum::middleware::from_fn_with_state(
-        crate::resource_owner::ResourceOwners::over(host.memory_registry()),
-        crate::resource_owner::memory_store_ownership_guard,
-    ));
+    let memory_stores = memory_stores_router_with_catalog(host.clone(), resource_catalog.clone())
+        .layer(axum::middleware::from_fn_with_state(
+            crate::resource_owner::ResourceOwners::over(resource_catalog),
+            crate::resource_owner::memory_store_ownership_guard,
+        ));
     // The skills API (`/v1/skills`) over the host's durable delivered-skill catalog.
     let skills = skills_router(host.clone());
     // The Models API (`/v1/models`) over the deployment's model directory.

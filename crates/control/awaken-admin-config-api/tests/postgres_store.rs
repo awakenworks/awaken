@@ -210,6 +210,11 @@ async fn postgres_admin_store_serves_every_port() {
         ConfigVersion(2)
     );
     assert!(store.memory_store("other", "memory-1").is_none());
+    let mut updated = store.memory_store("ws", "memory-1").unwrap();
+    updated.name = "Renamed".into();
+    store.update_memory_store(updated).unwrap();
+    assert_eq!(store.list_memory_stores("ws")[0].name, "Renamed");
+    assert!(store.list_memory_stores("other").is_empty());
 
     let (definition, initial) = repository();
     store.create_repository(definition, initial).unwrap();
@@ -255,4 +260,56 @@ async fn postgres_admin_rows_survive_a_reconnect() {
             .version,
         ConfigVersion::INITIAL
     );
+}
+
+#[tokio::test]
+async fn postgres_owned_legacy_memory_rows_migrate_but_unowned_rows_are_quarantined() {
+    let Some(url) = schema_url("t_admin_legacy_memory").await else {
+        return;
+    };
+    {
+        let u = url.clone();
+        tokio::task::spawn_blocking(move || PostgresAdminStore::connect(&u).unwrap())
+            .await
+            .unwrap();
+    }
+    let pool = PgPool::connect(&url).await.unwrap();
+    for (id, data) in [
+        (
+            "legacy-owned",
+            serde_json::json!({
+                "id": "legacy-owned",
+                "workspace_id": "ws",
+                "name": "Legacy",
+                "description": "old row",
+                "metadata": {"source": "v6"},
+                "archived": false
+            }),
+        ),
+        (
+            "legacy-unowned",
+            serde_json::json!({
+                "id": "legacy-unowned",
+                "name": "Quarantined",
+                "archived": false
+            }),
+        ),
+    ] {
+        sqlx::query("INSERT INTO admin_memory_store (id, data) VALUES ($1, $2)")
+            .bind(id)
+            .bind(sqlx::types::Json(data))
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    pool.close().await;
+
+    let store = tokio::task::spawn_blocking(move || PostgresAdminStore::connect(&url).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        store.memory_store("ws", "legacy-owned").unwrap().name,
+        "Legacy"
+    );
+    assert!(store.memory_store("ws", "legacy-unowned").is_none());
 }
