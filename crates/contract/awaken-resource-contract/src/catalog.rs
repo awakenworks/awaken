@@ -186,7 +186,25 @@ pub trait ResourceCatalog: Send + Sync {
         &self,
         workspace_id: &str,
         id: &str,
-    ) -> Result<ResolvedMemoryStoreConfig, ResourceCatalogError>;
+    ) -> Result<ResolvedMemoryStoreConfig, ResourceCatalogError> {
+        let definition = self
+            .memory_store(workspace_id, id)
+            .ok_or_else(|| ResourceCatalogError::NotFound(id.into()))?;
+        if definition.state != ResourceState::Active {
+            return Err(ResourceCatalogError::NotActive {
+                id: id.into(),
+                state: definition.state,
+            });
+        }
+        let config = self
+            .memory_config(workspace_id, id, definition.current_config_version)
+            .ok_or_else(|| {
+                ResourceCatalogError::Storage(format!(
+                    "MemoryStore `{id}` current config version is missing"
+                ))
+            })?;
+        Ok(ResolvedMemoryStoreConfig { definition, config })
+    }
     fn publish_memory_config(
         &self,
         workspace_id: &str,
@@ -216,7 +234,25 @@ pub trait ResourceCatalog: Send + Sync {
         &self,
         workspace_id: &str,
         id: &str,
-    ) -> Result<ResolvedRepositoryConfig, ResourceCatalogError>;
+    ) -> Result<ResolvedRepositoryConfig, ResourceCatalogError> {
+        let definition = self
+            .repository(workspace_id, id)
+            .ok_or_else(|| ResourceCatalogError::NotFound(id.into()))?;
+        if definition.state != ResourceState::Active {
+            return Err(ResourceCatalogError::NotActive {
+                id: id.into(),
+                state: definition.state,
+            });
+        }
+        let config = self
+            .repository_config(workspace_id, id, definition.current_config_version)
+            .ok_or_else(|| {
+                ResourceCatalogError::Storage(format!(
+                    "Repository `{id}` current config version is missing"
+                ))
+            })?;
+        Ok(ResolvedRepositoryConfig { definition, config })
+    }
     fn publish_repository_config(
         &self,
         workspace_id: &str,

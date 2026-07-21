@@ -17,6 +17,8 @@ mod router;
 pub mod schema;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
+#[cfg(feature = "sqlite")]
+mod sqlite_resource_catalog;
 
 #[cfg(feature = "postgres")]
 pub use postgres::PostgresAdminStore;

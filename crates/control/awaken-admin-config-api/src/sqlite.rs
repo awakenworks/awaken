@@ -23,7 +23,7 @@ use awaken_config_resolver::{
 use crate::schema::admin_bundle;
 
 /// The admin component's table namespace (its bundle prefix).
-const NS: &str = "admin";
+pub(crate) const NS: &str = "admin";
 
 /// Errors from opening or migrating the store.
 #[derive(Debug, thiserror::Error)]
@@ -39,7 +39,7 @@ pub enum StoreError {
 /// [`McpStore`]. Clone the `Arc<SqliteAdminStore>` into both `AdminState`
 /// slots so the two ports share the row set.
 pub struct SqliteAdminStore {
-    conn: Arc<Mutex<Connection>>,
+    pub(crate) conn: Arc<Mutex<Connection>>,
 }
 
 impl SqliteAdminStore {

@@ -252,6 +252,7 @@ dependencies = [
  "awaken-config-resolver",
  "awaken-credential-vault",
  "awaken-model-catalog",
+ "awaken-resource-contract",
  "awaken-runtime-contract",
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
