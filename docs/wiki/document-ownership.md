@@ -77,6 +77,7 @@ Source documents own behavior. Wiki pages own retrieval facts only.
 | [adr/0060-durable-dispatch-completion-tombstone.md](../adr/0060-durable-dispatch-completion-tombstone.md) | durable applied-Done completion facts and permanent run-id tombstones behind the neutral dispatch port | [index.md](index.md) |
 | [adr/0061-selectable-identity-and-platform-managed-resource-scopes.md](../adr/0061-selectable-identity-and-platform-managed-resource-scopes.md) | local identity choices, PAP-owned scope applicability, and durable resource ownership/version boundaries | [index.md](index.md) |
 | [adr/0062-published-inference-access-and-runtime-credential-injection.md](../adr/0062-published-inference-access-and-runtime-credential-injection.md) | one scope-aware inference resolution at publication, fingerprinted access, and runtime-only credential injection | [index.md](index.md) |
+| [adr/0063-resource-input-identity-configuration-pinning-and-lifecycle.md](../adr/0063-resource-input-identity-configuration-pinning-and-lifecycle.md) | File content identity, Memory/Repository configuration pinning at Session resolution, per-stage component ownership, activation, release, and reclamation | [resources-memory-files-skills-facts.md](resources-memory-files-skills-facts.md) |
 | [architecture-overview.md](../design/architecture-overview.md) | bounded contexts, domain vocabulary, and cross-context boundaries | [index.md](index.md) |
 | [brain-hand-coverage.md](../design/brain-hand-coverage.md) | ADR-0044/0045 test-coverage report | [index.md](index.md) |
 | [distributed-acp-execution.md](../design/distributed-acp-execution.md) | cell-based distributed ACP execution | [index.md](index.md) |
@@ -99,7 +100,7 @@ Source documents own behavior. Wiki pages own retrieval facts only.
 | [web-ui.md](../design/web-ui.md) | web console blueprint: Oversight two-scope shell mapped onto the management plane, session transcript surface, design tokens, and the contract-first frontend engineering plan | [index.md](index.md) |
 | [awaken-server-local-overview.md](../design/awaken-server-local-overview.md) | the awaken-server-local single-machine assembly map, component responsibilities, and end-to-end interaction flow, linking to component owners | [index.md](index.md) |
 | [credentials-and-vaults.md](../design/credentials-and-vaults.md) | credential refs, vault lifecycle, selection, and availability | [credentials-and-vaults-facts.md](credentials-and-vaults-facts.md) |
-| [resources-memory-files-skills.md](../design/resources-memory-files-skills.md) | logical resources, memory/files, and skills | [resources-memory-files-skills-facts.md](resources-memory-files-skills-facts.md) |
+| [resources-memory-files-skills.md](../design/resources-memory-files-skills.md) | File/Memory/Repository input lifecycle, component catalog, Agent/Session binding, config-version resolution, activation/recovery/reclamation, and the separate Skill boundary | [resources-memory-files-skills-facts.md](resources-memory-files-skills-facts.md) |
 | [tool-state-machine.md](../design/tool-state-machine.md) | the tool call state machine extension: the typed-cell state model over the untyped command store, the four runtime seams (state materialization, tool gate chain, tool-outcome reaction hook, run-end guard state), reminder emission via the conversation aggregate, capability bounding, and its persistence/atomicity/transactionality/restart guarantees | [index.md](index.md) |
 | [plugin-configuration.md](../design/plugin-configuration.md) | per-plugin configuration: the raw config carrier on the resolved spec, config-aware resolve, validation as a dry run of resolve, schema derived from the config type, and its delivery to the frontend on the capability catalog | [index.md](index.md) |
 | [observability-eval-dataset-boundary.md](../design/observability-eval-dataset-boundary.md) | trace, dataset, eval, experiment, and analytics boundaries | [runtime-explicit-boundaries-facts.md](runtime-explicit-boundaries-facts.md) |
@@ -133,6 +134,7 @@ Source documents own behavior. Wiki pages own retrieval facts only.
 | Selection is not authorization | [credentials-and-vaults.md](../design/credentials-and-vaults.md#selection-is-not-authorization) |
 | Public protocol names | [anthropic-alignment-and-sessions.md](../design/anthropic-alignment-and-sessions.md#anti-corruption-layer) |
 | Public protocol adapters | [protocol-adapter-boundaries.md](../design/protocol-adapter-boundaries.md) |
-| Resource realization | [resources-memory-files-skills.md](../design/resources-memory-files-skills.md#resource-boundary) |
+| Resource input lifecycle | [resources-memory-files-skills.md](../design/resources-memory-files-skills.md#lifecycle-stage-ownership) |
+| Resource realization | [resources-memory-files-skills.md](../design/resources-memory-files-skills.md#common-configure-to-reclaim-flow) |
 | Error taxonomy | [error-taxonomy.md](../design/error-taxonomy.md) |
 | Packaging enforcement | [packaging-enforcement-matrix.md](../design/packaging-enforcement-matrix.md) |

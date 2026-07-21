@@ -197,7 +197,7 @@ are checked separately by the OKF/wiki hooks.
 | `anthropic-alignment-and-sessions.md` | Boundary guidance for downstream protocol/product adapters and anti-corruption mapping |
 | `awaken-server-local-overview.md` | Single-machine assembly of runtime kernel + sandbox/tool-relay + Managed adapter: component map, interaction flow, and distributed seams |
 | `credentials-and-vaults.md` | Boundary guidance for product-owned credential lifecycle and authorization boundaries |
-| `resources-memory-files-skills.md` | Boundary guidance for resource data plane, skills, and out-of-process execution |
+| `resources-memory-files-skills.md` | File/Memory/Repository input identities, Agent/Session binding, config-version resolution, lifecycle component ownership, activation, recovery, reclamation, and the separate Skill boundary |
 | `observability-eval-dataset-boundary.md` | Trace, dataset, eval, and analytics boundaries |
 | `error-taxonomy.md` | Neutral error ownership and public adapter error mapping |
 | `packaging-enforcement-matrix.md` | Package/import/license/vocabulary enforcement matrix |

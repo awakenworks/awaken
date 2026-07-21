@@ -30,7 +30,7 @@ code or long-form design.
 - [Run ingress and message delivery](run-ingress-message-delivery-facts.md) - direct ingress, durable ingress, pending input, and message recovery
 - [Product protocol and sessions](anthropic-alignment-and-sessions-facts.md) - anti-corruption adapters and public projections
 - [Credentials and vaults](credentials-and-vaults-facts.md) - opaque refs, selection, availability
-- [Resources, memory, files, and skills](resources-memory-files-skills-facts.md) - logical resource refs
+- [Resources, memory, files, and skills](resources-memory-files-skills-facts.md) - input identity, config pinning, lifecycle owners, activation, and reclamation
 
 ## Lessons
 
