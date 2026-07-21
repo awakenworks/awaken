@@ -120,7 +120,7 @@ impl SharedHost {
             llm.clone(),
             &model_ref,
         )) as Arc<dyn awaken_ext_memory::RecallSelector>);
-        let mut skills = crate::skill_catalog::SkillCatalog::new(local_workspace.clone());
+        let mut skills = crate::skill_catalog::SkillCatalog::new();
         if let Some(ports) = &resources {
             skills.set_store(ports.skill_store.clone());
         }
@@ -207,8 +207,7 @@ impl SharedHost {
             !workspace.trim().is_empty(),
             "local workspace must not be empty"
         );
-        self.local_workspace = workspace.clone();
-        self.skills.set_local_workspace(workspace);
+        self.local_workspace = workspace;
         self
     }
 
