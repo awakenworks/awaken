@@ -994,6 +994,36 @@ async fn resolve_and_stage_realizes_a_file_from_the_seed() {
     );
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn resolve_and_stage_makes_declared_read_write_content_writable_by_container_uid() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut spec = file_mount_spec(
+        "res-writable",
+        pc::MountSource::File {
+            file_id: "blob-rw".into(),
+            content_hash: None,
+        },
+        true,
+    );
+    spec.mounts[0].access = pc::MountAccess::ReadWrite;
+    let mut plan = container_plan(&spec, "img", &["x".to_string()]);
+    let mut seed = HashMap::new();
+    seed.insert("blob-rw".to_string(), b"writable".to_vec());
+
+    let _guard = resolve_and_stage(&spec, &mut plan.binds, &seed, &None, &None)
+        .await
+        .expect("resolve writable mount");
+    let mode = std::fs::metadata(&plan.binds[0].source_ref)
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o666);
+    assert!(!plan.binds[0].read_only);
+}
+
 #[tokio::test]
 async fn resolve_and_stage_resolves_a_resource_from_the_injected_store() {
     let spec = file_mount_spec(

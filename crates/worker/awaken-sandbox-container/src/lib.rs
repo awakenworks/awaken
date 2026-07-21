@@ -833,13 +833,14 @@ async fn resolve_and_stage(
         std::fs::write(&host_file, &bytes)
             .map_err(|e| err(RuntimeError::Backend(format!("stage mount content: {e}"))))?;
         #[cfg(unix)]
-        if mount.is_some_and(|m| matches!(&m.source, pc::MountSource::Secret { .. })) {
+        if mount.is_some_and(|mount| mount.access == pc::MountAccess::ReadWrite) {
             use std::os::unix::fs::PermissionsExt;
-            // Docker/Podman images deliberately run as non-root with an image-defined UID.
-            // The private 0700 parent prevents host users from reaching this file; 0666 lets
-            // that sandboxed UID both read the native OAuth cache and persist token refreshes.
+            // Docker/Podman images deliberately run as non-root with an image-defined UID
+            // that is not known to the host. The private 0700 parent prevents host users
+            // from reaching this per-session file; 0666 lets the sandboxed UID honor the
+            // neutral ReadWrite contract (resource/memory write-back and OAuth refresh).
             std::fs::set_permissions(&host_file, std::fs::Permissions::from_mode(0o666))
-                .map_err(|e| err(RuntimeError::Backend(format!("secure staged secret: {e}"))))?;
+                .map_err(|e| err(RuntimeError::Backend(format!("secure writable mount: {e}"))))?;
         }
         bind.source_ref = host_config_dir
             .as_ref()

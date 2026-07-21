@@ -15,16 +15,39 @@
 // Self-skips when Docker is unreachable. Run: (from e2e/) node managed_container_agent_e2e.mjs
 
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import net from 'node:net';
 import { spawn, execFileSync, execSync, spawnSync } from 'node:child_process';
-import Anthropic from '@anthropic-ai/sdk';
+import Anthropic, { toFile } from '@anthropic-ai/sdk';
 import { REPO_ROOT } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38143);
 const BETAS = ['managed-agents-2026-04-01'];
 const MARKER = 'CONTAINER-AGENT-OK';
 const IMAGE = process.env.AWAKEN_TEST_SESSION_IMAGE ?? 'awaken-sandbox:session-e2e';
+const TMP = `/tmp/awaken-container-agent-e2e-${process.pid}`;
 const ACP_FIXTURE = `process.stdin.once('data',()=>{console.log(JSON.stringify({type:'message',text:'${MARKER}'}));console.log(JSON.stringify({type:'turn_end',reason:'natural_end'}))})`;
+
+function git(args, cwd) {
+  return execFileSync('git', args, { cwd, encoding: 'utf8' });
+}
+
+function seedSkillRepository() {
+  const work = `${TMP}/skill-seed`;
+  fs.mkdirSync(`${work}/greet`, { recursive: true });
+  git(['init', '-q', '-b', 'main'], work);
+  git(['config', 'user.email', 'container-e2e@awaken.invalid'], work);
+  git(['config', 'user.name', 'Awaken Container E2E'], work);
+  fs.writeFileSync(
+    `${work}/greet/SKILL.md`,
+    '---\nname: greet\ndescription: container skill\n---\nCONTAINER-SKILL-OK\n',
+  );
+  git(['add', '-A'], work);
+  git(['commit', '-q', '-m', 'seed container skill'], work);
+  const bare = `${TMP}/skills.git`;
+  git(['clone', '-q', '--bare', work, bare]);
+  return bare;
+}
 
 function dockerAvailable() {
   return spawnSync('docker', ['version'], { stdio: 'ignore' }).status === 0;
@@ -100,6 +123,9 @@ async function main() {
   }
   ensureSessionImage();
   cleanupTestContainers();
+  fs.rmSync(TMP, { recursive: true, force: true });
+  fs.mkdirSync(TMP, { recursive: true });
+  const skillRepository = seedSkillRepository();
   const bin = buildBrain();
   const addr = `127.0.0.1:${PORT}`;
   const brain = spawn(bin, {
@@ -110,6 +136,7 @@ async function main() {
       AWAKEN_CONTAINER_IMAGE: IMAGE,
       AWAKEN_SANDBOX_TIER: 'docker',
       AWAKEN_ACP_ARGV: `node -e ${ACP_FIXTURE}`,
+      AWAKEN_STORAGE_DIR: `${TMP}/storage`,
       // Disable the reaper's periodic sweep noise during the short test; the startup
       // sweep still runs (proving it is harmless with no leaked containers present).
       AWAKEN_SANDBOX_REAP_INTERVAL: '3600',
@@ -120,11 +147,21 @@ async function main() {
   try {
     await waitForPort(PORT);
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://${addr}` });
+    const file = await client.beta.files.upload({
+      file: await toFile(Buffer.from('CONTAINER-FILE-OK'), 'input.txt'),
+      betas: BETAS,
+    });
+    const memory = await client.post('/v1/memory_stores');
 
     const session = await client.beta.sessions.create({
       agent: 'assistant',
       metadata: { 'awaken.runtime': 'acp:custom' },
       environment_id: 'env_local',
+      resources: [
+        { type: 'file', file_id: file.id, mount_path: '/workspace/input.txt' },
+        { type: 'memory_store', memory_store_id: memory.id, mount_path: '/workspace/notes.txt' },
+        { type: 'github_repository', url: skillRepository, mount_path: '/workspace/skills' },
+      ],
       betas: BETAS,
     });
     await client.beta.sessions.events.send(session.id, {
@@ -145,13 +182,40 @@ async function main() {
 
     const containers = testContainers();
     assert.equal(containers.length, 1, 'the Session must own one shared container, not one per attempt');
+    const container = containers[0];
+    assert.equal(
+      execFileSync('docker', ['exec', container, 'cat', '/workspace/.mnt/workspace/input.txt'], {
+        encoding: 'utf8',
+      }),
+      'CONTAINER-FILE-OK',
+      'the uploaded file must be materialized into the Session container',
+    );
+    assert.match(
+      execFileSync('docker', ['exec', container, 'cat', '/workspace/skills/greet/SKILL.md'], {
+        encoding: 'utf8',
+      }),
+      /CONTAINER-SKILL-OK/,
+      'the repository-backed workspace skill must be imported into the Session container',
+    );
+
+    execFileSync('docker', [
+      'exec',
+      container,
+      'sh',
+      '-c',
+      'printf %s CONTAINER-MEMORY-OK > /workspace/.mnt/workspace/notes.txt',
+    ]);
+    await client.get(`/v1/files?scope_id=${session.id}`);
+    const harvested = await client.get(`/v1/memory_stores/${memory.id}`);
+    assert.match(harvested.content, /CONTAINER-MEMORY-OK/, 'container memory writes must harvest through the host');
 
     console.log(
-      'E2E PASS: container agent — managed ACP and the hand shared one Session-owned Docker environment and the reply round-tripped to the external SDK.',
+      'E2E PASS: container agent — ACP, hand, file, memory, repository and workspace skill shared one Session-owned Docker environment.',
     );
   } finally {
     brain.kill('SIGINT');
     cleanupTestContainers();
+    fs.rmSync(TMP, { recursive: true, force: true });
   }
 }
 
