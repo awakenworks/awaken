@@ -139,11 +139,12 @@ async function assertImportedSkill() {
   const list = await c.get('/v1/skills');
   assert.deepEqual(
     list.data.map((entry) => entry.id),
-    ['legacy-skill'],
-    'only the sequential legacy aggregate is imported',
+    ['legacy-file', 'legacy-skill'],
+    'filesystem and sequential registry aggregates are imported, but invalid history is not',
   );
-  assert.equal(list.data[0].display_title, 'Imported legacy skill');
-  assert.equal(list.data[0].latest_version, '2');
+  const registrySkill = list.data.find((entry) => entry.id === 'legacy-skill');
+  assert.equal(registrySkill.display_title, 'Imported legacy skill');
+  assert.equal(registrySkill.latest_version, '2');
 
   // A second call in the same process exercises the one-shot Workspace guard and
   // must not duplicate versions.
@@ -163,6 +164,10 @@ async function assertImportedSkill() {
   );
   assert.equal(support.status, 200);
   assert.equal(await support.text(), 'legacy-support-file');
+
+  const filesystemContent = await raw('/v1/skills/legacy-file/versions/1/content');
+  assert.equal(filesystemContent.status, 200);
+  assert.equal(await filesystemContent.text(), 'legacy-filesystem-skill');
 }
 
 async function createMemory(publishConfig = false) {
@@ -190,6 +195,9 @@ async function main() {
   const storage = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-resource-upgrade-e2e-'));
   const legacy = path.join(storage, 'resource-api.db');
   seedLegacyDatabase(legacy);
+  const legacySkillDirectory = path.join(storage, 'skills_catalog', 'default');
+  fs.mkdirSync(legacySkillDirectory, { recursive: true });
+  fs.writeFileSync(path.join(legacySkillDirectory, 'legacy-file.md'), 'legacy-filesystem-skill');
   const upstream = await startUpstream('skills');
   const servers = [];
   const environment = {
