@@ -352,6 +352,28 @@ pub trait RemoteAgent: Send + Sync {
 mod result_tests {
     use super::*;
 
+    struct StableRequestRemote;
+
+    #[async_trait]
+    impl RemoteAgent for StableRequestRemote {
+        async fn run(
+            &self,
+            agent_id: &str,
+            request_id: &str,
+            input: &str,
+            _cancellation: Option<&CancellationToken>,
+        ) -> Result<DelegationStep, DelegationExecutionError> {
+            Ok(DelegationStep::Ended {
+                text: format!("{agent_id}:{request_id}:{input}"),
+                usage: ThreadUsage::default(),
+            })
+        }
+
+        async fn card(&self, agent_id: &str) -> Result<Value, DelegationExecutionError> {
+            Ok(serde_json::json!({ "agent_id": agent_id }))
+        }
+    }
+
     fn result(id: &DelegationId, text: &str) -> ChildRunResult {
         ChildRunResult {
             child_run_id: id.child_run_id(),
@@ -410,6 +432,26 @@ mod result_tests {
             .unwrap();
         assert_eq!(inbox.discard_on_parent_end(), 2);
         assert!(inbox.is_empty());
+    }
+
+    #[tokio::test]
+    async fn default_remote_resume_reuses_the_stable_request_path() {
+        let step = StableRequestRemote
+            .resume(
+                "remote-agent",
+                "request-7",
+                &serde_json::json!({ "opaque_task_id": "task-3" }),
+                "continued input",
+                None,
+            )
+            .await
+            .expect("legacy request-id adapters reconnect through run");
+
+        assert!(matches!(
+            step,
+            DelegationStep::Ended { text, .. }
+                if text == "remote-agent:request-7:continued input"
+        ));
     }
 }
 
