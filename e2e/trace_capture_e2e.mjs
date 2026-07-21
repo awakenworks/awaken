@@ -45,6 +45,7 @@ async function createAndTurn(base, text, resources = []) {
     environment_id: 'env_local',
     resources,
     betas: BETAS,
+    resources,
   });
   const send = await fetch(`${base}/v1/sessions/${session.id}/events`, {
     method: 'POST',
