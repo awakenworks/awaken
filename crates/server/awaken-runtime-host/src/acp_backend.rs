@@ -270,6 +270,9 @@ impl crate::host::SharedHost {
             extra_mounts,
             hand_factory,
         );
+        if let Some(mounter) = host.memory_mounter() {
+            host.session_provider.install_memory_mounter(mounter);
+        }
         host.with_bound_acp(source, None)
     }
 

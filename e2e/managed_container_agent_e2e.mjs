@@ -136,7 +136,6 @@ async function main() {
       AWAKEN_CONTAINER_IMAGE: IMAGE,
       AWAKEN_SANDBOX_TIER: 'docker',
       AWAKEN_ACP_ARGV: `node -e ${ACP_FIXTURE}`,
-      AWAKEN_STORAGE_DIR: `${TMP}/storage`,
       // Disable the reaper's periodic sweep noise during the short test; the startup
       // sweep still runs (proving it is harmless with no leaked containers present).
       AWAKEN_SANDBOX_REAP_INTERVAL: '3600',
@@ -250,6 +249,7 @@ async function main() {
   } finally {
     brain.kill('SIGINT');
     cleanupTestContainers();
+    fs.rmSync(`/tmp/awaken-acp-container-${brain.pid}`, { recursive: true, force: true });
     fs.rmSync(TMP, { recursive: true, force: true });
   }
 }

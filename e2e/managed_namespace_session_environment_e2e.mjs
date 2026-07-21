@@ -1,4 +1,4 @@
-// Managed API -> one Session-owned bubblewrap namespace.
+// Managed API -> one Session-owned local/namespace environment.
 //
 // This is the namespace sibling of managed_container_agent_e2e.mjs. It drives the
 // production `with_acp_from_env` composition and mutates resources only after the
@@ -15,6 +15,7 @@ import { spawnServer, stopServer, waitForPort } from './harness.mjs';
 const PORT = Number(process.env.E2E_PORT ?? 38172);
 const BETAS = ['managed-agents-2026-04-01', 'files-api-2025-04-14'];
 const TMP = `/tmp/awaken-namespace-session-e2e-${process.pid}`;
+const TIER = process.env.SESSION_ENVIRONMENT_TIER ?? 'namespace';
 
 function bwrapAvailable() {
   return spawnSync('bwrap', ['--unshare-user', '--ro-bind', '/', '/', '--', 'true'], {
@@ -50,6 +51,7 @@ function seedAgentFixtureRepository() {
     `${work}/namespace-agent.mjs`,
     `import fs from 'node:fs';
 const read = (path) => { try { return fs.readFileSync(path, 'utf8'); } catch { return 'ABSENT'; } };
+const readAny = (...paths) => paths.map(read).find((value) => value !== 'ABSENT') ?? 'ABSENT';
 const writable = (path) => { try { fs.accessSync(path, fs.constants.W_OK); return true; } catch { return false; } };
 process.stdin.once('data', () => {
   const observations = [
@@ -58,8 +60,8 @@ process.stdin.once('data', () => {
     ['memory_writable', writable('.mnt/notes/seed.txt')],
     ['live_file', read('.mnt/workspace/live.txt')],
     ['renamed_file', read('.mnt/workspace/renamed.txt')],
-    ['live_repo', read('live-repo/README.md')],
-    ['renamed_repo', read('renamed-repo/README.md')],
+    ['live_repo', readAny('live-repo/README.md', 'workspace/live-repo/README.md')],
+    ['renamed_repo', readAny('renamed-repo/README.md', 'workspace/renamed-repo/README.md')],
   ];
   console.log(JSON.stringify({ type: 'message', text: JSON.stringify(observations) }));
   console.log(JSON.stringify({ type: 'turn_end', reason: 'natural_end' }));
@@ -88,7 +90,8 @@ async function lastReply(client, sessionId, prompt) {
 }
 
 async function main() {
-  if (!bwrapAvailable()) {
+  assert.ok(['local', 'namespace'].includes(TIER), `unsupported Session environment tier: ${TIER}`);
+  if (TIER === 'namespace' && !bwrapAvailable()) {
     console.log('E2E SKIP: bwrap/unprivileged userns unavailable on this host.');
     return;
   }
@@ -97,9 +100,11 @@ async function main() {
   const repository = seedRepository();
   const fixtureRepository = seedAgentFixtureRepository();
   const { server, baseUrl } = spawnServer('acp-container', PORT, {
-    AWAKEN_SANDBOX_TIER: 'namespace',
+    AWAKEN_SANDBOX_TIER: TIER,
     AWAKEN_SANDBOX_DIR: `${TMP}/sandboxes`,
-    AWAKEN_ACP_ARGV: 'node /workspace/fixture/namespace-agent.mjs',
+    AWAKEN_ACP_ARGV: TIER === 'namespace'
+      ? 'node /workspace/fixture/namespace-agent.mjs'
+      : `node ${TMP}/fixture-seed/namespace-agent.mjs`,
     AWAKEN_STORAGE_DIR: `${TMP}/storage`,
   });
 
@@ -132,7 +137,7 @@ async function main() {
           type: 'memory_store',
           memory_store_id: memory.id,
           mount_path: '/notes',
-          access: 'read_only',
+          access: TIER === 'namespace' ? 'read_only' : 'read_write',
         },
         {
           type: 'github_repository',
@@ -145,7 +150,11 @@ async function main() {
     let reply = await lastReply(client, session.id, 'observe initial namespace');
     assert.match(reply, /NAMESPACE-SKILL-OK/, 'the immutable Skill bundle reached the namespace');
     assert.match(reply, /NAMESPACE-MEMORY-OK/, 'the read-only governed memory reached the namespace');
-    assert.match(reply, /memory_writable",false/, 'the namespace enforces read-only memory access');
+    assert.match(
+      reply,
+      new RegExp(`memory_writable",${TIER === 'local'}`),
+      `${TIER} enforces its declared memory access capability`,
+    );
 
     const uploaded = await client.beta.files.upload({
       file: await toFile(Buffer.from('NAMESPACE-FILE-OK'), 'live.txt'),
@@ -205,7 +214,7 @@ async function main() {
       'a live Session cannot detach its create-time memory authority',
     );
 
-    console.log('E2E PASS: namespace Session retained one sandbox across Skill/memory materialization and live file/repository attach, rename and detach.');
+    console.log(`E2E PASS: ${TIER} Session retained one sandbox across Skill/memory materialization and live file/repository attach, rename and detach.`);
   } finally {
     await stopServer(server);
     fs.rmSync(TMP, { recursive: true, force: true });
