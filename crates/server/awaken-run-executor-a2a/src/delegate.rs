@@ -426,4 +426,85 @@ mod tests {
         assert!(body.contains(r#""messageId":"delegation-resume-child-1-remote-wait-7""#));
         assert!(body.contains(r#""text":"README.md""#));
     }
+
+    #[tokio::test]
+    async fn resume_requires_both_durable_remote_identifiers() {
+        let delegate = A2aRemoteAgent::new(Arc::new(MockTransport {
+            seen: Mutex::new(Vec::new()),
+            status: 200,
+            reply: String::new(),
+        }));
+
+        let missing_task = RemoteAgent::resume(
+            &delegate,
+            "researcher",
+            "child-1",
+            &json!({"context_id": "ctx-7"}),
+            "answer",
+            None,
+        )
+        .await
+        .err()
+        .expect("missing task id fails closed");
+        assert!(missing_task.to_string().contains("task_id"));
+
+        let missing_context = RemoteAgent::resume(
+            &delegate,
+            "researcher",
+            "child-1",
+            &json!({"task_id": "remote-7"}),
+            "answer",
+            None,
+        )
+        .await
+        .err()
+        .expect("missing context id fails closed");
+        assert!(missing_context.to_string().contains("context_id"));
+    }
+
+    #[tokio::test]
+    async fn run_uses_stable_delegation_correlation_ids() {
+        let transport = Arc::new(BodyTransport {
+            body: Mutex::new(None),
+            reply: r#"{"task":{"id":"remote-done","contextId":"deleg-child-9","status":{"state":"completed"}}}"#.into(),
+        });
+        let delegate = A2aRemoteAgent::new(transport.clone());
+
+        let step = delegate
+            .run("researcher", "child-9", "investigate", None)
+            .await
+            .unwrap();
+        assert!(matches!(step, DelegationStep::Ended { .. }));
+        let body = transport.body.lock().unwrap().clone().unwrap();
+        assert!(body.contains(r#""contextId":"deleg-child-9""#));
+        assert!(body.contains(r#""messageId":"delegation-message-child-9""#));
+    }
+
+    #[tokio::test]
+    async fn cancellation_during_remote_poll_aborts_the_same_task() {
+        let transport = Arc::new(MockTransport {
+            seen: Mutex::new(Vec::new()),
+            status: 200,
+            reply:
+                r#"{"task":{"id":"remote-working","contextId":"ctx","status":{"state":"working"}}}"#
+                    .into(),
+        });
+        let delegate = A2aRemoteAgent::new(transport.clone());
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+
+        let error = delegate
+            .run("researcher", "child-cancel", "stop", Some(&cancellation))
+            .await
+            .err()
+            .expect("cancelled delegation fails closed");
+        assert!(error.to_string().contains("cancelled"));
+        assert_eq!(
+            transport.seen.lock().unwrap().as_slice(),
+            &[
+                ("POST".into(), "/v1/a2a/message:send".into()),
+                ("POST".into(), "/v1/a2a/tasks/remote-working:cancel".into()),
+            ]
+        );
+    }
 }
