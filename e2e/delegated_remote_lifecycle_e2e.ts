@@ -53,6 +53,7 @@ function json(response: ServerResponse, status: number, value?: unknown): void {
 
 async function startPeer(): Promise<{ endpoint: string; state: PeerState; close: () => Promise<void> }> {
   const state: PeerState = { freshMessages: 0, polls: [], cancels: [], resumes: [] };
+  const sequenceByContext = new Map<string, number>();
   const server = http.createServer(async (request, response) => {
     const route = request.url ?? '';
     if (request.method === 'POST' && route === '/v1/a2a/message:send') {
@@ -67,8 +68,37 @@ async function startPeer(): Promise<{ endpoint: string; state: PeerState; close:
         return;
       }
 
-      state.freshMessages += 1;
-      switch (state.freshMessages) {
+      if (text.includes('delegate lifecycle: poll failure')) {
+        json(response, 200, {
+          task: task('delegated-poll-failure', 'delegated-poll-failure-context', 'working'),
+        });
+        return;
+      }
+      if (text.includes('delegate lifecycle: failed')) {
+        json(response, 200, { task: task('delegated-failed', 'delegated-failed-context', 'failed') });
+        return;
+      }
+      if (text.includes('delegate lifecycle: rejected')) {
+        json(response, 200, { task: task('delegated-rejected', 'delegated-rejected-context', 'rejected') });
+        return;
+      }
+      if (text.includes('delegate lifecycle: canceled')) {
+        json(response, 200, { task: task('delegated-canceled', 'delegated-canceled-context', 'canceled') });
+        return;
+      }
+      if (text.includes('delegate lifecycle: unavailable')) {
+        json(response, 503, { error: { message: 'delegated peer unavailable' } });
+        return;
+      }
+
+      const identity = String(message.contextId ?? message.messageId ?? 'missing-context');
+      let sequence = sequenceByContext.get(identity);
+      if (sequence === undefined) {
+        state.freshMessages += 1;
+        sequence = state.freshMessages;
+        sequenceByContext.set(identity, sequence);
+      }
+      switch (sequence) {
         case 1:
           json(response, 200, {
             task: task('delegated-input', 'delegated-input-context', 'input-required', 'which target?'),
@@ -97,6 +127,8 @@ async function startPeer(): Promise<{ endpoint: string; state: PeerState; close:
         json(response, 200, task('delegated-polled', 'delegated-poll-context', 'completed', 'REMOTE-CHILD-POLLED'));
       } else if (get[1] === 'delegated-cancel') {
         json(response, 200, task('delegated-cancel', 'delegated-cancel-context', 'working'));
+      } else if (get[1] === 'delegated-poll-failure') {
+        json(response, 503, { error: { message: 'delegated poll unavailable' } });
       } else {
         json(response, 404, { error: { message: `unknown task ${get[1]}` } });
       }
@@ -220,17 +252,42 @@ async function main(): Promise<void> {
     assert.deepEqual(peer.state.cancels, ['delegated-cancel']);
     pass('parent interrupt cancels the pinned remote child task exactly once');
 
-    // A retryable remote 5xx remains an error outcome; no synthetic delegate
-    // result is fed to the coordinator.
-    const failed = await createSession(client);
+    // Poll transport failures and every negative terminal state remain governed
+    // error outcomes. None may be collapsed into a successful child result and
+    // fed back to the parent model.
+    const pollFailed = await createSession(client);
     await assert.rejects(
-      sendText(client, failed.id, 'delegate to unavailable remote child'),
+      sendText(client, pollFailed.id, 'delegate lifecycle: poll failure'),
       (error: any) => error?.status === 500 && String(error?.message).includes('503'),
     );
-    const failedEvents = await listEvents(client, failed.id);
-    const failedProjection = JSON.stringify(failedEvents);
-    assert.ok(!failedProjection.includes('REMOTE-CHILD-'));
-    pass('remote agent_run 5xx fails closed without a fabricated child result');
+    const pollFailureProjection = JSON.stringify(await listEvents(client, pollFailed.id));
+    assert.ok(!pollFailureProjection.includes('REMOTE-CHILD-'));
+    assert.ok(peer.state.polls.includes('delegated-poll-failure'));
+    pass('remote agent_run poll 5xx remains an explicit child tool error');
+
+    // Protocol terminal failures are deterministic, non-retryable tool errors.
+    // The parent may observe and explain that error, but never receives a
+    // fabricated successful child payload.
+    for (const [prompt, marker] of [
+      ['delegate lifecycle: failed', 'remote A2A agent failed'],
+      ['delegate lifecycle: rejected', 'remote A2A task was rejected'],
+      ['delegate lifecycle: canceled', 'remote A2A task was canceled'],
+    ]) {
+      const failed = await createSession(client);
+      await sendText(client, failed.id, prompt);
+      const failedProjection = JSON.stringify(await listEvents(client, failed.id));
+      assert.ok(failedProjection.includes(marker), `${prompt}: ${failedProjection}`);
+      assert.ok(!failedProjection.includes('REMOTE-CHILD-'), prompt);
+    }
+    pass('remote failed/rejected/canceled terminals remain explicit child tool errors');
+
+    const sendFailed = await createSession(client);
+    await assert.rejects(
+      sendText(client, sendFailed.id, 'delegate lifecycle: unavailable'),
+      (error: any) => error?.status === 500,
+    );
+    assert.ok(!JSON.stringify(await listEvents(client, sendFailed.id)).includes('REMOTE-CHILD-'));
+    pass('remote agent_run send 5xx fails closed after stable-id retries');
 
     console.log('DELEGATED REMOTE LIFECYCLE TS API E2E PASS.');
   } finally {
