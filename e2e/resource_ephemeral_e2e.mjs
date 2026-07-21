@@ -139,11 +139,39 @@ async function main() {
     });
     const prefix = await json('GET', WORKSPACE, `memory_stores/${store}/memories?path_prefix=/notes`);
     assert.deepEqual(prefix.body.data.map((entry) => entry.path), ['/notes/a.md', '/notes/b.md']);
+    const versionsBeforeRejectedUpdate = await json(
+      'GET', WORKSPACE, `memory_stores/${store}/memory_versions`,
+    );
     assert.equal(
       (await json('POST', WORKSPACE, `memory_stores/${store}/memories/${first.body.id}`, {
-        content: 'beta', precondition: { content_sha256: 'stale' },
+        content: 'must-not-commit',
+        path: 'relative.md',
+        precondition: { content_sha256: first.body.content_sha256 },
+      })).status,
+      400,
+    );
+    const afterInvalidPath = await json(
+      'GET', WORKSPACE, `memory_stores/${store}/memories/${first.body.id}`,
+    );
+    assert.equal(afterInvalidPath.body.path, '/notes/a.md');
+    assert.equal(afterInvalidPath.body.content, 'alpha');
+    assert.equal(
+      (await json('GET', WORKSPACE, `memory_stores/${store}/memory_versions`)).body.data.length,
+      versionsBeforeRejectedUpdate.body.data.length,
+      'invalid target path rolls back content and history',
+    );
+    assert.equal(
+      (await json('POST', WORKSPACE, `memory_stores/${store}/memories/${first.body.id}`, {
+        content: 'alpha',
+        path: '/notes/stale-move.md',
+        precondition: { content_sha256: 'stale' },
       })).status,
       409,
+    );
+    assert.equal(
+      (await json('GET', WORKSPACE, `memory_stores/${store}/memories/${first.body.id}`)).body.path,
+      '/notes/a.md',
+      'matching content cannot make a stale path mutation idempotent',
     );
     const updated = await json('POST', WORKSPACE, `memory_stores/${store}/memories/${first.body.id}`, {
       content: 'beta',
@@ -152,6 +180,12 @@ async function main() {
     });
     assert.equal(updated.status, 200);
     assert.equal(updated.body.path, '/notes/b.md');
+    assert.equal(updated.body.content, 'beta');
+    assert.equal(
+      (await json('GET', WORKSPACE, `memory_stores/${store}/memory_versions`)).body.data.length,
+      versionsBeforeRejectedUpdate.body.data.length + 2,
+      'rename-replace appends displaced delete plus one combined head update',
+    );
     const idempotent = await json('POST', WORKSPACE, `memory_stores/${store}/memories/${first.body.id}`, {
       content: 'beta', precondition: { content_sha256: 'stale' },
     });

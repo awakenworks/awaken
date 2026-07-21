@@ -88,15 +88,26 @@ impl MemoryRepository for InvalidatingMemoryRepository {
         Ok(memory)
     }
 
-    async fn update(
+    async fn update_head(
         &self,
         store: &str,
         id: &str,
         content: &str,
         base_sha: &str,
+        target_path: Option<&str>,
     ) -> Result<Memory, MemErr> {
-        let memory = self.inner.update(store, id, content, base_sha).await?;
-        self.invalidator.publish(store, &memory.path);
+        let memory = self
+            .inner
+            .update_head(store, id, content, base_sha, target_path)
+            .await?;
+        // A path-changing aggregate update can displace another head. Broadcast a
+        // store-wide invalidation so peers cannot retain either old path; the
+        // resource repository remains unaware of cache/topology concerns.
+        if target_path.is_some() {
+            self.invalidator.publish(store, "/");
+        } else {
+            self.invalidator.publish(store, &memory.path);
+        }
         Ok(memory)
     }
 
@@ -175,7 +186,8 @@ mod tests {
         );
 
         // update → invalidation for the memory's path.
-        fs.update("s", &m.id, "two", &m.content_sha256)
+        let updated = fs
+            .update("s", &m.id, "two", &m.content_sha256)
             .await
             .unwrap();
         assert_eq!(
@@ -183,22 +195,29 @@ mod tests {
             ("s".to_string(), "/a.md".to_string())
         );
 
+        // A combined content/path update may also displace a destination, so it
+        // emits the store-root sentinel consumed as a full cache clear.
+        fs.update_head("s", &m.id, "three", &updated.content_sha256, Some("/b.md"))
+            .await
+            .unwrap();
+        assert_eq!(rx.recv().await.unwrap(), ("s".to_string(), "/".to_string()));
+
         // rename → both the source and destination paths are invalidated.
-        fs.rename("s", "/a.md", "/b.md").await.unwrap();
-        assert_eq!(
-            rx.recv().await.unwrap(),
-            ("s".to_string(), "/a.md".to_string())
-        );
+        fs.rename("s", "/b.md", "/c.md").await.unwrap();
         assert_eq!(
             rx.recv().await.unwrap(),
             ("s".to_string(), "/b.md".to_string())
+        );
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            ("s".to_string(), "/c.md".to_string())
         );
 
         // delete → invalidation for the removed path.
-        fs.delete_by_path("s", "/b.md").await.unwrap();
+        fs.delete_by_path("s", "/c.md").await.unwrap();
         assert_eq!(
             rx.recv().await.unwrap(),
-            ("s".to_string(), "/b.md".to_string())
+            ("s".to_string(), "/c.md".to_string())
         );
     }
 

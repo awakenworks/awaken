@@ -391,6 +391,13 @@ and publishes the next policy version only with `expected_config_version` CAS;
 descriptive metadata updates remain separate, so a failed config CAS cannot
 partially mutate the resource definition.
 
+A Memory head update is likewise one resource-aggregate command. The public API
+passes content, optional target path, and the head SHA precondition to
+`MemoryRepository.update_head`; validation, CAS, rename-replace, and history are
+one transaction. The API never sequences a content write followed by a second
+rename. This invariant belongs to the resource plane and contains no principal,
+role, policy, API key, or authorization decision.
+
 ### Bind and resolve
 
 Agent and Session bindings carry only `MemoryStoreId`. At Session creation the

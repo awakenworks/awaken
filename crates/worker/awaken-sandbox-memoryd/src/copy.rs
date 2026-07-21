@@ -48,6 +48,12 @@ impl CopySnapshot {
     pub fn len(&self) -> usize {
         self.heads.len()
     }
+
+    /// Whether no store heads were materialized.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.heads.is_empty()
+    }
 }
 
 /// One local edit that could not be reconciled because the durable head changed.
@@ -266,6 +272,7 @@ mod tests {
 
         let snapshot = rt.block_on(materialize(&*fs, "s", &dir)).unwrap();
         assert_eq!(snapshot.len(), 2);
+        assert!(!snapshot.is_empty());
         assert_eq!(std::fs::read_to_string(dir.join("root.md")).unwrap(), "top");
         assert_eq!(
             std::fs::read_to_string(dir.join("notes/deep/a.md")).unwrap(),

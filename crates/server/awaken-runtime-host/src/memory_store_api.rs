@@ -668,7 +668,8 @@ async fn get_memory(
 /// `POST /v1/memory_stores/:id/memories/:mid` — update a memory's content (and/or
 /// path). A `content_sha256` precondition that does not match the durable head is a
 /// `409` (the SDK's `memory_precondition_failed_error`), enforced as a compare-and-
-/// swap in the store. Appends a `modified` version.
+/// swap in the store. Content, optional rename-replace, and history are one atomic
+/// aggregate operation and append one `modified` version for the updated memory.
 async fn update_memory(
     State(state): State<Arc<MemoryStoreApi>>,
     scope: Option<Extension<WorkspaceScope>>,
@@ -697,36 +698,22 @@ async fn update_memory(
         .and_then(Value::as_str)
         .map(str::to_string)
         .unwrap_or_else(|| current.content.clone().unwrap_or_default());
+    let target_path = body.get("path").and_then(Value::as_str);
 
-    let updated = match state
+    match state
         .host
         .memory_stores
         .fs()
-        .update(&id, &mid, &new_content, &base_sha)
+        .update_head(&id, &mid, &new_content, &base_sha, target_path)
         .await
     {
-        Ok(updated) => updated,
-        Err(MemErr::Conflict { .. }) => return memory_conflict(),
-        Err(MemErr::TooLarge) => return err(StatusCode::BAD_REQUEST, "memory content too large"),
-        Err(_) => return not_found("memory"),
-    };
-    // An optional path change is a rename on the store (keeps the id + open fds).
-    let final_mem = match body.get("path").and_then(Value::as_str) {
-        Some(new_path) if new_path != path => {
-            match state
-                .host
-                .memory_stores
-                .fs()
-                .rename(&id, &path, new_path)
-                .await
-            {
-                Ok(m) => m,
-                Err(e) => return err(StatusCode::BAD_REQUEST, e.to_string()),
-            }
-        }
-        _ => updated,
-    };
-    (StatusCode::OK, Json(project_memory(&final_mem, &id))).into_response()
+        Ok(updated) => (StatusCode::OK, Json(project_memory(&updated, &id))).into_response(),
+        Err(MemErr::Conflict { .. }) => memory_conflict(),
+        Err(MemErr::TooLarge) => err(StatusCode::BAD_REQUEST, "memory content too large"),
+        Err(MemErr::InvalidPath(_)) => err(StatusCode::BAD_REQUEST, "invalid memory path"),
+        Err(MemErr::NotFound(_)) => not_found("memory"),
+        Err(error) => err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
 }
 
 async fn delete_memory(

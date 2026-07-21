@@ -89,7 +89,11 @@ fn run_invalidation_listener(
                 if store == store_id
                     && let Ok(mut cache) = cache.lock()
                 {
-                    cache.remove_path(&path);
+                    if path == "/" {
+                        cache.clear();
+                    } else {
+                        cache.remove_path(&path);
+                    }
                 }
             }
             Err(broadcast::error::TryRecvError::Empty) => std::thread::sleep(INVALIDATION_POLL),
@@ -1222,6 +1226,17 @@ mod tests {
         assert!(
             cache.lock().unwrap().get("/b.md").is_some(),
             "other store untouched"
+        );
+
+        bus.publish("s", "/");
+        let mut waited = Duration::ZERO;
+        while cache.lock().unwrap().get("/b.md").is_some() && waited < Duration::from_secs(2) {
+            std::thread::sleep(Duration::from_millis(10));
+            waited += Duration::from_millis(10);
+        }
+        assert!(
+            cache.lock().unwrap().get("/b.md").is_none(),
+            "the root sentinel clears every cached path in the store"
         );
 
         stop.store(true, Ordering::SeqCst);

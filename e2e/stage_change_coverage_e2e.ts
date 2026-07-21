@@ -118,6 +118,7 @@ const obligations: Obligation[] = [
   { id: 'D7-12', stage: '7 resource persistence', behavior: 'SQLite Memory behavior config publishes with CAS and survives process replacement without pinning content', scenario: 'resource_legacy_upgrade' },
   { id: 'D7-13', stage: '7 resource persistence', behavior: 'Postgres Memory behavior config publishes with CAS and is shared across nodes', scenario: 'resource_plane_postgres' },
   { id: 'D7-14', stage: '7 resource persistence', behavior: 'no-login/no-storage mode composes the volatile File, Memory, Skill, and lifecycle adapters under one explicit Workspace', scenario: 'resource_ephemeral' },
+  { id: 'D7-15', stage: '7 resource persistence', behavior: 'one Memory API request atomically applies content plus rename-replace, while invalid paths and stale CAS leave head and history untouched', scenario: 'resource_ephemeral' },
 
   { id: 'D8-01', stage: '8 neutral MCP server core', behavior: 'newest and older protocol versions negotiate', scenario: 'mcp_stdio' },
   { id: 'D8-02', stage: '8 neutral MCP server core', behavior: 'unsupported version returns invalid params', scenario: 'mcp_stdio' },

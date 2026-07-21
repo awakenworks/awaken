@@ -77,6 +77,8 @@ pub trait MemoryRepository: Send + Sync {
     async fn get_by_path(&self, store: &str, path: &str) -> Result<Option<Memory>, MemErr>;
     async fn create(&self, store: &str, path: &str, content: &str) -> Result<Memory, MemErr>;
     // CAS: base_sha mismatch -> MemErr::Conflict{current}. Never clobbers.
+    async fn update_head(&self, store: &str, id: &str, content: &str, base_sha: &str,
+                         target_path: Option<&str>) -> Result<Memory, MemErr>;
     async fn update(&self, store: &str, id: &str, content: &str, base_sha: &str) -> Result<Memory, MemErr>;
     async fn rename(&self, store: &str, from: &str, to: &str) -> Result<Memory, MemErr>;
     async fn delete_by_path(&self, store: &str, path: &str) -> Result<(), MemErr>;
@@ -92,8 +94,11 @@ Store invariants required by everything downstream:
 - Keyed `(workspace, store_id, path)`, **unique path** per store (blocks two
   concurrent `create`s of the same path).
 - Every write carries `content_sha256` and a **monotonic per-path `version`**.
-- `create`/`update`/`delete`/`rename` are each **one transaction** (pg tx; fs
+- `create`/`update_head`/`delete`/`rename` are each **one transaction** (pg tx; fs
   write-temp-then-atomic-rename; sqlite tx).
+- `update_head` is the aggregate operation used by the public API: content, an
+  optional path change, replacement of an occupied destination, and all history
+  rows commit or roll back together. `update` is its content-only convenience.
 - `update` is **compare-and-swap on `base_sha`** — mismatch returns
   `Conflict{current}` (carrying the current sha + content for diagnostics), never
   overwrites.

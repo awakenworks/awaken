@@ -345,16 +345,29 @@ pub trait MemoryRepository: Send + Sync {
     async fn get_by_path(&self, store: &str, path: &str) -> Result<Option<Memory>, MemErr>;
     /// Create a memory at `path`. `PathConflict` if it already exists.
     async fn create(&self, store: &str, path: &str, content: &str) -> Result<Memory, MemErr>;
-    /// Compare-and-swap the content of memory `id`: succeeds only if the stored sha
-    /// equals `base_sha` (or the new content is already current — idempotent). On a
-    /// mismatch returns [`MemErr::Conflict`] carrying the live memory; never clobbers.
+    /// Atomically compare-and-swap the head of memory `id`, optionally moving it to
+    /// `target_path` in the same repository operation. Content, path, displaced-target
+    /// deletion, and history either all commit or all roll back. A stale `base_sha`
+    /// is idempotent only when both requested content and path are already current;
+    /// otherwise it returns [`MemErr::Conflict`] carrying the live memory.
+    async fn update_head(
+        &self,
+        store: &str,
+        id: &str,
+        content: &str,
+        base_sha: &str,
+        target_path: Option<&str>,
+    ) -> Result<Memory, MemErr>;
+    /// Content-only convenience over [`MemoryRepository::update_head`].
     async fn update(
         &self,
         store: &str,
         id: &str,
         content: &str,
         base_sha: &str,
-    ) -> Result<Memory, MemErr>;
+    ) -> Result<Memory, MemErr> {
+        self.update_head(store, id, content, base_sha, None).await
+    }
     /// Move `from` → `to` atomically, **replacing** `to` if it exists (POSIX rename
     /// semantics). The memory keeps its id (so an open FUSE fd stays valid) and bumps
     /// its version.

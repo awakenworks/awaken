@@ -314,17 +314,21 @@ impl MemoryRepository for PostgresMemoryRepository {
         })
     }
 
-    async fn update(
+    async fn update_head(
         &self,
         store: &str,
         id: &str,
         content: &str,
         base_sha: &str,
+        target_path: Option<&str>,
     ) -> Result<Memory, MemErr> {
         validate_size(content)?;
+        if let Some(path) = target_path {
+            validate_path(path)?;
+        }
         let mut tx = self.pool.begin().await.map_err(mem_err)?;
         let row = sqlx::query(&format!(
-            "SELECT path, sha, content, version, created FROM {NS}_memories \
+            "SELECT path, sha, content, version, created, updated FROM {NS}_memories \
              WHERE store_id = $1 AND id = $2 FOR UPDATE"
         ))
         .bind(store)
@@ -333,16 +337,26 @@ impl MemoryRepository for PostgresMemoryRepository {
         .await
         .map_err(mem_err)?
         .ok_or_else(|| MemErr::NotFound(id.to_string()))?;
-        let (path, cur_sha, cur_content, version, created): (String, String, Vec<u8>, i64, i64) = (
+        let (path, cur_sha, cur_content, version, created, updated): (
+            String,
+            String,
+            Vec<u8>,
+            i64,
+            i64,
+            i64,
+        ) = (
             row.get("path"),
             row.get("sha"),
             row.get("content"),
             row.get("version"),
             row.get("created"),
+            row.get("updated"),
         );
+        let requested_path = target_path.unwrap_or(&path);
         let new_sha = sha256_hex(content);
+        let already_current = cur_sha == new_sha && path == requested_path;
         if cur_sha != base_sha {
-            if cur_sha == new_sha {
+            if already_current {
                 return to_memory(
                     id.into(),
                     path,
@@ -350,7 +364,7 @@ impl MemoryRepository for PostgresMemoryRepository {
                     cur_sha,
                     version,
                     created,
-                    created,
+                    updated,
                 );
             }
             let current = to_memory(
@@ -360,17 +374,51 @@ impl MemoryRepository for PostgresMemoryRepository {
                 cur_sha,
                 version,
                 created,
-                created,
+                updated,
             )?;
             return Err(MemErr::Conflict {
                 current: Box::new(current),
             });
         }
+        if already_current {
+            return to_memory(
+                id.into(),
+                path,
+                cur_content,
+                cur_sha,
+                version,
+                created,
+                updated,
+            );
+        }
         let now = now_nanos() as i64;
+        let displaced_id = if requested_path == path {
+            None
+        } else {
+            sqlx::query_scalar::<_, String>(&format!(
+                "SELECT id FROM {NS}_memories WHERE store_id = $1 AND path = $2 FOR UPDATE"
+            ))
+            .bind(store)
+            .bind(requested_path)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(mem_err)?
+        };
+        if displaced_id.is_some() {
+            sqlx::query(&format!(
+                "DELETE FROM {NS}_memories WHERE store_id = $1 AND path = $2"
+            ))
+            .bind(store)
+            .bind(requested_path)
+            .execute(&mut *tx)
+            .await
+            .map_err(mem_err)?;
+        }
         sqlx::query(&format!(
-            "UPDATE {NS}_memories SET content = $1, sha = $2, version = version + 1, updated = $3 \
-             WHERE store_id = $4 AND id = $5"
+            "UPDATE {NS}_memories SET path = $1, content = $2, sha = $3, \
+             version = version + 1, updated = $4 WHERE store_id = $5 AND id = $6"
         ))
+        .bind(requested_path)
         .bind(content.as_bytes())
         .bind(&new_sha)
         .bind(now)
@@ -379,12 +427,24 @@ impl MemoryRepository for PostgresMemoryRepository {
         .execute(&mut *tx)
         .await
         .map_err(mem_err)?;
+        if let Some(displaced_id) = displaced_id {
+            append_version(
+                &mut tx,
+                store,
+                &displaced_id,
+                MemoryVersionOperation::Deleted,
+                requested_path,
+                None,
+                now,
+            )
+            .await?;
+        }
         append_version(
             &mut tx,
             store,
             id,
             MemoryVersionOperation::Modified,
-            &path,
+            requested_path,
             Some(content),
             now,
         )
@@ -394,7 +454,7 @@ impl MemoryRepository for PostgresMemoryRepository {
             content_size: content.len() as u64,
             content: Some(content.to_string()),
             id: id.to_string(),
-            path,
+            path: requested_path.to_string(),
             content_sha256: new_sha,
             version: (version + 1) as u64,
             created_unix_nanos: created as u128,
