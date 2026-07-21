@@ -1396,4 +1396,258 @@ mod tests {
             AwaitReason::ExternalEvent
         );
     }
+
+    #[test]
+    fn durable_reference_and_resume_projection_fail_closed() {
+        let valid = serde_json::json!({
+            "endpoint": "http://remote.invalid",
+            "task_id": "task-7",
+            "context_id": "ctx-7",
+        });
+        let reference = decode_task_reference(&valid).unwrap();
+        assert_eq!(reference.task_id, "task-7");
+        for field in ["endpoint", "task_id", "context_id"] {
+            let mut invalid = valid.clone();
+            invalid.as_object_mut().unwrap().remove(field);
+            assert!(decode_task_reference(&invalid).is_err(), "missing {field}");
+        }
+        assert!(ensure_endpoint(&reference, "http://other.invalid").is_err());
+
+        assert_eq!(resume_text(&ResumeResult::Input("input".into())), "input");
+        assert_eq!(
+            resume_text(&ResumeResult::ToolResult(
+                awaken_runtime_contract::tool::ToolOutput::ok("call", "tool")
+            )),
+            "tool"
+        );
+        assert_eq!(resume_text(&ResumeResult::allow()), "allow");
+        assert_eq!(resume_text(&ResumeResult::deny(None)), "deny");
+        assert_eq!(
+            resume_text(&ResumeResult::deny(Some("because".into()))),
+            "because"
+        );
+    }
+
+    fn resume_command(activation: &RunActivation) -> ResumeCommand {
+        ResumeCommand {
+            correlation_id: "missing-ticket".into(),
+            run_id: activation.run_id.clone(),
+            thread_id: activation.thread_id.clone(),
+            snapshot_id: activation.snapshot.id.clone(),
+            catalog_fingerprint: activation
+                .snapshot
+                .resolved_spec
+                .catalog_fingerprint
+                .clone(),
+            result: ResumeResult::Input("answer".into()),
+            now_ms: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn restore_skips_unrelated_state_and_honors_a_later_remove() {
+        let rec = Arc::new(Rec::default());
+        let activation = activation("a2a:http://remote.invalid");
+        let context = RuntimeRunContext::new()
+            .with_commit(rec.clone())
+            .with_reader(rec.clone());
+        commit_boundary(
+            &context,
+            &activation,
+            RunDisposition::running(activation.run_id.clone()),
+            Vec::new(),
+            vec![StateCommand::set(
+                Scope::Run,
+                MergePolicy::Disjoint,
+                "unrelated",
+                serde_json::json!(true),
+            )],
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            restored_task_reference(&context, &activation).unwrap(),
+            None
+        );
+
+        let reference = TaskReference {
+            endpoint: "http://remote.invalid".into(),
+            task_id: "task-7".into(),
+            context_id: "ctx-7".into(),
+        };
+        commit_boundary(
+            &context,
+            &activation,
+            RunDisposition::running(activation.run_id.clone()),
+            Vec::new(),
+            vec![task_reference_state(&reference)],
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            restored_task_reference(&context, &activation).unwrap(),
+            Some(reference)
+        );
+        commit_boundary(
+            &context,
+            &activation,
+            RunDisposition::running(activation.run_id.clone()),
+            Vec::new(),
+            vec![clear_task_reference_state()],
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            restored_task_reference(&context, &activation).unwrap(),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_requires_reader_ticket_and_durable_task_in_that_order() {
+        let activation = activation("a2a:http://remote.invalid");
+        let executor = A2aRunExecutor::over_http();
+        let command = resume_command(&activation);
+        assert!(
+            executor
+                .resume(
+                    activation.clone(),
+                    command.clone(),
+                    RuntimeRunContext::new()
+                )
+                .await
+                .is_err()
+        );
+
+        let empty = Arc::new(Rec::default());
+        assert!(
+            executor
+                .resume(
+                    activation.clone(),
+                    command,
+                    RuntimeRunContext::new().with_reader(empty),
+                )
+                .await
+                .is_err()
+        );
+
+        let rec = Arc::new(Rec::default());
+        let context = RuntimeRunContext::new()
+            .with_commit(rec.clone())
+            .with_reader(rec.clone());
+        let mut waiting = task_with(None, &[], &[]);
+        waiting.status.state = TaskState::InputRequired;
+        let ticket = awaiting_ticket(&activation, &waiting);
+        commit_boundary(
+            &context,
+            &activation,
+            RunDisposition::awaiting(ticket.clone()),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+        assert!(
+            executor
+                .resume(
+                    activation,
+                    ResumeCommand::from_ticket(&ticket, ResumeResult::Input("answer".into()), 0),
+                    context,
+                )
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_rejects_a_task_pinned_to_another_endpoint() {
+        let rec = Arc::new(Rec::default());
+        let activation = activation("a2a:http://remote.invalid");
+        let context = RuntimeRunContext::new()
+            .with_commit(rec.clone())
+            .with_reader(rec.clone());
+        commit_boundary(
+            &context,
+            &activation,
+            RunDisposition::running(activation.run_id.clone()),
+            Vec::new(),
+            vec![task_reference_state(&TaskReference {
+                endpoint: "http://old.invalid".into(),
+                task_id: "task-7".into(),
+                context_id: "ctx-7".into(),
+            })],
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            A2aRunExecutor::over_http()
+                .execute(activation, context)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_without_a_reference_is_idempotent_and_terminal_is_a_noop() {
+        let activation = activation("a2a:http://remote.invalid");
+        let empty = Arc::new(Rec::default());
+        scripted_executor(Arc::new(ScriptedTransport::new(Vec::new())))
+            .cancel(
+                activation.clone(),
+                RuntimeRunContext::new().with_reader(empty),
+            )
+            .await
+            .unwrap();
+
+        let transport = Arc::new(ScriptedTransport::new(vec![response(
+            r#"{"id":"task-7","contextId":"ctx-7","status":{"state":"completed"}}"#,
+        )]));
+        let rec = Arc::new(Rec::default());
+        let context = RuntimeRunContext::new()
+            .with_commit(rec.clone())
+            .with_reader(rec.clone());
+        commit_boundary(
+            &context,
+            &activation,
+            RunDisposition::running(activation.run_id.clone()),
+            Vec::new(),
+            vec![task_reference_state(&TaskReference {
+                endpoint: "http://remote.invalid".into(),
+                task_id: "task-7".into(),
+                context_id: "ctx-7".into(),
+            })],
+        )
+        .await
+        .unwrap();
+        scripted_executor(transport.clone())
+            .cancel(activation, context)
+            .await
+            .unwrap();
+        assert_eq!(transport.seen.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_pre_cancelled_poll_commits_a_cancelled_terminal_boundary() {
+        let transport = Arc::new(ScriptedTransport::new(vec![
+            response(
+                r#"{"task":{"id":"task-7","contextId":"ctx-7","status":{"state":"working"}}}"#,
+            ),
+            Ok(Response::new(204, Vec::new())),
+        ]));
+        let cancellation = awaken_runtime_contract::CancellationToken::new();
+        cancellation.cancel();
+        let rec = Arc::new(Rec::default());
+        let state = scripted_executor(transport)
+            .execute(
+                activation("a2a:http://remote.invalid"),
+                RuntimeRunContext::new()
+                    .with_commit(rec.clone())
+                    .with_reader(rec)
+                    .with_cancellation(cancellation),
+            )
+            .await
+            .unwrap();
+        assert_eq!(state, RunState::Ended(EndCause::Cancelled));
+    }
 }
