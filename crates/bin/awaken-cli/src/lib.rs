@@ -66,10 +66,7 @@ impl awaken_admin_config_api::CredentialProbe for GenaiProbe {
 struct ManagementStores {
     /// Durable installation root used to persist the platform Workspace id.
     workspace_root: Option<std::path::PathBuf>,
-    /// Resource-plane consistency state. It is selected independently of IAM and
-    /// carries ownership/references/purge fences, never authorization policy.
-    resource_lifecycle:
-        Arc<dyn awaken_protocol_managed::resource_plane::ResourceLifecycleRepository>,
+    resource_plane: ResourcePlaneStores,
     catalog: Arc<dyn awaken_model_catalog::repo::CatalogRepo>,
     credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
     secrets: Arc<dyn awaken_credential_vault::SecretStore>,
@@ -92,6 +89,88 @@ struct ManagementStores {
     config: Arc<dyn awaken_config_store::ScopedConfigRegistry>,
     /// Self-hosted environments registry + work queue, durable per deployment mode.
     environments: Arc<awaken_protocol_managed::EnvironmentState>,
+}
+
+/// Backend-neutral resource ports selected together at the composition root.
+/// This is wiring, not an aggregate and not an authorization context.
+struct ResourcePlaneStores {
+    lifecycle: Arc<dyn awaken_protocol_managed::resource_plane::ResourceLifecycleRepository>,
+    files: Arc<dyn awaken_file_store::FileStore>,
+    memory: Arc<dyn awaken_memory_store::MemoryRepository>,
+    skills: Arc<dyn awaken_skill_store::SkillStore>,
+}
+
+impl ResourcePlaneStores {
+    fn ephemeral() -> Self {
+        Self {
+            lifecycle: Arc::new(awaken_resource_store::InMemoryResourceStore::new()),
+            files: Arc::new(awaken_file_store::InMemoryFileStore::new()),
+            memory: Arc::new(awaken_memory_store::VolatileMemoryRepository::new()),
+            skills: Arc::new(awaken_skill_store::InMemorySkillStore::new()),
+        }
+    }
+
+    fn embedded(root: &std::path::Path) -> Self {
+        std::fs::create_dir_all(root).expect("create resource-plane directory");
+        let memory = awaken_memory_store::SqliteMemoryRepository::open(
+            root.join("memory_fs.db")
+                .to_str()
+                .expect("resource memory path is valid UTF-8"),
+        )
+        .expect("open resource memory sqlite");
+        memory
+            .import_legacy_versions(&root.join("resource-api.db"))
+            .expect("import legacy resource memory versions");
+        Self {
+            lifecycle: Arc::new(
+                awaken_resource_store::SqliteResourceStore::open(
+                    root.join("resource-lifecycle.db"),
+                )
+                .expect("open resource lifecycle sqlite"),
+            ),
+            files: Arc::new(
+                awaken_file_store::sqlite::SqliteFileStore::open(
+                    root.join("files.db")
+                        .to_str()
+                        .expect("resource file path is valid UTF-8"),
+                )
+                .expect("open resource file sqlite"),
+            ),
+            memory: Arc::new(memory),
+            skills: Arc::new(
+                awaken_skill_store::FsSkillStore::open(root.join("skills"))
+                    .expect("open resource skill filesystem store"),
+            ),
+        }
+    }
+
+    async fn open(backend: config::ResourcePlaneStoreBackend) -> Self {
+        match backend {
+            config::ResourcePlaneStoreBackend::Embedded(root) => Self::embedded(&root),
+            config::ResourcePlaneStoreBackend::Postgres(url) => Self {
+                lifecycle: Arc::new(
+                    awaken_resource_store::PostgresResourceStore::connect(&url)
+                        .await
+                        .expect("connect resource lifecycle postgres"),
+                ),
+                files: Arc::new(
+                    awaken_file_store::postgres::PgFileStore::connect(&url)
+                        .await
+                        .expect("connect resource file postgres"),
+                ),
+                memory: Arc::new(
+                    awaken_memory_store::PostgresMemoryRepository::connect(&url)
+                        .await
+                        .expect("connect resource memory postgres"),
+                ),
+                skills: Arc::new(
+                    awaken_skill_store::PgSkillStore::connect(&url)
+                        .await
+                        .expect("connect resource skill postgres"),
+                ),
+            },
+        }
+    }
 }
 
 const CREDENTIAL_RECONCILIATION_INTERVAL: Duration = Duration::from_secs(60);
@@ -139,7 +218,7 @@ fn in_memory_management_stores() -> ManagementStores {
     let sessions = Arc::new(awaken_protocol_managed::InMemorySessionRepository::default());
     ManagementStores {
         workspace_root: None,
-        resource_lifecycle: Arc::new(awaken_resource_store::InMemoryResourceStore::new()),
+        resource_plane: ResourcePlaneStores::ephemeral(),
         catalog: Arc::new(awaken_model_catalog::repo::InMemoryCatalogRepo::new()),
         credentials: Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new()),
         secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
@@ -183,10 +262,7 @@ fn durable_management_stores(dir: &std::path::Path, key: &[u8; 32]) -> Managemen
     );
     ManagementStores {
         workspace_root: Some(dir.to_path_buf()),
-        resource_lifecycle: Arc::new(
-            awaken_resource_store::SqliteResourceStore::open(dir.join("resource-lifecycle.db"))
-                .expect("open resource-lifecycle.db under AWAKEN_MGMT_DIR"),
-        ),
+        resource_plane: ResourcePlaneStores::embedded(dir),
         catalog: Arc::new(catalog),
         credentials: Arc::new(credentials),
         // The only durable secret path is sealed: `nonce ‖ ciphertext` under the
@@ -236,7 +312,7 @@ fn durable_management_stores(dir: &std::path::Path, key: &[u8; 32]) -> Managemen
 /// (Option A, shared-DB).
 async fn open_management_stores(
     cfg: awaken_control::ControlStoreConfig,
-    resource_lifecycle_backend: config::ResourceLifecycleStoreBackend,
+    resource_backend: config::ResourcePlaneStoreBackend,
     workspace_root: std::path::PathBuf,
     key: &[u8; 32],
 ) -> ManagementStores {
@@ -252,24 +328,7 @@ async fn open_management_stores(
     }
     let path = |p: &std::path::Path| p.to_string_lossy().into_owned();
 
-    let resource_lifecycle: Arc<
-        dyn awaken_protocol_managed::resource_plane::ResourceLifecycleRepository,
-    > = match resource_lifecycle_backend {
-        config::ResourceLifecycleStoreBackend::Sqlite(path) => {
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent).expect("create resource-lifecycle directory");
-            }
-            Arc::new(
-                awaken_resource_store::SqliteResourceStore::open(path)
-                    .expect("open resource lifecycle sqlite"),
-            )
-        }
-        config::ResourceLifecycleStoreBackend::Postgres(url) => Arc::new(
-            awaken_resource_store::PostgresResourceStore::connect(&url)
-                .await
-                .expect("connect resource lifecycle postgres"),
-        ),
-    };
+    let resource_plane = ResourcePlaneStores::open(resource_backend).await;
 
     ensure_parent(&cfg.catalog);
     let catalog: Arc<dyn awaken_model_catalog::repo::CatalogRepo> = match &cfg.catalog {
@@ -430,7 +489,7 @@ async fn open_management_stores(
 
     ManagementStores {
         workspace_root: Some(workspace_root),
-        resource_lifecycle,
+        resource_plane,
         catalog,
         credentials,
         secrets,
@@ -446,15 +505,19 @@ async fn open_management_stores(
     }
 }
 
-/// The AEAD key for the durable management plane, from `AWAKEN_MGMT_SEAL_KEY` (inline)
-/// **or** `AWAKEN_MGMT_SEAL_KEY_FILE` (a path to a file holding it). Exactly one must
+/// The AEAD key for the durable control plane, from `AWAKEN_CONTROL_SEAL_KEY` (inline)
+/// **or** `AWAKEN_CONTROL_SEAL_KEY_FILE` (a path to a file holding it). Exactly one must
 /// be set. Fails loudly when unset, both-set, unreadable, or malformed. The pure
 /// resolution lives once in `awaken_credential_vault` (shared with the worker); this
 /// only wires the env.
 fn mgmt_seal_key_from_env() -> [u8; 32] {
     let hex = awaken_credential_vault::resolve_seal_key_hex(
-        std::env::var("AWAKEN_MGMT_SEAL_KEY").ok(),
-        std::env::var("AWAKEN_MGMT_SEAL_KEY_FILE").ok(),
+        std::env::var("AWAKEN_CONTROL_SEAL_KEY")
+            .ok()
+            .or_else(|| std::env::var("AWAKEN_MGMT_SEAL_KEY").ok()),
+        std::env::var("AWAKEN_CONTROL_SEAL_KEY_FILE")
+            .ok()
+            .or_else(|| std::env::var("AWAKEN_MGMT_SEAL_KEY_FILE").ok()),
         |p| std::fs::read_to_string(p),
     )
     .unwrap_or_else(|reason| panic!("{reason}."));
@@ -463,18 +526,29 @@ fn mgmt_seal_key_from_env() -> [u8; 32] {
     })
 }
 
+fn deployment_data_dir_from_env() -> Option<String> {
+    std::env::var("AWAKEN_DEPLOYMENT_DATA_DIR")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            std::env::var("AWAKEN_MGMT_DIR")
+                .ok()
+                .filter(|value| !value.is_empty())
+        })
+}
+
 /// Serve the management plane (authoring + data plane) with **persistence selected
 /// from the environment**:
 ///
-/// - `AWAKEN_MGMT_DIR` unset — in-memory stores, exactly the previous behavior.
-/// - `AWAKEN_MGMT_DIR=<dir>` — SQLite-backed stores under `<dir>`, secrets AEAD-sealed
+/// - `AWAKEN_DEPLOYMENT_DATA_DIR` unset — in-memory stores.
+/// - `AWAKEN_DEPLOYMENT_DATA_DIR=<dir>` — durable stores rooted under `<dir>`, secrets AEAD-sealed
 ///   under the seal key (required then; unset or malformed panics rather than sealing
 ///   under a key that cannot survive a restart). The key comes from exactly one of
-///   `AWAKEN_MGMT_SEAL_KEY` (inline) or `AWAKEN_MGMT_SEAL_KEY_FILE`.
+///   `AWAKEN_CONTROL_SEAL_KEY` (inline) or `AWAKEN_CONTROL_SEAL_KEY_FILE`.
 ///
 /// Additionally (ADR-0042/0043 P1), `AWAKEN_MGMT_IAM=embedded` gates the management
 /// surfaces behind bearer `ApiToken` authn + preset-role authz; it requires
-/// `AWAKEN_MGMT_DIR` and panics with a clear message when it is missing. Unset — the
+/// `AWAKEN_DEPLOYMENT_DATA_DIR` and panics with a clear message when it is missing. Unset — the
 /// default — is today's open behavior, byte-identical.
 pub async fn build_management_router() -> Router {
     build_management_router_with_fallback(
@@ -506,11 +580,11 @@ pub async fn build_management_router_with_fallback(
         .unwrap_or(ManagementIdentityMode::NoLogin);
     let (iam, remote_iam) = match identity_mode {
         ManagementIdentityMode::SelfManaged => {
-            let dir = std::env::var("AWAKEN_MGMT_DIR").unwrap_or_else(|_| {
+            let dir = deployment_data_dir_from_env().unwrap_or_else(|| {
                 panic!(
-                    "self-managed IAM requires AWAKEN_MGMT_DIR: the embedded \
+                    "self-managed IAM requires AWAKEN_DEPLOYMENT_DATA_DIR: the embedded \
                      IAM persists its API tokens and role bindings under \
-                     <AWAKEN_MGMT_DIR>/iam.sqlite; an in-memory token directory would \
+                     <AWAKEN_DEPLOYMENT_DATA_DIR>/iam.sqlite; an in-memory token directory would \
                      mint a fresh bootstrap admin token on every restart."
                 )
             });
@@ -544,29 +618,27 @@ pub async fn build_management_router_with_fallback(
         ),
         ManagementIdentityMode::NoLogin => (None, None),
     };
-    match std::env::var("AWAKEN_MGMT_DIR") {
-        Ok(dir) => {
+    match deployment_data_dir_from_env() {
+        Some(dir) => {
             let key = mgmt_seal_key_from_env();
             // Each control-plane store honors its own `AWAKEN_<COMPONENT>_DB` override
             // (SQLite path or shared Postgres), defaulting to `<dir>/<name>.db`.
             let cfg = awaken_control::ControlStoreConfig::from_env(std::path::Path::new(&dir));
-            let resource_lifecycle_backend =
-                config::ResourceLifecycleStoreBackend::from_env(std::path::Path::new(&dir));
+            let resource_backend =
+                config::ResourcePlaneStoreBackend::from_env(std::path::Path::new(&dir))
+                    .unwrap_or_else(|error| panic!("resource plane configuration: {error}"));
             let shared_runtime = std::env::var("AWAKEN_RUNTIME_DISPATCH_DATABASE_URL")
                 .is_ok_and(|value| !value.is_empty())
                 || std::env::var("AWAKEN_STORE").as_deref() == Ok("postgres")
                 || std::env::var("AWAKEN_DISPATCH_BACKEND").as_deref() == Ok("postgres");
-            resource_lifecycle_backend
-                .validate_runtime_shape(shared_runtime)
+            let shared_resource_catalog =
+                matches!(&cfg.admin, awaken_control::StoreBackend::Postgres(_));
+            resource_backend
+                .validate_runtime_shape(shared_runtime, shared_resource_catalog)
                 .unwrap_or_else(|error| panic!("{error}"));
             management_router_over(
-                open_management_stores(
-                    cfg,
-                    resource_lifecycle_backend,
-                    std::path::PathBuf::from(&dir),
-                    &key,
-                )
-                .await,
+                open_management_stores(cfg, resource_backend, std::path::PathBuf::from(&dir), &key)
+                    .await,
                 iam,
                 remote_iam,
                 fallback_model,
@@ -575,7 +647,7 @@ pub async fn build_management_router_with_fallback(
             )
             .await
         }
-        Err(_) => {
+        None => {
             management_router_over(
                 in_memory_management_stores(),
                 iam,
@@ -711,7 +783,7 @@ async fn management_router_over(
 ) -> Router {
     let ManagementStores {
         workspace_root,
-        resource_lifecycle,
+        resource_plane,
         catalog,
         credentials,
         secrets,
@@ -725,6 +797,12 @@ async fn management_router_over(
         config,
         environments,
     } = stores;
+    let ResourcePlaneStores {
+        lifecycle: resource_lifecycle,
+        files: file_store,
+        memory: memory_store,
+        skills: skill_store,
+    } = resource_plane;
     // Resolve the installation's Workspace exactly once, then inject the same
     // coordinate into every adapter assembled below. Durable roots persist it;
     // ephemeral roots receive a process-local generated coordinate.
@@ -835,17 +913,6 @@ async fn management_router_over(
         RESERVED_ADMIN_SCOPE,
         vec![awaken_admin_assistant::ADMIN_ASSISTANT_AGENT_ID.to_string()],
     ));
-    // The durable skill catalog under the management storage dir when set, else a
-    // per-process temp dir. Built HERE (not inside the host) so ONE store is shared by
-    // the host (delivered skills) and the capability inventory (skill enumeration).
-    let skill_dir = std::env::var("AWAKEN_MGMT_DIR")
-        .map(|d| std::path::PathBuf::from(d).join("skills"))
-        .unwrap_or_else(|_| {
-            std::env::temp_dir().join(format!("awaken-skills-{}", std::process::id()))
-        });
-    let skill_store: Arc<dyn awaken_skill_store::SkillStore> = Arc::new(
-        awaken_skill_store::FsSkillStore::open(skill_dir).expect("open durable skill store root"),
-    );
     // The LIVE data-plane resource inventory (ADR-0038): memory-store ids from the durable
     // Resource Catalog (the same aggregate Session resolution reads, so this stays
     // consistent) + skill ids from the shared skill store. Unlike before, this is now
@@ -941,15 +1008,19 @@ async fn management_router_over(
     // Resource Catalog the capability inventory reads, so a skill or memory store the
     // host serves is exactly what the assistant enumerates, and identity survives a
     // restart.
-    let host_builder = SharedHost::new(model, model_ref)
+    let resource_ports = awaken_runtime_host::ResourcePlanePorts::new(
+        file_store,
+        memory_store,
+        skill_store,
+        resource_lifecycle,
+    );
+    let host_builder = SharedHost::new_with_resource_plane(model, model_ref, resource_ports)
         .with_local_workspace(platform_workspace.clone())
         .with_config_service(config_service.clone())
         .with_admin_tools(admin_execs)
-        .with_skill_store_backend(skill_store)
         // Resolve a session's model to a real executor from the config plane (M2):
         // an unconfigured/unresolvable model falls back to the scenario model above.
         .with_inference_materializer(inference_materializer);
-    let host_builder = host_builder.with_resource_lifecycle(resource_lifecycle);
     host_builder.install_memory_extraction_repository(memory_extractions);
     awaken_server::install_platform_memory_data_plane(&host_builder);
     // Production ACP wiring (`acp:*` threads): `AWAKEN_ACP_CLI` / `AWAKEN_ACP_ARGV`

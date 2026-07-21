@@ -253,7 +253,8 @@ process-local handle.
 | `SandboxProvider` | Existing | Environment provisioning | realize validated mounts/working trees and dispose them | product resource authoring and policy |
 | `ResourceReclaimer` | Existing, durable and per-resource | Product/session operations | reconcile crashed activations and purge intents; retention, reference checks, fenced claims, per-kind receipts | authorization decisions, remote Git deletion |
 | `ResourceReclamationFence` | Existing resource lifecycle port | Resource consistency | atomically prove zero physical references, fence `(kind, resource_id)`, and reject racing reference writes | principal, role, policy, API key, Org/Project/WorkUnit |
-| `SqliteResourceStore` / `PostgresResourceStore` | Existing adapters | Resource persistence | persist purge intents, intrinsic references, and reclamation fences for embedded or multi-node deployment | IAM/PDP data and resource content bytes |
+| `ResourcePlaneStores` / `ResourcePlanePorts` | Existing composition bundle/Host wiring value | Composition root | select File, Memory, Skill, and lifecycle adapters together and inject them atomically before local stores open | aggregate behavior, IAM/PDP data, authorization decisions |
+| `SqliteResourceStore` / `PostgresResourceStore` | Existing adapters | Resource consistency persistence | persist purge intents, intrinsic references, and reclamation fences for embedded or multi-node deployment | IAM/PDP data and File/Memory/Skill content |
 
 The catalog names roles rather than forcing them into one crate. Local mode may
 compose several roles in one process; cloud mode may deploy them separately.
@@ -690,8 +691,10 @@ internal config version remains an awaken governance detail.
   references; Session manifest replacement updates its references atomically;
 - a physical-identity fence serializes zero-reference proof with every new
   reference across processes; SQLite and Postgres implement the same port;
-- resource lifecycle persistence is selected once at composition by
-  `AWAKEN_RESOURCE_LIFECYCLE_DB`, independently of IAM/authentication mode;
+- the complete resource persistence family is selected once at composition by
+  `AWAKEN_RESOURCE_DATABASE_URL`, independently of IAM/authentication mode;
+- File bytes, Memory content/history, Skill bundles, and lifecycle fences cannot
+  silently mix shared and node-local backends in a multi-node deployment;
 - File GC checks every Workspace ownership/reference before deleting shared bytes;
 - Memory GC requires the catalog tombstone, pinned config generation, retention,
   no Session/Agent binding, and no recoverable extraction before atomically

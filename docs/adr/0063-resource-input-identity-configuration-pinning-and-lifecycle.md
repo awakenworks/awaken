@@ -214,12 +214,28 @@ acquisition, performs idempotent physical deletion, releases the fence, and only
 then commits the receipt. A crash before release lets the same intent resume; a
 crash after release but before the receipt safely rechecks/repeats deletion.
 
-Embedded composition uses SQLite and cloud/multi-node composition uses Postgres,
-selected once by `AWAKEN_RESOURCE_LIFECYCLE_DB`. The transitional runtime-Postgres
-DSN fallback is accepted for compatibility, but operators should set the resource
-axis explicitly. This database contains only resource identities, Workspace
-ownership/reference edges, purge work, and consistency fences. It is not an IAM
-store and is never selected by identity mode, API-key type, role, or policy.
+Embedded composition uses local SQLite/filesystem adapters and cloud/multi-node
+composition uses Postgres adapters, selected together once by
+`AWAKEN_RESOURCE_DATABASE_URL`. The former `AWAKEN_RESOURCE_LIFECYCLE_DB` and
+runtime-Postgres DSN fallbacks are transitional compatibility aliases; operators
+should set the resource axis explicitly. Selection covers File bytes, Memory
+content/history, Skill definitions/bundles, and lifecycle/reference/fence state,
+while each bounded context retains its own port and migration scope. This is a
+composition bundle, not one god repository.
+
+The resource databases contain only resource content, intrinsic Workspace
+ownership/reference edges, purge work, and consistency fences. They contain no
+principal, token, API key, role, policy, PDP decision, credential material, Org,
+Project, or WorkUnit. Resource backend selection is never derived from identity
+mode or policy. Authentication and authorization remain independently deployable
+at the PEP/PDP edge.
+
+`ResourcePlanePorts` injects the four neutral ports atomically when the Host is
+constructed. A shared deployment therefore never opens an unused local
+File/Memory/Skill/lifecycle store before replacing it. A shared Runtime also
+requires the Resource Catalog/Agent-binding store (`AWAKEN_ADMIN_DB`) to be
+shared; startup fails closed when shared execution is combined with a local
+resource configuration catalog.
 
 ### D7: Memory has one data truth
 
@@ -313,8 +329,8 @@ The first coherent slice is:
   between the Managed adapter and Runtime Host.
 - Resource services stay independent of IAM language and product hierarchy.
 - Deletion and physical reclamation become safe, auditable, and recoverable.
-- A shared Postgres runtime cannot silently use a process-local/SQLite resource
-  fence; startup requires a shared resource-lifecycle backend.
+- A shared Postgres runtime cannot silently use node-local resource content or a
+  local fence; startup requires the complete shared resource backend family.
 
 ### Negative and accepted
 

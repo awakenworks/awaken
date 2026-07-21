@@ -4,6 +4,32 @@
 use super::*;
 use awaken_runtime_contract::delegation::{RemoteAgent, RunDelegationService};
 
+/// Backend-neutral resource ports selected atomically by an outer composition
+/// root. This is a wiring value, not a resource aggregate or authorization
+/// context; it contains no principal, credential, role, policy, or PDP result.
+pub struct ResourcePlanePorts {
+    file_store: Arc<dyn awaken_file_store::FileStore>,
+    memory_repository: Arc<dyn awaken_memory_store::MemoryRepository>,
+    skill_store: Arc<dyn awaken_skill_store::SkillStore>,
+    lifecycle: Arc<dyn awaken_protocol_managed::resource_plane::ResourceLifecycleRepository>,
+}
+
+impl ResourcePlanePorts {
+    pub fn new(
+        file_store: Arc<dyn awaken_file_store::FileStore>,
+        memory_repository: Arc<dyn awaken_memory_store::MemoryRepository>,
+        skill_store: Arc<dyn awaken_skill_store::SkillStore>,
+        lifecycle: Arc<dyn awaken_protocol_managed::resource_plane::ResourceLifecycleRepository>,
+    ) -> Self {
+        Self {
+            file_store,
+            memory_repository,
+            skill_store,
+            lifecycle,
+        }
+    }
+}
+
 impl SharedHost {
     /// Resolve or provision the stable local workspace coordinate owned by this
     /// installation. Composition roots call this once and pass the value to every
@@ -26,6 +52,25 @@ impl SharedHost {
     /// A host over `llm`. Configure it with the chainable `with_*` builders
     /// (client tools, delegates, a judge grader, a durable store).
     pub fn new(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> Self {
+        Self::build(llm, model_ref.into(), None)
+    }
+
+    /// Construct with an already selected resource persistence family. Unlike
+    /// post-construction overrides, this never opens node-local resource stores
+    /// before installing shared adapters, so there is no unused second truth.
+    pub fn new_with_resource_plane(
+        llm: Arc<dyn LlmExecutor>,
+        model_ref: impl Into<String>,
+        resources: ResourcePlanePorts,
+    ) -> Self {
+        Self::build(llm, model_ref.into(), Some(resources))
+    }
+
+    fn build(
+        llm: Arc<dyn LlmExecutor>,
+        model_ref: String,
+        resources: Option<ResourcePlanePorts>,
+    ) -> Self {
         // Composition root: the deployment axes are parsed once from the environment
         // into one typed config. `AWAKEN_STORAGE_DIR` set → durable SQLite commit
         // store + a durable memory blob store under it (both survive a restart);
@@ -41,8 +86,12 @@ impl SharedHost {
         // rule, owned by `MemoryStores::open` (durable under the dir; ephemeral
         // per-process otherwise). Resource identity/configuration is injected into
         // the server composition root through `ResourceCatalog`.
-        let memory_stores = crate::memory_stores::MemoryStores::open(store_dir.as_deref());
-        let model_ref = model_ref.into();
+        let memory_stores = resources.as_ref().map_or_else(
+            || crate::memory_stores::MemoryStores::open(store_dir.as_deref()),
+            |ports| {
+                crate::memory_stores::MemoryStores::with_repository(ports.memory_repository.clone())
+            },
+        );
         let memory_catalog = Arc::new(AgentCatalog::new().with_agent(default_memory_agent(
             &model_ref,
             DEFAULT_MEMORY_INSTRUCTIONS,
@@ -72,6 +121,29 @@ impl SharedHost {
             llm.clone(),
             &model_ref,
         )) as Arc<dyn awaken_ext_memory::RecallSelector>);
+        let mut skills = crate::skill_catalog::SkillCatalog::new(local_workspace.clone());
+        if let Some(ports) = &resources {
+            skills.set_store(ports.skill_store.clone());
+        }
+        let file_store = resources.as_ref().map_or_else(
+            || match store_dir.as_ref() {
+                Some(dir) => Arc::new(
+                    awaken_file_store::sqlite::SqliteFileStore::open(
+                        &dir.join("files.db").to_string_lossy(),
+                    )
+                    .expect("open durable file store"),
+                ) as Arc<dyn awaken_file_store::FileStore>,
+                None => Arc::new(awaken_file_store::InMemoryFileStore::new()),
+            },
+            |ports| ports.file_store.clone(),
+        );
+        let resource_lifecycle = resources.as_ref().map_or_else(
+            || {
+                Arc::new(crate::resource_lifecycle::EphemeralResourceLifecycle::default())
+                    as Arc<dyn awaken_protocol_managed::resource_plane::ResourceLifecycleRepository>
+            },
+            |ports| ports.lifecycle.clone(),
+        );
         Self {
             llm,
             model_ref,
@@ -82,7 +154,7 @@ impl SharedHost {
             client_tools: HashSet::new(),
             local_workspace: local_workspace.clone(),
             thread_workspaces: std::sync::Mutex::new(HashMap::new()),
-            skills: crate::skill_catalog::SkillCatalog::new(local_workspace),
+            skills,
             delegates: crate::delegate::Delegates::new(),
             // Subagents share the parent's sandbox by default (`默认共用`).
             agent_run_reuse_sandbox: true,
@@ -111,18 +183,8 @@ impl SharedHost {
             thread_resources: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
             thread_egress: crate::sandbox_source::ThreadEgress::new(),
             thread_sandbox: crate::sandbox_source::ThreadSandbox::new(),
-            file_store: match store_dir.as_ref() {
-                Some(dir) => Arc::new(
-                    awaken_file_store::sqlite::SqliteFileStore::open(
-                        &dir.join("files.db").to_string_lossy(),
-                    )
-                    .expect("open durable file store"),
-                ),
-                None => Arc::new(awaken_file_store::InMemoryFileStore::new()),
-            },
-            resource_lifecycle: Arc::new(
-                crate::resource_lifecycle::EphemeralResourceLifecycle::default(),
-            ),
+            file_store,
+            resource_lifecycle,
             memory_stores,
             memory_mounter: std::sync::RwLock::new(None),
             gate_override: None,

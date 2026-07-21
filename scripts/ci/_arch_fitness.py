@@ -117,6 +117,43 @@ def _selftest_protocol_leaves() -> None:
     assert len(v) == 2 and "awaken-protocol-a2a" in v[0] and "awaken-protocol-managed" in v[1], v  # T6 sorted
 
 
+# Resource persistence owns intrinsic identity, Workspace ownership and consistency.
+# Authentication and authorization are composed at the edge, so no resource adapter or
+# reclaimer may acquire a dependency on IAM, a PDP/PEP implementation, or credentials.
+RESOURCE_PLANE_CRATES: frozenset[str] = frozenset(
+    {
+        "awaken-file-store",
+        "awaken-memory-store",
+        "awaken-skill-store",
+        "awaken-resource-store",
+        "awaken-resource-reclaimer",
+    }
+)
+RESOURCE_AUTHZ_PREFIXES: tuple[str, ...] = (
+    "awaken-iam",
+    "awaken-authz",
+    "awaken-credential",
+)
+
+
+def resource_authz_coupling_violations(name: str, normal_deps: frozenset[str]) -> list[str]:
+    """Resource-plane crates must remain authorization- and credential-implementation free."""
+    if name not in RESOURCE_PLANE_CRATES:
+        return []
+    return [
+        f"{name} depends on `{dep}` — resource persistence/reclamation accepts trusted scope "
+        f"and typed operations only; authenticate and authorize at the composition edge"
+        for dep in sorted(normal_deps)
+        if dep.startswith(RESOURCE_AUTHZ_PREFIXES)
+    ]
+
+
+def _selftest_resource_authz_separation() -> None:
+    assert resource_authz_coupling_violations("awaken-file-store", frozenset({"awaken-iam-core"}))
+    assert resource_authz_coupling_violations("awaken-memory-store", frozenset({"serde"})) == []
+    assert resource_authz_coupling_violations("awaken-cli", frozenset({"awaken-iam-client"})) == []
+
+
 # ── Phase 3: the runtime-host god-hub dependency ratchet ─────────────────────────
 # `awaken-runtime-host` is the historical god-hub (~6 bounded contexts, 36 first-party
 # deps). Its full crate-split is a multi-session, port-first effort — each extraction must
@@ -209,6 +246,7 @@ def selftest() -> None:
     CI invocation)."""
     _selftest_contract_purity()
     _selftest_protocol_leaves()
+    _selftest_resource_authz_separation()
     _selftest_god_hub_ratchet()
     _property_check()
 
@@ -220,6 +258,7 @@ def check_all(specs: list[CrateSpec]) -> list[str]:
         if spec.bucket == "contract":
             errors.extend(contract_purity_violations(spec.name, spec.normal_deps))
         errors.extend(protocol_leaf_violations(spec.name, spec.normal_deps))
+        errors.extend(resource_authz_coupling_violations(spec.name, spec.normal_deps))
     hub = next((s for s in specs if s.name == GOD_HUB_CRATE), None)
     if hub is not None:
         first_party = frozenset(d for d in hub.normal_deps if d.startswith("awaken-"))

@@ -94,6 +94,7 @@ use crate::judge::HostAgentTool;
 use crate::provisioning::StagedResources;
 
 mod build;
+pub use build::ResourcePlanePorts;
 mod completion;
 mod run;
 mod session;

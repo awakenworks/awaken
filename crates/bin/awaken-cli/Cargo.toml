@@ -28,6 +28,8 @@ awaken-worker = { workspace = true }
 awaken-runtime-host = { workspace = true }
 awaken-resource-store = { workspace = true, features = ["postgres"] }
 awaken-resource-reclaimer = { workspace = true }
+awaken-file-store = { workspace = true, features = ["sqlite", "postgres"] }
+awaken-memory-store = { workspace = true, features = ["sqlite", "postgres"] }
 # The ACP executor (AcpLaunch/AcpRunExecutor) for `acp:*` threads — wired by config
 # (AWAKEN_ACP_ARGV) into the worker's configured sandbox tier.
 awaken-run-executor-acp = { workspace = true }
@@ -46,7 +48,7 @@ awaken-config-store = { workspace = true }
 awaken-config-resolver = { workspace = true }
 # The durable skill catalog: one store shared by the host (delivered skills) and the
 # capability inventory (skill enumeration for the admin assistant).
-awaken-skill-store = { workspace = true }
+awaken-skill-store = { workspace = true, features = ["postgres"] }
 # The management assistant executables the host carries (ADR-0052).
 awaken-admin-assistant = { workspace = true }
 # The opaque scope id the warm-load + reserved-scope seeding are keyed by.

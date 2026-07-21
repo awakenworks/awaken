@@ -33,53 +33,62 @@ pub enum Role {
     Hand,
 }
 
-/// Resource-plane lifecycle state backend. This selection is intentionally
-/// separate from IAM and from the runtime commit/dispatch stores: it persists
-/// intrinsic ownership, references, purge intents, and reclamation fences only.
+/// One backend family for the complete resource plane: File bytes, Memory
+/// content/history, Skill bundles, and lifecycle/reference/fence state. It is
+/// intentionally independent of IAM and runtime commit/dispatch storage.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ResourceLifecycleStoreBackend {
-    Sqlite(std::path::PathBuf),
+pub enum ResourcePlaneStoreBackend {
+    Embedded(std::path::PathBuf),
     Postgres(String),
 }
 
-impl ResourceLifecycleStoreBackend {
-    /// Resolve the one resource-lifecycle backend. An explicit
-    /// `AWAKEN_RESOURCE_LIFECYCLE_DB` Postgres URL selects the shared multi-node
-    /// adapter; another value is a SQLite path; absence preserves embedded mode.
-    pub fn from_env(data_dir: &std::path::Path) -> Self {
-        let explicit = std::env::var("AWAKEN_RESOURCE_LIFECYCLE_DB")
+impl ResourcePlaneStoreBackend {
+    /// Resolve the resource plane once. `AWAKEN_RESOURCE_DATABASE_URL` selects
+    /// the shared Postgres adapter family; absence uses embedded stores under
+    /// `data_dir`. Runtime-Postgres fallback is transitional compatibility only.
+    pub fn from_env(data_dir: &std::path::Path) -> Result<Self, String> {
+        let explicit = std::env::var("AWAKEN_RESOURCE_DATABASE_URL")
             .ok()
             .is_some_and(|value| !value.is_empty());
         let resolved = Self::resolve(data_dir, |key| {
             std::env::var(key).ok().filter(|value| !value.is_empty())
-        });
+        })?;
         if !explicit && matches!(resolved, Self::Postgres(_)) {
             eprintln!(
-                "shared resource lifecycle database inferred from the runtime Postgres DSN; \
-                 set AWAKEN_RESOURCE_LIFECYCLE_DB explicitly"
+                "shared resource database inferred from the runtime Postgres DSN; \
+                 set AWAKEN_RESOURCE_DATABASE_URL explicitly"
             );
         }
-        resolved
+        Ok(resolved)
     }
 
-    pub fn resolve(data_dir: &std::path::Path, lookup: impl Fn(&str) -> Option<String>) -> Self {
-        let selected = lookup("AWAKEN_RESOURCE_LIFECYCLE_DB").or_else(|| {
-            lookup("AWAKEN_RUNTIME_DISPATCH_DATABASE_URL").or_else(|| {
-                let shared_runtime = lookup("AWAKEN_STORE").as_deref() == Some("postgres")
-                    || lookup("AWAKEN_DISPATCH_BACKEND").as_deref() == Some("postgres");
-                shared_runtime
-                    .then(|| lookup("AWAKEN_DATABASE_URL"))
-                    .flatten()
-            })
-        });
+    pub fn resolve(
+        data_dir: &std::path::Path,
+        lookup: impl Fn(&str) -> Option<String>,
+    ) -> Result<Self, String> {
+        let selected = lookup("AWAKEN_RESOURCE_DATABASE_URL")
+            .or_else(|| lookup("AWAKEN_RESOURCE_LIFECYCLE_DB"))
+            .or_else(|| {
+                lookup("AWAKEN_RUNTIME_DISPATCH_DATABASE_URL").or_else(|| {
+                    let shared_runtime = lookup("AWAKEN_STORE").as_deref() == Some("postgres")
+                        || lookup("AWAKEN_DISPATCH_BACKEND").as_deref() == Some("postgres");
+                    shared_runtime
+                        .then(|| lookup("AWAKEN_DATABASE_URL"))
+                        .flatten()
+                })
+            });
         match selected {
             Some(value)
                 if value.starts_with("postgres://") || value.starts_with("postgresql://") =>
             {
-                Self::Postgres(value)
+                Ok(Self::Postgres(value))
             }
-            Some(value) => Self::Sqlite(value.into()),
-            None => Self::Sqlite(data_dir.join("resource-lifecycle.db")),
+            Some(_) => Err(
+                "AWAKEN_RESOURCE_DATABASE_URL must be a postgres:// URL; embedded mode uses \
+                 AWAKEN_MGMT_DIR and does not accept a second resource path"
+                    .into(),
+            ),
+            None => Ok(Self::Embedded(data_dir.to_path_buf())),
         }
     }
 
@@ -90,11 +99,20 @@ impl ResourceLifecycleStoreBackend {
 
     /// A shared runtime must not advertise cross-process safety while resource
     /// reference/fence state is local to one SQLite file.
-    pub fn validate_runtime_shape(&self, shared_runtime: bool) -> Result<(), &'static str> {
+    pub fn validate_runtime_shape(
+        &self,
+        shared_runtime: bool,
+        shared_resource_catalog: bool,
+    ) -> Result<(), &'static str> {
         if shared_runtime && !self.is_shared() {
             Err(
-                "a shared Postgres runtime requires a shared resource lifecycle store; \
-                 set AWAKEN_RESOURCE_LIFECYCLE_DB to a postgres:// URL",
+                "a shared Postgres runtime requires the shared resource backend family; \
+                 set AWAKEN_RESOURCE_DATABASE_URL to a postgres:// URL",
+            )
+        } else if shared_runtime && !shared_resource_catalog {
+            Err(
+                "a shared Postgres runtime requires a shared resource configuration catalog; \
+                 set AWAKEN_ADMIN_DB to a postgres:// URL",
             )
         } else {
             Ok(())
@@ -570,38 +588,41 @@ mod tests {
     }
 
     #[test]
-    fn resource_lifecycle_backend_is_one_explicit_resource_plane_axis() {
+    fn resource_backend_is_one_explicit_resource_plane_axis() {
         let directory = std::path::Path::new("/var/lib/awaken");
         assert_eq!(
-            ResourceLifecycleStoreBackend::resolve(directory, |_| None),
-            ResourceLifecycleStoreBackend::Sqlite(directory.join("resource-lifecycle.db"))
+            ResourcePlaneStoreBackend::resolve(directory, |_| None).unwrap(),
+            ResourcePlaneStoreBackend::Embedded(directory.into())
         );
         assert_eq!(
-            ResourceLifecycleStoreBackend::resolve(directory, |key| {
-                (key == "AWAKEN_RESOURCE_LIFECYCLE_DB").then(|| "postgres://db/resources".into())
-            }),
-            ResourceLifecycleStoreBackend::Postgres("postgres://db/resources".into())
+            ResourcePlaneStoreBackend::resolve(directory, |key| {
+                (key == "AWAKEN_RESOURCE_DATABASE_URL").then(|| "postgres://db/resources".into())
+            })
+            .unwrap(),
+            ResourcePlaneStoreBackend::Postgres("postgres://db/resources".into())
         );
-        assert_eq!(
-            ResourceLifecycleStoreBackend::resolve(directory, |key| {
-                (key == "AWAKEN_RESOURCE_LIFECYCLE_DB").then(|| "/mnt/resources.sqlite".into())
-            }),
-            ResourceLifecycleStoreBackend::Sqlite("/mnt/resources.sqlite".into())
+        assert!(
+            ResourcePlaneStoreBackend::resolve(directory, |key| {
+                (key == "AWAKEN_RESOURCE_DATABASE_URL").then(|| "/mnt/resources.sqlite".into())
+            })
+            .is_err()
         );
-        let legacy = ResourceLifecycleStoreBackend::resolve(directory, |key| match key {
+        let legacy = ResourcePlaneStoreBackend::resolve(directory, |key| match key {
             "AWAKEN_DISPATCH_BACKEND" => Some("postgres".into()),
             "AWAKEN_DATABASE_URL" => Some("postgres://db/shared".into()),
             _ => None,
-        });
+        })
+        .unwrap();
         assert_eq!(
             legacy,
-            ResourceLifecycleStoreBackend::Postgres("postgres://db/shared".into())
+            ResourcePlaneStoreBackend::Postgres("postgres://db/shared".into())
         );
         assert!(legacy.is_shared());
-        assert!(legacy.validate_runtime_shape(true).is_ok());
+        assert!(legacy.validate_runtime_shape(true, true).is_ok());
+        assert!(legacy.validate_runtime_shape(true, false).is_err());
         assert!(
-            ResourceLifecycleStoreBackend::Sqlite("/tmp/resources.db".into())
-                .validate_runtime_shape(true)
+            ResourcePlaneStoreBackend::Embedded(directory.into())
+                .validate_runtime_shape(true, true)
                 .is_err()
         );
     }

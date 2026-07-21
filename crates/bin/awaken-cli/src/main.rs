@@ -128,14 +128,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok()
         .and_then(|value| awaken_cli::ManagementIdentityMode::parse(&value))
         .unwrap_or(awaken_cli::ManagementIdentityMode::NoLogin);
-    let durable = std::env::var("AWAKEN_MGMT_DIR").is_ok();
+    let durable = deployment.data_dir.is_some();
     eprintln!(
         "awaken serving on http://{addr} (management plane; models resolved from the \
          database-configured catalog + vault; storage: {}; auth: {})",
         if durable {
-            "durable (AWAKEN_MGMT_DIR)"
+            "durable (AWAKEN_DEPLOYMENT_DATA_DIR)"
         } else {
-            "in-memory (set AWAKEN_MGMT_DIR to persist)"
+            "in-memory (set AWAKEN_DEPLOYMENT_DATA_DIR to persist)"
         },
         match identity {
             awaken_cli::ManagementIdentityMode::NoLogin => "no login",

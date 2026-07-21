@@ -39,6 +39,7 @@ const scenarios: Scenario[] = [
   { id: 'sandbox', file: 'e2e/sandbox_provisioning_e2e.mjs' },
   { id: 'mcp_stdio', file: 'e2e/mcp_server_core_e2e.ts' },
   { id: 'mcp_http', file: 'e2e/mcp_streamable_http_e2e.ts' },
+  { id: 'resource_plane_postgres', file: 'e2e/resource_plane_postgres_e2e.ts', postgres: true },
 ];
 
 const obligations: Obligation[] = [
@@ -98,6 +99,10 @@ const obligations: Obligation[] = [
   { id: 'D6-12', stage: '6 sandbox/recovery/metrics', behavior: 'in-flight metric exports over OTLP', scenario: 'dispatch_metrics' },
   { id: 'D6-13', stage: '6 sandbox/recovery/metrics', behavior: 'expired-lease recovery metric exports over OTLP', scenario: 'child_recovery' },
   { id: 'D6-14', stage: '6 sandbox/recovery/metrics', behavior: 'fenced-commit counter exports from a stale in-process worker attempt' },
+
+  { id: 'D7-01', stage: '7 resource persistence', behavior: 'File, Memory, Skill, and lifecycle adapters select one shared backend family', scenario: 'resource_plane_postgres' },
+  { id: 'D7-02', stage: '7 resource persistence', behavior: 'resource data survives process and local-directory replacement', scenario: 'resource_plane_postgres' },
+  { id: 'D7-03', stage: '7 resource persistence', behavior: 'cross-Workspace access fails closed without IAM data in resource storage', scenario: 'resource_plane_postgres' },
 
   { id: 'D8-01', stage: '8 neutral MCP server core', behavior: 'newest and older protocol versions negotiate', scenario: 'mcp_stdio' },
   { id: 'D8-02', stage: '8 neutral MCP server core', behavior: 'unsupported version returns invalid params', scenario: 'mcp_stdio' },
