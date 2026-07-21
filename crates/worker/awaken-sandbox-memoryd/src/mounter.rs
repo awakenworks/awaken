@@ -27,11 +27,13 @@ pub struct MemoryStoreMounter {
     /// The durable store wrapped so every write publishes an invalidation.
     fs: Arc<dyn MemoryRepository>,
     /// The shared invalidation bus every FUSE mount subscribes to.
+    #[cfg(all(feature = "fuse", target_os = "linux"))]
     bus: Arc<LocalInvalidator>,
     /// When false, never mount FUSE — always copy. Set for isolation tiers that
     /// cannot splice a host FUSE mount into their namespace yet (bwrap/container;
     /// live-FUSE-in-namespace is ADR-0053 item 2, deferred). The Workdir tier runs in
     /// the host mount namespace, so it FUSE-mounts directly at the sandbox path.
+    #[cfg(all(feature = "fuse", target_os = "linux"))]
     prefer_fuse: bool,
 }
 
@@ -52,13 +54,17 @@ impl MemoryStoreMounter {
     }
 
     fn with_fuse(durable: Arc<dyn MemoryRepository>, prefer_fuse: bool) -> Self {
+        #[cfg(not(all(feature = "fuse", target_os = "linux")))]
+        let _ = prefer_fuse;
         let bus = Arc::new(LocalInvalidator::default());
         let invalidator: Arc<dyn Invalidator> = bus.clone();
         let fs: Arc<dyn MemoryRepository> =
             Arc::new(InvalidatingMemoryRepository::new(durable, invalidator));
         Self {
             fs,
+            #[cfg(all(feature = "fuse", target_os = "linux"))]
             bus,
+            #[cfg(all(feature = "fuse", target_os = "linux"))]
             prefer_fuse,
         }
     }
@@ -88,12 +94,7 @@ fn is_mountpoint(path: &Path) -> bool {
         })
 }
 
-#[cfg(all(feature = "fuse", not(target_os = "linux")))]
-fn is_mountpoint(_path: &Path) -> bool {
-    false
-}
-
-#[cfg(feature = "fuse")]
+#[cfg(all(feature = "fuse", target_os = "linux"))]
 fn detach_fuse(path: &Path) {
     'detach: for args in [["-u", ""], ["-u", "-z"]] {
         for command in ["fusermount3", "fusermount"] {
@@ -122,7 +123,7 @@ fn detach_fuse(path: &Path) {
 fn clear_projection(host_path: &Path) -> Result<(), SandboxError> {
     // A disconnected FUSE mount returns ENOTCONN even for metadata, so detect and
     // detach it before the ordinary no-path fast path below.
-    #[cfg(feature = "fuse")]
+    #[cfg(all(feature = "fuse", target_os = "linux"))]
     if is_mountpoint(host_path) {
         detach_fuse(host_path);
     }
@@ -136,7 +137,7 @@ fn clear_projection(host_path: &Path) -> Result<(), SandboxError> {
         return Ok(());
     }
 
-    #[cfg(feature = "fuse")]
+    #[cfg(all(feature = "fuse", target_os = "linux"))]
     detach_fuse(host_path);
     // A lazy detach is asynchronous in the kernel. Bound the wait so a recovered
     // Session does not race `spawn_mount2` against its dead predecessor.
@@ -178,7 +179,7 @@ impl MemoryMounter for MemoryStoreMounter {
             ))
         })?;
 
-        #[cfg(feature = "fuse")]
+        #[cfg(all(feature = "fuse", target_os = "linux"))]
         if self.prefer_fuse && copy::fuse_available() {
             let handle = crate::fuse::spawn_mount_with_invalidations(
                 self.fs.clone(),
@@ -265,12 +266,12 @@ impl MemoryMounter for MemoryStoreMounter {
 }
 
 /// A live FUSE mount; teardown unmounts (draining open fds).
-#[cfg(feature = "fuse")]
+#[cfg(all(feature = "fuse", target_os = "linux"))]
 struct FuseMount {
     handle: crate::fuse::MemoryMountHandle,
 }
 
-#[cfg(feature = "fuse")]
+#[cfg(all(feature = "fuse", target_os = "linux"))]
 #[async_trait::async_trait]
 impl MemoryMount for FuseMount {
     fn realization(&self) -> Realization {
@@ -367,6 +368,39 @@ mod tests {
                 .as_deref(),
             Some("v2"),
             "harvest wrote the edit back to the durable store"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn default_mounter_automatically_uses_copy_and_harvests_on_macos() {
+        let durable = Arc::new(VolatileMemoryRepository::new());
+        durable.create("s", "/note.md", "before").await.unwrap();
+        let mounter = MemoryStoreMounter::new(durable.clone());
+        let dir = temp("macos-auto-copy");
+
+        let guard = mounter
+            .mount("s", &dir, MountAccess::ReadWrite)
+            .await
+            .unwrap();
+        assert_eq!(guard.realization(), Realization::Copy);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("note.md")).unwrap(),
+            "before"
+        );
+        std::fs::write(dir.join("note.md"), "after").unwrap();
+        guard.teardown().await;
+
+        assert_eq!(
+            durable
+                .get_by_path("s", "/note.md")
+                .await
+                .unwrap()
+                .unwrap()
+                .content
+                .as_deref(),
+            Some("after")
         );
         std::fs::remove_dir_all(&dir).ok();
     }
