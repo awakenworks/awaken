@@ -111,6 +111,7 @@ k3d cluster delete "$CLUSTER" >/dev/null 2>&1 || true
 # eviction threshold, so use a conservative 1% floor on both node roles.
 EVICT="eviction-hard=imagefs.available<1%,nodefs.available<1%"
 k3d cluster create "$CLUSTER" --agents 1 --wait --timeout 180s \
+  --runtime-ulimit "nofile=65536:65536" \
   --k3s-arg "--kubelet-arg=$EVICT@server:*" \
   --k3s-arg "--kubelet-arg=$EVICT@agent:*" >/dev/null
 
