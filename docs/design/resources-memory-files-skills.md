@@ -654,6 +654,15 @@ internal config version remains an awaken governance detail.
   retained as aliases: the port is `MemoryRepository`, with
   `VolatileMemoryRepository`, `FilesystemMemoryRepository`,
   `SqliteMemoryRepository`, and `PostgresMemoryRepository` adapters.
+- durable `MemoryExtractionIntent` application work replaces fire-and-forget
+  extraction: terminal outbox recovery, process-unique lease fencing/heartbeat,
+  staged mutation receipts, and idempotent CAS apply survive a real SIGKILL;
+- publication-pinned inference and credential-injection vocabulary is shared by
+  configuration, Session application, and Runtime through the foundation
+  `awaken-inference-contract`; Runtime materialization injects only that frozen
+  reference and never re-resolves a route or reads a global extractor credential;
+- stale FUSE Memory realizations are detected and detached at remount, so a dead
+  process cannot prevent the same durable Session binding from being recovered.
 
 ### Completed deletion
 

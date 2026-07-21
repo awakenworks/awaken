@@ -217,6 +217,16 @@ MemoryStore binding has no recall or extraction. The removed
 `with_memory(mem_dir)`/`memory_scope_root` path is not a fallback in local mode;
 local mode provisions and binds a normal store under its hidden default Workspace.
 
+Reliable extraction is Session application work, not part of the Memory resource
+aggregate and not an authorization decision. A durable `MemoryExtractionIntent`
+freezes the terminal commit, Workspace/store/config binding, transcript, and the
+secret-free inference access pin. The Session application repository owns its
+lease-fenced `Pending -> Claimed -> Extracted -> Stored -> Completed` convergence;
+`MemoryRepository` owns only CAS/idempotent mutation. Restart reconstructs a
+missing terminal outbox intent, reclaims an expired process lease, and remounts a
+dead FUSE realization before resuming. The resource stores never receive a
+principal, API key, role, policy document, or PDP result.
+
 ### D8: Anthropic compatibility is an adapter concern
 
 The Managed adapter continues to accept and project Anthropic File, MemoryStore,
