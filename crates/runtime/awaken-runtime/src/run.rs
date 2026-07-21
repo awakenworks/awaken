@@ -8,7 +8,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use awaken_agent_contract::agent::awaiting::ResumeTicket;
 use awaken_agent_contract::agent::content::ContentBlock;
-use awaken_agent_contract::agent::delegation::DelegationOrigin;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
@@ -62,9 +61,9 @@ impl Runtime {
             .await
     }
 
-    /// Drive a Run to completion under a caller-supplied durable identity.
-    /// Delegation uses this entry so the child identity committed by the parent
-    /// is the identity executed by the child Runtime, including after a retry.
+    /// Drive an embedded Run to completion under a caller-supplied durable
+    /// identity. Durable dispatch normally carries an explicit [`RunActivation`]
+    /// through `RunAttemptExecutor`; this convenience remains for embedded callers.
     pub async fn run_to_completion_with_id<F>(
         &self,
         snapshot: &ExecutableAgentSnapshot,
@@ -77,60 +76,13 @@ impl Runtime {
     where
         F: FnMut(&ResumeTicket) -> ResumeResult,
     {
-        self.run_with_identity(snapshot, run_id, thread, input, context, None, &mut decide)
-            .await
-    }
-
-    /// Drive a delegated child through the ordinary lifecycle under its stable
-    /// Run id while retaining the tool-call origin in durable activation data.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn run_delegated_to_completion<F>(
-        &self,
-        snapshot: &ExecutableAgentSnapshot,
-        run_id: RunId,
-        thread: impl Into<String>,
-        input: impl Into<RunInput>,
-        context: RuntimeRunContext,
-        delegation_origin: DelegationOrigin,
-        mut decide: F,
-    ) -> Result<RunState, Error>
-    where
-        F: FnMut(&ResumeTicket) -> ResumeResult,
-    {
-        self.run_with_identity(
-            snapshot,
-            run_id,
-            thread,
-            input,
-            context,
-            Some(delegation_origin),
-            &mut decide,
-        )
-        .await
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn run_with_identity<F>(
-        &self,
-        snapshot: &ExecutableAgentSnapshot,
-        run_id: RunId,
-        thread: impl Into<String>,
-        input: impl Into<RunInput>,
-        context: RuntimeRunContext,
-        delegation_origin: Option<DelegationOrigin>,
-        decide: &mut F,
-    ) -> Result<RunState, Error>
-    where
-        F: FnMut(&ResumeTicket) -> ResumeResult,
-    {
-        let mut activation = RunActivation::new(
+        let activation = RunActivation::new(
             run_id.clone(),
             ThreadId(thread.into()),
             snapshot.clone(),
             input.into().0,
         );
-        activation.delegation_origin = delegation_origin;
-        self.drive_to_completion(run_id, activation, context, decide)
+        self.drive_to_completion(run_id, activation, context, &mut decide)
             .await
     }
 

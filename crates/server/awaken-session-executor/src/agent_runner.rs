@@ -53,13 +53,6 @@ pub(crate) enum AgentRunSandbox<'a> {
     Fresh(&'a LocalProvider),
 }
 
-/// Identity used by an auxiliary Agent Run. Delegated children no longer use a
-/// host-specific identity wrapper: they are ordinary Runs carrying a typed
-/// `DelegationOrigin` in their activation.
-pub(crate) struct AgentRunIdentity<'a> {
-    thread: &'a str,
-}
-
 /// Runtime capabilities of an Agent regardless of who initiated its Run.
 /// A child Run receives the target Agent's own delegation interface and roster;
 /// initiation never copies capabilities from the parent Agent.
@@ -141,12 +134,6 @@ impl AgentRunError {
             self,
             Self::Runtime(awaken_runtime_contract::execution::Error::Commit(_))
         )
-    }
-}
-
-impl<'a> AgentRunIdentity<'a> {
-    pub(crate) fn transient(thread: &'a str) -> Self {
-        Self { thread }
     }
 }
 
@@ -424,8 +411,10 @@ pub(crate) async fn run_configured_agent_until_boundary(
 /// under [`Isolated`](UsageRollup::Isolated) the return is empty, so an auxiliary Agent's tokens are never
 /// counted against the session. Also empty when the model reported no usage.
 ///
-/// Errors preserve their category so delegation can recover a child commit
-/// interruption without retrying terminal configuration failures.
+/// This helper is intentionally auxiliary-only. Delegated children use
+/// [`run_configured_agent_until_boundary`] and the ordinary durable dispatch path;
+/// retaining optional child identity/origin arguments here would recreate the
+/// retired second child-execution path.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_configured_agent(
     catalog: &AgentCatalog,
@@ -438,8 +427,6 @@ pub(crate) async fn run_configured_agent(
     cancellation: Option<CancellationToken>,
     context: Option<RuntimeRunContext>,
     run_delegation: Option<Arc<dyn RunDelegationService>>,
-    run_id: Option<RunId>,
-    delegation_origin: Option<DelegationOrigin>,
 ) -> Result<(String, ThreadUsage), AgentRunError> {
     let config = catalog
         .resolve(agent_id)
@@ -491,30 +478,10 @@ pub(crate) async fn run_configured_agent(
     }
     let reader = ctx.reader.clone().expect("checked above");
     let thread_id = ThreadId(thread.to_string());
-    match run_id {
-        Some(run_id) => match delegation_origin {
-            Some(origin) => {
-                runtime
-                    .run_delegated_to_completion(&config, run_id, thread, seed, ctx, origin, |_| {
-                        ResumeResult::allow()
-                    })
-                    .await
-            }
-            None => {
-                runtime
-                    .run_to_completion_with_id(&config, run_id, thread, seed, ctx, |_| {
-                        ResumeResult::allow()
-                    })
-                    .await
-            }
-        },
-        None => {
-            runtime
-                .run_to_completion(&config, thread, seed, ctx, |_| ResumeResult::allow())
-                .await
-        }
-    }
-    .map_err(AgentRunError::Runtime)?;
+    runtime
+        .run_to_completion(&config, thread, seed, ctx, |_| ResumeResult::allow())
+        .await
+        .map_err(AgentRunError::Runtime)?;
     let text = latest_assistant_text(&reader.committed_messages(&thread_id));
     let usage = usage_from_committed(reader.as_ref(), &thread_id);
     Ok((text, usage))
@@ -537,7 +504,7 @@ pub(crate) async fn run_agent(
     llm: Arc<dyn LlmExecutor>,
     execution: AgentExecution<'_>,
     sandbox: AgentRunSandbox<'_>,
-    identity: AgentRunIdentity<'_>,
+    thread: &str,
     input: impl Into<RunInput>,
     cancellation: Option<CancellationToken>,
 ) -> Result<(String, ThreadUsage), AgentRunError> {
@@ -558,14 +525,12 @@ pub(crate) async fn run_agent(
         sandbox,
         llm,
         execution.agent_id,
-        identity.thread,
+        thread,
         input,
         Vec::new(),
         cancellation,
         execution.context,
         execution.run_delegation,
-        None,
-        None,
     )
     .await
 }
@@ -816,8 +781,6 @@ mod tests {
             None,
             None,
             None,
-            None,
-            None,
         )
         .await
         .unwrap();
@@ -831,8 +794,6 @@ mod tests {
             "t-judge",
             vec![user("go")],
             Vec::new(),
-            None,
-            None,
             None,
             None,
             None,
@@ -886,8 +847,6 @@ mod tests {
             None,
             None,
             None,
-            None,
-            None,
         )
         .await
         .unwrap();
@@ -924,8 +883,6 @@ mod tests {
             None,
             None,
             None,
-            None,
-            None,
         )
         .await
         .unwrap_err();
@@ -958,8 +915,6 @@ mod tests {
             None,
             None,
             None,
-            None,
-            None,
         )
         .await
         .unwrap();
@@ -977,8 +932,6 @@ mod tests {
             "sub-b",
             vec![user("go")],
             Vec::new(),
-            None,
-            None,
             None,
             None,
             None,
