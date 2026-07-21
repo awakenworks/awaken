@@ -324,8 +324,17 @@ pub(crate) fn plan_commit(
 /// candidate id is never materialized as a side effect (a prematurely built
 /// session context would lack the session's agent config and MCP tools).
 pub(crate) fn durable_thread_exists(store_dir: Option<&std::path::Path>, thread: &str) -> bool {
-    use crate::deployment_config::{DeploymentConfig, StoreKind};
+    use crate::deployment_config::DeploymentConfig;
     let store = DeploymentConfig::from_env().store;
+    durable_thread_exists_with_store(store, store_dir, thread)
+}
+
+fn durable_thread_exists_with_store(
+    store: crate::deployment_config::StoreKind,
+    store_dir: Option<&std::path::Path>,
+    thread: &str,
+) -> bool {
+    use crate::deployment_config::StoreKind;
     // Shared Postgres backend: the coordinator is keyed by thread, so a committed
     // run for the thread means it durably exists (no per-thread file to stat).
     if store == StoreKind::Postgres {
@@ -352,15 +361,14 @@ mod tests {
 
     #[test]
     fn durable_thread_exists_routes_to_postgres_when_selected() {
-        // AWAKEN_STORE=postgres routes the probe to the shared coordinator. With no
-        // coordinator initialised here it reads false, but this exercises the backend
-        // dispatch (the postgres branch of durable_thread_exists). Set-and-restore is
-        // safe: only this crate's durable_thread_exists reads AWAKEN_STORE in a unit
-        // test, and it is called nowhere else here.
-        // SAFETY: single-threaded within this test's critical section; restored below.
-        unsafe { std::env::set_var("AWAKEN_STORE", "postgres") };
-        let exists = durable_thread_exists(None, "no-such-thread-xyz");
-        unsafe { std::env::remove_var("AWAKEN_STORE") };
+        // Drive the pure backend-selection seam directly. Tests must never mutate a
+        // process-global deployment variable while parallel Host tests are building
+        // commits from that same environment.
+        let exists = durable_thread_exists_with_store(
+            crate::deployment_config::StoreKind::Postgres,
+            None,
+            "no-such-thread-xyz",
+        );
         assert!(!exists, "an unknown thread has no committed run");
     }
 
