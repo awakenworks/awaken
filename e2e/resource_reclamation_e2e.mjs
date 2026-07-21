@@ -115,6 +115,20 @@ function scalar(database, sql) {
   return Number(execFileSync('sqlite3', [database, sql]).toString().trim());
 }
 
+function seedRepository(root) {
+  const work = path.join(root, 'reclamation-repository-work');
+  const remote = path.join(root, 'reclamation-repository.git');
+  fs.mkdirSync(work, { recursive: true });
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: work });
+  execFileSync('git', ['config', 'user.email', 'resource-reclaim@example.invalid'], { cwd: work });
+  execFileSync('git', ['config', 'user.name', 'resource-reclaim'], { cwd: work });
+  fs.writeFileSync(path.join(work, 'README.md'), 'reclamation repository');
+  execFileSync('git', ['add', 'README.md'], { cwd: work });
+  execFileSync('git', ['commit', '-q', '-m', 'seed'], { cwd: work });
+  execFileSync('git', ['clone', '-q', '--bare', work, remote]);
+  return remote;
+}
+
 async function main() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-resource-reclaim-'));
   const bin = binary();
@@ -142,8 +156,14 @@ async function main() {
     // reclamation. The reclaimer consumes only that reference edge; after Session
     // archive removes it, the same durable intent converges without an IAM query.
     const boundFile = await upload(WS_A, 'session-bound-content');
+    const repository = seedRepository(directory);
     const boundSession = await json('POST', scoped(WS_A, 'sessions'), {
       agent: 'assistant', environment_id: 'env_local',
+      resources: [{
+        type: 'github_repository',
+        url: repository,
+        mount_path: '/workspace/reclamation-repository',
+      }],
     });
     assert.equal(boundSession.status, 200, JSON.stringify(boundSession.body));
     const binding = await json(
@@ -174,6 +194,9 @@ async function main() {
     );
     const boundReceipt = await waitReceipt(directory, 'file', boundFile);
     assert.equal(boundReceipt.receipt.evidence.blob_deleted, true);
+    const repositoryId = `managed:${boundSession.body.id}:repository:0`;
+    const repositoryReceipt = await waitReceipt(directory, 'repository', repositoryId);
+    assert.equal(repositoryReceipt.receipt.evidence.local_realizations_deleted, 0);
 
     // Equal bytes share one blob. Removing A cannot delete bytes still owned
     // to B; revoking B subsequently permits physical GC.
