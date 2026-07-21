@@ -135,18 +135,6 @@ pub struct RepositoryConfigVersion {
     pub clone_policy: ClonePolicy,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResolvedMemoryStoreConfig {
-    pub definition: MemoryStoreDefinition,
-    pub config: MemoryStoreConfigVersion,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResolvedRepositoryConfig {
-    pub definition: RepositoryDefinition,
-    pub config: RepositoryConfigVersion,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ResourceCatalogError {
     #[error("resource `{0}` already exists")]
@@ -175,13 +163,13 @@ pub trait ResourceConfigSource: Send + Sync {
         &self,
         workspace_id: &str,
         id: &str,
-    ) -> Result<ResolvedMemoryStoreConfig, ResourceCatalogError>;
+    ) -> Result<MemoryStoreConfigVersion, ResourceCatalogError>;
 
     fn resolve_repository(
         &self,
         workspace_id: &str,
         id: &str,
-    ) -> Result<ResolvedRepositoryConfig, ResourceCatalogError>;
+    ) -> Result<RepositoryConfigVersion, ResourceCatalogError>;
 }
 
 /// Secret-free Resource Catalog application port. Authorization decisions are made

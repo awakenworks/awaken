@@ -19,9 +19,8 @@ use std::time::Duration;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::RunState;
 use awaken_protocol_managed::resource_plane::{
-    ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, ResolvedMemoryStoreConfig,
-    ResolvedRepositoryConfig, ResourceAccess, ResourceCatalogError, ResourceConfigSource,
-    ResourceState,
+    ConfigVersion, MemoryStoreConfigVersion, RepositoryConfigVersion, ResourceAccess,
+    ResourceCatalogError, ResourceConfigSource,
 };
 use awaken_provider_genai::GenaiExecutor;
 use awaken_server::SharedHost;
@@ -46,24 +45,14 @@ fn bind_memory(host: &SharedHost, thread: &str, store: &str) {
             &self,
             workspace_id: &str,
             id: &str,
-        ) -> Result<ResolvedMemoryStoreConfig, ResourceCatalogError> {
-            Ok(ResolvedMemoryStoreConfig {
-                definition: MemoryStoreDefinition {
-                    id: id.into(),
-                    workspace_id: workspace_id.into(),
-                    name: id.into(),
-                    description: String::new(),
-                    metadata: Default::default(),
-                    state: ResourceState::Active,
-                    current_config_version: ConfigVersion::INITIAL,
-                },
-                config: MemoryStoreConfigVersion {
-                    memory_store_id: id.into(),
-                    version: ConfigVersion::INITIAL,
-                    recall_policy: Default::default(),
-                    extraction_policy: Default::default(),
-                    retention_policy: Default::default(),
-                },
+        ) -> Result<MemoryStoreConfigVersion, ResourceCatalogError> {
+            let _ = workspace_id;
+            Ok(MemoryStoreConfigVersion {
+                memory_store_id: id.into(),
+                version: ConfigVersion::INITIAL,
+                recall_policy: Default::default(),
+                extraction_policy: Default::default(),
+                retention_policy: Default::default(),
             })
         }
 
@@ -71,7 +60,7 @@ fn bind_memory(host: &SharedHost, thread: &str, store: &str) {
             &self,
             _workspace_id: &str,
             id: &str,
-        ) -> Result<ResolvedRepositoryConfig, ResourceCatalogError> {
+        ) -> Result<RepositoryConfigVersion, ResourceCatalogError> {
             Err(ResourceCatalogError::NotFound(id.into()))
         }
     }

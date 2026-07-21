@@ -154,6 +154,14 @@ constructs a Workspace. The local composition root stamps its hidden default
 Workspace once, while authenticated compositions stamp the Workspace selected by
 their PEP. Catalog ownership middleware consumes that stamp without rewriting it.
 
+`ResourceConfigSource` is deliberately a narrow resource-domain port. Its
+implementations verify the trusted Workspace ownership edge, current lifecycle
+state, and current-version integrity internally, then return only the selected
+`MemoryStoreConfigVersion` or `RepositoryConfigVersion`. They do not return an
+authorization envelope or duplicate the resource definition into Session state.
+Consequently an API/composition PEP can be embedded locally or backed by a remote
+IAM service without changing the catalog, resolver, or data-plane contracts.
+
 ### D5: Lifecycle stages have explicit component owners
 
 | Stage | Owning component | Responsibility |

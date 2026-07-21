@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 
 use awaken_resource_contract::{
     ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, RepositoryConfigVersion,
-    RepositoryDefinition, ResolvedMemoryStoreConfig, ResolvedRepositoryConfig, ResourceCatalog,
-    ResourceCatalogError, ResourceConfigSource, ResourceState,
+    RepositoryDefinition, ResourceCatalog, ResourceCatalogError, ResourceConfigSource,
+    ResourceState,
 };
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -231,7 +231,7 @@ impl ResourceConfigSource for SqliteAdminStore {
         &self,
         workspace_id: &str,
         id: &str,
-    ) -> Result<ResolvedMemoryStoreConfig, ResourceCatalogError> {
+    ) -> Result<MemoryStoreConfigVersion, ResourceCatalogError> {
         let record = self
             .catalog_record::<MemoryRecord>(MEMORY, id)
             .filter(|record| record.definition.workspace_id == workspace_id)
@@ -251,17 +251,14 @@ impl ResourceConfigSource for SqliteAdminStore {
                     "MemoryStore `{id}` current config version is missing"
                 ))
             })?;
-        Ok(ResolvedMemoryStoreConfig {
-            definition: record.definition,
-            config,
-        })
+        Ok(config)
     }
 
     fn resolve_repository(
         &self,
         workspace_id: &str,
         id: &str,
-    ) -> Result<ResolvedRepositoryConfig, ResourceCatalogError> {
+    ) -> Result<RepositoryConfigVersion, ResourceCatalogError> {
         let record = self
             .catalog_record::<RepositoryRecord>(REPOSITORY, id)
             .filter(|record| record.definition.workspace_id == workspace_id)
@@ -281,10 +278,7 @@ impl ResourceConfigSource for SqliteAdminStore {
                     "Repository `{id}` current config version is missing"
                 ))
             })?;
-        Ok(ResolvedRepositoryConfig {
-            definition: record.definition,
-            config,
-        })
+        Ok(config)
     }
 }
 
@@ -592,7 +586,6 @@ mod tests {
             reopened
                 .resolve_memory_store("workspace-a", "memory-1")
                 .unwrap()
-                .config
                 .version,
             ConfigVersion(2)
         );

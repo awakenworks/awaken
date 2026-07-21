@@ -49,26 +49,16 @@ impl awaken_resource_contract::ResourceConfigSource for TestResourceConfigSource
         workspace_id: &str,
         id: &str,
     ) -> Result<
-        awaken_resource_contract::ResolvedMemoryStoreConfig,
+        awaken_resource_contract::MemoryStoreConfigVersion,
         awaken_resource_contract::ResourceCatalogError,
     > {
-        Ok(awaken_resource_contract::ResolvedMemoryStoreConfig {
-            definition: awaken_resource_contract::MemoryStoreDefinition {
-                id: id.into(),
-                workspace_id: workspace_id.into(),
-                name: id.into(),
-                description: String::new(),
-                metadata: Default::default(),
-                state: awaken_resource_contract::ResourceState::Active,
-                current_config_version: awaken_resource_contract::ConfigVersion::INITIAL,
-            },
-            config: awaken_resource_contract::MemoryStoreConfigVersion {
-                memory_store_id: id.into(),
-                version: awaken_resource_contract::ConfigVersion::INITIAL,
-                recall_policy: Default::default(),
-                extraction_policy: Default::default(),
-                retention_policy: Default::default(),
-            },
+        let _ = workspace_id;
+        Ok(awaken_resource_contract::MemoryStoreConfigVersion {
+            memory_store_id: id.into(),
+            version: awaken_resource_contract::ConfigVersion::INITIAL,
+            recall_policy: Default::default(),
+            extraction_policy: Default::default(),
+            retention_policy: Default::default(),
         })
     }
 
@@ -77,27 +67,17 @@ impl awaken_resource_contract::ResourceConfigSource for TestResourceConfigSource
         workspace_id: &str,
         id: &str,
     ) -> Result<
-        awaken_resource_contract::ResolvedRepositoryConfig,
+        awaken_resource_contract::RepositoryConfigVersion,
         awaken_resource_contract::ResourceCatalogError,
     > {
-        Ok(awaken_resource_contract::ResolvedRepositoryConfig {
-            definition: awaken_resource_contract::RepositoryDefinition {
-                id: id.into(),
-                workspace_id: workspace_id.into(),
-                name: id.into(),
-                description: String::new(),
-                metadata: Default::default(),
-                state: awaken_resource_contract::ResourceState::Active,
-                current_config_version: awaken_resource_contract::ConfigVersion::INITIAL,
-            },
-            config: awaken_resource_contract::RepositoryConfigVersion {
-                repository_id: id.into(),
-                version: awaken_resource_contract::ConfigVersion::INITIAL,
-                remote_url: "https://unused.example/repo.git".into(),
-                credential_binding: None,
-                initial_branch: None,
-                clone_policy: Default::default(),
-            },
+        let _ = workspace_id;
+        Ok(awaken_resource_contract::RepositoryConfigVersion {
+            repository_id: id.into(),
+            version: awaken_resource_contract::ConfigVersion::INITIAL,
+            remote_url: "https://unused.example/repo.git".into(),
+            credential_binding: None,
+            initial_branch: None,
+            clone_policy: Default::default(),
         })
     }
 }

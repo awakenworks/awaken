@@ -965,30 +965,19 @@ mod tests {
             workspace_id: &str,
             id: &str,
         ) -> Result<
-            awaken_protocol_managed::resource_plane::ResolvedMemoryStoreConfig,
+            awaken_protocol_managed::resource_plane::MemoryStoreConfigVersion,
             awaken_protocol_managed::resource_plane::ResourceCatalogError,
         > {
             use awaken_protocol_managed::resource_plane::{
-                ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition,
-                ResolvedMemoryStoreConfig, ResourceState,
+                ConfigVersion, MemoryStoreConfigVersion,
             };
-            Ok(ResolvedMemoryStoreConfig {
-                definition: MemoryStoreDefinition {
-                    id: id.into(),
-                    workspace_id: workspace_id.into(),
-                    name: id.into(),
-                    description: String::new(),
-                    metadata: Default::default(),
-                    state: ResourceState::Active,
-                    current_config_version: ConfigVersion::INITIAL,
-                },
-                config: MemoryStoreConfigVersion {
-                    memory_store_id: id.into(),
-                    version: ConfigVersion::INITIAL,
-                    recall_policy: Default::default(),
-                    extraction_policy: Default::default(),
-                    retention_policy: Default::default(),
-                },
+            let _ = workspace_id;
+            Ok(MemoryStoreConfigVersion {
+                memory_store_id: id.into(),
+                version: ConfigVersion::INITIAL,
+                recall_policy: Default::default(),
+                extraction_policy: Default::default(),
+                retention_policy: Default::default(),
             })
         }
 
@@ -997,7 +986,7 @@ mod tests {
             _workspace_id: &str,
             id: &str,
         ) -> Result<
-            awaken_protocol_managed::resource_plane::ResolvedRepositoryConfig,
+            awaken_protocol_managed::resource_plane::RepositoryConfigVersion,
             awaken_protocol_managed::resource_plane::ResourceCatalogError,
         > {
             Err(awaken_protocol_managed::resource_plane::ResourceCatalogError::NotFound(id.into()))

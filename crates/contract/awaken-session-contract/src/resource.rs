@@ -266,25 +266,25 @@ impl SessionInputResolver {
                 let source = match binding.target {
                     InputResourceId::File(file_id) => ResolvedInputSource::File { file_id },
                     InputResourceId::MemoryStore(memory_store_id) => {
-                        let resolved = catalog
+                        let config = catalog
                             .ok_or_else(|| {
                                 ResourceCatalogError::NotFound(memory_store_id.to_string())
                             })?
                             .resolve_memory_store(workspace_id, memory_store_id.as_str())?;
                         ResolvedInputSource::MemoryStore {
                             memory_store_id,
-                            config: resolved.config,
+                            config,
                         }
                     }
                     InputResourceId::Repository(repository_id) => {
-                        let resolved = catalog
+                        let config = catalog
                             .ok_or_else(|| {
                                 ResourceCatalogError::NotFound(repository_id.to_string())
                             })?
                             .resolve_repository(workspace_id, repository_id.as_str())?;
                         ResolvedInputSource::Repository {
                             repository_id,
-                            config: resolved.config,
+                            config,
                         }
                     }
                 };
@@ -315,10 +315,8 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use awaken_resource_contract::{
-        ClonePolicy, ConfigVersion, ExtractionPolicy, FileId, MemoryStoreDefinition, MemoryStoreId,
-        RecallPolicy, RepositoryDefinition, RepositoryId, ResolvedMemoryStoreConfig,
-        ResolvedRepositoryConfig, ResourceCatalogError, ResourceConfigSource, ResourceState,
-        RetentionPolicy,
+        ClonePolicy, ConfigVersion, ExtractionPolicy, FileId, MemoryStoreId, RecallPolicy,
+        RepositoryId, ResourceCatalogError, ResourceConfigSource, RetentionPolicy,
     };
 
     #[derive(Default)]
@@ -332,28 +330,17 @@ mod tests {
             &self,
             workspace_id: &str,
             id: &str,
-        ) -> Result<ResolvedMemoryStoreConfig, ResourceCatalogError> {
+        ) -> Result<MemoryStoreConfigVersion, ResourceCatalogError> {
             self.memory_resolves.fetch_add(1, Ordering::Relaxed);
             if workspace_id != "workspace-a" || id != "memory-1" {
                 return Err(ResourceCatalogError::NotFound(id.into()));
             }
-            Ok(ResolvedMemoryStoreConfig {
-                definition: MemoryStoreDefinition {
-                    id: id.into(),
-                    workspace_id: workspace_id.into(),
-                    name: "Memory".into(),
-                    description: String::new(),
-                    metadata: Default::default(),
-                    state: ResourceState::Active,
-                    current_config_version: ConfigVersion(4),
-                },
-                config: MemoryStoreConfigVersion {
-                    memory_store_id: id.into(),
-                    version: ConfigVersion(4),
-                    recall_policy: RecallPolicy::default(),
-                    extraction_policy: ExtractionPolicy::default(),
-                    retention_policy: RetentionPolicy::default(),
-                },
+            Ok(MemoryStoreConfigVersion {
+                memory_store_id: id.into(),
+                version: ConfigVersion(4),
+                recall_policy: RecallPolicy::default(),
+                extraction_policy: ExtractionPolicy::default(),
+                retention_policy: RetentionPolicy::default(),
             })
         }
 
@@ -361,29 +348,18 @@ mod tests {
             &self,
             workspace_id: &str,
             id: &str,
-        ) -> Result<ResolvedRepositoryConfig, ResourceCatalogError> {
+        ) -> Result<RepositoryConfigVersion, ResourceCatalogError> {
             self.repository_resolves.fetch_add(1, Ordering::Relaxed);
             if workspace_id != "workspace-a" || id != "repo-1" {
                 return Err(ResourceCatalogError::NotFound(id.into()));
             }
-            Ok(ResolvedRepositoryConfig {
-                definition: RepositoryDefinition {
-                    id: id.into(),
-                    workspace_id: workspace_id.into(),
-                    name: "Repository".into(),
-                    description: String::new(),
-                    metadata: Default::default(),
-                    state: ResourceState::Active,
-                    current_config_version: ConfigVersion(7),
-                },
-                config: RepositoryConfigVersion {
-                    repository_id: id.into(),
-                    version: ConfigVersion(7),
-                    remote_url: "https://example.test/repo.git".into(),
-                    credential_binding: Some("credential-1".into()),
-                    initial_branch: Some("main".into()),
-                    clone_policy: ClonePolicy::default(),
-                },
+            Ok(RepositoryConfigVersion {
+                repository_id: id.into(),
+                version: ConfigVersion(7),
+                remote_url: "https://example.test/repo.git".into(),
+                credential_binding: Some("credential-1".into()),
+                initial_branch: Some("main".into()),
+                clone_policy: ClonePolicy::default(),
             })
         }
     }

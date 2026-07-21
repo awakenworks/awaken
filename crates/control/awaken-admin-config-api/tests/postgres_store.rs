@@ -207,7 +207,6 @@ async fn postgres_admin_store_serves_every_port() {
         store
             .resolve_memory_store("ws", "memory-1")
             .unwrap()
-            .config
             .version,
         ConfigVersion(2)
     );
@@ -258,7 +257,6 @@ async fn postgres_admin_rows_survive_a_reconnect() {
         store
             .resolve_memory_store("ws", "memory-1")
             .unwrap()
-            .config
             .version,
         ConfigVersion::INITIAL
     );

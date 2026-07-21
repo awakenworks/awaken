@@ -5,8 +5,8 @@ use std::sync::Mutex;
 
 use awaken_resource_contract::{
     ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, RepositoryConfigVersion,
-    RepositoryDefinition, ResolvedMemoryStoreConfig, ResolvedRepositoryConfig, ResourceCatalog,
-    ResourceCatalogError, ResourceConfigSource, ResourceState,
+    RepositoryDefinition, ResourceCatalog, ResourceCatalogError, ResourceConfigSource,
+    ResourceState,
 };
 
 #[derive(Default)]
@@ -66,7 +66,7 @@ impl ResourceConfigSource for InMemoryResourceCatalog {
         &self,
         workspace_id: &str,
         id: &str,
-    ) -> Result<ResolvedMemoryStoreConfig, ResourceCatalogError> {
+    ) -> Result<MemoryStoreConfigVersion, ResourceCatalogError> {
         let state = self.0.lock().expect("resource catalog");
         let definition = state
             .memories
@@ -89,14 +89,14 @@ impl ResourceConfigSource for InMemoryResourceCatalog {
                     "MemoryStore `{id}` current config version is missing"
                 ))
             })?;
-        Ok(ResolvedMemoryStoreConfig { definition, config })
+        Ok(config)
     }
 
     fn resolve_repository(
         &self,
         workspace_id: &str,
         id: &str,
-    ) -> Result<ResolvedRepositoryConfig, ResourceCatalogError> {
+    ) -> Result<RepositoryConfigVersion, ResourceCatalogError> {
         let state = self.0.lock().expect("resource catalog");
         let definition = state
             .repositories
@@ -119,7 +119,7 @@ impl ResourceConfigSource for InMemoryResourceCatalog {
                     "Repository `{id}` current config version is missing"
                 ))
             })?;
-        Ok(ResolvedRepositoryConfig { definition, config })
+        Ok(config)
     }
 }
 
@@ -425,8 +425,8 @@ mod tests {
             .resolve_memory_store("workspace-a", "memory-1")
             .unwrap();
 
-        assert_eq!(first.config.version, ConfigVersion(1));
-        assert_eq!(second.config.version, ConfigVersion(2));
+        assert_eq!(first.version, ConfigVersion(1));
+        assert_eq!(second.version, ConfigVersion(2));
         assert_eq!(
             catalog
                 .memory_config("workspace-a", "memory-1", ConfigVersion(1))
@@ -505,8 +505,8 @@ mod tests {
             .unwrap();
 
         let resolved = catalog.resolve_repository("workspace-a", "repo-1").unwrap();
-        assert_eq!(resolved.config.version, ConfigVersion(2));
-        assert_eq!(resolved.config.remote_url, "https://example.test/two.git");
+        assert_eq!(resolved.version, ConfigVersion(2));
+        assert_eq!(resolved.remote_url, "https://example.test/two.git");
     }
 
     #[test]

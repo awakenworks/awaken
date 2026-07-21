@@ -781,10 +781,11 @@ mod tests {
         let host = std::sync::Arc::new(
             SharedHost::new(std::sync::Arc::new(NoLlm), "test").with_skill_store(dir.join("store")),
         );
+        let workspace = host.local_workspace().to_string();
         // Deliver straight to the durable repository — the API reads the same truth.
         host.skills
             .persist_authored(
-                host.local_workspace(),
+                &workspace,
                 "Greeter",
                 "---\nname: Greeter\ndescription: hi\n---\nsay hello",
             )
@@ -793,12 +794,13 @@ mod tests {
         let cid = "Greeter";
 
         // The advertised catalog id retrieves the skill via the durable fallback…
-        let (status, _) = get(&router, &format!("/v1/skills/{cid}")).await;
+        let (status, _) = get_in(&router, &format!("/v1/skills/{cid}"), &workspace).await;
         assert_eq!(status, StatusCode::OK, "catalog id retrieves the skill");
         // …and `version: "latest"` downloads its content (what the worker fetches).
-        let (status, body) = get(
+        let (status, body) = get_in(
             &router,
             &format!("/v1/skills/{cid}/versions/latest/content"),
+            &workspace,
         )
         .await;
         assert_eq!(status, StatusCode::OK);
@@ -809,7 +811,7 @@ mod tests {
         // The list surfaces the durable skill under its stable stem (the durability
         // contract). The tagged catalog id is what advertisement offers the worker,
         // and both forms resolve on retrieve/download (asserted above).
-        let (_, list) = get(&router, "/v1/skills").await;
+        let (_, list) = get_in(&router, "/v1/skills", &workspace).await;
         assert!(
             list.contains("Greeter"),
             "list surfaces the durable stem: {list}"
