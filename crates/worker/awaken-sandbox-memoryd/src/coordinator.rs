@@ -111,13 +111,13 @@ impl MountCoordinator {
 
 /// The real mount factory: each store is mounted under `root/<store_id>` via
 /// [`spawn_mount`](crate::fuse::spawn_mount) over the shared [`MemoryRepository`].
-#[cfg(feature = "fuse")]
+#[cfg(all(feature = "fuse", target_os = "linux"))]
 pub struct FuseMountFactory {
     fs: std::sync::Arc<dyn awaken_memory_store::MemoryRepository>,
     root: PathBuf,
 }
 
-#[cfg(feature = "fuse")]
+#[cfg(all(feature = "fuse", target_os = "linux"))]
 impl FuseMountFactory {
     #[must_use]
     pub fn new(
@@ -131,7 +131,7 @@ impl FuseMountFactory {
     }
 }
 
-#[cfg(feature = "fuse")]
+#[cfg(all(feature = "fuse", target_os = "linux"))]
 impl MountFactory for FuseMountFactory {
     fn mount(&self, store_id: &str) -> Result<(PathBuf, Box<dyn Mount>), FuseError> {
         let mountpoint = self.root.join(awaken_memory_store::sanitize_stem(store_id));
@@ -142,7 +142,7 @@ impl MountFactory for FuseMountFactory {
     }
 }
 
-#[cfg(feature = "fuse")]
+#[cfg(all(feature = "fuse", target_os = "linux"))]
 impl Mount for crate::fuse::MemoryMountHandle {
     fn unmount(self: Box<Self>) {
         (*self).unmount();

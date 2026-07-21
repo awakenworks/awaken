@@ -1,14 +1,14 @@
-//! `NamespaceProvider` — the OS-namespace (bubblewrap on Linux) sandbox tier
-//! (ADR-0041 Slice 2). Unlike the lexical `LocalProvider`, this tier is
-//! **tool-transparent**: bubblewrap binds host paths to real sandbox-absolute
-//! paths (`/workspace`, `/mnt/session/outputs`) and unshares namespaces, so an
-//! *opaque* process (Claude Code, any CLI) is confined by the OS regardless of
-//! what it does. It reports `tool_transparent = true`, so `prepare_environment`
-//! permits `Namespace`-class workloads here.
+//! `NamespaceProvider` — the OS-native process sandbox tier: bubblewrap namespaces
+//! on Linux and Seatbelt on macOS (ADR-0041 Slice 2). Unlike the lexical
+//! `LocalProvider`, this tier is **tool-transparent**: an opaque process (Claude
+//! Code, any CLI) is confined by the OS regardless of what it does. Linux also has
+//! real sandbox-absolute bind paths; Seatbelt has no mount namespace, so macOS
+//! advertises `path_fidelity = false` and translates cwd/known argv paths while
+//! exporting the realized workspace/output host paths through reserved env vars.
 //!
 //! The launcher argv is rendered by pure functions ([`bubblewrap_argv`],
 //! [`sandbox_exec_argv`]) — unit-testable without the tool installed; the actual
-//! exec requires `bwrap` on the host.
+//! exec requires the matching OS launcher on the host.
 
 use std::path::PathBuf;
 use std::process::Stdio as ProcStdio;
@@ -40,19 +40,33 @@ static OS_SANDBOX_PROBE: tokio::sync::OnceCell<bool> = tokio::sync::OnceCell::co
 /// Run the actual throwaway isolation probe: bwrap (Linux) / `sandbox-exec` (macOS)
 /// must run a trivial confined `true` here.
 async fn run_os_native_probe() -> bool {
-    let (program, args): (&str, &[&str]) = if cfg!(target_os = "macos") {
-        (
-            "sandbox-exec",
-            &["-p", "(version 1)(allow default)", "/usr/bin/true"],
-        )
+    let argv = if cfg!(target_os = "macos") {
+        sandbox_exec_argv(&RenderInput {
+            host_workspace: std::path::Path::new("/private/var/empty"),
+            host_outputs: std::path::Path::new("/private/var/empty"),
+            outputs_path: "/mnt/session/outputs",
+            mounts: &[],
+            env: &[],
+            network: &pc::NetworkPolicy::None,
+            cwd: "",
+            argv: &["/usr/bin/true".to_string()],
+        })
     } else {
-        (
+        [
             "bwrap",
-            &["--unshare-user", "--ro-bind", "/", "/", "--", "true"],
-        )
+            "--unshare-user",
+            "--ro-bind",
+            "/",
+            "/",
+            "--",
+            "true",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
     };
-    TokioCommand::new(program)
-        .args(args)
+    TokioCommand::new(&argv[0])
+        .args(&argv[1..])
         .stdin(ProcStdio::null())
         .stdout(ProcStdio::null())
         .stderr(ProcStdio::null())
@@ -186,18 +200,83 @@ pub fn bubblewrap_argv(input: &RenderInput) -> Vec<String> {
     a
 }
 
-/// Render a macOS `sandbox-exec` (Seatbelt) command line. Deny-by-default with
-/// read of the workspace and write to workspace + outputs. Pure; not executed on
-/// Linux CI (present for tier parity + unit coverage).
+fn seatbelt_string(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len() + 2);
+    escaped.push('"');
+    for ch in value.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped.push('"');
+    escaped
+}
+
+fn seatbelt_path_filters(path: &std::path::Path) -> String {
+    let quoted = seatbelt_string(&path.to_string_lossy());
+    format!("(literal {quoted})(subpath {quoted})")
+}
+
+/// Render a macOS `sandbox-exec` (Seatbelt) command line. The Apple system profile
+/// supplies the minimum Mach/sysctl/runtime reads required to start ordinary macOS
+/// binaries; user data remains deny-by-default. Workspace/output/mount permissions
+/// and the on/off network policy are then added explicitly.
 #[must_use]
 pub fn sandbox_exec_argv(input: &RenderInput) -> Vec<String> {
-    let ws = input.host_workspace.to_string_lossy();
-    let out = input.host_outputs.to_string_lossy();
-    let profile = format!(
-        "(version 1)(deny default)(allow process-fork)(allow process-exec)\
-         (allow file-read* (subpath \"{ws}\"))\
-         (allow file-write* (subpath \"{ws}\"))(allow file-write* (subpath \"{out}\"))"
+    let mut readable = vec![
+        input.host_workspace.to_path_buf(),
+        input.host_outputs.to_path_buf(),
+    ];
+    readable.extend(input.mounts.iter().map(|mount| mount.host.clone()));
+    let mut writable = vec![
+        input.host_workspace.to_path_buf(),
+        input.host_outputs.to_path_buf(),
+    ];
+    writable.extend(
+        input
+            .mounts
+            .iter()
+            .filter(|mount| !mount.read_only)
+            .map(|mount| mount.host.clone()),
     );
+    let readonly: Vec<_> = input
+        .mounts
+        .iter()
+        .filter(|mount| mount.read_only)
+        .map(|mount| mount.host.clone())
+        .collect();
+
+    let mut profile = String::from(
+        "(version 1)(deny default)(import \"system.sb\")\
+         (allow process-fork)(allow process-exec)\
+         (allow file-read-metadata)\
+         (allow file-read* (subpath \"/private/var/select\")\
+          (subpath \"/opt/homebrew\") (subpath \"/usr/local\"))",
+    );
+    for path in readable {
+        profile.push_str("(allow file-read* ");
+        profile.push_str(&seatbelt_path_filters(&path));
+        profile.push(')');
+    }
+    for path in writable {
+        profile.push_str("(allow file-write* ");
+        profile.push_str(&seatbelt_path_filters(&path));
+        profile.push(')');
+    }
+    // A specific deny wins over the enclosing workspace write grant, preserving
+    // declared read-only files/directories even when they live below /workspace.
+    for path in readonly {
+        profile.push_str("(deny file-write* ");
+        profile.push_str(&seatbelt_path_filters(&path));
+        profile.push(')');
+    }
+    if matches!(input.network, pc::NetworkPolicy::Unrestricted) {
+        profile.push_str("(allow network*)");
+    }
     let mut a = vec![s("sandbox-exec"), s("-p"), profile, s("--")];
     a.extend(input.argv.iter().cloned());
     a
@@ -243,8 +322,9 @@ impl NamespaceProvider {
         self
     }
 
-    /// Realize `MemoryStore` mounts via an injected mounter (copy-only on this tier).
-    /// Without one, a `MemoryStore` mount fails loud.
+    /// Realize `MemoryStore` mounts via an injected mounter. It uses live FUSE where
+    /// the platform supports it and automatically copy+harvests otherwise. Without
+    /// a mounter, a `MemoryStore` mount fails loud.
     #[must_use]
     pub fn with_memory_mounter(self, mounter: Arc<dyn pc::MemoryMounter>) -> Self {
         self.install_memory_mounter(mounter);
@@ -262,7 +342,10 @@ impl NamespaceProvider {
         pc::SandboxCapabilities {
             isolation: pc::IsolationClass::Namespace,
             tool_transparent: true,
-            path_fidelity: true,
+            // Seatbelt is a policy boundary, not a mount namespace: it cannot make
+            // host paths appear at Linux-style /workspace or /mnt paths. The launcher
+            // translates cwd/known argv paths and exports real host paths instead.
+            path_fidelity: !cfg!(target_os = "macos"),
             enforced_readonly: true,
             network_isolation: true,
             secret_egress_substitution: false,
@@ -295,6 +378,12 @@ impl NamespaceProvider {
         let mut secret_paths: Vec<PathBuf> = Vec::new();
         for req in &spec.mounts {
             let host = host_projection_path(root, host_workspace, &req.mount_path)?;
+            if matches!(req.source, pc::MountSource::CacheVolume { .. }) {
+                return Err(err(format!(
+                    "mount {:?}: cache_volume is not supported by the local OS sandbox",
+                    req.mount_id
+                )));
+            }
             // memory_store is a keyed store, not a byte blob (ADR-0038/0053): the mounter
             // realizes it at `host` (a live FUSE mount with a FUSE-preferring mounter, or
             // materialized files on the copy fallback) which then binds into the namespace
@@ -425,27 +514,39 @@ impl NamespaceProvider {
         spec: &pc::SandboxSpec,
     ) -> Result<NamespaceSandbox, pc::SandboxError> {
         pc::prepare_environment(spec, &Self::caps()).map_err(err)?;
-        // bwrap can share or unshare the net namespace, but cannot enforce a
-        // host allowlist; refuse it rather than silently blocking all egress.
+        // Neither bwrap nor the Seatbelt adapter can enforce a DNS-host allowlist;
+        // refuse it rather than silently blocking all egress or allowing too much.
         if matches!(spec.network, pc::NetworkPolicy::Allowlist { .. }) {
             return Err(err(
-                "bwrap tier supports on/off egress only, not a host allowlist",
+                "local OS sandbox supports on/off egress only, not a host allowlist",
             ));
         }
 
-        let root = IsolatedRoot::new(self.base.join(&spec.scope));
-        std::fs::create_dir_all(root.root()).map_err(err)?;
+        let mut base_env = Vec::new();
+        for var in &spec.env {
+            match &var.value {
+                pc::EnvValue::Inline { value } => {
+                    base_env.push((var.name.clone(), value.clone()));
+                }
+                pc::EnvValue::Secret { .. } => {
+                    return Err(err(format!(
+                        "environment variable {:?}: unresolved secret env values are not supported by the local OS sandbox",
+                        var.name
+                    )));
+                }
+            }
+        }
+
+        let raw_root = self.base.join(&spec.scope);
+        std::fs::create_dir_all(&raw_root).map_err(err)?;
+        // `/var` is a symlink to `/private/var` on macOS. Seatbelt evaluates some
+        // operations against the canonical vnode path, so build every rule/env/cwd
+        // from one canonical root or write grants can miss their target.
+        let root = IsolatedRoot::new(std::fs::canonicalize(&raw_root).map_err(err)?);
         let host_workspace = root.resolve("/workspace").map_err(err)?;
         std::fs::create_dir_all(&host_workspace).map_err(err)?;
         let host_outputs = root.resolve(&spec.outputs_path).map_err(err)?;
         std::fs::create_dir_all(&host_outputs).map_err(err)?;
-
-        let mut base_env = Vec::new();
-        for var in &spec.env {
-            if let pc::EnvValue::Inline { value } = &var.value {
-                base_env.push((var.name.clone(), value.clone()));
-            }
-        }
 
         let (layout, realized, memory_mounts, secret_paths) =
             match self.realize_layout(&root, &host_workspace, spec).await {
@@ -481,7 +582,15 @@ impl NamespaceProvider {
         &self,
         handle: &pc::SandboxHandle,
     ) -> Result<NamespaceSandbox, pc::SandboxError> {
-        if handle.provider_kind != "bwrap" {
+        // Older macOS handles were mislabeled as `bwrap`; accept them during
+        // adoption so the provider-kind correction does not strand a persisted
+        // Session environment.
+        let compatible_provider = if cfg!(target_os = "macos") {
+            matches!(handle.provider_kind.as_str(), "seatbelt" | "bwrap")
+        } else {
+            handle.provider_kind == "bwrap"
+        };
+        if !compatible_provider {
             return Err(err(format!(
                 "namespace provider cannot adopt {:?} sandbox",
                 handle.provider_kind
@@ -494,7 +603,8 @@ impl NamespaceProvider {
             .and_then(|v| v.as_str())
             .unwrap_or("/mnt/session/outputs")
             .to_string();
-        let root = IsolatedRoot::new(self.base.join(&handle.sandbox_id));
+        let raw_root = self.base.join(&handle.sandbox_id);
+        let root = IsolatedRoot::new(std::fs::canonicalize(&raw_root).unwrap_or(raw_root));
         let host_workspace = root.resolve("/workspace").map_err(err)?;
         let host_outputs = root.resolve(&outputs_path).map_err(err)?;
         Ok(NamespaceSandbox {
@@ -513,7 +623,7 @@ impl NamespaceProvider {
     }
 }
 
-/// A realized bubblewrap environment. Path-fidelity + OS-confined.
+/// A realized OS-confined environment (bubblewrap on Linux, Seatbelt on macOS).
 pub struct NamespaceSandbox {
     id: String,
     root: IsolatedRoot,
@@ -640,17 +750,100 @@ impl NamespaceSandbox {
         }
     }
 
-    /// The rendered launcher argv for `command` (bwrap wrapping the program).
+    fn translate_macos_path(&self, value: &str) -> Option<String> {
+        let mut mappings: Vec<(&str, &std::path::Path)> = vec![
+            ("/workspace", &self.host_workspace),
+            (&self.outputs_path, &self.host_outputs),
+        ];
+        mappings.extend(
+            self.layout
+                .iter()
+                .map(|mount| (mount.dest.as_str(), mount.host.as_path())),
+        );
+        // Prefer the most-specific mount when paths overlap.
+        mappings.sort_by_key(|(dest, _)| std::cmp::Reverse(dest.len()));
+        for (dest, host) in mappings {
+            if value == dest {
+                return Some(host.to_string_lossy().into_owned());
+            }
+            if let Some(suffix) = value.strip_prefix(dest)
+                && suffix.starts_with('/')
+            {
+                return Some(format!("{}{suffix}", host.to_string_lossy()));
+            }
+        }
+        None
+    }
+
+    fn translate_macos_argument(&self, value: &str) -> String {
+        if let Some(translated) = self.translate_macos_path(value) {
+            return translated;
+        }
+        if let Some((key, path)) = value.split_once('=')
+            && let Some(translated) = self.translate_macos_path(path)
+        {
+            return format!("{key}={translated}");
+        }
+        value.to_string()
+    }
+
+    fn configure_macos_command(
+        &self,
+        process: &mut TokioCommand,
+        command: &pc::Command,
+    ) -> Result<(), pc::SandboxError> {
+        let cwd = if command.cwd.is_empty() {
+            self.host_workspace.clone()
+        } else if let Some(translated) = self.translate_macos_path(&command.cwd) {
+            PathBuf::from(translated)
+        } else {
+            self.root.resolve(&command.cwd).map_err(err)?
+        };
+        process
+            .current_dir(cwd)
+            .env("AWAKEN_OUTPUTS_DIR", &self.host_outputs)
+            .env("AWAKEN_PROJECT_DIR", &self.host_workspace)
+            .envs(self.base_env.iter().map(|(key, value)| (key, value)));
+        for var in &command.env {
+            match &var.value {
+                pc::EnvValue::Inline { value } => {
+                    process.env(&var.name, value);
+                }
+                pc::EnvValue::Secret { .. } => {
+                    return Err(err(format!(
+                        "command environment variable {:?}: unresolved secret env values are not supported by the local OS sandbox",
+                        var.name
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The rendered launcher argv for `command` (bwrap or Seatbelt wrapping the program).
     fn render_argv(&self, command: &pc::Command) -> Result<Vec<String>, pc::SandboxError> {
         if command.argv.is_empty() {
             return Err(err("command argv is empty"));
         }
         let mut cmd_env = self.base_env.clone();
         for var in &command.env {
-            if let pc::EnvValue::Inline { value } = &var.value {
-                cmd_env.push((var.name.clone(), value.clone()));
+            match &var.value {
+                pc::EnvValue::Inline { value } => {
+                    cmd_env.push((var.name.clone(), value.clone()));
+                }
+                pc::EnvValue::Secret { .. } => {
+                    return Err(err(format!(
+                        "command environment variable {:?}: unresolved secret env values are not supported by the local OS sandbox",
+                        var.name
+                    )));
+                }
             }
         }
+        let macos_argv: Vec<String> = command
+            .argv
+            .iter()
+            .map(|arg| self.translate_macos_argument(arg))
+            .collect();
         let input = RenderInput {
             host_workspace: &self.host_workspace,
             host_outputs: &self.host_outputs,
@@ -659,7 +852,11 @@ impl NamespaceSandbox {
             env: &cmd_env,
             network: &self.network,
             cwd: &command.cwd,
-            argv: &command.argv,
+            argv: if cfg!(target_os = "macos") {
+                &macos_argv
+            } else {
+                &command.argv
+            },
         };
         // OS-native launcher: bubblewrap on Linux, Seatbelt (`sandbox-exec`) on macOS.
         // `cfg!` keeps both branches type-checked on every target; only the matching
@@ -685,8 +882,11 @@ impl NamespaceSandbox {
     ) -> Result<(Box<dyn pc::ProcessHandle>, Box<dyn AgentChannel>), pc::SandboxError> {
         let argv = self.render_argv(&command)?;
         let mut cmd = TokioCommand::new(&argv[0]);
-        cmd.args(&argv[1..])
-            .stdin(ProcStdio::piped())
+        cmd.args(&argv[1..]);
+        if cfg!(target_os = "macos") {
+            self.configure_macos_command(&mut cmd, &command)?;
+        }
+        cmd.stdin(ProcStdio::piped())
             .stdout(ProcStdio::piped())
             .stderr(ProcStdio::null());
         let mut child = cmd.spawn().map_err(err)?;
@@ -710,7 +910,12 @@ impl pc::Sandbox for NamespaceSandbox {
     }
 
     fn handle(&self) -> pc::SandboxHandle {
-        let mut h = pc::SandboxHandle::new("bwrap", &self.id);
+        let provider_kind = if cfg!(target_os = "macos") {
+            "seatbelt"
+        } else {
+            "bwrap"
+        };
+        let mut h = pc::SandboxHandle::new(provider_kind, &self.id);
         h.extra = Some(json!({ "outputs_path": self.outputs_path }));
         h
     }
@@ -722,6 +927,9 @@ impl pc::Sandbox for NamespaceSandbox {
         let argv = self.render_argv(&command)?;
         let mut cmd = TokioCommand::new(&argv[0]);
         cmd.args(&argv[1..]);
+        if cfg!(target_os = "macos") {
+            self.configure_macos_command(&mut cmd, &command)?;
+        }
         let (out, e) = match command.stdio {
             pc::Stdio::Inherit => (ProcStdio::inherit(), ProcStdio::inherit()),
             pc::Stdio::Piped => (ProcStdio::piped(), ProcStdio::piped()),
@@ -1090,7 +1298,41 @@ mod tests {
         assert_eq!(a[0], "sandbox-exec");
         assert_eq!(a[1], "-p");
         assert!(a[2].contains("(deny default)"));
+        assert!(a[2].contains("(import \"system.sb\")"));
         assert!(a[2].contains("/w"));
+        assert!(a[2].contains("(allow network*)"));
         assert_eq!(a.last().unwrap(), "claude");
+    }
+
+    #[test]
+    fn sandbox_exec_renders_mount_permissions_none_network_and_escaped_paths() {
+        let ws = PathBuf::from("/host/w\"s");
+        let out = PathBuf::from("/host/out");
+        let mounts = vec![
+            RenderMount {
+                host: PathBuf::from("/host/w\"s/readonly"),
+                dest: "/workspace/readonly".into(),
+                read_only: true,
+            },
+            RenderMount {
+                host: PathBuf::from("/host/rw"),
+                dest: "/data".into(),
+                read_only: false,
+            },
+        ];
+        let argv = vec![s("true")];
+        let rendered = sandbox_exec_argv(&input(
+            &ws,
+            &out,
+            &mounts,
+            &[],
+            &pc::NetworkPolicy::None,
+            &argv,
+        ));
+        let profile = &rendered[2];
+        assert!(profile.contains("/host/w\\\"s"));
+        assert!(profile.contains("(deny file-write*"));
+        assert!(profile.contains("/host/rw"));
+        assert!(!profile.contains("(allow network*)"));
     }
 }

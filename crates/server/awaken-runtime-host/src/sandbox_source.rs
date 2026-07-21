@@ -911,16 +911,16 @@ pub async fn build_acp_channel_source(
     }
 }
 
-/// Resolve the effective sandbox tier at composition, probing bwrap ONCE (memoized) for
-/// the `Namespace` tier so a host without the OS-native sandbox gets a clear startup
-/// decision instead of an opaque per-run spawn error. Absent bwrap: fail closed
-/// (`Err`) by default — the caller turns it into a startup abort with guidance — or,
-/// when the operator opts in with `AWAKEN_SANDBOX_ALLOW_LOCAL_FALLBACK=1`, degrade to
+/// Resolve the effective sandbox tier at composition, probing the OS-native launcher
+/// ONCE (memoized) for the `Namespace` tier so an unsupported host gets a clear startup
+/// decision instead of an opaque per-run spawn error. An unavailable provider fails
+/// closed (`Err`) by default — the caller turns it into a startup abort with guidance.
+/// Only when the operator opts in with `AWAKEN_SANDBOX_ALLOW_LOCAL_FALLBACK=1` do we degrade to
 /// the UNSANDBOXED `Local` tier with a loud notice so a dev/single-tenant worker runs.
 /// Every other tier passes through unchanged.
 pub async fn resolve_sandbox_tier(
     tier: crate::deployment_config::SandboxTier,
-    tier_explicit: bool,
+    _tier_explicit: bool,
     namespace_base: &std::path::Path,
 ) -> Result<crate::deployment_config::SandboxTier, String> {
     use crate::deployment_config::SandboxTier;
@@ -933,30 +933,29 @@ pub async fn resolve_sandbox_tier(
         .await
     {
         Ok(()) => Ok(SandboxTier::Namespace),
-        Err(e) if namespace_degrades_to_local(tier_explicit, allow_local_fallback()) => {
+        Err(e) if namespace_degrades_to_local(allow_local_fallback()) => {
             eprintln!(
                 "awaken: OS-native sandbox unavailable ({e}); running UNSANDBOXED local ACP \
-                 execution (no OS isolation for this worker). Install bwrap for isolation, or \
-                 set AWAKEN_SANDBOX_TIER=namespace to require it (fail closed)."
+                 execution (no OS isolation for this worker). Install bwrap on Linux or enable \
+                 macOS Seatbelt, or \
+                 unset AWAKEN_SANDBOX_ALLOW_LOCAL_FALLBACK to require isolation (fail closed)."
             );
             Ok(SandboxTier::Local)
         }
         Err(e) => Err(format!(
-            "OS-native sandbox unavailable: {e}. `AWAKEN_SANDBOX_TIER=namespace` was requested \
-             explicitly — install bwrap (Linux) / use macOS Seatbelt, drop the explicit tier to \
-             auto-degrade, or set AWAKEN_SANDBOX_TIER=local to run unsandboxed"
+            "OS-native sandbox unavailable: {e}. Install bwrap (Linux) / use macOS Seatbelt, set \
+             AWAKEN_SANDBOX_ALLOW_LOCAL_FALLBACK=1 for an explicit unsafe fallback, or set \
+             AWAKEN_SANDBOX_TIER=local to run unsandboxed"
         )),
     }
 }
 
-/// Whether a `Namespace`-tier request with no available bwrap degrades to the
-/// UNSANDBOXED `Local` tier rather than failing closed. Degrade when the tier was left
-/// at its default (`AWAKEN_SANDBOX_TIER` unset → dev/single-machine ergonomics: a
-/// bwrap-less host still runs) OR the operator opted in explicitly. Fail closed ONLY
-/// when `namespace` was EXPLICITLY requested (an operator asked for OS isolation — honor
-/// it or refuse, never silently drop). Pure, so the policy is unit-testable off-host.
-fn namespace_degrades_to_local(tier_explicit: bool, fallback_optin: bool) -> bool {
-    !tier_explicit || fallback_optin
+/// Whether an unavailable `Namespace` provider may degrade to the UNSANDBOXED
+/// `Local` tier. Isolation never silently downgrades: the explicit unsafe opt-in is
+/// required whether the namespace tier was configured explicitly or selected as a
+/// default. Pure, so the policy is unit-testable off-host.
+fn namespace_degrades_to_local(fallback_optin: bool) -> bool {
+    fallback_optin
 }
 
 /// Whether an operator opted in (`AWAKEN_SANDBOX_ALLOW_LOCAL_FALLBACK=1`) to degrade a
@@ -1549,23 +1548,16 @@ mod tests {
     }
 
     #[test]
-    fn namespace_degrade_policy_is_usable_without_bwrap_by_default_but_strict_when_explicit() {
-        // Tier left at the default (unset AWAKEN_SANDBOX_TIER) → degrade to Local without
-        // bwrap, so a dev/single-machine worker runs out of the box (no opt-in needed).
+    fn namespace_degrade_policy_requires_an_explicit_unsafe_optin() {
+        // An unavailable namespace provider is unavailable, even when it was selected
+        // by default. Never turn an isolation request into plain local execution silently.
         assert!(
-            namespace_degrades_to_local(false, false),
-            "unset tier auto-degrades"
+            !namespace_degrades_to_local(false),
+            "namespace fails closed without an explicit fallback opt-in"
         );
-        // Explicit `AWAKEN_SANDBOX_TIER=namespace` → fail closed without bwrap (an operator
-        // who asked for OS isolation must not silently lose it) ...
         assert!(
-            !namespace_degrades_to_local(true, false),
-            "explicit namespace fails closed"
-        );
-        // ... unless they ALSO opt into the fallback.
-        assert!(
-            namespace_degrades_to_local(true, true),
-            "explicit + opt-in degrades"
+            namespace_degrades_to_local(true),
+            "the explicit unsafe opt-in permits local fallback"
         );
     }
 

@@ -46,7 +46,11 @@ async fn bwrap_works() -> bool {
 /// True only when macOS `sandbox-exec` (Seatbelt) can run a trivial profile.
 async fn seatbelt_works() -> bool {
     tokio::process::Command::new("sandbox-exec")
-        .args(["-p", "(version 1)(allow default)", "/usr/bin/true"])
+        .args([
+            "-p",
+            "(version 1)(deny default)(import \"system.sb\")(allow process-fork)(allow process-exec)",
+            "/usr/bin/true",
+        ])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
@@ -70,8 +74,12 @@ async fn capabilities_are_tool_transparent_namespace() {
     let caps = NamespaceProvider::new(tmp.path()).capabilities();
     assert_eq!(caps.isolation, pc::IsolationClass::Namespace);
     assert!(caps.tool_transparent, "bwrap tier may host opaque agents");
-    assert!(caps.path_fidelity);
+    assert_eq!(caps.path_fidelity, !cfg!(target_os = "macos"));
     assert!(caps.enforced_readonly);
+    assert!(caps.network_isolation);
+    assert!(!caps.secret_egress_substitution);
+    assert!(!caps.resource_limits);
+    assert!(!caps.custom_rootfs);
 }
 
 #[tokio::test]
@@ -89,21 +97,134 @@ async fn probe_ready_reflects_the_os_native_sandbox_availability() {
 }
 
 #[tokio::test]
-async fn seatbelt_confines_a_real_spawn_on_macos() {
-    // Self-skips off macOS (no `sandbox-exec`). On macOS, `spawn` renders via
-    // `sandbox_exec_argv`, so a trivial command runs OS-confined under Seatbelt.
+async fn seatbelt_enforces_files_env_cwd_and_outputs_on_macos() {
     if !seatbelt_works().await {
         eprintln!("skipping: Seatbelt/sandbox-exec unavailable (non-macOS)");
         return;
     }
+    // A real existing user/repository file outside the sandbox roots. Avoid /var/folders:
+    // Apple's imported system profile deliberately grants some runtime reads there.
+    let outside_file = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../Cargo.toml")
+        .canonicalize()
+        .unwrap();
+
     let tmp = tempfile::tempdir().unwrap();
+    let mut sandbox_spec = spec("t-seatbelt");
+    sandbox_spec.env.push(pc::EnvVar {
+        name: "BASE_VALUE".into(),
+        value: pc::EnvValue::Inline {
+            value: "from-spec".into(),
+        },
+        visibility: pc::EnvVisibility::Process,
+    });
+    sandbox_spec.mounts.push(pc::MountRequirement {
+        mount_id: "readonly".into(),
+        source: pc::MountSource::Inline {
+            contents: "seed".into(),
+        },
+        mount_path: "/workspace/sub/input.txt".into(),
+        access: pc::MountAccess::ReadOnly,
+        lifetime: pc::MountLifetime::PerRun,
+        required: true,
+    });
     let sandbox = NamespaceProvider::new(tmp.path())
-        .create_sandbox(&spec("t-seatbelt"))
+        .create_sandbox(&sandbox_spec)
         .await
         .unwrap();
-    let proc = sandbox.spawn(sh("exit 0")).await.unwrap();
+
+    // Known sandbox paths in argv/cwd are translated to their host realization;
+    // literal env and the reserved project/output paths are inherited by the child.
+    let mut command = pc::Command::new([
+        "/bin/sh",
+        "-c",
+        "test \"$BASE_VALUE\" = from-spec && test \"$CMD_VALUE\" = from-command && \
+         test -f ./input.txt",
+    ]);
+    command.cwd = "/workspace/sub".into();
+    command.env.push(pc::EnvVar {
+        name: "CMD_VALUE".into(),
+        value: pc::EnvValue::Inline {
+            value: "from-command".into(),
+        },
+        visibility: pc::EnvVisibility::Process,
+    });
+    command.stdio = pc::Stdio::Null;
+    let proc = sandbox.spawn(command).await.unwrap();
     assert_eq!(proc.wait().await.unwrap().code, Some(0));
+
+    let mut copy = pc::Command::new([
+        "/bin/sh",
+        "-c",
+        "/bin/cat \"$1\" > \"$AWAKEN_OUTPUTS_DIR/copy.txt\"",
+        "seatbelt-copy",
+        "/workspace/sub/input.txt",
+    ]);
+    copy.stdio = pc::Stdio::Null;
+    let copy = sandbox.spawn(copy).await.unwrap();
+    assert_eq!(copy.wait().await.unwrap().code, Some(0));
+    let artifact = sandbox
+        .artifacts()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|artifact| artifact.path.ends_with("/copy.txt"))
+        .unwrap();
+    assert_eq!(sandbox.read_artifact(&artifact.id).await.unwrap(), b"seed");
+
+    let mut outside_read = pc::Command::new(["/bin/cat", outside_file.to_str().unwrap()]);
+    outside_read.stdio = pc::Stdio::Null;
+    let outside_read = sandbox.spawn(outside_read).await.unwrap();
+    assert_ne!(outside_read.wait().await.unwrap().code, Some(0));
+
+    // The read-only mount lives below the otherwise-writable workspace; its
+    // specific Seatbelt deny must still win.
+    let mut write = pc::Command::new([
+        "/bin/sh",
+        "-c",
+        "printf changed > \"$1\"",
+        "seatbelt-ro",
+        "/workspace/sub/input.txt",
+    ]);
+    write.stdio = pc::Stdio::Null;
+    let write = sandbox.spawn(write).await.unwrap();
+    assert_ne!(write.wait().await.unwrap().code, Some(0));
     sandbox.dispose().await.unwrap();
+}
+
+#[tokio::test]
+async fn seatbelt_enforces_none_and_unrestricted_network_on_macos() {
+    if !seatbelt_works().await {
+        eprintln!("skipping: Seatbelt/sandbox-exec unavailable (non-macOS)");
+        return;
+    }
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port().to_string();
+    let tmp = tempfile::tempdir().unwrap();
+
+    let mut denied_spec = spec("t-seatbelt-net-none");
+    denied_spec.network = pc::NetworkPolicy::None;
+    let denied = NamespaceProvider::new(tmp.path())
+        .create_sandbox(&denied_spec)
+        .await
+        .unwrap();
+    let denied_probe = denied
+        .spawn(pc::Command::new(["/usr/bin/nc", "-z", "127.0.0.1", &port]))
+        .await
+        .unwrap();
+    assert_ne!(denied_probe.wait().await.unwrap().code, Some(0));
+    denied.dispose().await.unwrap();
+
+    let allowed = NamespaceProvider::new(tmp.path())
+        .create_sandbox(&spec("t-seatbelt-net-open"))
+        .await
+        .unwrap();
+    let allowed_probe = allowed
+        .spawn(pc::Command::new(["/usr/bin/nc", "-z", "127.0.0.1", &port]))
+        .await
+        .unwrap();
+    assert_eq!(allowed_probe.wait().await.unwrap().code, Some(0));
+    allowed.dispose().await.unwrap();
 }
 
 #[tokio::test]
@@ -251,6 +372,55 @@ async fn host_allowlist_egress_is_rejected() {
 }
 
 #[tokio::test]
+async fn unsupported_cache_limits_and_unresolved_secret_env_fail_closed() {
+    let tmp = tempfile::tempdir().unwrap();
+
+    let mut cache = spec("t-cache-unsupported");
+    cache.mounts.push(pc::MountRequirement {
+        mount_id: "cache".into(),
+        source: pc::MountSource::CacheVolume {
+            host_path: tmp.path().join("cache").to_string_lossy().into_owned(),
+            key: "cache-key".into(),
+        },
+        mount_path: "/workspace/cache".into(),
+        access: pc::MountAccess::ReadWrite,
+        lifetime: pc::MountLifetime::Session,
+        required: false,
+    });
+    assert!(
+        NamespaceProvider::new(tmp.path())
+            .create(&cache)
+            .await
+            .is_err()
+    );
+
+    let mut limits = spec("t-limits-unsupported");
+    limits.limits.memory_bytes = Some(1024);
+    assert!(
+        NamespaceProvider::new(tmp.path())
+            .create(&limits)
+            .await
+            .is_err()
+    );
+
+    let mut secret_env = spec("t-secret-env-unsupported");
+    secret_env.env.push(pc::EnvVar {
+        name: "TOKEN".into(),
+        value: pc::EnvValue::Secret {
+            reference: "broker://token".into(),
+        },
+        visibility: pc::EnvVisibility::Process,
+    });
+    assert!(
+        NamespaceProvider::new(tmp.path())
+            .create(&secret_env)
+            .await
+            .is_err()
+    );
+    assert!(!tmp.path().join("t-secret-env-unsupported").exists());
+}
+
+#[tokio::test]
 async fn bwrap_exec_has_path_fidelity_and_collects_outputs() {
     if !bwrap_works().await {
         eprintln!("skipping: bwrap/userns unavailable on this host");
@@ -328,7 +498,14 @@ async fn create_realizes_env_and_lifecycle_without_executing() {
 
     assert_eq!(sandbox.id(), "t-nx");
     let handle = sandbox.handle();
-    assert_eq!(handle.provider_kind, "bwrap");
+    assert_eq!(
+        handle.provider_kind,
+        if cfg!(target_os = "macos") {
+            "seatbelt"
+        } else {
+            "bwrap"
+        }
+    );
     assert!(matches!(
         sandbox.status().await.unwrap(),
         pc::SandboxStatus::Ready

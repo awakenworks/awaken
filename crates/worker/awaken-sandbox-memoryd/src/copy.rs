@@ -18,6 +18,9 @@ use crate::FuseError;
 /// `fusermount3` on `PATH`). When false, use [`materialize`] / [`harvest`].
 #[must_use]
 pub fn fuse_available() -> bool {
+    if !cfg!(target_os = "linux") {
+        return false;
+    }
     if !Path::new("/dev/fuse").exists() {
         return false;
     }
