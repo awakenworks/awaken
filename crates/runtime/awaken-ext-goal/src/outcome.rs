@@ -82,6 +82,18 @@ pub struct Grade {
     pub explanation: String,
 }
 
+/// Immutable evidence that one Worker result was graded. The message range is
+/// half-open (`start..end`) in the committed Worker transcript.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Evaluation {
+    pub iteration: u32,
+    pub worker_run_id: RunId,
+    pub grader_run_id: RunId,
+    pub message_start: usize,
+    pub message_end: usize,
+    pub grade: Grade,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvaluationResult {
