@@ -186,7 +186,7 @@ pub struct SessionInit {
     /// The session's mounted resources (ADR-0038), parsed from the wire `resources[]`:
     /// files, memory stores, repos. The host realizes each into the run's sandbox and
     /// appends a prompt fragment to the system prompt (A3a). Empty = no mounts.
-    pub resources: crate::EffectiveSessionInputs,
+    pub resources: crate::ResolvedSessionResources,
     /// The session's requested model (R2), staged so the run binds it; `None` →
     /// the host default.
     pub model: Option<String>,
@@ -352,7 +352,7 @@ pub trait SessionRuntime: Send + Sync {
         &self,
         _thread: &str,
         _workspace_id: &str,
-        _inputs: &crate::EffectiveSessionInputs,
+        _inputs: &crate::ResolvedSessionResources,
     ) -> Result<(), RunError> {
         Ok(())
     }
@@ -667,7 +667,7 @@ mod tests {
             workspace_id: "ws_test".into(),
             agent_id: "a".into(),
             mcp_servers: Vec::new(),
-            resources: crate::EffectiveSessionInputs::default(),
+            resources: crate::ResolvedSessionResources::default(),
             model: None,
             runtime: None,
             deny_egress: false,

@@ -73,11 +73,7 @@ pub struct ResolvedSessionResources {
     pub skills: Option<Vec<ResolvedSkillBinding>>,
 }
 
-/// Compatibility name retained at existing call sites while the canonical model
-/// is [`ResolvedSessionResources`].
-pub type EffectiveSessionInputs = ResolvedSessionResources;
-
-impl EffectiveSessionInputs {
+impl ResolvedSessionResources {
     /// Validate identity and mount invariants before an adapter performs any
     /// resource-specific side effect such as sealing a credential or creating a
     /// catalog definition.
@@ -263,7 +259,7 @@ impl SessionInputResolver {
         catalog: &S,
         agent_defaults: &[InputBinding],
         session_attachments: &[SessionInputAttachment],
-    ) -> Result<EffectiveSessionInputs, SessionInputError> {
+    ) -> Result<ResolvedSessionResources, SessionInputError> {
         let inputs = Self::compose(agent_defaults, session_attachments)?
             .into_iter()
             .map(|binding| {
@@ -300,7 +296,7 @@ impl SessionInputResolver {
                 })
             })
             .collect::<Result<Vec<_>, SessionInputError>>()?;
-        Ok(EffectiveSessionInputs {
+        Ok(ResolvedSessionResources {
             inputs,
             skills: None,
         })
@@ -524,7 +520,7 @@ mod tests {
 
     #[test]
     fn effective_manifest_mutations_preserve_identity_and_invariants() {
-        let initial = EffectiveSessionInputs::default()
+        let initial = ResolvedSessionResources::default()
             .attach(resolved_file("input-a", "file-a", "mnt/a"))
             .unwrap();
         assert_eq!(initial.inputs[0].mount_path, "/mnt/a");

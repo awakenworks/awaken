@@ -1,4 +1,4 @@
-//! Live-session typed input CRUD. The persisted `EffectiveSessionInputs` aggregate
+//! Live-session typed input CRUD. The persisted `ResolvedSessionResources` aggregate
 //! is authoritative; runtime mounts and wire DTOs are projections of that value.
 
 use super::*;
@@ -17,7 +17,7 @@ impl ManagedState {
         &self,
         session_id: &str,
         owner_scope: &str,
-        inputs: awaken_session_contract::EffectiveSessionInputs,
+        inputs: awaken_session_contract::ResolvedSessionResources,
     ) -> Result<(), StateError> {
         let mut persisted = self
             .sessions_repo

@@ -40,7 +40,7 @@ pub struct PersistedSession {
     /// The exact, secret-free input manifest resolved at Session creation. Retry
     /// and rehydration reuse this value and never re-read Agent defaults/current
     /// Memory or Repository configuration.
-    pub effective_inputs: crate::EffectiveSessionInputs,
+    pub effective_inputs: crate::ResolvedSessionResources,
     /// Durable lifecycle projection used when a process rehydrates the session.
     pub status: String,
     pub archived_at: Option<String>,

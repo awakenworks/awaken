@@ -142,7 +142,7 @@ secret value.
 ### Resolved Session model
 
 ```rust
-struct EffectiveSessionInputs {
+struct ResolvedSessionResources {
     inputs: Vec<ResolvedInput>,
     skills: Option<Vec<ResolvedSkillBinding>>,
 }
@@ -221,10 +221,10 @@ reclamation. It stores neither a secret nor a process-local handle.
 
 | Component | Status | Owner | Responsibility | Must not own |
 |---|---|---|---|---|
-| `ResourceCatalog` | Target evolution of current config stores | Resource Catalog | Memory/Repository definitions, immutable config versions, current version, lifecycle state | content bytes, IAM policy, sandbox paths |
+| `ResourceCatalog` | Existing | Resource Catalog | Memory/Repository definitions, immutable config versions, current version, lifecycle state | content bytes, IAM policy, sandbox paths |
 | `AgentInputBindingRepository` | Existing | Agent Configuration | Workspace-scoped Agent default bindings and authoring revision; every operation requires Workspace | Session merge, content resolution, authorization |
 | Managed Session adapter | Existing | Protocol/product ACL | parse/project Anthropic resources; accept temporary attachments | raw DTO leakage into neutral/resource services |
-| `SessionInputResolver` | Target; replaces duplicate merge/resolve | Session control plane | merge once, replace explicitly, validate mount paths, select current config versions, create `EffectiveSessionInputs` and prompts | secret material, runtime loop, physical mounts |
+| `SessionInputResolver` | Existing | Session control plane | merge once, replace explicitly, validate mount paths, select current config versions, create `ResolvedSessionResources` and prompts | secret material, runtime loop, physical mounts |
 | front-door PEP | Existing/evolving | Server edge | authenticate, construct trusted Workspace target, call PDP, enforce obligations | resource content and domain policy implementation |
 | authorization PDP/PIP | External/shared authorization domain | IAM | decide principal/action/scope/resource facts under active policy | mounts, resource configuration, storage |
 | `SessionResourceCoordinator` | Target evolution of Host preparation | Session application/host | activation state, ordered provision/release, recovery handoff | Agent config loading, IAM policy language |
@@ -253,7 +253,7 @@ resource-specific repositories enforce their own intrinsic invariants.
 | Configure Repo | Resource Catalog service | Repository config repository, Vault | `Repository` + config v1 referencing credential binding |
 | Bind Agent default | Agent Configuration service | `AgentInputBindingRepository`, PEP/PDP | identity-only `InputBinding`, authoring revision increments |
 | Attach to Session | Managed Session adapter | PEP/PDP | temporary `SessionInputAttachment` |
-| Resolve | `SessionInputResolver` | Agent binding repo, Resource Catalog, PEP result | `EffectiveSessionInputs`; Memory/Repo config versions selected once |
+| Resolve | `SessionInputResolver` | Agent binding repo, Resource Catalog, PEP result | `ResolvedSessionResources`; Memory/Repo config versions selected once |
 | Activate File | `SessionResourceCoordinator` | `FileStore`, `SandboxProvider` | read-only mount + activation `Active` |
 | Activate Memory | `SessionResourceCoordinator` | `MemoryRepository`, Memory realizer | `ScopedMemoryStore`/mount + activation `Active` |
 | Activate Repo | `SessionResourceCoordinator` | Repository realizer, Vault, Sandbox | current clone + working tree; credential lease not persisted |
@@ -285,7 +285,7 @@ Agent default binding  +  Session temporary attachment
              SessionInputResolver
                        |
                        v
-             EffectiveSessionInputs
+             ResolvedSessionResources
                        |
                        v
           SessionResourceCoordinator
@@ -532,7 +532,7 @@ resource port or storage schema.
 
 ## Recovery and Reclamation
 
-`EffectiveSessionInputs` and activation records are durable Session application
+`ResolvedSessionResources` and activation records are durable Session application
 state, not committed Runtime facts. Local paths, process ids, leases, and live
 handles are reconstructed.
 
@@ -613,13 +613,11 @@ internal config version remains an awaken governance detail.
 - merge protocol-side and Host-side resource composition into
   `SessionInputResolver`;
 - preserve `ResourceAccess` through the neutral Session contract and realizer;
-- generate prompts from `EffectiveSessionInputs` once;
+- generate prompts from `ResolvedSessionResources` once;
 - rename the now-unified `MemoryFs` aggregate port to `MemoryRepository` when the
   remaining extraction call sites have migrated;
 - evolve repo staging into a `RepositoryRealizer` consuming a platform-managed
   Repository config version and credential binding.
-- use `ResolvedSessionResources` as the canonical name; retain
-  `EffectiveSessionInputs` only as a source-compatibility alias.
 
 ### Delete after migration
 
@@ -644,7 +642,7 @@ internal config version remains an awaken governance detail.
 ### Add
 
 - typed ids and `InputResourceId`;
-- `EffectiveSessionInputs` and activation records;
+- `ResolvedSessionResources` and activation records;
 - version repositories for Memory/Repository config;
 - `SessionInputResolver`, `SessionResourceCoordinator`, and
   `ResourceReclaimer` roles;

@@ -468,7 +468,7 @@ impl ManagedHost {
         &self,
         thread: &str,
         workspace: &str,
-        inputs: &awaken_protocol_managed::EffectiveSessionInputs,
+        inputs: &awaken_protocol_managed::ResolvedSessionResources,
     ) -> Result<Vec<crate::host::PreparedMcpServer>, RunError> {
         let mut all = crate::provisioning::StagedResources::default();
         let mut bound_memory = None;
@@ -867,7 +867,7 @@ impl SessionRuntime for ManagedHost {
         &self,
         thread: &str,
         workspace_id: &str,
-        inputs: &awaken_protocol_managed::EffectiveSessionInputs,
+        inputs: &awaken_protocol_managed::ResolvedSessionResources,
     ) -> Result<(), RunError> {
         self.host.register_thread_workspace(thread, workspace_id);
         self.host.harvest_thread_memory(thread).await;

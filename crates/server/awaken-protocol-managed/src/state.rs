@@ -64,7 +64,7 @@ struct SessionRecord {
     agent_id: String,
     session: Session,
     /// Durable source of truth for the runtime's currently applied input projection.
-    effective_inputs: awaken_session_contract::EffectiveSessionInputs,
+    effective_inputs: awaken_session_contract::ResolvedSessionResources,
     events: Vec<Event>,
     /// Subagent (multiagent delegate) child threads spawned in the session, each a
     /// projected `session_thread` object (parent = the primary thread). Enumerated
@@ -330,7 +330,7 @@ mod tests {
                 Vec<(
                     String,
                     String,
-                    awaken_session_contract::EffectiveSessionInputs,
+                    awaken_session_contract::ResolvedSessionResources,
                 )>,
             >,
         >,
@@ -391,7 +391,7 @@ mod tests {
             &self,
             thread: &str,
             workspace_id: &str,
-            inputs: &awaken_session_contract::EffectiveSessionInputs,
+            inputs: &awaken_session_contract::ResolvedSessionResources,
         ) -> Result<(), RunError> {
             self.order.lock().unwrap().push("resources");
             self.restored.lock().unwrap().push((
@@ -598,8 +598,8 @@ mod tests {
         }
     }
 
-    fn sample_inputs() -> awaken_session_contract::EffectiveSessionInputs {
-        awaken_session_contract::EffectiveSessionInputs {
+    fn sample_inputs() -> awaken_session_contract::ResolvedSessionResources {
+        awaken_session_contract::ResolvedSessionResources {
             inputs: vec![awaken_session_contract::ResolvedInput {
                 binding_id: awaken_resource_contract::BindingId::from("input-file"),
                 source: awaken_session_contract::ResolvedInputSource::File {

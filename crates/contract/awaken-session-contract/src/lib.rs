@@ -33,8 +33,8 @@ pub use lifecycle::{SessionLifecycleFact, SessionLifecycleSink};
 pub use mcp_binding::{McpRefreshBinding, TokenEndpointAuthBinding};
 pub use mcp_probe::{McpProbe, McpProbeStatus};
 pub use resource::{
-    EffectiveSessionInputs, ResolvedInput, ResolvedInputSource, ResolvedSessionResources,
-    ResolvedSkillBinding, SessionInputAttachment, SessionInputError, SessionInputResolver,
+    ResolvedInput, ResolvedInputSource, ResolvedSessionResources, ResolvedSkillBinding,
+    SessionInputAttachment, SessionInputError, SessionInputResolver,
 };
 pub use session::{
     AgentCapabilities, BuiltinTool, CustomTool, DelegatedRun, LiveInboxEntry, LiveInboxError,

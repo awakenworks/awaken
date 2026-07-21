@@ -60,7 +60,7 @@ The version rule is:
 An Agent does not pin a Memory or Repository configuration version. It names the
 resource identity. The `SessionInputResolver` reads the current published
 configuration version exactly once while creating the Session and persists the
-secret-free result in `EffectiveSessionInputs`. A Session does not pin an Agent
+secret-free result in `ResolvedSessionResources`. A Session does not pin an Agent
 version; changes to Agent defaults affect later Sessions, not the effective
 inputs already recorded for an existing Session.
 
@@ -102,7 +102,7 @@ current Agent bindings + Session attachments
 
 An explicit Session attachment may replace a named Agent binding. Accidental
 mount-path collisions fail closed; array order is never an override policy.
-Resource prompts are rendered from `EffectiveSessionInputs`, after replacement,
+Resource prompts are rendered from `ResolvedSessionResources`, after replacement,
 scope, access, and mount paths are final. The Runtime Host does not read the
 Agent binding repository or merge resources a second time.
 
@@ -125,7 +125,7 @@ pinned config + current state + current ownership + current authorization
 An old config version cannot revive a suspended/deleted resource or a revoked
 credential. Credential configuration contains only a binding/reference; secret
 material is injected as a short-lived lease at activation or remote operation
-time and is never persisted in `EffectiveSessionInputs`.
+time and is never persisted in `ResolvedSessionResources`.
 
 ### D4: Resource services own data invariants, not authorization policy
 
@@ -242,7 +242,7 @@ configuration is never transiently resolved into the old Session's sandbox.
 The first coherent slice is:
 
 1. introduce typed `InputResourceId`, `InputBinding`, and
-   `EffectiveSessionInputs`;
+   `ResolvedSessionResources`;
 2. resolve Agent defaults and Session attachments once at Session creation;
 3. preserve `ResourceAccess` through activation and generate prompts from the
    effective result;

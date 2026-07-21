@@ -7,7 +7,7 @@ use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse};
 use std::sync::atomic::AtomicUsize;
 
 /// Authoring shorthand used only by tests. Production crosses the runtime port
-/// exclusively as `EffectiveSessionInputs`.
+/// exclusively as `ResolvedSessionResources`.
 #[derive(Clone)]
 struct TestInput {
     kind: String,
@@ -102,13 +102,13 @@ fn managed_with_resource_source(host: Arc<SharedHost>) -> crate::ManagedHost {
 
 fn effective_resources(
     resources: Vec<TestInput>,
-) -> awaken_protocol_managed::EffectiveSessionInputs {
+) -> awaken_protocol_managed::ResolvedSessionResources {
     use awaken_protocol_managed::{ResolvedInput, ResolvedInputSource};
     use awaken_resource_contract::{
         BindingId, FileId, MemoryStoreId, RepositoryId, ResourceAccess,
     };
 
-    awaken_protocol_managed::EffectiveSessionInputs {
+    awaken_protocol_managed::ResolvedSessionResources {
         inputs: resources
             .into_iter()
             .enumerate()
@@ -161,8 +161,8 @@ fn effective_repository(
     url: &str,
     mount_path: &str,
     credential_binding: Option<String>,
-) -> awaken_protocol_managed::EffectiveSessionInputs {
-    awaken_protocol_managed::EffectiveSessionInputs {
+) -> awaken_protocol_managed::ResolvedSessionResources {
+    awaken_protocol_managed::ResolvedSessionResources {
         inputs: vec![awaken_protocol_managed::ResolvedInput {
             binding_id: awaken_resource_contract::BindingId::from("test-repository"),
             source: awaken_protocol_managed::ResolvedInputSource::Repository {
@@ -1116,7 +1116,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         .apply_session_inputs(
             "t-attach",
             host.local_workspace(),
-            &awaken_protocol_managed::EffectiveSessionInputs::default(),
+            &awaken_protocol_managed::ResolvedSessionResources::default(),
         )
         .await
         .expect("detach");

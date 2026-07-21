@@ -68,7 +68,8 @@ fn resource_catalog() -> std::sync::Arc<InMemoryResourceCatalog> {
 #[derive(Clone, Default)]
 struct AcceptingFake {
     prepared: std::sync::Arc<std::sync::Mutex<Vec<SessionInit>>>,
-    applied: std::sync::Arc<std::sync::Mutex<Vec<awaken_session_contract::EffectiveSessionInputs>>>,
+    applied:
+        std::sync::Arc<std::sync::Mutex<Vec<awaken_session_contract::ResolvedSessionResources>>>,
 }
 
 struct AgentWithResources;
@@ -179,7 +180,7 @@ impl SessionRuntime for AcceptingFake {
         &self,
         _thread: &str,
         _workspace_id: &str,
-        inputs: &awaken_session_contract::EffectiveSessionInputs,
+        inputs: &awaken_session_contract::ResolvedSessionResources,
     ) -> Result<(), RunError> {
         self.applied.lock().unwrap().push(inputs.clone());
         Ok(())
