@@ -73,6 +73,17 @@ impl SharedHost {
         if let Some(token) = ctx.cancel.lock().expect("cancel mutex poisoned").as_ref() {
             token.cancel();
         }
+        let active_run = ctx
+            .active_run
+            .lock()
+            .expect("active run mutex poisoned")
+            .clone();
+        if let (Some(ingress), Some(run_id)) = (&ctx.durable_ingress, active_run) {
+            ingress
+                .cancel(&run_id)
+                .await
+                .map_err(|error| HostError::internal(error.to_string()))?;
+        }
         Ok(())
     }
 
@@ -198,15 +209,44 @@ impl SharedHost {
         // state and commit through the same boundary, so `finish_step` is identical.
         // R3/R4: route to the ACP executor for acp:* threads, else the native
         // ingress (direct / durable / superseding). See `crate::run_exec`.
+        *ctx.active_run.lock().expect("active run mutex poisoned") = Some(run_id.clone());
         let state = self
             .execute_activation(&ctx, activation, supersede, sink)
-            .await?;
+            .await;
+        {
+            let mut active_run = ctx.active_run.lock().expect("active run mutex poisoned");
+            if active_run.as_ref() == Some(&run_id) {
+                *active_run = None;
+            }
+        }
+        let state = state?;
         let terminal_commit_id = run_id.0.clone();
         let result = self.finish_step(&ctx, &mut st, run_id, state, before, thread)?;
         drop(st);
         self.run_aux_after_step(&ctx, thread, &terminal_commit_id, &result.state)
             .await;
         Ok(result)
+    }
+
+    /// Resume through the same in-flight identity slot as a fresh foreground
+    /// attempt, so `user.interrupt` is backend-independent while a resumed ACP or
+    /// A2A task is executing.
+    async fn drive_resume(
+        &self,
+        ctx: &Arc<SessionCtx>,
+        activation: RunActivation,
+        command: ResumeCommand,
+    ) -> Result<RunState, HostError> {
+        let run_id = activation.run_id.clone();
+        *ctx.active_run.lock().expect("active run mutex poisoned") = Some(run_id.clone());
+        let result = ctx.ingress.resume(activation, command, ctx.context()).await;
+        {
+            let mut active = ctx.active_run.lock().expect("active run mutex poisoned");
+            if active.as_ref() == Some(&run_id) {
+                *active = None;
+            }
+        }
+        result.map_err(|error| HostError::internal(error.to_string()))
     }
 
     /// Fire the out-of-band auxiliary agents (memory extraction) after a step reaches
@@ -512,14 +552,12 @@ impl SharedHost {
             let before = ctx.commit.committed_messages(&ctx.thread_id).len();
             let activation = ctx.resume_activation(&ticket);
             let command = ResumeCommand::from_ticket(&ticket, ResumeResult::Input(content), 0);
-            let state = ctx
-                .ingress
-                .resume(activation, command, ctx.context())
-                .await
-                .map_err(|e| HostError::internal(e.to_string()))?;
+            let state = self.drive_resume(&ctx, activation, command).await?;
+            let terminal_commit_id = run_id.0.clone();
             let result = self.finish_step(&ctx, &mut st, run_id, state, before, thread)?;
             drop(st);
-            self.run_aux_after_step(&ctx, thread, &result.state).await;
+            self.run_aux_after_step(&ctx, thread, &terminal_commit_id, &result.state)
+                .await;
             return Ok(result);
         }
 
@@ -574,11 +612,7 @@ impl SharedHost {
             let before = ctx.commit.committed_messages(&ctx.thread_id).len();
             let activation = ctx.resume_activation(&ticket);
             let command = ResumeCommand::from_ticket(&ticket, result, 0);
-            let state = ctx
-                .ingress
-                .resume(activation, command, ctx.context())
-                .await
-                .map_err(|e| HostError::internal(e.to_string()))?;
+            let state = self.drive_resume(&ctx, activation, command).await?;
             let terminal_commit_id = run_id.0.clone();
             let result = self.finish_step(&ctx, &mut st, run_id, state, before, thread)?;
             drop(st);
@@ -609,11 +643,7 @@ impl SharedHost {
         let before = ctx.commit.committed_messages(&ctx.thread_id).len();
         let activation = ctx.resume_activation(&ticket);
         let command = ResumeCommand::from_ticket(&ticket, result, 0);
-        let state = ctx
-            .ingress
-            .resume(activation, command, ctx.context())
-            .await
-            .map_err(|e| HostError::internal(e.to_string()))?;
+        let state = self.drive_resume(&ctx, activation, command).await?;
         let terminal_commit_id = run_id.0.clone();
         let result = self.finish_step(&ctx, &mut st, run_id, state, before, thread)?;
         drop(st);
