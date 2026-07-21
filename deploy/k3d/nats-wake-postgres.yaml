@@ -134,6 +134,9 @@ spec:
             # Cross-node wake over NATS (pg-notify DISABLED). Requires a binary built
             # with `--features nats`; the durable store stays Postgres above.
             - { name: AWAKEN_DISPATCH_WAKE, value: nats }
+            # Three processes each host dispatch + commit pools. Bound their
+            # aggregate below the fixture Postgres max_connections=100.
+            - { name: AWAKEN_PG_MAX_CONNECTIONS, value: "8" }
             - { name: AWAKEN_NATS_URL, value: "nats://nats:4222" }
             - { name: AWAKEN_HTTP_ADDR, value: "0.0.0.0:3000" }
             - { name: AWAKEN_STORAGE_DIR, value: "/tmp/awaken" }

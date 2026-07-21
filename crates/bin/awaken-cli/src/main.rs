@@ -58,6 +58,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Serve role. Refuse a durable ingress on a volatile queue (no-data-loss guard).
     awaken_runtime_host::ensure_durable_backend()?;
+    let runtime_deployment = awaken_runtime_host::DeploymentConfig::from_env();
+    let postgres_startup = runtime_deployment.dispatch_backend
+        == awaken_runtime_host::DispatchBackend::Postgres
+        || runtime_deployment.store == awaken_runtime_host::StoreKind::Postgres;
+    let migration_lock = if postgres_startup {
+        let url = runtime_deployment
+            .database_url
+            .as_deref()
+            .ok_or("a Postgres dispatch or commit backend requires AWAKEN_DATABASE_URL")?;
+        Some(awaken_runtime_host::PostgresMigrationLock::acquire(url).await?)
+    } else {
+        None
+    };
     // Shared Postgres data-plane backends (a multi-node fleet), connected once before
     // serving; the console's own config/catalog/credential stores are SQLite under
     // AWAKEN_MGMT_DIR (or in-memory), assembled inside the management router.
@@ -79,6 +92,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // provider/model/credential through /v1/config/* + /v1/vaults/* and sessions run
     // that real model.
     let app = awaken_cli::build_management_router().await;
+    if let Some(lock) = migration_lock {
+        lock.release().await?;
+    }
     // The brain admin surface (connection-count metric + /admin/drain + /readyz) so a
     // graceful, stream-preserving scale-in works. When AWAKEN_SERVER_ADMIN_LISTEN is
     // set, serve the admin routes on that SEPARATE port (cloud-native: probes/metrics/

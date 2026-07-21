@@ -1,16 +1,15 @@
-# Cold-start migration-race harness (Oversight issue #24). Same fleet topology as
+# Cold-start migration-race regression harness. Same fleet topology as
 # `scaling-postgres.yaml` — a brain Deployment behind one Service, all replicas
 # draining ONE shared Postgres dispatch queue — but the brain Deployment is born at
 # `replicas: 1` so the e2e can control cold-start ordering precisely:
 #
-#   PHASE 1 (workaround, the regression guard): apply postgres → wait ready →
+#   PHASE 1 (historical seed-one regression guard): apply postgres → wait ready →
 #     apply brain(1) → let the single pod run `ensure_ledger` + migrations with NO
 #     peer to race → scale 1→3 → submit concurrent durable runs → assert exactly-once.
 #
-#   PHASE 2 (naive repro, diagnostic): fresh DB, brain scaled 0→3 all at once against
-#     a ready-but-unmigrated Postgres → N replicas race scoped-migration's UNLOCKED
-#     `ensure_ledger` (`CREATE TABLE IF NOT EXISTS` outside the per-bundle advisory
-#     lock) → collide on `pg_type_typname_nsp_index` → a replica crash-loops.
+#   PHASE 2 (concurrent cold-start gate): fresh DB, brain scaled 0→3 all at once
+#     against a ready-but-unmigrated Postgres → the composition-root advisory lock
+#     serializes all repository migrations → all replicas become Ready without restart.
 #
 # Loaded into a k3d cluster with `imagePullPolicy: Never`. See `cold_start_race_e2e.sh`.
 ---
@@ -94,6 +93,9 @@ spec:
             - { name: AWAKEN_STORE, value: postgres }
             - { name: AWAKEN_DATABASE_URL, value: "postgres://postgres:test@postgres:5432/awaken" }
             - { name: AWAKEN_DISPATCH_WAKE, value: pg-notify }
+            # Three processes each host dispatch + commit pools. Bound their
+            # aggregate below the fixture Postgres max_connections=100.
+            - { name: AWAKEN_PG_MAX_CONNECTIONS, value: "8" }
             - { name: AWAKEN_HTTP_ADDR, value: "0.0.0.0:3000" }
             - { name: AWAKEN_STORAGE_DIR, value: "/tmp/awaken" }
           ports:

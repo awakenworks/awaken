@@ -34,6 +34,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // AWAKEN_STORAGE_DIR) — such a queue silently drops every queued/crashed/scheduled
     // run on restart, defeating the whole point of durable ingress (no-data-loss).
     awaken_runtime_host::ensure_durable_backend()?;
+    let deployment = awaken_runtime_host::DeploymentConfig::from_env();
+    let postgres_startup = (deployment.durable
+        && deployment.dispatch_backend == awaken_runtime_host::DispatchBackend::Postgres)
+        || deployment.store == awaken_runtime_host::StoreKind::Postgres;
+    let migration_lock = if postgres_startup {
+        let url = deployment
+            .database_url
+            .as_deref()
+            .ok_or("a Postgres dispatch or commit backend requires AWAKEN_DATABASE_URL")?;
+        Some(awaken_runtime_host::PostgresMigrationLock::acquire(url).await?)
+    } else {
+        None
+    };
     // Connect the shared Postgres dispatch pool once, before serving, when durable
     // ingress is backed by Postgres (a multi-node fleet sharing one queue). Doing it
     // here keeps the non-`Send` sqlx connect future out of the per-thread run loop.
@@ -122,6 +135,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok("full-chain") => awaken_scenario_host::build_full_chain_router(),
         _ => awaken_scenario_host::build_echo_router(),
     };
+    if let Some(lock) = migration_lock {
+        lock.release().await?;
+    }
     // Brain admin surface (ADR-0022 D7): the connection-count metric that KEDA
     // autoscales on, plus /admin/drain + /readyz for graceful, stream-preserving
     // scale-in. Wraps the served router so the in-flight counter sees every request.
