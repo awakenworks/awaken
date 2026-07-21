@@ -88,6 +88,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # adapter, never here.
     # dev-only: serde_json drives the ScopeId wire (scope_id column) round-trip test.
     "awaken-tenancy": {"serde", "serde_json"},
+    "awaken-inference-contract": {"serde", "serde_json"},
     # The neutral session-runtime ports + signature vocabulary (session runtime, work
     # queue, MCP probe, agent-config source, session repo), extracted from the Managed
     # wire adapter so the host + other implementors depend on a contract/ leaf, not on
@@ -95,6 +96,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # only; names no wire, store, or plane. Ports move here incrementally.
     "awaken-session-contract": {
         "awaken-agent-contract",
+        "awaken-inference-contract",
         # Session resolution consumes only the resources-plane identity/config
         # port. Authorization remains an edge/PDP concern.
         "awaken-resource-contract",
@@ -304,6 +306,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     },
     "awaken-runtime-contract": {
         "awaken-agent-contract",
+        "awaken-inference-contract",
         "serde",
         "serde_json",
         "sha2",
@@ -725,6 +728,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # from awaken-runtime-host so the host stays lean (Step 3b).
     "awaken-session-store": {
         "awaken-session-contract",
+        "awaken-inference-contract",
         # The opaque tenancy ScopeId the in-memory scoped-session store keys its
         # isolation fence by (durable backends bind it as an opaque column).
         "awaken-tenancy",

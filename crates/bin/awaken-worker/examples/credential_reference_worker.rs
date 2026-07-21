@@ -6,7 +6,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_runtime_contract::InferenceAccess;
-use awaken_runtime_contract::RunActivation;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult,
 };
@@ -30,9 +29,9 @@ impl LlmExecutor for GrantExecutor {
 struct ReferenceMaterializer;
 
 impl InferenceExecutorMaterializer for ReferenceMaterializer {
-    fn materialize(
+    fn materialize_pinned(
         &self,
-        _activation: &RunActivation,
+        _model_ref: &str,
         access: &InferenceAccess,
     ) -> Option<Arc<dyn LlmExecutor>> {
         (access.scheme == "credential-reference/v1").then(|| {

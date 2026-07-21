@@ -15,7 +15,6 @@ use awaken_agent_contract::agent::message::Role;
 use awaken_config_resolver::ResolvedInference;
 use awaken_protocol_managed::ManagedState;
 use awaken_provider_genai::GenaiExecutor;
-use awaken_runtime_contract::RunActivation;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
 };
@@ -53,12 +52,11 @@ fn mount(host: Arc<SharedHost>) -> Router {
 struct RouteProvider;
 
 impl InferenceExecutorMaterializer for RouteProvider {
-    fn materialize(
+    fn materialize_pinned(
         &self,
-        activation: &RunActivation,
+        model_ref: &str,
         access: &InferenceAccess,
     ) -> Option<Arc<dyn LlmExecutor>> {
-        let model_ref = activation.effective_model_ref();
         if !access.is_host_executor_for(model_ref) {
             return None;
         }
@@ -234,12 +232,12 @@ pub async fn run_echo_worker(upstream: &str) -> Result<(), Box<dyn std::error::E
     struct EchoWorkerProvider;
 
     impl InferenceExecutorMaterializer for EchoWorkerProvider {
-        fn materialize(
+        fn materialize_pinned(
             &self,
-            activation: &RunActivation,
+            model_ref: &str,
             access: &InferenceAccess,
         ) -> Option<Arc<dyn LlmExecutor>> {
-            if !access.is_host_executor_for(activation.effective_model_ref()) {
+            if !access.is_host_executor_for(model_ref) {
                 return None;
             }
             Some(Arc::new(EchoModel))

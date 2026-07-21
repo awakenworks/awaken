@@ -31,7 +31,13 @@ fn bind_test_memory(host: &SharedHost, thread: &str, store_id: &str, writable: b
     let handle = host.platform_memory_handle(store_id.to_string(), writable);
     host.register_thread_memory(
         thread,
-        Some(Arc::new(host.memory.bind(handle, &config, writable))),
+        Some(Arc::new(host.memory.bind(
+            "default",
+            handle,
+            Arc::new(TestResourceConfigSource),
+            &config,
+            writable,
+        ))),
     );
 }
 
@@ -612,6 +618,73 @@ async fn memory_written_in_one_thread_is_recalled_and_used_in_another() {
         reply, "tea",
         "the fresh thread should recall and use the saved memory"
     );
+}
+
+#[tokio::test]
+async fn reopening_a_terminal_thread_recovers_a_missing_extraction_outbox_intent() {
+    use awaken_protocol_managed::MemoryExtractionRepository as _;
+
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("awaken-memory-outbox-{stamp}"));
+    let thread = "memory-outbox-thread";
+
+    // Commit the terminal run without a Memory binding, modeling a crash after
+    // terminal truth but before the auxiliary intent could be inserted.
+    let first = SharedHost::new(Arc::new(MemoryHostModel), "stub").with_store_dir(&dir);
+    first
+        .run(None, thread, user("remember rust"))
+        .await
+        .expect("terminal run");
+    drop(first);
+
+    // Rebind the frozen resource and reopen the committed thread. Context recovery
+    // derives the missing outbox identity from the latest terminal run and inserts
+    // the same durable intent normal after-commit delivery would have produced.
+    let second = SharedHost::new(Arc::new(MemoryHostModel), "stub").with_store_dir(&dir);
+    bind_test_memory(&second, thread, "outbox-store", true);
+    let ctx = second
+        .ctx_for(thread, None)
+        .await
+        .expect("rehydrate thread");
+    let run = ctx
+        .commit
+        .latest_run(&ctx.thread_id)
+        .expect("terminal run record");
+    assert!(
+        second
+            .drain_memory(std::time::Duration::from_secs(10))
+            .await
+    );
+
+    let repository = awaken_session_store::SqliteManagedSessionRepository::open(
+        &dir.join("sessions.db").to_string_lossy(),
+    )
+    .unwrap();
+    let intent = repository
+        .get_extraction(&format!("memory-extraction:{thread}:{}", run.id.0))
+        .await
+        .unwrap()
+        .expect("recovered extraction intent");
+    assert_eq!(
+        intent.status,
+        awaken_protocol_managed::MemoryExtractionStatus::Completed
+    );
+    assert!(
+        second
+            .memory_stores
+            .fs()
+            .get_by_path("outbox-store", "/user-prefs.md")
+            .await
+            .unwrap()
+            .is_some(),
+        "recovered outbox drives the same governed Memory store"
+    );
+
+    drop(second);
+    std::fs::remove_dir_all(dir).ok();
 }
 
 /// Managed Memory is selected only by the frozen Session input; that same handle

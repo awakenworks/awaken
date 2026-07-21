@@ -201,9 +201,11 @@ impl SharedHost {
         let state = self
             .execute_activation(&ctx, thread, activation, supersede, sink)
             .await?;
+        let terminal_commit_id = run_id.0.clone();
         let result = self.finish_step(&ctx, &mut st, run_id, state, before, thread)?;
         drop(st);
-        self.run_aux_after_step(&ctx, thread, &result.state).await;
+        self.run_aux_after_step(&ctx, thread, &terminal_commit_id, &result.state)
+            .await;
         Ok(result)
     }
 
@@ -212,8 +214,15 @@ impl SharedHost {
     /// tool/delegation resume gets the same treatment as one that ended directly.
     /// No-op while the run is still awaiting. (Compaction is not out-of-band: it runs
     /// inline as the `compact` plugin's `BeforeInference` hook.)
-    async fn run_aux_after_step(&self, ctx: &Arc<SessionCtx>, thread: &str, state: &RunState) {
-        self.maybe_extract_memory(ctx, thread, state).await;
+    async fn run_aux_after_step(
+        &self,
+        ctx: &Arc<SessionCtx>,
+        thread: &str,
+        terminal_commit_id: &str,
+        state: &RunState,
+    ) {
+        self.maybe_extract_memory(ctx, thread, terminal_commit_id, state)
+            .await;
     }
 
     /// Fire out-of-band memory extraction when a turn reaches a terminal state
@@ -221,7 +230,13 @@ impl SharedHost {
     /// messages committed since the last extraction (a per-thread cursor), so a
     /// long conversation is not re-processed every turn. Fire-and-forget (drained
     /// at shutdown). The cursor advances optimistically on trigger.
-    async fn maybe_extract_memory(&self, ctx: &SessionCtx, thread: &str, state: &RunState) {
+    pub(crate) async fn maybe_extract_memory(
+        &self,
+        ctx: &SessionCtx,
+        thread: &str,
+        terminal_commit_id: &str,
+        state: &RunState,
+    ) {
         if matches!(state, RunState::Awaiting) {
             return;
         }
@@ -247,22 +262,48 @@ impl SharedHost {
                 .get(awaken_ext_memory::MEMORY_PLUGIN_ID),
         )
         .unwrap_or_default();
+        let model_ref = self
+            .inference_routing
+            .model_ref(thread, &snapshot.resolved_spec.model_binding.model_ref);
+        let inference_access = snapshot
+            .metadata
+            .inference_access
+            .as_ref()
+            .and_then(|access| access.for_model(&model_ref))
+            .unwrap_or_else(|| awaken_runtime_contract::InferenceAccess::host_executor(&model_ref));
+        let extractor = awaken_protocol_managed::MemoryExtractorSnapshot {
+            agent_id: awaken_ext_memory::MEMORY_AGENT_ID.to_string(),
+            model_ref,
+            inference_access,
+            instructions: memory_config.instructions.clone(),
+            extraction_prompt: memory_config.extraction_prompt.clone(),
+        };
         let committed = ctx.commit.committed_messages(&ctx.thread_id);
-        let mut st = ctx.state.lock().await;
+        let st = ctx.state.lock().await;
         let cursor = st.last_extracted_len.min(committed.len());
         if committed.len() <= cursor {
             return; // no new messages since the last extraction
         }
         let delta = committed[cursor..].to_vec();
-        st.last_extracted_len = committed.len();
+        let next_cursor = committed.len();
         drop(st);
-        mem.trigger(
-            thread,
-            delta,
-            memory_config.instructions.as_deref(),
-            memory_config.extraction_prompt.as_deref(),
-        )
-        .await;
+        match mem
+            .trigger(thread, terminal_commit_id, delta, extractor)
+            .await
+        {
+            Ok(()) => {
+                let mut st = ctx.state.lock().await;
+                st.last_extracted_len = st.last_extracted_len.max(next_cursor);
+            }
+            Err(error) => {
+                tracing::error!(
+                    session = thread,
+                    terminal_commit_id,
+                    error = ?error,
+                    "could not persist Memory extraction intent"
+                );
+            }
+        }
     }
 
     /// The durable ingress for `thread`, building the session if needed. Errors
@@ -500,9 +541,11 @@ impl SharedHost {
                 .resume(command, ctx.context())
                 .await
                 .map_err(|e| HostError::internal(e.to_string()))?;
+            let terminal_commit_id = run_id.0.clone();
             let result = self.finish_step(&ctx, &mut st, run_id, state, before, thread)?;
             drop(st);
-            self.run_aux_after_step(&ctx, thread, &result.state).await;
+            self.run_aux_after_step(&ctx, thread, &terminal_commit_id, &result.state)
+                .await;
             return Ok(result);
         }
 
@@ -532,9 +575,11 @@ impl SharedHost {
             .resume(command, ctx.context())
             .await
             .map_err(|e| HostError::internal(e.to_string()))?;
+        let terminal_commit_id = run_id.0.clone();
         let result = self.finish_step(&ctx, &mut st, run_id, state, before, thread)?;
         drop(st);
-        self.run_aux_after_step(&ctx, thread, &result.state).await;
+        self.run_aux_after_step(&ctx, thread, &terminal_commit_id, &result.state)
+            .await;
         Ok(result)
     }
 

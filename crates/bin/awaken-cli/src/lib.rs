@@ -79,6 +79,9 @@ struct ManagementStores {
     /// Durable home for the Managed session aggregate (its own `sessions.db`), so a
     /// rehydrated session reports its real config across a restart / peer process.
     sessions: Arc<dyn awaken_protocol_managed::ManagedSessionRepository>,
+    /// Same Session application repository viewed through the extraction-work
+    /// port; kept separate from MemoryRepository and from IAM.
+    memory_extractions: Arc<dyn awaken_protocol_managed::MemoryExtractionRepository>,
     /// The config authoring plane (`config.db`): the rich `AgentConfig` drafts the
     /// management console authors directly, and their publications. Scoped so a
     /// workspace's config is fenced from another's (ADR-0051).
@@ -129,6 +132,7 @@ fn spawn_credential_creation_reconciliation(
 
 /// Ephemeral management stores: everything in process memory (dev / e2e default).
 fn in_memory_management_stores() -> ManagementStores {
+    let sessions = Arc::new(awaken_protocol_managed::InMemorySessionRepository::default());
     ManagementStores {
         workspace_root: None,
         catalog: Arc::new(awaken_model_catalog::repo::InMemoryCatalogRepo::new()),
@@ -139,7 +143,8 @@ fn in_memory_management_stores() -> ManagementStores {
         resources: Arc::new(awaken_admin_config_api::InMemoryAgentInputBindingRepository::new()),
         resource_catalog: Arc::new(awaken_config_resolver::InMemoryResourceCatalog::new()),
         webhooks: Arc::new(awaken_admin_config_api::InMemoryWebhookStore::new()),
-        sessions: Arc::new(awaken_protocol_managed::InMemorySessionRepository::default()),
+        sessions: sessions.clone(),
+        memory_extractions: sessions,
         config: Arc::new(
             awaken_config_store::SqliteConfigStore::open_in_memory().expect("open config store"),
         ),
@@ -167,6 +172,10 @@ fn durable_management_stores(dir: &std::path::Path, key: &[u8; 32]) -> Managemen
         awaken_admin_config_api::SqliteAdminStore::open(&db("admin.db"))
             .expect("open admin.db under AWAKEN_MGMT_DIR"),
     );
+    let sessions = Arc::new(
+        awaken_runtime_host::SqliteManagedSessionRepository::open(&db("sessions.db"))
+            .expect("open sessions.db under AWAKEN_MGMT_DIR"),
+    );
     ManagementStores {
         workspace_root: Some(dir.to_path_buf()),
         catalog: Arc::new(catalog),
@@ -187,10 +196,8 @@ fn durable_management_stores(dir: &std::path::Path, key: &[u8; 32]) -> Managemen
         // A separate `sessions.db` (not a table in admin.db): a live session
         // instance is a different aggregate from the agent/MCP definitions admin.db
         // holds (ADR-0039 one-repository-per-aggregate).
-        sessions: Arc::new(
-            awaken_runtime_host::SqliteManagedSessionRepository::open(&db("sessions.db"))
-                .expect("open sessions.db under AWAKEN_MGMT_DIR"),
-        ),
+        sessions: sessions.clone(),
+        memory_extractions: sessions,
         // The config authoring plane persists agent drafts/publications under its
         // own `config.db` (ADR-0029/0031 `config` namespace).
         config: Arc::new(
@@ -327,16 +334,25 @@ async fn open_management_stores(
     }
 
     ensure_parent(&cfg.sessions);
-    let sessions: Arc<dyn awaken_protocol_managed::ManagedSessionRepository> = match &cfg.sessions {
-        StoreBackend::Sqlite(p) => Arc::new(
-            awaken_runtime_host::SqliteManagedSessionRepository::open(&path(p))
-                .expect("open sessions sqlite"),
-        ),
-        StoreBackend::Postgres(url) => Arc::new(
-            awaken_runtime_host::PostgresManagedSessionRepository::connect(url)
-                .await
-                .expect("connect sessions postgres"),
-        ),
+    let (sessions, memory_extractions): (
+        Arc<dyn awaken_protocol_managed::ManagedSessionRepository>,
+        Arc<dyn awaken_protocol_managed::MemoryExtractionRepository>,
+    ) = match &cfg.sessions {
+        StoreBackend::Sqlite(p) => {
+            let repository = Arc::new(
+                awaken_runtime_host::SqliteManagedSessionRepository::open(&path(p))
+                    .expect("open sessions sqlite"),
+            );
+            (repository.clone(), repository)
+        }
+        StoreBackend::Postgres(url) => {
+            let repository = Arc::new(
+                awaken_runtime_host::PostgresManagedSessionRepository::connect(url)
+                    .await
+                    .expect("connect sessions postgres"),
+            );
+            (repository.clone(), repository)
+        }
     };
 
     ensure_parent(&cfg.config);
@@ -393,6 +409,7 @@ async fn open_management_stores(
         resource_catalog: admin_catalog,
         webhooks: admin_webhooks,
         sessions,
+        memory_extractions,
         config,
         environments,
     }
@@ -657,6 +674,7 @@ async fn management_router_over(
         resource_catalog,
         webhooks: webhook_store,
         sessions,
+        memory_extractions,
         config,
         environments,
     } = stores;
@@ -884,6 +902,7 @@ async fn management_router_over(
         // Resolve a session's model to a real executor from the config plane (M2):
         // an unconfigured/unresolvable model falls back to the scenario model above.
         .with_inference_materializer(inference_materializer);
+    host_builder.install_memory_extraction_repository(memory_extractions);
     awaken_server::install_platform_memory_data_plane(&host_builder);
     // Production ACP wiring (`acp:*` threads): `AWAKEN_ACP_CLI` / `AWAKEN_ACP_ARGV`
     // realized in `AWAKEN_SANDBOX_TIER`. The one shared helper both the server and

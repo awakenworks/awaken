@@ -68,6 +68,97 @@ fn sandbox_err(e: impl std::fmt::Display) -> SandboxError {
     SandboxError::new(e.to_string())
 }
 
+#[cfg(all(feature = "fuse", target_os = "linux"))]
+fn is_mountpoint(path: &Path) -> bool {
+    let expected = path.to_string_lossy();
+    std::fs::read_to_string("/proc/self/mountinfo")
+        .ok()
+        .is_some_and(|mounts| {
+            mounts.lines().any(|line| {
+                line.split_whitespace()
+                    .nth(4)
+                    .map(|value| {
+                        value
+                            .replace("\\040", " ")
+                            .replace("\\011", "\t")
+                            .replace("\\134", "\\")
+                    })
+                    .is_some_and(|mountpoint| mountpoint == expected)
+            })
+        })
+}
+
+#[cfg(all(feature = "fuse", not(target_os = "linux")))]
+fn is_mountpoint(_path: &Path) -> bool {
+    false
+}
+
+#[cfg(feature = "fuse")]
+fn detach_fuse(path: &Path) {
+    'detach: for args in [["-u", ""], ["-u", "-z"]] {
+        for command in ["fusermount3", "fusermount"] {
+            let mut process = std::process::Command::new(command);
+            process.arg(args[0]);
+            if !args[1].is_empty() {
+                process.arg(args[1]);
+            }
+            if process
+                .arg(path)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success())
+            {
+                break 'detach;
+            }
+        }
+    }
+}
+
+/// Remove a prior realization without following symlinks. A hard-killed process
+/// can leave a disconnected FUSE mount at the durable Session path; detach that
+/// resource-plane projection and retry removal before mounting the same binding.
+fn clear_projection(host_path: &Path) -> Result<(), SandboxError> {
+    // A disconnected FUSE mount returns ENOTCONN even for metadata, so detect and
+    // detach it before the ordinary no-path fast path below.
+    #[cfg(feature = "fuse")]
+    if is_mountpoint(host_path) {
+        detach_fuse(host_path);
+    }
+    let Ok(metadata) = std::fs::symlink_metadata(host_path) else {
+        return Ok(());
+    };
+    if metadata.file_type().is_symlink() || metadata.is_file() {
+        return std::fs::remove_file(host_path).map_err(sandbox_err);
+    }
+    if std::fs::remove_dir_all(host_path).is_ok() && matches!(host_path.try_exists(), Ok(false)) {
+        return Ok(());
+    }
+
+    #[cfg(feature = "fuse")]
+    detach_fuse(host_path);
+    // A lazy detach is asynchronous in the kernel. Bound the wait so a recovered
+    // Session does not race `spawn_mount2` against its dead predecessor.
+    let mut last_error = None;
+    for _ in 0..20 {
+        match std::fs::remove_dir_all(host_path) {
+            Ok(()) if matches!(host_path.try_exists(), Ok(false)) => return Ok(()),
+            Ok(()) => {}
+            Err(error) => last_error = Some(error),
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    Err(sandbox_err(format!(
+        "clear prior Memory projection `{}`: {}",
+        host_path.display(),
+        last_error.map_or_else(
+            || "mountpoint remained after removal".into(),
+            |error| error.to_string()
+        )
+    )))
+}
+
 #[async_trait::async_trait]
 impl MemoryMounter for MemoryStoreMounter {
     async fn mount(
@@ -79,14 +170,13 @@ impl MemoryMounter for MemoryStoreMounter {
         // Every realization is a fresh projection. In particular, a deleted
         // memory from the durable store must not reappear from stale copy bytes
         // left by an evicted Session context. Never follow a replaced symlink.
-        if let Ok(metadata) = std::fs::symlink_metadata(host_path) {
-            if metadata.file_type().is_symlink() || metadata.is_file() {
-                std::fs::remove_file(host_path).map_err(sandbox_err)?;
-            } else {
-                std::fs::remove_dir_all(host_path).map_err(sandbox_err)?;
-            }
-        }
-        std::fs::create_dir_all(host_path).map_err(sandbox_err)?;
+        clear_projection(host_path)?;
+        std::fs::create_dir_all(host_path).map_err(|error| {
+            sandbox_err(format!(
+                "create Memory projection `{}`: {error}",
+                host_path.display()
+            ))
+        })?;
 
         #[cfg(feature = "fuse")]
         if self.prefer_fuse && copy::fuse_available() {
@@ -96,7 +186,12 @@ impl MemoryMounter for MemoryStoreMounter {
                 host_path.to_path_buf(),
                 self.bus.subscribe(),
             )
-            .map_err(sandbox_err)?;
+            .map_err(|error| {
+                sandbox_err(format!(
+                    "mount MemoryStore `{store_id}` at `{}`: {error}",
+                    host_path.display()
+                ))
+            })?;
             return Ok(Box::new(FuseMount { handle }));
         }
 
@@ -384,5 +479,34 @@ mod tests {
         );
         guard.teardown().await;
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn projection_cleanup_removes_directory_and_never_follows_symlink() {
+        let root = temp("clear-projection");
+        let outside = temp("clear-projection-outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("keep.txt"), "keep").unwrap();
+        let projection = root.join("memory");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, &projection).unwrap();
+
+        #[cfg(unix)]
+        {
+            clear_projection(&projection).unwrap();
+            assert!(!projection.exists());
+            assert_eq!(
+                std::fs::read_to_string(outside.join("keep.txt")).unwrap(),
+                "keep"
+            );
+        }
+
+        std::fs::create_dir_all(&projection).unwrap();
+        std::fs::write(projection.join("stale.txt"), "stale").unwrap();
+        clear_projection(&projection).unwrap();
+        assert!(!projection.exists());
+        std::fs::remove_dir_all(root).ok();
+        std::fs::remove_dir_all(outside).ok();
     }
 }

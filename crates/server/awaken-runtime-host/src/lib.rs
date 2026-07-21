@@ -478,7 +478,18 @@ impl ManagedHost {
                 let handle = self
                     .host
                     .platform_memory_handle(memory_store_id.to_string(), writable);
-                bound_memory = Some(Arc::new(self.host.memory.bind(handle, config, writable)));
+                let resource_configs = self.resource_configs.as_ref().ok_or_else(|| {
+                    RunError::bad_request(
+                        "Memory extraction requires a configured Resource Catalog",
+                    )
+                })?;
+                bound_memory = Some(Arc::new(self.host.memory.bind(
+                    workspace,
+                    handle,
+                    resource_configs.clone(),
+                    config,
+                    writable,
+                )));
             }
         }
 
@@ -500,6 +511,9 @@ impl ManagedHost {
         // Every Session records an explicit selection (including none). There is
         // no Host-global or directory fallback.
         self.host.register_thread_memory(thread, bound_memory);
+        if let Some(memory) = self.host.memory_for_thread(thread) {
+            memory.reconcile(thread).await;
+        }
         Ok(repository_mcp)
     }
 

@@ -47,12 +47,26 @@ impl SharedHost {
             &model_ref,
             DEFAULT_MEMORY_INSTRUCTIONS,
         )));
+        let extraction_repository: Arc<dyn awaken_protocol_managed::MemoryExtractionRepository> =
+            match store_dir.as_ref() {
+                Some(dir) => {
+                    std::fs::create_dir_all(dir)
+                        .expect("create durable Memory extraction repository directory");
+                    Arc::new(
+                        awaken_session_store::SqliteManagedSessionRepository::open(
+                            &dir.join("sessions.db").to_string_lossy(),
+                        )
+                        .expect("open durable Memory extraction repository"),
+                    )
+                }
+                None => Arc::new(awaken_session_store::InMemorySessionRepository::default()),
+            };
         let memory = Arc::new(crate::memory::MemoryRuntime::new(
             llm.clone(),
             Arc::new(LocalProvider::new(sub_base("mem"))),
             memory_catalog,
             Arc::new(BackgroundRuns::new()),
-            model_ref.clone(),
+            extraction_repository,
         ));
         let memory_selector = Some(Arc::new(crate::memory::AgentSelector::new(
             llm.clone(),
@@ -424,6 +438,14 @@ impl SharedHost {
             provider.install_memory_mounter(mounter);
         }
         self.provider = provider;
+        std::fs::create_dir_all(&dir)
+            .expect("create durable Memory extraction repository directory");
+        self.memory.set_extraction_repository(Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open(
+                &dir.join("sessions.db").to_string_lossy(),
+            )
+            .expect("open durable Memory extraction repository"),
+        ));
         self.store_dir = Some(dir);
         self
     }
@@ -444,6 +466,7 @@ impl SharedHost {
         mut self,
         materializer: Arc<dyn crate::inference_routing::InferenceExecutorMaterializer>,
     ) -> Self {
+        self.memory.set_inference_materializer(materializer.clone());
         self.inference_routing.set_materializer(materializer);
         self
     }

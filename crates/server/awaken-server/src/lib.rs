@@ -104,8 +104,11 @@ pub fn local_managed_state(
                 &root.join("sessions.db").to_string_lossy(),
             )
             .expect("open durable managed session repository"),
-        ) as Arc<dyn awaken_protocol_managed::ManagedSessionRepository>
+        )
     });
+    if let Some(repo) = &session_repo {
+        host.install_memory_extraction_repository(repo.clone());
+    }
     let managed = ManagedState::new(
         ManagedHost::new(host)
             .with_resource_configs(catalog.clone())

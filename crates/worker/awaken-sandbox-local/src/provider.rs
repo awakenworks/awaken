@@ -201,10 +201,20 @@ impl LocalProvider {
             .and_then(|v| v.get("deny_egress"))
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        std::fs::create_dir_all(sandbox.root.root()).map_err(err)?;
+        std::fs::create_dir_all(sandbox.root.root()).map_err(|error| {
+            err(format!(
+                "create sandbox root `{}`: {error}",
+                sandbox.root.root().display()
+            ))
+        })?;
         // Outputs directory (sandbox-absolute → rejailed host path).
         let host_outputs = sandbox.root.resolve(&spec.outputs_path).map_err(err)?;
-        std::fs::create_dir_all(&host_outputs).map_err(err)?;
+        std::fs::create_dir_all(&host_outputs).map_err(|error| {
+            err(format!(
+                "create sandbox outputs `{}`: {error}",
+                host_outputs.display()
+            ))
+        })?;
 
         // Base env: non-secret literals only (a local provider has no egress broker).
         for var in &spec.env {

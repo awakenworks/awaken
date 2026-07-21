@@ -66,7 +66,7 @@ impl MemoryExtractionRepository for SqliteManagedSessionRepository {
             let existing = decode(&existing)?;
             tx.commit()
                 .map_err(|error| MemoryExtractionError::Storage(error.to_string()))?;
-            return if existing == intent {
+            return if existing.same_request(&intent) {
                 Ok(PutMemoryExtractionOutcome::Existing)
             } else {
                 Err(MemoryExtractionError::IdempotencyConflict(
@@ -218,7 +218,7 @@ impl MemoryExtractionRepository for PostgresManagedSessionRepository {
             MemoryExtractionError::Storage("conflicting extraction disappeared".into())
         })?;
         let existing = decode(row.get("data"))?;
-        if existing == intent {
+        if existing.same_request(&intent) {
             Ok(PutMemoryExtractionOutcome::Existing)
         } else {
             Err(MemoryExtractionError::IdempotencyConflict(

@@ -16,6 +16,9 @@ use serde::{Deserialize, Serialize};
 pub struct MemoryExtractorSnapshot {
     pub agent_id: String,
     pub model_ref: String,
+    /// Configuration-publication output used to inject the same credential and
+    /// endpoint on every retry. It contains references only, never secret bytes.
+    pub inference_access: awaken_inference_contract::InferenceAccess,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -182,6 +185,22 @@ impl MemoryExtractionIntent {
         Ok(())
     }
 
+    /// Whether two values describe the same immutable request. Lifecycle fields
+    /// deliberately do not participate: redelivery after an intent advanced must
+    /// still resolve to `Existing`, not an idempotency conflict.
+    #[must_use]
+    pub fn same_request(&self, other: &Self) -> bool {
+        self.intent_id == other.intent_id
+            && self.idempotency_key == other.idempotency_key
+            && self.workspace_id == other.workspace_id
+            && self.session_id == other.session_id
+            && self.terminal_commit_id == other.terminal_commit_id
+            && self.memory_store_id == other.memory_store_id
+            && self.memory_config_version == other.memory_config_version
+            && self.transcript == other.transcript
+            && self.extractor == other.extractor
+    }
+
     /// Acquire or recover the lease for a non-terminal intent.
     pub fn claim(
         &mut self,
@@ -239,6 +258,29 @@ impl MemoryExtractionIntent {
         )?;
         self.mutations = mutations;
         self.status = MemoryExtractionStatus::Extracted;
+        self.bump_revision()
+    }
+
+    /// Extend the current fenced claim while a slow extractor is still running.
+    /// Renewal keeps the same generation and attempt; only the lease/revision move.
+    pub fn renew_claim(
+        &mut self,
+        owner: &str,
+        generation: u64,
+        now_unix_ms: u64,
+        lease_ms: u64,
+    ) -> Result<(), MemoryExtractionError> {
+        self.require_claim(owner, generation, now_unix_ms)?;
+        if lease_ms == 0 {
+            return Err(MemoryExtractionError::Invalid(
+                "positive renewal lease is required".into(),
+            ));
+        }
+        self.lease_expires_at_unix_ms = Some(
+            now_unix_ms
+                .checked_add(lease_ms)
+                .ok_or_else(|| MemoryExtractionError::Invalid("claim lease overflow".into()))?,
+        );
         self.bump_revision()
     }
 
@@ -411,6 +453,9 @@ mod tests {
             MemoryExtractorSnapshot {
                 agent_id: "memory-agent".into(),
                 model_ref: "model-config-2".into(),
+                inference_access: awaken_inference_contract::InferenceAccess::host_executor(
+                    "model-config-2",
+                ),
                 instructions: None,
                 extraction_prompt: None,
             },
@@ -489,6 +534,21 @@ mod tests {
         );
         let next_generation = intent.claim("worker-b", 151, 50).unwrap();
         assert!(next_generation > generation);
+    }
+
+    #[test]
+    fn renewal_extends_only_the_current_fenced_claim() {
+        let mut intent = intent();
+        let generation = intent.claim("worker-a", 100, 50).unwrap();
+        let attempts = intent.attempts;
+        intent.renew_claim("worker-a", generation, 120, 80).unwrap();
+        assert_eq!(intent.lease_expires_at_unix_ms, Some(200));
+        assert_eq!(intent.claim_generation, generation);
+        assert_eq!(intent.attempts, attempts);
+        assert_eq!(
+            intent.renew_claim("worker-b", generation, 130, 80),
+            Err(MemoryExtractionError::StaleClaim)
+        );
     }
 
     #[test]

@@ -160,7 +160,7 @@ impl MemoryExtractionRepository for InMemorySessionRepository {
                     "idempotency index references a missing extraction".into(),
                 )
             })?;
-            return if existing == &intent {
+            return if existing.same_request(&intent) {
                 Ok(PutMemoryExtractionOutcome::Existing)
             } else {
                 Err(MemoryExtractionError::IdempotencyConflict(
@@ -433,6 +433,9 @@ mod tests {
             MemoryExtractorSnapshot {
                 agent_id: "memory-agent".into(),
                 model_ref: "model-1".into(),
+                inference_access: awaken_inference_contract::InferenceAccess::host_executor(
+                    "model-1",
+                ),
                 instructions: None,
                 extraction_prompt: None,
             },
@@ -519,6 +522,13 @@ mod tests {
         repo.compare_and_swap_extraction(0, claimed.clone())
             .await
             .unwrap();
+        assert_eq!(
+            repo.put_extraction_if_absent(initial.clone())
+                .await
+                .unwrap(),
+            PutMemoryExtractionOutcome::Existing,
+            "redelivery remains idempotent after lifecycle state advances"
+        );
         assert_eq!(
             repo.get_extraction("extract-1").await.unwrap(),
             Some(claimed.clone())

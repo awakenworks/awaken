@@ -50,6 +50,8 @@ pub(crate) enum HostCommit {
 /// `Arc<dyn HostStore>`. The remote worker boundary is write-only and is not a
 /// `HostStore`.
 pub(crate) trait HostStore: Coordinator + ThreadReader + RunStore + Send + Sync {
+    /// Latest committed run on `thread`, used by after-commit outbox recovery.
+    fn latest_run(&self, thread: &ThreadId) -> Option<RunRecord>;
     /// The awaiting run on `thread`, if any, recovered from committed truth.
     fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, ResumeTicket)>;
     /// Payloads of committed `Continuation` (outcome-round) events for `thread`, in
@@ -82,6 +84,9 @@ fn continuation_from_reader<R: CheckpointReader>(
 }
 
 impl HostStore for MemoryCommitCoordinator {
+    fn latest_run(&self, _thread: &ThreadId) -> Option<RunRecord> {
+        self.committed().latest_run
+    }
     fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, ResumeTicket)> {
         let run = self.committed().latest_run?;
         let ticket = self.resume_ticket_for(&run.id)?;
@@ -98,6 +103,9 @@ impl HostStore for MemoryCommitCoordinator {
 }
 
 impl HostStore for SqliteCommitCoordinator {
+    fn latest_run(&self, thread: &ThreadId) -> Option<RunRecord> {
+        CheckpointReader::latest_run(self, thread)
+    }
     fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, ResumeTicket)> {
         // Inherent method wins over the trait method in resolution — not recursive.
         SqliteCommitCoordinator::open_wait_for_thread(self, thread)
@@ -108,6 +116,9 @@ impl HostStore for SqliteCommitCoordinator {
 }
 
 impl HostStore for FsCommitCoordinator {
+    fn latest_run(&self, thread: &ThreadId) -> Option<RunRecord> {
+        CheckpointReader::latest_run(self, thread)
+    }
     fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, ResumeTicket)> {
         awaiting_from_reader(self, thread)
     }
@@ -117,6 +128,9 @@ impl HostStore for FsCommitCoordinator {
 }
 
 impl HostStore for PostgresCommitCoordinator {
+    fn latest_run(&self, thread: &ThreadId) -> Option<RunRecord> {
+        CheckpointReader::latest_run(self, thread)
+    }
     fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, ResumeTicket)> {
         awaiting_from_reader(self, thread)
     }
@@ -126,6 +140,15 @@ impl HostStore for PostgresCommitCoordinator {
 }
 
 impl HostCommit {
+    /// Latest committed run on a locally readable thread. Remote worker commits
+    /// are write-only and therefore have no local recovery projection.
+    pub(crate) fn latest_run(&self, thread: &ThreadId) -> Option<RunRecord> {
+        match self {
+            HostCommit::Local(store) => store.latest_run(thread),
+            HostCommit::Remote(_) => None,
+        }
+    }
+
     /// The awaiting run on `thread`, if any, recovered from committed truth. After a
     /// restart the durable variants read their hydrated projection, so a rebuilt
     /// session can restore its awaiting position and be resumed.
@@ -226,7 +249,7 @@ fn commit_or_err(
 /// without mutating the process `AWAKEN_STORE` env.
 pub(crate) fn durable_thread_exists_postgres(thread: &ThreadId) -> bool {
     crate::commit_backend::shared_postgres_commit()
-        .and_then(|c| c.latest_run(thread))
+        .and_then(|c| CheckpointReader::latest_run(c.as_ref(), thread))
         .is_some()
 }
 

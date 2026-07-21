@@ -135,8 +135,8 @@ export function withScenarioServer(mode, behavior, port, fn, extraEnv = {}, opts
 // created ONCE and survives every restart, so each spawned process dials the same
 // URL. Pair with `realServerEnv(behavior, upstream, {mode})` in the spawn env, and
 // `upstream.close()` in a `finally`.
-export function startUpstream(behavior) {
-  return startFakeAnthropic(FAKE_KEY, { behavior });
+export function startUpstream(behavior, opts = {}) {
+  return startFakeAnthropic(FAKE_KEY, { behavior, ...opts });
 }
 
 // The REAL-provider equivalent of `withServer`: instead of an in-process stub

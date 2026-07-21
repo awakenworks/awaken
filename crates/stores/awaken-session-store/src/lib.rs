@@ -796,6 +796,9 @@ mod tests {
             awaken_session_contract::MemoryExtractorSnapshot {
                 agent_id: "memory-agent".into(),
                 model_ref: "model-1".into(),
+                inference_access: awaken_inference_contract::InferenceAccess::host_executor(
+                    "model-1",
+                ),
                 instructions: Some("extract durable facts".into()),
                 extraction_prompt: None,
             },

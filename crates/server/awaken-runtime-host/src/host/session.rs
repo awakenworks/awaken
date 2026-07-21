@@ -593,6 +593,16 @@ impl SharedHost {
                 st.pending_system.push(prompt);
             }
         }
+        // Recover the after-commit extraction outbox gap. A process can die after
+        // the terminal run fact is durable but before its extraction intent is
+        // inserted. Reopening the thread reads that terminal fact and idempotently
+        // recreates (or resumes) the intent before any later turn can advance the
+        // in-memory extraction cursor.
+        if let Some(run) = ctx.commit.latest_run(&ctx.thread_id)
+            && run.state.is_terminal()
+        {
+            Box::pin(self.maybe_extract_memory(&ctx, thread, &run.id.0, &run.state)).await;
+        }
         Ok(ctx)
     }
 

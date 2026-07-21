@@ -766,6 +766,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-inference-contract"
+version = "1.0.0-dev"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "awaken-managed-bridge"
 version = "1.0.0-dev"
 dependencies = [
@@ -1156,6 +1164,7 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-inference-contract",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -1462,6 +1471,7 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-inference-contract",
  "awaken-resource-contract",
  "awaken-tenancy",
  "proptest",
@@ -1476,6 +1486,7 @@ name = "awaken-session-store"
 version = "1.0.0-dev"
 dependencies = [
  "async-trait",
+ "awaken-inference-contract",
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
  "awaken-session-contract",
