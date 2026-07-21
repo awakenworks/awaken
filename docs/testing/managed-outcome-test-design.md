@@ -20,7 +20,7 @@ not inferred from conversational prose.
 | error guessing | Judge tools configured | rejected before Judge execution | `awaken-runtime-host` unit test |
 | syntax/negative partition | prose-wrapped, missing, empty, unknown-field Grade JSON | strict parser rejects | `awaken-ext-goal` and Host tests |
 | recovery transition | crash after committed Worker Run | stable Run is reused without another inference | `outcome_controller` restart test |
-| concurrency/stale write | stale aggregate version | transition rejected; evaluation not duplicated | `outcome_state` CAS tests |
+| concurrency/stale write | stale aggregate version under the Session owner | transition rejected; evaluation not duplicated | `outcome_state` version-guard tests |
 | command transition | interrupt in live phase and repeat after terminal | first wins, terminal state is idempotent | Outcome domain and Host interrupt tests |
 
 The backend matrix is exhaustive rather than pairwise-reduced because two binary

@@ -5,8 +5,6 @@
 //! `CommitCoordinator`. A stable control Run groups those state-only commits so
 //! no second physical store or schema is introduced.
 
-#![allow(dead_code)] // Consumed by the OutcomeController in ADR-0064 P5.
-
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId};
 use awaken_agent_contract::agent::state::{Command, Key, MergePolicy, Scope, Store};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
@@ -36,7 +34,7 @@ pub(crate) enum Error {
     NotFound(String),
     #[error("Worker Thread already has active Outcome {0}")]
     AlreadyActive(String),
-    #[error("Outcome CAS conflict: expected version {expected}, current version {current}")]
+    #[error("Outcome version conflict: expected version {expected}, current version {current}")]
     Conflict { expected: u64, current: u64 },
     #[error("Outcome active pointer and aggregate id disagree")]
     ActivePointerMismatch,
@@ -120,7 +118,7 @@ impl<'a> ThreadOutcomeState<'a> {
     /// Append one transition only when the committed head still has the version
     /// the caller evaluated. An Evaluation is immutable and written once with
     /// the head that consumes its Grade.
-    pub(crate) async fn compare_and_set(
+    pub(crate) async fn commit_if_current(
         &self,
         expected_version: u64,
         state: &State,
@@ -320,12 +318,12 @@ mod tests {
         let expected = state.version;
         state.start(worker_run_id(&state.outcome_id, 0)).unwrap();
         adapter
-            .compare_and_set(expected, &state, None)
+            .commit_if_current(expected, &state, None)
             .await
             .unwrap();
 
         assert!(matches!(
-            adapter.compare_and_set(expected, &state, None).await,
+            adapter.commit_if_current(expected, &state, None).await,
             Err(Error::Conflict {
                 expected: 0,
                 current: 1
@@ -358,7 +356,7 @@ mod tests {
             },
         };
         adapter
-            .compare_and_set(0, &state, Some(&evaluation))
+            .commit_if_current(0, &state, Some(&evaluation))
             .await
             .unwrap();
 
@@ -380,7 +378,7 @@ mod tests {
         let version = state.version;
         assert!(state.interrupt());
         adapter
-            .compare_and_set(version, &state, None)
+            .commit_if_current(version, &state, None)
             .await
             .unwrap();
 
@@ -404,7 +402,7 @@ mod tests {
             let version = state.version;
             state.start(worker_run_id(&state.outcome_id, 0)).unwrap();
             adapter
-                .compare_and_set(version, &state, None)
+                .commit_if_current(version, &state, None)
                 .await
                 .unwrap();
         }

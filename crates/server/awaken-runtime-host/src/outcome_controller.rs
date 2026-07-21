@@ -91,7 +91,7 @@ impl SharedHost {
                         .start(worker_run_id(&aggregate.state.outcome_id, 0))
                         .map_err(domain_error)?;
                     persistence
-                        .compare_and_set(expected, &aggregate.state, None)
+                        .commit_if_current(expected, &aggregate.state, None)
                         .await
                         .map_err(outcome_state_error)?;
                 }
@@ -117,14 +117,14 @@ impl SharedHost {
                                 )
                                 .map_err(domain_error)?;
                             persistence
-                                .compare_and_set(expected, &aggregate.state, None)
+                                .commit_if_current(expected, &aggregate.state, None)
                                 .await
                                 .map_err(outcome_state_error)?;
                         }
                         RunState::Ended(EndCause::Cancelled) => {
                             aggregate.state.interrupt();
                             persistence
-                                .compare_and_set(expected, &aggregate.state, None)
+                                .commit_if_current(expected, &aggregate.state, None)
                                 .await
                                 .map_err(outcome_state_error)?;
                         }
@@ -139,7 +139,7 @@ impl SharedHost {
                             ));
                             aggregate.state.fail(failure).map_err(domain_error)?;
                             persistence
-                                .compare_and_set(expected, &aggregate.state, None)
+                                .commit_if_current(expected, &aggregate.state, None)
                                 .await
                                 .map_err(outcome_state_error)?;
                         }
@@ -169,7 +169,7 @@ impl SharedHost {
                         Err(GraderError::Interrupted) => {
                             aggregate.state.interrupt();
                             persistence
-                                .compare_and_set(expected, &aggregate.state, None)
+                                .commit_if_current(expected, &aggregate.state, None)
                                 .await
                                 .map_err(outcome_state_error)?;
                             continue;
@@ -186,7 +186,7 @@ impl SharedHost {
                             };
                             aggregate.state.fail(failure).map_err(domain_error)?;
                             persistence
-                                .compare_and_set(expected, &aggregate.state, None)
+                                .commit_if_current(expected, &aggregate.state, None)
                                 .await
                                 .map_err(outcome_state_error)?;
                             continue;
@@ -206,7 +206,7 @@ impl SharedHost {
                         .apply_grade(&aggregate.definition, &grader_run_id, &grade, next_run_id)
                         .map_err(domain_error)?;
                     persistence
-                        .compare_and_set(expected, &aggregate.state, Some(&evaluation))
+                        .commit_if_current(expected, &aggregate.state, Some(&evaluation))
                         .await
                         .map_err(outcome_state_error)?;
                     aggregate.evaluations.push(evaluation);
@@ -234,7 +234,7 @@ impl SharedHost {
                         }
                     }
                     persistence
-                        .compare_and_set(expected, &aggregate.state, None)
+                        .commit_if_current(expected, &aggregate.state, None)
                         .await
                         .map_err(outcome_state_error)?;
                 }
@@ -565,7 +565,10 @@ mod tests {
                 .await
                 .unwrap();
             state.start(worker_run_id(&outcome_id, 0)).unwrap();
-            persistence.compare_and_set(0, &state, None).await.unwrap();
+            persistence
+                .commit_if_current(0, &state, None)
+                .await
+                .unwrap();
             host.drive_outcome_worker(
                 &ctx,
                 &persistence.active().unwrap().unwrap(),

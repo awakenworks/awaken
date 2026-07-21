@@ -112,13 +112,13 @@ InfrastructureFailure ==
     /\ UNCHANGED <<iteration, evaluations, acknowledgments, lastGrade,
                     workerRuns, graderRuns, evaluated>>
 
-\* A crash, duplicate delivery, or stale compare-and-set is observationally a
+\* A crash, duplicate delivery, or stale version-guarded commit is observationally a
 \* stutter: it cannot mint another logical Run or advance the aggregate.
-ReplayOrStaleCAS == UNCHANGED vars
+ReplayOrStaleVersion == UNCHANGED vars
 
 Next == StartWorker \/ WorkerCommitted \/ GradeSatisfied \/ GradeFailed
         \/ GradeNeedsRevision \/ GradeExhausted \/ Acknowledge \/ Interrupt
-        \/ InfrastructureFailure \/ ReplayOrStaleCAS
+        \/ InfrastructureFailure \/ ReplayOrStaleVersion
 
 TypeOK == /\ phase \in Phases
           /\ result \in Results

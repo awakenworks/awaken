@@ -51,7 +51,7 @@ pub(crate) struct SessionCtx {
     /// the host. `None` = content is recorded to spans only.
     pub(crate) capture_sink: Option<Arc<dyn awaken_runtime_contract::CaptureSink>>,
     pub(crate) thread_id: ThreadId,
-    /// The thread's sandbox environment, reused to build a goal-enabled runtime
+    /// The thread's sandbox environment, reused to build an Outcome Worker runtime
     /// for `define_outcome` (same tools, same environment).
     pub(crate) env: Arc<crate::session_environment::SessionEnvironment>,
     /// The thread's skill registry (delivered + workspace), used to expand user

@@ -99,9 +99,10 @@ concrete Host facility, not a new `AgentRunService` trait. The existing
 ### D5: Outcome state is existing Worker Thread state
 
 The Worker Thread is the consistency boundary. Exactly one Outcome may be active
-on it. A concrete `ThreadOutcomeState` adapter owns typed serialization and CAS
-over the existing `ThreadReader` and `CommitCoordinator`; there is no new physical
-Outcome store and no speculative repository trait.
+on it. A concrete `ThreadOutcomeState` adapter owns typed serialization and
+version-guarded commits over the existing `ThreadReader` and
+`CommitCoordinator`; there is no new physical Outcome store and no speculative
+repository trait.
 
 ```text
 outcome/active
@@ -113,7 +114,11 @@ outcome/{outcome_id}/evaluation/{iteration}
 
 The definition, immutable Worker/Grader snapshot bindings, small mutable head, and
 append-only evaluations are separate cells. Transitions carry an expected version
-and expected Run id. External IO never occurs while the thread state lock is held.
+and expected Run id. The Managed Session is the single Outcome owner: its Outcome
+and execution locks serialize commands, while the version guard rejects stale
+local or recovered views. This is deliberately not advertised as a distributed
+atomic CAS; a different process must acquire Session/Thread ownership before
+takeover. External IO never occurs while the thread state lock is held.
 
 ### D6: Stable identities make cross-Thread recovery idempotent
 
@@ -129,7 +134,7 @@ outcome/{outcome_id}/ack
 A Grader Thread is semantically fresh but durably addressable. It inherits no
 prior Judge conversation. If a process dies after a Run commits but before the
 Worker Outcome head advances, recovery observes the same terminal Run and applies
-the missing CAS transition without paying for another inference. No distributed
+the missing version-guarded transition without paying for another inference. No distributed
 transaction between Worker and Grader Threads is required.
 
 ### D7: Grading is direct snapshot execution
@@ -202,7 +207,8 @@ validates the wire request and maps Runtime records to
    purpose policy; migrate ordinary turns to it.
 2. **P2** — add the pure Outcome state machine and cause-effect/decision-table
    unit tests.
-3. **P3** — add Thread-state persistence, CAS, stable identities, and recovery.
+3. **P3** — add Thread-state persistence, owner serialization, version guards,
+   stable identities, and recovery.
 4. **P4** — add `GradingInput`, direct `AgentGrader`, schema parsing, and
    Native/ACP isolation tests.
 5. **P5** — wire `OutcomeController`, Managed events, interruption,
@@ -226,7 +232,7 @@ Required Worker/Grader matrix:
 
 The decision-table suite covers satisfaction, revision, maximum budget and
 acknowledgment, rubric mismatch, invalid Judge output, Worker/Grader failure,
-interrupt in every live phase, stale CAS, duplicate commands, restart at every
+interrupt in every live phase, stale versions, duplicate commands, restart at every
 external-IO boundary, snapshot pinning, message-range projection, usage
 idempotency, and Grader capability denial.
 
