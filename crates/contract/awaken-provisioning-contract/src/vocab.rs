@@ -88,6 +88,13 @@ pub enum MountSource {
     /// property is intrinsic — it is neither `Secret` (writeback) nor `MemoryStore`
     /// (harvested), so no realizer copies it back.
     Inline { contents: String },
+    /// Binary-safe, non-secret per-run content carried to a worker. Unlike
+    /// [`MountSource::Inline`], bytes are never coerced through UTF-8. The optional
+    /// hash is verified by the realizer before Agent execution.
+    InlineBytes {
+        contents: Vec<u8>,
+        content_hash: Option<String>,
+    },
     /// Forward-compat escape: an unknown source a newer provider understands. Any wire
     /// object whose `kind` is not one of the known tags (including a missing `kind`)
     /// deserializes here, carrying the FULL object verbatim — so an older worker accepts
@@ -130,6 +137,11 @@ enum KnownMountSource {
     Inline {
         contents: String,
     },
+    InlineBytes {
+        contents: Vec<u8>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        content_hash: Option<String>,
+    },
 }
 
 /// The snake_case `kind` tags that route to a known variant; any other (or a missing
@@ -141,6 +153,7 @@ const KNOWN_MOUNT_KINDS: &[&str] = &[
     "cache_volume",
     "secret",
     "inline",
+    "inline_bytes",
 ];
 
 impl From<KnownMountSource> for MountSource {
@@ -172,6 +185,13 @@ impl From<KnownMountSource> for MountSource {
                 content_hash,
             },
             KnownMountSource::Inline { contents } => MountSource::Inline { contents },
+            KnownMountSource::InlineBytes {
+                contents,
+                content_hash,
+            } => MountSource::InlineBytes {
+                contents,
+                content_hash,
+            },
         }
     }
 }
@@ -211,6 +231,13 @@ impl MountSource {
             },
             MountSource::Inline { contents } => KnownMountSource::Inline {
                 contents: contents.clone(),
+            },
+            MountSource::InlineBytes {
+                contents,
+                content_hash,
+            } => KnownMountSource::InlineBytes {
+                contents: contents.clone(),
+                content_hash: content_hash.clone(),
             },
             MountSource::Other(_) => return None,
         })
@@ -643,6 +670,17 @@ mod tests {
             wire.contains("[plugin]"),
             "the derived bytes ride the wire: {wire}"
         );
+        assert_eq!(serde_json::from_str::<MountSource>(&wire).unwrap(), src);
+    }
+
+    #[test]
+    fn inline_bytes_round_trip_without_utf8_coercion() {
+        let src = MountSource::InlineBytes {
+            contents: vec![0, 0xff, 0x80, b'\n'],
+            content_hash: Some("hash".into()),
+        };
+        let wire = serde_json::to_string(&src).unwrap();
+        assert!(wire.contains("\"kind\":\"inline_bytes\""), "{wire}");
         assert_eq!(serde_json::from_str::<MountSource>(&wire).unwrap(), src);
     }
 

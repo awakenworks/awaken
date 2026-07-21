@@ -25,7 +25,7 @@ async fn hello_agent_example_runs_to_completion() {
         tool_patterns: Vec::new(),
         ..Default::default()
     };
-    let snapshot = compile_resolved(&config, &[], &[], AgentSnapshotMetadata::default())
+    let snapshot = compile_resolved(&config, &[], AgentSnapshotMetadata::default())
         .expect("compile resolved config");
 
     // The fingerprint is derived and consistent across the snapshot envelope and

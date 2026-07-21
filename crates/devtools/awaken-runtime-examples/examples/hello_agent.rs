@@ -41,7 +41,7 @@ async fn main() {
 
     // 2. Compile to an executable snapshot — the fingerprint is sha256(config), stamped
     //    into the snapshot and the install for you.
-    let snapshot = compile_resolved(&config, &[], &[], AgentSnapshotMetadata::default())
+    let snapshot = compile_resolved(&config, &[], AgentSnapshotMetadata::default())
         .expect("compile resolved config");
 
     // 3. Assemble the runtime and run one turn.

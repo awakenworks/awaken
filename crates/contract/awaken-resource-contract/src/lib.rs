@@ -1,4 +1,4 @@
-//! Port-only contract for the resources plane (files, memory, skills).
+//! Port-only contract for the resources plane (files, memory, repositories, skills).
 //!
 //! The four mountable-resource **ports** — [`FileStore`], [`MemoryBlobStore`],
 //! [`MemoryFs`], [`SkillStore`] — plus the value/error types in their signatures,
@@ -18,6 +18,19 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+
+mod catalog;
+mod input;
+
+pub use catalog::{
+    ClonePolicy, ConfigVersion, ExtractionPolicy, MemoryStoreConfigVersion, MemoryStoreDefinition,
+    RecallPolicy, RepositoryConfigVersion, RepositoryDefinition, ResolvedMemoryStoreConfig,
+    ResolvedRepositoryConfig, ResourceCatalog, ResourceCatalogError, ResourceState,
+    RetentionPolicy,
+};
+pub use input::{
+    BindingId, FileId, InputBinding, InputResourceId, MemoryStoreId, RepositoryId, ResourceAccess,
+};
 
 // ---------------------------------------------------------------------------
 // File store (ADR-0041): content-addressed, immutable blob port.

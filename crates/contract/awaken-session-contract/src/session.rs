@@ -177,6 +177,7 @@ pub struct OutcomeReport {
 /// Phase 3): the agent it runs and the MCP servers it connects to, each already
 /// bound to a vault credential's neutral domain id (or none). Consumed by the
 /// server's `ManagedHost` through [`SessionRuntime::prepare_session`].
+#[derive(Debug, Clone)]
 pub struct SessionInit {
     /// Trusted owning workspace resolved by the platform edge before runtime
     /// preparation. Resource stores never infer or hard-code it.
@@ -209,6 +210,7 @@ pub struct SessionInit {
 /// credential the URL matched (`None` when no vault credential matches — the
 /// host then connects unauthenticated and the server decides). Consumed by
 /// `ManagedHost::prepare_session` in the server assembly.
+#[derive(Debug, Clone)]
 pub struct McpServerBinding {
     pub name: String,
     pub url: String,

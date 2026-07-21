@@ -12,6 +12,11 @@ use awaken_config_resolver::{
     McpServerId, McpStore, ResourceAccess, ResourceBinding, ResourceKind, ResourceStore,
 };
 use awaken_credential_vault::CredentialBinding;
+use awaken_resource_contract::{
+    ClonePolicy, ConfigVersion, ExtractionPolicy, MemoryStoreConfigVersion, MemoryStoreDefinition,
+    RecallPolicy, RepositoryConfigVersion, RepositoryDefinition, ResourceCatalog,
+    ResourceCatalogError, ResourceState, RetentionPolicy,
+};
 use sqlx::Executor;
 use sqlx::postgres::PgPool;
 
@@ -67,6 +72,49 @@ fn server(id: &str) -> McpServerDef {
         credential_binding: CredentialBinding::None,
         version: 1,
     }
+}
+
+fn memory() -> (MemoryStoreDefinition, MemoryStoreConfigVersion) {
+    (
+        MemoryStoreDefinition {
+            id: "memory-1".into(),
+            workspace_id: "ws".into(),
+            name: "Memory".into(),
+            description: String::new(),
+            metadata: Default::default(),
+            state: ResourceState::Active,
+            current_config_version: ConfigVersion::INITIAL,
+        },
+        MemoryStoreConfigVersion {
+            memory_store_id: "memory-1".into(),
+            version: ConfigVersion::INITIAL,
+            recall_policy: RecallPolicy::default(),
+            extraction_policy: ExtractionPolicy::default(),
+            retention_policy: RetentionPolicy::default(),
+        },
+    )
+}
+
+fn repository() -> (RepositoryDefinition, RepositoryConfigVersion) {
+    (
+        RepositoryDefinition {
+            id: "repo-1".into(),
+            workspace_id: "ws".into(),
+            name: "Repository".into(),
+            description: String::new(),
+            metadata: Default::default(),
+            state: ResourceState::Active,
+            current_config_version: ConfigVersion::INITIAL,
+        },
+        RepositoryConfigVersion {
+            repository_id: "repo-1".into(),
+            version: ConfigVersion::INITIAL,
+            remote_url: "https://example.test/repo.git".into(),
+            credential_binding: Some("credential-1".into()),
+            initial_branch: None,
+            clone_policy: ClonePolicy::default(),
+        },
+    )
 }
 
 #[tokio::test]
@@ -136,6 +184,42 @@ async fn postgres_admin_store_serves_every_port() {
     v2.resources.clear();
     ResourceStore::put_agent_resource(&store, v2.clone());
     assert_eq!(store.get_agent_resource("agent-1").unwrap(), v2);
+
+    // ResourceCatalog: resource/config separation, monotonic CAS and Workspace
+    // hiding. This port contains no authorization subject or policy input.
+    let (definition, initial) = memory();
+    store.create_memory_store(definition, initial).unwrap();
+    let mut second = store
+        .memory_config("ws", "memory-1", ConfigVersion(1))
+        .unwrap();
+    second.version = ConfigVersion(2);
+    second.recall_policy.max_results = 20;
+    assert!(matches!(
+        store.publish_memory_config("other", ConfigVersion(1), second.clone()),
+        Err(ResourceCatalogError::NotFound(_))
+    ));
+    store
+        .publish_memory_config("ws", ConfigVersion(1), second)
+        .unwrap();
+    assert_eq!(
+        store
+            .resolve_memory_store("ws", "memory-1")
+            .unwrap()
+            .config
+            .version,
+        ConfigVersion(2)
+    );
+    assert!(store.memory_store("other", "memory-1").is_none());
+
+    let (definition, initial) = repository();
+    store.create_repository(definition, initial).unwrap();
+    store
+        .set_repository_state("ws", "repo-1", ResourceState::Suspended)
+        .unwrap();
+    assert!(matches!(
+        store.resolve_repository("ws", "repo-1"),
+        Err(ResourceCatalogError::NotActive { .. })
+    ));
 }
 
 /// Rows survive a fresh store handle on the same schema (durable + idempotent
@@ -152,6 +236,8 @@ async fn postgres_admin_rows_survive_a_reconnect() {
             .unwrap();
         store.put("p1".into(), profile("m1"));
         store.put_server(server("calc"));
+        let (definition, initial) = memory();
+        store.create_memory_store(definition, initial).unwrap();
     }
     let store = tokio::task::spawn_blocking(move || PostgresAdminStore::connect(&url).unwrap())
         .await
@@ -161,4 +247,12 @@ async fn postgres_admin_rows_survive_a_reconnect() {
         "m1"
     );
     assert_eq!(store.list_servers().len(), 1);
+    assert_eq!(
+        store
+            .resolve_memory_store("ws", "memory-1")
+            .unwrap()
+            .config
+            .version,
+        ConfigVersion::INITIAL
+    );
 }
