@@ -19,6 +19,7 @@
 
 use awaken_authz_enforce::RequestTenancy;
 use awaken_protocol_managed::WorkspaceScope;
+use awaken_tenancy::ExecutionWorkspace;
 use axum::Router;
 use axum::extract::{Path, Request, State};
 use axum::http::Uri;
@@ -53,7 +54,14 @@ async fn stamp_platform_workspace(
     next: axum::middleware::Next,
 ) -> Response {
     if request.extensions().get::<WorkspaceScope>().is_none() {
-        request.extensions_mut().insert(WorkspaceScope(workspace));
+        request
+            .extensions_mut()
+            .insert(WorkspaceScope(workspace.clone()));
+    }
+    if request.extensions().get::<ExecutionWorkspace>().is_none() {
+        request
+            .extensions_mut()
+            .insert(ExecutionWorkspace(workspace));
     }
     // `RequestTenancy` is an explicit selector (workspace path/API key). A flat
     // local workspace is ownership context, not caller-selected tenancy; authn
@@ -83,9 +91,13 @@ async fn dispatch(
     // matched path params (`{ws}`/`{*rest}`) in the request, which would collide with
     // the flat router's `{id}` extraction and 500 it. Drop them; carry only the
     // resolved scope so the handlers + ownership guards see the tenancy.
+    let execution_workspace = parts.extensions.get::<ExecutionWorkspace>().cloned();
     let mut extensions = axum::http::Extensions::new();
     extensions.insert(WorkspaceScope(ws.clone()));
     extensions.insert(RequestTenancy { workspace_id: ws });
+    if let Some(execution_workspace) = execution_workspace {
+        extensions.insert(execution_workspace);
+    }
     parts.extensions = extensions;
     let request = Request::from_parts(parts, body);
     // `Router`'s service error is `Infallible`, so this never fails.
@@ -105,9 +117,14 @@ mod tests {
     /// A flat router that echoes the matched path and the stamped scope, so a test
     /// can assert the rewrite target and the resolved workspace.
     fn echo_router() -> Router {
-        async fn echo(uri: Uri, scope: Option<axum::Extension<WorkspaceScope>>) -> String {
+        async fn echo(
+            uri: Uri,
+            scope: Option<axum::Extension<WorkspaceScope>>,
+            execution: Option<axum::Extension<ExecutionWorkspace>>,
+        ) -> String {
             let ws = scope.map_or_else(|| "-".to_string(), |w| w.0.0.clone());
-            format!("{}|{ws}", uri.path())
+            let execution = execution.map_or_else(|| "-".to_string(), |w| w.0.0.clone());
+            format!("{}|{ws}|{execution}", uri.path())
         }
         Router::new()
             .route("/v1/agents", get(echo))
@@ -131,11 +148,11 @@ mod tests {
         // `/v1/workspaces/ws_a/agents` → `/v1/agents`, scope ws_a.
         let (status, body) = get_path(&app, "/v1/workspaces/ws_a/agents").await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body, "/v1/agents|ws_a");
+        assert_eq!(body, "/v1/agents|ws_a|-");
         // A deeper resource rewrites its whole tail.
         let (status, body) = get_path(&app, "/v1/workspaces/acme/config/agents/x").await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body, "/v1/config/agents/x|acme");
+        assert_eq!(body, "/v1/config/agents/x|acme|-");
     }
 
     #[tokio::test]
@@ -144,7 +161,7 @@ mod tests {
         let (status, body) = get_path(&app, "/v1/agents").await;
         assert_eq!(status, StatusCode::OK);
         // No workspace stamped for a flat request.
-        assert_eq!(body, "/v1/agents|-");
+        assert_eq!(body, "/v1/agents|-|-");
     }
 
     #[tokio::test]
@@ -153,10 +170,30 @@ mod tests {
         let app = with_workspace_path_addressing(flat);
         let (status, body) = get_path(&app, "/v1/agents").await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body, "/v1/agents|ws_local_generated");
+        assert_eq!(body, "/v1/agents|ws_local_generated|ws_local_generated");
 
         let (status, body) = get_path(&app, "/v1/workspaces/ws_cloud/agents").await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body, "/v1/agents|ws_cloud");
+        assert_eq!(body, "/v1/agents|ws_cloud|ws_local_generated");
+    }
+
+    #[tokio::test]
+    async fn platform_workspace_never_overrides_a_pep_execution_workspace() {
+        let flat = with_platform_workspace(echo_router(), "ws_local_generated".into()).layer(
+            axum::middleware::from_fn(
+                |mut request: Request, next: axum::middleware::Next| async move {
+                    request
+                        .extensions_mut()
+                        .insert(WorkspaceScope("ws_authorized".into()));
+                    request
+                        .extensions_mut()
+                        .insert(ExecutionWorkspace("ws_authorized".into()));
+                    next.run(request).await
+                },
+            ),
+        );
+        let (status, body) = get_path(&flat, "/v1/agents").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, "/v1/agents|ws_authorized|ws_authorized");
     }
 }

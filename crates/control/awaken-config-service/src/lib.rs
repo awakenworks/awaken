@@ -16,6 +16,7 @@ mod capabilities;
 mod compaction;
 mod config_plane;
 mod installed_catalog;
+mod managed_agent;
 mod publication;
 mod tool_catalog;
 

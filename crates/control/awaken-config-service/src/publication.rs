@@ -10,6 +10,8 @@ use crate::compaction::apply_compaction;
 /// A publish failure, split so the edge can map it to an HTTP status.
 #[derive(Debug, thiserror::Error)]
 pub enum PublishError {
+    #[error("reserved configuration publication requires an explicit execution Workspace")]
+    ExecutionWorkspaceRequired,
     #[error("no config stored for agent `{0}`")]
     NotStored(String),
     #[error("cannot resolve an auto model binding: {0}")]

@@ -1,6 +1,7 @@
 pub mod awaken_config_service
 pub enum awaken_config_service::PublishError
 pub awaken_config_service::PublishError::Compile(alloc::string::String)
+pub awaken_config_service::PublishError::ExecutionWorkspaceRequired
 pub awaken_config_service::PublishError::NotStored(alloc::string::String)
 pub awaken_config_service::PublishError::StaleRevision(core::option::Option<u64>)
 pub awaken_config_service::PublishError::Store(alloc::string::String)
