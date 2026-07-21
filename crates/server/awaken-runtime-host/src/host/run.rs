@@ -199,7 +199,7 @@ impl SharedHost {
         // R3/R4: route to the ACP executor for acp:* threads, else the native
         // ingress (direct / durable / superseding). See `crate::run_exec`.
         let state = self
-            .execute_activation(&ctx, thread, activation, supersede, sink)
+            .execute_activation(&ctx, activation, supersede, sink)
             .await?;
         let terminal_commit_id = run_id.0.clone();
         let result = self.finish_step(&ctx, &mut st, run_id, state, before, thread)?;

@@ -320,6 +320,26 @@ const FAKE_ACP_JSONRPC_SCRIPT: &str = "while IFS= read -r line; do \
       esac; \
     done";
 
+/// Official-wire ACP agent that asks the host to authorize one mutating tool.
+/// The first process is cancelled at the durable permission boundary. On resume,
+/// the executor reloads the same ACP session and answers the repeated request
+/// with the user's one-shot decision; the marker makes allow and deny externally
+/// distinguishable without performing an effect in this deterministic fixture.
+const FAKE_ACP_PERMISSION_SCRIPT: &str = "while IFS= read -r line; do \
+      case \"$line\" in \
+        *'\"id\":1'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{\"loadSession\":true}}}';; \
+        *'\"id\":2'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"permission-s1\"}}';; \
+        *'\"id\":3'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":42,\"method\":\"session/request_permission\",\"params\":{\"sessionId\":\"permission-s1\",\"toolCall\":{\"toolCallId\":\"permission-call\",\"title\":\"bash\",\"rawInput\":{\"command\":\"printf permission\"}},\"options\":[{\"optionId\":\"ok\",\"name\":\"Allow\",\"kind\":\"allow_once\"},{\"optionId\":\"no\",\"name\":\"Reject\",\"kind\":\"reject_once\"}]}}';; \
+        *'\"id\":42'*'\"ok\"'*) \
+          printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"permission-s1\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"ACP-PERMISSION-ALLOWED\"}}}}'; \
+          printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'; exit 0;; \
+        *'\"id\":42'*'\"no\"'*) \
+          printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"permission-s1\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"ACP-PERMISSION-DENIED\"}}}}'; \
+          printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'; exit 0;; \
+        *'\"id\":42'*) exit 0;; \
+      esac; \
+    done";
+
 /// [`build_acp_router`]'s official-wire twin: `acp:*` sessions drive the fake agent
 /// over real ACP JSON-RPC (the [`awaken_run_executor_acp::Codec::Acp`] driver),
 /// proving the production codec end-to-end. `AWAKEN_MODEL_MODE=acp-jsonrpc`.
@@ -329,6 +349,27 @@ pub fn build_acp_jsonrpc_router() -> Router {
             "/bin/sh".to_string(),
             "-c".to_string(),
             FAKE_ACP_JSONRPC_SCRIPT.to_string(),
+        ],
+        vec![],
+    );
+    let source = Arc::new(
+        awaken_run_executor_acp::SubprocessChannelSource::new(launch)
+            .with_codec(awaken_run_executor_acp::Codec::Acp),
+    );
+    let acp = Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(source));
+    mount(Arc::new(
+        SharedHost::new(Arc::new(EchoModel), "awaken").with_acp(acp),
+    ))
+}
+
+/// Durable allow/deny coverage for ACP `session/request_permission`, through the
+/// same per-Session policy and Managed resume API used by native execution.
+pub fn build_acp_permission_router() -> Router {
+    let launch = awaken_run_executor_acp::AcpLaunch::custom(
+        vec![
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            FAKE_ACP_PERMISSION_SCRIPT.to_string(),
         ],
         vec![],
     );

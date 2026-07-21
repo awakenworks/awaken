@@ -69,9 +69,12 @@ impl AcpBackend {
     pub(crate) fn executor_for(
         &self,
         sandbox: Arc<crate::session_environment::SessionEnvironment>,
+        permission: Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy>,
     ) -> Arc<AcpRunExecutor> {
         match &self.source {
-            AcpExecutorSource::Static(executor) => executor.clone(),
+            AcpExecutorSource::Static(executor) => {
+                Arc::new(executor.for_permission_policy(permission))
+            }
             AcpExecutorSource::Bound {
                 launch,
                 observer,
@@ -88,7 +91,7 @@ impl AcpBackend {
                 if let Some(session_home) = session_home {
                     executor = executor.with_session_home(session_home.clone());
                 }
-                Arc::new(executor)
+                Arc::new(executor.with_permission_policy(permission))
             }
         }
     }

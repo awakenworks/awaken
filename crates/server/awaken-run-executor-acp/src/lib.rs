@@ -22,6 +22,7 @@ use awaken_agent_channel::AgentChannel;
 // a direct dependency on the foundational channel crate (crate-boundary compliant).
 pub use awaken_agent_channel::AgentChannel as AgentChannelType;
 use awaken_agent_contract::agent::awaiting::{AwaitReason, PendingTool, ResumeTicket};
+use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::run::{EndCause, Failure, RunState};
@@ -208,6 +209,22 @@ impl AcpRunExecutor {
     pub fn with_permission_policy(mut self, policy: Arc<dyn ToolPermissionPolicy>) -> Self {
         self.permission = Arc::new(NeutralPermissionResolver { policy });
         self
+    }
+
+    /// Fork this executor's immutable launch/supervision configuration for one
+    /// Session while binding that Session's resolved permission policy. Static and
+    /// dynamically-bound ACP sources therefore share the same per-agent authority
+    /// without mutating a process-global executor or racing concurrent Sessions.
+    #[must_use]
+    pub fn for_permission_policy(&self, policy: Arc<dyn ToolPermissionPolicy>) -> Self {
+        Self {
+            source: self.source.clone(),
+            policy: self.policy,
+            observer: self.observer.clone(),
+            permission: Arc::new(NeutralPermissionResolver { policy }),
+            session_mode: self.session_mode.clone(),
+            session_home: self.session_home.clone(),
+        }
     }
 
     /// Pin the ACP session mode (e.g. `plan`), applied via `session/set_mode` after
@@ -627,6 +644,7 @@ impl AcpRunExecutor {
                     ask,
                 }) => {
                     committed.extend(appender.messages);
+                    ensure_pending_tool_use(&mut committed, &ask);
                     let ticket = ResumeTicket {
                         correlation_id,
                         run_id: run_id.clone(),
@@ -941,9 +959,9 @@ fn pause_ticket(activation: &RunActivation, run_id: &RunId, reason: AwaitReason)
 /// [`ToolPermissionPolicy`] authority (G21). It projects the wire ask into a neutral
 /// [`ToolCall`], asks the policy, and maps the decision back to a wire
 /// verdict — so an external CLI's tool requests are decided by the same policy that
-/// governs native tools. `Ask` (out-of-band/HITL) has no synchronous answer over
-/// the held ACP turn yet, so it fails safe to `Deny` (a turn-holding HITL resolve
-/// is a follow-up); `Allow`/`Deny` pass straight through.
+/// governs native tools. `Ask` closes the current process at a durable permission
+/// boundary; the Managed resume path relaunches the ACP session and supplies the
+/// exact call's one-shot decision. Immediate `Allow`/`Deny` pass straight through.
 struct NeutralPermissionResolver {
     policy: Arc<dyn ToolPermissionPolicy>,
 }
@@ -1114,6 +1132,30 @@ fn tool_use_id(acp_id: &str, seq: u64) -> String {
         format!("acp-tool-{seq}")
     } else {
         acp_id.to_string()
+    }
+}
+
+/// A permission request is itself the pending neutral tool fact. Some ACP agents
+/// emit a `tool_call` update before requesting permission and some do not; append
+/// only when absent so both wire styles project to exactly one Managed tool-use
+/// event whose id matches the durable resume ticket.
+fn ensure_pending_tool_use(messages: &mut Vec<Message>, ask: &PermissionAsk) {
+    let already_projected = messages.iter().any(|message| {
+        message
+            .content
+            .iter()
+            .any(|block| matches!(block, ContentBlock::ToolUse { id, .. } if id == &ask.call_id))
+    });
+    if !already_projected {
+        messages.push(Message {
+            id: MessageId(format!("acp-permission-{}", ask.call_id)),
+            role: Role::Assistant,
+            content: vec![ContentBlock::tool_use(
+                ask.call_id.clone(),
+                ask.tool.clone(),
+                ask.arguments.clone(),
+            )],
+        });
     }
 }
 
