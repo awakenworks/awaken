@@ -66,7 +66,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `design/web-ui.md` | Product/downstream mapping | Not required | n/a |
 | `design/awaken-server-local-overview.md` | Product/downstream mapping | Not required | n/a |
 | `design/credentials-and-vaults.md` | Product/downstream mapping | Not required | n/a |
-| `design/resources-memory-files-skills.md` | Product/downstream mapping | Not required | n/a |
+| `design/resources-memory-files-skills.md` | Role owner | Required | self |
 | `design/observability-eval-dataset-boundary.md` | Product/downstream mapping | Not required | n/a |
 | `design/error-taxonomy.md` | Decision record | Not required | n/a |
 | `design/packaging-enforcement-matrix.md` | Meta / introspection | Not required | n/a |
@@ -137,3 +137,4 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0060-durable-dispatch-completion-tombstone.md` | Decision record | Not required | n/a |
 | `adr/0061-selectable-identity-and-platform-managed-resource-scopes.md` | Decision record | Not required | n/a |
 | `adr/0062-published-inference-access-and-runtime-credential-injection.md` | Decision record | Not required | n/a |
+| `adr/0063-resource-input-identity-configuration-pinning-and-lifecycle.md` | Decision record | Not required | n/a |

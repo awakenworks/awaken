@@ -13,7 +13,7 @@ Owner: [resources-memory-files-skills.md](../design/resources-memory-files-skill
 ## FACT-RES-001: Resource refs cross; host paths do not
 
 - Status: active
-- Owner: [Resource boundary](../design/resources-memory-files-skills.md#resource-boundary)
+- Owner: [Static domain model](../design/resources-memory-files-skills.md#static-domain-model)
 - Fact: runtime input carries logical refs, descriptors, and hashes; local paths and live resource handles are created inside environment adapters.
 - Links: guardrails G3 and G8
 - Verification: serde tests, dependency checks, and environment realization tests.
@@ -21,8 +21,8 @@ Owner: [resources-memory-files-skills.md](../design/resources-memory-files-skill
 ## FACT-RES-002: Memory and files are product or environment resources
 
 - Status: active
-- Owner: [Memory and files](../design/resources-memory-files-skills.md#memory-and-files)
-- Fact: mutable memory, files, indexes, quotas, sharing, mounts, and cleanup belong outside runtime core; runtime uses approved tool/resource ports.
+- Owner: [Owning contexts](../design/resources-memory-files-skills.md#owning-contexts)
+- Fact: mutable Memory and immutable content-addressed Files, including their indexes, quotas, sharing, mounts, and cleanup, belong outside Runtime Core; execution uses approved resource and environment ports.
 - Links: guardrails G8 and G13
 - Verification: no-path API checks and store truth review.
 
@@ -37,8 +37,8 @@ Owner: [resources-memory-files-skills.md](../design/resources-memory-files-skill
 ## FACT-RES-004: Recovery replays facts and re-binds resources
 
 - Status: active
-- Owner: [Portable sessions and recovery](../design/resources-memory-files-skills.md#portable-sessions-and-recovery)
-- Fact: committed runtime facts are replayable, while resource bindings, mounts, paths, and process ids are re-created outside durable runtime truth.
+- Owner: [Recovery and reclamation](../design/resources-memory-files-skills.md#recovery-and-reclamation)
+- Fact: committed runtime facts are replayable, while Session resource activations, mounts, paths, leases, and process ids are re-created from the secret-free effective input manifest outside durable Runtime truth.
 - Links: guardrails G1 and G13
 - Verification: replay tests and recovery tests that avoid local path authority.
 
@@ -49,3 +49,43 @@ Owner: [resources-memory-files-skills.md](../design/resources-memory-files-skill
 - Fact: off-process work uses tool or backend execution paths and returns typed results; it does not add a separate session dispatcher.
 - Links: guardrails G5 and G6
 - Verification: ingress capability tests and dependency checks.
+
+## FACT-RES-006: Input identity follows content lifecycle
+
+- Status: active
+- Owner: [Static domain model](../design/resources-memory-files-skills.md#static-domain-model)
+- Fact: a File binding names immutable content, while Agent bindings for Memory and Repository name only their stable resource identities.
+- Links: guardrail G37
+- Verification: typed-binding serialization and content-id tests.
+
+## FACT-RES-007: Session resolution is the configuration pin point
+
+- Status: active
+- Owner: [Common configure-to-reclaim flow](../design/resources-memory-files-skills.md#common-configure-to-reclaim-flow)
+- Fact: one Session resolver merges Agent defaults with temporary attachments and selects current Memory/Repository configuration versions; it never selects Memory content or a Git commit.
+- Links: guardrail G37
+- Verification: single-resolution, replacement, and no-content-pin tests.
+
+## FACT-RES-008: Lifecycle stages have named owners
+
+- Status: active
+- Owner: [Lifecycle stage ownership](../design/resources-memory-files-skills.md#lifecycle-stage-ownership)
+- Fact: catalog, binding, resolution, authorization, activation, use, release, and reclamation each have one orchestration component; resource repositories enforce only their intrinsic data invariants.
+- Links: guardrails G14 and G38
+- Verification: component-boundary review and lifecycle scenario tests.
+
+## FACT-RES-009: Live deny overrides historical configuration
+
+- Status: active
+- Owner: [Lifecycle state and live deny](../design/resources-memory-files-skills.md#lifecycle-state-and-live-deny)
+- Fact: current ownership, suspension/deletion, authorization, and credential revocation can deny use of a previously resolved configuration.
+- Links: guardrails G21 and G37
+- Verification: cross-Workspace and post-revocation fail-closed tests.
+
+## FACT-RES-010: Logical deletion precedes physical reclamation
+
+- Status: active
+- Owner: [Recovery and reclamation](../design/resources-memory-files-skills.md#recovery-and-reclamation)
+- Fact: a resource is denied and tombstoned before asynchronous cleanup; purge waits for the references and activations required by that resource kind.
+- Links: guardrail G38
+- Verification: crash-reconciliation, retention, and no-live-reference purge tests.
