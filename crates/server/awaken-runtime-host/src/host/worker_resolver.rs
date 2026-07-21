@@ -164,17 +164,6 @@ impl HostWorkerResolver {
     ) -> Result<Arc<awaken_run_ingress::DispatchWorker<AnyDispatchStore>>, awaken_run_ingress::Error>
     {
         let thread_id = claimed.request.session_thread_id();
-        if let Some(worker) = host
-            .sessions
-            .lock()
-            .await
-            .get(&thread_id.0)
-            .and_then(|ctx| ctx.durable_ingress.as_ref())
-            .map(|ingress| ingress.worker_handle())
-        {
-            return Ok(worker);
-        }
-
         let commit = Arc::new(
             host.build_commit(&thread_id.0)
                 .await
