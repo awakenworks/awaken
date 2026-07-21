@@ -22,6 +22,21 @@ RESOURCE_PLANE_CRATES = {
     "awaken-resource-reclaimer",
 }
 
+# Resource application/adapters that live in a mixed-role crate. Their owning
+# crate may have broader dependencies for sibling modules, so scan these files
+# directly in addition to the dedicated resource crates above.
+RESOURCE_APPLICATION_SOURCES = (
+    "crates/control/awaken-admin-config-api/src/postgres_resource_catalog.rs",
+    "crates/control/awaken-admin-config-api/src/sqlite_resource_catalog.rs",
+    "crates/control/awaken-config-resolver/src/resource_catalog.rs",
+    "crates/server/awaken-managed-routers/src/files.rs",
+    "crates/server/awaken-runtime-host/src/memory_store_api.rs",
+    "crates/server/awaken-runtime-host/src/memory_stores.rs",
+    "crates/server/awaken-runtime-host/src/resource_lifecycle.rs",
+    "crates/server/awaken-runtime-host/src/resource_reclamation.rs",
+    "crates/server/awaken-runtime-host/src/skills_api.rs",
+)
+
 FORBIDDEN_DEPENDENCY_PREFIXES = ("awaken-authz", "awaken-iam")
 
 FORBIDDEN_TYPE_NAMES = {
@@ -160,4 +175,12 @@ def check_all(repo_root: Path, crates: Path) -> list[str]:
                         f"{path.relative_to(repo_root)}: resource schema persists "
                         f"authorization-plane field {field_name!r}"
                     )
+
+    for relative in RESOURCE_APPLICATION_SOURCES:
+        path = repo_root / relative
+        if not path.is_file():
+            errors.append(f"missing resource application source {relative!r}")
+            continue
+        for violation in _rust_violations(path.read_text(encoding="utf-8")):
+            errors.append(f"{relative}: {violation}")
     return errors

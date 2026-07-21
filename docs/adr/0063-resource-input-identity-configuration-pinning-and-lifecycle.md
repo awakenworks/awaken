@@ -231,12 +231,13 @@ mode or policy. Authentication and authorization remain independently deployable
 at the PEP/PDP edge.
 
 This separation is mechanically enforced by
-`check_resource_authorization_isolation`: every resource-plane crate is denied
-IAM/authz dependencies (including Cargo package aliases), authorization-domain
-types and fields are denied in production Rust, and the same fields are denied
-in resource SQL migrations. The check intentionally permits Workspace because it
-is the resource partition/ownership coordinate stamped by the PEP, not evidence
-that authorization was granted.
+`check_resource_authorization_isolation`: every dedicated resource-plane crate
+is denied IAM/authz dependencies (including Cargo package aliases); resource
+application modules living in mixed-role crates are scanned explicitly;
+authorization-domain types and fields are denied in production Rust; and the
+same fields are denied in resource SQL migrations. The check intentionally
+permits Workspace because it is the resource partition/ownership coordinate
+stamped by the PEP, not evidence that authorization was granted.
 
 `ResourcePlanePorts` injects the four neutral ports atomically when the Host is
 constructed. A shared deployment therefore never opens an unused local
