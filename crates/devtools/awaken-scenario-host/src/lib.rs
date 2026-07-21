@@ -76,6 +76,7 @@ impl InferenceExecutorMaterializer for RouteProvider {
         let labeled: Arc<dyn LlmExecutor> = match model_ref {
             "fast" => Arc::new(LabelModel("fast")),
             "slow" => Arc::new(LabelModel("slow")),
+            "default" => Arc::new(LabelModel("default")),
             _ => return None,
         };
         // Over the real wire the label rides in the model name the session bound

@@ -375,6 +375,21 @@ impl InferenceAccessPublisher for CatalogInferenceAccessPublisher {
 }
 
 impl InferenceExecutorMaterializer for CredentialInferenceMaterializer {
+    fn materialize(
+        &self,
+        activation: &awaken_runtime_contract::activation::RunActivation,
+        access: &InferenceAccess,
+    ) -> Option<Arc<dyn LlmExecutor>> {
+        // Preserve the complete publication-pinned candidate set for the executor's
+        // in-run failover. This adapter still cannot select or resolve any route that
+        // was not frozen in `access` by the configuration plane.
+        <Self as InferenceExecutorMaterializer>::materialize_pinned(
+            self,
+            activation.effective_model_ref(),
+            access,
+        )
+    }
+
     fn materialize_pinned(
         &self,
         model_ref: &str,

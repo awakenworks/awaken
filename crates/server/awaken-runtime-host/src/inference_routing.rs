@@ -35,7 +35,9 @@ pub trait InferenceExecutorMaterializer: Send + Sync {
         activation: &RunActivation,
         access: &InferenceAccess,
     ) -> Option<Arc<dyn LlmExecutor>> {
-        self.materialize_pinned(activation.effective_model_ref(), access)
+        let model_ref = activation.effective_model_ref();
+        let exact = access.for_model(model_ref)?;
+        self.materialize_pinned(model_ref, &exact)
     }
 }
 
@@ -242,6 +244,40 @@ mod tests {
             Err(error) => error,
         };
         assert!(error.contains("cannot materialize model `no-such`"));
+    }
+
+    #[test]
+    fn executor_selects_the_effective_model_from_a_publication_candidate_set() {
+        let fast: Arc<dyn LlmExecutor> = Arc::new(LabeledModel("fast"));
+        let slow: Arc<dyn LlmExecutor> = Arc::new(LabeledModel("slow"));
+        let mut map: HashMap<String, Arc<dyn LlmExecutor>> = HashMap::new();
+        map.insert("fast-model".into(), fast.clone());
+        map.insert("slow-model".into(), slow);
+        let mut routing = InferenceRouting::new();
+        routing.set_materializer(Arc::new(MapProvider(map)));
+
+        let mut activation = activation("fast-model");
+        activation.snapshot.metadata.inference_access = Some(
+            InferenceAccess::candidate_set([
+                (
+                    "fast-model".into(),
+                    InferenceAccess::host_executor("fast-model"),
+                ),
+                (
+                    "slow-model".into(),
+                    InferenceAccess::host_executor("slow-model"),
+                ),
+            ])
+            .unwrap(),
+        );
+
+        assert!(Arc::ptr_eq(
+            &routing
+                .executor_for_activation(&activation)
+                .unwrap()
+                .unwrap(),
+            &fast
+        ));
     }
 
     #[test]
