@@ -84,6 +84,7 @@ use awaken_runtime_contract::live_inbox::{EditError, LiveInboxMessageId, Message
 
 use crate::host::{HostError, HostErrorKind, PendingTool, RunResult};
 
+mod postgres_migration_lock;
 mod worker_control_client;
 
 // The neutral session substrate and its resume vocabulary.
@@ -92,6 +93,7 @@ pub use crate::dispatch_backend::{
     ensure_durable_backend, init_shared_dispatch_store, init_shared_postgres_dispatch,
 };
 pub use crate::host::{HostResume, ResourcePlanePorts, SharedHost};
+pub use crate::postgres_migration_lock::PostgresMigrationLock;
 pub use crate::worker_control_client::WorkerControlClient;
 // The sandboxed ACP channel source (bwrap-confined agent launch) and the shared
 // per-thread egress handle a composition root wires it with.
