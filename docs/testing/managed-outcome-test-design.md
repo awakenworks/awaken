@@ -24,6 +24,14 @@ not inferred from conversational prose.
 | interruption phase | Worker / Judge / final acknowledgment in flight | terminal `interrupted`; no later Grade | `managed_outcome_recovery_e2e.ts` |
 | Judge decision/schema | terminal `failed` / malformed JSON | failed evaluation / fail-closed stable error | `managed_outcome_recovery_e2e.ts` |
 | crash boundary | SIGKILL after Worker commit, during Judge inference | recover Judge; never repeat committed Worker | `managed_outcome_recovery_e2e.ts` |
+
+Changed-line coverage uses the repository merge-base, not the mutable branch tip.
+Audited non-API-reachable lines use the repository-wide
+`scripts/ci/e2e_unreachable.toml` ledger: every range requires a reachability reason
+and concrete lower-layer evidence, covered lines remain in the numerator, stale
+entries fail the gate, and the total waived share is capped. Valid Outcome
+orchestration, backend routing, Managed projection, interruption, and restart
+paths remain in the E2E denominator.
 | command transition | interrupt in live phase and repeat after terminal | first wins, terminal state is idempotent | Outcome domain and Host interrupt tests |
 
 The backend matrix is exhaustive rather than pairwise-reduced because two binary
