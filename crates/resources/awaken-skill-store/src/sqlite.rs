@@ -136,6 +136,7 @@ impl SkillStore for SqliteSkillStore {
                 initial_version,
             )]),
             retired_versions: Default::default(),
+            deleted: false,
         };
         let ws = aggregate.definition.workspace_id.clone();
         let id = aggregate.definition.id.clone();
@@ -209,10 +210,11 @@ impl SkillStore for SqliteSkillStore {
             .map_err(storage)?
             .map(|data| {
                 serde_json::from_str::<SkillAggregate>(&data)
-                    .map(|value| value.definition)
+                    .map(|value| (!value.deleted).then_some(value.definition))
                     .map_err(storage)
             })
             .transpose()
+            .map(Option::flatten)
         })
         .await
     }
@@ -231,13 +233,15 @@ impl SkillStore for SqliteSkillStore {
             let rows = statement
                 .query_map(params![ws], |row| row.get::<_, String>(0))
                 .map_err(storage)?;
-            rows.map(|row| {
+            let mut definitions = Vec::new();
+            for row in rows {
                 let data = row.map_err(storage)?;
-                serde_json::from_str::<SkillAggregate>(&data)
-                    .map(|aggregate| aggregate.definition)
-                    .map_err(storage)
-            })
-            .collect()
+                let aggregate = serde_json::from_str::<SkillAggregate>(&data).map_err(storage)?;
+                if !aggregate.deleted {
+                    definitions.push(aggregate.definition);
+                }
+            }
+            Ok(definitions)
         })
         .await
     }
@@ -262,6 +266,7 @@ impl SkillStore for SqliteSkillStore {
         Ok(self
             .load(workspace_id, skill_id)
             .await?
+            .filter(|aggregate| !aggregate.deleted)
             .map(|aggregate| {
                 aggregate
                     .versions
@@ -319,13 +324,64 @@ impl SkillStore for SqliteSkillStore {
         let ws = workspace_id.to_string();
         let id = skill_id.to_string();
         with_conn(&self.conn, move |conn| {
-            let n = conn
-                .execute(
-                    &format!("DELETE FROM {NS}_aggregate WHERE workspace_id = ?1 AND id = ?2"),
+            let Some(data) = conn
+                .query_row(
+                    &format!("SELECT data FROM {NS}_aggregate WHERE workspace_id = ?1 AND id = ?2"),
                     params![ws, id],
+                    |row| row.get::<_, String>(0),
                 )
-                .map_err(storage)?;
-            Ok(n > 0)
+                .optional()
+                .map_err(storage)?
+            else {
+                return Ok(false);
+            };
+            let mut aggregate: SkillAggregate = serde_json::from_str(&data).map_err(storage)?;
+            if aggregate.deleted {
+                return Ok(false);
+            }
+            aggregate.deleted = true;
+            let data = serde_json::to_string(&aggregate).map_err(storage)?;
+            conn.execute(
+                &format!("UPDATE {NS}_aggregate SET data = ?3 WHERE workspace_id = ?1 AND id = ?2"),
+                params![ws, id, data],
+            )
+            .map_err(storage)?;
+            Ok(true)
+        })
+        .await
+    }
+
+    async fn purge_skill(
+        &self,
+        workspace_id: &str,
+        skill_id: &str,
+    ) -> Result<u64, SkillStoreError> {
+        let ws = workspace_id.to_string();
+        let id = skill_id.to_string();
+        with_conn(&self.conn, move |conn| {
+            let Some(data) = conn
+                .query_row(
+                    &format!("SELECT data FROM {NS}_aggregate WHERE workspace_id = ?1 AND id = ?2"),
+                    params![ws, id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(storage)?
+            else {
+                return Ok(0);
+            };
+            let aggregate: SkillAggregate = serde_json::from_str(&data).map_err(storage)?;
+            if !aggregate.deleted {
+                return Err(SkillStoreError::Invalid(
+                    "an active Skill cannot be physically reclaimed".into(),
+                ));
+            }
+            conn.execute(
+                &format!("DELETE FROM {NS}_aggregate WHERE workspace_id = ?1 AND id = ?2"),
+                params![ws, id],
+            )
+            .map_err(storage)?;
+            Ok(aggregate.versions.len() as u64)
         })
         .await
     }

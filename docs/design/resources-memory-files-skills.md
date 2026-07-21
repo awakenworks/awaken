@@ -251,7 +251,7 @@ process-local handle.
 | `RepositoryRealizer` | Existing neutral port | Environment adapter | clone current remote config, construct working tree, publish Agent-authored commits with ephemeral transport credentials | remote repository ownership, authorization policy, or commit pinning |
 | `CredentialResolver`/Vault | Existing | Credential product domain | turn a credential binding into a short-lived lease and rotate/revoke it | Agent prompt, persisted Session secret material |
 | `SandboxProvider` | Existing | Environment provisioning | realize validated mounts/working trees and dispose them | product resource authoring and policy |
-| `ResourceReclaimer` | Existing for Session activation recovery; per-resource purge remains | Product/session operations | reconcile crashed activations, retention, reference checks, per-kind purge receipts | authorization decisions, remote Git deletion |
+| `ResourceReclaimer` | Existing, durable and per-resource | Product/session operations | reconcile crashed activations and purge intents; retention, reference checks, fenced claims, per-kind receipts | authorization decisions, remote Git deletion |
 
 The catalog names roles rather than forcing them into one crate. Local mode may
 compose several roles in one process; cloud mode may deploy them separately.
@@ -264,7 +264,7 @@ resource-specific repositories enforce their own intrinsic invariants.
 
 | Stage | Primary component | Collaborators | Durable result |
 |---|---|---|---|
-| Configure File | Files API / File application service | `FileStore`, ownership repository | immutable `FileId` plus Workspace grant |
+| Configure File | Files API / File application service | `FileStore`, ownership repository | immutable `FileId` plus Workspace ownership edge |
 | Configure Memory | Resource Catalog service | Memory config repository, `MemoryRepository` | `MemoryStore` + config v1 + logical namespace |
 | Configure Repo | Resource Catalog service | Repository config repository, Vault | `Repository` + config v1 referencing credential binding |
 | Bind Agent default | Agent Configuration service | `AgentInputBindingRepository`, PEP/PDP | identity-only `InputBinding`, authoring revision increments |
@@ -343,13 +343,13 @@ effective set, so what the Agent is told is what the environment provisions.
 ### Configure
 
 The Files API streams bytes into `FileStore`. The store computes BLAKE3 and
-returns `FileId`; equal bytes deduplicate. The ownership repository grants the
+returns `FileId`; equal bytes deduplicate. The ownership repository records the
 Workspace access to that content id. Knowing a hash is never authority.
 
 ### Bind and resolve
 
 Agent and Session bindings carry the immutable `FileId`. Resolution checks the
-Workspace grant, current deletion state, mount path, and content existence. No
+Workspace ownership edge, current deletion state, mount path, and content existence. No
 File config or version lookup exists.
 
 ### Activate and use
@@ -362,17 +362,17 @@ is a new File or Artifact; the original blob is never overwritten.
 ### Release and reclaim
 
 Session release deletes only the sandbox copy. Logical File deletion revokes a
-Workspace grant. Physical blob GC is allowed only when all are false:
+Workspace ownership edge. Physical blob GC is allowed only when all are false:
 
 ```text
-Workspace grants
+Workspace ownership edges
 Agent bindings
 active/effective Session references
 Artifact references
 retention or legal hold
 ```
 
-A shared blob survives deletion of one tenant's grant.
+A shared blob survives removal of one Workspace's ownership edge.
 
 ## MemoryStore Lifecycle
 
@@ -654,6 +654,15 @@ internal config version remains an awaken governance detail.
   retained as aliases: the port is `MemoryRepository`, with
   `VolatileMemoryRepository`, `FilesystemMemoryRepository`,
   `SqliteMemoryRepository`, and `PostgresMemoryRepository` adapters.
+- durable `MemoryExtractionIntent` application work replaces fire-and-forget
+  extraction: terminal outbox recovery, process-unique lease fencing/heartbeat,
+  staged mutation receipts, and idempotent CAS apply survive a real SIGKILL;
+- publication-pinned inference and credential-injection vocabulary is shared by
+  configuration, Session application, and Runtime through the foundation
+  `awaken-inference-contract`; Runtime materialization injects only that frozen
+  reference and never re-resolves a route or reads a global extractor credential;
+- stale FUSE Memory realizations are detected and detached at remount, so a dead
+  process cannot prevent the same durable Session binding from being recovered.
 
 ### Completed deletion
 
@@ -670,9 +679,21 @@ internal config version remains an awaken governance detail.
 - API-local `SkillRegistry`, text-only `SkillStore` overwrite semantics, lossy
   `String::from_utf8_lossy` bundle ingestion, and runtime lookup of `latest`.
 
-### Remaining additions
+### Completed reclamation slice
 
-- resource-specific purge receipts and recovery tests.
+- one `ResourcePurgeIntent`/receipt state machine covers File, MemoryStore,
+  Repository, and Skill without importing IAM vocabulary;
+- the durable resource store owns purge work plus Workspace-scoped reverse
+  references; Session manifest replacement updates its references atomically;
+- File GC checks every Workspace ownership/reference before deleting shared bytes;
+- Memory GC requires the catalog tombstone, pinned config generation, retention,
+  no Session/Agent binding, and no recoverable extraction before atomically
+  deleting heads and history;
+- Skill delete is a tombstone: new resolution is denied while retained Session
+  pins can still read immutable versions until the reclaimer records physical
+  purge; and
+- Repository reclamation records only awaken-local cleanup and never calls a
+  remote Git deletion operation.
 
 ## Failure Semantics
 
@@ -701,7 +722,7 @@ reconciler. It never silently marks the resource released.
 | Area | Required proof |
 |---|---|
 | Binding | Agent defaults and Session attachments merge once; explicit replacement only; mount collision fails |
-| File | binary round-trip; content-id validation; read-only mount; shared-blob grant isolation; safe GC |
+| File | binary round-trip; content-id validation; read-only mount; shared-blob ownership isolation; safe GC |
 | Memory | config update affects only later Sessions; current content remains shared; read-only extraction denied; CAS conflict loses no update |
 | Repository | config update affects later Sessions; no commit pin in manifest; credentials absent from logs/prompt/disk; remote is never deleted by GC |
 | Skill | binary bundle round-trip; traversal rejected; restart preserves history; v1 Session keeps v1 after v2 publication; hash mismatch fails closed |

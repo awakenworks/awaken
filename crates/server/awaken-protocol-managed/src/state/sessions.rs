@@ -577,7 +577,10 @@ impl ManagedState {
             .end_session(&session_id)
             .await
             .map_err(StateError::Run)?;
-        if !self.retire_session_repositories(owner_scope, &session_id, &session.resources) {
+        if !self
+            .retire_session_repositories(owner_scope, &session_id, &session.resources)
+            .await
+        {
             return Err(StateError::Run(RunError::internal(
                 "Session-scoped Repository cleanup remains pending",
             )));
@@ -591,15 +594,15 @@ impl ManagedState {
         Ok(session)
     }
 
-    fn retire_session_repositories(
+    async fn retire_session_repositories(
         &self,
         owner_scope: &str,
         session_id: &str,
         resources: &awaken_session_contract::SessionResourceState,
     ) -> bool {
-        let Some(catalog) = &self.resource_catalog else {
+        if self.resource_catalog.is_none() {
             return true;
-        };
+        }
         let prefix = format!("managed:{session_id}:repository:");
         let mut ids = std::collections::BTreeSet::new();
         for manifest in std::iter::once(&resources.active).chain(resources.pending.iter()) {
@@ -616,21 +619,53 @@ impl ManagedState {
         }
         let mut retired = true;
         for repository_id in ids {
-            if let Err(error) = catalog.set_repository_state(
-                owner_scope,
-                &repository_id,
-                awaken_resource_contract::ResourceState::Deleted,
-            ) {
+            if !self.retire_repository(owner_scope, &repository_id).await {
                 retired = false;
                 tracing::warn!(
                     session = session_id,
                     repository = %repository_id,
-                    error = ?error,
                     "Session-scoped Repository cleanup remains pending"
                 );
             }
         }
         retired
+    }
+
+    pub(crate) async fn retire_repository(&self, owner_scope: &str, repository_id: &str) -> bool {
+        let Some(catalog) = &self.resource_catalog else {
+            return true;
+        };
+        let Some(definition) = catalog.repository(owner_scope, repository_id) else {
+            return true;
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as u64)
+            .unwrap_or_default();
+        if let Some(scheduler) = &self.resource_purge_scheduler
+            && let Err(error) = scheduler
+                .schedule_purge(
+                    awaken_resource_contract::ResourceTarget::new(
+                        owner_scope,
+                        awaken_resource_contract::ResourceKind::Repository,
+                        repository_id,
+                    ),
+                    Some(definition.current_config_version.0),
+                    now,
+                    now,
+                )
+                .await
+        {
+            tracing::warn!(repository = repository_id, error = ?error, "Repository purge scheduling failed");
+            return false;
+        }
+        catalog
+            .set_repository_state(
+                owner_scope,
+                repository_id,
+                awaken_resource_contract::ResourceState::Deleted,
+            )
+            .is_ok()
     }
 
     /// ResourceReclaimer entry point. Composition roots call this after durable
@@ -1015,7 +1050,9 @@ impl ManagedState {
             .save_owned(owner_scope, persisted.clone())
             .await;
         if self.end_session_sandboxes(id, child_threads).await
-            && self.retire_session_repositories(owner_scope, id, &persisted.resources)
+            && self
+                .retire_session_repositories(owner_scope, id, &persisted.resources)
+                .await
         {
             persisted
                 .resources

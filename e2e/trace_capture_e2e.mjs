@@ -38,11 +38,12 @@ const SID = '0123456789abcdef';
 let upstream;
 
 // Create a session and drive one user-message turn to completion.
-async function createAndTurn(base, text) {
+async function createAndTurn(base, text, resources = []) {
   const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
   const session = await client.beta.sessions.create({
     agent: 'assistant',
     environment_id: 'env_local',
+    resources,
     betas: BETAS,
   });
   const send = await fetch(`${base}/v1/sessions/${session.id}/events`, {
@@ -66,8 +67,8 @@ const CAPTURE_BEHAVIOR = { echo: 'echo', statemachine: 'stateMachine', memory: '
 // The MODEL runs over the real wire: `echo` is plain-mount (real mode), other modes
 // keep their `AWAKEN_MODEL_MODE=<mode>` host config with the model swapped to the
 // wire. Each call runs its own fake upstream reproducing that mode's behavior.
-// `settleMs` waits for detached background work (e.g. memory extraction) to finish
-// before stopping, so its spans are captured.
+// Background work is awaited through its observable resource effect rather than a
+// timing guess, so a captured aux span proves the governed binding actually ran.
 async function captureTurn(mode, port, file, text, { extraEnv = {}, settleMs = 0 } = {}) {
   fs.rmSync(file, { force: true });
   const behavior = CAPTURE_BEHAVIOR[mode] ?? 'echo';
@@ -81,8 +82,36 @@ async function captureTurn(mode, port, file, text, { extraEnv = {}, settleMs = 0
   });
   try {
     await waitForPort(port);
-    await createAndTurn(`http://127.0.0.1:${port}`, text);
-    if (settleMs) await sleep(settleMs);
+    const base = `http://127.0.0.1:${port}`;
+    let memoryStore;
+    let resources = [];
+    if (mode === 'memory') {
+      const created = await fetch(`${base}/v1/memory_stores`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'trace-memory' }),
+      });
+      assert.equal(created.status, 200, 'trace memory store created');
+      memoryStore = await created.json();
+      resources = [{ type: 'memory_store', memory_store_id: memoryStore.id, mount_path: '/memory' }];
+    }
+    await createAndTurn(base, text, resources);
+    if (memoryStore) {
+      let extracted = false;
+      for (let i = 0; i < 30; i += 1) {
+        const response = await fetch(`${base}/v1/memory_stores/${memoryStore.id}/memories`);
+        assert.equal(response.status, 200, 'trace memory store remains readable');
+        const page = await response.json();
+        if ((page.data ?? []).length > 0) {
+          extracted = true;
+          break;
+        }
+        await sleep(100);
+      }
+      assert.ok(extracted, 'background extraction committed to the bound MemoryStore');
+    } else if (settleMs) {
+      await sleep(settleMs);
+    }
     await stopServer(server);
     return readSpans(file);
   } finally {

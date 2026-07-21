@@ -11,6 +11,10 @@ awaken-agent-contract.workspace = true
 # Secret-free resources-plane identity/configuration port used once while a
 # Session freezes its effective inputs. It contains no IAM policy or principal.
 awaken-resource-contract.workspace = true
+# Secret-free, publication-pinned inference access carried by durable auxiliary
+# work. This is execution configuration, not an authorization decision; raw
+# credentials remain behind the runtime materializer.
+awaken-inference-contract.workspace = true
 # The opaque tenancy `ScopeId` bound on the scoped session-repository decorator.
 awaken-tenancy.workspace = true
 async-trait.workspace = true

@@ -37,6 +37,7 @@ license = "Apache-2.0"
 
 [workspace.dependencies]
 awaken-agent-contract = { path = "crates/contract/awaken-agent-contract" }
+awaken-inference-contract = { path = "crates/contract/awaken-inference-contract" }
 awaken-runtime-contract = { path = "crates/contract/awaken-runtime-contract" }
 awaken-tenancy = { path = "crates/contract/awaken-tenancy" }
 awaken-session-contract = { path = "crates/contract/awaken-session-contract" }
@@ -65,6 +66,7 @@ awaken-protocol-mcp = { path = "crates/server/awaken-protocol-mcp" }
 awaken-protocol-ag-ui = { path = "crates/server/awaken-protocol-ag-ui" }
 awaken-protocol-ai-sdk = { path = "crates/server/awaken-protocol-ai-sdk" }
 awaken-protocol-managed = { path = "crates/server/awaken-protocol-managed" }
+awaken-resource-reclaimer = { path = "crates/server/awaken-resource-reclaimer" }
 awaken-protocol-acp = { path = "crates/server/awaken-protocol-acp" }
 awaken-run-executor-acp = { path = "crates/server/awaken-run-executor-acp" }
 awaken-run-executor-a2a = { path = "crates/server/awaken-run-executor-a2a" }
@@ -106,6 +108,7 @@ awaken-store-sqlite = { path = "crates/stores/awaken-store-sqlite" }
 awaken-store-postgres = { path = "crates/stores/awaken-store-postgres" }
 awaken-work-store = { path = "crates/stores/awaken-work-store" }
 awaken-session-store = { path = "crates/stores/awaken-session-store" }
+awaken-resource-store = { path = "crates/stores/awaken-resource-store" }
 awaken-env-store = { path = "crates/stores/awaken-env-store" }
 awaken-config-store = { path = "crates/control/awaken-config-store" }
 awaken-config-service = { path = "crates/control/awaken-config-service" }

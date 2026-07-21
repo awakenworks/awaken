@@ -1,0 +1,15 @@
+[package]
+name = "awaken-resource-reclaimer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+awaken-resource-contract.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints]
+workspace = true

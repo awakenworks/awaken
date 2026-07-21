@@ -45,8 +45,11 @@ def changed_lines(base: str) -> dict[str, set[int]]:
     return result
 
 
-def lcov_lines() -> dict[str, dict[int, int]]:
-    lcov = run("cargo", "llvm-cov", "report", "--lcov")
+def lcov_lines(ignore_filename_regex: str | None) -> dict[str, dict[int, int]]:
+    command = ["cargo", "llvm-cov", "report", "--lcov"]
+    if ignore_filename_regex:
+        command.extend(["--ignore-filename-regex", ignore_filename_regex])
+    lcov = run(*command)
     result: dict[str, dict[int, int]] = {}
     current: str | None = None
     for line in lcov.splitlines():
@@ -68,6 +71,10 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", default="origin/1.0.0-dev")
     parser.add_argument("--minimum", type=float, default=0.95)
+    parser.add_argument(
+        "--ignore-filename-regex",
+        help="apply the served-binary reachability exclusions used by the coverage report",
+    )
     parser.add_argument("--show-missing", type=int, default=80)
     parser.add_argument("--show-files", type=int, default=30)
     args = parser.parse_args()
@@ -75,7 +82,7 @@ def main() -> None:
         parser.error("--minimum must be between zero and one")
 
     changed = changed_lines(args.base)
-    coverage = lcov_lines()
+    coverage = lcov_lines(args.ignore_filename_regex)
     executable: list[tuple[str, int, int]] = []
     for relative, lines in changed.items():
         measured = coverage.get(relative, {})

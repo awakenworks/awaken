@@ -6,7 +6,7 @@
 //   - Artifact (harvest, write): the model writes under `outputs/`; the host harvests
 //     it; we retrieve it via `files.list(scope_id)` + `files.download`.
 //   - Memory (stateful, read+write, cross-session): a memory store has a stable id;
-//     session A writes a note, the host harvests it back, and a *new* session B reads
+//     session A writes through the governed mount, and a *new* session B reads
 //     the persisted note — proving write-back and cross-session persistence.
 // Prompt effect (A3a): the model only learns WHERE each resource lives from the system
 // prompt the host injected from the binding — so a correct read/write proves the
@@ -195,10 +195,8 @@ async function main() {
           `its entire contents become: ${MEMTOKEN}. Do not create any other file and do ` +
           `not use an absolute path. Reply with "saved" when done.`,
         async () => {
-          // files.list(scope_id) is the reverse channel that harvests memory write-back.
-          for await (const _ of client.beta.files.list({ scope_id: sessionA.id, betas: BETAS })) {
-            /* drain to trigger harvest */
-          }
+          // The Memory API is a read-only observation here. The governed mount
+          // writes through to the same repository; Files GET has no hidden write edge.
           const page = await client.get(`/v1/memory_stores/${mem.id}/memories`);
           memContent = (page?.data ?? []).map((memory) => memory.content ?? '').join('\n');
           return memContent.includes(MEMTOKEN);
@@ -206,8 +204,8 @@ async function main() {
         { nudgeText: `Use the write tool to save the exact text ${MEMTOKEN} into your persistent memory file.` },
       );
       assert.ok(memWrite.approved.size > 0, 'the memory write should have awaiting for a confirmation');
-      assert.ok(memWrite.ok, `memory store must hold the harvested note; got ${JSON.stringify(memContent.slice(0, 120))}`);
-      pass(`model wrote to memory; host harvested it into the store: ${MEMTOKEN}`);
+      assert.ok(memWrite.ok, `memory store must hold the written note; got ${JSON.stringify(memContent.slice(0, 120))}`);
+      pass(`model wrote through the governed Memory mount: ${MEMTOKEN}`);
 
       // Session B: a fresh session mounts the SAME memory id — the note must be there.
       const sessionB = await client.beta.sessions.create({

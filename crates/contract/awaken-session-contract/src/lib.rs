@@ -16,6 +16,7 @@ pub mod env_registry;
 mod lifecycle;
 mod mcp_binding;
 mod mcp_probe;
+mod memory_extraction;
 mod resource;
 mod resource_activation;
 mod session;
@@ -33,6 +34,11 @@ pub use agent_config::{AgentConfigSource, AgentConfigView, AgentMcpServerView};
 pub use lifecycle::{SessionLifecycleFact, SessionLifecycleSink};
 pub use mcp_binding::{McpRefreshBinding, TokenEndpointAuthBinding};
 pub use mcp_probe::{McpProbe, McpProbeStatus};
+pub use memory_extraction::{
+    MemoryExtractionError, MemoryExtractionIntent, MemoryExtractionMutation,
+    MemoryExtractionReceipt, MemoryExtractionRepository, MemoryExtractionStatus,
+    MemoryExtractorSnapshot, MemoryMutationReceipt, PutMemoryExtractionOutcome,
+};
 pub use resource::{
     ResolvedInput, ResolvedInputSource, ResolvedSessionResources, ResolvedSkillBinding,
     SessionInputAttachment, SessionInputError, SessionInputResolver,

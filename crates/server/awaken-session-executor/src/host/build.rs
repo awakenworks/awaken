@@ -47,12 +47,26 @@ impl SharedHost {
             &model_ref,
             DEFAULT_MEMORY_INSTRUCTIONS,
         )));
+        let extraction_repository: Arc<dyn awaken_protocol_managed::MemoryExtractionRepository> =
+            match store_dir.as_ref() {
+                Some(dir) => {
+                    std::fs::create_dir_all(dir)
+                        .expect("create durable Memory extraction repository directory");
+                    Arc::new(
+                        awaken_session_store::SqliteManagedSessionRepository::open(
+                            &dir.join("sessions.db").to_string_lossy(),
+                        )
+                        .expect("open durable Memory extraction repository"),
+                    )
+                }
+                None => Arc::new(awaken_session_store::InMemorySessionRepository::default()),
+            };
         let memory = Arc::new(crate::memory::MemoryRuntime::new(
             llm.clone(),
             Arc::new(LocalProvider::new(sub_base("mem"))),
             memory_catalog,
             Arc::new(BackgroundRuns::new()),
-            model_ref.clone(),
+            extraction_repository,
         ));
         let memory_selector = Some(Arc::new(crate::memory::AgentSelector::new(
             llm.clone(),
@@ -106,9 +120,10 @@ impl SharedHost {
                 ),
                 None => Arc::new(awaken_file_store::InMemoryFileStore::new()),
             },
-            resource_ownership: crate::resource_ownership::ResourceOwnership::open(
-                store_dir.as_deref(),
+            resource_lifecycle: Arc::new(
+                crate::resource_lifecycle::EphemeralResourceLifecycle::default(),
             ),
+            resource_lifecycle_gate: tokio::sync::Mutex::new(()),
             memory_stores,
             memory_mounter: std::sync::RwLock::new(None),
             gate_override: None,
@@ -149,6 +164,24 @@ impl SharedHost {
     /// about those repositories.
     pub fn storage_dir(&self) -> Option<&std::path::Path> {
         self.store_dir.as_deref()
+    }
+
+    /// Replace the ephemeral resource-lifecycle adapter. Composition roots use
+    /// this for SQLite/Postgres/cloud implementations; the runtime sees only the
+    /// resource contract and remains independent of IAM and storage technology.
+    #[must_use]
+    pub fn with_resource_lifecycle(
+        mut self,
+        repository: Arc<dyn awaken_protocol_managed::resource_plane::ResourceLifecycleRepository>,
+    ) -> Self {
+        self.resource_lifecycle = repository;
+        self
+    }
+
+    pub fn resource_lifecycle(
+        &self,
+    ) -> Arc<dyn awaken_protocol_managed::resource_plane::ResourceLifecycleRepository> {
+        self.resource_lifecycle.clone()
     }
 
     pub(crate) fn register_thread_workspace(&self, thread: &str, workspace: &str) {
@@ -424,6 +457,14 @@ impl SharedHost {
             provider.install_memory_mounter(mounter);
         }
         self.provider = provider;
+        std::fs::create_dir_all(&dir)
+            .expect("create durable Memory extraction repository directory");
+        self.memory.set_extraction_repository(Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open(
+                &dir.join("sessions.db").to_string_lossy(),
+            )
+            .expect("open durable Memory extraction repository"),
+        ));
         self.store_dir = Some(dir);
         self
     }
@@ -444,6 +485,7 @@ impl SharedHost {
         mut self,
         materializer: Arc<dyn crate::inference_routing::InferenceExecutorMaterializer>,
     ) -> Self {
+        self.memory.set_inference_materializer(materializer.clone());
         self.inference_routing.set_materializer(materializer);
         self
     }

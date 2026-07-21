@@ -19,13 +19,24 @@ use awaken_runtime_contract::llm::LlmExecutor;
 /// executor. Selecting models and routes is deliberately outside this port; the
 /// materializer may only consume the exact activation and access it is given.
 pub trait InferenceExecutorMaterializer: Send + Sync {
+    /// Materialize one configuration-pinned model/access pair. The implementation
+    /// may inject referenced credential material, but must not resolve or select a
+    /// different model, route, scope, or credential.
+    fn materialize_pinned(
+        &self,
+        model_ref: &str,
+        access: &InferenceAccess,
+    ) -> Option<Arc<dyn LlmExecutor>>;
+
     /// Materialize exactly the pinned access for this activation. Returning
     /// `None` rejects the run; it never falls back to a different route.
     fn materialize(
         &self,
         activation: &RunActivation,
         access: &InferenceAccess,
-    ) -> Option<Arc<dyn LlmExecutor>>;
+    ) -> Option<Arc<dyn LlmExecutor>> {
+        self.materialize_pinned(activation.effective_model_ref(), access)
+    }
 }
 
 /// The host's per-thread model binding: which model ref each thread runs, and how
@@ -179,12 +190,11 @@ mod tests {
 
     struct MapProvider(HashMap<String, Arc<dyn LlmExecutor>>);
     impl InferenceExecutorMaterializer for MapProvider {
-        fn materialize(
+        fn materialize_pinned(
             &self,
-            activation: &RunActivation,
+            model_ref: &str,
             access: &InferenceAccess,
         ) -> Option<Arc<dyn LlmExecutor>> {
-            let model_ref = activation.effective_model_ref();
             access
                 .is_host_executor_for(model_ref)
                 .then(|| self.0.get(model_ref).cloned())
@@ -264,12 +274,12 @@ mod tests {
         }
 
         impl InferenceExecutorMaterializer for ReferenceMaterializer {
-            fn materialize(
+            fn materialize_pinned(
                 &self,
-                activation: &RunActivation,
+                model_ref: &str,
                 access: &InferenceAccess,
             ) -> Option<Arc<dyn LlmExecutor>> {
-                assert_eq!(activation.effective_model_ref(), "gateway-model");
+                assert_eq!(model_ref, "gateway-model");
                 *self.seen.lock().expect("grant capture mutex") = Some(access.clone());
                 Some(self.executor.clone())
             }

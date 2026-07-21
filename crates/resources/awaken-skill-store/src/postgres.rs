@@ -110,6 +110,7 @@ impl SkillStore for PgSkillStore {
                 initial_version,
             )]),
             retired_versions: Default::default(),
+            deleted: false,
         };
         let data = serde_json::to_string(&aggregate).map_err(storage)?;
         sqlx::query(&format!(
@@ -175,6 +176,7 @@ impl SkillStore for PgSkillStore {
         Ok(self
             .load(workspace_id, skill_id)
             .await?
+            .filter(|aggregate| !aggregate.deleted)
             .map(|aggregate| aggregate.definition))
     }
 
@@ -189,14 +191,15 @@ impl SkillStore for PgSkillStore {
         .fetch_all(&self.pool)
         .await
         .map_err(storage)?;
-        rows.into_iter()
-            .map(|r| {
-                let data = r.try_get::<String, _>("data").map_err(storage)?;
-                serde_json::from_str::<SkillAggregate>(&data)
-                    .map(|aggregate| aggregate.definition)
-                    .map_err(storage)
-            })
-            .collect()
+        let mut definitions = Vec::new();
+        for row in rows {
+            let data = row.try_get::<String, _>("data").map_err(storage)?;
+            let aggregate = serde_json::from_str::<SkillAggregate>(&data).map_err(storage)?;
+            if !aggregate.deleted {
+                definitions.push(aggregate.definition);
+            }
+        }
+        Ok(definitions)
     }
 
     async fn version(
@@ -219,6 +222,7 @@ impl SkillStore for PgSkillStore {
         Ok(self
             .load(workspace_id, skill_id)
             .await?
+            .filter(|aggregate| !aggregate.deleted)
             .map(|aggregate| {
                 aggregate
                     .versions
@@ -272,7 +276,40 @@ impl SkillStore for PgSkillStore {
         workspace_id: &str,
         skill_id: &str,
     ) -> Result<bool, SkillStoreError> {
-        let r = sqlx::query(&format!(
+        let Some(mut aggregate) = self.load(workspace_id, skill_id).await? else {
+            return Ok(false);
+        };
+        if aggregate.deleted {
+            return Ok(false);
+        }
+        aggregate.deleted = true;
+        let data = serde_json::to_string(&aggregate).map_err(storage)?;
+        sqlx::query(&format!(
+            "UPDATE {NS}_aggregate SET data = $3 WHERE workspace_id = $1 AND id = $2"
+        ))
+        .bind(workspace_id)
+        .bind(skill_id)
+        .bind(data)
+        .execute(&self.pool)
+        .await
+        .map_err(storage)?;
+        Ok(true)
+    }
+
+    async fn purge_skill(
+        &self,
+        workspace_id: &str,
+        skill_id: &str,
+    ) -> Result<u64, SkillStoreError> {
+        let Some(aggregate) = self.load(workspace_id, skill_id).await? else {
+            return Ok(0);
+        };
+        if !aggregate.deleted {
+            return Err(SkillStoreError::Invalid(
+                "an active Skill cannot be physically reclaimed".into(),
+            ));
+        }
+        sqlx::query(&format!(
             "DELETE FROM {NS}_aggregate WHERE workspace_id = $1 AND id = $2"
         ))
         .bind(workspace_id)
@@ -280,7 +317,7 @@ impl SkillStore for PgSkillStore {
         .execute(&self.pool)
         .await
         .map_err(storage)?;
-        Ok(r.rows_affected() > 0)
+        Ok(aggregate.versions.len() as u64)
     }
 }
 

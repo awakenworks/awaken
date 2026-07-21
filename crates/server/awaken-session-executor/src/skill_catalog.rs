@@ -279,6 +279,14 @@ impl SkillCatalog {
         Some(result)
     }
 
+    pub(crate) async fn purge(
+        &self,
+        workspace: &str,
+        id: &str,
+    ) -> Option<Result<u64, SkillStoreError>> {
+        Some(self.store.as_ref()?.purge_skill(workspace, id).await)
+    }
+
     /// Refresh the in-memory delivered-catalog snapshot from the async store. Called
     /// on a write and at each session's setup so the sync read paths (advertisement,
     /// run-loop scan) see the current catalog.

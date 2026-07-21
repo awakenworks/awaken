@@ -40,7 +40,9 @@ mod memory_store_api;
 mod memory_stores;
 mod provisioning;
 mod redact;
-mod resource_ownership;
+mod resource_lifecycle;
+mod resource_reclamation;
+pub use resource_reclamation::HostResourceReclamation;
 mod run_exec;
 mod sandbox_source;
 mod skill_catalog;
@@ -313,7 +315,12 @@ impl ManagedHost {
 
         match &input.source {
             ResolvedInputSource::File { file_id } => {
-                if !self.host.owns_file(workspace, file_id.as_str()) {
+                if !self
+                    .host
+                    .owns_file(workspace, file_id.as_str())
+                    .await
+                    .map_err(|error| RunError::internal(error.to_string()))?
+                {
                     return Err(RunError::bad_request(format!(
                         "file resource `{file_id}` not found in this workspace"
                     )));
@@ -478,7 +485,18 @@ impl ManagedHost {
                 let handle = self
                     .host
                     .platform_memory_handle(memory_store_id.to_string(), writable);
-                bound_memory = Some(Arc::new(self.host.memory.bind(handle, config, writable)));
+                let resource_configs = self.resource_configs.as_ref().ok_or_else(|| {
+                    RunError::bad_request(
+                        "Memory extraction requires a configured Resource Catalog",
+                    )
+                })?;
+                bound_memory = Some(Arc::new(self.host.memory.bind(
+                    workspace,
+                    handle,
+                    resource_configs.clone(),
+                    config,
+                    writable,
+                )));
             }
         }
 
@@ -496,10 +514,17 @@ impl ManagedHost {
             .collect();
         // The complete manifest replaces the prior projection. Register an empty
         // value too, so deleting the final input cannot leave a stale mount behind.
+        self.host
+            .replace_session_references(workspace, thread, inputs)
+            .await
+            .map_err(|error| RunError::internal(error.to_string()))?;
         self.host.register_thread_resources(thread, all);
         // Every Session records an explicit selection (including none). There is
         // no Host-global or directory fallback.
         self.host.register_thread_memory(thread, bound_memory);
+        if let Some(memory) = self.host.memory_for_thread(thread) {
+            memory.reconcile(thread).await;
+        }
         Ok(repository_mcp)
     }
 

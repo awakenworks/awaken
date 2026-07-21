@@ -94,7 +94,13 @@ async fn upload_file(
     let size = bytes.len();
     match host.file_store().put(&bytes).await {
         Ok(id) => {
-            host.grant_file(&workspace, &id);
+            if let Err(error) = host.register_file_ownership(&workspace, &id).await {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": error.to_string() })),
+                )
+                    .into_response();
+            }
             (
                 StatusCode::OK,
                 Json(json!({
@@ -124,7 +130,7 @@ async fn get_file(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let workspace = request_workspace(&host, scope);
-    if !host.owns_file(&workspace, &id) {
+    if !host.owns_file(&workspace, &id).await.unwrap_or(false) {
         return (
             StatusCode::NOT_FOUND,
             Json(json!({ "error": "file not found" })),
@@ -155,32 +161,44 @@ async fn get_file(
     }
 }
 
-/// `DELETE /v1/files/{id}` — drop the blob (what `client.beta.files.delete`
-/// calls). Returns the `DeletedFile` receipt (`{id, type:"file_deleted"}`) when
-/// the blob existed, `404` when the id is unknown. The store is content-addressed,
-/// so this removes the bytes for that id; a later re-upload of equal bytes mints
-/// the same id afresh.
+/// `DELETE /v1/files/{id}` — commit logical denial and durable reclamation work.
+/// Physical deletion is asynchronous and occurs only after every Workspace ownership
+/// and binding/reference is gone.
 async fn delete_file(
     State(host): State<Arc<SharedHost>>,
     scope: Option<Extension<ResourceWorkspace>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let workspace = request_workspace(&host, scope);
-    if !host.revoke_file(&workspace, &id) {
+    match host.owns_file(&workspace, &id).await {
+        Ok(true) => {}
+        Ok(false) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "file not found" })),
+            )
+                .into_response();
+        }
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": error.to_string() })),
+            )
+                .into_response();
+        }
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default();
+    if let Err(error) = host.request_file_purge(&workspace, &id, now).await {
         return (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "file not found" })),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": error.to_string() })),
         )
             .into_response();
     }
-    if host.file_has_any_owner(&id) {
-        return (
-            StatusCode::OK,
-            Json(json!({ "id": id, "type": "file_deleted" })),
-        )
-            .into_response();
-    }
-    match host.file_store().delete(&id).await {
+    match host.remove_file_ownership(&workspace, &id).await {
         Ok(true) => (
             StatusCode::OK,
             Json(json!({ "id": id, "type": "file_deleted" })),
@@ -188,12 +206,12 @@ async fn delete_file(
             .into_response(),
         Ok(false) => (
             StatusCode::NOT_FOUND,
-            Json(json!({ "error": format!("file `{id}` not found") })),
+            Json(json!({ "error": "file not found" })),
         )
             .into_response(),
-        Err(e) => (
+        Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": e.to_string() })),
+            Json(json!({ "error": error.to_string() })),
         )
             .into_response(),
     }
@@ -206,7 +224,7 @@ async fn download_file(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let workspace = request_workspace(&host, scope);
-    if !host.owns_file(&workspace, &id) {
+    if !host.owns_file(&workspace, &id).await.unwrap_or(false) {
         return (StatusCode::NOT_FOUND, "not found").into_response();
     }
     match host.file_store().get(&id).await {

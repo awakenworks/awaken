@@ -21,7 +21,7 @@ use std::sync::Arc;
 /// stale + idempotent base), list under a prefix, rename-replace, idempotent delete,
 /// path validation, and the size cap. (Ported from `repository::tests::conformance`.)
 #[allow(dead_code)] // the MemoryRepository conformance suite is wired only to the postgres-feature backend
-async fn memfs_conformance(fs: &dyn MemoryRepository) {
+async fn memory_repository_conformance(fs: &dyn MemoryRepository) {
     let store = "memstore_1";
 
     let m = fs.create(store, "/notes/today.md", "alpha").await.unwrap();
@@ -152,8 +152,8 @@ async fn memfs_conformance(fs: &dyn MemoryRepository) {
 /// Cause-effect-graph edges beyond the core suite: remaining validation branches,
 /// CAS/rename precedence (validate-before-lookup, from==to), and prefix-boundary
 /// correctness. (Ported from `repository::tests::extended_conformance`.)
-#[allow(dead_code)] // postgres-feature only (see memfs_conformance)
-async fn memfs_extended(fs: &dyn MemoryRepository) {
+#[allow(dead_code)] // postgres-feature only (see memory_repository_conformance)
+async fn memory_repository_extended(fs: &dyn MemoryRepository) {
     let store = "ext";
 
     let over_cap = format!("/{}", "a".repeat(MAX_PATH_BYTES)); // len == cap + 1
@@ -239,8 +239,8 @@ async fn memfs_extended(fs: &dyn MemoryRepository) {
 
 /// The `NotFound` paths of `update`/`rename`. (Ported from
 /// `repository::tests::not_found_paths`.)
-#[allow(dead_code)] // postgres-feature only (see memfs_conformance)
-async fn memfs_not_found(fs: &dyn MemoryRepository) {
+#[allow(dead_code)] // postgres-feature only (see memory_repository_conformance)
+async fn memory_repository_not_found(fs: &dyn MemoryRepository) {
     let store = "s";
     assert!(matches!(
         fs.update(store, "no_id", "x", "sha").await,
@@ -468,9 +468,9 @@ mod postgres {
         };
         let fs = PostgresMemoryRepository::with_pool(pool);
         fs.ensure_schema().await.unwrap();
-        memfs_conformance(&fs).await;
-        memfs_extended(&fs).await;
-        memfs_not_found(&fs).await;
+        memory_repository_conformance(&fs).await;
+        memory_repository_extended(&fs).await;
+        memory_repository_not_found(&fs).await;
         conditional_delete_never_removes_a_changed_or_recreated_head(&fs).await;
     }
 
