@@ -184,7 +184,7 @@ pub struct NamespaceProvider {
     /// A copy-only mounter ([`MemoryStoreMounter::copy_only`]) is the fallback for a host
     /// without `/dev/fuse`: the store is materialized to files that bind in, harvested on
     /// dispose. The FUSE-preferring mounter degrades to copy automatically off `/dev/fuse`.
-    memory_mounter: Option<Arc<dyn pc::MemoryMounter>>,
+    memory_mounter: Arc<std::sync::RwLock<Option<Arc<dyn pc::MemoryMounter>>>>,
 }
 
 impl NamespaceProvider {
@@ -193,7 +193,7 @@ impl NamespaceProvider {
             base: base.into(),
             blobs: std::collections::HashMap::new(),
             file_store: None,
-            memory_mounter: None,
+            memory_mounter: Arc::new(std::sync::RwLock::new(None)),
         }
     }
 
@@ -213,13 +213,16 @@ impl NamespaceProvider {
     /// Realize `MemoryStore` mounts via an injected mounter (copy-only on this tier).
     /// Without one, a `MemoryStore` mount fails loud.
     #[must_use]
-    pub fn with_memory_mounter(mut self, mounter: Arc<dyn pc::MemoryMounter>) -> Self {
-        self.memory_mounter = Some(mounter);
+    pub fn with_memory_mounter(self, mounter: Arc<dyn pc::MemoryMounter>) -> Self {
+        self.install_memory_mounter(mounter);
         self
     }
 
-    pub fn install_memory_mounter(&mut self, mounter: Arc<dyn pc::MemoryMounter>) {
-        self.memory_mounter = Some(mounter);
+    pub fn install_memory_mounter(&self, mounter: Arc<dyn pc::MemoryMounter>) {
+        *self
+            .memory_mounter
+            .write()
+            .expect("memory mounter lock poisoned") = Some(mounter);
     }
 
     fn caps() -> pc::SandboxCapabilities {
@@ -264,7 +267,12 @@ impl NamespaceProvider {
             // — live write-through FUSE-in-bwrap works (ADR-0053 item 2); copy harvests on
             // dispose.
             if let pc::MountSource::MemoryStore { store_id } = &req.source {
-                let Some(mounter) = &self.memory_mounter else {
+                let Some(mounter) = self
+                    .memory_mounter
+                    .read()
+                    .expect("memory mounter lock poisoned")
+                    .clone()
+                else {
                     return Err(err(format!(
                         "mount {:?}: memory_store is not realizable on this provider (no memory mounter wired)",
                         req.mount_id
@@ -493,11 +501,25 @@ pub struct NamespaceSandbox {
 impl NamespaceSandbox {
     /// Tear down every live memory mount (harvest a copy / unmount a FUSE), draining
     /// the guard list so a later dispose is a no-op.
-    async fn teardown_memory_mounts(&self) {
+    pub async fn release_memory_mounts(&self) {
         let mounts: Vec<Box<dyn pc::MemoryMount>> =
             std::mem::take(&mut self.memory_mounts.lock().unwrap());
         for mount in mounts {
             mount.teardown().await;
+        }
+    }
+
+    /// Remove only the runtime-owned resource projection while retaining the
+    /// Session workspace and every non-resource file.
+    pub fn clear_resource_projection(&self) -> Result<(), pc::SandboxError> {
+        let projection = self.root.resolve(".mnt").map_err(err)?;
+        match std::fs::symlink_metadata(&projection) {
+            Ok(metadata) if metadata.file_type().is_symlink() || metadata.is_file() => {
+                std::fs::remove_file(projection).map_err(err)
+            }
+            Ok(_) => std::fs::remove_dir_all(projection).map_err(err),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(err(error)),
         }
     }
 
@@ -704,7 +726,7 @@ impl pc::Sandbox for NamespaceSandbox {
     async fn dispose(&self) -> Result<(), pc::SandboxError> {
         // Order: harvest memory (reads edits back) → shred secrets → reap the tree, so
         // a promised memory write-back is never lost and no credential lingers on disk.
-        self.teardown_memory_mounts().await;
+        self.release_memory_mounts().await;
         for path in &self.secret_paths {
             if let Ok(meta) = std::fs::metadata(path) {
                 let _ = std::fs::write(path, vec![0u8; meta.len() as usize]);

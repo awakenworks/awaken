@@ -970,6 +970,49 @@ impl SessionRuntime for ManagedHost {
         inputs: &awaken_protocol_managed::ResolvedSessionResources,
     ) -> Result<(), RunError> {
         self.host.register_thread_workspace(thread, workspace_id);
+        let old = self.host.thread_resources_snapshot(thread);
+        let old_memory: Vec<_> = old
+            .mounts
+            .iter()
+            .filter_map(|mount| match &mount.source {
+                awaken_provisioning_contract::MountSource::MemoryStore { store_id } => Some((
+                    mount.mount_id.clone(),
+                    store_id.clone(),
+                    mount.mount_path.clone(),
+                    mount.access,
+                )),
+                _ => None,
+            })
+            .collect();
+        let desired_memory: Vec<_> = inputs
+            .inputs
+            .iter()
+            .filter_map(|input| match &input.source {
+                awaken_protocol_managed::ResolvedInputSource::MemoryStore {
+                    memory_store_id,
+                    ..
+                } => Some((
+                    input.binding_id.to_string(),
+                    memory_store_id.to_string(),
+                    format!(".mnt/{}", input.mount_path.trim_start_matches('/')),
+                    match input.access {
+                        awaken_resource_contract::ResourceAccess::ReadOnly => {
+                            awaken_provisioning_contract::MountAccess::ReadOnly
+                        }
+                        awaken_resource_contract::ResourceAccess::ReadWrite => {
+                            awaken_provisioning_contract::MountAccess::ReadWrite
+                        }
+                    },
+                )),
+                _ => None,
+            })
+            .collect();
+        let live_environment = self.host.session_environment(thread).await;
+        if live_environment.is_some() && old_memory != desired_memory {
+            return Err(RunError::bad_request(
+                "memory_store inputs are create-time only for a live Session",
+            ));
+        }
         self.host.harvest_thread_skills(thread).await;
         self.host.publish_thread_repositories(thread).await;
         match &inputs.skills {
@@ -997,10 +1040,65 @@ impl SessionRuntime for ManagedHost {
         let repository_mcp = self
             .stage_effective_inputs(thread, workspace_id, inputs)
             .await?;
+        let new = self.host.thread_resources_snapshot(thread);
+        if let Some(environment) = live_environment {
+            for mount in &old.mounts {
+                if !new
+                    .mounts
+                    .iter()
+                    .any(|candidate| candidate.mount_path == mount.mount_path)
+                {
+                    environment
+                        .remove_workspace_path(&mount.mount_path)
+                        .await
+                        .map_err(|error| RunError::internal(error.to_string()))?;
+                }
+            }
+            for mount in &new.mounts {
+                if let awaken_provisioning_contract::MountSource::InlineBytes { contents, .. } =
+                    &mount.source
+                {
+                    environment
+                        .materialize_workspace_file(&mount.mount_path, contents)
+                        .await
+                        .map_err(|error| RunError::internal(error.to_string()))?;
+                }
+            }
+            for repository in &old.repositories {
+                if !new
+                    .repositories
+                    .iter()
+                    .any(|candidate| candidate.plan == repository.plan)
+                {
+                    environment
+                        .remove_workspace_path(&repository.plan.mount_path)
+                        .await
+                        .map_err(|error| RunError::internal(error.to_string()))?;
+                }
+            }
+            for repository in &new.repositories {
+                if !old
+                    .repositories
+                    .iter()
+                    .any(|candidate| candidate.plan == repository.plan)
+                {
+                    awaken_provisioning_contract::RepositoryRealizer::realize_repository(
+                        environment.as_ref(),
+                        &repository.plan,
+                        repository
+                            .credential
+                            .as_ref()
+                            .map(|credential| credential.expose_secret()),
+                    )
+                    .await
+                    .map_err(|error| RunError::internal(error.to_string()))?;
+                }
+            }
+        }
         self.host
             .replace_thread_repository_mcp(thread, repository_mcp);
         self.host
-            .evict_session_for_rebuild(thread, true)
+            .evict_session_for_rebuild(thread, false)
             .await
             .map_err(to_run_error)
     }

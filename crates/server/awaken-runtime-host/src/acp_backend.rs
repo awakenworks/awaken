@@ -246,11 +246,17 @@ impl crate::host::SharedHost {
             crate::SandboxTier::Local => {
                 host.session_provider =
                     crate::session_environment::SessionEnvironmentProvider::workdir(base.clone());
+                if let Some(mounter) = host.memory_mounter() {
+                    host.session_provider.install_memory_mounter(mounter);
+                }
                 return host.with_bound_acp(source, None);
             }
             crate::SandboxTier::Namespace => {
                 host.session_provider =
                     crate::session_environment::SessionEnvironmentProvider::namespace(base.clone());
+                if let Some(mounter) = host.memory_mounter() {
+                    host.session_provider.install_memory_mounter(mounter);
+                }
                 return host.with_bound_acp(source, None);
             }
             _ => {}

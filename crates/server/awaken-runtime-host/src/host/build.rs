@@ -542,6 +542,9 @@ impl SharedHost {
             .expect("open durable Memory extraction repository"),
         ));
         self.session_provider = self.session_provider.at_root(dir.join("sandboxes"));
+        if let Some(mounter) = self.memory_mounter() {
+            self.session_provider.install_memory_mounter(mounter);
+        }
         self.store_dir = Some(dir);
         self
     }
