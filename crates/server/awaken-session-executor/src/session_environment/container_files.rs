@@ -145,13 +145,7 @@ pub(super) async fn materialize_read_only_tree(
             stdio: pc::Stdio::Null,
         })
         .await?;
-    let status = setup.wait().await?;
-    if status.code != Some(0) {
-        return Err(pc::SandboxError::new(format!(
-            "container read-only tree setup exited {:?}",
-            status.code
-        )));
-    }
+    require_success(setup.wait().await?, "container read-only tree setup")?;
     for (relative, contents) in files {
         write(
             sandbox,
@@ -168,15 +162,7 @@ pub(super) async fn materialize_read_only_tree(
             stdio: pc::Stdio::Null,
         })
         .await?;
-    let status = restrict.wait().await?;
-    if status.code == Some(0) {
-        Ok(())
-    } else {
-        Err(pc::SandboxError::new(format!(
-            "container read-only tree chmod exited {:?}",
-            status.code
-        )))
-    }
+    require_success(restrict.wait().await?, "container read-only tree chmod")
 }
 
 pub(super) async fn remove(
@@ -192,15 +178,7 @@ pub(super) async fn remove(
             stdio: pc::Stdio::Null,
         })
         .await?;
-    let status = process.wait().await?;
-    if status.code == Some(0) {
-        Ok(())
-    } else {
-        Err(pc::SandboxError::new(format!(
-            "container workspace removal exited {:?}",
-            status.code
-        )))
-    }
+    require_success(process.wait().await?, "container workspace removal")
 }
 
 #[cfg(test)]
