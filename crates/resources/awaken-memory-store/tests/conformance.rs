@@ -4,8 +4,7 @@
 
 use awaken_memory_store::repository::MAX_PATH_BYTES;
 use awaken_memory_store::{
-    FilesystemMemoryRepository, MAX_MEMORY_BYTES, MemErr, MemoryRepository,
-    VolatileMemoryRepository, sha256_hex,
+    MAX_MEMORY_BYTES, MemErr, MemoryRepository, VolatileMemoryRepository, sha256_hex,
 };
 use std::sync::Arc;
 
@@ -362,15 +361,6 @@ async fn in_memory_conditional_delete_is_atomic() {
         .await;
 }
 
-#[tokio::test]
-async fn fs_conditional_delete_is_atomic() {
-    let dir = tempfile::tempdir().unwrap();
-    conditional_delete_never_removes_a_changed_or_recreated_head(
-        &FilesystemMemoryRepository::open(dir.path()).unwrap(),
-    )
-    .await;
-}
-
 #[cfg(feature = "sqlite")]
 #[tokio::test]
 async fn sqlite_conditional_delete_is_atomic() {
@@ -378,24 +368,6 @@ async fn sqlite_conditional_delete_is_atomic() {
     conditional_delete_never_removes_a_changed_or_recreated_head(
         &SqliteMemoryRepository::open_in_memory().unwrap(),
     )
-    .await;
-}
-
-#[tokio::test]
-async fn fs_concurrent_create_has_exactly_one_winner() {
-    let dir = tempfile::tempdir().unwrap();
-    concurrent_create_one_winner(Arc::new(
-        FilesystemMemoryRepository::open(dir.path()).unwrap(),
-    ))
-    .await;
-}
-
-#[tokio::test]
-async fn fs_concurrent_cas_has_exactly_one_winner() {
-    let dir = tempfile::tempdir().unwrap();
-    concurrent_cas_one_winner(Arc::new(
-        FilesystemMemoryRepository::open(dir.path()).unwrap(),
-    ))
     .await;
 }
 
@@ -483,7 +455,7 @@ mod postgres {
     /// same-path race is the same domain error across every backend.
     #[tokio::test]
     async fn postgres_concurrent_same_path_create_surfaces_path_conflict_not_raw_storage() {
-        let Some(pool) = schema_pool("t_memoryfs_race").await else {
+        let Some(pool) = schema_pool("t_memory_repo_race").await else {
             return;
         };
         let fs = Arc::new(PostgresMemoryRepository::with_pool(pool));
@@ -520,7 +492,7 @@ mod postgres {
     /// deletion cannot make an id reusable.
     #[tokio::test]
     async fn postgres_never_reuses_a_deleted_top_ordinal() {
-        let Some(pool) = schema_pool("t_memoryfs_reuse").await else {
+        let Some(pool) = schema_pool("t_memory_repo_reuse").await else {
             return;
         };
         let fs = PostgresMemoryRepository::with_pool(pool);

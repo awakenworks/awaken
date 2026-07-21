@@ -23,6 +23,10 @@ pub(crate) struct MemoryStores {
 }
 
 impl MemoryStores {
+    pub(crate) fn with_repository(fs: Arc<dyn MemoryRepository>) -> Self {
+        Self { fs }
+    }
+
     /// Open the content stores under one storage-dir durability rule (`Some` → durable
     /// under the dir, `None` → ephemeral per-process).
     pub(crate) fn open(store_dir: Option<&Path>) -> Self {

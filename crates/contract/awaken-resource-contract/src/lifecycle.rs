@@ -90,6 +90,23 @@ pub struct ResourceReferenceRecord {
     pub reference: ResourceReference,
 }
 
+/// Result of atomically fencing one physical resource identity for reclamation.
+///
+/// The fence key is `(kind, resource_id)`, deliberately excluding Workspace:
+/// content-addressed data such as File blobs may be referenced by more than one
+/// Workspace and must not be deleted while any such reference exists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AcquireResourceReclamationOutcome {
+    /// This intent installed the fence.
+    Acquired,
+    /// A retry found the fence already owned by this same intent.
+    AlreadyOwned,
+    /// Intrinsic resource references prevented the fence from being installed.
+    Blocked(Vec<ResourceReferenceRecord>),
+    /// A different reclamation intent currently owns the physical identity.
+    Contended,
+}
+
 /// Per-kind, immutable proof returned by the physical adapter.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -188,6 +205,13 @@ pub enum ResourcePurgeError {
     RetentionHeld { not_before_unix_ms: u64 },
     #[error("stale resource purge claim")]
     StaleClaim,
+    #[error("resource `{kind:?}/{resource_id}` is fenced for physical reclamation")]
+    ReclamationFenced {
+        kind: ResourceKind,
+        resource_id: String,
+    },
+    #[error("resource reclamation fence is owned by another intent")]
+    StaleReclamationFence,
     #[error("invalid resource purge transition from {from:?} to {to:?}")]
     InvalidTransition {
         from: ResourcePurgeStatus,
@@ -431,10 +455,33 @@ pub enum PutResourcePurgeOutcome {
     Existing,
 }
 
+/// Atomic resource-plane fence around physical deletion.
+///
+/// Implementations must serialize `acquire_reclamation` with reference writes:
+/// acquiring succeeds only when the physical identity has no references, and a
+/// reference writer must fail closed while a fence exists. This is lifecycle
+/// consistency—not an IAM grant, policy lock, or authorization decision.
+#[async_trait]
+pub trait ResourceReclamationFence: Send + Sync {
+    async fn acquire_reclamation(
+        &self,
+        intent_id: &str,
+        target: &ResourceTarget,
+    ) -> Result<AcquireResourceReclamationOutcome, ResourcePurgeError>;
+
+    /// Release only a fence owned by `intent_id`. Absence is an idempotent
+    /// success; a fence owned by another intent fails closed.
+    async fn release_reclamation(
+        &self,
+        intent_id: &str,
+        target: &ResourceTarget,
+    ) -> Result<bool, ResourcePurgeError>;
+}
+
 /// Durable storage port. Implementations compare `revision` on update so a stale
 /// worker can never overwrite a recovered claim or receipt.
 #[async_trait]
-pub trait ResourcePurgeRepository: Send + Sync {
+pub trait ResourcePurgeRepository: ResourceReclamationFence + Send + Sync {
     async fn put(
         &self,
         intent: ResourcePurgeIntent,

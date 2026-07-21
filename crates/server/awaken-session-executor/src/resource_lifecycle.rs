@@ -9,15 +9,21 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 use awaken_protocol_managed::resource_plane::{
-    PutResourcePurgeOutcome, ResourceKind, ResourcePurgeError, ResourcePurgeIntent,
-    ResourcePurgeRepository, ResourceReference, ResourceReferenceIndex, ResourceReferenceKind,
-    ResourceReferenceRecord, ResourceTarget,
+    AcquireResourceReclamationOutcome, PutResourcePurgeOutcome, ResourceKind, ResourcePurgeError,
+    ResourcePurgeIntent, ResourcePurgeRepository, ResourceReclamationFence, ResourceReference,
+    ResourceReferenceIndex, ResourceReferenceKind, ResourceReferenceRecord, ResourceTarget,
 };
+
+#[derive(Default)]
+struct ResourceConsistencyState {
+    references: BTreeSet<ResourceReferenceRecord>,
+    reclamation_fences: BTreeMap<(ResourceKind, String), String>,
+}
 
 #[derive(Default)]
 pub(crate) struct EphemeralResourceLifecycle {
     intents: Mutex<BTreeMap<String, ResourcePurgeIntent>>,
-    references: Mutex<BTreeSet<ResourceReferenceRecord>>,
+    consistency: Mutex<ResourceConsistencyState>,
 }
 
 fn storage(error: impl ToString) -> ResourcePurgeError {
@@ -28,6 +34,75 @@ fn valid_reference(record: &ResourceReferenceRecord) -> bool {
     !record.target.workspace_id.trim().is_empty()
         && !record.target.resource_id.trim().is_empty()
         && !record.reference.reference_id.trim().is_empty()
+}
+
+fn physical_key(target: &ResourceTarget) -> (ResourceKind, String) {
+    (target.kind, target.resource_id.clone())
+}
+
+fn validate_fence_request(intent_id: &str, target: &ResourceTarget) -> bool {
+    !intent_id.trim().is_empty()
+        && !target.workspace_id.trim().is_empty()
+        && !target.resource_id.trim().is_empty()
+}
+
+#[async_trait]
+impl ResourceReclamationFence for EphemeralResourceLifecycle {
+    async fn acquire_reclamation(
+        &self,
+        intent_id: &str,
+        target: &ResourceTarget,
+    ) -> Result<AcquireResourceReclamationOutcome, ResourcePurgeError> {
+        if !validate_fence_request(intent_id, target) {
+            return Err(ResourcePurgeError::Invalid(
+                "reclamation fence fields must not be empty".into(),
+            ));
+        }
+        let mut state = self.consistency.lock().map_err(storage)?;
+        let key = physical_key(target);
+        if let Some(owner) = state.reclamation_fences.get(&key) {
+            return Ok(if owner == intent_id {
+                AcquireResourceReclamationOutcome::AlreadyOwned
+            } else {
+                AcquireResourceReclamationOutcome::Contended
+            });
+        }
+        let blockers: Vec<_> = state
+            .references
+            .iter()
+            .filter(|record| {
+                record.target.kind == target.kind && record.target.resource_id == target.resource_id
+            })
+            .cloned()
+            .collect();
+        if !blockers.is_empty() {
+            return Ok(AcquireResourceReclamationOutcome::Blocked(blockers));
+        }
+        state.reclamation_fences.insert(key, intent_id.into());
+        Ok(AcquireResourceReclamationOutcome::Acquired)
+    }
+
+    async fn release_reclamation(
+        &self,
+        intent_id: &str,
+        target: &ResourceTarget,
+    ) -> Result<bool, ResourcePurgeError> {
+        if !validate_fence_request(intent_id, target) {
+            return Err(ResourcePurgeError::Invalid(
+                "reclamation fence fields must not be empty".into(),
+            ));
+        }
+        let mut state = self.consistency.lock().map_err(storage)?;
+        let key = physical_key(target);
+        match state.reclamation_fences.get(&key) {
+            Some(owner) if owner == intent_id => {
+                state.reclamation_fences.remove(&key);
+                Ok(true)
+            }
+            Some(_) => Err(ResourcePurgeError::StaleReclamationFence),
+            None => Ok(false),
+        }
+    }
 }
 
 #[async_trait]
@@ -123,14 +198,29 @@ impl ResourceReferenceIndex for EphemeralResourceLifecycle {
                 "resource reference fields must not be empty".into(),
             ));
         }
-        Ok(self.references.lock().map_err(storage)?.insert(record))
+        let mut state = self.consistency.lock().map_err(storage)?;
+        if state
+            .reclamation_fences
+            .contains_key(&physical_key(&record.target))
+        {
+            return Err(ResourcePurgeError::ReclamationFenced {
+                kind: record.target.kind,
+                resource_id: record.target.resource_id,
+            });
+        }
+        Ok(state.references.insert(record))
     }
 
     async fn remove_reference(
         &self,
         record: &ResourceReferenceRecord,
     ) -> Result<bool, ResourcePurgeError> {
-        Ok(self.references.lock().map_err(storage)?.remove(record))
+        Ok(self
+            .consistency
+            .lock()
+            .map_err(storage)?
+            .references
+            .remove(record))
     }
 
     async fn replace_references(
@@ -150,11 +240,21 @@ impl ResourceReferenceIndex for EphemeralResourceLifecycle {
                 "invalid resource reference replacement".into(),
             ));
         }
-        let mut current = self.references.lock().map_err(storage)?;
-        current.retain(|record| {
+        let mut state = self.consistency.lock().map_err(storage)?;
+        if let Some(record) = records.iter().find(|record| {
+            state
+                .reclamation_fences
+                .contains_key(&physical_key(&record.target))
+        }) {
+            return Err(ResourcePurgeError::ReclamationFenced {
+                kind: record.target.kind,
+                resource_id: record.target.resource_id.clone(),
+            });
+        }
+        state.references.retain(|record| {
             record.reference.kind != kind || record.reference.reference_id != reference_id
         });
-        current.extend(records);
+        state.references.extend(records);
         Ok(())
     }
 
@@ -163,9 +263,10 @@ impl ResourceReferenceIndex for EphemeralResourceLifecycle {
         target: &ResourceTarget,
     ) -> Result<Vec<ResourceReference>, ResourcePurgeError> {
         Ok(self
-            .references
+            .consistency
             .lock()
             .map_err(storage)?
+            .references
             .iter()
             .filter(|record| &record.target == target)
             .map(|record| record.reference.clone())
@@ -178,9 +279,10 @@ impl ResourceReferenceIndex for EphemeralResourceLifecycle {
         resource_id: &str,
     ) -> Result<Vec<ResourceReferenceRecord>, ResourcePurgeError> {
         Ok(self
-            .references
+            .consistency
             .lock()
             .map_err(storage)?
+            .references
             .iter()
             .filter(|record| record.target.kind == kind && record.target.resource_id == resource_id)
             .cloned()

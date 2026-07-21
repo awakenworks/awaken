@@ -89,3 +89,11 @@ Owner: [resources-memory-files-skills.md](../design/resources-memory-files-skill
 - Fact: a resource is denied and tombstoned before asynchronous cleanup; purge waits for the references and activations required by that resource kind.
 - Links: guardrail G38
 - Verification: crash-reconciliation, retention, and no-live-reference purge tests.
+
+## FACT-RES-011: Physical reclamation is resource-fenced, not IAM-locked
+
+- Status: active
+- Owner: [Recovery and reclamation](../design/resources-memory-files-skills.md#recovery-and-reclamation)
+- Fact: zero-reference proof, durable physical-identity fencing, and racing reference rejection are one resource-store consistency protocol; the protocol contains no principal, role, API key, policy, Org, Project, or WorkUnit.
+- Links: guardrails G21 and G38
+- Verification: in-memory/SQLite/Postgres store conformance, cross-Workspace shared-blob fencing, crash/retry reclamation tests, and dependency-boundary checks.

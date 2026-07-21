@@ -1,6 +1,6 @@
 //! Durable memory persistence for the resources plane.
 //!
-//! The [`MemoryRepository`] port with pluggable in-memory, filesystem, SQLite, and Postgres
+//! The [`MemoryRepository`] port with pluggable ephemeral, SQLite, and Postgres
 //! backends. A store is addressed only by an opaque, globally unique id; workspace
 //! ownership and authorization deliberately remain outside this storage adapter in
 //! the resource catalog and authorization edge respectively.
@@ -13,8 +13,8 @@
 pub mod repository;
 
 pub use repository::{
-    FilesystemMemoryRepository, MAX_MEMORY_BYTES, MemErr, Memory, MemoryEntry, MemoryPurgeSummary,
-    MemoryRepository, MemoryVersion, MemoryVersionOperation, VolatileMemoryRepository, sha256_hex,
+    MAX_MEMORY_BYTES, MemErr, Memory, MemoryEntry, MemoryPurgeSummary, MemoryRepository,
+    MemoryVersion, MemoryVersionOperation, VolatileMemoryRepository, sha256_hex,
 };
 
 #[cfg(feature = "postgres")]

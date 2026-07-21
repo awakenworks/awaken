@@ -19,7 +19,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import readline from 'node:readline';
-import { spawn, execSync } from 'node:child_process';
+import { spawn, execFileSync, execSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Anthropic from '@anthropic-ai/sdk';
@@ -118,6 +118,20 @@ async function ready(base, timeoutMs = 60_000) {
     if (Date.now() > deadline) throw new Error('management plane did not become ready');
     await sleep(200);
   }
+}
+
+function seedRepository(root) {
+  const work = path.join(root, 'repository-work');
+  const remote = path.join(root, 'repository.git');
+  fs.mkdirSync(work, { recursive: true });
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: work });
+  execFileSync('git', ['config', 'user.email', 'resource-e2e@example.invalid'], { cwd: work });
+  execFileSync('git', ['config', 'user.name', 'resource-e2e'], { cwd: work });
+  fs.writeFileSync(path.join(work, 'README.md'), 'sqlite resource catalog');
+  execFileSync('git', ['add', 'README.md'], { cwd: work });
+  execFileSync('git', ['commit', '-q', '-m', 'seed'], { cwd: work });
+  execFileSync('git', ['clone', '-q', '--bare', work, remote]);
+  return remote;
 }
 
 async function main() {
@@ -397,6 +411,29 @@ async function main() {
     assert.equal((await fetch(`${base}/v1/workspaces/${WS_A}/files/${fileId}`)).status, 200);
     assert.equal((await fetch(`${base}/v1/workspaces/${WS_B}/files/${fileId}`)).status, 404);
     console.log('ok: config resources and files enforce intrinsic workspace ownership without IAM');
+
+    // Exercise the production embedded Resource Catalog adapter through the same
+    // Managed Session edge used by cloud mode. Only the persistence adapter differs.
+    const repository = seedRepository(mgmtDir);
+    const repositoryResource = await client.beta.sessions.resources.add(warm.id, {
+      type: 'github_repository',
+      url: repository,
+      mount_path: '/workspace/repository',
+      betas: BETAS,
+    });
+    const updatedRepository = await client.beta.sessions.resources.update(repositoryResource.id, {
+      session_id: warm.id,
+      mount_path: '/workspace/repository-updated',
+      authorization_token: 'sqlite-repository-rotated-token', // awaken-allow: secret
+      betas: BETAS,
+    });
+    assert.equal(updatedRepository.mount_path, '/workspace/repository-updated');
+    const retiredRepository = await client.beta.sessions.resources.delete(repositoryResource.id, {
+      session_id: warm.id,
+      betas: BETAS,
+    });
+    assert.equal(retiredRepository.type, 'session_resource_deleted');
+    console.log('ok: embedded repository configuration publishes and retires through SQLite');
   } finally {
     await h.stop();
     upstream.close();
