@@ -67,7 +67,7 @@ Goal evaluation uses the runtime extension seam:
 1. `ContinuationGuard` evaluates at the natural end of a run.
 2. The guard returns a structured opaque verdict.
 3. Replay reuses recorded verdicts and never re-grades.
-4. `awaken-ext-goal` owns `GoalSpec`, grading, and classifications.
+4. `awaken-ext-goal` owns the pure Outcome lifecycle and grading vocabulary; Runtime Host owns orchestration.
 5. Product adapters map Anthropic Outcome or other public concepts onto the
    extension.
 

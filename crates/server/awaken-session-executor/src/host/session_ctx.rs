@@ -10,9 +10,6 @@ use super::*;
 pub(crate) struct SessionState {
     pub(crate) awaiting_run: Option<RunId>,
     pub(crate) pending_system: Vec<String>,
-    /// How many committed `Continuation` (outcome) rounds have already been
-    /// projected, so a second `define_outcome` on the thread reports only its own.
-    pub(crate) consumed_rounds: usize,
     /// Cursor for out-of-band memory extraction: the committed-message count that
     /// has already been handed to the extractor, so each turn extracts only the
     /// new messages instead of re-processing (and re-billing) the whole history.
@@ -54,7 +51,7 @@ pub(crate) struct SessionCtx {
     /// the host. `None` = content is recorded to spans only.
     pub(crate) capture_sink: Option<Arc<dyn awaken_runtime_contract::CaptureSink>>,
     pub(crate) thread_id: ThreadId,
-    /// The thread's sandbox environment, reused to build a goal-enabled runtime
+    /// The thread's sandbox environment, reused to build an Outcome Worker runtime
     /// for `define_outcome` (same tools, same environment).
     pub(crate) env: Arc<crate::session_environment::SessionEnvironment>,
     /// The thread's skill registry (delivered + workspace), used to expand user
@@ -64,7 +61,7 @@ pub(crate) struct SessionCtx {
     /// separate request) can cancel it. A plain `std::sync::Mutex` (brief locks),
     /// held by neither the run loop nor the state lock, so interrupt never blocks
     /// on the loop that holds `state`.
-    pub(crate) cancel: std::sync::Mutex<Option<CancellationToken>>,
+    pub(crate) cancel: Arc<std::sync::Mutex<Option<CancellationToken>>>,
     /// Stable identity of the foreground Run currently being driven. Direct
     /// execution uses `cancel`; durable execution uses this id to persist a
     /// cancellation intent for whichever pool worker owns the claim.
@@ -79,6 +76,12 @@ pub(crate) struct SessionCtx {
     /// live in [`crate::live_inbox`].
     pub(crate) live_inbox: std::sync::Mutex<crate::live_inbox::LiveInboxSlot>,
     pub(crate) state: tokio::sync::Mutex<SessionState>,
+    /// Serializes Outcome commands without holding ordinary Session position
+    /// state across Worker/Judge IO. `interrupt` never takes this lock.
+    pub(crate) outcome: tokio::sync::Mutex<()>,
+    /// One externally executing Run at a time on the Worker Thread. Position
+    /// state is locked only for short reads/writes, never across model/tool IO.
+    pub(crate) execution: tokio::sync::Mutex<()>,
 }
 
 impl SessionCtx {

@@ -17,13 +17,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use awaken_agent_contract::agent::awaiting::{AwaitReason, ResumeTicket};
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
+#[cfg(test)]
+use awaken_agent_contract::agent::run::EndCause;
+use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::state::{Scope, StateKey, Store};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
-use awaken_ext_goal::{AgentToolGrader, GoalPlugin, GoalSpec, Grader, KeywordGrader};
 use awaken_ext_skills::{SkillRegistry, SkillSpec};
 use awaken_file_store::FileStore;
 use awaken_dispatch::{
@@ -80,7 +81,7 @@ pub(crate) use crate::store::sanitize_thread;
 
 /// Wall-clock milliseconds since the Unix epoch — the dispatch queue's lease and
 /// recovery clock (slice D). Falls back to `0` if the clock is before the epoch.
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
@@ -89,7 +90,6 @@ fn now_ms() -> u64 {
 
 pub use crate::mcp::PreparedMcpServer;
 
-use crate::judge::HostAgentTool;
 use crate::provisioning::StagedResources;
 
 mod build;
@@ -137,7 +137,7 @@ pub struct SharedHost {
     /// Provider for the Session-owned environment shared by Native/ACP/children.
     /// Kept separate from deliberately-fresh housekeeping sandboxes.
     pub(crate) session_provider: crate::session_environment::SessionEnvironmentProvider,
-    grader: Arc<dyn Grader>,
+    pub(crate) judge_snapshot: Option<ExecutableAgentSnapshot>,
     pub(crate) client_tools: HashSet<String>,
     /// The skill offering (ADR-0036): the static configured set, the optional durable
     /// `/v1/skills` catalog, and its sync-read cache — grouped behind one type that

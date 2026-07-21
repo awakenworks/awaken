@@ -118,7 +118,7 @@ product's model of "done" into every run.
 
 **Decision.** The runtime provides neutral continuation mechanisms: async
 `ContinuationGuard`, structured opaque verdicts, thread-scoped state effects, and
-`TerminationReason::Concluded`. `awaken-ext-goal` owns `GoalSpec`, grading, and
+`TerminationReason::Concluded`. `awaken-ext-goal` owns Outcome lifecycle and grading, and
 goal classifications. Product protocols map onto that extension.
 
 **Consequence.** The kernel records and replays verdicts but does not interpret

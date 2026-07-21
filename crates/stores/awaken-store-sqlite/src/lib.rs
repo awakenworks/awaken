@@ -163,38 +163,6 @@ impl SqliteCommitCoordinator {
                 .map(|(run_id, ticket)| (run_id.clone(), ticket.clone()))
         })
     }
-
-    /// Payloads of committed `Continuation` events for `thread`, in commit order.
-    /// Read straight from the durable event log (the projection does not
-    /// materialize events), so the outcome-round history survives a restart.
-    pub fn continuation_payloads(&self, thread: &ThreadId) -> Vec<serde_json::Value> {
-        let kind =
-            match serde_json::to_string(&awaken_agent_contract::audit::kind::Kind::Continuation) {
-                Ok(kind) => kind,
-                Err(_) => return Vec::new(),
-            };
-        let conn = match self.conn.lock() {
-            Ok(conn) => conn,
-            Err(_) => return Vec::new(),
-        };
-        let mut stmt = match conn.prepare(&format!(
-            "SELECT e.payload FROM {NS}_event e \
-             JOIN {NS}_run_record r ON e.run_id = r.run_id \
-             WHERE r.thread_id = ?1 AND e.kind = ?2 ORDER BY e.sequence"
-        )) {
-            Ok(stmt) => stmt,
-            Err(_) => return Vec::new(),
-        };
-        let rows = match stmt.query_map(params![thread.0.as_str(), kind], |row| {
-            row.get::<_, String>(0)
-        }) {
-            Ok(rows) => rows,
-            Err(_) => return Vec::new(),
-        };
-        rows.filter_map(|row| row.ok())
-            .filter_map(|payload| serde_json::from_str::<serde_json::Value>(&payload).ok())
-            .collect()
-    }
 }
 
 #[async_trait]
