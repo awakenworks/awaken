@@ -22,11 +22,26 @@ import Anthropic, { toFile } from '@anthropic-ai/sdk';
 import { REPO_ROOT } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38143);
-const BETAS = ['managed-agents-2026-04-01'];
+const BETAS = ['managed-agents-2026-04-01', 'files-api-2025-04-14'];
 const MARKER = 'CONTAINER-AGENT-OK';
 const IMAGE = process.env.AWAKEN_TEST_SESSION_IMAGE ?? 'awaken-sandbox:session-e2e';
 const TMP = `/tmp/awaken-container-agent-e2e-${process.pid}`;
 const ACP_FIXTURE = `process.stdin.once('data',()=>{console.log(JSON.stringify({type:'message',text:'${MARKER}'}));console.log(JSON.stringify({type:'turn_end',reason:'natural_end'}))})`;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function afterPendingActivation(operation) {
+  let last;
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      last = error;
+      if (error.status !== 400 || !String(error.message).includes('activation is already pending')) throw error;
+      await sleep(100);
+    }
+  }
+  throw last;
+}
 
 function git(args, cwd) {
   return execFileSync('git', args, { cwd, encoding: 'utf8' });
@@ -135,6 +150,7 @@ async function main() {
       AWAKEN_MODEL_MODE: 'acp-container',
       AWAKEN_CONTAINER_IMAGE: IMAGE,
       AWAKEN_SANDBOX_TIER: 'docker',
+      AWAKEN_STORAGE_DIR: `${TMP}/storage`,
       AWAKEN_ACP_ARGV: `node -e ${ACP_FIXTURE}`,
       // Disable the reaper's periodic sweep noise during the short test; the startup
       // sweep still runs (proving it is harmless with no leaked containers present).
@@ -228,6 +244,98 @@ async function main() {
       'the governed memory filesystem must hydrate into the Session container',
     );
 
+    const liveFile = await client.beta.files.upload({
+      file: await toFile(Buffer.from('CONTAINER-LIVE-FILE-OK'), 'live.txt'),
+      betas: BETAS,
+    });
+    const fileResource = await afterPendingActivation(() => client.beta.sessions.resources.add(session.id, {
+      type: 'file',
+      file_id: liveFile.id,
+      mount_path: '/workspace/live.txt',
+      betas: BETAS,
+    }));
+    const repoResource = await afterPendingActivation(() => client.beta.sessions.resources.add(session.id, {
+      type: 'github_repository',
+      url: skillRepository,
+      mount_path: '/workspace/live-repo',
+      betas: BETAS,
+    }));
+    assert.equal(
+      execFileSync('docker', ['exec', container, 'cat', '/workspace/.mnt/workspace/live.txt'], {
+        encoding: 'utf8',
+      }),
+      'CONTAINER-LIVE-FILE-OK',
+      'a live file attach must update the resident container workspace',
+    );
+    assert.match(
+      execFileSync('docker', ['exec', container, 'cat', '/workspace/live-repo/greet/SKILL.md'], {
+        encoding: 'utf8',
+      }),
+      /CONTAINER-SKILL-OK/,
+      'a live repository attach must update the resident container workspace',
+    );
+
+    await afterPendingActivation(() => client.beta.sessions.resources.update(fileResource.id, {
+      session_id: session.id,
+      mount_path: '/workspace/renamed.txt',
+      betas: BETAS,
+    }));
+    await afterPendingActivation(() => client.beta.sessions.resources.update(repoResource.id, {
+      session_id: session.id,
+      mount_path: '/workspace/renamed-repo',
+      betas: BETAS,
+    }));
+    execFileSync('docker', [
+      'exec',
+      container,
+      'sh',
+      '-c',
+      'test ! -e /workspace/.mnt/workspace/live.txt && test ! -e /workspace/live-repo',
+    ]);
+    assert.equal(
+      execFileSync('docker', ['exec', container, 'cat', '/workspace/.mnt/workspace/renamed.txt'], {
+        encoding: 'utf8',
+      }),
+      'CONTAINER-LIVE-FILE-OK',
+      'a live file rename must revoke the old path and materialize the replacement',
+    );
+    assert.match(
+      execFileSync('docker', ['exec', container, 'cat', '/workspace/renamed-repo/greet/SKILL.md'], {
+        encoding: 'utf8',
+      }),
+      /CONTAINER-SKILL-OK/,
+      'a live repository rename must reprovision only the replacement path',
+    );
+
+    await afterPendingActivation(() => client.beta.sessions.resources.delete(fileResource.id, {
+      session_id: session.id,
+      betas: BETAS,
+    }));
+    await afterPendingActivation(() => client.beta.sessions.resources.delete(repoResource.id, {
+      session_id: session.id,
+      betas: BETAS,
+    }));
+    execFileSync('docker', [
+      'exec',
+      container,
+      'sh',
+      '-c',
+      'test ! -e /workspace/.mnt/workspace/renamed.txt && test ! -e /workspace/renamed-repo',
+    ]);
+
+    execFileSync('docker', [
+      'exec',
+      container,
+      'sh',
+      '-c',
+      'printf %s CONTAINER-ARTIFACT-OK > /outputs/result.txt',
+    ]);
+    const artifacts = await client.get(`/v1/files?scope_id=${session.id}`);
+    const artifact = artifacts.data.find((entry) => entry.filename === 'result.txt');
+    assert.ok(artifact, `container output must project through the files API: ${JSON.stringify(artifacts)}`);
+    const artifactContent = await client.beta.files.download(artifact.id, { betas: BETAS });
+    assert.equal(await artifactContent.text(), 'CONTAINER-ARTIFACT-OK');
+
     execFileSync('docker', [
       'exec',
       container,
@@ -251,9 +359,9 @@ async function main() {
     );
   } finally {
     brain.kill('SIGINT');
-    cleanupTestContainers();
+    if (!process.env.AWAKEN_E2E_KEEP_TMP) cleanupTestContainers();
     fs.rmSync(`/tmp/awaken-acp-container-${brain.pid}`, { recursive: true, force: true });
-    fs.rmSync(TMP, { recursive: true, force: true });
+    if (!process.env.AWAKEN_E2E_KEEP_TMP) fs.rmSync(TMP, { recursive: true, force: true });
   }
 }
 

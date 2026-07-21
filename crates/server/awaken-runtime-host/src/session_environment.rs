@@ -165,7 +165,7 @@ impl SessionEnvironment {
             Self::Workdir(sandbox) => Ok(sandbox.list_files(subdir)),
             Self::Namespace(sandbox) => Ok(sandbox.list_files(subdir)),
             Self::Container { sandbox, .. } => {
-                let root = container_files::workspace_path(subdir)?;
+                let root = container_files::read_root(subdir, sandbox.outputs_path())?;
                 sandbox.read_files(&root).await.map(|files| {
                     files
                         .into_iter()
