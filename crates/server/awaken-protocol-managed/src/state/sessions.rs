@@ -638,12 +638,9 @@ impl ManagedState {
     pub async fn reconcile_resource_activations(&self) -> usize {
         let pending = self.sessions_repo.pending_resource_sessions().await;
         let mut settled = 0;
-        for session in pending {
-            let owner_scope = self
-                .sessions_repo
-                .owner(&session.session_id)
-                .await
-                .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
+        for record in pending {
+            let owner_scope = record.workspace_id;
+            let session = record.session;
             match self
                 .reconcile_persisted_resources(&owner_scope, session.clone())
                 .await

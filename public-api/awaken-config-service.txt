@@ -28,6 +28,8 @@ pub fn awaken_config_service::ConfigPlane::service(&self) -> &alloc::sync::Arc<a
 pub fn awaken_config_service::ConfigPlane::validate(&self, &awaken_tenancy::ScopeId, &awaken_config_store::config::AgentConfig) -> core::result::Result<(), awaken_config_service::ValidationIssue>
 pub struct awaken_config_service::ConfigService
 impl awaken_config_service::ConfigService
+pub fn awaken_config_service::ConfigService::agents_referencing_input(&self, &str, &awaken_resource_contract::input::InputResourceId) -> alloc::vec::Vec<alloc::string::String>
+pub fn awaken_config_service::ConfigService::agents_referencing_skill(&self, &str) -> alloc::vec::Vec<alloc::string::String>
 pub async fn awaken_config_service::ConfigService::get(&self, &dyn awaken_config_store::store::ConfigRegistry, &str) -> core::result::Result<core::option::Option<awaken_config_store::config::AgentConfig>, alloc::string::String>
 pub async fn awaken_config_service::ConfigService::get_versioned(&self, &dyn awaken_config_store::store::ConfigRegistry, &str) -> core::result::Result<core::option::Option<awaken_config_store::store::AgentConfigRevision>, alloc::string::String>
 pub fn awaken_config_service::ConfigService::installed(&self, &str) -> core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>
@@ -41,10 +43,11 @@ pub fn awaken_config_service::ConfigService::validate(&self, &str, &awaken_confi
 pub async fn awaken_config_service::ConfigService::warm_install(&self, &dyn awaken_config_store::store::ScopedConfigRegistry, &awaken_tenancy::ScopeId) -> usize
 pub fn awaken_config_service::ConfigService::with_inference_access_publisher(self, alloc::sync::Arc<dyn awaken_config_resolver::InferenceAccessPublisher>) -> Self
 pub fn awaken_config_service::ConfigService::with_model_resolver(self, alloc::sync::Arc<dyn awaken_config_service::ModelResolver>) -> Self
-pub fn awaken_config_service::ConfigService::with_resources(self, alloc::sync::Arc<dyn awaken_config_resolver::stores::ResourceStore>) -> Self
+pub fn awaken_config_service::ConfigService::with_resources(self, alloc::sync::Arc<dyn awaken_config_resolver::stores::AgentInputBindingRepository>) -> Self
 pub struct awaken_config_service::ConfigServiceAgentSource(pub alloc::sync::Arc<awaken_config_service::ConfigService>)
 impl awaken_session_contract::agent_config::AgentConfigSource for awaken_config_service::ConfigServiceAgentSource
 pub fn awaken_config_service::ConfigServiceAgentSource::agent_view(&self, &str) -> core::option::Option<awaken_session_contract::agent_config::AgentConfigView>
+pub fn awaken_config_service::ConfigServiceAgentSource::agent_view_in(&self, &str, &str) -> core::option::Option<awaken_session_contract::agent_config::AgentConfigView>
 pub struct awaken_config_service::ConfigServiceReconciler
 impl awaken_config_service::ConfigServiceReconciler
 pub fn awaken_config_service::ConfigServiceReconciler::new(awaken_config_service::ConfigPlane, impl core::convert::Into<awaken_tenancy::ScopeId>, alloc::vec::Vec<alloc::string::String>) -> Self
@@ -82,3 +85,5 @@ pub fn awaken_config_service::StaticToolCatalog::catalog_for(&self, &awaken_tena
 pub fn awaken_config_service::capabilities_router(alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>) -> axum::routing::Router
 pub fn awaken_config_service::config_router(awaken_config_service::ConfigPlane) -> axum::routing::Router
 pub fn awaken_config_service::needs_resolution(&awaken_config_store::config::ModelSelection) -> bool
+pub fn awaken_config_service::runtime_catalog() -> alloc::vec::Vec<serde_json::value::Value>
+pub fn awaken_config_service::sandbox_capability() -> serde_json::value::Value

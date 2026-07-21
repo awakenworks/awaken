@@ -63,6 +63,9 @@ pub awaken_provisioning_contract::MountSource::File::content_hash: core::option:
 pub awaken_provisioning_contract::MountSource::File::file_id: alloc::string::String
 pub awaken_provisioning_contract::MountSource::Inline
 pub awaken_provisioning_contract::MountSource::Inline::contents: alloc::string::String
+pub awaken_provisioning_contract::MountSource::InlineBytes
+pub awaken_provisioning_contract::MountSource::InlineBytes::content_hash: core::option::Option<alloc::string::String>
+pub awaken_provisioning_contract::MountSource::InlineBytes::contents: alloc::vec::Vec<u8>
 pub awaken_provisioning_contract::MountSource::MemoryStore
 pub awaken_provisioning_contract::MountSource::MemoryStore::store_id: alloc::string::String
 pub awaken_provisioning_contract::MountSource::Other(serde_json::value::Value)
@@ -228,6 +231,12 @@ pub awaken_provisioning_contract::ReconcileOutcome::adopted: alloc::vec::Vec<awa
 pub awaken_provisioning_contract::ReconcileOutcome::failed: alloc::vec::Vec<awaken_provisioning_contract::SandboxHandle>
 pub awaken_provisioning_contract::ReconcileOutcome::orphaned: alloc::vec::Vec<awaken_provisioning_contract::SandboxHandle>
 pub awaken_provisioning_contract::ReconcileOutcome::reaped: alloc::vec::Vec<awaken_provisioning_contract::SandboxHandle>
+pub struct awaken_provisioning_contract::RepositoryRealizationPlan
+pub awaken_provisioning_contract::RepositoryRealizationPlan::access: awaken_provisioning_contract::MountAccess
+pub awaken_provisioning_contract::RepositoryRealizationPlan::initial_branch: core::option::Option<alloc::string::String>
+pub awaken_provisioning_contract::RepositoryRealizationPlan::mount_path: alloc::string::String
+pub awaken_provisioning_contract::RepositoryRealizationPlan::remote_url: alloc::string::String
+pub awaken_provisioning_contract::RepositoryRealizationPlan::repository_id: alloc::string::String
 pub struct awaken_provisioning_contract::ResourceLimits
 pub awaken_provisioning_contract::ResourceLimits::cpu_millis: core::option::Option<u32>
 pub awaken_provisioning_contract::ResourceLimits::disk_bytes: core::option::Option<u64>
@@ -255,6 +264,14 @@ pub awaken_provisioning_contract::SandboxHandle::provider_kind: alloc::string::S
 pub awaken_provisioning_contract::SandboxHandle::sandbox_id: alloc::string::String
 impl awaken_provisioning_contract::SandboxHandle
 pub fn awaken_provisioning_contract::SandboxHandle::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub struct awaken_provisioning_contract::SandboxOverride
+pub awaken_provisioning_contract::SandboxOverride::isolation: core::option::Option<awaken_provisioning_contract::IsolationClass>
+pub awaken_provisioning_contract::SandboxOverride::limits: awaken_provisioning_contract::ResourceLimits
+pub awaken_provisioning_contract::SandboxOverride::network: core::option::Option<awaken_provisioning_contract::NetworkPolicy>
+impl awaken_provisioning_contract::SandboxOverride
+pub fn awaken_provisioning_contract::SandboxOverride::apply(&self, awaken_provisioning_contract::SandboxSpec) -> awaken_provisioning_contract::SandboxSpec
+pub fn awaken_provisioning_contract::SandboxOverride::from_config_value(&serde_json::value::Value) -> core::option::Option<Self>
+pub fn awaken_provisioning_contract::SandboxOverride::is_empty(&self) -> bool
 pub struct awaken_provisioning_contract::SandboxSpec
 pub awaken_provisioning_contract::SandboxSpec::env: alloc::vec::Vec<awaken_provisioning_contract::EnvVar>
 pub awaken_provisioning_contract::SandboxSpec::extra: core::option::Option<serde_json::value::Value>
@@ -278,6 +295,9 @@ pub fn awaken_provisioning_contract::ProcessHandle::id(&self) -> &str
 pub fn awaken_provisioning_contract::ProcessHandle::poll<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_provisioning_contract::ExitStatus>, awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_provisioning_contract::ProcessHandle::signal<'life0, 'async_trait>(&'life0 self, awaken_provisioning_contract::Signal) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_provisioning_contract::ProcessHandle::wait<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_provisioning_contract::ExitStatus, awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub trait awaken_provisioning_contract::RepositoryRealizer: core::marker::Send + core::marker::Sync
+pub fn awaken_provisioning_contract::RepositoryRealizer::publish_repository(&self, &awaken_provisioning_contract::RepositoryRealizationPlan, core::option::Option<&str>) -> core::result::Result<bool, awaken_provisioning_contract::SandboxError>
+pub fn awaken_provisioning_contract::RepositoryRealizer::realize_repository(&self, &awaken_provisioning_contract::RepositoryRealizationPlan, core::option::Option<&str>) -> core::result::Result<(), awaken_provisioning_contract::SandboxError>
 pub trait awaken_provisioning_contract::Sandbox: core::marker::Send + core::marker::Sync
 pub fn awaken_provisioning_contract::Sandbox::artifacts<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_provisioning_contract::Artifact>, awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_provisioning_contract::Sandbox::attach<'life0, 'async_trait>(&'life0 self, awaken_provisioning_contract::MountRequirement) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_provisioning_contract::RealizedMount, awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
@@ -295,6 +315,9 @@ pub fn awaken_provisioning_contract::SandboxProvider::adopt<'life0, 'life1, 'asy
 pub fn awaken_provisioning_contract::SandboxProvider::capabilities(&self) -> awaken_provisioning_contract::SandboxCapabilities
 pub fn awaken_provisioning_contract::SandboxProvider::create<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_provisioning_contract::SandboxSpec) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::boxed::Box<dyn awaken_provisioning_contract::Sandbox>, awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_provisioning_contract::SandboxProvider::probe_ready<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub trait awaken_provisioning_contract::SecretBroker: core::marker::Send + core::marker::Sync
+pub fn awaken_provisioning_contract::SecretBroker::materialize<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<u8>, awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_provisioning_contract::SecretBroker::write_back<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, alloc::vec::Vec<u8>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub async fn awaken_provisioning_contract::apply_adoption_plan(&dyn awaken_provisioning_contract::SandboxProvider, &awaken_provisioning_contract::AdoptionPlan) -> awaken_provisioning_contract::ReconcileOutcome
 pub fn awaken_provisioning_contract::approval_decide(awaken_provisioning_contract::ApprovalPolicy, awaken_provisioning_contract::SandboxAction) -> awaken_provisioning_contract::ApprovalDecision
 pub const fn awaken_provisioning_contract::capability_requirements_satisfied(awaken_provisioning_contract::IsolationClass, awaken_provisioning_contract::IsolationClass, bool, bool, bool, bool) -> bool

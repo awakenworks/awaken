@@ -1,4 +1,10 @@
 pub mod awaken_admin_assistant
+pub struct awaken_admin_assistant::InputSpec
+pub awaken_admin_assistant::InputSpec::access: core::option::Option<alloc::string::String>
+pub awaken_admin_assistant::InputSpec::instructions: core::option::Option<alloc::string::String>
+pub awaken_admin_assistant::InputSpec::kind: alloc::string::String
+pub awaken_admin_assistant::InputSpec::mount_path: core::option::Option<alloc::string::String>
+pub awaken_admin_assistant::InputSpec::resource_id: alloc::string::String
 pub struct awaken_admin_assistant::PlatformCapabilities
 pub awaken_admin_assistant::PlatformCapabilities::agents: alloc::vec::Vec<alloc::string::String>
 pub awaken_admin_assistant::PlatformCapabilities::mcp_servers: alloc::vec::Vec<alloc::string::String>
@@ -6,18 +12,14 @@ pub awaken_admin_assistant::PlatformCapabilities::memory_stores: alloc::vec::Vec
 pub awaken_admin_assistant::PlatformCapabilities::models: alloc::vec::Vec<alloc::string::String>
 pub awaken_admin_assistant::PlatformCapabilities::plugins: alloc::vec::Vec<awaken_admin_assistant::PluginInfo>
 pub awaken_admin_assistant::PlatformCapabilities::providers: alloc::vec::Vec<alloc::string::String>
+pub awaken_admin_assistant::PlatformCapabilities::runtimes: alloc::vec::Vec<serde_json::value::Value>
+pub awaken_admin_assistant::PlatformCapabilities::sandbox: core::option::Option<serde_json::value::Value>
 pub awaken_admin_assistant::PlatformCapabilities::skills: alloc::vec::Vec<alloc::string::String>
 pub awaken_admin_assistant::PlatformCapabilities::tools: alloc::vec::Vec<alloc::string::String>
 pub struct awaken_admin_assistant::PluginInfo
 pub awaken_admin_assistant::PluginInfo::config_schema: core::option::Option<serde_json::value::Value>
 pub awaken_admin_assistant::PluginInfo::id: alloc::string::String
 pub awaken_admin_assistant::PluginInfo::schema_keys: alloc::vec::Vec<alloc::string::String>
-pub struct awaken_admin_assistant::ResourceSpec
-pub awaken_admin_assistant::ResourceSpec::access: core::option::Option<alloc::string::String>
-pub awaken_admin_assistant::ResourceSpec::instructions: core::option::Option<alloc::string::String>
-pub awaken_admin_assistant::ResourceSpec::kind: alloc::string::String
-pub awaken_admin_assistant::ResourceSpec::mount_path: core::option::Option<alloc::string::String>
-pub awaken_admin_assistant::ResourceSpec::resource_id: alloc::string::String
 pub struct awaken_admin_assistant::TracingAuditSink
 impl awaken_admin_assistant::AuditSink for awaken_admin_assistant::TracingAuditSink
 pub fn awaken_admin_assistant::TracingAuditSink::record(&self, awaken_admin_assistant::AdminAuditEvent)
@@ -25,6 +27,7 @@ pub const awaken_admin_assistant::ADMIN_ASSISTANT_AGENT_ID: &str
 pub const awaken_admin_assistant::ADMIN_ASSISTANT_INSTRUCTIONS: &str
 pub const awaken_admin_assistant::CAPABILITIES_TOOL: &str
 pub const awaken_admin_assistant::CREATE_DRAFT_TOOL: &str
+pub const awaken_admin_assistant::CREATE_ENV_TOOL: &str
 pub const awaken_admin_assistant::EXPLAIN_TOOL: &str
 pub const awaken_admin_assistant::PATCH_TOOL: &str
 pub const awaken_admin_assistant::VALIDATE_TOOL: &str
@@ -36,19 +39,21 @@ pub trait awaken_admin_assistant::CapabilityReader: core::marker::Send + core::m
 pub fn awaken_admin_assistant::CapabilityReader::capabilities<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_admin_assistant::PlatformCapabilities> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_admin_assistant::DraftStore: core::marker::Send + core::marker::Sync
 pub fn awaken_admin_assistant::DraftStore::get<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_config_store::config::AgentConfig>, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_admin_assistant::DraftStore::get_resources<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_admin_assistant::ResourceSpec>, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_admin_assistant::DraftStore::get_resources<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_admin_assistant::InputSpec>, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_admin_assistant::DraftStore::put<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_config_store::config::AgentConfig) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_admin_assistant::DraftStore::put_audited<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_config_store::config::AgentConfig, &'life2 awaken_admin_assistant::AdminAuditEvent) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
-pub fn awaken_admin_assistant::DraftStore::put_audited_with_resources<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_config_store::config::AgentConfig, &'life2 awaken_admin_assistant::AdminAuditEvent, core::option::Option<alloc::vec::Vec<awaken_admin_assistant::ResourceSpec>>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
-pub fn awaken_admin_assistant::DraftStore::put_resources<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, alloc::vec::Vec<awaken_admin_assistant::ResourceSpec>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_admin_assistant::DraftStore::put_audited_with_resources<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_config_store::config::AgentConfig, &'life2 awaken_admin_assistant::AdminAuditEvent, core::option::Option<alloc::vec::Vec<awaken_admin_assistant::InputSpec>>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_admin_assistant::DraftStore::put_resources<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, alloc::vec::Vec<awaken_admin_assistant::InputSpec>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_admin_assistant::DraftStore::record_audit<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_admin_assistant::AdminAuditEvent) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_admin_assistant::DraftValidator: core::marker::Send + core::marker::Sync
 pub fn awaken_admin_assistant::DraftValidator::validate(&self, &awaken_config_store::config::AgentConfig) -> core::result::Result<(), alloc::string::String>
+pub trait awaken_admin_assistant::EnvironmentAuthor: core::marker::Send + core::marker::Sync
+pub fn awaken_admin_assistant::EnvironmentAuthor::create<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_admin_assistant::ResourceInventory: core::marker::Send + core::marker::Sync
 pub fn awaken_admin_assistant::ResourceInventory::memory_stores<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = alloc::vec::Vec<alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_admin_assistant::ResourceInventory::skills<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = alloc::vec::Vec<alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_admin_assistant::admin_assistant_config() -> awaken_config_store::config::AgentConfig
 pub fn awaken_admin_assistant::admin_tool_descriptors() -> alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
 pub fn awaken_admin_assistant::admin_tool_ids() -> alloc::vec::Vec<alloc::string::String>
-pub fn awaken_admin_assistant::admin_tools(alloc::sync::Arc<dyn awaken_admin_assistant::CapabilityReader>, alloc::sync::Arc<dyn awaken_admin_assistant::DraftValidator>, alloc::sync::Arc<dyn awaken_admin_assistant::DraftStore>, alloc::sync::Arc<dyn awaken_admin_assistant::AuditSink>) -> alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>
+pub fn awaken_admin_assistant::admin_tools(alloc::sync::Arc<dyn awaken_admin_assistant::CapabilityReader>, alloc::sync::Arc<dyn awaken_admin_assistant::DraftValidator>, alloc::sync::Arc<dyn awaken_admin_assistant::DraftStore>, alloc::sync::Arc<dyn awaken_admin_assistant::EnvironmentAuthor>, alloc::sync::Arc<dyn awaken_admin_assistant::AuditSink>) -> alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>
 pub type awaken_admin_assistant::AdminAuditEvent = awaken_config_store::store::ManagementAuditRecord

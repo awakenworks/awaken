@@ -46,6 +46,17 @@ pub struct PersistedSession {
     pub archived_at: Option<String>,
 }
 
+/// One durable Session together with its intrinsic Workspace partition.
+///
+/// Recovery consumes this envelope atomically instead of looking up an owner in
+/// a second step. It contains no principal, role, policy, credential, or
+/// authorization decision; `workspace_id` is resource routing state only.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScopedPersistedSession {
+    pub workspace_id: String,
+    pub session: PersistedSession,
+}
+
 /// The port the Managed adapter drives to persist and restore [`PersistedSession`]
 /// rows. The default in-memory impl keeps single-process behavior; a durable impl
 /// (e.g. SQLite alongside the transcript store) lets a session survive a restart
@@ -100,7 +111,7 @@ pub trait ManagedSessionRepository: Send + Sync {
     /// Sessions with a Prepared/Releasing resource transition. Implementations
     /// must preserve their ordinary tenancy fence; the coordinator obtains the
     /// already-trusted owner separately through [`Self::owner`].
-    async fn pending_resource_sessions(&self) -> Vec<PersistedSession> {
+    async fn pending_resource_sessions(&self) -> Vec<ScopedPersistedSession> {
         Vec::new()
     }
 
@@ -242,9 +253,15 @@ impl<S: ScopedSessionStore> ManagedSessionRepository for ScopedSessionRepo<S> {
         self.inner.get_scoped(&self.scope, session_id).await
     }
 
-    async fn pending_resource_sessions(&self) -> Vec<PersistedSession> {
+    async fn pending_resource_sessions(&self) -> Vec<ScopedPersistedSession> {
         self.inner
             .pending_resource_sessions_scoped(&self.scope)
             .await
+            .into_iter()
+            .map(|session| ScopedPersistedSession {
+                workspace_id: self.scope.to_string(),
+                session,
+            })
+            .collect()
     }
 }

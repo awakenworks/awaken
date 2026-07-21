@@ -25,7 +25,7 @@ pub mod mcp_export;
 pub mod model_resolver;
 pub mod no_model;
 pub mod placement;
-pub mod resource_owner;
+pub mod resource_scope_fence;
 pub mod webhooks;
 mod worker_registry;
 pub mod workspace_path;
@@ -248,8 +248,8 @@ fn mount_with_managed_over(
     // single-tenant deployment resolves to the default scope and is never fenced.
     let memory_stores = memory_stores_router_with_catalog(host.clone(), resource_catalog.clone())
         .layer(axum::middleware::from_fn_with_state(
-            crate::resource_owner::MemoryStoreOwnershipLookup::over(resource_catalog),
-            crate::resource_owner::memory_store_ownership_guard,
+            crate::resource_scope_fence::MemoryStoreScopeFence::over(resource_catalog),
+            crate::resource_scope_fence::memory_store_scope_fence,
         ));
     // The skills API (`/v1/skills`) over the host's durable delivered-skill catalog.
     let skills = skills_router(host.clone());

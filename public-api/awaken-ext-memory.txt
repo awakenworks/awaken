@@ -18,10 +18,26 @@ pub fn awaken_ext_memory::localfs::MemoryDir::entries(&self) -> alloc::vec::Vec<
 pub fn awaken_ext_memory::localfs::MemoryDir::new(impl core::convert::Into<std::path::PathBuf>) -> Self
 pub fn awaken_ext_memory::localfs::MemoryDir::root(&self) -> &std::path::Path
 pub fn awaken_ext_memory::localfs::MemoryDir::write(&self, &str, &str) -> core::io::error::Result<std::path::PathBuf>
+impl awaken_ext_memory::localfs::MemoryStoreHandle for awaken_ext_memory::localfs::MemoryDir
+pub fn awaken_ext_memory::localfs::MemoryDir::entries<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_ext_memory::localfs::Entry>, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_memory::localfs::MemoryDir::write<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub trait awaken_ext_memory::localfs::MemoryStoreHandle: core::marker::Send + core::marker::Sync
+pub fn awaken_ext_memory::localfs::MemoryStoreHandle::entries<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_ext_memory::localfs::Entry>, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_memory::localfs::MemoryStoreHandle::write<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+impl awaken_ext_memory::localfs::MemoryStoreHandle for awaken_ext_memory::localfs::MemoryDir
+pub fn awaken_ext_memory::localfs::MemoryDir::entries<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_ext_memory::localfs::Entry>, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_memory::localfs::MemoryDir::write<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_ext_memory::localfs::sanitize_stem(&str) -> alloc::string::String
 pub mod awaken_ext_memory::plugin
+pub struct awaken_ext_memory::plugin::MemoryConfig
+pub awaken_ext_memory::plugin::MemoryConfig::extraction_prompt: core::option::Option<alloc::string::String>
+pub awaken_ext_memory::plugin::MemoryConfig::instructions: core::option::Option<alloc::string::String>
+pub awaken_ext_memory::plugin::MemoryConfig::recall: awaken_ext_memory::recall::RecallBounds
+impl awaken_ext_memory::plugin::MemoryConfig
+pub fn awaken_ext_memory::plugin::MemoryConfig::from_value(core::option::Option<&serde_json::value::Value>) -> core::result::Result<Self, serde_json::error::Error>
 pub struct awaken_ext_memory::plugin::MemoryPlugin
 impl awaken_ext_memory::plugin::MemoryPlugin
+pub fn awaken_ext_memory::plugin::MemoryPlugin::from_handle(alloc::sync::Arc<dyn awaken_ext_memory::localfs::MemoryStoreHandle>, awaken_ext_memory::recall::RecallBounds) -> Self
 pub fn awaken_ext_memory::plugin::MemoryPlugin::new(awaken_ext_memory::localfs::MemoryDir, awaken_ext_memory::recall::RecallBounds) -> Self
 pub fn awaken_ext_memory::plugin::MemoryPlugin::with_selector(self, alloc::sync::Arc<dyn awaken_ext_memory::select::RecallSelector>) -> Self
 impl awaken_runtime_contract::plugin::contributions::Plugin for awaken_ext_memory::plugin::MemoryPlugin
@@ -52,6 +68,7 @@ pub async fn awaken_ext_memory::select::select_relevant(&dyn awaken_runtime_cont
 pub mod awaken_ext_memory::tool
 pub struct awaken_ext_memory::tool::WriteMemoryTool
 impl awaken_ext_memory::tool::WriteMemoryTool
+pub fn awaken_ext_memory::tool::WriteMemoryTool::from_handle(alloc::sync::Arc<dyn awaken_ext_memory::localfs::MemoryStoreHandle>) -> Self
 pub fn awaken_ext_memory::tool::WriteMemoryTool::new(awaken_ext_memory::localfs::MemoryDir) -> Self
 impl awaken_runtime_contract::tool::Tool for awaken_ext_memory::tool::WriteMemoryTool
 pub type awaken_ext_memory::tool::WriteMemoryTool::Args = serde_json::value::Value
@@ -59,14 +76,28 @@ pub type awaken_ext_memory::tool::WriteMemoryTool::Output = alloc::string::Strin
 pub fn awaken_ext_memory::tool::WriteMemoryTool::call<'life0, 'async_trait>(&'life0 self, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_ext_memory::tool::WriteMemoryTool::id(&self) -> &str
 pub fn awaken_ext_memory::tool::write_memory_descriptor() -> awaken_runtime_contract::resolved::ToolDescriptor
+pub struct awaken_ext_memory::Entry
+pub awaken_ext_memory::Entry::content: alloc::string::String
+pub awaken_ext_memory::Entry::modified: std::time::SystemTime
+pub awaken_ext_memory::Entry::path: std::path::PathBuf
+pub struct awaken_ext_memory::MemoryConfig
+pub awaken_ext_memory::MemoryConfig::extraction_prompt: core::option::Option<alloc::string::String>
+pub awaken_ext_memory::MemoryConfig::instructions: core::option::Option<alloc::string::String>
+pub awaken_ext_memory::MemoryConfig::recall: awaken_ext_memory::recall::RecallBounds
+impl awaken_ext_memory::plugin::MemoryConfig
+pub fn awaken_ext_memory::plugin::MemoryConfig::from_value(core::option::Option<&serde_json::value::Value>) -> core::result::Result<Self, serde_json::error::Error>
 pub struct awaken_ext_memory::MemoryDir
 impl awaken_ext_memory::localfs::MemoryDir
 pub fn awaken_ext_memory::localfs::MemoryDir::entries(&self) -> alloc::vec::Vec<awaken_ext_memory::localfs::Entry>
 pub fn awaken_ext_memory::localfs::MemoryDir::new(impl core::convert::Into<std::path::PathBuf>) -> Self
 pub fn awaken_ext_memory::localfs::MemoryDir::root(&self) -> &std::path::Path
 pub fn awaken_ext_memory::localfs::MemoryDir::write(&self, &str, &str) -> core::io::error::Result<std::path::PathBuf>
+impl awaken_ext_memory::localfs::MemoryStoreHandle for awaken_ext_memory::localfs::MemoryDir
+pub fn awaken_ext_memory::localfs::MemoryDir::entries<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_ext_memory::localfs::Entry>, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_memory::localfs::MemoryDir::write<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub struct awaken_ext_memory::MemoryPlugin
 impl awaken_ext_memory::plugin::MemoryPlugin
+pub fn awaken_ext_memory::plugin::MemoryPlugin::from_handle(alloc::sync::Arc<dyn awaken_ext_memory::localfs::MemoryStoreHandle>, awaken_ext_memory::recall::RecallBounds) -> Self
 pub fn awaken_ext_memory::plugin::MemoryPlugin::new(awaken_ext_memory::localfs::MemoryDir, awaken_ext_memory::recall::RecallBounds) -> Self
 pub fn awaken_ext_memory::plugin::MemoryPlugin::with_selector(self, alloc::sync::Arc<dyn awaken_ext_memory::select::RecallSelector>) -> Self
 impl awaken_runtime_contract::plugin::contributions::Plugin for awaken_ext_memory::plugin::MemoryPlugin
@@ -82,6 +113,7 @@ impl core::default::Default for awaken_ext_memory::recall::RecallBounds
 pub fn awaken_ext_memory::recall::RecallBounds::default() -> Self
 pub struct awaken_ext_memory::WriteMemoryTool
 impl awaken_ext_memory::tool::WriteMemoryTool
+pub fn awaken_ext_memory::tool::WriteMemoryTool::from_handle(alloc::sync::Arc<dyn awaken_ext_memory::localfs::MemoryStoreHandle>) -> Self
 pub fn awaken_ext_memory::tool::WriteMemoryTool::new(awaken_ext_memory::localfs::MemoryDir) -> Self
 impl awaken_runtime_contract::tool::Tool for awaken_ext_memory::tool::WriteMemoryTool
 pub type awaken_ext_memory::tool::WriteMemoryTool::Args = serde_json::value::Value
@@ -94,6 +126,12 @@ pub const awaken_ext_memory::EXTRACT_PROMPT: &str
 pub const awaken_ext_memory::MEMORY_AGENT_ID: &str
 pub const awaken_ext_memory::MEMORY_PLUGIN_ID: &str
 pub const awaken_ext_memory::SELECTOR_AGENT_ID: &str
+pub trait awaken_ext_memory::MemoryStoreHandle: core::marker::Send + core::marker::Sync
+pub fn awaken_ext_memory::MemoryStoreHandle::entries<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_ext_memory::localfs::Entry>, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_memory::MemoryStoreHandle::write<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+impl awaken_ext_memory::localfs::MemoryStoreHandle for awaken_ext_memory::localfs::MemoryDir
+pub fn awaken_ext_memory::localfs::MemoryDir::entries<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_ext_memory::localfs::Entry>, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_memory::localfs::MemoryDir::write<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub trait awaken_ext_memory::RecallSelector: core::marker::Send + core::marker::Sync
 pub fn awaken_ext_memory::RecallSelector::select<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 [(usize, alloc::string::String)], usize) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = alloc::vec::Vec<usize>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_ext_memory::default_memory_agent(&str, &str) -> awaken_runtime_contract::snapshot::ExecutableAgentSnapshot

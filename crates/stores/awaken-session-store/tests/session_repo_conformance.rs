@@ -6,7 +6,9 @@
 //! suite checks that universal invariant for both backends; durable restart persistence
 //! remains in the backend-specific suite.
 
-use awaken_session_contract::{ManagedSessionRepository, PersistedSession, SessionLifecycleFact};
+use awaken_session_contract::{
+    ManagedSessionRepository, PersistedSession, ScopedPersistedSession, SessionLifecycleFact,
+};
 use awaken_session_store::{InMemorySessionRepository, SqliteManagedSessionRepository};
 use serde_json::json;
 
@@ -144,7 +146,13 @@ async fn pending_resource_activation_index_is_durable<R: ManagedSessionRepositor
         .unwrap();
     r.save_owned("ws_a", pending.clone()).await;
 
-    assert_eq!(r.pending_resource_sessions().await, vec![pending.clone()]);
+    assert_eq!(
+        r.pending_resource_sessions().await,
+        vec![ScopedPersistedSession {
+            workspace_id: "ws_a".into(),
+            session: pending.clone(),
+        }]
+    );
 
     pending.resources.start_attempt().unwrap();
     pending.resources.commit().unwrap();
