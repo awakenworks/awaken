@@ -52,6 +52,7 @@ const scenarios: Scenario[] = [
   { id: 'resource_ephemeral', file: 'e2e/resource_ephemeral_e2e.mjs' },
   { id: 'resource_scope_boundary', file: 'e2e/resource_scope_boundary_e2e.mjs' },
   { id: 'container_provider_config', file: 'e2e/container_provider_configuration_e2e.ts' },
+  { id: 'file_workspace_ownership', file: 'e2e/file_workspace_ownership_e2e.ts' },
   { id: 'mcp_stdio', file: 'e2e/mcp_server_core_e2e.ts' },
   { id: 'mcp_http', file: 'e2e/mcp_streamable_http_e2e.ts' },
   { id: 'resource_plane_postgres', file: 'e2e/resource_plane_postgres_e2e.ts', postgres: true },
@@ -123,6 +124,8 @@ const obligations: Obligation[] = [
   { id: 'D6-14', stage: '6 sandbox/recovery/metrics', behavior: 'fenced-commit counter exports from a stale in-process worker attempt' },
   { id: 'D6-15', stage: '6 sandbox/recovery/metrics', behavior: 'container tiers without matching build capabilities fail before accepting traffic', scenario: 'container_provider_config' },
   { id: 'D6-16', stage: '6 sandbox/recovery/metrics', behavior: 'a docker-only build still rejects unsupported podman and Kubernetes tiers', scenario: 'container_provider_config' },
+  { id: 'D6-17', stage: '6 sandbox/recovery/metrics', behavior: 'one workspace revoke preserves a content-addressed blob owned by another workspace', scenario: 'file_workspace_ownership' },
+  { id: 'D6-18', stage: '6 sandbox/recovery/metrics', behavior: 'last-owner deletion removes the blob and duplicate revoke fails closed', scenario: 'file_workspace_ownership' },
 
   { id: 'D7-01', stage: '7 resource persistence', behavior: 'File, Memory, Skill, and lifecycle adapters select one shared backend family', scenario: 'resource_plane_postgres' },
   { id: 'D7-02', stage: '7 resource persistence', behavior: 'resource data survives process and local-directory replacement', scenario: 'resource_plane_postgres' },
