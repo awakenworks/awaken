@@ -51,6 +51,13 @@ RESOURCE_HTTP_SOURCES = (
     "crates/server/awaken-runtime-host/src/skills_api.rs",
 )
 
+# Recovery already reads a durably persisted Workspace envelope. Re-selecting a
+# local/default scope here would turn missing routing state into cross-Workspace
+# access instead of failing closed.
+RESOURCE_RECOVERY_SOURCES = (
+    "crates/server/awaken-protocol-managed/src/state/sessions.rs",
+)
+
 FORBIDDEN_DEPENDENCY_PREFIXES = ("awaken-authz", "awaken-iam")
 
 FORBIDDEN_TYPE_NAMES = {
@@ -230,5 +237,24 @@ def check_all(repo_root: Path, crates: Path) -> list[str]:
         if re.search(r"\blocal_workspace\s*\(", code):
             errors.append(
                 f"{relative}: resource HTTP adapter falls back to the Host-local Workspace"
+            )
+    for relative in RESOURCE_RECOVERY_SOURCES:
+        path = repo_root / relative
+        if not path.is_file():
+            errors.append(f"missing resource recovery source {relative!r}")
+            continue
+        production = _without_cfg_test_module(path.read_text(encoding="utf-8"))
+        code = _without_rust_comments_and_strings(production)
+        recovery = re.search(
+            r"pub\s+async\s+fn\s+reconcile_resource_activations\b(?P<body>.*?)(?:\n\s*///|\n\s*pub(?:\([^)]*\))?\s+fn)",
+            code,
+            flags=re.DOTALL,
+        )
+        if recovery is None:
+            errors.append(f"{relative}: resource recovery entry point is missing")
+        elif "DEFAULT_SCOPE" in recovery.group("body"):
+            errors.append(
+                f"{relative}: resource recovery re-selects DEFAULT_SCOPE instead of "
+                "consuming the durable Workspace envelope"
             )
     return errors

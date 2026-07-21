@@ -384,6 +384,7 @@ pub const awaken_runtime_host::WORKER_ID_HEADER: &str
 pub trait awaken_runtime_host::InferenceExecutorMaterializer: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_host::InferenceExecutorMaterializer::materialize(&self, &awaken_runtime_contract::activation::RunActivation, &awaken_inference_contract::InferenceAccess) -> core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>
 pub fn awaken_runtime_host::InferenceExecutorMaterializer::materialize_pinned(&self, &str, &awaken_inference_contract::InferenceAccess) -> core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>
+pub fn awaken_runtime_host::InferenceExecutorMaterializer::supported_access_schemes(&self) -> &'static [&'static str]
 pub trait awaken_runtime_host::WorkerClock: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_host::WorkerClock::now_ms(&self) -> u64
 impl awaken_runtime_host::WorkerClock for awaken_runtime_host::ManualWorkerClock

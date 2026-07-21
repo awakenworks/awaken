@@ -29,8 +29,11 @@ pub awaken_sandbox_container::AgentContainerSession::process: alloc::boxed::Box<
 pub struct awaken_sandbox_container::BindPlan
 pub awaken_sandbox_container::BindPlan::content: core::option::Option<alloc::string::String>
 pub awaken_sandbox_container::BindPlan::content_bytes: core::option::Option<alloc::vec::Vec<u8>>
+pub awaken_sandbox_container::BindPlan::credential_file_path: core::option::Option<alloc::string::String>
 pub awaken_sandbox_container::BindPlan::mount_path: alloc::string::String
 pub awaken_sandbox_container::BindPlan::read_only: bool
+pub awaken_sandbox_container::BindPlan::secret_content: core::option::Option<awaken_sandbox_container::SecretBytes>
+pub awaken_sandbox_container::BindPlan::secret_writeback: bool
 pub awaken_sandbox_container::BindPlan::source_ref: alloc::string::String
 pub struct awaken_sandbox_container::CgroupCaps
 pub awaken_sandbox_container::CgroupCaps::disk_size: core::option::Option<alloc::string::String>
@@ -58,6 +61,7 @@ pub async fn awaken_sandbox_container::ContainerProvider<R>::open_agent_from(&se
 pub fn awaken_sandbox_container::ContainerProvider<R>::with_blob(self, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::vec::Vec<u8>>) -> Self
 pub fn awaken_sandbox_container::ContainerProvider<R>::with_blob_source(self, alloc::sync::Arc<dyn awaken_provisioning_contract::sandbox::BlobSource>) -> Self
 pub fn awaken_sandbox_container::ContainerProvider<R>::with_egress_proxy(self, awaken_sandbox_container::EgressProxy) -> Self
+pub fn awaken_sandbox_container::ContainerProvider<R>::with_secret_broker(self, alloc::sync::Arc<dyn awaken_provisioning_contract::sandbox::SecretBroker>) -> Self
 impl<R: awaken_sandbox_container::ContainerRuntime + 'static> awaken_provisioning_contract::sandbox::SandboxProvider for awaken_sandbox_container::ContainerProvider<R>
 pub fn awaken_sandbox_container::ContainerProvider<R>::adopt<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_provisioning_contract::sandbox::SandboxHandle) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::boxed::Box<dyn awaken_provisioning_contract::sandbox::Sandbox>, awaken_provisioning_contract::sandbox::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_sandbox_container::ContainerProvider<R>::capabilities(&self) -> awaken_provisioning_contract::sandbox::SandboxCapabilities
@@ -87,6 +91,7 @@ pub awaken_sandbox_container::EgressRealization::proxy_env: alloc::vec::Vec<(all
 pub struct awaken_sandbox_container::ManagedContainer
 pub awaken_sandbox_container::ManagedContainer::age_secs: u64
 pub awaken_sandbox_container::ManagedContainer::id: alloc::string::String
+pub awaken_sandbox_container::ManagedContainer::owned_by_current_runtime: bool
 pub awaken_sandbox_container::ManagedContainer::running: bool
 pub struct awaken_sandbox_container::MemoryMount
 pub awaken_sandbox_container::MemoryMount::mount_path: alloc::string::String
@@ -102,6 +107,9 @@ pub awaken_sandbox_container::PodPlan::network: awaken_sandbox_container::Networ
 pub awaken_sandbox_container::PodPlan::outputs_volume: alloc::string::String
 pub awaken_sandbox_container::PodPlan::owner_uid: alloc::string::String
 pub awaken_sandbox_container::PodPlan::restart_never: bool
+pub struct awaken_sandbox_container::SecretBytes(_)
+impl core::fmt::Debug for awaken_sandbox_container::SecretBytes
+pub fn awaken_sandbox_container::SecretBytes::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub trait awaken_sandbox_container::AgentContainerProvider: core::marker::Send + core::marker::Sync
 pub fn awaken_sandbox_container::AgentContainerProvider::open_agent<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_provisioning_contract::spec::SandboxSpec) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_sandbox_container::AgentContainerSession, awaken_provisioning_contract::sandbox::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 impl<R: awaken_sandbox_container::ContainerRuntime + 'static> awaken_sandbox_container::AgentContainerProvider for awaken_sandbox_container::ContainerProvider<R>
@@ -114,8 +122,10 @@ pub fn awaken_sandbox_container::ContainerRuntime::list_managed<'life0, 'async_t
 pub fn awaken_sandbox_container::ContainerRuntime::open_channel<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::boxed::Box<dyn awaken_agent_channel::AgentChannel>, awaken_sandbox_container::RuntimeError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_sandbox_container::ContainerRuntime::poll<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_provisioning_contract::sandbox::ExitStatus>, awaken_sandbox_container::RuntimeError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_sandbox_container::ContainerRuntime::read_artifact<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<u8>, awaken_sandbox_container::RuntimeError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_sandbox_container::ContainerRuntime::read_live_file<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, awaken_sandbox_container::RuntimeError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_sandbox_container::ContainerRuntime::remove<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_sandbox_container::RuntimeError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_sandbox_container::ContainerRuntime::signal<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, awaken_provisioning_contract::sandbox::Signal) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_sandbox_container::RuntimeError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_sandbox_container::ContainerRuntime::supports_secret_writeback(&self) -> bool
 pub fn awaken_sandbox_container::ContainerRuntime::touch_lease<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_sandbox_container::RuntimeError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_sandbox_container::ContainerRuntime::wait<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_provisioning_contract::sandbox::ExitStatus, awaken_sandbox_container::RuntimeError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_sandbox_container::command_of(&awaken_provisioning_contract::spec::SandboxSpec) -> alloc::vec::Vec<alloc::string::String>

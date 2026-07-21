@@ -1,0 +1,12 @@
+pub mod awaken_resource_reclaimer
+pub struct awaken_resource_reclaimer::ReconcileSummary
+pub awaken_resource_reclaimer::ReconcileSummary::completed: usize
+pub awaken_resource_reclaimer::ReconcileSummary::conflicts: usize
+pub awaken_resource_reclaimer::ReconcileSummary::deferred: usize
+pub awaken_resource_reclaimer::ReconcileSummary::retryable_failures: usize
+pub struct awaken_resource_reclaimer::ResourceReclaimer
+impl awaken_resource_reclaimer::ResourceReclaimer
+pub async fn awaken_resource_reclaimer::ResourceReclaimer::enqueue(&self, awaken_resource_contract::lifecycle::ResourcePurgeIntent) -> core::result::Result<awaken_resource_contract::lifecycle::PutResourcePurgeOutcome, awaken_resource_contract::lifecycle::ResourcePurgeError>
+pub fn awaken_resource_reclaimer::ResourceReclaimer::new(impl core::convert::Into<alloc::string::String>, u64, alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourcePurgeRepository>, alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourcePhysicalReclaimer>) -> core::result::Result<Self, awaken_resource_contract::lifecycle::ResourcePurgeError>
+pub async fn awaken_resource_reclaimer::ResourceReclaimer::reconcile(&self, u64, usize) -> core::result::Result<awaken_resource_reclaimer::ReconcileSummary, awaken_resource_contract::lifecycle::ResourcePurgeError>
+pub fn awaken_resource_reclaimer::ResourceReclaimer::with_guard(self, alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourcePurgeGuard>) -> Self

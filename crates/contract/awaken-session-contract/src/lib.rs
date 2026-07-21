@@ -52,5 +52,6 @@ pub use session::{
     RunErrorKind, SessionInit, SessionRuntime, SessionUsage, StepOutcome, ToolPermissionDecision,
 };
 pub use session_repo::{
-    ManagedSessionRepository, PersistedSession, ScopedSessionRepo, ScopedSessionStore,
+    ManagedSessionRepository, PersistedSession, ScopedPersistedSession, ScopedSessionRepo,
+    ScopedSessionStore,
 };

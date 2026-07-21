@@ -45,7 +45,9 @@ pub struct awaken_run_executor_acp::AcpCli
 pub awaken_run_executor_acp::AcpCli::args: &'static [&'static str]
 pub awaken_run_executor_acp::AcpCli::command: &'static str
 pub awaken_run_executor_acp::AcpCli::config_home_env: &'static str
+pub awaken_run_executor_acp::AcpCli::container_argv: &'static [&'static str]
 pub awaken_run_executor_acp::AcpCli::context_window_env: core::option::Option<&'static str>
+pub awaken_run_executor_acp::AcpCli::credential_file: core::option::Option<&'static str>
 pub awaken_run_executor_acp::AcpCli::env: &'static [(&'static str, &'static str)]
 pub awaken_run_executor_acp::AcpCli::id: &'static str
 pub awaken_run_executor_acp::AcpCli::mcp_interface: awaken_run_executor_acp::McpInterface
@@ -124,6 +126,8 @@ pub awaken_run_executor_acp::ModelDelivery::aliases: &'static [&'static str]
 pub awaken_run_executor_acp::ModelDelivery::base_url: &'static str
 pub awaken_run_executor_acp::ModelDelivery::key: &'static str
 pub awaken_run_executor_acp::ModelDelivery::model: &'static str
+pub awaken_run_executor_acp::ModelDelivery::model_config_env: core::option::Option<&'static str>
+pub awaken_run_executor_acp::ModelDelivery::model_config_key: core::option::Option<&'static str>
 pub struct awaken_run_executor_acp::NoSessionHome
 impl awaken_run_executor_acp::SessionHomeProvider for awaken_run_executor_acp::NoSessionHome
 pub fn awaken_run_executor_acp::NoSessionHome::harvest<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_run_executor_acp::SessionHomeKey, &'life2 awaken_run_executor_acp::SessionHomePlan) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
