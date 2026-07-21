@@ -248,7 +248,7 @@ process-local handle.
 | `MemoryRepository` | Existing behavior behind `MemoryFs`; naming evolution remains | Memory data plane | scoped entries, CAS, atomic history, redaction, retention hooks | Agent/Session binding and IAM policy |
 | `MemoryRuntime` | Existing | Runtime Host | store-less recall selector/extractor capability and background-run drain | resource identity, default store, IAM policy |
 | `BoundMemory` | Existing | Session Runtime | one resolved store handle + pinned policy + maximum access shared by recall/extraction | workspace lookup, current-config resolution, authorization |
-| `RepositoryRealizer` | Target evolution of repo staging | Environment/host adapter | clone current remote config, construct working tree, mediate Git credentials | remote repository ownership or commit pinning |
+| `RepositoryRealizer` | Existing neutral port | Environment adapter | clone current remote config, construct working tree, publish Agent-authored commits with ephemeral transport credentials | remote repository ownership, authorization policy, or commit pinning |
 | `CredentialResolver`/Vault | Existing | Credential product domain | turn a credential binding into a short-lived lease and rotate/revoke it | Agent prompt, persisted Session secret material |
 | `SandboxProvider` | Existing | Environment provisioning | realize validated mounts/working trees and dispose them | product resource authoring and policy |
 | `ResourceReclaimer` | Existing for Session activation recovery; per-resource purge remains | Product/session operations | reconcile crashed activations, retention, reference checks, per-kind purge receipts | authorization decisions, remote Git deletion |
@@ -638,13 +638,17 @@ internal config version remains an awaken governance detail.
 - copy fallback retains only transient `(path, id, sha)` heads captured at
   materialization and reconciles with CAS update plus atomic `delete_if_match`;
   concurrent durable heads are preserved and reported.
+- `RepoStage` and LocalSandbox-specific orchestration are replaced by
+  `RepositoryActivation { plan, credential }` plus the neutral, secret-free
+  `RepositoryRealizationPlan` / `RepositoryRealizer` environment port;
+- Repository publication and authored-Skill persistence run only at binding
+  replacement or Session release; `GET /v1/files` is a read-only artifact
+  projection and no longer triggers unrelated resource writes.
 
 ### Remaining rename or merge
 
 - rename the now-unified `MemoryFs` aggregate port to `MemoryRepository` when the
-  remaining extraction call sites have migrated;
-- evolve repo staging into a `RepositoryRealizer` consuming a platform-managed
-  Repository config version and credential binding.
+  remaining extraction call sites have migrated.
 
 ### Remaining deletion
 

@@ -1488,9 +1488,16 @@ async fn prepare_session_mounts_effective_file_and_stages_effective_repo() {
     assert_eq!(content_hash.as_deref(), Some(file_id.as_str()));
 
     // The repo is staged for a host-side clone (not a byte mount).
-    let repos = host.thread_repos("t-multi");
-    assert_eq!(repos.len(), 1, "the bound repo is staged for cloning");
-    assert_eq!(repos[0].url, "https://github.com/awaken/example.git");
+    let repositories = host.thread_repository_activations("t-multi");
+    assert_eq!(
+        repositories.len(),
+        1,
+        "the bound repository has one realization plan"
+    );
+    assert_eq!(
+        repositories[0].plan.remote_url,
+        "https://github.com/awaken/example.git"
+    );
 }
 
 #[tokio::test]
@@ -1628,7 +1635,7 @@ async fn a_github_repository_resource_injects_a_scoped_github_mcp_server() {
 
     // The repo is staged for a host-side clone...
     assert_eq!(
-        host.thread_repos("t-gh").len(),
+        host.thread_repository_activations("t-gh").len(),
         1,
         "repo staged for cloning"
     );
@@ -1716,7 +1723,7 @@ async fn rotating_a_github_repository_token_re_keys_the_clone_and_mcp_bearer() {
             .and_then(|s| s.bearer.map(|b| b.expose_secret().to_string()))
     };
     let clone_token = |h: &SharedHost| {
-        h.thread_repos("t-rot")[0]
+        h.thread_repository_activations("t-rot")[0]
             .credential
             .as_ref()
             .map(|t| t.expose_secret().to_string())

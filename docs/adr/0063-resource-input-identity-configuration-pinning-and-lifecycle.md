@@ -185,6 +185,13 @@ PDP decision, or policy document into this state machine.
   it may preserve a patch/Artifact or push receipt. Deleting the platform
   Repository definition never deletes the external remote repository.
 
+Repository activation crosses a neutral `RepositoryRealizer` port with a
+secret-free `RepositoryRealizationPlan`. The plan contains the resolved config
+version's URL, optional initial branch, mount path, identity, and access—never a
+Git commit/tree pin or authorization object. Credential bytes are a separate,
+ephemeral transport argument. Publication and authored-Skill persistence occur at
+binding replacement or Session release; a Files GET is never a hidden write edge.
+
 `Active -> Suspended -> Archived -> Deleted -> Purged` is the managed-resource
 lifecycle. `Suspended` is a reversible live deny; `Archived` rejects new
 activation; `Deleted` is a tombstone; `Purged` is an asynchronous reclamation

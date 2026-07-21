@@ -1,11 +1,11 @@
 // Consolidated sandbox-provisioning e2e: every session-resource TYPE realized into
-// ONE sandbox at prepare time, plus the reverse channels and the fail-closed paths.
+// ONE sandbox at prepare time, plus artifact projection and the fail-closed paths.
 //
 // The existing e2e cover one resource type each (file, memory_store, github_repository
 // in separate files); this drives all three into a SINGLE session — the real
 // StagedResources → sandbox_spec → provider realization path — then exercises:
 //   • the turn runs with all resources mounted (provisioning succeeded),
-//   • GET /v1/files?scope_id (the sandbox→host reverse channel: artifacts + repo push),
+//   • GET /v1/files?scope_id (read-only artifact projection),
 //   • fail-closed for each resource type (missing file / missing memory_store / bad repo).
 //
 // The sandbox TIER (Workdir / Namespace-bwrap / Container-k8s) is not yet selectable
@@ -96,10 +96,10 @@ async function main() {
     assert.ok(events.includes('agent.message'), `turn ran with all resources mounted: ${events}`);
     pass('a turn ran over the fully-provisioned sandbox');
 
-    // ── reverse channel: GET /v1/files?scope_id (artifacts + repo push-back) ────
+    // ── read-only artifact projection ─────────────────────────────────────────
     const artifacts = await client.get(`/v1/files?scope_id=${session.id}`);
     assert.ok(artifacts, 'artifact/reverse-channel endpoint responded for the session');
-    pass('sandbox→host reverse channel (GET /v1/files?scope_id) works');
+    pass('GET /v1/files?scope_id projects artifacts without hidden resource writes');
 
     // ── fail-closed: each resource type rejects a dangling reference ───────────
     const badFile = await createRaw(base, {
@@ -145,7 +145,7 @@ async function main() {
   });
 
   fs.rmSync(TMP, { recursive: true, force: true });
-  console.log('E2E PASS: all sandbox resource types provision into one session + reverse channel + fail-closed.');
+  console.log('E2E PASS: all sandbox resource types provision into one session + artifact projection + fail-closed.');
   process.exitCode = 0;
 }
 

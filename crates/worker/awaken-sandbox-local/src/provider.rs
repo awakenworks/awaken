@@ -613,26 +613,6 @@ impl LocalSandbox {
         rooted_raw_tools(self.root.clone(), self.deny_egress)
     }
 
-    /// Clone a github_repository resource into `<root>/<logical>` host-side (ADR-0038);
-    /// the credential stays out of the jail. Fail-closed on a bad path or git error.
-    pub fn provision_repo(
-        &self,
-        logical: &str,
-        url: &str,
-        git_ref: Option<&str>,
-        token: Option<&str>,
-    ) -> Result<(), pc::SandboxError> {
-        provision_repo_at(&self.root, logical, url, git_ref, token).map_err(err)
-    }
-
-    /// Push the repo at `<root>/<logical>` to origin host-side (ADR-0038 write-back). The
-    /// agent authors its own commits in the jail; the host only pushes them (it alone holds
-    /// the token). `Ok(true)` when the agent's commits were pushed, `Ok(false)` when origin
-    /// was already up to date (the agent authored nothing).
-    pub fn push_repo(&self, logical: &str, token: Option<&str>) -> Result<bool, pc::SandboxError> {
-        push_repo_at(&self.root, logical, token).map_err(err)
-    }
-
     /// List regular files under `<root>/<subdir>` as `(logical_path, bytes)` — a
     /// session's output artifacts or a memory-harvest read. Paths are logical (G3).
     pub fn list_files(&self, subdir: &str) -> Vec<(String, Vec<u8>)> {
@@ -643,6 +623,31 @@ impl LocalSandbox {
     /// parses the skill model). Re-scanned each call so a run-authored skill is seen.
     pub fn scan_skill_dir(&self, subdir: &str) -> Vec<DiscoveredSkillFile> {
         scan_skill_dir_at(&self.root, subdir)
+    }
+}
+
+impl pc::RepositoryRealizer for LocalSandbox {
+    fn realize_repository(
+        &self,
+        plan: &pc::RepositoryRealizationPlan,
+        credential: Option<&str>,
+    ) -> Result<(), pc::SandboxError> {
+        provision_repo_at(
+            &self.root,
+            &plan.mount_path,
+            &plan.remote_url,
+            plan.initial_branch.as_deref(),
+            credential,
+        )
+        .map_err(err)
+    }
+
+    fn publish_repository(
+        &self,
+        plan: &pc::RepositoryRealizationPlan,
+        credential: Option<&str>,
+    ) -> Result<bool, pc::SandboxError> {
+        push_repo_at(&self.root, &plan.mount_path, credential).map_err(err)
     }
 }
 
@@ -1202,10 +1207,15 @@ mod workdir_helper_tests {
             .await
             .unwrap();
         let root = sandbox.root.root().to_path_buf();
+        let plan = pc::RepositoryRealizationPlan {
+            repository_id: "repo-1".into(),
+            mount_path: "workspace/repo".into(),
+            remote_url: bare.to_string_lossy().into_owned(),
+            initial_branch: None,
+            access: pc::MountAccess::ReadWrite,
+        };
 
-        sandbox
-            .provision_repo("workspace/repo", bare.to_str().unwrap(), None, None)
-            .unwrap();
+        pc::RepositoryRealizer::realize_repository(&sandbox, &plan, None).unwrap();
         let repo_dir = root.join("workspace/repo");
         assert_eq!(
             std::fs::read_to_string(repo_dir.join("README.md")).unwrap(),
@@ -1223,7 +1233,7 @@ mod workdir_helper_tests {
         );
 
         // Nothing authored yet → the host push is a no-op (agent committed nothing).
-        assert!(!sandbox.push_repo("workspace/repo", None).unwrap());
+        assert!(!pc::RepositoryRealizer::publish_repository(&sandbox, &plan, None).unwrap());
 
         // The AGENT configures its own identity and authors a commit in the jail — a clean
         // working tree afterwards (it committed everything), which the OLD harvest would have
@@ -1235,8 +1245,8 @@ mod workdir_helper_tests {
         git(&repo_dir, &["commit", "-q", "-m", "agent: add NEW.txt"]);
 
         // Host push reports true (the branch was ahead) and re-pushing is an idempotent no-op.
-        assert!(sandbox.push_repo("workspace/repo", None).unwrap());
-        assert!(!sandbox.push_repo("workspace/repo", None).unwrap());
+        assert!(pc::RepositoryRealizer::publish_repository(&sandbox, &plan, None).unwrap());
+        assert!(!pc::RepositoryRealizer::publish_repository(&sandbox, &plan, None).unwrap());
 
         // The bare remote carries the AGENT's commit — its own message and author, not a
         // canned harvest commit by a fake user.
@@ -1255,18 +1265,21 @@ mod workdir_helper_tests {
     }
 
     #[tokio::test]
-    async fn provision_repo_rejects_a_jail_escape() {
+    async fn repository_realizer_rejects_a_jail_escape() {
         let tmp = tempfile::tempdir().unwrap();
         let provider = LocalProvider::new(tmp.path());
         let sandbox = provider
             .create_sandbox(&workdir_spec("t-escape", false))
             .await
             .unwrap();
-        assert!(
-            sandbox
-                .provision_repo("../escape", "http://x", None, None)
-                .is_err()
-        );
+        let plan = pc::RepositoryRealizationPlan {
+            repository_id: "repo-escape".into(),
+            mount_path: "../escape".into(),
+            remote_url: "http://x".into(),
+            initial_branch: None,
+            access: pc::MountAccess::ReadOnly,
+        };
+        assert!(pc::RepositoryRealizer::realize_repository(&sandbox, &plan, None).is_err());
     }
 
     #[tokio::test]
