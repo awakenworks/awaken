@@ -17,6 +17,7 @@ mod lifecycle;
 mod mcp_binding;
 mod mcp_probe;
 mod resource;
+mod resource_activation;
 mod session;
 mod session_repo;
 pub mod work_queue;
@@ -35,6 +36,9 @@ pub use mcp_probe::{McpProbe, McpProbeStatus};
 pub use resource::{
     ResolvedInput, ResolvedInputSource, ResolvedSessionResources, ResolvedSkillBinding,
     SessionInputAttachment, SessionInputError, SessionInputResolver,
+};
+pub use resource_activation::{
+    ActivationState, ResourceActivationError, SessionResourceActivation, SessionResourceState,
 };
 pub use session::{
     AgentCapabilities, BuiltinTool, CustomTool, DelegatedRun, LiveInboxEntry, LiveInboxError,

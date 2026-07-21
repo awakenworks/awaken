@@ -10,10 +10,12 @@ use awaken_protocol_managed::{
     SessionRuntime, StepOutcome, ToolPermissionDecision, router,
 };
 use awaken_resource_contract::{
-    BindingId, ConfigVersion, ExtractionPolicy, FileId, InputBinding, InputResourceId,
-    MemoryStoreConfigVersion, MemoryStoreDefinition, MemoryStoreId, RecallPolicy, ResourceAccess,
-    ResourceCatalog, ResourceState, RetentionPolicy,
+    BindingId, ClonePolicy, ConfigVersion, ExtractionPolicy, FileId, InputBinding, InputResourceId,
+    MemoryStoreConfigVersion, MemoryStoreDefinition, MemoryStoreId, RecallPolicy,
+    RepositoryConfigVersion, RepositoryDefinition, RepositoryId, ResourceAccess, ResourceCatalog,
+    ResourceState, RetentionPolicy,
 };
+use awaken_session_contract::ManagedSessionRepository;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -70,6 +72,7 @@ struct AcceptingFake {
     prepared: std::sync::Arc<std::sync::Mutex<Vec<SessionInit>>>,
     applied:
         std::sync::Arc<std::sync::Mutex<Vec<awaken_session_contract::ResolvedSessionResources>>>,
+    fail_next_apply: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 struct AgentWithResources;
@@ -106,6 +109,26 @@ impl AgentConfigSource for AgentWithIntegrations {
             }],
             skill_ids: vec!["skill_release".into()],
             resources: Vec::new(),
+        })
+    }
+}
+
+struct AgentWithPlatformRepository;
+
+impl AgentConfigSource for AgentWithPlatformRepository {
+    fn agent_view(&self, agent_id: &str) -> Option<AgentConfigView> {
+        (agent_id == "repo-agent").then(|| AgentConfigView {
+            model: None,
+            system: None,
+            tool_ids: Vec::new(),
+            mcp_servers: Vec::new(),
+            skill_ids: Vec::new(),
+            resources: vec![input(
+                "platform-repository",
+                InputResourceId::Repository(RepositoryId::from("platform-repository")),
+                "/workspace/repository",
+                ResourceAccess::ReadWrite,
+            )],
         })
     }
 }
@@ -183,6 +206,12 @@ impl SessionRuntime for AcceptingFake {
         inputs: &awaken_session_contract::ResolvedSessionResources,
     ) -> Result<(), RunError> {
         self.applied.lock().unwrap().push(inputs.clone());
+        if self
+            .fail_next_apply
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(RunError::internal("injected activation failure"));
+        }
         Ok(())
     }
     async fn define_outcome(
@@ -466,6 +495,87 @@ async fn repository_token_is_sealed_before_the_effective_manifest() {
 }
 
 #[tokio::test]
+async fn terminal_session_retires_only_its_compatibility_repository_definition() {
+    let catalog = resource_catalog();
+    let repo = std::sync::Arc::new(awaken_session_store::InMemorySessionRepository::default());
+    let state = ManagedState::new(AcceptingFake::default())
+        .with_resource_catalog(catalog.clone())
+        .with_session_repo(repo.clone());
+    let request = serde_json::from_value(json!({
+        "agent": "a",
+        "resources": [{
+            "type": "github_repository",
+            "url": "https://github.com/awaken/example.git"
+        }]
+    }))
+    .unwrap();
+    let id = state.create_session(request, None).await.unwrap().id;
+    let persisted = repo.get(&id).await.unwrap();
+    let awaken_session_contract::ResolvedInputSource::Repository { repository_id, .. } =
+        &persisted.resources.active.inputs[0].source
+    else {
+        panic!("expected compatibility Repository")
+    };
+    assert_eq!(
+        catalog
+            .repository("default", repository_id.as_str())
+            .unwrap()
+            .state,
+        ResourceState::Active
+    );
+
+    state.archive_session(&id).await.unwrap();
+    assert_eq!(
+        catalog
+            .repository("default", repository_id.as_str())
+            .unwrap()
+            .state,
+        ResourceState::Deleted,
+        "Session cleanup tombstones only the generated compatibility definition"
+    );
+}
+
+#[tokio::test]
+async fn terminal_session_never_deletes_a_platform_repository_definition() {
+    let catalog = resource_catalog();
+    catalog
+        .create_repository(
+            RepositoryDefinition {
+                id: "platform-repository".into(),
+                workspace_id: "default".into(),
+                name: "Platform Repository".into(),
+                description: String::new(),
+                metadata: Default::default(),
+                state: ResourceState::Active,
+                current_config_version: ConfigVersion::INITIAL,
+            },
+            RepositoryConfigVersion {
+                repository_id: "platform-repository".into(),
+                version: ConfigVersion::INITIAL,
+                remote_url: "https://github.com/awaken/platform.git".into(),
+                credential_binding: None,
+                initial_branch: None,
+                clone_policy: ClonePolicy::default(),
+            },
+        )
+        .unwrap();
+    let state = ManagedState::new(AcceptingFake::default())
+        .with_resource_catalog(catalog.clone())
+        .with_config_source(std::sync::Arc::new(AgentWithPlatformRepository));
+    let request = serde_json::from_value(json!({ "agent": "repo-agent" })).unwrap();
+    let id = state.create_session(request, None).await.unwrap().id;
+    state.archive_session(&id).await.unwrap();
+
+    assert_eq!(
+        catalog
+            .repository("default", "platform-repository")
+            .unwrap()
+            .state,
+        ResourceState::Active
+    );
+}
+
+#[tokio::test]
 async fn duplicate_session_mount_paths_fail_closed_before_runtime() {
     let runtime = AcceptingFake::default();
     let prepared = runtime.prepared.clone();
@@ -508,6 +618,51 @@ async fn file_resource_attaches_to_a_live_session() {
     let (s, listed) = call(&app, "GET", &format!("/v1/sessions/{id}/resources"), None).await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(listed["data"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn failed_live_activation_rolls_back_before_reporting_failure() {
+    let runtime = AcceptingFake::default();
+    let fail_next = runtime.fail_next_apply.clone();
+    let applied = runtime.applied.clone();
+    let repo = std::sync::Arc::new(awaken_session_store::InMemorySessionRepository::default());
+    let state = ManagedState::new(runtime)
+        .with_session_repo(repo.clone())
+        .with_resource_catalog(resource_catalog());
+    let request = serde_json::from_value(json!({ "agent": "a" })).unwrap();
+    let id = state.create_session(request, None).await.unwrap().id;
+
+    fail_next.store(true, std::sync::atomic::Ordering::SeqCst);
+    let error = state
+        .create_resource(
+            &id,
+            json!({
+                "type": "file",
+                "file_id": "file-rollback",
+                "mount_path": "/rollback.txt"
+            }),
+        )
+        .await
+        .unwrap_err();
+    assert!(format!("{error:?}").contains("injected activation failure"));
+
+    {
+        let calls = applied.lock().unwrap();
+        assert_eq!(
+            calls.len(),
+            2,
+            "failed desired apply plus prior-manifest rollback"
+        );
+        assert_eq!(calls[0].inputs.len(), 1);
+        assert!(calls[1].inputs.is_empty());
+    }
+    let durable = repo.get(&id).await.unwrap();
+    assert!(durable.resources.active.inputs.is_empty());
+    assert!(durable.resources.pending.is_none());
+    assert_eq!(
+        durable.resources.activations[0].state,
+        awaken_session_contract::ActivationState::Failed
+    );
 }
 
 #[tokio::test]

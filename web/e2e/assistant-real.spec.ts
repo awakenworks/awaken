@@ -78,7 +78,7 @@ test("Admin Assistant authors an agent with tools + a memory-store binding (real
   const cfg = await (await request.get(`/v1/config/agents/${agentId}`)).json();
   expect(cfg.tools).toEqual(expect.arrayContaining(["read", "write"]));
   const res = await (await request.get(`/v1/config/agents/${agentId}/resources`)).json();
-  expect(res.resources?.[0]).toMatchObject({ kind: "memory_store", resource_id: ms });
+  expect(res.inputs?.[0]).toMatchObject({ target: { kind: "memory_store", id: ms } });
 });
 
 test("KIMI writes and recalls an Agent-bound memory store across fresh sessions", async ({ page, request }) => {

@@ -45,16 +45,8 @@ async fn list_files(
         Some(session)
             if host.registered_thread_workspace(&session).as_deref() == Some(&workspace) =>
         {
-            // The session's reverse channel: harvest any read-write memory mounts back
-            // into their stores (ADR-0038 MemoryStore write-back) before listing the
-            // output artifacts, so a poll here also persists the session's memory edits.
-            host.harvest_thread_memory(&session).await;
-            // Same reverse channel for github_repository: commit + push the agent's
-            // edits back to the remote (ADR-0038 write-back).
-            host.harvest_thread_repo(&session).await;
-            // Same reverse channel for skills a Hermes-style agent authored this run:
-            // persist them to the durable catalog so the next session delivers them.
-            host.harvest_thread_skills(&session).await;
+            // Read-only artifact projection. Repository publication and authored-Skill
+            // persistence belong to Session release/replacement, never to a GET poll.
             host.session_artifacts(&session)
                 .await
                 .into_iter()

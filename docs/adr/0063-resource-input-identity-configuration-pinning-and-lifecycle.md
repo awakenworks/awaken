@@ -30,13 +30,13 @@ one content lifecycle:
   entries;
 - a Repository is a stable, mutable reference to an external Git truth.
 
-The existing implementation has the correct beginnings but no single version
-rule or lifecycle owner. `ResourceBinding` and `SessionResource` are separate,
-stringly shapes. The Managed protocol and Runtime Host each merge Agent defaults
-with Session attachments. Access is lost while lowering to `SessionResource`.
-Memory is split between a one-blob copy/harvest path, path-addressed `MemoryFs`,
-and a separate version log. Repository input carries a raw URL, token, and branch
-instead of referencing a platform-managed Repository definition.
+Before this decision was implemented, `ResourceBinding` and `SessionResource`
+were separate stringly shapes, protocol and Runtime both merged inputs, and
+access could be lost during lowering. Agent defaults now persist the same typed
+`InputBinding` language as Session attachments, composition happens once in
+`SessionInputResolver`, and `ResolvedSessionResources` is the only durable
+runtime manifest. Legacy flat File/Memory/Repository JSON is accepted only by a
+read migration adapter; legacy Outputs/Skill input variants fail closed.
 
 Treating every resource as content-pinned would make mutable Memory and Git look
 replayable when they are not. Treating every resource as live would discard the
@@ -165,6 +165,13 @@ The Session application state records `SessionResourceActivation` as
 record, not a new product resource aggregate, and contains no secret or live
 handle.
 
+The implemented `SessionResourceState` keeps the applied manifest, an optional
+pending manifest, a sequential revision, and the per-binding activation records
+in one persisted Session value. Prepared/Releasing commits precede external IO;
+Active/Released commits follow it. Startup reconciliation reads the separately
+persisted trusted owner envelope and never imports a principal, role, API key,
+PDP decision, or policy document into this state machine.
+
 ### D6: Each resource reclaims according to its own invariant
 
 - File deletion revokes a Workspace grant first. Physical blob GC requires no
@@ -177,6 +184,13 @@ handle.
 - Repository Session release disposes the working tree and credential material;
   it may preserve a patch/Artifact or push receipt. Deleting the platform
   Repository definition never deletes the external remote repository.
+
+Repository activation crosses a neutral `RepositoryRealizer` port with a
+secret-free `RepositoryRealizationPlan`. The plan contains the resolved config
+version's URL, optional initial branch, mount path, identity, and access—never a
+Git commit/tree pin or authorization object. Credential bytes are a separate,
+ephemeral transport argument. Publication and authored-Skill persistence occur at
+binding replacement or Session release; a Files GET is never a hidden write edge.
 
 `Active -> Suspended -> Archived -> Deleted -> Purged` is the managed-resource
 lifecycle. `Suspended` is a reversible live deny; `Archived` rejects new

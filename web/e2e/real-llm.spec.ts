@@ -169,7 +169,7 @@ test("Agent reads a bound read-only file (real model)", async ({ request }) => {
     },
   });
   await request.put(`/v1/config/agents/${agent}/resources`, {
-    data: { agent_id: agent, version: 1, resources: [{ kind: "file", resource_id: file.id, mount_path: "/data/config.txt", access: "read_only" }] },
+    data: { agent_id: agent, revision: 1, inputs: [{ binding_id: "config", target: { kind: "file", id: file.id }, mount_path: "/data/config.txt", access: "read_only" }] },
   });
   await request.post(`/v1/config/agents/${agent}/publish`);
 
@@ -178,4 +178,3 @@ test("Agent reads a bound read-only file (real model)", async ({ request }) => {
   const answer = await runTurn(request, s.id, "Read the config file that is mounted for you and tell me the launch code. Answer with only the code.");
   expect(answer).toContain(secret);
 });
-

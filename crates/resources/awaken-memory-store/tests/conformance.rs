@@ -3,7 +3,7 @@
 //! compare-and-swap semantics as the in-process backends.
 
 use awaken_memory_store::memfs::MAX_PATH_BYTES;
-use awaken_memory_store::{FsMemoryFs, MAX_MEMORY_BYTES, MemErr, MemoryFs, sha256_hex};
+use awaken_memory_store::{FsMemoryFs, InMemoryFs, MAX_MEMORY_BYTES, MemErr, MemoryFs, sha256_hex};
 use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
@@ -312,6 +312,71 @@ where
     assert_eq!(conflicts, 7);
 }
 
+async fn conditional_delete_never_removes_a_changed_or_recreated_head(fs: &dyn MemoryFs) {
+    let first = fs.create("guarded", "/note.md", "v1").await.unwrap();
+    let changed = fs
+        .update("guarded", &first.id, "v2", &first.content_sha256)
+        .await
+        .unwrap();
+    assert!(matches!(
+        fs.delete_if_match("guarded", "/note.md", &first.id, &first.content_sha256)
+            .await,
+        Err(MemErr::Conflict { .. })
+    ));
+    assert_eq!(
+        fs.get_by_path("guarded", "/note.md")
+            .await
+            .unwrap()
+            .unwrap()
+            .content
+            .as_deref(),
+        Some("v2")
+    );
+    assert!(
+        fs.delete_if_match("guarded", "/note.md", &changed.id, &changed.content_sha256)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !fs.delete_if_match("guarded", "/note.md", &changed.id, &changed.content_sha256)
+            .await
+            .unwrap(),
+        "an already absent head is an idempotent no-op"
+    );
+
+    let recreated = fs.create("guarded", "/note.md", "v2").await.unwrap();
+    assert_ne!(recreated.id, changed.id);
+    assert!(matches!(
+        fs.delete_if_match("guarded", "/note.md", &changed.id, &changed.content_sha256)
+            .await,
+        Err(MemErr::Conflict { .. })
+    ));
+}
+
+#[tokio::test]
+async fn in_memory_conditional_delete_is_atomic() {
+    conditional_delete_never_removes_a_changed_or_recreated_head(&InMemoryFs::new()).await;
+}
+
+#[tokio::test]
+async fn fs_conditional_delete_is_atomic() {
+    let dir = tempfile::tempdir().unwrap();
+    conditional_delete_never_removes_a_changed_or_recreated_head(
+        &FsMemoryFs::open(dir.path()).unwrap(),
+    )
+    .await;
+}
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn sqlite_conditional_delete_is_atomic() {
+    use awaken_memory_store::SqliteMemoryFs;
+    conditional_delete_never_removes_a_changed_or_recreated_head(
+        &SqliteMemoryFs::open_in_memory().unwrap(),
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn fs_concurrent_create_has_exactly_one_winner() {
     let dir = tempfile::tempdir().unwrap();
@@ -396,6 +461,7 @@ mod postgres {
         memfs_conformance(&fs).await;
         memfs_extended(&fs).await;
         memfs_not_found(&fs).await;
+        conditional_delete_never_removes_a_changed_or_recreated_head(&fs).await;
     }
 
     /// `PgMemoryFs::create` reads existence with an unlocked `SELECT 1` and mints its

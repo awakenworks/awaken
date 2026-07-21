@@ -54,9 +54,10 @@ pub use poison::{
 pub use prepare::{EnvironmentPlan, PrepareError, prepare_environment};
 pub use sandbox::{
     BlobSource, ExitStatus, IsolationClass, IsolationPolicy, MemoryMount, MemoryMounter, OnUnmet,
-    PolicySelection, ProcessHandle, Sandbox, SandboxCapabilities, SandboxError, SandboxHandle,
-    SandboxProvider, SandboxStatus, SecretBroker, SelectionError, Signal,
-    capability_requirements_satisfied, select_provider, select_provider_with_policy,
+    PolicySelection, ProcessHandle, RepositoryRealizationPlan, RepositoryRealizer, Sandbox,
+    SandboxCapabilities, SandboxError, SandboxHandle, SandboxProvider, SandboxStatus, SecretBroker,
+    SelectionError, Signal, capability_requirements_satisfied, select_provider,
+    select_provider_with_policy,
 };
 pub use shape::{ExecutionShape, plan_shape};
 pub use spec::{Command, EnvironmentKind, RootfsSource, SandboxOverride, SandboxSpec, Stdio};

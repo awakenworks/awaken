@@ -256,7 +256,7 @@ impl SharedHost {
         });
         // Clone any staged github_repository resources into the fresh sandbox,
         // host-side (ADR-0038); fail-closed so a bad repo aborts session start.
-        self.provision_thread_repos(thread, &env)?;
+        self.realize_thread_repositories(thread, env.as_ref())?;
         let thread_id = ThreadId(thread.to_string());
         let commit = Arc::new(self.build_commit(thread).await?);
         // Durable interrupted-stream checkpoints follow the commit's durability
@@ -605,8 +605,9 @@ impl SharedHost {
     /// edges (`rebind_model`/`apply_session_inputs`)
     /// remove the cached context WITHOUT disposing, so the next turn's `ctx_for`
     /// rebuilds over the same `base/<thread>` workspace (ADR-0038 continuity); a
-    /// terminal end must instead reap it, so any in-sandbox memory/skill edits are
-    /// harvested by the caller BEFORE this runs.
+    /// terminal end must instead reap it. Repository publication and authored-Skill
+    /// persistence run at the caller's release boundary before this method; Memory
+    /// copy reconciliation is owned by `Sandbox::dispose` through its mount guard.
     pub(crate) async fn end_session(&self, thread: &str) -> Result<(), HostError> {
         let ctx = self.sessions.lock().await.remove(thread);
         let dispose_result = if let Some(ctx) = ctx {

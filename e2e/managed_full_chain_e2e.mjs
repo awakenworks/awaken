@@ -3,8 +3,8 @@
 // resource via the API, is offered a skill, and has out-of-band memory extraction —
 // then one natural-language turn drives the whole ADR-0038/0036 loop:
 //   configure (API) → apply (sandbox mounts) → NL turn → use a skill →
-//   write the memory store (harvested back) → commit+push the repo → produce an
-//   output artifact (harvested) → retrieve the artifact via GET /v1/files.
+//   write the memory store → commit the repo → produce an output artifact →
+//   retrieve the artifact via GET /v1/files → release once to reconcile/publish.
 // Plus: the extractor sub-run saves a cross-session memory after the turn.
 //
 // The model runs for real (GenaiExecutor → fake upstream reproducing the `fullChain`
@@ -54,7 +54,7 @@ const listEvents = async (c, sid) => {
 };
 
 // Release every gated (`ask`) tool call not yet approved — each `write` awaits for a
-// confirmation, so approving lets the run advance and the harvest fire.
+// confirmation, so approving lets the run advance to its terminal message.
 async function approveGated(c, sid, evs, approved) {
   for (const e of evs) {
     if (e.type === 'agent.tool_use' && e.evaluated_permission === 'ask' && !approved.has(e.id)) {
@@ -67,9 +67,9 @@ async function approveGated(c, sid, evs, approved) {
   }
 }
 
-// `GET /v1/files?scope_id=<session>` is the reverse channel: it harvests read-write
-// memory mounts + repo edits back and lists the output artifacts. Returns the file list.
-async function harvest(c, sid) {
+// Files GET is a read-only Artifact projection; reverse resource operations belong
+// to replacement/release.
+async function listArtifacts(c, sid) {
   try {
     return await c.get(`/v1/files?scope_id=${sid}`);
   } catch {
@@ -108,6 +108,7 @@ async function main() {
     const skillIds = (session.agent.skills ?? []).map((s) => s.skill_id ?? s);
     assert.ok(skillIds.includes('greet'), `the skill is offered: ${JSON.stringify(session.agent.skills)}`);
     assert.equal(session.resources.length, 2, 'both resources bound to the session');
+    const remoteHeadBefore = git(['rev-parse', 'main'], bare).trim();
     pass('one session binds memory_store + github_repository and is offered the skill');
 
     // 3) A single natural-language turn drives the whole chain.
@@ -116,7 +117,7 @@ async function main() {
       betas: BETAS,
     });
 
-    // Drive the await→approve→harvest loop until the turn ends and everything landed.
+    // Drive await→approve until the turn ends. Artifact GET remains read-only.
     const approved = new Set();
     let evs = [];
     let files = null;
@@ -125,15 +126,26 @@ async function main() {
       await sleep(400);
       evs = await listEvents(c, session.id);
       await approveGated(c, session.id, evs, approved);
-      files = await harvest(c, session.id);
+      files = await listArtifacts(c, session.id);
+      const done = evs.some((e) => e.type === 'agent.message' && (e.content ?? []).some((b) => (b.text ?? '').includes('done')));
+      if (done) break;
+    }
+
+    assert.equal(
+      git(['rev-parse', 'main'], bare).trim(),
+      remoteHeadBefore,
+      'Files GET does not advance the Repository remote',
+    );
+    await c.beta.sessions.delete(session.id, { betas: BETAS });
+    for (let i = 0; i < 20; i += 1) {
       try {
         const page = await c.get(`/v1/memory_stores/${mem.id}/memories`);
         memContent = (page?.data ?? []).map((memory) => memory.content ?? '').join('\n');
       } catch {
         memContent = '';
       }
-      const done = evs.some((e) => e.type === 'agent.message' && (e.content ?? []).some((b) => (b.text ?? '').includes('done')));
-      if (done && memContent.includes(MEMO_MARKER)) break;
+      if (memContent.includes(MEMO_MARKER)) break;
+      await sleep(200);
     }
 
     // 4) Skill was discovered + used.
@@ -144,19 +156,19 @@ async function main() {
 
     // 5) Memory store write-back landed.
     assert.ok(memContent.includes(MEMO_MARKER), `memory-store write-back landed: ${JSON.stringify(memContent)}`);
-    pass('memory_store write harvested back under its id (write-back)');
+    pass('Session release reconciled memory_store write under its id');
 
     // 6) Repo commit + push-back to the real bare remote.
     const pushed = git(['show', 'main:CHAIN.txt'], bare).trim();
     assert.equal(pushed, REPO_MARKER, 'the agent edit was committed + pushed to the remote');
-    pass('git repo edit committed + pushed back to the remote (write-back)');
+    pass('Session release published the Agent-authored Repository commit');
 
     // 7) Output artifact retrievable via the Files API.
     const artifacts = files?.data ?? files?.files ?? files ?? [];
     const arr = Array.isArray(artifacts) ? artifacts : artifacts.data ?? [];
     const artifact = arr.find((f) => (f.filename ?? f.path ?? f.logical_path ?? '').includes('result.txt'));
     assert.ok(artifact, `the output artifact is listed by /v1/files: ${JSON.stringify(arr)}`);
-    pass('output artifact harvested + retrievable via GET /v1/files (artifact retrieval)');
+    pass('output artifact projected + retrievable via GET /v1/files');
 
     // 8) Cross-session memory: the extractor sub-run saved a memory the store persisted.
     // Extraction is out-of-band (fires after the turn's terminal step, runs its own

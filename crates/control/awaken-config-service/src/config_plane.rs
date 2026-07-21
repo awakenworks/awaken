@@ -895,7 +895,7 @@ async fn publish(
 mod resource_prompt_tests {
     use super::*;
     use awaken_config_resolver::{
-        AgentResourceConfig, ResourceAccess, ResourceBinding, ResourceKind,
+        AgentInputConfig, BindingId, InputBinding, InputResourceId, MemoryStoreId, ResourceAccess,
     };
     use awaken_config_store::{ConfigStoreError, SqliteConfigStore};
     use awaken_runtime_contract::resolved::ContextPolicy;
@@ -1363,20 +1363,22 @@ mod resource_prompt_tests {
         // the Agent must not bake a stale pre-merge resource prompt into its snapshot.
         let resources =
             Arc::new(awaken_config_resolver::InMemoryAgentInputBindingRepository::new());
-        resources.put_agent_inputs(
-            DEFAULT_SCOPE,
-            AgentResourceConfig {
-                agent_id: "agent-1".into(),
-                resources: vec![ResourceBinding {
-                    kind: ResourceKind::MemoryStore,
-                    resource_id: "memstore-7".into(),
-                    mount_path: "/mnt/memory/prefs".into(),
-                    access: ResourceAccess::ReadWrite,
-                    instructions: Some("user preferences".into()),
-                }],
-                version: 1,
-            },
-        );
+        resources
+            .put_agent_inputs(
+                DEFAULT_SCOPE,
+                AgentInputConfig {
+                    agent_id: "agent-1".into(),
+                    inputs: vec![InputBinding {
+                        binding_id: BindingId::from("memory"),
+                        target: InputResourceId::MemoryStore(MemoryStoreId::from("memstore-7")),
+                        mount_path: "/mnt/memory/prefs".into(),
+                        access: ResourceAccess::ReadWrite,
+                        instructions: Some("user preferences".into()),
+                    }],
+                    revision: 1,
+                },
+            )
+            .unwrap();
 
         let scope = ScopeId::from(DEFAULT_SCOPE);
         let plane = plane_with(
@@ -1400,14 +1402,16 @@ mod resource_prompt_tests {
     async fn publish_pins_agent_model_and_catalog_but_not_session_resources() {
         let resources =
             Arc::new(awaken_config_resolver::InMemoryAgentInputBindingRepository::new());
-        resources.put_agent_inputs(
-            DEFAULT_SCOPE,
-            AgentResourceConfig {
-                agent_id: "pinned-inputs".into(),
-                resources: vec![],
-                version: 4,
-            },
-        );
+        resources
+            .put_agent_inputs(
+                DEFAULT_SCOPE,
+                AgentInputConfig {
+                    agent_id: "pinned-inputs".into(),
+                    inputs: vec![],
+                    revision: 1,
+                },
+            )
+            .unwrap();
         let tool = ToolDescriptor::pinned(
             "builtin",
             "search",

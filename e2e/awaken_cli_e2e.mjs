@@ -182,18 +182,14 @@ async function main() {
     // Resource bindings are resolved by the configuration plane exactly once.
     // A negative resource revision fails publication; replacing it with a valid
     // revision contributes the prompt and typed input pin to the snapshot.
-    const resources = (version) => ({
+    const resources = (revision) => ({
       agent_id: AGENT,
-      version,
-      resources: [{
-        kind: 'outputs', mount_path: '/workspace/outputs', access: 'read_write',
-        instructions: 'Keep final artifacts here.',
-      }],
+      revision,
+      inputs: [],
     });
     r = await req(base, 'PUT', `/v1/config/agents/${AGENT}/resources`, resources(-1));
-    assert.equal(r.status, 200, `negative resource revision staged: ${JSON.stringify(r.json)}`);
-    r = await req(base, 'POST', `/v1/config/agents/${AGENT}/publish`, undefined);
-    assert.equal(r.status, 409, `negative resource revision rejects publication: ${JSON.stringify(r.json)}`);
+    assert.equal(r.status, 422, `negative resource revision rejected at authoring: ${JSON.stringify(r.json)}`);
+    assert.equal(r.json.code, 'invalid_revision');
     r = await req(base, 'PUT', `/v1/config/agents/${AGENT}/resources`, resources(1));
     assert.equal(r.status, 200, `valid resource revision staged: ${JSON.stringify(r.json)}`);
     r = await req(base, 'POST', `/v1/config/agents/${AGENT}/publish`, undefined);

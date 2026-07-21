@@ -311,7 +311,7 @@ pub(crate) fn provision_repo_at(
     root: &IsolatedRoot,
     logical: &str,
     url: &str,
-    git_ref: Option<&str>,
+    initial_branch: Option<&str>,
     token: Option<&str>,
 ) -> Result<(), SandboxError> {
     let dest = jailed_at(root, logical)?;
@@ -319,9 +319,9 @@ pub(crate) fn provision_repo_at(
         std::fs::create_dir_all(parent).map_err(|e| SandboxError(e.to_string()))?;
     }
     let mut args = vec!["clone".to_string()];
-    if let Some(r) = git_ref {
+    if let Some(branch) = initial_branch {
         args.push("--branch".into());
-        args.push(r.to_string());
+        args.push(branch.to_string());
     }
     args.push(authed_url(url, token));
     args.push(dest.to_string_lossy().into_owned());

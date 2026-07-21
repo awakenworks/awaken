@@ -14,7 +14,7 @@ use std::sync::Arc;
 use awaken_agent_contract::RedactedString;
 use awaken_api_contract::{ApiError, PROBLEM_JSON_CONTENT_TYPE, REQUEST_ID_HEADER};
 use awaken_config_resolver::{
-    AgentInputBindingRepository, AgentMcpConfig, AgentResourceConfig, InferenceProfile,
+    AgentInputBindingRepository, AgentInputConfig, AgentMcpConfig, InferenceProfile,
     InferenceProfileStore, McpServerDef, McpServerId, McpStore, ResolveError, ResolvedInference,
     SourceLookup, cooldown_deadline, resolve_inference, resolve_mcp_servers, resolve_profile,
     resolve_profile_candidates,
@@ -50,7 +50,7 @@ pub struct AdminState {
     /// Authored [`McpServerDef`]s + per-agent [`AgentMcpConfig`] bindings
     /// (ADR-0043 Phase 3; the resolver materializes these at run bind time).
     pub mcp: Arc<dyn McpStore>,
-    /// Per-agent [`AgentResourceConfig`] bindings (ADR-0038): which resources an
+    /// Per-agent [`AgentInputConfig`] bindings (ADR-0038): which resources an
     /// agent mounts. Rendered into the agent's system prompt at compile (A3a) and
     /// realized into the sandbox at run bind time.
     pub resources: Arc<dyn AgentInputBindingRepository>,
@@ -156,7 +156,7 @@ pub fn admin_router(state: AdminState) -> Router {
         )
         .route(
             "/v1/config/agents/{agent_id}/resources",
-            put(put_agent_resource).get(get_agent_resource),
+            put(put_agent_inputs).get(get_agent_inputs),
         )
         .route(
             "/v1/config/agents/{agent_id}/mcp/resolve",
@@ -908,27 +908,31 @@ async fn get_agent_mcp(
 
 /// Bind which resources an agent mounts (ADR-0038). The path agent id is
 /// authoritative; the binding set is stored whole (upsert by agent id).
-async fn put_agent_resource(
+async fn put_agent_inputs(
     State(state): State<AdminState>,
     scope: Option<Extension<ResourceWorkspace>>,
     Path(agent_id): Path<String>,
-    Json(mut config): Json<AgentResourceConfig>,
-) -> Json<AgentResourceConfig> {
+    headers: HeaderMap,
+    Json(mut config): Json<AgentInputConfig>,
+) -> Result<Json<AgentInputConfig>, Problem> {
     config.agent_id = agent_id;
     let workspace = scope.map_or_else(
         || awaken_tenancy::DEFAULT_WORKSPACE_ID.to_string(),
         |Extension(scope)| scope.0,
     );
-    state.resources.put_agent_inputs(&workspace, config.clone());
-    Json(config)
+    state
+        .resources
+        .put_agent_inputs(&workspace, config.clone())
+        .map_err(|error| agent_input_write_problem(error, &req_id(&headers)))?;
+    Ok(Json(config))
 }
 
-async fn get_agent_resource(
+async fn get_agent_inputs(
     State(state): State<AdminState>,
     scope: Option<Extension<ResourceWorkspace>>,
     Path(agent_id): Path<String>,
     headers: HeaderMap,
-) -> Result<Json<AgentResourceConfig>, Problem> {
+) -> Result<Json<AgentInputConfig>, Problem> {
     let workspace = scope.map_or_else(
         || awaken_tenancy::DEFAULT_WORKSPACE_ID.to_string(),
         |Extension(scope)| scope.0,
@@ -937,17 +941,32 @@ async fn get_agent_resource(
         .resources
         .get_agent_inputs(&workspace, &agent_id)
         .map(Json)
-        .ok_or_else(|| agent_resource_missing(&agent_id, &req_id(&headers)))
+        .ok_or_else(|| agent_inputs_missing(&agent_id, &req_id(&headers)))
 }
 
-fn agent_resource_missing(agent_id: &str, rid: &str) -> Problem {
+fn agent_inputs_missing(agent_id: &str, rid: &str) -> Problem {
     Problem(ApiError::new(
         404,
         "not_found",
-        "Agent resource config not found",
-        format!("no resource config for agent `{agent_id}`"),
+        "Agent input config not found",
+        format!("no input config for agent `{agent_id}`"),
         rid,
     ))
+}
+
+fn agent_input_write_problem(
+    error: awaken_config_resolver::AgentInputRepositoryError,
+    rid: &str,
+) -> Problem {
+    use awaken_config_resolver::AgentInputRepositoryError as Error;
+    let (status, code, title) = match error {
+        Error::InvalidRevision(_) => (422, "invalid_revision", "Invalid Agent input revision"),
+        Error::RevisionConflict { .. } => {
+            (409, "revision_conflict", "Agent input revision conflict")
+        }
+        Error::Storage(_) => (500, "storage_error", "Agent input storage failed"),
+    };
+    Problem(ApiError::new(status, code, title, error.to_string(), rid))
 }
 
 /// Resolve an agent's MCP binding within a workspace's credential scope.

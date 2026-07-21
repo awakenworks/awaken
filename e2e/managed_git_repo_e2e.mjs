@@ -1,9 +1,9 @@
 // github_repository session resource end-to-end (ADR-0038).
 //
 // A repo mounted on a session is cloned into the sandbox HOST-SIDE (the token never
-// enters the jail), the agent reads and edits the working tree, and the host commits
-// + pushes the edits back to the remote on harvest. This proves the whole loop the
-// old stub skipped: clone → agent reads the cloned file → agent writes → host pushes
+// enters the jail), the agent reads, edits, and commits in the working tree, and the
+// Repository realizer publishes those commits at Session release. This proves:
+// clone → agent reads the cloned file → agent writes/commits → release publishes
 // back → a later session re-clones and sees the pushed change (durable in the remote,
 // across a real process restart).
 //
@@ -68,9 +68,8 @@ async function approveGated(sid, evs, approved) {
   }
 }
 
-// `GET /v1/files?scope_id` is the reverse-channel trigger: it also commits + pushes
-// the session's repo edits back to the remote.
-async function harvest(sid) {
+// Files GET is deliberately read-only; it must not publish Repository changes.
+async function listArtifacts(sid) {
   try {
     await client.get(`/v1/files?scope_id=${sid}`);
   } catch {
@@ -81,6 +80,8 @@ async function harvest(sid) {
 // Drive a session: read the cloned README (proving the clone), write NEW.txt (parks
 // for approval), then reply. Returns the joined text of all tool results.
 async function driveRepoSession(bare, checkout) {
+  const branch = checkout?.name ?? 'main';
+  const remoteHeadBefore = git(['rev-parse', branch], bare).trim();
   const repo = { type: 'github_repository', url: bare, mount_path: '/workspace/repo' };
   if (checkout) repo.checkout = checkout;
   const session = await client.beta.sessions.create({
@@ -101,7 +102,13 @@ async function driveRepoSession(bare, checkout) {
     await approveGated(session.id, evs, approved);
     if (evs.some((e) => e.type === 'agent.message')) break;
   }
-  await harvest(session.id);
+  await listArtifacts(session.id);
+  assert.equal(
+    git(['rev-parse', branch], bare).trim(),
+    remoteHeadBefore,
+    'Files GET does not advance the Repository remote',
+  );
+  await client.beta.sessions.delete(session.id, { betas: BETAS });
   const toolText = JSON.stringify(evs.filter((e) => e.type === 'agent.tool_result').map((e) => e.content));
   return { id: session.id, toolText };
 }
@@ -113,7 +120,7 @@ async function main() {
   const servers = [];
   const upstream = await startUpstream('gitRepo');
   try {
-    // ---- server A: clone → agent reads seed → agent writes → host pushes back ----
+    // ---- server A: clone → agent reads/writes/commits → release publishes ----
     const a = spawnServer('git-repo', PORT, realServerEnv('gitRepo', upstream, { mode: 'git-repo' }));
     servers.push(a.server);
     await waitForPort(PORT);
@@ -131,10 +138,10 @@ async function main() {
     assert.ok(!sf.toolText.includes(README), 'the feature checkout did not clone the default branch');
     pass('checkout:{type:"branch"} mounts the requested ref');
 
-    // The host committed + pushed the agent's NEW.txt back to the bare remote.
+    // The release boundary published the agent's own NEW.txt commit.
     const pushed = git(['show', `main:NEW.txt`], bare).trim();
     assert.equal(pushed, MARKER, 'host pushed the agent edit back to the remote');
-    pass('host committed + pushed the agent edit back to the remote (write-back)');
+    pass('Session release published the Agent-authored commit; Files GET stayed read-only');
 
     // ---- restart: a fresh process re-clones the remote and sees the pushed change ----
     await stopServer(a.server);

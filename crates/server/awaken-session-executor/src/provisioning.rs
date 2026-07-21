@@ -37,33 +37,19 @@ pub(crate) fn agent_run_sandbox_spec(thread: &str) -> pc::SandboxSpec {
 pub(crate) struct StagedResources {
     pub mounts: Vec<pc::MountRequirement>,
     pub prompts: Vec<String>,
-    /// Each read-write memory mount together with the path versions observed while
-    /// staging. `harvest_thread_memory` uses those versions as CAS bases. Empty for
-    /// file/repository mounts.
-    pub memory_mounts: Vec<MemoryMount>,
-    /// github_repository resources (ADR-0038). Provisioned by a host-side `git clone`
-    /// after the environment is created (not a byte mount) and pushed back on harvest.
-    pub repos: Vec<RepoStage>,
+    /// Mutable Repository inputs, realized after the environment is created (not a
+    /// byte mount). The plan is secret-free; its transport credential is transient.
+    pub repositories: Vec<RepositoryActivation>,
 }
 
-#[derive(Clone, Debug)]
-pub(crate) struct MemoryMount {
-    pub store_id: String,
-    pub logical: String,
-    /// Path → content SHA observed while staging. Harvest uses these as CAS bases.
-    pub versions: std::collections::BTreeMap<String, String>,
-}
-
-/// A staged github_repository: cloned host-side into the jailed `logical` path and
-/// pushed back on harvest. `credential` is materialized at the runtime injection
-/// seam, used only on host transports, and never enters the sandbox jail.
+/// Runtime-only activation material for one already-resolved Repository config.
+/// The plan is the neutral environment port; the credential is materialized at the
+/// injection seam, used only for a transport operation, and never persisted in the
+/// plan, origin URL, Session manifest, or sandbox.
 #[derive(Clone)]
-pub(crate) struct RepoStage {
-    pub logical: String,
-    pub url: String,
-    pub git_ref: Option<String>,
+pub(crate) struct RepositoryActivation {
+    pub plan: pc::RepositoryRealizationPlan,
     pub credential: Option<awaken_agent_contract::RedactedString>,
-    pub access: pc::MountAccess,
 }
 
 impl SharedHost {
@@ -133,20 +119,22 @@ impl SharedHost {
         servers.extend(repository_mcp);
     }
 
-    /// The github_repository stages queued for `thread` (test-only observability: a
-    /// repo is cloned host-side, not a byte mount, so it is absent from `sandbox_spec`).
+    /// The Repository activations queued for `thread` (test-only observability: a
+    /// working tree is realized through its port, not as a byte mount, so it is absent
+    /// from `sandbox_spec`).
     #[cfg(test)]
-    pub(crate) fn thread_repos(&self, thread: &str) -> Vec<RepoStage> {
+    pub(crate) fn thread_repository_activations(&self, thread: &str) -> Vec<RepositoryActivation> {
         self.thread_resources
             .lock()
             .unwrap()
             .get(thread)
-            .map(|s| s.repos.clone())
+            .map(|s| s.repositories.clone())
             .unwrap_or_default()
     }
 
     /// The MCP servers staged for `thread` (test-only observability, mirrors
-    /// [`Self::thread_repos`]): the set `register_thread_mcp` recorded, including any
+    /// [`Self::thread_repository_activations`]): the set `register_thread_mcp`
+    /// recorded, including any
     /// `github:<logical>` server bridged from a github_repository resource.
     #[cfg(test)]
     pub(crate) fn thread_mcp(&self, thread: &str) -> Vec<crate::host::PreparedMcpServer> {
@@ -155,18 +143,6 @@ impl SharedHost {
             .unwrap()
             .get(thread)
             .cloned()
-            .unwrap_or_default()
-    }
-
-    /// The memory mounts staged for `thread` (test-only observability, mirrors
-    /// [`Self::thread_repos`]).
-    #[cfg(test)]
-    pub(crate) fn thread_memory_mounts(&self, thread: &str) -> Vec<MemoryMount> {
-        self.thread_resources
-            .lock()
-            .unwrap()
-            .get(thread)
-            .map(|s| s.memory_mounts.clone())
             .unwrap_or_default()
     }
 
@@ -201,118 +177,57 @@ impl SharedHost {
         self.resource_ownership.has_any_owner("file", id)
     }
 
-    /// Harvest a thread's read-write MemoryStore directory back through the same
-    /// path-addressed CAS store used by recall, extraction, and the Memory API.
-    pub async fn harvest_thread_memory(&self, thread: &str) {
-        let (env, mounts) = {
-            let sessions = self.sessions.lock().await;
-            let env = sessions.get(thread).map(|ctx| ctx.env.clone());
-            let mounts = self
-                .thread_resources
-                .lock()
-                .unwrap()
-                .get(thread)
-                .map(|s| s.memory_mounts.clone())
-                .unwrap_or_default();
-            (env, mounts)
-        };
-        let Some(env) = env else {
-            return;
-        };
-        if mounts.is_empty() {
-            return;
-        }
-        let realized = env.list_files(".mnt");
-        for mount in mounts {
-            let prefix = format!("{}/", mount.logical.trim_end_matches('/'));
-            for (realized_path, bytes) in realized
-                .iter()
-                .filter(|(path, _)| path.starts_with(&prefix))
-            {
-                let Ok(content) = std::str::from_utf8(bytes) else {
-                    continue;
-                };
-                let path = format!("/{}", realized_path[prefix.len()..].trim_start_matches('/'));
-                let current = self
-                    .memory_stores
-                    .fs()
-                    .get_by_path(&mount.store_id, &path)
-                    .await
-                    .unwrap_or(None);
-                match (current, mount.versions.get(&path)) {
-                    (Some(current), Some(base_sha)) => {
-                        let _ = self
-                            .memory_stores
-                            .fs()
-                            .update(&mount.store_id, &current.id, content, base_sha)
-                            .await;
-                    }
-                    (None, None) => {
-                        let _ = self
-                            .memory_stores
-                            .fs()
-                            .create(&mount.store_id, &path, content)
-                            .await;
-                    }
-                    // Created/changed concurrently after staging: fail closed by
-                    // preserving current truth rather than clobbering it.
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    /// Clone a thread's staged github_repository resources into its freshly-created
-    /// environment (ADR-0038). Runs after `provider.create`, host-side, so the token
-    /// authenticates the clone transport without ever entering the jail. Fail-closed:
-    /// a clone error surfaces so the session doesn't run believing a repo mounted.
-    pub(crate) fn provision_thread_repos(
+    /// Realize a thread's resolved Repository inputs into its freshly-created
+    /// environment. The narrow port receives only a secret-free plan and an ephemeral
+    /// transport credential after authorization/config resolution. A failure aborts
+    /// activation so the Session cannot run believing a working tree exists.
+    pub(crate) fn realize_thread_repositories(
         &self,
         thread: &str,
-        sandbox: &awaken_sandbox_local::LocalSandbox,
+        realizer: &dyn pc::RepositoryRealizer,
     ) -> Result<(), crate::host::HostError> {
-        let repos = self
+        let repositories = self
             .thread_resources
             .lock()
             .unwrap()
             .get(thread)
-            .map(|s| s.repos.clone())
+            .map(|s| s.repositories.clone())
             .unwrap_or_default();
-        for repo in repos {
-            sandbox
-                .provision_repo(
-                    &repo.logical,
-                    &repo.url,
-                    repo.git_ref.as_deref(),
-                    repo.credential.as_ref().map(|value| value.expose_secret()),
+        for repository in repositories {
+            realizer
+                .realize_repository(
+                    &repository.plan,
+                    repository
+                        .credential
+                        .as_ref()
+                        .map(|value| value.expose_secret()),
                 )
                 .map_err(|e| crate::host::HostError::internal(e.to_string()))?;
         }
         Ok(())
     }
 
-    /// Push a thread's github_repository commits back to their remotes (ADR-0038
-    /// write-back, symmetric to `harvest_thread_memory`): host-side `push` with the held
-    /// token. The AGENT authors the commits (its own message + identity) in the jail; the
-    /// host only pushes them (it alone holds the token) — it never fabricates a commit.
+    /// Publish a thread's Agent-authored commits through the Repository realizer.
+    /// The host never fabricates a commit or resolves another config; it only applies
+    /// the already-selected activation and its ephemeral transport credential.
     ///
     /// A repo whose remote ops the agent owns through an injected GitHub MCP server (the
     /// Managed Agents model — branch/commit/push/PR via MCP tools) is SKIPPED here: pushing
     /// host-side too would double-write or conflict with the agent's own pushes. Host-push
     /// remains only the fallback for a repo with no GitHub MCP (e.g. a non-MCP CLI). A no-op
     /// for a thread with no repos, no live env, or nothing the agent committed. Best-effort.
-    pub async fn harvest_thread_repo(&self, thread: &str) {
-        let (env, repos) = {
+    pub async fn publish_thread_repositories(&self, thread: &str) {
+        let (env, repositories) = {
             let sessions = self.sessions.lock().await;
             let env = sessions.get(thread).map(|ctx| ctx.env.clone());
-            let repos = self
+            let repositories = self
                 .thread_resources
                 .lock()
                 .unwrap()
                 .get(thread)
-                .map(|s| s.repos.clone())
+                .map(|s| s.repositories.clone())
                 .unwrap_or_default();
-            (env, repos)
+            (env, repositories)
         };
         let Some(env) = env else {
             return;
@@ -327,22 +242,26 @@ impl SharedHost {
             .flatten()
             .filter_map(|s| s.name.strip_prefix("github:").map(String::from))
             .collect();
-        for repo in repos {
-            if repo.access == pc::MountAccess::ReadOnly {
+        for repository in repositories {
+            if repository.plan.access == pc::MountAccess::ReadOnly {
                 continue;
             }
-            if mcp_owned.contains(&repo.logical) {
+            if mcp_owned.contains(&repository.plan.mount_path) {
                 continue;
             }
-            let _ = env.push_repo(
-                &repo.logical,
-                repo.credential.as_ref().map(|value| value.expose_secret()),
+            let _ = pc::RepositoryRealizer::publish_repository(
+                env.as_ref(),
+                &repository.plan,
+                repository
+                    .credential
+                    .as_ref()
+                    .map(|value| value.expose_secret()),
             );
         }
     }
 
     /// Harvest a thread's run-authored skills into the durable catalog (ADR-0036 D6/D8,
-    /// symmetric to `harvest_thread_memory`): scan the workspace skill dir for skills the
+    /// scan the workspace skill dir for skills the
     /// agent authored this run — the self-authoring loop a Hermes-style agent runs — and
     /// persist each under its id, so a skill written in this session is delivered to the
     /// next one that opens against the same catalog. A no-op for a thread with no live
@@ -380,9 +299,10 @@ impl SharedHost {
 
     /// Collect a session's output artifacts (ADR-0038): the files the agent wrote
     /// under the environment's `outputs/` dir, each stored into the blob store and
-    /// returned as `(content_id, logical_path)`. This is the sandbox→host reverse
-    /// channel behind `GET /v1/files?scope_id=<session>`; empty when the session has
-    /// no environment or wrote nothing.
+    /// returned as `(content_id, logical_path)`. This is a read-only projection
+    /// behind `GET /v1/files?scope_id=<session>`; Repository/Skill reverse operations
+    /// belong to release/replacement. Empty when the Session has no environment or
+    /// wrote nothing.
     pub async fn session_artifacts(&self, thread: &str) -> Vec<(String, String)> {
         let env = {
             let sessions = self.sessions.lock().await;
@@ -425,7 +345,7 @@ impl SharedHost {
 }
 
 /// Gap-1 coverage: the resource-staging registry (`register`/`merge`/`remove`),
-/// `sandbox_spec` projection, the `provision_thread_repos` fail-closed contract,
+/// `sandbox_spec` projection, the `realize_thread_repositories` fail-closed contract,
 /// and the reverse-channel no-ops when a thread has no live environment. These
 /// exercise the host-plane provisioning bookkeeping directly; the wired
 /// memory/repo write-back happy paths run in `host::tests` through a real session.
@@ -481,13 +401,16 @@ mod provisioning_registry_tests {
         }
     }
 
-    fn repo_stage(logical: &str) -> RepoStage {
-        RepoStage {
-            logical: logical.to_string(),
-            url: "https://example.invalid/x.git".to_string(),
-            git_ref: None,
+    fn repository_activation(logical: &str) -> RepositoryActivation {
+        RepositoryActivation {
+            plan: pc::RepositoryRealizationPlan {
+                repository_id: format!("id-{logical}"),
+                mount_path: logical.to_string(),
+                remote_url: "https://example.invalid/x.git".to_string(),
+                initial_branch: None,
+                access: pc::MountAccess::ReadWrite,
+            },
             credential: None,
-            access: pc::MountAccess::ReadWrite,
         }
     }
 
@@ -499,12 +422,7 @@ mod provisioning_registry_tests {
             StagedResources {
                 mounts: vec![resource_mount("a.md"), resource_mount("b.md")],
                 prompts: vec!["first".into()],
-                memory_mounts: vec![MemoryMount {
-                    store_id: "s1".into(),
-                    logical: "mem-a".into(),
-                    versions: Default::default(),
-                }],
-                repos: vec![repo_stage("repo-a")],
+                repositories: vec![repository_activation("repo-a")],
             },
         );
         // A second register REPLACES (correct at create time, before any first turn).
@@ -513,8 +431,7 @@ mod provisioning_registry_tests {
             StagedResources {
                 mounts: vec![resource_mount("c.md")],
                 prompts: vec!["second".into()],
-                memory_mounts: Vec::new(),
-                repos: Vec::new(),
+                repositories: Vec::new(),
             },
         );
 
@@ -523,8 +440,10 @@ mod provisioning_registry_tests {
             host.thread_resource_prompts("t"),
             vec!["second".to_string()]
         );
-        assert!(host.thread_repos("t").is_empty(), "old repo dropped");
-        assert!(host.thread_memory_mounts("t").is_empty());
+        assert!(
+            host.thread_repository_activations("t").is_empty(),
+            "old repository activation dropped"
+        );
     }
 
     #[test]
@@ -550,7 +469,7 @@ mod provisioning_registry_tests {
     }
 
     #[tokio::test]
-    async fn provision_thread_repos_fails_closed_on_an_unsafe_repo_path() {
+    async fn realize_thread_repositories_fails_closed_on_an_unsafe_path() {
         // A jail-escaping logical path is rejected by `LocalSandbox::provision_repo`
         // BEFORE any git runs (deterministic, no git binary needed). The fail-closed
         // contract: that SandboxError surfaces as a HostError so a session never
@@ -564,17 +483,20 @@ mod provisioning_registry_tests {
         host.register_thread_resources(
             "t",
             StagedResources {
-                repos: vec![RepoStage {
-                    logical: "../escape".into(),
-                    url: "https://example.invalid/x.git".into(),
-                    git_ref: None,
+                repositories: vec![RepositoryActivation {
+                    plan: pc::RepositoryRealizationPlan {
+                        repository_id: "repo-escape".into(),
+                        mount_path: "../escape".into(),
+                        remote_url: "https://example.invalid/x.git".into(),
+                        initial_branch: None,
+                        access: pc::MountAccess::ReadWrite,
+                    },
                     credential: None,
-                    access: pc::MountAccess::ReadWrite,
                 }],
                 ..Default::default()
             },
         );
-        let err = host.provision_thread_repos("t", &env);
+        let err = host.realize_thread_repositories("t", &env);
         assert!(
             err.is_err(),
             "an unsafe repo mount must abort session start"
@@ -584,22 +506,17 @@ mod provisioning_registry_tests {
     #[tokio::test]
     async fn reverse_channels_are_safe_noops_without_a_live_session() {
         let host = host();
-        // Stage a memory mount + a repo, but never create a session for the thread:
-        // harvest/artifacts must early-return (no live env), not panic.
+        // Stage a repo, but never create a session for the thread: reverse channels
+        // must early-return (no live env), not panic. Memory write-through is owned
+        // by the MemoryMount guard and therefore has no Host-side reverse channel.
         host.register_thread_resources(
             "t",
             StagedResources {
-                memory_mounts: vec![MemoryMount {
-                    store_id: "s1".into(),
-                    logical: "mem.md".into(),
-                    versions: Default::default(),
-                }],
-                repos: vec![repo_stage("r")],
+                repositories: vec![repository_activation("r")],
                 ..Default::default()
             },
         );
-        host.harvest_thread_memory("t").await; // no env → no store write
-        host.harvest_thread_repo("t").await; // no env → no push
+        host.publish_thread_repositories("t").await; // no env → no publish
         host.harvest_thread_skills("t").await; // no env / no store → no persist
         assert!(host.session_artifacts("t").await.is_empty());
         assert!(host.session_artifacts("never-seen").await.is_empty());

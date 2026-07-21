@@ -198,11 +198,16 @@ Agent/Skill configuration into an older Session.
 
 ```rust
 struct SessionResourceActivation {
+    activation_id: ActivationId,
     session_id: SessionId,
+    revision: u64,
     binding_id: BindingId,
     resource_id: InputResourceId,
+    access: ResourceAccess,
     state: ActivationState,
+    attempts: u32,
     lease_expires_at: Option<Timestamp>,
+    last_error: Option<String>,
 }
 
 enum ActivationState {
@@ -212,10 +217,21 @@ enum ActivationState {
     Released,
     Failed,
 }
+
+struct SessionResourceState {
+    revision: u64,
+    active: ResolvedSessionResources,
+    pending: Option<ResolvedSessionResources>,
+    activations: Vec<SessionResourceActivation>,
+}
 ```
 
 An activation record is Session application state used by crash recovery and
-reclamation. It stores neither a secret nor a process-local handle.
+reclamation. `pending` and its Prepared records are committed before Host or
+worker IO; `active` changes only after realization commits. A failed synchronous
+replacement first re-applies `active`; if rollback also fails, the pending state
+remains discoverable by the reclaimer. The record stores neither a secret nor a
+process-local handle.
 
 ## Resource Input Component Catalog
 
@@ -227,15 +243,15 @@ reclamation. It stores neither a secret nor a process-local handle.
 | `SessionInputResolver` | Existing | Session control plane | merge once, replace explicitly, validate mount paths, select current config versions, create `ResolvedSessionResources` and prompts | secret material, runtime loop, physical mounts |
 | front-door PEP | Existing/evolving | Server edge | authenticate, construct trusted Workspace target, call PDP, enforce obligations | resource content and domain policy implementation |
 | authorization PDP/PIP | External/shared authorization domain | IAM | decide principal/action/scope/resource facts under active policy | mounts, resource configuration, storage |
-| `SessionResourceCoordinator` | Target evolution of Host preparation | Session application/host | activation state, ordered provision/release, recovery handoff | Agent config loading, IAM policy language |
+| `SessionResourceCoordinator` | Existing in Managed Session application service | Session application/host | activation state, ordered provision/release, recovery handoff | Agent config loading, IAM policy language |
 | `FileStore` | Existing | File data plane | immutable content-addressed bytes | Workspace authorization; mutable overwrite |
 | `MemoryRepository` | Existing behavior behind `MemoryFs`; naming evolution remains | Memory data plane | scoped entries, CAS, atomic history, redaction, retention hooks | Agent/Session binding and IAM policy |
 | `MemoryRuntime` | Existing | Runtime Host | store-less recall selector/extractor capability and background-run drain | resource identity, default store, IAM policy |
 | `BoundMemory` | Existing | Session Runtime | one resolved store handle + pinned policy + maximum access shared by recall/extraction | workspace lookup, current-config resolution, authorization |
-| `RepositoryRealizer` | Target evolution of repo staging | Environment/host adapter | clone current remote config, construct working tree, mediate Git credentials | remote repository ownership or commit pinning |
+| `RepositoryRealizer` | Existing neutral port | Environment adapter | clone current remote config, construct working tree, publish Agent-authored commits with ephemeral transport credentials | remote repository ownership, authorization policy, or commit pinning |
 | `CredentialResolver`/Vault | Existing | Credential product domain | turn a credential binding into a short-lived lease and rotate/revoke it | Agent prompt, persisted Session secret material |
 | `SandboxProvider` | Existing | Environment provisioning | realize validated mounts/working trees and dispose them | product resource authoring and policy |
-| `ResourceReclaimer` | Target | Product/session operations | reconcile crashed activations, retention, reference checks, per-kind purge receipts | authorization decisions, remote Git deletion |
+| `ResourceReclaimer` | Existing for Session activation recovery; per-resource purge remains | Product/session operations | reconcile crashed activations, retention, reference checks, per-kind purge receipts | authorization decisions, remote Git deletion |
 
 The catalog names roles rather than forcing them into one crate. Local mode may
 compose several roles in one process; cloud mode may deploy them separately.
@@ -603,53 +619,54 @@ internal config version remains an awaken governance detail.
 - the unified Workspace-scoped Skill aggregate repository and version-pinned
   Session Skill bindings.
 
-### Rename or merge
+### Completed consolidation
 
-- rename `AgentResourceConfig.version` to `revision`;
-- migrate `AgentResourceConfig` behind the now Workspace-mandatory
-  `AgentInputBindingRepository` to the canonical typed binding language;
-- replace `ResourceBinding.kind + resource_id` and string `SessionResource` with
-  the typed common binding language;
-- merge protocol-side and Host-side resource composition into
-  `SessionInputResolver`;
-- preserve `ResourceAccess` through the neutral Session contract and realizer;
-- generate prompts from `ResolvedSessionResources` once;
+- `AgentInputConfig { agent_id, inputs, revision }` replaces
+  `AgentResourceConfig { resources, version }`;
+- `AgentInputBindingRepository` requires Workspace on every operation and applies
+  sequential, idempotent revision transitions;
+- Agent defaults and Session attachments share typed `InputBinding` /
+  `InputResourceId`; Outputs and Skills are no longer input variants;
+- `SessionInputResolver` composes and resolves once, preserves access, and emits
+  the sole durable `ResolvedSessionResources` manifest;
+- prompts are generated only from the resolved Session manifest;
+- the former Runtime-side Agent repository read/lowering and duplicate
+  `EffectiveSessionInputs` name are removed.
+- Memory realization has one lifetime owner: `MemoryMount`; the Host-side
+  `StagedResources.memory_mounts`, polling harvest, and `harvest_thread_memory`
+  duplicate writer are removed;
+- copy fallback retains only transient `(path, id, sha)` heads captured at
+  materialization and reconciles with CAS update plus atomic `delete_if_match`;
+  concurrent durable heads are preserved and reported.
+- `RepoStage` and LocalSandbox-specific orchestration are replaced by
+  `RepositoryActivation { plan, credential }` plus the neutral, secret-free
+  `RepositoryRealizationPlan` / `RepositoryRealizer` environment port;
+- Repository publication and authored-Skill persistence run only at binding
+  replacement or Session release; `GET /v1/files` is a read-only artifact
+  projection and no longer triggers unrelated resource writes.
+
+### Remaining rename or merge
+
 - rename the now-unified `MemoryFs` aggregate port to `MemoryRepository` when the
-  remaining extraction call sites have migrated;
-- evolve repo staging into a `RepositoryRealizer` consuming a platform-managed
-  Repository config version and credential binding.
+  remaining extraction call sites have migrated.
 
-### Delete after migration
+### Remaining deletion
 
 - `MemoryBlobStore` and all blob backends;
 - legacy single-file Memory materialization and Host-global extraction directory;
-- `with_memory(mem_dir)` and `memory_scope_root` (removed); the path-addressed
-  copy fallback may retain `harvest_thread_memory` only as a CAS realizer over the
-  same aggregate repository;
-- `StagedResources.memory_mounts` and last-writer-wins Memory write-back;
+- `with_memory(mem_dir)`, `memory_scope_root`, `StagedResources.memory_mounts`,
+  polling-route harvest, and Host `harvest_thread_memory` (removed);
 - API-local independent `VersionRepository` (removed; legacy rows are imported
   once into the aggregate repository without continued dual reads/writes);
-- Runtime's second read of the Agent resource store and
-  `binding_as_session_resource` lowering;
-- raw repository URL as `ResourceBinding.resource_id`;
+- raw repository URL support outside the legacy/protocol ingress adapter;
 - raw `auth_token` and string `git_ref` in the neutral Runtime resource shape;
 - commit/tree/content pin types for Repository;
 - File version abstractions above immutable `FileId`;
-- `Outputs` and `Skill` variants from the File/Memory/Repository input union.
 - API-local `SkillRegistry`, text-only `SkillStore` overwrite semantics, lossy
   `String::from_utf8_lossy` bundle ingestion, and runtime lookup of `latest`.
 
-### Add
+### Remaining additions
 
-- typed ids and `InputResourceId`;
-- `ResolvedSessionResources` and activation records;
-- version repositories for Memory/Repository config;
-- `SessionInputResolver`, `SessionResourceCoordinator`, and
-  `ResourceReclaimer` roles;
-- `ScopedMemoryStore` capabilities;
-- binary-safe File realization;
-- `SkillDefinition` / immutable `SkillVersion` / binary-safe `SkillBundleFile`,
-  exact Session pins, hash verification, and safe `.skills` materialization;
 - resource-specific purge receipts and recovery tests.
 
 ## Failure Semantics
