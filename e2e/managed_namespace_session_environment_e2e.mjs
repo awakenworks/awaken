@@ -54,6 +54,8 @@ const read = (path) => { try { return fs.readFileSync(path, 'utf8'); } catch { r
 const readAny = (...paths) => paths.map(read).find((value) => value !== 'ABSENT') ?? 'ABSENT';
 const writable = (path) => { try { fs.accessSync(path, fs.constants.W_OK); return true; } catch { return false; } };
 process.stdin.once('data', () => {
+  fs.mkdirSync('outputs', { recursive: true });
+  fs.writeFileSync('outputs/result.txt', 'NAMESPACE-ARTIFACT-OK');
   const observations = [
     ['skill', read('.skills/delivered-namespace/SKILL.md')],
     ['memory', read('.mnt/notes/seed.txt')],
@@ -212,6 +214,18 @@ async function main() {
       }),
       (error) => error.status === 400,
       'a live Session cannot detach its create-time memory authority',
+    );
+
+    const artifacts = await client.get(`/v1/files?scope_id=${session.id}`);
+    const artifact = artifacts.data.find((entry) => entry.filename === 'result.txt');
+    assert.ok(artifact, `${TIER} output must project through the Files API`);
+    const artifactContent = await client.beta.files.download(artifact.id, { betas: BETAS });
+    assert.equal(await artifactContent.text(), 'NAMESPACE-ARTIFACT-OK');
+
+    await client.beta.sessions.delete(session.id, { betas: BETAS });
+    assert.ok(
+      !fs.existsSync(`${TMP}/sandboxes/${session.id}`),
+      `${TIER} terminal Session deletion disposes its retained environment`,
     );
 
     console.log(`E2E PASS: ${TIER} Session retained one sandbox across Skill/memory materialization and live file/repository attach, rename and detach.`);
