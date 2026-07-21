@@ -927,28 +927,25 @@ async fn management_router_over(
     // shared catalog + advertised tools; the validator runs the publish-time compile
     // check on drafts in the tenant scope; Runtime history records every call and
     // mutating tools additionally enter the durable config-change path.
-    let capability_reader = Arc::new(
-        awaken_control::CatalogCapabilityReader::new(
-            // The LIVE catalog repo — models/providers an operator adds after startup
-            // are visible on the next capabilities call (not a frozen seed snapshot).
-            catalog.clone(),
-            &global,
-            // The installable plugins (state_machine / memory / compact) so the assistant
-            // knows it CAN author a state machine etc. — not an empty list (it would
-            // otherwise refuse, thinking no plugins exist).
-            &awaken_runtime_host::authorable_config_sections(),
-            // The LIVE authored MCP servers.
-            mcp_store.clone(),
-            // The config plane, to list existing agent ids in the tenant scope.
-            plane.clone(),
-            platform_workspace.clone(),
-            // LIVE data-plane inventory: memory-store ids (durable registry) + skill ids
-            // (shared skill store). Both handles are assembled by this composition root
-            // before the host, so the assistant enumerates real memory stores + skills.
-            Some(resource_inventory),
-        )
-        .with_scope(platform_workspace.clone()),
-    );
+    let capability_reader = Arc::new(awaken_control::CatalogCapabilityReader::new(
+        // The LIVE catalog repo — models/providers an operator adds after startup
+        // are visible on the next capabilities call (not a frozen seed snapshot).
+        catalog.clone(),
+        &global,
+        // The installable plugins (state_machine / memory / compact) so the assistant
+        // knows it CAN author a state machine etc. — not an empty list (it would
+        // otherwise refuse, thinking no plugins exist).
+        &awaken_runtime_host::authorable_config_sections(),
+        // The LIVE authored MCP servers.
+        mcp_store.clone(),
+        // The config plane, to list existing agent ids in the tenant scope.
+        plane.clone(),
+        platform_workspace.clone(),
+        // LIVE data-plane inventory: memory-store ids (durable registry) + skill ids
+        // (shared skill store). Both handles are assembled by this composition root
+        // before the host, so the assistant enumerates real memory stores + skills.
+        Some(resource_inventory),
+    ));
     let admin_execs = awaken_admin_assistant::admin_tools(
         capability_reader,
         Arc::new(awaken_control::ConfigServiceDraftValidator::new(

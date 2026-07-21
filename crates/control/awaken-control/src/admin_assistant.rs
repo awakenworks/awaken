@@ -95,16 +95,6 @@ impl CatalogCapabilityReader {
             inventory,
         }
     }
-
-    /// Bind live Agent discovery to the same execution Workspace as the
-    /// Assistant session. The default constructor retains the self-hosted
-    /// compatibility scope; composition roots with a platform-provisioned
-    /// Workspace must select it explicitly instead of reading another namespace.
-    #[must_use]
-    pub fn with_scope(mut self, workspace_id: impl Into<String>) -> Self {
-        self.scope = ScopeId::from(workspace_id.into());
-        self
-    }
 }
 
 #[async_trait]
@@ -879,9 +869,9 @@ mod tests {
             &[],
             Arc::new(InMemoryMcpStore::new()),
             plane,
+            "workspace-local",
             None,
-        )
-        .with_scope("workspace-local");
+        );
         let caps = reader.capabilities().await;
         assert_eq!(caps.agents, vec!["workspace-agent"]);
     }
