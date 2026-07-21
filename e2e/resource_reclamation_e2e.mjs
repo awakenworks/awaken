@@ -137,7 +137,7 @@ async function main() {
       0,
     );
 
-    // Equal bytes share one blob. Revoking A cannot delete bytes still granted
+    // Equal bytes share one blob. Removing A cannot delete bytes still owned
     // to B; revoking B subsequently permits physical GC.
     const sharedA = await upload(WS_A, 'shared-content');
     const sharedB = await upload(WS_B, 'shared-content');

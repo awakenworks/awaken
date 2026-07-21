@@ -1141,7 +1141,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         .put(b"hello-attached")
         .await
         .expect("put blob");
-    host.grant_file(host.local_workspace(), &file_id)
+    host.register_file_ownership(host.local_workspace(), &file_id)
         .await
         .unwrap();
     host.run(None, "t-attach", user("hi"))
@@ -1504,7 +1504,7 @@ async fn prepare_session_mounts_effective_file_and_stages_effective_repo() {
     // Seed a file blob and pass the already-resolved File and Repository inputs.
     let binary = vec![0, 0xff, b'R', 0x80, b'\n'];
     let file_id = host.file_store().put(&binary).await.expect("put blob");
-    host.grant_file(host.local_workspace(), &file_id)
+    host.register_file_ownership(host.local_workspace(), &file_id)
         .await
         .unwrap();
     let managed = managed_with_resource_source(host.clone());
@@ -1607,7 +1607,7 @@ async fn file_activation_rejects_bytes_that_do_not_match_the_file_id() {
     let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub");
     raw_host.file_store = Arc::new(CorruptFileStore);
     let host = Arc::new(raw_host);
-    host.grant_file(host.local_workspace(), &declared_id)
+    host.register_file_ownership(host.local_workspace(), &declared_id)
         .await
         .unwrap();
     let managed = crate::ManagedHost::new(host.clone());
@@ -1635,7 +1635,9 @@ async fn file_activation_enforces_workspace_ownership_without_iam_policy_logic()
 
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let file_id = host.file_store().put(b"workspace-a").await.unwrap();
-    host.grant_file("workspace-a", &file_id).await.unwrap();
+    host.register_file_ownership("workspace-a", &file_id)
+        .await
+        .unwrap();
     let managed = crate::ManagedHost::new(host);
     let mut init = bare_session("a", "workspace-b");
     init.resources = effective_resources(vec![TestInput {

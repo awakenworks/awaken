@@ -174,8 +174,8 @@ PDP decision, or policy document into this state machine.
 
 ### D6: Each resource reclaims according to its own invariant
 
-- File deletion revokes a Workspace grant first. Physical blob GC requires no
-  remaining grants, Agent bindings, active/effective Session references,
+- File deletion removes a Workspace ownership edge first. Physical blob GC requires no
+  remaining ownership edges, Agent bindings, active/effective Session references,
   Artifacts, or retention hold.
 - Memory Session release closes the scoped handle but never deletes long-term
   content. Store deletion tombstones the aggregate, denies operations, drains
@@ -198,7 +198,7 @@ activation; `Deleted` is a tombstone; `Purged` is an asynchronous reclamation
 receipt rather than a reusable identity.
 
 The implemented reclamation workflow writes a durable, idempotent
-`ResourcePurgeIntent` before the logical File grant revoke or catalog/Skill
+`ResourcePurgeIntent` before the logical File ownership removal or catalog/Skill
 tombstone. A lease-generation and revision fence prevents a stale worker from
 overwriting recovery. Physical adapters run only after the independently composed
 catalog, reverse-reference, Agent-binding, Session-binding, retention, runtime,

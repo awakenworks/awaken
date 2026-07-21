@@ -94,7 +94,7 @@ async fn upload_file(
     let size = bytes.len();
     match host.file_store().put(&bytes).await {
         Ok(id) => {
-            if let Err(error) = host.grant_file(&workspace, &id).await {
+            if let Err(error) = host.register_file_ownership(&workspace, &id).await {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(json!({ "error": error.to_string() })),
@@ -162,7 +162,7 @@ async fn get_file(
 }
 
 /// `DELETE /v1/files/{id}` — commit logical denial and durable reclamation work.
-/// Physical deletion is asynchronous and occurs only after every Workspace grant
+/// Physical deletion is asynchronous and occurs only after every Workspace ownership
 /// and binding/reference is gone.
 async fn delete_file(
     State(host): State<Arc<SharedHost>>,
@@ -198,7 +198,7 @@ async fn delete_file(
         )
             .into_response();
     }
-    match host.revoke_file(&workspace, &id).await {
+    match host.remove_file_ownership(&workspace, &id).await {
         Ok(true) => (
             StatusCode::OK,
             Json(json!({ "id": id, "type": "file_deleted" })),

@@ -61,7 +61,8 @@ impl ResourceTarget {
 #[serde(rename_all = "snake_case")]
 pub enum ResourceReferenceKind {
     LogicalLifecycle,
-    WorkspaceGrant,
+    #[serde(alias = "workspace_grant")]
+    WorkspaceOwnership,
     AgentBinding,
     SessionBinding,
     Artifact,
@@ -81,8 +82,8 @@ pub struct ResourceReference {
 }
 
 /// Workspace-scoped reference row. This is an internal resource-lifecycle fact,
-/// not an IAM grant: `WorkspaceGrant` means a Files ownership/reference edge and
-/// never carries the principal that was authorized to create it.
+/// `WorkspaceOwnership` means a File data-plane ownership/reference edge and
+/// never carries an authorization grant or the principal that created it.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ResourceReferenceRecord {
     pub target: ResourceTarget,
@@ -482,7 +483,7 @@ pub trait ResourceReferenceIndex: Send + Sync {
         target: &ResourceTarget,
     ) -> Result<Vec<ResourceReference>, ResourcePurgeError>;
     /// Cross-Workspace lookup is internal to physical GC. It is required for a
-    /// globally content-addressed File blob shared by multiple Workspace grants.
+    /// globally content-addressed File blob shared by multiple Workspace owners.
     async fn references_for_resource(
         &self,
         kind: ResourceKind,
@@ -537,6 +538,7 @@ pub trait ResourcePhysicalReclaimer: Send + Sync {
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
+    use serde_json::Value;
 
     use super::*;
 
@@ -550,6 +552,35 @@ mod tests {
             20,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn lifecycle_wire_is_authorization_free_and_reads_legacy_ownership_name() {
+        let mut value = intent(ResourceKind::File);
+        value.blockers.push(ResourceReference {
+            kind: ResourceReferenceKind::WorkspaceOwnership,
+            reference_id: "workspace-a".into(),
+        });
+        let wire = serde_json::to_value(&value).unwrap();
+        let object = wire.as_object().unwrap();
+        for forbidden in [
+            "principal",
+            "api_key",
+            "role",
+            "policy",
+            "organization_id",
+            "project_id",
+            "work_unit_id",
+        ] {
+            assert!(!object.contains_key(forbidden));
+        }
+        let legacy: ResourceReferenceKind =
+            serde_json::from_value(Value::String("workspace_grant".into())).unwrap();
+        assert_eq!(legacy, ResourceReferenceKind::WorkspaceOwnership);
+        assert_eq!(
+            serde_json::to_value(ResourceReferenceKind::WorkspaceOwnership).unwrap(),
+            Value::String("workspace_ownership".into())
+        );
     }
 
     #[test]

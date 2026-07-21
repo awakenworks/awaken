@@ -155,7 +155,7 @@ impl ResourcePhysicalReclaimer for HostResourceReclamation {
     ) -> Result<ResourcePurgeEvidence, ResourcePurgeError> {
         match target.kind {
             ResourceKind::File => {
-                // Serialize grant creation with the final reference recheck and
+                // Serialize ownership creation with the final reference recheck and
                 // blob delete. The durable local adapter is single-host SQLite;
                 // distributed adapters provide the equivalent transaction/lock.
                 let _guard = self.host.resource_lifecycle_gate.lock().await;

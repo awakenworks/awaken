@@ -20,11 +20,11 @@ use awaken_runtime_contract::resolved::ToolDescriptor;
 /// resolved under the root to `<root>/outputs`, which `list_files("outputs")` reads.
 const OUTPUTS_PATH: &str = "/outputs";
 
-fn file_grant(workspace: &str, id: &str) -> ResourceReferenceRecord {
+fn file_ownership(workspace: &str, id: &str) -> ResourceReferenceRecord {
     ResourceReferenceRecord {
         target: ResourceTarget::new(workspace, ResourceKind::File, id),
         reference: ResourceReference {
-            kind: ResourceReferenceKind::WorkspaceGrant,
+            kind: ResourceReferenceKind::WorkspaceOwnership,
             reference_id: workspace.to_string(),
         },
     }
@@ -195,10 +195,14 @@ impl SharedHost {
         self.file_store.clone()
     }
 
-    pub async fn grant_file(&self, workspace: &str, id: &str) -> Result<bool, ResourcePurgeError> {
+    pub async fn register_file_ownership(
+        &self,
+        workspace: &str,
+        id: &str,
+    ) -> Result<bool, ResourcePurgeError> {
         let _guard = self.resource_lifecycle_gate.lock().await;
         self.resource_lifecycle
-            .add_reference(file_grant(workspace, id))
+            .add_reference(file_ownership(workspace, id))
             .await
     }
 
@@ -208,13 +212,17 @@ impl SharedHost {
             .references(&ResourceTarget::new(workspace, ResourceKind::File, id))
             .await?
             .iter()
-            .any(|reference| reference.kind == ResourceReferenceKind::WorkspaceGrant))
+            .any(|reference| reference.kind == ResourceReferenceKind::WorkspaceOwnership))
     }
 
-    pub async fn revoke_file(&self, workspace: &str, id: &str) -> Result<bool, ResourcePurgeError> {
+    pub async fn remove_file_ownership(
+        &self,
+        workspace: &str,
+        id: &str,
+    ) -> Result<bool, ResourcePurgeError> {
         let _guard = self.resource_lifecycle_gate.lock().await;
         self.resource_lifecycle
-            .remove_reference(&file_grant(workspace, id))
+            .remove_reference(&file_ownership(workspace, id))
             .await
     }
 
@@ -461,7 +469,7 @@ impl SharedHost {
         for (path, bytes) in env.list_files("outputs") {
             if let Ok(id) = self.file_store.put(&bytes).await {
                 let workspace = self.thread_workspace(thread);
-                if self.grant_file(&workspace, &id).await.is_ok() {
+                if self.register_file_ownership(&workspace, &id).await.is_ok() {
                     out.push((id, path));
                 }
             }

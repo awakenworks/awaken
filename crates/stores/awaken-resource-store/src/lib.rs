@@ -585,7 +585,7 @@ fn status_name(status: awaken_resource_contract::ResourcePurgeStatus) -> &'stati
 fn reference_kind_name(kind: ResourceReferenceKind) -> &'static str {
     match kind {
         ResourceReferenceKind::LogicalLifecycle => "logical_lifecycle",
-        ResourceReferenceKind::WorkspaceGrant => "workspace_grant",
+        ResourceReferenceKind::WorkspaceOwnership => "workspace_ownership",
         ResourceReferenceKind::AgentBinding => "agent_binding",
         ResourceReferenceKind::SessionBinding => "session_binding",
         ResourceReferenceKind::Artifact => "artifact",
@@ -598,7 +598,9 @@ fn reference_kind_name(kind: ResourceReferenceKind) -> &'static str {
 fn parse_reference_kind(value: &str) -> Result<ResourceReferenceKind, ResourcePurgeError> {
     match value {
         "logical_lifecycle" => Ok(ResourceReferenceKind::LogicalLifecycle),
-        "workspace_grant" => Ok(ResourceReferenceKind::WorkspaceGrant),
+        // Read the pre-separation spelling so an upgrade cannot make an existing
+        // File ownership edge invisible to reclamation safety checks.
+        "workspace_ownership" | "workspace_grant" => Ok(ResourceReferenceKind::WorkspaceOwnership),
         "agent_binding" => Ok(ResourceReferenceKind::AgentBinding),
         "session_binding" => Ok(ResourceReferenceKind::SessionBinding),
         "artifact" => Ok(ResourceReferenceKind::Artifact),
@@ -643,7 +645,7 @@ mod tests {
         ResourceReferenceRecord {
             target: ResourceTarget::new(workspace, ResourceKind::File, "hash-1"),
             reference: ResourceReference {
-                kind: ResourceReferenceKind::WorkspaceGrant,
+                kind: ResourceReferenceKind::WorkspaceOwnership,
                 reference_id: holder.into(),
             },
         }
@@ -670,8 +672,8 @@ mod tests {
             Err(ResourcePurgeError::RevisionConflict(_))
         ));
 
-        let a = reference("workspace-a", "grant-a");
-        let b = reference("workspace-b", "grant-b");
+        let a = reference("workspace-a", "ownership-a");
+        let b = reference("workspace-b", "ownership-b");
         assert!(store.add_reference(a.clone()).await.unwrap());
         assert!(!store.add_reference(a.clone()).await.unwrap());
         assert!(store.add_reference(b.clone()).await.unwrap());
@@ -736,6 +738,18 @@ mod tests {
     #[tokio::test]
     async fn in_memory_conforms() {
         repository_spec(&InMemoryResourceStore::new()).await;
+    }
+
+    #[test]
+    fn legacy_workspace_grant_rows_remain_ownership_edges() {
+        assert_eq!(
+            parse_reference_kind("workspace_grant").unwrap(),
+            ResourceReferenceKind::WorkspaceOwnership
+        );
+        assert_eq!(
+            reference_kind_name(ResourceReferenceKind::WorkspaceOwnership),
+            "workspace_ownership"
+        );
     }
 
     #[tokio::test]
