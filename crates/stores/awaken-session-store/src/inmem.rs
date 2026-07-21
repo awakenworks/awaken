@@ -12,7 +12,9 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 use awaken_session_contract::{
-    ManagedSessionRepository, PersistedSession, ScopedSessionStore, SessionLifecycleFact,
+    ManagedSessionRepository, MemoryExtractionError, MemoryExtractionIntent,
+    MemoryExtractionRepository, PersistedSession, PutMemoryExtractionOutcome, ScopedSessionStore,
+    SessionLifecycleFact,
 };
 use awaken_tenancy::ScopeId;
 
@@ -20,6 +22,8 @@ use awaken_tenancy::ScopeId;
 struct InMemoryState {
     rows: HashMap<String, (PersistedSession, String)>,
     lifecycle: BTreeMap<String, SessionLifecycleFact>,
+    extractions: BTreeMap<String, MemoryExtractionIntent>,
+    extraction_keys: HashMap<String, String>,
 }
 
 #[derive(Default)]
@@ -137,6 +141,106 @@ impl ManagedSessionRepository for InMemorySessionRepository {
             .rows
             .get(session_id)
             .map(|(_, owner)| owner.clone())
+    }
+}
+
+#[async_trait]
+impl MemoryExtractionRepository for InMemorySessionRepository {
+    async fn put_extraction_if_absent(
+        &self,
+        intent: MemoryExtractionIntent,
+    ) -> Result<PutMemoryExtractionOutcome, MemoryExtractionError> {
+        intent.validate()?;
+        let mut state = self.state.lock().map_err(|error| {
+            MemoryExtractionError::Storage(format!("session repository lock: {error}"))
+        })?;
+        if let Some(existing_id) = state.extraction_keys.get(&intent.idempotency_key) {
+            let existing = state.extractions.get(existing_id).ok_or_else(|| {
+                MemoryExtractionError::Storage(
+                    "idempotency index references a missing extraction".into(),
+                )
+            })?;
+            return if existing == &intent {
+                Ok(PutMemoryExtractionOutcome::Existing)
+            } else {
+                Err(MemoryExtractionError::IdempotencyConflict(
+                    intent.idempotency_key,
+                ))
+            };
+        }
+        if state.extractions.contains_key(&intent.intent_id) {
+            return Err(MemoryExtractionError::IdempotencyConflict(
+                intent.idempotency_key,
+            ));
+        }
+        state
+            .extraction_keys
+            .insert(intent.idempotency_key.clone(), intent.intent_id.clone());
+        state.extractions.insert(intent.intent_id.clone(), intent);
+        Ok(PutMemoryExtractionOutcome::Inserted)
+    }
+
+    async fn get_extraction(
+        &self,
+        intent_id: &str,
+    ) -> Result<Option<MemoryExtractionIntent>, MemoryExtractionError> {
+        Ok(self
+            .state
+            .lock()
+            .map_err(|error| {
+                MemoryExtractionError::Storage(format!("session repository lock: {error}"))
+            })?
+            .extractions
+            .get(intent_id)
+            .cloned())
+    }
+
+    async fn recoverable_extractions(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<MemoryExtractionIntent>, MemoryExtractionError> {
+        Ok(self
+            .state
+            .lock()
+            .map_err(|error| {
+                MemoryExtractionError::Storage(format!("session repository lock: {error}"))
+            })?
+            .extractions
+            .values()
+            .filter(|intent| !intent.status.is_terminal())
+            .take(limit)
+            .cloned()
+            .collect())
+    }
+
+    async fn compare_and_swap_extraction(
+        &self,
+        expected_revision: u64,
+        intent: MemoryExtractionIntent,
+    ) -> Result<(), MemoryExtractionError> {
+        intent.validate()?;
+        let mut state = self.state.lock().map_err(|error| {
+            MemoryExtractionError::Storage(format!("session repository lock: {error}"))
+        })?;
+        let current = state
+            .extractions
+            .get(&intent.intent_id)
+            .ok_or_else(|| MemoryExtractionError::NotFound(intent.intent_id.clone()))?;
+        if current.revision != expected_revision
+            || intent.revision != expected_revision.saturating_add(1)
+            || current.idempotency_key != intent.idempotency_key
+            || current.workspace_id != intent.workspace_id
+            || current.session_id != intent.session_id
+            || current.terminal_commit_id != intent.terminal_commit_id
+            || current.memory_store_id != intent.memory_store_id
+            || current.memory_config_version != intent.memory_config_version
+            || current.extractor != intent.extractor
+            || current.transcript != intent.transcript
+        {
+            return Err(MemoryExtractionError::RevisionConflict(intent.intent_id));
+        }
+        state.extractions.insert(intent.intent_id.clone(), intent);
+        Ok(())
     }
 }
 
@@ -295,6 +399,8 @@ impl ScopedSessionStore for InMemoryScopedSessionStore {
 mod tests {
     use std::collections::BTreeMap;
 
+    use awaken_session_contract::{MemoryExtractionIntent, MemoryExtractorSnapshot};
+
     use super::*;
     use serde_json::json;
 
@@ -312,6 +418,26 @@ mod tests {
             status: "idle".into(),
             archived_at: None,
         }
+    }
+
+    fn extraction(id: &str, key: &str) -> MemoryExtractionIntent {
+        MemoryExtractionIntent::new(
+            id,
+            key,
+            "ws-a",
+            "session-1",
+            "terminal-1",
+            "memory-1",
+            1,
+            Vec::new(),
+            MemoryExtractorSnapshot {
+                agent_id: "memory-agent".into(),
+                model_ref: "model-1".into(),
+                instructions: None,
+                extraction_prompt: None,
+            },
+        )
+        .unwrap()
     }
 
     // Item 3: the non-scoped in-memory repo round-trips a save→get, and an upsert by
@@ -361,6 +487,77 @@ mod tests {
             back.mcp_servers[0]["url"],
             json!("https://mcp.example"),
             "the wire-echo url is preserved"
+        );
+    }
+
+    #[tokio::test]
+    async fn extraction_repository_is_idempotent_and_revision_fenced() {
+        let repo = InMemorySessionRepository::default();
+        let initial = extraction("extract-1", "terminal-1");
+        assert_eq!(
+            repo.put_extraction_if_absent(initial.clone())
+                .await
+                .unwrap(),
+            PutMemoryExtractionOutcome::Inserted
+        );
+        assert_eq!(
+            repo.put_extraction_if_absent(initial.clone())
+                .await
+                .unwrap(),
+            PutMemoryExtractionOutcome::Existing
+        );
+
+        let mut conflicting = initial.clone();
+        conflicting.memory_store_id = "memory-other".into();
+        assert!(matches!(
+            repo.put_extraction_if_absent(conflicting).await,
+            Err(MemoryExtractionError::IdempotencyConflict(_))
+        ));
+
+        let mut claimed = initial.clone();
+        claimed.claim("worker-a", 100, 50).unwrap();
+        repo.compare_and_swap_extraction(0, claimed.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.get_extraction("extract-1").await.unwrap(),
+            Some(claimed.clone())
+        );
+        assert!(matches!(
+            repo.compare_and_swap_extraction(0, claimed).await,
+            Err(MemoryExtractionError::RevisionConflict(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn extraction_repository_lists_only_recoverable_intents() {
+        let repo = InMemorySessionRepository::default();
+        let pending = extraction("extract-a", "terminal-a");
+        let mut completed = extraction("extract-b", "terminal-b");
+        let generation = completed.claim("worker-a", 100, 50).unwrap();
+        completed
+            .mark_extracted("worker-a", generation, 110, Vec::new())
+            .unwrap();
+        completed
+            .mark_stored(
+                "worker-a",
+                generation,
+                120,
+                awaken_session_contract::MemoryExtractionReceipt {
+                    stored_at_unix_ms: 120,
+                    mutations: Vec::new(),
+                },
+            )
+            .unwrap();
+        completed.complete("worker-a", generation, 130).unwrap();
+        repo.put_extraction_if_absent(pending.clone())
+            .await
+            .unwrap();
+        repo.put_extraction_if_absent(completed).await.unwrap();
+
+        assert_eq!(
+            repo.recoverable_extractions(10).await.unwrap(),
+            vec![pending]
         );
     }
 }
