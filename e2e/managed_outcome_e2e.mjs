@@ -9,11 +9,13 @@
 // Run: (from e2e/)  npm install && node managed_outcome_e2e.mjs
 
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import Anthropic from '@anthropic-ai/sdk';
 import { withRealServer } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38103);
 const BETAS = ['managed-agents-2026-04-01'];
+const STORE_DIR = `/tmp/awaken-outcome-e2e-${process.pid}`;
 
 async function outcomeEnds(client, sessionId) {
   const events = [];
@@ -35,23 +37,28 @@ async function draftThenOutcome(client, rubric, maxIterations) {
 }
 
 async function main() {
-  await withRealServer('revise', PORT, async (baseUrl) => {
-    const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
+  fs.rmSync(STORE_DIR, { recursive: true, force: true });
+  try {
+    await withRealServer('revise', PORT, async (baseUrl) => {
+      const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
-    // Satisfied: the revision contains "FINAL" -> satisfied.
-    const satisfied = await draftThenOutcome(client, 'FINAL', 3);
-    assert.ok(satisfied.length >= 2, `expected >=2 rounds, got ${satisfied.length}`);
-    assert.equal(satisfied[0].result, 'needs_revision');
-    assert.equal(satisfied.at(-1).result, 'satisfied');
-    console.log('  ok: needs_revision -> satisfied');
+      // Satisfied: the revision contains "FINAL" -> satisfied.
+      const satisfied = await draftThenOutcome(client, 'FINAL', 3);
+      assert.ok(satisfied.length >= 2, `expected >=2 rounds, got ${satisfied.length}`);
+      assert.equal(satisfied[0].result, 'needs_revision');
+      assert.equal(satisfied.at(-1).result, 'satisfied');
+      console.log('  ok: needs_revision -> satisfied');
 
-    // Unsatisfiable rubric within the budget -> max_iterations_reached.
-    const exhausted = await draftThenOutcome(client, 'NEVER_PRESENT_TOKEN', 2);
-    assert.equal(exhausted.at(-1).result, 'max_iterations_reached', `results: ${exhausted.map((e) => e.result)}`);
-    console.log('  ok: unsatisfiable rubric -> max_iterations_reached');
+      // Unsatisfiable rubric within the budget -> max_iterations_reached.
+      const exhausted = await draftThenOutcome(client, 'NEVER_PRESENT_TOKEN', 2);
+      assert.equal(exhausted.at(-1).result, 'max_iterations_reached', `results: ${exhausted.map((e) => e.result)}`);
+      console.log('  ok: unsatisfiable rubric -> max_iterations_reached');
 
-    console.log('E2E PASS: define_outcome satisfied + max_iterations paths via TS SDK.');
-  });
+      console.log('E2E PASS: define_outcome satisfied + max_iterations paths via TS SDK.');
+    }, { extraEnv: { AWAKEN_STORAGE_DIR: STORE_DIR } });
+  } finally {
+    fs.rmSync(STORE_DIR, { recursive: true, force: true });
+  }
 }
 
 main().catch((err) => {
