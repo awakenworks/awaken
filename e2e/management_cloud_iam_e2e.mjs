@@ -164,11 +164,16 @@ async function main() {
     assert.equal(result.status, 404, 'self-managed token administration is not mounted in cloud mode');
     assert.equal(iam.calls.length, callsBeforeTokenAdmin, 'token administration does not reach PDP');
 
-    for (const invalid of ['not-a-jwt', expiredToken, wrongAudienceToken]) {
+    for (const invalid of ['not-a-jwt', wrongAudienceToken]) {
       assert.equal((await req(base, 'GET', '/v1/files', invalid)).status, 401);
       assert.equal((await req(base, 'GET', '/v1/config/catalog', invalid)).status, 401);
     }
-    pass('malformed, expired, and wrong-audience cloud credentials fail closed');
+    for (const uri of ['/v1/files', '/v1/config/catalog']) {
+      const expired = await req(base, 'GET', uri, expiredToken);
+      assert.equal(expired.status, 401);
+      assert.match(expired.body.error.message, /cloud access token is expired/u);
+    }
+    pass('malformed/wrong-audience tokens fail closed and expiry keeps its reason');
 
     iam.decide('deny');
     assert.equal((await req(base, 'GET', '/v1/files', explicitToken)).status, 403);
