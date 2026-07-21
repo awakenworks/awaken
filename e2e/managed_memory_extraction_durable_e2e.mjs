@@ -16,6 +16,8 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import Anthropic from '@anthropic-ai/sdk';
 import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
 
@@ -32,6 +34,19 @@ const MARKER = 'fact-zebra7durable';
 let client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function extractionIntents(sessionId) {
+  const database = path.join(STORE_DIR, 'sessions.db');
+  if (!fs.existsSync(database)) return [];
+  const output = execFileSync('sqlite3', [
+    '-json',
+    database,
+    'SELECT data FROM managed_memory_extraction ORDER BY intent_id',
+  ]).toString().trim();
+  return (output ? JSON.parse(output) : [])
+    .map((row) => JSON.parse(row.data))
+    .filter((intent) => intent.session_id === sessionId);
+}
 
 async function reply(sessionId) {
   const events = [];
@@ -78,6 +93,34 @@ async function main() {
     await waitForPort(PORT);
 
     const store = await client.post('/v1/memory_stores', { body: { name: 'durable-extraction' } });
+    const readOnly = await client.beta.sessions.create({
+      agent: 'assistant',
+      betas: BETAS,
+      resources: [{
+        type: 'memory_store',
+        memory_store_id: store.id,
+        mount_path: '/memory',
+        access: 'read_only',
+      }],
+    });
+    const readOnlyMarker = 'fact-readonly-must-not-extract';
+    await assert.rejects(
+      () => turn(readOnly.id, `remember ${readOnlyMarker}`),
+      /read-only mount .* requested but backend does not enforce read-only/u,
+      'a backend without an enforced read-only capability must fail before execution',
+    );
+    assert.deepEqual(
+      extractionIntents(readOnly.id),
+      [],
+      'a read-only binding must not enqueue durable extraction work',
+    );
+    assert.deepEqual(
+      (await client.get(`/v1/memory_stores/${store.id}/memories`)).data,
+      [],
+      'a denied read-only activation must not mutate the bound MemoryStore',
+    );
+    pass('read-only Memory failed closed before execution and created no extraction outbox');
+
     const s = await client.beta.sessions.create({
       agent: 'assistant',
       betas: BETAS,
