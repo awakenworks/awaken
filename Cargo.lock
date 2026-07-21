@@ -1056,6 +1056,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-resource-reclaimer"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "awaken-resource-contract",
+ "tokio",
+]
+
+[[package]]
 name = "awaken-run-executor-a2a"
 version = "1.0.0-dev"
 dependencies = [

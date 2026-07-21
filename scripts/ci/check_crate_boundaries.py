@@ -1319,9 +1319,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tokio",
         "tracing",
     },
+    "awaken-resource-reclaimer": {"awaken-resource-contract", "async-trait", "tokio"},
     # Single-machine assembly binary: the composition root. Since the service
-    # layer moved to awaken-runtime-host, this bin only composes that host + the
-    # protocol facades + the management plane (admin/vault/IAM) into router
+    # layer moved to awaken-runtime-host; this bin composes host/protocol/management routers.
     # modes; it names no runtime/ext/store crate directly. Nothing depends on it.
     # Test-only scenario host (Stage A): the mock models + build_*_router scenario
     # assemblies extracted from awaken-server. Depends on the product crate

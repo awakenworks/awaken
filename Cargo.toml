@@ -66,6 +66,7 @@ awaken-protocol-mcp = { path = "crates/server/awaken-protocol-mcp" }
 awaken-protocol-ag-ui = { path = "crates/server/awaken-protocol-ag-ui" }
 awaken-protocol-ai-sdk = { path = "crates/server/awaken-protocol-ai-sdk" }
 awaken-protocol-managed = { path = "crates/server/awaken-protocol-managed" }
+awaken-resource-reclaimer = { path = "crates/server/awaken-resource-reclaimer" }
 awaken-protocol-acp = { path = "crates/server/awaken-protocol-acp" }
 awaken-run-executor-acp = { path = "crates/server/awaken-run-executor-acp" }
 awaken-run-executor-a2a = { path = "crates/server/awaken-run-executor-a2a" }

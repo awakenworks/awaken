@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 
 mod catalog;
 mod input;
+mod lifecycle;
 
 pub use catalog::{
     ClonePolicy, ConfigVersion, ExtractionPolicy, MemoryStoreConfigVersion, MemoryStoreDefinition,
@@ -30,6 +31,12 @@ pub use catalog::{
 };
 pub use input::{
     BindingId, FileId, InputBinding, InputResourceId, MemoryStoreId, RepositoryId, ResourceAccess,
+};
+pub use lifecycle::{
+    PutResourcePurgeOutcome, ResourceKind, ResourcePhysicalReclaimer, ResourcePurgeError,
+    ResourcePurgeEvidence, ResourcePurgeGuard, ResourcePurgeIntent, ResourcePurgeReceipt,
+    ResourcePurgeRepository, ResourcePurgeStatus, ResourceReference, ResourceReferenceKind,
+    ResourceTarget,
 };
 
 // ---------------------------------------------------------------------------
