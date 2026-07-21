@@ -605,8 +605,8 @@ async fn agent_input_bindings_reject_non_positive_versions() {
             })),
         )
         .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{problem}");
-        assert_eq!(problem["code"], "invalid_request");
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{problem}");
+        assert_eq!(problem["code"], "invalid_revision");
     }
 
     let (status, problem) = call(&h.app, "GET", "/v1/config/agents/agent-1/resources", None).await;
