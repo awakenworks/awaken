@@ -9,6 +9,7 @@ import pathlib
 import re
 import subprocess
 import sys
+import tomllib
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -110,6 +111,69 @@ def lcov_lines(ignore_filename_regex: str | None) -> dict[str, dict[int, int]]:
     return result
 
 
+def unreachable_lines(manifest: str | None) -> tuple[dict[str, set[int]], list[dict[str, object]]]:
+    """Load audited lines that no served-process API can deterministically select.
+
+    A waiver never turns a hit into an exclusion: callers apply it only to changed,
+    executable lines whose counter is zero.  This keeps newly covered lines in the
+    numerator and makes the manifest an explicit review queue rather than a way to
+    shrink already-observed production behavior.
+    """
+
+    if manifest is None:
+        return {}, []
+    manifest_path = ROOT / manifest
+    document = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+    if document.get("version") != 1:
+        raise ValueError(f"{manifest}: expected version = 1")
+    by_path: dict[str, set[int]] = collections.defaultdict(set)
+    entries = document.get("waiver", [])
+    if not isinstance(entries, list) or not entries:
+        raise ValueError(f"{manifest}: expected at least one [[waiver]]")
+    normalized: list[dict[str, object]] = []
+    for index, entry in enumerate(entries, 1):
+        if not isinstance(entry, dict):
+            raise ValueError(f"{manifest}: waiver {index} is not a table")
+        path = entry.get("path")
+        ranges = entry.get("ranges")
+        reason = entry.get("reason")
+        evidence = entry.get("evidence")
+        if not isinstance(path, str) or not path.startswith("crates/") or not path.endswith(".rs"):
+            raise ValueError(f"{manifest}: waiver {index} has an invalid Rust path")
+        source = ROOT / path
+        if not source.is_file():
+            raise ValueError(f"{manifest}: waiver {index} path does not exist: {path}")
+        if not isinstance(reason, str) or len(reason.strip()) < 20:
+            raise ValueError(f"{manifest}: waiver {index} needs a specific reason")
+        if not isinstance(evidence, str) or len(evidence.strip()) < 10:
+            raise ValueError(f"{manifest}: waiver {index} needs test/formal evidence")
+        if not isinstance(ranges, list) or not ranges:
+            raise ValueError(f"{manifest}: waiver {index} needs line ranges")
+        line_count = len(source.read_text(encoding="utf-8").splitlines())
+        selected: set[int] = set()
+        for value in ranges:
+            if not isinstance(value, str) or not re.fullmatch(r"\d+(?:-\d+)?", value):
+                raise ValueError(f"{manifest}: invalid range {value!r} for {path}")
+            start_text, _, end_text = value.partition("-")
+            start = int(start_text)
+            end = int(end_text or start_text)
+            if start < 1 or end < start or end > line_count:
+                raise ValueError(
+                    f"{manifest}: range {value} exceeds {path} (1-{line_count})"
+                )
+            selected.update(range(start, end + 1))
+        overlap = by_path[path] & selected
+        if overlap:
+            raise ValueError(
+                f"{manifest}: overlapping waiver lines for {path}: {sorted(overlap)[:5]}"
+            )
+        by_path[path].update(selected)
+        normalized.append(
+            {"path": path, "lines": selected, "reason": reason, "evidence": evidence}
+        )
+    return dict(by_path), normalized
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", default="origin/1.0.0-dev")
@@ -121,6 +185,16 @@ def main() -> None:
     parser.add_argument("--show-missing", type=int, default=80)
     parser.add_argument("--show-files", type=int, default=30)
     parser.add_argument(
+        "--unreachable-manifest",
+        help="audited changed lines that cannot be selected through a served API",
+    )
+    parser.add_argument(
+        "--maximum-unreachable-fraction",
+        type=float,
+        default=0.15,
+        help="fail if audited non-API lines exceed this share of changed executable lines",
+    )
+    parser.add_argument(
         "--label",
         default="changed API E2E line coverage",
         help="human-readable authority name printed in the report and failures",
@@ -128,6 +202,8 @@ def main() -> None:
     args = parser.parse_args()
     if not 0.0 < args.minimum < 1.0:
         parser.error("--minimum must be between zero and one")
+    if not 0.0 <= args.maximum_unreachable_fraction < 1.0:
+        parser.error("--maximum-unreachable-fraction must be between zero and one")
 
     try:
         ignore = (
@@ -139,6 +215,10 @@ def main() -> None:
         parser.error(f"invalid --ignore-filename-regex: {error}")
     changed = changed_lines(args.base, ignore)
     coverage = lcov_lines(args.ignore_filename_regex)
+    try:
+        unreachable, waiver_entries = unreachable_lines(args.unreachable_manifest)
+    except (OSError, ValueError, tomllib.TOMLDecodeError) as error:
+        parser.error(str(error))
     executable: list[tuple[str, int, int]] = []
     for relative, lines in changed.items():
         measured = coverage.get(relative, {})
@@ -150,14 +230,49 @@ def main() -> None:
         raise SystemExit(f"{args.label}: no changed executable Rust lines found")
 
     covered = [(path, line, count) for path, line, count in executable if count > 0]
-    missing = [(path, line) for path, line, count in executable if count == 0]
-    ratio = len(covered) / len(executable)
+    waived = [
+        (path, line)
+        for path, line, count in executable
+        if count == 0 and line in unreachable.get(path, set())
+    ]
+    missing = [
+        (path, line)
+        for path, line, count in executable
+        if count == 0 and line not in unreachable.get(path, set())
+    ]
+    reachable_total = len(covered) + len(missing)
+    ratio = len(covered) / reachable_total
     print(
-        f"{args.label}: {len(covered)}/{len(executable)} = {ratio:.2%} "
+        f"{args.label}: {len(covered)}/{reachable_total} = {ratio:.2%} "
         f"(required > {args.minimum:.0%}, base {args.base})"
     )
+    if waived:
+        waived_fraction = len(waived) / len(executable)
+        print(
+            f"  audited non-API-reachable changed lines: {len(waived)} "
+            f"({waived_fraction:.2%}; raw executable total: {len(executable)})"
+        )
+        if waived_fraction > args.maximum_unreachable_fraction:
+            raise SystemExit(
+                "audited non-API-reachable share exceeds its ceiling: "
+                f"{waived_fraction:.2%} > {args.maximum_unreachable_fraction:.2%}"
+            )
+    stale = []
+    for entry in waiver_entries:
+        path = str(entry["path"])
+        selected = entry["lines"]
+        assert isinstance(selected, set)
+        if not any(candidate_path == path and line in selected for candidate_path, line in waived):
+            stale.append(path)
+    if stale:
+        raise SystemExit(
+            "unreachable waiver no longer matches an uncovered changed executable line: "
+            + ", ".join(stale)
+        )
     by_file: dict[str, list[int]] = collections.defaultdict(lambda: [0, 0])
-    for path, _line, count in executable:
+    for path, line, count in executable:
+        if count == 0 and line in unreachable.get(path, set()):
+            continue
         by_file[path][1] += 1
         if count > 0:
             by_file[path][0] += 1
