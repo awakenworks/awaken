@@ -960,10 +960,8 @@ impl SessionRuntime for ManagedHost {
         // turn rebuilds with the newly resolved executor (native switch is O(1); an
         // ACP thread's cached context relaunches its CLI on rebuild).
         self.host.register_thread_model(thread, model);
-        self.host
-            .evict_session_for_rebuild(thread, false)
-            .await
-            .map_err(to_run_error)
+        self.host.evict_session_for_rebuild(thread).await;
+        Ok(())
     }
 
     async fn resolve_session_skills(
@@ -1115,10 +1113,8 @@ impl SessionRuntime for ManagedHost {
         }
         self.host
             .replace_thread_repository_mcp(thread, repository_mcp);
-        self.host
-            .evict_session_for_rebuild(thread, false)
-            .await
-            .map_err(to_run_error)
+        self.host.evict_session_for_rebuild(thread).await;
+        Ok(())
     }
 
     async fn prepare_session(
