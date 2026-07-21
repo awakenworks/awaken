@@ -5,22 +5,20 @@
 //! list / delete, with a `content_sha256` precondition), and `memory_versions`
 //! (retrieve / list / redact).
 //!
-//! Two things coexist without regression: the original **mount blob** (a store is
-//! a mutable directory a session mounts read-write; the host harvests the write
-//! back under the same id and it survives a restart) stays exactly as-is — the
-//! store's `content` / `size_bytes` are still read from that blob. On top, the SDK's
-//! richer object model: each **memory** (a path-addressed file with a
-//! `content_sha256` + CAS update) is the durable [`awaken_memory_store::MemoryFs`]
-//! (ADR-0053) — the same store the write-through FUSE mount projects, so memories
-//! survive a restart — while the **version history** the `/memory_versions`
-//! endpoints surface is an append-only SQLite log when storage is durable (and an
-//! in-memory adapter only for explicitly ephemeral deployments). The legacy no-body
-//! `POST /v1/memory_stores` still works; the SDK sends a `name`.
+//! Each **memory** is a path-addressed file with a `content_sha256` + CAS update in
+//! the durable [`awaken_memory_store::MemoryFs`] (ADR-0053). The same aggregate
+//! repository serves API heads, write-through mounts, recall/extraction, and the
+//! `/memory_versions` history: every mutation and its version row commit together.
+//! There is no API-side history registry or Host-global memory directory. The
+//! legacy no-body `POST /v1/memory_stores` still works; the SDK sends a `name`.
 
-use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
+use awaken_memory_store::{MemErr, MemoryVersion, MemoryVersionOperation};
+use awaken_protocol_managed::resource_plane::{
+    ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, ResourceState,
+};
+use awaken_tenancy::WorkspaceScope;
 use axum::body::Bytes;
 use axum::extract::{Extension, Path, Query, State};
 use axum::http::StatusCode;
@@ -28,57 +26,37 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
-
-use awaken_memory_store::MemErr;
-use awaken_protocol_managed::resource_plane::{
-    ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, ResourceState,
-};
-use awaken_tenancy::WorkspaceScope;
 
 use crate::host::SharedHost;
 
 const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
 
-/// Lowercase-hex SHA-256 of the UTF-8 bytes (the `content_sha256` the SDK uses
-/// for staleness checks and update preconditions).
-fn sha256_hex(content: &str) -> String {
-    let digest = Sha256::digest(content.as_bytes());
-    digest.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-/// One version of a memory: an operation on its content, hashed + sized.
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-struct MemoryVersion {
-    id: String,
-    memory_id: String,
-    /// `"created"` | `"modified"` | `"deleted"`.
-    operation: String,
-    content: Option<String>,
-    path: String,
-    redacted_at: Option<String>,
-}
-
-impl MemoryVersion {
-    fn project(&self, store_id: &str) -> Value {
-        let (sha, size) = match &self.content {
-            Some(c) => (Some(sha256_hex(c)), Some(c.len())),
-            None => (None, None),
-        };
-        json!({
-            "id": self.id,
-            "type": "memory_version",
-            "created_at": OBJECT_AT,
-            "memory_id": self.memory_id,
-            "memory_store_id": store_id,
-            "operation": self.operation,
-            "content": self.content,
-            "content_sha256": sha,
-            "content_size_bytes": size,
-            "path": self.path,
-            "redacted_at": self.redacted_at,
-        })
-    }
+fn project_version(version: &MemoryVersion, store_id: &str) -> Value {
+    let (sha, size) = match &version.content {
+        Some(content) => (
+            Some(awaken_memory_store::sha256_hex(content)),
+            Some(content.len()),
+        ),
+        None => (None, None),
+    };
+    let operation = match version.operation {
+        MemoryVersionOperation::Created => "created",
+        MemoryVersionOperation::Modified => "modified",
+        MemoryVersionOperation::Deleted => "deleted",
+    };
+    json!({
+        "id": version.id,
+        "type": "memory_version",
+        "created_at": OBJECT_AT,
+        "memory_id": version.memory_id,
+        "memory_store_id": store_id,
+        "operation": operation,
+        "content": version.content,
+        "content_sha256": sha,
+        "content_size_bytes": size,
+        "path": version.path,
+        "redacted_at": version.redacted_unix_nanos.map(|_| OBJECT_AT),
+    })
 }
 
 /// Project a durable [`awaken_memory_store::Memory`] (the path-addressed head, the
@@ -126,132 +104,6 @@ struct MemoryStoreApi {
     /// Unified resource definition/configuration/lifecycle repository consumed by
     /// both this API and Session resolution. It contains no authorization policy.
     catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
-    /// Durable append-only history adapter (ephemeral only when the whole host is).
-    versions: VersionRepository,
-}
-
-enum VersionRepository {
-    Memory {
-        logs: Mutex<BTreeMap<String, Vec<MemoryVersion>>>,
-        seq: AtomicU64,
-    },
-    Sqlite(Mutex<rusqlite::Connection>),
-}
-
-impl VersionRepository {
-    fn open() -> Self {
-        let Some(dir) = std::env::var("AWAKEN_STORAGE_DIR")
-            .ok()
-            .filter(|dir| !dir.trim().is_empty())
-            .map(std::path::PathBuf::from)
-        else {
-            return Self::Memory {
-                logs: Mutex::new(BTreeMap::new()),
-                seq: AtomicU64::new(0),
-            };
-        };
-        Self::open_at(&dir)
-    }
-
-    fn open_at(dir: &std::path::Path) -> Self {
-        std::fs::create_dir_all(dir).expect("create resource API storage directory");
-        let conn = rusqlite::Connection::open(dir.join("resource-api.db"))
-            .expect("open resource API database");
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS memory_versions (\
-                 seq INTEGER PRIMARY KEY AUTOINCREMENT,\
-                 store_id TEXT NOT NULL,\
-                 version_id TEXT UNIQUE,\
-                 data TEXT NOT NULL\
-             );\
-             CREATE INDEX IF NOT EXISTS memory_versions_store_seq \
-                 ON memory_versions(store_id, seq);",
-        )
-        .expect("migrate memory version log");
-        Self::Sqlite(Mutex::new(conn))
-    }
-
-    fn append(&self, store: &str, mut version: MemoryVersion) {
-        match self {
-            Self::Memory { logs, seq } => {
-                version.id = format!("memver_{:016}", seq.fetch_add(1, Ordering::SeqCst));
-                logs.lock()
-                    .expect("memory versions")
-                    .entry(store.to_string())
-                    .or_default()
-                    .push(version);
-            }
-            Self::Sqlite(conn) => {
-                let conn = conn.lock().expect("memory versions");
-                conn.execute(
-                    "INSERT INTO memory_versions(store_id, version_id, data) VALUES (?1, NULL, '')",
-                    rusqlite::params![store],
-                )
-                .expect("append memory version");
-                let seq = conn.last_insert_rowid();
-                version.id = format!("memver_{seq:016}");
-                let data = serde_json::to_string(&version).expect("encode memory version");
-                conn.execute(
-                    "UPDATE memory_versions SET version_id = ?1, data = ?2 WHERE seq = ?3",
-                    rusqlite::params![version.id, data, seq],
-                )
-                .expect("finalize memory version");
-            }
-        }
-    }
-
-    fn list(&self, store: &str) -> Vec<MemoryVersion> {
-        match self {
-            Self::Memory { logs, .. } => logs
-                .lock()
-                .expect("memory versions")
-                .get(store)
-                .cloned()
-                .unwrap_or_default(),
-            Self::Sqlite(conn) => {
-                let conn = conn.lock().expect("memory versions");
-                let mut stmt = conn
-                    .prepare("SELECT data FROM memory_versions WHERE store_id = ?1 ORDER BY seq")
-                    .expect("prepare memory version list");
-                stmt.query_map(rusqlite::params![store], |row| row.get::<_, String>(0))
-                    .expect("list memory versions")
-                    .map(|row| {
-                        serde_json::from_str(&row.expect("read memory version"))
-                            .expect("decode memory version")
-                    })
-                    .collect()
-            }
-        }
-    }
-
-    fn redact(&self, store: &str, version_id: &str) -> Option<MemoryVersion> {
-        let mut version = self
-            .list(store)
-            .into_iter()
-            .find(|version| version.id == version_id)?;
-        version.redacted_at = Some(OBJECT_AT.to_string());
-        version.content = None;
-        match self {
-            Self::Memory { logs, .. } => {
-                let mut logs = logs.lock().expect("memory versions");
-                *logs
-                    .get_mut(store)?
-                    .iter_mut()
-                    .find(|candidate| candidate.id == version_id)? = version.clone();
-            }
-            Self::Sqlite(conn) => {
-                let data = serde_json::to_string(&version).expect("encode redacted version");
-                conn.lock()
-                    .expect("memory versions")
-                    .execute(
-                        "UPDATE memory_versions SET data = ?1 WHERE store_id = ?2 AND version_id = ?3",
-                        rusqlite::params![data, store, version_id],
-                    )
-                    .expect("redact memory version");
-            }
-        }
-        Some(version)
-    }
 }
 
 /// Mount the memory-store API over an ephemeral resource catalog. Product
@@ -271,11 +123,7 @@ pub fn memory_stores_router_with_catalog(
     host: Arc<SharedHost>,
     catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
 ) -> Router {
-    let state = Arc::new(MemoryStoreApi {
-        host,
-        catalog,
-        versions: VersionRepository::open(),
-    });
+    let state = Arc::new(MemoryStoreApi { host, catalog });
     Router::new()
         .route("/v1/memory_stores", post(create_store).get(list_stores))
         .route(
@@ -521,26 +369,6 @@ async fn path_of(state: &MemoryStoreApi, store: &str, mid: &str) -> Option<Strin
         .map(|e| e.path)
 }
 
-/// Append a version-history row for the `/memory_versions` endpoints.
-fn record_version(
-    state: &MemoryStoreApi,
-    store: &str,
-    memory_id: &str,
-    path: &str,
-    content: Option<String>,
-    operation: &'static str,
-) {
-    let ver = MemoryVersion {
-        id: String::new(),
-        memory_id: memory_id.to_string(),
-        operation: operation.to_string(),
-        content,
-        path: path.to_string(),
-        redacted_at: None,
-    };
-    state.versions.append(store, ver);
-}
-
 fn memory_conflict() -> axum::response::Response {
     (
         StatusCode::CONFLICT,
@@ -580,17 +408,7 @@ async fn create_memory(
         .create(&id, path, content)
         .await
     {
-        Ok(mem) => {
-            record_version(
-                &state,
-                &id,
-                &mem.id,
-                path,
-                Some(content.to_string()),
-                "created",
-            );
-            (StatusCode::OK, Json(project_memory(&mem, &id))).into_response()
-        }
+        Ok(mem) => (StatusCode::OK, Json(project_memory(&mem, &id))).into_response(),
         Err(MemErr::PathConflict(_)) => memory_conflict(),
         Err(MemErr::InvalidPath(_)) => err(StatusCode::BAD_REQUEST, "invalid memory path"),
         Err(MemErr::TooLarge) => err(StatusCode::BAD_REQUEST, "memory content too large"),
@@ -729,14 +547,6 @@ async fn update_memory(
         }
         _ => updated,
     };
-    record_version(
-        &state,
-        &id,
-        &mid,
-        &final_mem.path,
-        Some(new_content),
-        "modified",
-    );
     (StatusCode::OK, Json(project_memory(&final_mem, &id))).into_response()
 }
 
@@ -762,7 +572,6 @@ async fn delete_memory(
     {
         return err(StatusCode::INTERNAL_SERVER_ERROR, "delete failed");
     }
-    record_version(&state, &id, &mid, &path, None, "deleted");
     (
         StatusCode::OK,
         Json(json!({ "id": mid, "type": "memory_deleted" })),
@@ -789,10 +598,13 @@ async fn list_versions(
     if !active_store_exists(&state, &workspace, &id) {
         return not_found("memory_store");
     }
-    let log = state.versions.list(&id);
+    let log = match state.host.memory_stores.fs().list_versions(&id).await {
+        Ok(log) => log,
+        Err(error) => return err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    };
     let data: Vec<Value> = collect_versions(&log)
         .iter()
-        .map(|v| v.project(&id))
+        .map(|version| project_version(version, &id))
         .collect();
     (
         StatusCode::OK,
@@ -810,9 +622,12 @@ async fn get_version(
     if !active_store_exists(&state, &workspace, &id) {
         return not_found("memory_store");
     }
-    let log = state.versions.list(&id);
+    let log = match state.host.memory_stores.fs().list_versions(&id).await {
+        Ok(log) => log,
+        Err(error) => return err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    };
     match collect_versions(&log).into_iter().find(|v| v.id == vid) {
-        Some(v) => (StatusCode::OK, Json(v.project(&id))).into_response(),
+        Some(version) => (StatusCode::OK, Json(project_version(&version, &id))).into_response(),
         None => not_found("memory_version"),
     }
 }
@@ -829,40 +644,18 @@ async fn redact_version(
     if !active_store_exists(&state, &workspace, &id) {
         return not_found("memory_store");
     }
-    if let Some(version) = state.versions.redact(&id, &vid) {
-        return (StatusCode::OK, Json(version.project(&id))).into_response();
+    match state
+        .host
+        .memory_stores
+        .fs()
+        .redact_version(&id, &vid)
+        .await
+    {
+        Ok(Some(version)) => {
+            return (StatusCode::OK, Json(project_version(&version, &id))).into_response();
+        }
+        Ok(None) => {}
+        Err(error) => return err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
     not_found("memory_version")
-}
-
-#[cfg(test)]
-mod version_repository_tests {
-    use super::*;
-
-    #[test]
-    fn version_history_and_redaction_survive_reopen() {
-        let dir = tempfile::tempdir().unwrap();
-        let repository = VersionRepository::open_at(dir.path());
-        repository.append(
-            "memstore_1",
-            MemoryVersion {
-                id: String::new(),
-                memory_id: "memory_1".into(),
-                operation: "created".into(),
-                content: Some("secret".into()),
-                path: "/note".into(),
-                redacted_at: None,
-            },
-        );
-        let version_id = repository.list("memstore_1")[0].id.clone();
-        repository.redact("memstore_1", &version_id).unwrap();
-        drop(repository);
-
-        let reopened = VersionRepository::open_at(dir.path());
-        let versions = reopened.list("memstore_1");
-        assert_eq!(versions.len(), 1);
-        assert_eq!(versions[0].id, version_id);
-        assert_eq!(versions[0].content, None);
-        assert!(versions[0].redacted_at.is_some());
-    }
 }

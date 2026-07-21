@@ -16,7 +16,8 @@ use std::path::{Path, PathBuf};
 pub mod memfs;
 
 pub use memfs::{
-    FsMemoryFs, InMemoryFs, MAX_MEMORY_BYTES, MemErr, Memory, MemoryEntry, MemoryFs, sha256_hex,
+    FsMemoryFs, InMemoryFs, MAX_MEMORY_BYTES, MemErr, Memory, MemoryEntry, MemoryFs, MemoryVersion,
+    MemoryVersionOperation, sha256_hex,
 };
 
 #[cfg(feature = "postgres")]

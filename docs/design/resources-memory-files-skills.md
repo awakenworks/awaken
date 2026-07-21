@@ -214,7 +214,7 @@ reclamation. It stores neither a secret nor a process-local handle.
 | authorization PDP/PIP | External/shared authorization domain | IAM | decide principal/action/scope/resource facts under active policy | mounts, resource configuration, storage |
 | `SessionResourceCoordinator` | Target evolution of Host preparation | Session application/host | activation state, ordered provision/release, recovery handoff | Agent config loading, IAM policy language |
 | `FileStore` | Existing | File data plane | immutable content-addressed bytes | Workspace authorization; mutable overwrite |
-| `MemoryRepository` | Target merge of `MemoryFs` + history/redaction | Memory data plane | scoped open, entries, CAS, history, redaction, retention hooks | Agent/Session binding and IAM policy |
+| `MemoryRepository` | Existing behavior behind `MemoryFs`; naming evolution remains | Memory data plane | scoped entries, CAS, atomic history, redaction, retention hooks | Agent/Session binding and IAM policy |
 | `RepositoryRealizer` | Target evolution of repo staging | Environment/host adapter | clone current remote config, construct working tree, mediate Git credentials | remote repository ownership or commit pinning |
 | `CredentialResolver`/Vault | Existing | Credential product domain | turn a credential binding into a short-lived lease and rotate/revoke it | Agent prompt, persisted Session secret material |
 | `SandboxProvider` | Existing | Environment provisioning | realize validated mounts/working trees and dispose them | product resource authoring and policy |
@@ -577,7 +577,8 @@ internal config version remains an awaken governance detail.
 - content-addressed immutable `FileStore` and its local/SQLite/Postgres/S3
   adapters;
 - Workspace-scoped resource ownership foundations;
-- `MemoryFs` path model, CAS, path validation, SQLite/Postgres adapters;
+- `MemoryFs` aggregate repository: path model, CAS, atomic history/redaction,
+  monotonic ids, and local/SQLite/Postgres adapters;
 - Agent default resource configuration and Managed Session attachment ingress;
 - `SandboxProvider`, mount descriptors, and environment realization boundary;
 - Vault credential references and host-side secret materialization.
@@ -592,8 +593,8 @@ internal config version remains an awaken governance detail.
   `SessionInputResolver`;
 - preserve `ResourceAccess` through the neutral Session contract and realizer;
 - generate prompts from `EffectiveSessionInputs` once;
-- merge `MemoryFs`, Memory history, and redaction persistence behind one
-  `MemoryRepository` transaction boundary;
+- rename the now-unified `MemoryFs` aggregate port to `MemoryRepository` when the
+  remaining extraction call sites have migrated;
 - evolve repo staging into a `RepositoryRealizer` consuming a platform-managed
   Repository config version and credential binding.
 
@@ -602,7 +603,8 @@ internal config version remains an awaken governance detail.
 - `MemoryBlobStore` and all blob backends;
 - single-file Memory materialization and `harvest_thread_memory`;
 - `StagedResources.memory_mounts` and last-writer-wins Memory write-back;
-- API-local independent `VersionRepository`;
+- API-local independent `VersionRepository` (removed; legacy rows are imported
+  once into the aggregate repository without continued dual reads/writes);
 - Runtime's second read of the Agent resource store and
   `binding_as_session_resource` lowering;
 - raw repository URL as `ResourceBinding.resource_id`;

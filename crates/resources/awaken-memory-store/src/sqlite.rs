@@ -36,7 +36,9 @@ fn migrate_guarded(conn: &Arc<Mutex<Connection>>) -> Result<(), StoreError> {
 }
 
 use crate::memfs::{now_nanos, under_prefix, validate_path, validate_size};
-use crate::{MemErr, Memory, MemoryEntry, MemoryFs, sha256_hex};
+use crate::{
+    MemErr, Memory, MemoryEntry, MemoryFs, MemoryVersion, MemoryVersionOperation, sha256_hex,
+};
 
 fn mem_err(err: impl std::fmt::Display) -> MemErr {
     MemErr::Storage(err.to_string())
@@ -95,6 +97,107 @@ impl SqliteMemoryFs {
     pub fn ensure_schema(&self) -> Result<(), StoreError> {
         migrate_guarded(&self.conn)
     }
+
+    /// One-time, idempotent upgrade from the removed runtime-host
+    /// `resource-api.db::memory_versions` sidecar. The imported rows become normal
+    /// aggregate history; no runtime read or write ever returns to the legacy DB.
+    pub fn import_legacy_versions(
+        &self,
+        legacy_path: &std::path::Path,
+    ) -> Result<usize, StoreError> {
+        if !legacy_path.exists() {
+            return Ok(0);
+        }
+        let legacy =
+            Connection::open(legacy_path).map_err(|error| StoreError::Open(error.to_string()))?;
+        let mut statement = match legacy.prepare(
+            "SELECT seq, store_id, version_id, data FROM memory_versions \
+             WHERE version_id IS NOT NULL AND data <> '' ORDER BY seq",
+        ) {
+            Ok(statement) => statement,
+            Err(_) => return Ok(0),
+        };
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(|error| StoreError::Migrate(error.to_string()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| StoreError::Migrate(error.to_string()))?;
+
+        let guard = self
+            .conn
+            .lock()
+            .map_err(|_| StoreError::Migrate("memory_store connection poisoned".into()))?;
+        let tx = guard
+            .unchecked_transaction()
+            .map_err(|error| StoreError::Migrate(error.to_string()))?;
+        let mut imported = 0usize;
+        let mut max_ordinal = 0i64;
+        for (ordinal, store, version_id, data) in rows {
+            let value: serde_json::Value = serde_json::from_str(&data)
+                .map_err(|error| StoreError::Migrate(error.to_string()))?;
+            let memory_id = value
+                .get("memory_id")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    StoreError::Migrate("legacy memory version has no memory_id".into())
+                })?;
+            let operation = value
+                .get("operation")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    StoreError::Migrate("legacy memory version has no operation".into())
+                })?;
+            let path = value
+                .get("path")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| StoreError::Migrate("legacy memory version has no path".into()))?;
+            let content = value.get("content").and_then(serde_json::Value::as_str);
+            let redacted = value
+                .get("redacted_at")
+                .is_some_and(|value| !value.is_null())
+                .then_some(1i64);
+            imported += tx
+                .execute(
+                    &format!(
+                        "INSERT OR IGNORE INTO {NS}_versions \
+                         (store_id, ordinal, id, memory_id, operation, path, content, created, redacted) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, ?8)"
+                    ),
+                    params![
+                        store,
+                        ordinal,
+                        version_id,
+                        memory_id,
+                        operation,
+                        path,
+                        content.map(str::as_bytes),
+                        redacted,
+                    ],
+                )
+                .map_err(|error| StoreError::Migrate(error.to_string()))?;
+            max_ordinal = max_ordinal.max(ordinal);
+        }
+        if max_ordinal > 0 {
+            tx.execute(
+                &format!(
+                    "INSERT INTO {NS}_counters(name, next_value) VALUES ('memory_version', ?1) \
+                     ON CONFLICT(name) DO UPDATE SET next_value = MAX(next_value, excluded.next_value)"
+                ),
+                params![max_ordinal],
+            )
+            .map_err(|error| StoreError::Migrate(error.to_string()))?;
+        }
+        tx.commit()
+            .map_err(|error| StoreError::Migrate(error.to_string()))?;
+        Ok(imported)
+    }
 }
 
 /// Build a [`Memory`] from a memories row (content included).
@@ -118,6 +221,121 @@ fn row_memory(
         created_unix_nanos: created as u128,
         updated_unix_nanos: updated as u128,
     })
+}
+
+fn operation_name(operation: MemoryVersionOperation) -> &'static str {
+    match operation {
+        MemoryVersionOperation::Created => "created",
+        MemoryVersionOperation::Modified => "modified",
+        MemoryVersionOperation::Deleted => "deleted",
+    }
+}
+
+fn parse_operation(value: &str) -> Result<MemoryVersionOperation, MemErr> {
+    match value {
+        "created" => Ok(MemoryVersionOperation::Created),
+        "modified" => Ok(MemoryVersionOperation::Modified),
+        "deleted" => Ok(MemoryVersionOperation::Deleted),
+        other => Err(mem_err(format!(
+            "unknown memory version operation `{other}`"
+        ))),
+    }
+}
+
+fn row_version(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryVersion> {
+    let operation: String = row.get(2)?;
+    let content: Option<Vec<u8>> = row.get(4)?;
+    let content = content
+        .map(String::from_utf8)
+        .transpose()
+        .map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                4,
+                rusqlite::types::Type::Blob,
+                Box::new(error),
+            )
+        })?;
+    Ok(MemoryVersion {
+        id: row.get(0)?,
+        memory_id: row.get(1)?,
+        operation: parse_operation(&operation).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                2,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?,
+        path: row.get(3)?,
+        content,
+        created_unix_nanos: row.get::<_, i64>(5)? as u128,
+        redacted_unix_nanos: row.get::<_, Option<i64>>(6)?.map(|value| value as u128),
+    })
+}
+
+fn next_counter(tx: &rusqlite::Transaction<'_>, name: &str, seed_sql: &str) -> Result<i64, MemErr> {
+    let seed: i64 = tx
+        .query_row(seed_sql, [], |row| row.get(0))
+        .map_err(mem_err)?;
+    tx.execute(
+        &format!("INSERT OR IGNORE INTO {NS}_counters(name, next_value) VALUES (?1, ?2)"),
+        params![name, seed],
+    )
+    .map_err(mem_err)?;
+    tx.execute(
+        &format!("UPDATE {NS}_counters SET next_value = next_value + 1 WHERE name = ?1"),
+        params![name],
+    )
+    .map_err(mem_err)?;
+    tx.query_row(
+        &format!("SELECT next_value FROM {NS}_counters WHERE name = ?1"),
+        params![name],
+        |row| row.get(0),
+    )
+    .map_err(mem_err)
+}
+
+fn append_version(
+    tx: &rusqlite::Transaction<'_>,
+    store: &str,
+    memory_id: &str,
+    operation: MemoryVersionOperation,
+    path: &str,
+    content: Option<&str>,
+    created: i64,
+) -> Result<MemoryVersion, MemErr> {
+    let ordinal = next_counter(
+        tx,
+        "memory_version",
+        &format!("SELECT COALESCE(MAX(ordinal), 0) FROM {NS}_versions"),
+    )?;
+    let version = MemoryVersion {
+        id: format!("memver_{ordinal:016}"),
+        memory_id: memory_id.to_string(),
+        operation,
+        path: path.to_string(),
+        content: content.map(str::to_string),
+        created_unix_nanos: created as u128,
+        redacted_unix_nanos: None,
+    };
+    tx.execute(
+        &format!(
+            "INSERT INTO {NS}_versions \
+             (store_id, ordinal, id, memory_id, operation, path, content, created, redacted) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL)"
+        ),
+        params![
+            store,
+            ordinal,
+            version.id,
+            memory_id,
+            operation_name(operation),
+            path,
+            content.map(str::as_bytes),
+            created,
+        ],
+    )
+    .map_err(mem_err)?;
+    Ok(version)
 }
 
 #[async_trait::async_trait]
@@ -200,7 +418,8 @@ impl MemoryFs for SqliteMemoryFs {
         validate_size(content)?;
         let (store, path, content) = (store.to_string(), path.to_string(), content.to_string());
         with_conn_mem(&self.conn, move |conn| {
-            let exists = conn
+            let tx = conn.unchecked_transaction().map_err(mem_err)?;
+            let exists = tx
                 .query_row(
                     &format!("SELECT 1 FROM {NS}_memories WHERE store_id = ?1 AND path = ?2"),
                     params![store, path],
@@ -212,17 +431,15 @@ impl MemoryFs for SqliteMemoryFs {
             if exists {
                 return Err(MemErr::PathConflict(path));
             }
-            let ordinal: i64 = conn
-                .query_row(
-                    &format!("SELECT COALESCE(MAX(ordinal), 0) + 1 FROM {NS}_memories"),
-                    [],
-                    |r| r.get(0),
-                )
-                .map_err(mem_err)?;
+            let ordinal = next_counter(
+                &tx,
+                "memory_id",
+                &format!("SELECT COALESCE(MAX(ordinal), 0) FROM {NS}_memories"),
+            )?;
             let id = format!("mem_{ordinal}");
             let sha = sha256_hex(&content);
             let now = now_nanos() as i64;
-            conn.execute(
+            tx.execute(
                 &format!(
                     "INSERT INTO {NS}_memories \
                      (store_id, path, id, ordinal, content, sha, version, created, updated) \
@@ -231,6 +448,16 @@ impl MemoryFs for SqliteMemoryFs {
                 params![store, path, id, ordinal, content.as_bytes(), sha, now],
             )
             .map_err(mem_err)?;
+            append_version(
+                &tx,
+                &store,
+                &id,
+                MemoryVersionOperation::Created,
+                &path,
+                Some(&content),
+                now,
+            )?;
+            tx.commit().map_err(mem_err)?;
             Ok(Memory {
                 content_size: content.len() as u64,
                 content: Some(content),
@@ -260,7 +487,8 @@ impl MemoryFs for SqliteMemoryFs {
             base_sha.to_string(),
         );
         with_conn_mem(&self.conn, move |conn| {
-            let row = conn
+            let tx = conn.unchecked_transaction().map_err(mem_err)?;
+            let row = tx
                 .query_row(
                     &format!(
                         "SELECT path, sha, content, version, created FROM {NS}_memories \
@@ -293,7 +521,7 @@ impl MemoryFs for SqliteMemoryFs {
                 });
             }
             let now = now_nanos() as i64;
-            conn.execute(
+            tx.execute(
                 &format!(
                     "UPDATE {NS}_memories SET content = ?1, sha = ?2, version = version + 1, \
                      updated = ?3 WHERE store_id = ?4 AND id = ?5"
@@ -301,6 +529,16 @@ impl MemoryFs for SqliteMemoryFs {
                 params![content.as_bytes(), new_sha, now, store, id],
             )
             .map_err(mem_err)?;
+            append_version(
+                &tx,
+                &store,
+                &id,
+                MemoryVersionOperation::Modified,
+                &path,
+                Some(&content),
+                now,
+            )?;
+            tx.commit().map_err(mem_err)?;
             Ok(Memory {
                 content_size: content.len() as u64,
                 content: Some(content),
@@ -351,6 +589,14 @@ impl MemoryFs for SqliteMemoryFs {
                 return row_memory(id, from, content, sha, version, created, created);
             }
             let now = now_nanos() as i64;
+            let displaced_id = tx
+                .query_row(
+                    &format!("SELECT id FROM {NS}_memories WHERE store_id = ?1 AND path = ?2"),
+                    params![store, to],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(mem_err)?;
             tx.execute(
                 &format!("DELETE FROM {NS}_memories WHERE store_id = ?1 AND path = ?2"),
                 params![store, to],
@@ -364,10 +610,31 @@ impl MemoryFs for SqliteMemoryFs {
                 params![to, now, store, id],
             )
             .map_err(mem_err)?;
+            if let Some(displaced_id) = displaced_id {
+                append_version(
+                    &tx,
+                    &store,
+                    &displaced_id,
+                    MemoryVersionOperation::Deleted,
+                    &to,
+                    None,
+                    now,
+                )?;
+            }
+            let content = String::from_utf8(content).map_err(mem_err)?;
+            append_version(
+                &tx,
+                &store,
+                &id,
+                MemoryVersionOperation::Modified,
+                &to,
+                Some(&content),
+                now,
+            )?;
             tx.commit().map_err(mem_err)?;
             Ok(Memory {
                 content_size: content.len() as u64,
-                content: Some(String::from_utf8(content).map_err(mem_err)?),
+                content: Some(content),
                 id,
                 path: to,
                 content_sha256: sha,
@@ -382,12 +649,92 @@ impl MemoryFs for SqliteMemoryFs {
     async fn delete_by_path(&self, store: &str, path: &str) -> Result<(), MemErr> {
         let (store, path) = (store.to_string(), path.to_string());
         with_conn_mem(&self.conn, move |conn| {
-            conn.execute(
+            let tx = conn.unchecked_transaction().map_err(mem_err)?;
+            let memory_id = tx
+                .query_row(
+                    &format!("SELECT id FROM {NS}_memories WHERE store_id = ?1 AND path = ?2"),
+                    params![store, path],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(mem_err)?;
+            let Some(memory_id) = memory_id else {
+                return Ok(());
+            };
+            tx.execute(
                 &format!("DELETE FROM {NS}_memories WHERE store_id = ?1 AND path = ?2"),
                 params![store, path],
             )
             .map_err(mem_err)?;
+            append_version(
+                &tx,
+                &store,
+                &memory_id,
+                MemoryVersionOperation::Deleted,
+                &path,
+                None,
+                now_nanos() as i64,
+            )?;
+            tx.commit().map_err(mem_err)?;
             Ok(())
+        })
+        .await
+    }
+
+    async fn list_versions(&self, store: &str) -> Result<Vec<MemoryVersion>, MemErr> {
+        let store = store.to_string();
+        with_conn_mem(&self.conn, move |conn| {
+            let mut stmt = conn
+                .prepare(&format!(
+                    "SELECT id, memory_id, operation, path, content, created, redacted \
+                     FROM {NS}_versions WHERE store_id = ?1 ORDER BY ordinal"
+                ))
+                .map_err(mem_err)?;
+            stmt.query_map(params![store], row_version)
+                .map_err(mem_err)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(mem_err)
+        })
+        .await
+    }
+
+    async fn redact_version(
+        &self,
+        store: &str,
+        version_id: &str,
+    ) -> Result<Option<MemoryVersion>, MemErr> {
+        let (store, version_id) = (store.to_string(), version_id.to_string());
+        with_conn_mem(&self.conn, move |conn| {
+            let tx = conn.unchecked_transaction().map_err(mem_err)?;
+            let existing = tx
+                .query_row(
+                    &format!(
+                        "SELECT id, memory_id, operation, path, content, created, redacted \
+                         FROM {NS}_versions WHERE store_id = ?1 AND id = ?2"
+                    ),
+                    params![store, version_id],
+                    row_version,
+                )
+                .optional()
+                .map_err(mem_err)?;
+            let Some(mut version) = existing else {
+                return Ok(None);
+            };
+            if version.redacted_unix_nanos.is_none() {
+                let redacted = now_nanos() as i64;
+                tx.execute(
+                    &format!(
+                        "UPDATE {NS}_versions SET content = NULL, redacted = ?1 \
+                         WHERE store_id = ?2 AND id = ?3"
+                    ),
+                    params![redacted, store, version_id],
+                )
+                .map_err(mem_err)?;
+                version.content = None;
+                version.redacted_unix_nanos = Some(redacted as u128);
+            }
+            tx.commit().map_err(mem_err)?;
+            Ok(Some(version))
         })
         .await
     }
@@ -659,17 +1006,10 @@ mod memfs_tests {
         assert_eq!(at_dst.content.as_deref(), Some("src"));
     }
 
-    /// KNOWN DIVERGENCE / TRIPWIRE (see the CEG report): the SQLite (and Postgres)
-    /// backend mints the next id from `MAX(ordinal)` over the *live* rows, so deleting
-    /// the highest-ordinal memory and creating again **reuses the deleted id**
-    /// (`mem_2`), whereas the in-memory backend advances a monotonic counter and mints
-    /// a fresh `mem_3`. The contract calls the id "globally-unique", and every other
-    /// backend honors monotonicity in-process, so this reuse is a bug: an in-flight
-    /// reference (e.g. a cached FUSE inode→id) to the deleted memory would silently
-    /// re-resolve to the new one. This test pins the current behavior so a durable-
-    /// counter fix (see report) flips it deliberately — update `mem_2` → `mem_3` then.
+    /// Durable high-water counters prevent a deleted memory id from ever being
+    /// reissued. This must agree with the in-memory aggregate.
     #[tokio::test]
-    async fn id_reuse_after_delete_diverges_from_monotonic_backends() {
+    async fn durable_ids_remain_monotonic_after_delete() {
         use crate::memfs::InMemoryFs;
 
         async fn top_delete_then_create(fs: &dyn MemoryFs) -> String {
@@ -683,14 +1023,8 @@ mod memfs_tests {
         assert_eq!(monotonic, "mem_3", "in-memory never reuses a deleted id");
 
         let sqlite = top_delete_then_create(&SqliteMemoryFs::open_in_memory().unwrap()).await;
-        assert_eq!(
-            sqlite, "mem_2",
-            "BUG(pinned): sqlite reuses the deleted top ordinal instead of minting mem_3"
-        );
-        assert_ne!(
-            monotonic, sqlite,
-            "the two backends disagree on the id after a top-ordinal delete"
-        );
+        assert_eq!(sqlite, "mem_3", "sqlite never reuses a deleted id");
+        assert_eq!(monotonic, sqlite);
     }
 
     #[tokio::test]
@@ -699,9 +1033,15 @@ mod memfs_tests {
         std::fs::create_dir_all(&dir).ok();
         let path = dir.join("m.db");
         let path_str = path.to_str().unwrap();
+        let version_id;
         {
             let fs = SqliteMemoryFs::open(path_str).unwrap();
-            fs.create("s", "/keep.md", "durable").await.unwrap();
+            let created = fs.create("s", "/keep.md", "durable").await.unwrap();
+            fs.update("s", &created.id, "updated", &created.content_sha256)
+                .await
+                .unwrap();
+            version_id = fs.list_versions("s").await.unwrap()[0].id.clone();
+            fs.redact_version("s", &version_id).await.unwrap().unwrap();
         }
         let fs = SqliteMemoryFs::open(path_str).unwrap();
         assert_eq!(
@@ -711,9 +1051,61 @@ mod memfs_tests {
                 .unwrap()
                 .content
                 .as_deref(),
-            Some("durable")
+            Some("updated")
         );
+        let versions = fs.list_versions("s").await.unwrap();
+        assert_eq!(versions.len(), 2);
+        assert_eq!(versions[0].id, version_id);
+        assert!(versions[0].content.is_none());
+        assert!(versions[0].redacted_unix_nanos.is_some());
+        assert_eq!(versions[1].content.as_deref(), Some("updated"));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn legacy_version_sidecar_import_is_idempotent_and_advances_high_water() {
+        let dir = tempfile::tempdir().unwrap();
+        let legacy_path = dir.path().join("resource-api.db");
+        let legacy = Connection::open(&legacy_path).unwrap();
+        legacy
+            .execute_batch(
+                "CREATE TABLE memory_versions (\
+                     seq INTEGER PRIMARY KEY AUTOINCREMENT,\
+                     store_id TEXT NOT NULL,\
+                     version_id TEXT UNIQUE,\
+                     data TEXT NOT NULL\
+                 );",
+            )
+            .unwrap();
+        legacy
+            .execute(
+                "INSERT INTO memory_versions(seq, store_id, version_id, data) \
+                 VALUES (42, 's', 'memver_0000000000000042', ?1)",
+                params![
+                    serde_json::json!({
+                        "id": "memver_0000000000000042",
+                        "memory_id": "mem_old",
+                        "operation": "created",
+                        "content": "legacy",
+                        "path": "/legacy.md",
+                        "redacted_at": null
+                    })
+                    .to_string()
+                ],
+            )
+            .unwrap();
+        drop(legacy);
+
+        let store = SqliteMemoryFs::open(dir.path().join("memory.db").to_str().unwrap()).unwrap();
+        assert_eq!(store.import_legacy_versions(&legacy_path).unwrap(), 1);
+        assert_eq!(store.import_legacy_versions(&legacy_path).unwrap(), 0);
+        let versions = store.list_versions("s").await.unwrap();
+        assert_eq!(versions.len(), 1);
+        assert_eq!(versions[0].content.as_deref(), Some("legacy"));
+
+        store.create("s", "/new.md", "new").await.unwrap();
+        let versions = store.list_versions("s").await.unwrap();
+        assert_eq!(versions[1].id, "memver_0000000000000043");
     }
 
     /// A crash mid-`rename` (after the destination is deleted, before the source is

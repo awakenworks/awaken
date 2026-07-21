@@ -440,13 +440,10 @@ mod postgres {
         );
     }
 
-    /// The sqlite id-reuse-after-delete divergence (pinned in `sqlite::memfs_tests`)
-    /// also holds for `PgMemoryFs`: both derive the next id from `MAX(ordinal)` over the
-    /// LIVE rows, so deleting the highest-ordinal memory and creating again REUSES the
-    /// deleted ordinal (`mem_2`) instead of minting a fresh `mem_3` the way the in-process
-    /// monotonic-counter backends do.
+    /// The Postgres high-water row is durable and transactionally incremented, so
+    /// deletion cannot make an id reusable.
     #[tokio::test]
-    async fn postgres_reuses_deleted_top_ordinal_like_sqlite() {
+    async fn postgres_never_reuses_a_deleted_top_ordinal() {
         let Some(pool) = schema_pool("t_memoryfs_reuse").await else {
             return;
         };
@@ -457,9 +454,8 @@ mod postgres {
         fs.delete_by_path("s", "/b.md").await.unwrap();
         let c = fs.create("s", "/c.md", "c").await.unwrap();
         assert_eq!(
-            c.id, "mem_2",
-            "BUG(pinned): postgres reuses the deleted top ordinal, matching sqlite \
-             (the monotonic in-memory backend would mint mem_3)"
+            c.id, "mem_3",
+            "postgres must not reuse an identity observed by an earlier run"
         );
     }
 }

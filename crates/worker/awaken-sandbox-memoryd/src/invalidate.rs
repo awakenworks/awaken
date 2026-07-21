@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use awaken_memory_store::{MemErr, Memory, MemoryEntry, MemoryFs};
+use awaken_memory_store::{MemErr, Memory, MemoryEntry, MemoryFs, MemoryVersion};
 use tokio::sync::broadcast;
 
 /// A `(store_id, path)` invalidation — "this path changed; drop it".
@@ -111,6 +111,18 @@ impl MemoryFs for InvalidatingMemoryFs {
         self.inner.delete_by_path(store, path).await?;
         self.invalidator.publish(store, path);
         Ok(())
+    }
+
+    async fn list_versions(&self, store: &str) -> Result<Vec<MemoryVersion>, MemErr> {
+        self.inner.list_versions(store).await
+    }
+
+    async fn redact_version(
+        &self,
+        store: &str,
+        version_id: &str,
+    ) -> Result<Option<MemoryVersion>, MemErr> {
+        self.inner.redact_version(store, version_id).await
     }
 }
 

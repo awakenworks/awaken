@@ -134,6 +134,31 @@ pub struct MemoryEntry {
     pub updated_unix_nanos: u128,
 }
 
+/// The kind of durable state transition recorded for a memory head.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryVersionOperation {
+    Created,
+    Modified,
+    Deleted,
+}
+
+/// One immutable audit/version row emitted by the same repository transaction
+/// that mutates the live memory head. Redaction removes only the historical
+/// content; it never rewrites the live head.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryVersion {
+    pub id: String,
+    pub memory_id: String,
+    pub operation: MemoryVersionOperation,
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    pub created_unix_nanos: u128,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redacted_unix_nanos: Option<u128>,
+}
+
 /// A [`MemoryFs`] failure.
 #[derive(Debug, thiserror::Error)]
 pub enum MemErr {
@@ -169,8 +194,14 @@ pub fn validate_path_len(path: &str) -> Result<(), MemErr> {
     }
 }
 
-/// A path-addressed, CAS memory store — the seam a write-through FUSE mount calls
-/// (ADR-0053). All methods are store-scoped by an opaque, globally-unique `store` id.
+/// A path-addressed, CAS memory aggregate repository — the seam a write-through
+/// FUSE mount and the managed API share (ADR-0053/ADR-0063). All methods are
+/// store-scoped by an opaque, globally-unique `store` id.
+///
+/// Every successful, state-changing create/update/rename/delete appends exactly
+/// one or more [`MemoryVersion`] rows in the same atomic repository operation.
+/// Idempotent updates/deletes append nothing. This invariant is what keeps API
+/// versions, runtime recall/extraction, and mounted content on one source of truth.
 #[async_trait]
 pub trait MemoryFs: Send + Sync {
     /// Memories whose path is at or under `prefix` (`"/"` or `""` = all).
@@ -195,4 +226,13 @@ pub trait MemoryFs: Send + Sync {
     async fn rename(&self, store: &str, from: &str, to: &str) -> Result<Memory, MemErr>;
     /// Delete the memory at `path` (idempotent — deleting an absent path is `Ok`).
     async fn delete_by_path(&self, store: &str, path: &str) -> Result<(), MemErr>;
+    /// Ordered version history for this store.
+    async fn list_versions(&self, store: &str) -> Result<Vec<MemoryVersion>, MemErr>;
+    /// Redact one historical version's content. Returns `None` when the version
+    /// does not belong to this store. Repeated redaction is idempotent.
+    async fn redact_version(
+        &self,
+        store: &str,
+        version_id: &str,
+    ) -> Result<Option<MemoryVersion>, MemErr>;
 }

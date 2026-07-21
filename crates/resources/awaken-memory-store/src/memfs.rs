@@ -8,11 +8,11 @@
 //! optimistic concurrency**: [`MemoryFs::update`] is a compare-and-swap on the base
 //! sha, so two writers never silently clobber each other.
 //!
-//! Backends: [`InMemoryFs`], [`FsMemoryFs`] (JSON record per memory), and — feature-
-//! record per memory). Sqlite/postgres are a later slice (ADR-0053 P4).
+//! Backends: [`InMemoryFs`], [`FsMemoryFs`] (one atomic aggregate document per
+//! store), and feature-gated SQLite/Postgres transactional repositories.
 //!
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -26,7 +26,8 @@ use sha2::{Digest, Sha256};
 // contract crate. This module implements the port and re-exports them so
 // `awaken_memory_store::memfs::Memory` (and the root re-exports) keep resolving.
 pub use awaken_resource_contract::{
-    MAX_MEMORY_BYTES, MAX_PATH_BYTES, MemErr, Memory, MemoryEntry, MemoryFs,
+    MAX_MEMORY_BYTES, MAX_PATH_BYTES, MemErr, Memory, MemoryEntry, MemoryFs, MemoryVersion,
+    MemoryVersionOperation,
 };
 
 /// Lowercase hex SHA-256 of `content` — the CAS token (Anthropic wire is sha256).
@@ -125,9 +126,16 @@ pub(crate) fn under_prefix(path: &str, prefix: &str) -> bool {
 /// whole map, so every create/update/rename/delete is atomic and CAS is race-free.
 #[derive(Default)]
 pub struct InMemoryFs {
-    // store id → (path → record)
-    inner: Mutex<BTreeMap<String, BTreeMap<String, Record>>>,
+    inner: Mutex<InMemoryState>,
     next: AtomicU64,
+    version_next: AtomicU64,
+}
+
+#[derive(Default)]
+struct InMemoryState {
+    // store id → (path → record)
+    records: BTreeMap<String, BTreeMap<String, Record>>,
+    versions: BTreeMap<String, Vec<MemoryVersion>>,
 }
 
 impl InMemoryFs {
@@ -138,6 +146,30 @@ impl InMemoryFs {
     fn mint_id(&self) -> String {
         format!("mem_{}", self.next.fetch_add(1, Ordering::SeqCst) + 1)
     }
+
+    fn append_version(
+        &self,
+        state: &mut InMemoryState,
+        store: &str,
+        record: &Record,
+        operation: MemoryVersionOperation,
+        content: Option<String>,
+    ) {
+        let ordinal = self.version_next.fetch_add(1, Ordering::SeqCst) + 1;
+        state
+            .versions
+            .entry(store.to_string())
+            .or_default()
+            .push(MemoryVersion {
+                id: format!("memver_{ordinal}"),
+                memory_id: record.id.clone(),
+                operation,
+                path: record.path.clone(),
+                content,
+                created_unix_nanos: record.updated,
+                redacted_unix_nanos: None,
+            });
+    }
 }
 
 #[async_trait]
@@ -145,6 +177,7 @@ impl MemoryFs for InMemoryFs {
     async fn list(&self, store: &str, prefix: &str) -> Result<Vec<MemoryEntry>, MemErr> {
         let guard = self.inner.lock().unwrap();
         Ok(guard
+            .records
             .get(store)
             .map(|s| {
                 s.values()
@@ -158,6 +191,7 @@ impl MemoryFs for InMemoryFs {
     async fn get_by_path(&self, store: &str, path: &str) -> Result<Option<Memory>, MemErr> {
         let guard = self.inner.lock().unwrap();
         Ok(guard
+            .records
             .get(store)
             .and_then(|s| s.get(path))
             .map(|r| r.to_memory(true)))
@@ -168,7 +202,7 @@ impl MemoryFs for InMemoryFs {
         validate_size(content)?;
         let id = self.mint_id();
         let mut guard = self.inner.lock().unwrap();
-        let store_map = guard.entry(store.to_string()).or_default();
+        let store_map = guard.records.entry(store.to_string()).or_default();
         if store_map.contains_key(path) {
             return Err(MemErr::PathConflict(path.to_string()));
         }
@@ -183,7 +217,14 @@ impl MemoryFs for InMemoryFs {
             updated: now,
         };
         let memory = record.to_memory(true);
-        store_map.insert(path.to_string(), record);
+        store_map.insert(path.to_string(), record.clone());
+        self.append_version(
+            &mut guard,
+            store,
+            &record,
+            MemoryVersionOperation::Created,
+            Some(content.to_string()),
+        );
         Ok(memory)
     }
 
@@ -198,6 +239,7 @@ impl MemoryFs for InMemoryFs {
         let new_sha = sha256_hex(content);
         let mut guard = self.inner.lock().unwrap();
         let store_map = guard
+            .records
             .get_mut(store)
             .ok_or_else(|| MemErr::NotFound(id.to_string()))?;
         let record = store_map
@@ -217,13 +259,23 @@ impl MemoryFs for InMemoryFs {
         record.sha = new_sha;
         record.version += 1;
         record.updated = now_nanos();
-        Ok(record.to_memory(true))
+        let record = record.clone();
+        let memory = record.to_memory(true);
+        self.append_version(
+            &mut guard,
+            store,
+            &record,
+            MemoryVersionOperation::Modified,
+            Some(content.to_string()),
+        );
+        Ok(memory)
     }
 
     async fn rename(&self, store: &str, from: &str, to: &str) -> Result<Memory, MemErr> {
         validate_path(to)?;
         let mut guard = self.inner.lock().unwrap();
         let store_map = guard
+            .records
             .get_mut(store)
             .ok_or_else(|| MemErr::NotFound(from.to_string()))?;
         if from == to {
@@ -235,22 +287,80 @@ impl MemoryFs for InMemoryFs {
         let mut record = store_map
             .remove(from)
             .ok_or_else(|| MemErr::NotFound(from.to_string()))?;
-        // Atomic replace of the destination (POSIX rename): the id/version below are
-        // the moved memory's; any prior `to` is dropped.
+        // Atomic replace of the destination (POSIX rename). Preserve a deletion
+        // version for the displaced memory before recording the moved head.
+        let displaced = store_map.remove(to);
         record.path = to.to_string();
         record.version += 1;
         record.updated = now_nanos();
         let memory = record.to_memory(true);
-        store_map.insert(to.to_string(), record);
+        store_map.insert(to.to_string(), record.clone());
+        if let Some(displaced) = displaced {
+            self.append_version(
+                &mut guard,
+                store,
+                &displaced,
+                MemoryVersionOperation::Deleted,
+                None,
+            );
+        }
+        self.append_version(
+            &mut guard,
+            store,
+            &record,
+            MemoryVersionOperation::Modified,
+            Some(record.content.clone()),
+        );
         Ok(memory)
     }
 
     async fn delete_by_path(&self, store: &str, path: &str) -> Result<(), MemErr> {
         let mut guard = self.inner.lock().unwrap();
-        if let Some(s) = guard.get_mut(store) {
-            s.remove(path);
+        let removed = guard
+            .records
+            .get_mut(store)
+            .and_then(|records| records.remove(path));
+        if let Some(record) = removed {
+            self.append_version(
+                &mut guard,
+                store,
+                &record,
+                MemoryVersionOperation::Deleted,
+                None,
+            );
         }
         Ok(())
+    }
+
+    async fn list_versions(&self, store: &str) -> Result<Vec<MemoryVersion>, MemErr> {
+        Ok(self
+            .inner
+            .lock()
+            .unwrap()
+            .versions
+            .get(store)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    async fn redact_version(
+        &self,
+        store: &str,
+        version_id: &str,
+    ) -> Result<Option<MemoryVersion>, MemErr> {
+        let mut guard = self.inner.lock().unwrap();
+        let Some(version) = guard
+            .versions
+            .get_mut(store)
+            .and_then(|versions| versions.iter_mut().find(|version| version.id == version_id))
+        else {
+            return Ok(None);
+        };
+        if version.redacted_unix_nanos.is_none() {
+            version.redacted_unix_nanos = Some(now_nanos());
+            version.content = None;
+        }
+        Ok(Some(version.clone()))
     }
 }
 
@@ -258,45 +368,34 @@ impl MemoryFs for InMemoryFs {
 // Filesystem backend
 // ---------------------------------------------------------------------------
 
-/// Durable [`MemoryFs`]: `<root>/<store>/<hex(sha256(path))>.mem`, one JSON record
-/// per memory, written atomically (temp + rename). A single async mutex serializes
-/// mutations so an in-process read-modify-write (CAS, rename-replace) is atomic; a
-/// cross-node CAS is the postgres slice (ADR-0053 P4).
+/// Durable local-development [`MemoryFs`]: one aggregate document per store,
+/// replaced atomically after each serialized mutation. Production embedded and
+/// multi-node deployments use the SQLite/Postgres transactional adapters.
 pub struct FsMemoryFs {
     root: PathBuf,
-    // Mints dense `mem_<n>` ids; only `create` advances it.
-    next: AtomicU64,
-    // Distinct from `next`: names each staged temp file uniquely, so a write never
-    // consumes an id ordinal (that is what keeps minted ids dense).
     write_seq: AtomicU64,
     write_lock: tokio::sync::Mutex<()>,
 }
 
+/// One crash-atomic document per store. Heads, id high-water marks, and history
+/// move together under a temp-file + rename, so this development adapter honors
+/// the same aggregate invariant as SQLite/Postgres instead of maintaining a
+/// second sidecar log.
+#[derive(Default, Serialize, Deserialize)]
+struct FsState {
+    records: BTreeMap<String, Record>,
+    versions: Vec<MemoryVersion>,
+    next_id: u64,
+    next_version: u64,
+}
+
 impl FsMemoryFs {
-    /// Open (creating if absent) the store rooted at `root`, seeding the id counter
-    /// past the highest `mem_<n>` already persisted.
+    /// Open (creating if absent) the store rooted at `root`.
     pub fn open(root: impl Into<PathBuf>) -> std::io::Result<Self> {
         let root = root.into();
         std::fs::create_dir_all(&root)?;
-        let mut max = 0u64;
-        if let Ok(stores) = std::fs::read_dir(&root) {
-            for store in stores.flatten() {
-                if let Ok(files) = std::fs::read_dir(store.path()) {
-                    for entry in files.flatten() {
-                        if let Ok(bytes) = std::fs::read(entry.path())
-                            && let Ok(rec) = serde_json::from_slice::<Record>(&bytes)
-                            && let Some(n) =
-                                rec.id.strip_prefix("mem_").and_then(|d| d.parse().ok())
-                        {
-                            max = max.max(n);
-                        }
-                    }
-                }
-            }
-        }
         Ok(Self {
             root,
-            next: AtomicU64::new(max),
             write_seq: AtomicU64::new(0),
             write_lock: tokio::sync::Mutex::new(()),
         })
@@ -305,31 +404,27 @@ impl FsMemoryFs {
     fn store_dir(&self, store: &str) -> PathBuf {
         self.root.join(crate::sanitize_stem(store))
     }
-    fn record_path(&self, store: &str, path: &str) -> PathBuf {
-        self.store_dir(store)
-            .join(format!("{}.mem", sha256_hex(path)))
-    }
-    fn mint_id(&self) -> String {
-        format!("mem_{}", self.next.fetch_add(1, Ordering::SeqCst) + 1)
+    fn state_path(&self, store: &str) -> PathBuf {
+        self.store_dir(store).join("state.json")
     }
 
-    async fn read_record(&self, file: &Path) -> Result<Option<Record>, MemErr> {
-        match tokio::fs::read(file).await {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map(Some)
-                .map_err(|e| MemErr::Storage(e.to_string())),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(MemErr::Storage(e.to_string())),
+    async fn load_state(&self, store: &str) -> Result<FsState, MemErr> {
+        match tokio::fs::read(self.state_path(store)).await {
+            Ok(bytes) => {
+                serde_json::from_slice(&bytes).map_err(|error| MemErr::Storage(error.to_string()))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(FsState::default()),
+            Err(error) => Err(MemErr::Storage(error.to_string())),
         }
     }
 
-    async fn write_record(&self, store: &str, record: &Record) -> Result<(), MemErr> {
+    async fn write_state(&self, store: &str, state: &FsState) -> Result<(), MemErr> {
         let dir = self.store_dir(store);
         tokio::fs::create_dir_all(&dir)
             .await
             .map_err(|e| MemErr::Storage(e.to_string()))?;
-        let bytes = serde_json::to_vec(record).map_err(|e| MemErr::Storage(e.to_string()))?;
-        let final_path = self.record_path(store, &record.path);
+        let bytes = serde_json::to_vec(state).map_err(|e| MemErr::Storage(e.to_string()))?;
+        let final_path = self.state_path(store);
         let tmp = dir.join(format!(
             ".tmp.{}.{}",
             std::process::id(),
@@ -343,27 +438,22 @@ impl FsMemoryFs {
             .map_err(|e| MemErr::Storage(e.to_string()))
     }
 
-    async fn all_records(&self, store: &str) -> Result<Vec<Record>, MemErr> {
-        let dir = self.store_dir(store);
-        let mut out = Vec::new();
-        let mut rd = match tokio::fs::read_dir(&dir).await {
-            Ok(rd) => rd,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
-            Err(e) => return Err(MemErr::Storage(e.to_string())),
-        };
-        while let Some(entry) = rd
-            .next_entry()
-            .await
-            .map_err(|e| MemErr::Storage(e.to_string()))?
-        {
-            let p = entry.path();
-            if p.extension().and_then(|e| e.to_str()) == Some("mem")
-                && let Some(rec) = self.read_record(&p).await?
-            {
-                out.push(rec);
-            }
-        }
-        Ok(out)
+    fn append_version(
+        state: &mut FsState,
+        record: &Record,
+        operation: MemoryVersionOperation,
+        content: Option<String>,
+    ) {
+        state.next_version += 1;
+        state.versions.push(MemoryVersion {
+            id: format!("memver_{}", state.next_version),
+            memory_id: record.id.clone(),
+            operation,
+            path: record.path.clone(),
+            content,
+            created_unix_nanos: record.updated,
+            redacted_unix_nanos: None,
+        });
     }
 }
 
@@ -371,9 +461,10 @@ impl FsMemoryFs {
 impl MemoryFs for FsMemoryFs {
     async fn list(&self, store: &str, prefix: &str) -> Result<Vec<MemoryEntry>, MemErr> {
         Ok(self
-            .all_records(store)
+            .load_state(store)
             .await?
-            .iter()
+            .records
+            .values()
             .filter(|r| under_prefix(&r.path, prefix))
             .map(Record::to_entry)
             .collect())
@@ -381,21 +472,25 @@ impl MemoryFs for FsMemoryFs {
 
     async fn get_by_path(&self, store: &str, path: &str) -> Result<Option<Memory>, MemErr> {
         Ok(self
-            .read_record(&self.record_path(store, path))
+            .load_state(store)
             .await?
-            .map(|r| r.to_memory(true)))
+            .records
+            .get(path)
+            .map(|record| record.to_memory(true)))
     }
 
     async fn create(&self, store: &str, path: &str, content: &str) -> Result<Memory, MemErr> {
         validate_path(path)?;
         validate_size(content)?;
         let _guard = self.write_lock.lock().await;
-        if self.record_path(store, path).exists() {
+        let mut state = self.load_state(store).await?;
+        if state.records.contains_key(path) {
             return Err(MemErr::PathConflict(path.to_string()));
         }
         let now = now_nanos();
+        state.next_id += 1;
         let record = Record {
-            id: self.mint_id(),
+            id: format!("mem_{}", state.next_id),
             path: path.to_string(),
             sha: sha256_hex(content),
             content: content.to_string(),
@@ -403,8 +498,16 @@ impl MemoryFs for FsMemoryFs {
             created: now,
             updated: now,
         };
-        self.write_record(store, &record).await?;
-        Ok(record.to_memory(true))
+        let memory = record.to_memory(true);
+        Self::append_version(
+            &mut state,
+            &record,
+            MemoryVersionOperation::Created,
+            Some(content.to_string()),
+        );
+        state.records.insert(path.to_string(), record);
+        self.write_state(store, &state).await?;
+        Ok(memory)
     }
 
     async fn update(
@@ -417,12 +520,16 @@ impl MemoryFs for FsMemoryFs {
         validate_size(content)?;
         let new_sha = sha256_hex(content);
         let _guard = self.write_lock.lock().await;
-        let mut record = self
-            .all_records(store)
-            .await?
-            .into_iter()
-            .find(|r| r.id == id)
+        let mut state = self.load_state(store).await?;
+        let path = state
+            .records
+            .iter()
+            .find_map(|(path, record)| (record.id == id).then(|| path.clone()))
             .ok_or_else(|| MemErr::NotFound(id.to_string()))?;
+        let record = state
+            .records
+            .get_mut(&path)
+            .expect("path came from records");
         if record.sha != base_sha {
             if record.sha == new_sha {
                 return Ok(record.to_memory(true));
@@ -435,37 +542,90 @@ impl MemoryFs for FsMemoryFs {
         record.sha = new_sha;
         record.version += 1;
         record.updated = now_nanos();
-        self.write_record(store, &record).await?;
-        Ok(record.to_memory(true))
+        let record = record.clone();
+        let memory = record.to_memory(true);
+        Self::append_version(
+            &mut state,
+            &record,
+            MemoryVersionOperation::Modified,
+            Some(content.to_string()),
+        );
+        self.write_state(store, &state).await?;
+        Ok(memory)
     }
 
     async fn rename(&self, store: &str, from: &str, to: &str) -> Result<Memory, MemErr> {
         validate_path(to)?;
         let _guard = self.write_lock.lock().await;
-        let from_file = self.record_path(store, from);
-        let mut record = self
-            .read_record(&from_file)
-            .await?
+        let mut state = self.load_state(store).await?;
+        let mut record = state
+            .records
+            .remove(from)
             .ok_or_else(|| MemErr::NotFound(from.to_string()))?;
         if from == to {
+            state.records.insert(from.to_string(), record.clone());
             return Ok(record.to_memory(true));
         }
+        let displaced = state.records.remove(to);
         record.path = to.to_string();
         record.version += 1;
         record.updated = now_nanos();
-        // Write the destination (replacing any prior `to`), then drop the source.
-        self.write_record(store, &record).await?;
-        let _ = tokio::fs::remove_file(&from_file).await;
-        Ok(record.to_memory(true))
+        let memory = record.to_memory(true);
+        if let Some(displaced) = displaced {
+            Self::append_version(
+                &mut state,
+                &displaced,
+                MemoryVersionOperation::Deleted,
+                None,
+            );
+        }
+        Self::append_version(
+            &mut state,
+            &record,
+            MemoryVersionOperation::Modified,
+            Some(record.content.clone()),
+        );
+        state.records.insert(to.to_string(), record);
+        self.write_state(store, &state).await?;
+        Ok(memory)
     }
 
     async fn delete_by_path(&self, store: &str, path: &str) -> Result<(), MemErr> {
         let _guard = self.write_lock.lock().await;
-        match tokio::fs::remove_file(self.record_path(store, path)).await {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(MemErr::Storage(e.to_string())),
+        let mut state = self.load_state(store).await?;
+        if let Some(record) = state.records.remove(path) {
+            Self::append_version(&mut state, &record, MemoryVersionOperation::Deleted, None);
+            self.write_state(store, &state).await?;
         }
+        Ok(())
+    }
+
+    async fn list_versions(&self, store: &str) -> Result<Vec<MemoryVersion>, MemErr> {
+        Ok(self.load_state(store).await?.versions)
+    }
+
+    async fn redact_version(
+        &self,
+        store: &str,
+        version_id: &str,
+    ) -> Result<Option<MemoryVersion>, MemErr> {
+        let _guard = self.write_lock.lock().await;
+        let mut state = self.load_state(store).await?;
+        let Some(version) = state
+            .versions
+            .iter_mut()
+            .find(|version| version.id == version_id)
+        else {
+            return Ok(None);
+        };
+        if version.redacted_unix_nanos.is_some() {
+            return Ok(Some(version.clone()));
+        }
+        version.content = None;
+        version.redacted_unix_nanos = Some(now_nanos());
+        let version = version.clone();
+        self.write_state(store, &state).await?;
+        Ok(Some(version))
     }
 }
 
@@ -734,15 +894,108 @@ mod tests {
             .unwrap();
     }
 
+    /// Cause-effect graph for the aggregate invariant:
+    ///
+    /// state-changing mutation => one durable version (rename-replace => displaced
+    /// delete + source modify); rejected/idempotent mutation => no version;
+    /// redaction => history content removed, live head unchanged.
+    async fn history_conformance(fs: &dyn MemoryFs) {
+        let store = "history";
+        let created = fs.create(store, "/a.md", "one").await.unwrap();
+        let first = fs.list_versions(store).await.unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].memory_id, created.id);
+        assert_eq!(first[0].operation, MemoryVersionOperation::Created);
+        assert_eq!(first[0].content.as_deref(), Some("one"));
+
+        assert!(matches!(
+            fs.create(store, "/a.md", "duplicate").await,
+            Err(MemErr::PathConflict(_))
+        ));
+        assert_eq!(fs.list_versions(store).await.unwrap().len(), 1);
+
+        let updated = fs
+            .update(store, &created.id, "two", &created.content_sha256)
+            .await
+            .unwrap();
+        assert_eq!(fs.list_versions(store).await.unwrap().len(), 2);
+        fs.update(store, &created.id, "two", "stale-but-idempotent")
+            .await
+            .unwrap();
+        assert_eq!(
+            fs.list_versions(store).await.unwrap().len(),
+            2,
+            "idempotent CAS does not invent a version"
+        );
+
+        let displaced = fs.create(store, "/b.md", "old").await.unwrap();
+        fs.rename(store, "/a.md", "/b.md").await.unwrap();
+        let after_rename = fs.list_versions(store).await.unwrap();
+        assert_eq!(after_rename.len(), 5);
+        assert_eq!(after_rename[3].memory_id, displaced.id);
+        assert_eq!(after_rename[3].operation, MemoryVersionOperation::Deleted);
+        assert_eq!(after_rename[4].memory_id, created.id);
+        assert_eq!(after_rename[4].operation, MemoryVersionOperation::Modified);
+
+        fs.delete_by_path(store, "/b.md").await.unwrap();
+        fs.delete_by_path(store, "/b.md").await.unwrap();
+        let versions = fs.list_versions(store).await.unwrap();
+        assert_eq!(versions.len(), 6, "idempotent delete appends once");
+
+        let redacted = fs
+            .redact_version(store, &first[0].id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(redacted.content.is_none());
+        assert!(redacted.redacted_unix_nanos.is_some());
+        let again = fs
+            .redact_version(store, &first[0].id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(again, redacted, "redaction is idempotent");
+        assert!(
+            fs.redact_version("other", &first[0].id)
+                .await
+                .unwrap()
+                .is_none(),
+            "a version id cannot cross its store boundary"
+        );
+        assert_eq!(updated.content.as_deref(), Some("two"));
+    }
+
     #[tokio::test]
     async fn in_memory_extended_conformance() {
         extended_conformance(&InMemoryFs::new()).await;
     }
 
     #[tokio::test]
+    async fn in_memory_history_conformance() {
+        history_conformance(&InMemoryFs::new()).await;
+    }
+
+    #[tokio::test]
     async fn fs_extended_conformance() {
         let root = temp_root("ext");
         extended_conformance(&FsMemoryFs::open(&root).unwrap()).await;
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn fs_history_conformance_and_reopen() {
+        let root = temp_root("history");
+        let first_version_id;
+        {
+            let fs = FsMemoryFs::open(&root).unwrap();
+            history_conformance(&fs).await;
+            first_version_id = fs.list_versions("history").await.unwrap()[0].id.clone();
+        }
+        let reopened = FsMemoryFs::open(&root).unwrap();
+        let versions = reopened.list_versions("history").await.unwrap();
+        assert_eq!(versions.len(), 6);
+        assert_eq!(versions[0].id, first_version_id);
+        assert!(versions[0].redacted_unix_nanos.is_some());
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -817,10 +1070,8 @@ mod tests {
 
     /// Ids are monotonic across a delete: deleting the highest-ordinal memory and then
     /// creating must mint a FRESH id, never re-hand-out the deleted one. Holds within a
-    /// live handle for both the in-memory and (in-process) filesystem backends because
-    /// their `next` counter only advances. (The sqlite/postgres backends derive the
-    /// high-water from live rows and therefore reuse a deleted top ordinal — pinned as a
-    /// divergence in `sqlite::memfs_tests`.)
+    /// live handle for the in-memory backend and durably for every persistent
+    /// backend because their high-water counters only advance.
     async fn ids_stay_monotonic_across_delete(fs: &dyn MemoryFs) {
         let a = fs.create("s", "/a.md", "a").await.unwrap();
         let b = fs.create("s", "/b.md", "b").await.unwrap();

@@ -30,7 +30,9 @@ async fn run_migrations(pool: &PgPool) -> Result<(), PgStoreError> {
 }
 
 use crate::memfs::{now_nanos, under_prefix, validate_path, validate_size};
-use crate::{MemErr, Memory, MemoryEntry, MemoryFs, sha256_hex};
+use crate::{
+    MemErr, Memory, MemoryEntry, MemoryFs, MemoryVersion, MemoryVersionOperation, sha256_hex,
+};
 
 fn mem_err(err: impl std::fmt::Display) -> MemErr {
     MemErr::Storage(err.to_string())
@@ -86,6 +88,104 @@ fn to_memory(
         created_unix_nanos: created as u128,
         updated_unix_nanos: updated as u128,
     })
+}
+
+fn operation_name(operation: MemoryVersionOperation) -> &'static str {
+    match operation {
+        MemoryVersionOperation::Created => "created",
+        MemoryVersionOperation::Modified => "modified",
+        MemoryVersionOperation::Deleted => "deleted",
+    }
+}
+
+fn parse_operation(value: &str) -> Result<MemoryVersionOperation, MemErr> {
+    match value {
+        "created" => Ok(MemoryVersionOperation::Created),
+        "modified" => Ok(MemoryVersionOperation::Modified),
+        "deleted" => Ok(MemoryVersionOperation::Deleted),
+        other => Err(mem_err(format!(
+            "unknown memory version operation `{other}`"
+        ))),
+    }
+}
+
+fn to_version(row: sqlx::postgres::PgRow) -> Result<MemoryVersion, MemErr> {
+    let content = row
+        .get::<Option<Vec<u8>>, _>("content")
+        .map(String::from_utf8)
+        .transpose()
+        .map_err(mem_err)?;
+    Ok(MemoryVersion {
+        id: row.get("id"),
+        memory_id: row.get("memory_id"),
+        operation: parse_operation(row.get::<String, _>("operation").as_str())?,
+        path: row.get("path"),
+        content,
+        created_unix_nanos: row.get::<i64, _>("created") as u128,
+        redacted_unix_nanos: row
+            .get::<Option<i64>, _>("redacted")
+            .map(|value| value as u128),
+    })
+}
+
+async fn next_counter(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    name: &str,
+    seed_sql: &str,
+) -> Result<i64, MemErr> {
+    let seed: i64 = sqlx::query_scalar(seed_sql)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(mem_err)?;
+    sqlx::query(&format!(
+        "INSERT INTO {NS}_counters(name, next_value) VALUES ($1, $2) ON CONFLICT (name) DO NOTHING"
+    ))
+    .bind(name)
+    .bind(seed)
+    .execute(&mut **tx)
+    .await
+    .map_err(mem_err)?;
+    sqlx::query_scalar(&format!(
+        "UPDATE {NS}_counters SET next_value = next_value + 1 WHERE name = $1 RETURNING next_value"
+    ))
+    .bind(name)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(mem_err)
+}
+
+async fn append_version(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    store: &str,
+    memory_id: &str,
+    operation: MemoryVersionOperation,
+    path: &str,
+    content: Option<&str>,
+    created: i64,
+) -> Result<(), MemErr> {
+    let ordinal = next_counter(
+        tx,
+        "memory_version",
+        &format!("SELECT COALESCE(MAX(ordinal), 0) FROM {NS}_versions"),
+    )
+    .await?;
+    sqlx::query(&format!(
+        "INSERT INTO {NS}_versions \
+         (store_id, ordinal, id, memory_id, operation, path, content, created, redacted) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL)"
+    ))
+    .bind(store)
+    .bind(ordinal)
+    .bind(format!("memver_{ordinal:016}"))
+    .bind(memory_id)
+    .bind(operation_name(operation))
+    .bind(path)
+    .bind(content.map(str::as_bytes))
+    .bind(created)
+    .execute(&mut **tx)
+    .await
+    .map_err(mem_err)?;
+    Ok(())
 }
 
 #[async_trait::async_trait]
@@ -153,12 +253,12 @@ impl MemoryFs for PgMemoryFs {
         if exists {
             return Err(MemErr::PathConflict(path.to_string()));
         }
-        let ordinal: i64 = sqlx::query_scalar(&format!(
-            "SELECT COALESCE(MAX(ordinal), 0) + 1 FROM {NS}_memories"
-        ))
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(mem_err)?;
+        let ordinal = next_counter(
+            &mut tx,
+            "memory_id",
+            &format!("SELECT COALESCE(MAX(ordinal), 0) FROM {NS}_memories"),
+        )
+        .await?;
         let id = format!("mem_{ordinal}");
         let sha = sha256_hex(content);
         let now = now_nanos() as i64;
@@ -190,6 +290,16 @@ impl MemoryFs for PgMemoryFs {
                 mem_err(e)
             }
         })?;
+        append_version(
+            &mut tx,
+            store,
+            &id,
+            MemoryVersionOperation::Created,
+            path,
+            Some(content),
+            now,
+        )
+        .await?;
         tx.commit().await.map_err(mem_err)?;
         Ok(Memory {
             content_size: content.len() as u64,
@@ -268,6 +378,16 @@ impl MemoryFs for PgMemoryFs {
         .execute(&mut *tx)
         .await
         .map_err(mem_err)?;
+        append_version(
+            &mut tx,
+            store,
+            id,
+            MemoryVersionOperation::Modified,
+            &path,
+            Some(content),
+            now,
+        )
+        .await?;
         tx.commit().await.map_err(mem_err)?;
         Ok(Memory {
             content_size: content.len() as u64,
@@ -305,6 +425,14 @@ impl MemoryFs for PgMemoryFs {
             return to_memory(id, from.into(), content, sha, version, created, created);
         }
         let now = now_nanos() as i64;
+        let displaced_id = sqlx::query_scalar::<_, String>(&format!(
+            "SELECT id FROM {NS}_memories WHERE store_id = $1 AND path = $2 FOR UPDATE"
+        ))
+        .bind(store)
+        .bind(to)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(mem_err)?;
         sqlx::query(&format!(
             "DELETE FROM {NS}_memories WHERE store_id = $1 AND path = $2"
         ))
@@ -324,10 +452,33 @@ impl MemoryFs for PgMemoryFs {
         .execute(&mut *tx)
         .await
         .map_err(mem_err)?;
+        if let Some(displaced_id) = displaced_id {
+            append_version(
+                &mut tx,
+                store,
+                &displaced_id,
+                MemoryVersionOperation::Deleted,
+                to,
+                None,
+                now,
+            )
+            .await?;
+        }
+        let content = String::from_utf8(content).map_err(mem_err)?;
+        append_version(
+            &mut tx,
+            store,
+            &id,
+            MemoryVersionOperation::Modified,
+            to,
+            Some(&content),
+            now,
+        )
+        .await?;
         tx.commit().await.map_err(mem_err)?;
         Ok(Memory {
             content_size: content.len() as u64,
-            content: Some(String::from_utf8(content).map_err(mem_err)?),
+            content: Some(content),
             id,
             path: to.to_string(),
             content_sha256: sha,
@@ -338,14 +489,89 @@ impl MemoryFs for PgMemoryFs {
     }
 
     async fn delete_by_path(&self, store: &str, path: &str) -> Result<(), MemErr> {
+        let mut tx = self.pool.begin().await.map_err(mem_err)?;
+        let memory_id = sqlx::query_scalar::<_, String>(&format!(
+            "SELECT id FROM {NS}_memories WHERE store_id = $1 AND path = $2 FOR UPDATE"
+        ))
+        .bind(store)
+        .bind(path)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(mem_err)?;
+        let Some(memory_id) = memory_id else {
+            return Ok(());
+        };
         sqlx::query(&format!(
             "DELETE FROM {NS}_memories WHERE store_id = $1 AND path = $2"
         ))
         .bind(store)
         .bind(path)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(mem_err)?;
+        append_version(
+            &mut tx,
+            store,
+            &memory_id,
+            MemoryVersionOperation::Deleted,
+            path,
+            None,
+            now_nanos() as i64,
+        )
+        .await?;
+        tx.commit().await.map_err(mem_err)?;
         Ok(())
+    }
+
+    async fn list_versions(&self, store: &str) -> Result<Vec<MemoryVersion>, MemErr> {
+        sqlx::query(&format!(
+            "SELECT id, memory_id, operation, path, content, created, redacted \
+             FROM {NS}_versions WHERE store_id = $1 ORDER BY ordinal"
+        ))
+        .bind(store)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(mem_err)?
+        .into_iter()
+        .map(to_version)
+        .collect()
+    }
+
+    async fn redact_version(
+        &self,
+        store: &str,
+        version_id: &str,
+    ) -> Result<Option<MemoryVersion>, MemErr> {
+        let mut tx = self.pool.begin().await.map_err(mem_err)?;
+        let row = sqlx::query(&format!(
+            "SELECT id, memory_id, operation, path, content, created, redacted \
+             FROM {NS}_versions WHERE store_id = $1 AND id = $2 FOR UPDATE"
+        ))
+        .bind(store)
+        .bind(version_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(mem_err)?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let mut version = to_version(row)?;
+        if version.redacted_unix_nanos.is_none() {
+            let redacted = now_nanos() as i64;
+            sqlx::query(&format!(
+                "UPDATE {NS}_versions SET content = NULL, redacted = $1 \
+                 WHERE store_id = $2 AND id = $3"
+            ))
+            .bind(redacted)
+            .bind(store)
+            .bind(version_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(mem_err)?;
+            version.content = None;
+            version.redacted_unix_nanos = Some(redacted as u128);
+        }
+        tx.commit().await.map_err(mem_err)?;
+        Ok(Some(version))
     }
 }
