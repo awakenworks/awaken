@@ -197,6 +197,9 @@ impl SkillCatalog {
         workspace: &str,
         ids: &[String],
     ) -> Result<Vec<ResolvedSkillBinding>, SkillStoreError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
         let store = self
             .store
             .as_ref()
@@ -225,6 +228,9 @@ impl SkillCatalog {
         workspace: &str,
         bindings: &[ResolvedSkillBinding],
     ) -> Result<Vec<SkillVersion>, SkillStoreError> {
+        if bindings.is_empty() {
+            return Ok(Vec::new());
+        }
         let store = self
             .store
             .as_ref()
@@ -350,6 +356,19 @@ mod tests {
             bundle_sha256: bundle_sha256(&files),
             files,
         }
+    }
+
+    #[tokio::test]
+    async fn empty_binding_is_the_identity_without_a_repository() {
+        let catalog = SkillCatalog::new("ws-a".into());
+        assert!(
+            catalog
+                .resolve_latest("ws-a", &[])
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(catalog.load_pinned("ws-a", &[]).await.unwrap().is_empty());
     }
 
     #[tokio::test]
