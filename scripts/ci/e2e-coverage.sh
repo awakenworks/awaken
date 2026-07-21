@@ -109,6 +109,10 @@ node worker_pool_e2e.mjs
 # scenarios are part of the changed runtime surface and must contribute real
 # process coverage (including the exact anonymous-worker 401 contract).
 npm run test:runtime-stages
+# Deterministic production-composition and lifecycle scenarios that are not part
+# of the historical aggregate suites. Keeping the list in package.json makes the
+# exact changed-line evidence runnable locally without invoking the reporter.
+npm run test:coverage-gaps
 if [ "${AWAKEN_COVERAGE_REAL:-0}" = "1" ] && [ -n "${coverage_anthropic_key}${coverage_kimi_key}" ]; then
   (
     export ANTHROPIC_API_KEY="$coverage_anthropic_key" # awaken-allow: secret

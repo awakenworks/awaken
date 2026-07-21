@@ -401,19 +401,21 @@ pub fn build_acp_gateway_router() -> Router {
 
 /// A fake ACP agent (JSON-RPC, shell builtins only) that reports whether the
 /// `session/new` request it received carried the session's MCP server and, if so,
-/// whether the bearer is the α secretless reference (`session-mcp:<name>`) rather than
-/// the raw vault token. It captures the `session/new` line (`id:2`) and, on the prompt
-/// (`id:3`), classifies it into its agent message: `saw-calc` if the `calc` server name
-/// crossed, `alpha-ref` if a `session-mcp:` reference is the bearer. So the managed-API
-/// e2e can assert the whole D6→D5 chain (session `mcp_servers` → staged → α overlay →
-/// `session/new`) reached the CLI without the raw secret ever leaving the host.
+/// whether the endpoint is the host-owned loopback relay rather than a provider endpoint
+/// carrying a raw vault token. It captures the `session/new` line (`id:2`) and, on the
+/// prompt (`id:3`), classifies it into its agent message: `saw-calc` if the `calc` server
+/// name crossed, `host-relay` if the URL points at the per-session loopback relay. The
+/// managed-API e2e can therefore assert the whole D6→D5 chain (session `mcp_servers` →
+/// staged → host relay → `session/new`) without exposing authorization material to the
+/// external ACP process. `alpha-ref` remains observable for the explicit relay-start
+/// fallback.
 const FAKE_ACP_MCP_ECHO_SCRIPT: &str = "while IFS= read -r line; do \
       case \"$line\" in \
         *'\"id\":1'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{}}}';; \
         *'\"id\":2'*) SN=\"$line\"; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"s1\"}}';; \
         *'\"id\":3'*) \
           N=noname; case \"$SN\" in *calc*) N=saw-calc;; esac; \
-          A=noref; case \"$SN\" in *'session-mcp:'*) A=alpha-ref;; esac; \
+          A=noref; case \"$SN\" in *'http://127.0.0.1:'*) A=host-relay;; *'session-mcp:'*) A=alpha-ref;; esac; \
           printf '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"mcp %s %s\"}}}}\\n' \"$N\" \"$A\"; \
           printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'; \
           exit 0;; \
