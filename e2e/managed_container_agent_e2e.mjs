@@ -152,6 +152,9 @@ async function main() {
       betas: BETAS,
     });
     const memory = await client.post('/v1/memory_stores');
+    await client.post(`/v1/memory_stores/${memory.id}/memories`, {
+      body: { path: '/seed.txt', content: 'CONTAINER-MEMORY-SEED' },
+    });
 
     const session = await client.beta.sessions.create({
       agent: 'assistant',
@@ -159,7 +162,7 @@ async function main() {
       environment_id: 'env_local',
       resources: [
         { type: 'file', file_id: file.id, mount_path: '/workspace/input.txt' },
-        { type: 'memory_store', memory_store_id: memory.id, mount_path: '/workspace/notes.txt' },
+        { type: 'memory_store', memory_store_id: memory.id, mount_path: '/notes' },
         { type: 'github_repository', url: skillRepository, mount_path: '/workspace/skills' },
       ],
       betas: BETAS,
@@ -197,17 +200,28 @@ async function main() {
       /CONTAINER-SKILL-OK/,
       'the repository-backed workspace skill must be imported into the Session container',
     );
+    assert.equal(
+      execFileSync('docker', ['exec', container, 'cat', '/workspace/.mnt/notes/seed.txt'], {
+        encoding: 'utf8',
+      }),
+      'CONTAINER-MEMORY-SEED',
+      'the governed memory filesystem must hydrate into the Session container',
+    );
 
     execFileSync('docker', [
       'exec',
       container,
       'sh',
       '-c',
-      'printf %s CONTAINER-MEMORY-OK > /workspace/.mnt/workspace/notes.txt',
+      'printf %s CONTAINER-MEMORY-OK > /workspace/.mnt/notes/container.txt',
     ]);
     await client.get(`/v1/files?scope_id=${session.id}`);
-    const harvested = await client.get(`/v1/memory_stores/${memory.id}`);
-    assert.match(harvested.content, /CONTAINER-MEMORY-OK/, 'container memory writes must harvest through the host');
+    const harvested = await client.get(`/v1/memory_stores/${memory.id}/memories`);
+    assert.equal(
+      harvested.data.find((entry) => entry.path === '/container.txt')?.content,
+      'CONTAINER-MEMORY-OK',
+      'container memory writes must harvest through the host',
+    );
 
     console.log(
       'E2E PASS: container agent — ACP, hand, file, memory, repository and workspace skill shared one Session-owned Docker environment.',

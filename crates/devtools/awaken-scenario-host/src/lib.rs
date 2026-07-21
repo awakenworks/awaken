@@ -634,9 +634,10 @@ pub async fn build_acp_container_router() -> Router {
         .with_skill_store(skill_store)
         .with_acp_from_env(awaken_server::relay_hand_executor_factory())
         .await;
-    let host = Arc::new(host);
-    let managed_state = Arc::new(ManagedState::new(ManagedHost::new(host.clone())));
-    mount_with_managed(host, managed_state)
+    // Use the same shared Resource Catalog + Managed ACL assembly as every other
+    // scenario. A bespoke state here previously dropped repository resolution and
+    // made the container path fail closed before the Session environment existed.
+    mount(Arc::new(host))
 }
 
 // ── Router assembly ─────────────────────────────────────────────────────────

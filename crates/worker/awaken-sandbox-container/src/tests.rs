@@ -5,7 +5,10 @@
 use super::*;
 use awaken_provisioning_contract::SandboxProvider;
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{
+    Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 
 fn spec(scope: &str) -> pc::SandboxSpec {
     pc::SandboxSpec {
@@ -242,7 +245,12 @@ async fn memory_store_realizes_as_copy_on_the_container_tier() {
         lifetime: pc::MountLifetime::Session,
         required: true,
     });
-    let sandbox = provider(rt).create(&s).await.unwrap();
+    let p = provider(rt);
+    let torn_down = Arc::new(AtomicBool::new(false));
+    p.install_memory_mounter(Arc::new(FakeMemoryMounter {
+        torn_down: torn_down.clone(),
+    }));
+    let sandbox = p.create(&s).await.unwrap();
     let mem = sandbox
         .realized()
         .iter()
@@ -251,6 +259,52 @@ async fn memory_store_realizes_as_copy_on_the_container_tier() {
     // No-FUSE portable default: the container tier reports Copy (the memoryd sidecar
     // materializes + harvests), not a live Fuse mount.
     assert_eq!(mem.realization, pc::Realization::Copy);
+    {
+        let state = p.runtime.st.lock().unwrap();
+        let bind = state.created_binds["cid-mem-real"]
+            .iter()
+            .find(|bind| bind.mount_path == "/workspace/.mnt/notes")
+            .expect("portable memory copy is bound into the container");
+        assert!(!bind.read_only);
+        assert_eq!(
+            std::fs::read(std::path::Path::new(&bind.source_ref).join("seed.txt")).unwrap(),
+            b"seed"
+        );
+    }
+    sandbox.dispose().await.unwrap();
+    assert!(torn_down.load(Ordering::SeqCst));
+}
+
+struct FakeMemoryMounter {
+    torn_down: Arc<AtomicBool>,
+}
+
+struct FakeMemoryMount(Arc<AtomicBool>);
+
+#[async_trait]
+impl pc::MemoryMounter for FakeMemoryMounter {
+    async fn mount(
+        &self,
+        _store_id: &str,
+        host_path: &std::path::Path,
+        _access: pc::MountAccess,
+    ) -> Result<Box<dyn pc::MemoryMount>, pc::SandboxError> {
+        std::fs::create_dir_all(host_path).map_err(|e| pc::SandboxError::new(e.to_string()))?;
+        std::fs::write(host_path.join("seed.txt"), b"seed")
+            .map_err(|e| pc::SandboxError::new(e.to_string()))?;
+        Ok(Box::new(FakeMemoryMount(self.torn_down.clone())))
+    }
+}
+
+#[async_trait]
+impl pc::MemoryMount for FakeMemoryMount {
+    fn realization(&self) -> pc::Realization {
+        pc::Realization::Copy
+    }
+
+    async fn teardown(self: Box<Self>) {
+        self.0.store(true, Ordering::SeqCst);
+    }
 }
 
 #[test]
@@ -279,6 +333,7 @@ struct FakeState {
     alive: HashMap<String, bool>,
     created_command: HashMap<String, Vec<String>>,
     created_env: HashMap<String, Vec<(String, String)>>,
+    created_binds: HashMap<String, Vec<BindPlan>>,
     exits: HashMap<String, pc::ExitStatus>,
     signals: Vec<(String, pc::Signal)>,
     lease_touches: u32,
@@ -386,6 +441,7 @@ impl ContainerRuntime for FakeRuntime {
         st.alive.insert(cid.clone(), true);
         st.created_command.insert(cid.clone(), plan.command.clone());
         st.created_env.insert(cid.clone(), plan.env.clone());
+        st.created_binds.insert(cid.clone(), plan.binds.clone());
         st.exits.insert(
             cid.clone(),
             pc::ExitStatus {
