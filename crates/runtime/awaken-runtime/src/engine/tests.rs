@@ -768,3 +768,39 @@ fn merge_thread_usage_fails_closed_and_does_not_reset_a_drifted_tally() {
         "the drifted usage cell is left untouched, never reset"
     );
 }
+
+#[tokio::test]
+async fn attempt_resume_without_committed_history_fails_closed() {
+    let snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("snapshot-1")
+        .fingerprint("fingerprint-1")
+        .build();
+    let activation = RunActivation::new(
+        RunId("run-1".into()),
+        ThreadId("thread-1".into()),
+        snapshot.clone(),
+        Vec::new(),
+    );
+    let command = ResumeCommand {
+        correlation_id: "ticket-1".into(),
+        run_id: activation.run_id.clone(),
+        thread_id: activation.thread_id.clone(),
+        snapshot_id: snapshot.id,
+        catalog_fingerprint: snapshot.fingerprint,
+        result: ResumeResult::allow(),
+        now_ms: 0,
+    };
+
+    let error = <Runtime as RunAttemptExecutor>::resume(
+        &Runtime::new(),
+        activation,
+        command,
+        RuntimeRunContext::new(),
+    )
+    .await
+    .expect_err("resume requires the authoritative committed history reader");
+
+    assert_eq!(
+        error.to_string(),
+        "runtime execution failed: RunAttemptExecutor::resume requires committed history"
+    );
+}
