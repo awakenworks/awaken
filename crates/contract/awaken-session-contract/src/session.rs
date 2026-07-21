@@ -187,7 +187,7 @@ pub struct SessionInit {
     /// The session's mounted resources (ADR-0038), parsed from the wire `resources[]`:
     /// files, memory stores, repos. The host realizes each into the run's sandbox and
     /// appends a prompt fragment to the system prompt (A3a). Empty = no mounts.
-    pub resources: Vec<SessionResource>,
+    pub resources: crate::EffectiveSessionInputs,
     /// The session's requested model (R2), staged so the run binds it; `None` →
     /// the host default.
     pub model: Option<String>,
@@ -324,6 +324,20 @@ pub trait SessionRuntime: Send + Sync {
     /// create (fail closed). The default is a no-op, so every host without MCP
     /// wiring is unaffected.
     async fn prepare_session(&self, _thread: &str, _init: SessionInit) -> Result<(), RunError> {
+        Ok(())
+    }
+
+    /// Re-stage the exact, persisted resource manifest after a process restart.
+    /// This is deliberately narrower than [`prepare_session`](Self::prepare_session):
+    /// it must not resolve Agent defaults or current resource configuration again.
+    /// Implementations may consult current ownership/lifecycle state only as a
+    /// fail-closed deny overlay.
+    async fn restore_session_inputs(
+        &self,
+        _thread: &str,
+        _workspace_id: &str,
+        _inputs: &crate::EffectiveSessionInputs,
+    ) -> Result<(), RunError> {
         Ok(())
     }
 
@@ -682,7 +696,7 @@ mod tests {
             workspace_id: "ws_test".into(),
             agent_id: "a".into(),
             mcp_servers: Vec::new(),
-            resources: Vec::new(),
+            resources: crate::EffectiveSessionInputs::default(),
             model: None,
             runtime: None,
             deny_egress: false,

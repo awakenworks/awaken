@@ -10,6 +10,9 @@ awaken-agent-contract.workspace = true
 # owns the wire DTOs + the neutral→wire encoder and re-exports each moved port via a
 # shim so consumers stay unchanged until flipped to the contract directly.
 awaken-session-contract.workspace = true
+# Typed resource ids/bindings plus the Resource Catalog port used by the Managed
+# ACL to lower wire resources before Session resolution. No IAM policy lives here.
+awaken-resource-contract.workspace = true
 # The in-memory reference WorkQueue + EnvRegistry + session-repository backends the
 # Managed Default wires (the ports + value objects stay inward in session-contract; the
 # backends live beside the durable sqlite/postgres siblings).

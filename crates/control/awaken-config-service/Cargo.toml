@@ -20,6 +20,8 @@ awaken-ext-state-machine = { workspace = true, features = ["schema"] }
 awaken-config-store = { workspace = true }
 awaken-tenancy = { workspace = true }
 awaken-config-resolver = { workspace = true }
+# Shared typed File/Memory/Repository binding vocabulary; contains no policy.
+awaken-resource-contract = { workspace = true }
 # The agent-config port lives in the session contract (a contract/ leaf), not the
 # Managed wire adapter — config-service implements it inward, not reverse-depending
 # on a protocol adapter.

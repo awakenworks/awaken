@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use awaken_resource_contract::{
     ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, RepositoryConfigVersion,
     RepositoryDefinition, ResolvedMemoryStoreConfig, ResolvedRepositoryConfig, ResourceCatalog,
-    ResourceCatalogError, ResourceState,
+    ResourceCatalogError, ResourceConfigSource, ResourceState,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
@@ -174,6 +174,68 @@ impl PostgresAdminStore {
     }
 }
 
+impl ResourceConfigSource for PostgresAdminStore {
+    fn resolve_memory_store(
+        &self,
+        workspace_id: &str,
+        id: &str,
+    ) -> Result<ResolvedMemoryStoreConfig, ResourceCatalogError> {
+        let record = self
+            .catalog_record::<MemoryRecord>(MEMORY, id)
+            .filter(|record| record.definition.workspace_id == workspace_id)
+            .ok_or_else(|| ResourceCatalogError::NotFound(id.into()))?;
+        if record.definition.state != ResourceState::Active {
+            return Err(ResourceCatalogError::NotActive {
+                id: id.into(),
+                state: record.definition.state,
+            });
+        }
+        let config = record
+            .configs
+            .get(&record.definition.current_config_version)
+            .cloned()
+            .ok_or_else(|| {
+                ResourceCatalogError::Storage(format!(
+                    "MemoryStore `{id}` current config version is missing"
+                ))
+            })?;
+        Ok(ResolvedMemoryStoreConfig {
+            definition: record.definition,
+            config,
+        })
+    }
+
+    fn resolve_repository(
+        &self,
+        workspace_id: &str,
+        id: &str,
+    ) -> Result<ResolvedRepositoryConfig, ResourceCatalogError> {
+        let record = self
+            .catalog_record::<RepositoryRecord>(REPOSITORY, id)
+            .filter(|record| record.definition.workspace_id == workspace_id)
+            .ok_or_else(|| ResourceCatalogError::NotFound(id.into()))?;
+        if record.definition.state != ResourceState::Active {
+            return Err(ResourceCatalogError::NotActive {
+                id: id.into(),
+                state: record.definition.state,
+            });
+        }
+        let config = record
+            .configs
+            .get(&record.definition.current_config_version)
+            .cloned()
+            .ok_or_else(|| {
+                ResourceCatalogError::Storage(format!(
+                    "Repository `{id}` current config version is missing"
+                ))
+            })?;
+        Ok(ResolvedRepositoryConfig {
+            definition: record.definition,
+            config,
+        })
+    }
+}
+
 impl ResourceCatalog for PostgresAdminStore {
     fn create_memory_store(
         &self,
@@ -213,36 +275,6 @@ impl ResourceCatalog for PostgresAdminStore {
         self.catalog_record::<MemoryRecord>(MEMORY, id)
             .filter(|record| record.definition.workspace_id == workspace_id)
             .and_then(|record| record.configs.get(&version).cloned())
-    }
-
-    fn resolve_memory_store(
-        &self,
-        workspace_id: &str,
-        id: &str,
-    ) -> Result<ResolvedMemoryStoreConfig, ResourceCatalogError> {
-        let record = self
-            .catalog_record::<MemoryRecord>(MEMORY, id)
-            .filter(|record| record.definition.workspace_id == workspace_id)
-            .ok_or_else(|| ResourceCatalogError::NotFound(id.into()))?;
-        if record.definition.state != ResourceState::Active {
-            return Err(ResourceCatalogError::NotActive {
-                id: id.into(),
-                state: record.definition.state,
-            });
-        }
-        let config = record
-            .configs
-            .get(&record.definition.current_config_version)
-            .cloned()
-            .ok_or_else(|| {
-                ResourceCatalogError::Storage(format!(
-                    "MemoryStore `{id}` current config version is missing"
-                ))
-            })?;
-        Ok(ResolvedMemoryStoreConfig {
-            definition: record.definition,
-            config,
-        })
     }
 
     fn publish_memory_config(
@@ -331,36 +363,6 @@ impl ResourceCatalog for PostgresAdminStore {
         self.catalog_record::<RepositoryRecord>(REPOSITORY, id)
             .filter(|record| record.definition.workspace_id == workspace_id)
             .and_then(|record| record.configs.get(&version).cloned())
-    }
-
-    fn resolve_repository(
-        &self,
-        workspace_id: &str,
-        id: &str,
-    ) -> Result<ResolvedRepositoryConfig, ResourceCatalogError> {
-        let record = self
-            .catalog_record::<RepositoryRecord>(REPOSITORY, id)
-            .filter(|record| record.definition.workspace_id == workspace_id)
-            .ok_or_else(|| ResourceCatalogError::NotFound(id.into()))?;
-        if record.definition.state != ResourceState::Active {
-            return Err(ResourceCatalogError::NotActive {
-                id: id.into(),
-                state: record.definition.state,
-            });
-        }
-        let config = record
-            .configs
-            .get(&record.definition.current_config_version)
-            .cloned()
-            .ok_or_else(|| {
-                ResourceCatalogError::Storage(format!(
-                    "Repository `{id}` current config version is missing"
-                ))
-            })?;
-        Ok(ResolvedRepositoryConfig {
-            definition: record.definition,
-            config,
-        })
     }
 
     fn publish_repository_config(

@@ -15,7 +15,7 @@ use awaken_credential_vault::CredentialBinding;
 use awaken_resource_contract::{
     ClonePolicy, ConfigVersion, ExtractionPolicy, MemoryStoreConfigVersion, MemoryStoreDefinition,
     RecallPolicy, RepositoryConfigVersion, RepositoryDefinition, ResourceCatalog,
-    ResourceCatalogError, ResourceState, RetentionPolicy,
+    ResourceCatalogError, ResourceConfigSource, ResourceState, RetentionPolicy,
 };
 use sqlx::Executor;
 use sqlx::postgres::PgPool;

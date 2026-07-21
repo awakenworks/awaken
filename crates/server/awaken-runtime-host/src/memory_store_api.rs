@@ -133,6 +133,10 @@ struct MemoryStoreApi {
     /// The durable identity registry (id/name/metadata/archived): the control-plane
     /// aggregate that survives a restart and is enumerable from the admin plane.
     registry: Arc<dyn awaken_config_resolver::MemoryStoreRegistry>,
+    /// Unified resource configuration/lifecycle catalog consumed by Session
+    /// resolution. It contains no authorization policy; the HTTP PEP has already
+    /// supplied the trusted Workspace scope.
+    catalog: Option<Arc<dyn awaken_protocol_managed::ResourceCatalog>>,
     /// Durable append-only history adapter (ephemeral only when the whole host is).
     versions: VersionRepository,
 }
@@ -265,10 +269,28 @@ impl VersionRepository {
 /// and written through the host's [`MemoryStoreRegistry`](awaken_config_resolver::MemoryStoreRegistry)
 /// (the durable admin backend when the composition root wired one, else ephemeral).
 pub fn memory_stores_router(host: Arc<SharedHost>) -> Router {
+    memory_stores_router_over(host, None)
+}
+
+/// Mount the Memory API over the same Resource Catalog used by Session
+/// resolution. Composition roots that manage resources must use this variant so
+/// create/archive/delete and activation share one lifecycle truth.
+pub fn memory_stores_router_with_catalog(
+    host: Arc<SharedHost>,
+    catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
+) -> Router {
+    memory_stores_router_over(host, Some(catalog))
+}
+
+fn memory_stores_router_over(
+    host: Arc<SharedHost>,
+    catalog: Option<Arc<dyn awaken_protocol_managed::ResourceCatalog>>,
+) -> Router {
     let registry = host.memory_registry();
     let state = Arc::new(MemoryStoreApi {
         host,
         registry,
+        catalog,
         versions: VersionRepository::open(),
     });
     Router::new()
@@ -356,8 +378,34 @@ async fn create_store(
     };
     let projected = project_def(&def);
     // Persist the identity through the durable registry (survives a restart).
-    state.registry.put_memory_store(def);
-    (StatusCode::OK, Json(projected))
+    state.registry.put_memory_store(def.clone());
+    if let Some(catalog) = &state.catalog
+        && let Err(error) = catalog.create_memory_store(
+            awaken_protocol_managed::resource_plane::MemoryStoreDefinition {
+                id: id.clone(),
+                workspace_id: def.workspace_id.clone(),
+                name: def.name.clone(),
+                description: def.description.clone(),
+                metadata: def.metadata.clone(),
+                state: awaken_protocol_managed::resource_plane::ResourceState::Active,
+                current_config_version:
+                    awaken_protocol_managed::resource_plane::ConfigVersion::INITIAL,
+            },
+            awaken_protocol_managed::resource_plane::MemoryStoreConfigVersion {
+                memory_store_id: id,
+                version: awaken_protocol_managed::resource_plane::ConfigVersion::INITIAL,
+                recall_policy: Default::default(),
+                extraction_policy: Default::default(),
+                retention_policy: Default::default(),
+            },
+        )
+    {
+        return err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("memory_store catalog write failed: {error}"),
+        );
+    }
+    (StatusCode::OK, Json(projected)).into_response()
 }
 
 /// `GET /v1/memory_stores/:id` — the SDK store object PLUS the legacy mount-blob
@@ -440,6 +488,15 @@ async fn delete_store(
         return not_found("memory_store");
     };
     def.archived = true;
+    if let Some(catalog) = &state.catalog
+        && let Err(error) = catalog.set_memory_state(
+            &def.workspace_id,
+            &id,
+            awaken_protocol_managed::resource_plane::ResourceState::Deleted,
+        )
+    {
+        return err(StatusCode::CONFLICT, error.to_string());
+    }
     state.registry.put_memory_store(def);
     (
         StatusCode::OK,
@@ -456,6 +513,15 @@ async fn archive_store(
         return not_found("memory_store");
     };
     def.archived = true;
+    if let Some(catalog) = &state.catalog
+        && let Err(error) = catalog.set_memory_state(
+            &def.workspace_id,
+            &id,
+            awaken_protocol_managed::resource_plane::ResourceState::Archived,
+        )
+    {
+        return err(StatusCode::CONFLICT, error.to_string());
+    }
     let projected = project_def(&def);
     state.registry.put_memory_store(def);
     (StatusCode::OK, Json(projected)).into_response()

@@ -5,6 +5,36 @@ use super::*;
 use crate::types::McpServer;
 use serde_json::json;
 
+struct EmptyResourceConfigSource;
+
+impl awaken_resource_contract::ResourceConfigSource for EmptyResourceConfigSource {
+    fn resolve_memory_store(
+        &self,
+        _workspace_id: &str,
+        id: &str,
+    ) -> Result<
+        awaken_resource_contract::ResolvedMemoryStoreConfig,
+        awaken_resource_contract::ResourceCatalogError,
+    > {
+        Err(awaken_resource_contract::ResourceCatalogError::NotFound(
+            id.into(),
+        ))
+    }
+
+    fn resolve_repository(
+        &self,
+        _workspace_id: &str,
+        id: &str,
+    ) -> Result<
+        awaken_resource_contract::ResolvedRepositoryConfig,
+        awaken_resource_contract::ResourceCatalogError,
+    > {
+        Err(awaken_resource_contract::ResourceCatalogError::NotFound(
+            id.into(),
+        ))
+    }
+}
+
 fn lifecycle_fact(
     id: String,
     session_id: &str,
@@ -156,20 +186,107 @@ impl ManagedState {
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        // This is the one composition point. Runtime receives this exact effective
-        // list and never re-opens the Agent binding repository.
-        let effective_resources = awaken_session_contract::SessionInputResolver::resolve_legacy(
-            config_view
-                .as_ref()
-                .map(|view| view.resources.as_slice())
-                .unwrap_or_default(),
-            &resources,
-        )
+        // Lower compatibility Repository URLs/tokens before the neutral resolver:
+        // the catalog receives a Session-scoped definition and a Vault reference,
+        // never the token. File/Memory already carry platform identities on wire.
+        let agent_defaults = config_view
+            .as_ref()
+            .map(|view| view.resources.as_slice())
+            .unwrap_or_default();
+        let mut attachments = Vec::with_capacity(resources.len());
+        for (index, resource) in resources.iter().enumerate() {
+            let repository_id = if resource.kind == "github_repository" {
+                let catalog = self.resource_catalog.as_ref().ok_or_else(|| {
+                    StateError::Run(RunError::bad_request(
+                        "repository resources require a configured Resource Catalog",
+                    ))
+                })?;
+                let repository_id = format!("managed:{id}:repository:{index}");
+                let credential_binding = match &resource.auth_token {
+                    Some(token) => {
+                        let vaults = self.vaults.as_ref().ok_or_else(|| {
+                            StateError::Run(RunError::bad_request(
+                                "repository authorization requires a configured credential vault",
+                            ))
+                        })?;
+                        Some(
+                            vaults
+                                .enter_session_bearer(&owner_scope, token.clone())
+                                .await
+                                .map_err(|error| {
+                                    StateError::Run(RunError::bad_request(format!(
+                                        "repository credential could not be stored: {error}"
+                                    )))
+                                })?
+                                .0,
+                        )
+                    }
+                    None => None,
+                };
+                catalog
+                    .create_repository(
+                        awaken_resource_contract::RepositoryDefinition {
+                            id: repository_id.clone(),
+                            workspace_id: owner_scope.clone(),
+                            name: format!("Session repository {index}"),
+                            description: "Managed compatibility Session input".into(),
+                            metadata: Default::default(),
+                            state: awaken_resource_contract::ResourceState::Active,
+                            current_config_version:
+                                awaken_resource_contract::ConfigVersion::INITIAL,
+                        },
+                        awaken_resource_contract::RepositoryConfigVersion {
+                            repository_id: repository_id.clone(),
+                            version: awaken_resource_contract::ConfigVersion::INITIAL,
+                            remote_url: resource.id.clone(),
+                            credential_binding,
+                            initial_branch: resource.git_ref.clone(),
+                            clone_policy: awaken_resource_contract::ClonePolicy::default(),
+                        },
+                    )
+                    .map_err(|error| {
+                        StateError::Run(RunError::bad_request(format!(
+                            "repository resource could not be configured: {error}"
+                        )))
+                    })?;
+                Some(awaken_resource_contract::RepositoryId::from(repository_id))
+            } else {
+                None
+            };
+            let binding = input_binding(
+                format!("session:{id}:input:{index}"),
+                resource,
+                repository_id,
+            );
+            let normalized = binding.mount_path.trim_start_matches('/');
+            let replaces = agent_defaults
+                .iter()
+                .find(|default| default.mount_path.trim_start_matches('/') == normalized)
+                .map(|default| default.binding_id.clone());
+            attachments.push(awaken_session_contract::SessionInputAttachment { binding, replaces });
+        }
+        // Sole composition/resolution point. Runtime receives this persisted,
+        // secret-free manifest and never re-opens Agent or Resource config stores.
+        let effective_inputs = match self.resource_catalog.as_deref() {
+            Some(catalog) => awaken_session_contract::SessionInputResolver::resolve_inputs(
+                &owner_scope,
+                catalog,
+                agent_defaults,
+                &attachments,
+            ),
+            None => awaken_session_contract::SessionInputResolver::resolve_inputs(
+                &owner_scope,
+                &EmptyResourceConfigSource,
+                agent_defaults,
+                &attachments,
+            ),
+        }
         .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
-        let resource_dtos: Vec<serde_json::Value> = effective_resources
+        let resource_dtos: Vec<serde_json::Value> = effective_inputs
+            .inputs
             .iter()
             .enumerate()
-            .map(|(n, r)| resource_dto(&id, n, r))
+            .map(|(n, input)| resolved_resource_dto(&id, n, input))
             .collect();
         // Resolve the session's environment (defaulting to the local one) and its
         // networking policy once, for both the SessionInit (staged before the first
@@ -192,7 +309,7 @@ impl ManagedState {
                     workspace_id: owner_scope.clone(),
                     agent_id: agent_id.clone(),
                     mcp_servers: bindings,
-                    resources: effective_resources,
+                    resources: effective_inputs.clone(),
                     model: selected_model.as_ref().map(|m| m.id.clone()),
                     runtime: req.awaken_runtime().map(str::to_string),
                     deny_egress,
@@ -293,7 +410,7 @@ impl ManagedState {
                     metadata: session.metadata.clone(),
                     environment_id: session.environment_id.clone(),
                     mcp_servers: session.agent.mcp_servers.clone(),
-                    effective_inputs: Default::default(),
+                    effective_inputs,
                     status: "idle".to_string(),
                     archived_at: None,
                 },
@@ -360,32 +477,43 @@ impl ManagedState {
         persisted: Option<PersistedSession>,
     ) -> Session {
         let caps = self.runtime.capabilities_for(id);
-        let (agent_id, model, environment_id, title, metadata, mcp_servers, status, archived_at) =
-            match persisted {
-                Some(p) => (
-                    p.agent_id,
-                    p.model,
-                    p.environment_id,
-                    p.title,
-                    p.metadata,
-                    p.mcp_servers,
-                    match p.status.as_str() {
-                        "terminated" => "terminated",
-                        _ => "idle",
-                    },
-                    p.archived_at,
-                ),
-                None => (
-                    "assistant".to_string(),
-                    self.runtime.model(),
-                    "env_local".to_string(),
-                    None,
-                    Default::default(),
-                    Vec::new(),
-                    "idle",
-                    None,
-                ),
-            };
+        let (
+            agent_id,
+            model,
+            environment_id,
+            title,
+            metadata,
+            mcp_servers,
+            effective_inputs,
+            status,
+            archived_at,
+        ) = match persisted {
+            Some(p) => (
+                p.agent_id,
+                p.model,
+                p.environment_id,
+                p.title,
+                p.metadata,
+                p.mcp_servers,
+                p.effective_inputs,
+                match p.status.as_str() {
+                    "terminated" => "terminated",
+                    _ => "idle",
+                },
+                p.archived_at,
+            ),
+            None => (
+                "assistant".to_string(),
+                self.runtime.model(),
+                "env_local".to_string(),
+                None,
+                Default::default(),
+                Vec::new(),
+                Default::default(),
+                "idle",
+                None,
+            ),
+        };
         let deployment_id = metadata.get("awaken.deployment_id").cloned();
         Session {
             id: id.to_string(),
@@ -409,12 +537,12 @@ impl ManagedState {
             archived_at,
             title,
             metadata,
-            // Non-durable: `PersistedSession` does not carry the create-time mounts,
-            // and rehydration does not re-stage them into the host, so a rehydrated
-            // session reports no resources. (Durable resources + restart re-staging
-            // is a separate slice; storing the DTO alone would falsely show mounts
-            // the sandbox no longer has.)
-            resources: Vec::new(),
+            resources: effective_inputs
+                .inputs
+                .iter()
+                .enumerate()
+                .map(|(index, input)| resolved_resource_dto(id, index, input))
+                .collect(),
             outcome_evaluations: Vec::new(),
             status,
             stats: SessionStats::default(),
@@ -452,6 +580,16 @@ impl ManagedState {
         {
             return Err(StateError::NotFound);
         }
+        let owner_scope = self
+            .sessions_repo
+            .owner(id)
+            .await
+            .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
+        if let Some(session) = &persisted {
+            self.runtime
+                .restore_session_inputs(id, &owner_scope, &session.effective_inputs)
+                .await?;
+        }
         let agent_id = persisted
             .as_ref()
             .map_or_else(|| "assistant".to_string(), |p| p.agent_id.clone());
@@ -466,6 +604,11 @@ impl ManagedState {
             .unwrap()
             .entry(id.to_string())
             .or_insert(record);
+        self.owners
+            .lock()
+            .unwrap()
+            .entry(id.to_string())
+            .or_insert(owner_scope);
         Ok(())
     }
 

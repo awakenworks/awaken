@@ -40,7 +40,19 @@ use awaken_server::placement;
 /// An [`InferenceExecutorMaterializer`] mapping a model ref to a labeled executor, so a
 /// session bound to `fast`/`slow` resolves a distinct model — the R1/R2/R5 demo
 /// surface.
-use awaken_server::{ResolvedExecutorError, executor_from_resolved, mount, mount_with_managed};
+use awaken_server::{ResolvedExecutorError, executor_from_resolved, mount_with_managed};
+
+/// Scenario equivalent of the production composition root: one secret-free
+/// Resource Catalog is shared by the Memory API, Managed ACL, and runtime
+/// activation. Authorization remains outside this helper.
+fn mount(host: Arc<SharedHost>) -> Router {
+    let catalog = Arc::new(awaken_config_resolver::InMemoryResourceCatalog::new());
+    let managed = Arc::new(
+        ManagedState::new(ManagedHost::new(host.clone()).with_resource_configs(catalog.clone()))
+            .with_resource_catalog(catalog.clone()),
+    );
+    awaken_server::mount_with_managed_and_resource_catalog(host, managed, catalog)
+}
 struct RouteProvider;
 
 impl InferenceExecutorMaterializer for RouteProvider {

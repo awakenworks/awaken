@@ -77,6 +77,7 @@ struct ManagementStores {
     /// assistant can enumerate stores.
     memory_registry: Arc<dyn awaken_admin_config_api::MemoryStoreRegistry>,
     resources: Arc<dyn awaken_config_resolver::ResourceStore>,
+    resource_catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
     /// Authored webhook endpoints (ADR-0048), an id-addressed config resource beside
     /// profiles/MCP — the same admin store, a distinct port.
     webhooks: Arc<dyn awaken_admin_config_api::WebhookStore>,
@@ -142,6 +143,7 @@ fn in_memory_management_stores() -> ManagementStores {
         mcp: Arc::new(awaken_admin_config_api::InMemoryMcpStore::new()),
         memory_registry: Arc::new(awaken_admin_config_api::InMemoryMemoryStoreRegistry::new()),
         resources: Arc::new(awaken_admin_config_api::InMemoryResourceStore::new()),
+        resource_catalog: Arc::new(awaken_config_resolver::InMemoryResourceCatalog::new()),
         webhooks: Arc::new(awaken_admin_config_api::InMemoryWebhookStore::new()),
         sessions: Arc::new(awaken_protocol_managed::InMemorySessionRepository::default()),
         config: Arc::new(
@@ -187,6 +189,7 @@ fn durable_management_stores(dir: &std::path::Path, key: &[u8; 32]) -> Managemen
         // so the same admin store serves the registry port (durable across a restart).
         memory_registry: admin.clone(),
         resources: admin.clone(),
+        resource_catalog: admin.clone(),
         // Webhook endpoints share admin.db (one more secret-free table under the
         // `admin` bundle) — a config resource like the profiles/MCP defs above.
         webhooks: admin,
@@ -300,6 +303,7 @@ async fn open_management_stores(
     let admin_memory: Arc<dyn awaken_admin_config_api::MemoryStoreRegistry>;
     let admin_webhooks: Arc<dyn awaken_admin_config_api::WebhookStore>;
     let admin_resources: Arc<dyn awaken_config_resolver::ResourceStore>;
+    let admin_catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>;
     match &cfg.admin {
         StoreBackend::Sqlite(p) => {
             let admin = Arc::new(
@@ -310,6 +314,7 @@ async fn open_management_stores(
             admin_mcp = admin.clone();
             admin_memory = admin.clone();
             admin_resources = admin.clone();
+            admin_catalog = admin.clone();
             admin_webhooks = admin;
         }
         StoreBackend::Postgres(url) => {
@@ -328,6 +333,7 @@ async fn open_management_stores(
             admin_mcp = admin.clone();
             admin_memory = admin.clone();
             admin_resources = admin.clone();
+            admin_catalog = admin.clone();
             admin_webhooks = admin;
         }
     }
@@ -397,6 +403,7 @@ async fn open_management_stores(
         mcp: admin_mcp,
         memory_registry: admin_memory,
         resources: admin_resources,
+        resource_catalog: admin_catalog,
         webhooks: admin_webhooks,
         sessions,
         config,
@@ -661,6 +668,7 @@ async fn management_router_over(
         mcp: mcp_store,
         memory_registry,
         resources: resource_store,
+        resource_catalog,
         webhooks: webhook_store,
         sessions,
         config,
@@ -898,16 +906,21 @@ async fn management_router_over(
     };
     let host = Arc::new(host_builder);
     let managed_state = Arc::new(
-        ManagedState::new(ManagedHost::new(host.clone()).with_mcp(credentials, secrets, mcp_store))
-            .with_vaults(vault_state)
-            .with_environments(env_state)
-            // Share the SAME config plane `/v1/agents` reads, so a session inheriting a
-            // published agent's model sees the authoritative config-plane truth (M2).
-            .with_config_source(Arc::new(awaken_runtime_host::ConfigServiceAgentSource(
-                config_service.clone(),
-            )))
-            .with_session_repo(sessions)
-            .with_lifecycle_sink(webhook_sink),
+        ManagedState::new(
+            ManagedHost::new(host.clone())
+                .with_resource_configs(resource_catalog.clone())
+                .with_mcp(credentials, secrets, mcp_store),
+        )
+        .with_vaults(vault_state)
+        .with_environments(env_state)
+        .with_resource_catalog(resource_catalog.clone())
+        // Share the SAME config plane `/v1/agents` reads, so a session inheriting a
+        // published agent's model sees the authoritative config-plane truth (M2).
+        .with_config_source(Arc::new(awaken_runtime_host::ConfigServiceAgentSource(
+            config_service.clone(),
+        )))
+        .with_session_repo(sessions)
+        .with_lifecycle_sink(webhook_sink),
     );
     deployment_state.bind_launcher(managed_state.clone());
     // Drive cron Deployments in production. The state mints due runs and launches
@@ -928,7 +941,12 @@ async fn management_router_over(
     // surface so a `/v1/workspaces/{ws}/…` request is captured, rewritten to its flat
     // `/v1/…` form, and its `{ws}` stamped as the edge scope before it re-enters
     // routing. Flat requests fall through unchanged.
-    let mut flat = awaken_server::mount_with_managed(host, managed_state).merge(mgmt);
+    let mut flat = awaken_server::mount_with_managed_and_resource_catalog(
+        host,
+        managed_state,
+        resource_catalog,
+    )
+    .merge(mgmt);
     // Serving tools to an external MCP client is disabled until an operator sets a
     // dedicated bearer. This avoids turning the management toolset into an open
     // mutation surface while still making the `awaken` binary the complete adapter.

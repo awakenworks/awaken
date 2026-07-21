@@ -36,7 +36,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use awaken_agent_contract::RedactedString;
 use awaken_credential_vault::repo::{CredentialRepo, enter_credential};
-use awaken_credential_vault::{CredentialSourceId, SecretRef, SecretStore};
+use awaken_credential_vault::{
+    CredentialCreateParams as DomainCredentialCreateParams, CredentialKind, CredentialSourceId,
+    SecretRef, SecretStore,
+};
 use awaken_managed_bridge::{
     WireEnvVarCreate, WireMcpOauthCreate, WireStaticBearerCreate, env_var_to_create_params,
     mcp_oauth_to_create_params, static_bearer_to_create_params,
@@ -201,6 +204,30 @@ impl VaultState {
     #[must_use]
     pub fn has_vault(&self, id: &str) -> bool {
         self.inner.lock().unwrap().vaults.contains_key(id)
+    }
+
+    /// Seal a write-only compatibility token and return only its neutral source
+    /// id. Used when a Managed repository resource carries an inline token; the
+    /// Session manifest and Resource Catalog never receive the token value.
+    pub async fn enter_session_bearer(
+        &self,
+        workspace_id: &str,
+        token: String,
+    ) -> Result<CredentialSourceId, awaken_credential_vault::CredentialError> {
+        enter_credential(
+            DomainCredentialCreateParams {
+                workspace_id: workspace_id.to_string(),
+                kind: CredentialKind::Vault,
+                provider_id: Some("git".into()),
+                env_key: None,
+                secret: Some(RedactedString::from(token)),
+                oauth_command: None,
+            },
+            self.secrets.as_ref(),
+            self.credentials.as_ref(),
+        )
+        .await
+        .map(|source| source.id)
     }
 
     /// The neutral credential-domain row id for a wire credential id, if it lives

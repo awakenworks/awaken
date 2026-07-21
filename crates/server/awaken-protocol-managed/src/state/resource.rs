@@ -158,6 +158,90 @@ pub(crate) fn parse_session_resource(v: &serde_json::Value) -> Option<SessionRes
         .map(WireResource::into_session_resource)
 }
 
+/// Lower a parsed Managed resource into the shared typed binding language. The
+/// caller supplies the platform id for a compatibility Repository after it has
+/// created that Session-scoped catalog definition.
+pub(crate) fn input_binding(
+    binding_id: String,
+    resource: &SessionResource,
+    repository_id: Option<awaken_resource_contract::RepositoryId>,
+) -> awaken_resource_contract::InputBinding {
+    use awaken_resource_contract::{
+        BindingId, FileId, InputBinding, InputResourceId, MemoryStoreId,
+        ResourceAccess as InputAccess,
+    };
+
+    let target = match resource.kind.as_str() {
+        "file" => InputResourceId::File(FileId::from(resource.id.clone())),
+        "memory_store" => InputResourceId::MemoryStore(MemoryStoreId::from(resource.id.clone())),
+        "github_repository" => InputResourceId::Repository(
+            repository_id.expect("Managed Repository lowering supplies a platform id"),
+        ),
+        _ => unreachable!("wire parser accepts only input resource kinds"),
+    };
+    InputBinding {
+        binding_id: BindingId::new(binding_id),
+        target,
+        mount_path: resource.mount_path.clone(),
+        access: match (resource.kind.as_str(), resource.access) {
+            ("file", _) | (_, ResourceAccess::ReadOnly) => InputAccess::ReadOnly,
+            (_, ResourceAccess::ReadWrite) => InputAccess::ReadWrite,
+        },
+        instructions: resource.instructions.clone(),
+    }
+}
+
+/// Project one frozen resolved input back to the Managed Session wire. Internal
+/// config versions remain an awaken implementation detail; credentials are never
+/// echoed.
+pub(crate) fn resolved_resource_dto(
+    session_id: &str,
+    n: usize,
+    input: &awaken_session_contract::ResolvedInput,
+) -> serde_json::Value {
+    use awaken_session_contract::ResolvedInputSource;
+    use serde_json::json;
+
+    let mut obj = serde_json::Map::new();
+    obj.insert("id".into(), json!(format!("{session_id}:resource:{n}")));
+    obj.insert("mount_path".into(), json!(input.mount_path));
+    obj.insert("created_at".into(), json!(PROCESSED_AT));
+    obj.insert("updated_at".into(), json!(PROCESSED_AT));
+    match &input.source {
+        ResolvedInputSource::File { file_id } => {
+            obj.insert("type".into(), json!("file"));
+            obj.insert("file_id".into(), json!(file_id.as_str()));
+        }
+        ResolvedInputSource::MemoryStore {
+            memory_store_id, ..
+        } => {
+            obj.insert("type".into(), json!("memory_store"));
+            obj.insert("memory_store_id".into(), json!(memory_store_id.as_str()));
+            obj.insert(
+                "access".into(),
+                json!(match input.access {
+                    awaken_resource_contract::ResourceAccess::ReadOnly => "read_only",
+                    awaken_resource_contract::ResourceAccess::ReadWrite => "read_write",
+                }),
+            );
+            if let Some(instructions) = &input.instructions {
+                obj.insert("instructions".into(), json!(instructions));
+            }
+        }
+        ResolvedInputSource::Repository { config, .. } => {
+            obj.insert("type".into(), json!("github_repository"));
+            obj.insert("url".into(), json!(config.remote_url));
+            if let Some(branch) = &config.initial_branch {
+                obj.insert(
+                    "checkout".into(),
+                    json!({ "type": "branch", "name": branch }),
+                );
+            }
+        }
+    }
+    serde_json::Value::Object(obj)
+}
+
 /// Project a [`SessionResource`] to an official `BetaManagedAgentsSessionResource`
 /// wire entry with a stable id (`{session}:resource:{n}`), so both create-time
 /// backfill and live `resources.add` emit an SDK-decodable, uniformly-addressable

@@ -168,11 +168,12 @@ impl SessionInputResolver {
             }
         }
 
-        let mut effective = defaults
-            .into_iter()
-            .filter(|binding| !replaced.contains(&binding.binding_id))
-            .collect::<Vec<_>>();
-        effective.extend(attachments);
+        let mut effective = attachments;
+        effective.extend(
+            defaults
+                .into_iter()
+                .filter(|binding| !replaced.contains(&binding.binding_id)),
+        );
         validate_bindings(&mut effective)?;
         Ok(effective)
     }
@@ -180,9 +181,9 @@ impl SessionInputResolver {
     /// Compose and resolve the current Memory/Repository configuration exactly
     /// once. The caller supplies a trusted Workspace after the edge PEP has made
     /// its authorization decision; this method contains no authorization policy.
-    pub fn resolve_inputs(
+    pub fn resolve_inputs<S: ResourceConfigSource + ?Sized>(
         workspace_id: &str,
-        catalog: &dyn ResourceConfigSource,
+        catalog: &S,
         agent_defaults: &[InputBinding],
         session_attachments: &[SessionInputAttachment],
     ) -> Result<EffectiveSessionInputs, SessionInputError> {

@@ -186,7 +186,7 @@ pub trait ResourceConfigSource: Send + Sync {
 
 /// Secret-free Resource Catalog application port. Authorization decisions are made
 /// outside this boundary; Workspace ownership and lifecycle are intrinsic invariants.
-pub trait ResourceCatalog: Send + Sync {
+pub trait ResourceCatalog: ResourceConfigSource {
     fn create_memory_store(
         &self,
         definition: MemoryStoreDefinition,
@@ -199,29 +199,6 @@ pub trait ResourceCatalog: Send + Sync {
         id: &str,
         version: ConfigVersion,
     ) -> Option<MemoryStoreConfigVersion>;
-    fn resolve_memory_store(
-        &self,
-        workspace_id: &str,
-        id: &str,
-    ) -> Result<ResolvedMemoryStoreConfig, ResourceCatalogError> {
-        let definition = self
-            .memory_store(workspace_id, id)
-            .ok_or_else(|| ResourceCatalogError::NotFound(id.into()))?;
-        if definition.state != ResourceState::Active {
-            return Err(ResourceCatalogError::NotActive {
-                id: id.into(),
-                state: definition.state,
-            });
-        }
-        let config = self
-            .memory_config(workspace_id, id, definition.current_config_version)
-            .ok_or_else(|| {
-                ResourceCatalogError::Storage(format!(
-                    "MemoryStore `{id}` current config version is missing"
-                ))
-            })?;
-        Ok(ResolvedMemoryStoreConfig { definition, config })
-    }
     fn publish_memory_config(
         &self,
         workspace_id: &str,
@@ -247,29 +224,6 @@ pub trait ResourceCatalog: Send + Sync {
         id: &str,
         version: ConfigVersion,
     ) -> Option<RepositoryConfigVersion>;
-    fn resolve_repository(
-        &self,
-        workspace_id: &str,
-        id: &str,
-    ) -> Result<ResolvedRepositoryConfig, ResourceCatalogError> {
-        let definition = self
-            .repository(workspace_id, id)
-            .ok_or_else(|| ResourceCatalogError::NotFound(id.into()))?;
-        if definition.state != ResourceState::Active {
-            return Err(ResourceCatalogError::NotActive {
-                id: id.into(),
-                state: definition.state,
-            });
-        }
-        let config = self
-            .repository_config(workspace_id, id, definition.current_config_version)
-            .ok_or_else(|| {
-                ResourceCatalogError::Storage(format!(
-                    "Repository `{id}` current config version is missing"
-                ))
-            })?;
-        Ok(ResolvedRepositoryConfig { definition, config })
-    }
     fn publish_repository_config(
         &self,
         workspace_id: &str,
@@ -282,22 +236,4 @@ pub trait ResourceCatalog: Send + Sync {
         id: &str,
         state: ResourceState,
     ) -> Result<(), ResourceCatalogError>;
-}
-
-impl<T: ResourceCatalog + ?Sized> ResourceConfigSource for T {
-    fn resolve_memory_store(
-        &self,
-        workspace_id: &str,
-        id: &str,
-    ) -> Result<ResolvedMemoryStoreConfig, ResourceCatalogError> {
-        ResourceCatalog::resolve_memory_store(self, workspace_id, id)
-    }
-
-    fn resolve_repository(
-        &self,
-        workspace_id: &str,
-        id: &str,
-    ) -> Result<ResolvedRepositoryConfig, ResourceCatalogError> {
-        ResourceCatalog::resolve_repository(self, workspace_id, id)
-    }
 }

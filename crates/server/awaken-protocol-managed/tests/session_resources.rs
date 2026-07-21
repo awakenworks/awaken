@@ -4,9 +4,15 @@
 //! to a running session fails closed with a 400 (`invalid_request_error`).
 
 use awaken_agent_contract::agent::content::ContentBlock;
+use awaken_config_resolver::InMemoryResourceCatalog;
 use awaken_protocol_managed::{
     AgentConfigSource, AgentConfigView, ManagedState, OutcomeReport, RunError, SessionInit,
-    SessionResource, SessionRuntime, StepOutcome, ToolPermissionDecision, router,
+    SessionRuntime, StepOutcome, ToolPermissionDecision, router,
+};
+use awaken_resource_contract::{
+    BindingId, ConfigVersion, ExtractionPolicy, FileId, InputBinding, InputResourceId,
+    MemoryStoreConfigVersion, MemoryStoreDefinition, MemoryStoreId, RecallPolicy, ResourceAccess,
+    ResourceCatalog, ResourceState, RetentionPolicy,
 };
 use axum::Router;
 use axum::body::Body;
@@ -14,6 +20,48 @@ use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
+
+fn input(
+    id: &str,
+    target: InputResourceId,
+    mount_path: &str,
+    access: ResourceAccess,
+) -> InputBinding {
+    InputBinding {
+        binding_id: BindingId::from(id),
+        target,
+        mount_path: mount_path.into(),
+        access,
+        instructions: None,
+    }
+}
+
+fn resource_catalog() -> std::sync::Arc<InMemoryResourceCatalog> {
+    let catalog = std::sync::Arc::new(InMemoryResourceCatalog::new());
+    for id in ["mem_1", "agent-memory", "session-memory"] {
+        catalog
+            .create_memory_store(
+                MemoryStoreDefinition {
+                    id: id.into(),
+                    workspace_id: "default".into(),
+                    name: id.into(),
+                    description: String::new(),
+                    metadata: Default::default(),
+                    state: ResourceState::Active,
+                    current_config_version: ConfigVersion::INITIAL,
+                },
+                MemoryStoreConfigVersion {
+                    memory_store_id: id.into(),
+                    version: ConfigVersion::INITIAL,
+                    recall_policy: RecallPolicy::default(),
+                    extraction_policy: ExtractionPolicy::default(),
+                    retention_policy: RetentionPolicy::default(),
+                },
+            )
+            .unwrap();
+    }
+    catalog
+}
 
 /// A runtime that accepts every `prepare_session` — the session record exists, so
 /// the resource routes can be exercised. Turn methods are unused here.
@@ -32,15 +80,12 @@ impl AgentConfigSource for AgentWithResources {
             tool_ids: Vec::new(),
             mcp_servers: Vec::new(),
             skill_ids: Vec::new(),
-            resources: vec![SessionResource {
-                kind: "skill".into(),
-                id: "skill_release".into(),
-                mount_path: "/mnt/skills/release".into(),
-                access: awaken_protocol_managed::ResourceAccess::ReadOnly,
-                instructions: None,
-                auth_token: None,
-                git_ref: None,
-            }],
+            resources: vec![input(
+                "release-notes",
+                InputResourceId::File(FileId::from("file-release")),
+                "/mnt/release.txt",
+                ResourceAccess::ReadOnly,
+            )],
         })
     }
 }
@@ -78,24 +123,18 @@ impl AgentConfigSource for WorkspaceScopedAgent {
             mcp_servers: Vec::new(),
             skill_ids: Vec::new(),
             resources: vec![
-                SessionResource {
-                    kind: "memory_store".into(),
-                    id: "agent-memory".into(),
-                    mount_path: "/mnt/memory".into(),
-                    access: awaken_protocol_managed::ResourceAccess::ReadWrite,
-                    instructions: None,
-                    auth_token: None,
-                    git_ref: None,
-                },
-                SessionResource {
-                    kind: "file".into(),
-                    id: "agent-file".into(),
-                    mount_path: "/mnt/agent.txt".into(),
-                    access: awaken_protocol_managed::ResourceAccess::ReadOnly,
-                    instructions: None,
-                    auth_token: None,
-                    git_ref: None,
-                },
+                input(
+                    "agent-memory",
+                    InputResourceId::MemoryStore(MemoryStoreId::from("agent-memory")),
+                    "/mnt/memory",
+                    ResourceAccess::ReadWrite,
+                ),
+                input(
+                    "agent-file",
+                    InputResourceId::File(FileId::from("agent-file")),
+                    "/mnt/agent.txt",
+                    ResourceAccess::ReadOnly,
+                ),
             ],
         })
     }
@@ -187,9 +226,9 @@ async fn session_inherits_published_agent_integrations_and_echoes_the_effective_
 }
 
 async fn app_with_session() -> (Router, String) {
-    let app = router(std::sync::Arc::new(ManagedState::new(
-        AcceptingFake::default(),
-    )));
+    let app = router(std::sync::Arc::new(
+        ManagedState::new(AcceptingFake::default()).with_resource_catalog(resource_catalog()),
+    ));
     let (s, session) = call(&app, "POST", "/v1/sessions", Some(json!({ "agent": "a" }))).await;
     assert_eq!(s, StatusCode::OK);
     let id = session["id"].as_str().unwrap().to_string();
@@ -198,9 +237,9 @@ async fn app_with_session() -> (Router, String) {
 
 #[tokio::test]
 async fn create_time_resources_are_backfilled_and_addressable() {
-    let app = router(std::sync::Arc::new(ManagedState::new(
-        AcceptingFake::default(),
-    )));
+    let app = router(std::sync::Arc::new(
+        ManagedState::new(AcceptingFake::default()).with_resource_catalog(resource_catalog()),
+    ));
 
     let (s, session) = call(
         &app,
@@ -254,17 +293,18 @@ async fn published_agent_resources_are_visible_as_effective_session_inputs() {
     let (status, session) = call(&app, "POST", "/v1/sessions", Some(json!({ "agent": "a" }))).await;
 
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(session["resources"][0]["type"], "skill");
-    assert_eq!(session["resources"][0]["resource_id"], "skill_release");
-    assert_eq!(session["resources"][0]["mount_path"], "/mnt/skills/release");
+    assert_eq!(session["resources"][0]["type"], "file");
+    assert_eq!(session["resources"][0]["file_id"], "file-release");
+    assert_eq!(session["resources"][0]["mount_path"], "/mnt/release.txt");
 }
 
 #[tokio::test]
 async fn session_resolves_scoped_defaults_and_attachments_once_before_runtime() {
     let runtime = AcceptingFake::default();
     let prepared = runtime.prepared.clone();
-    let state =
-        ManagedState::new(runtime).with_config_source(std::sync::Arc::new(WorkspaceScopedAgent));
+    let state = ManagedState::new(runtime)
+        .with_config_source(std::sync::Arc::new(WorkspaceScopedAgent))
+        .with_resource_catalog(resource_catalog());
     let app = router(std::sync::Arc::new(state));
 
     let (status, session) = call(
@@ -291,20 +331,121 @@ async fn session_resolves_scoped_defaults_and_attachments_once_before_runtime() 
     let calls = prepared.lock().unwrap();
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].workspace_id, "default");
-    assert_eq!(calls[0].resources.len(), 2);
-    assert_eq!(calls[0].resources[0].id, "session-memory");
+    assert_eq!(calls[0].resources.inputs.len(), 2);
     assert_eq!(
-        calls[0].resources[0].access,
-        awaken_protocol_managed::ResourceAccess::ReadOnly
+        calls[0].resources.inputs[0].access,
+        ResourceAccess::ReadOnly
     );
     assert!(
-        calls[0]
-            .resources
-            .iter()
-            .all(|resource| resource.id != "agent-memory"),
+        calls[0].resources.inputs.iter().all(|resource| !matches!(
+            &resource.source,
+                awaken_session_contract::ResolvedInputSource::MemoryStore {
+                memory_store_id,
+                ..
+            } if memory_store_id.as_str() == "agent-memory"
+        )),
         "the replaced Agent default must not cross the runtime boundary"
     );
-    assert_eq!(calls[0].resources[1].id, "agent-file");
+    assert!(calls[0].resources.inputs.iter().any(|resource| matches!(
+        &resource.source,
+        awaken_session_contract::ResolvedInputSource::File { file_id }
+            if file_id.as_str() == "agent-file"
+    )));
+}
+
+#[tokio::test]
+async fn resource_config_publication_only_affects_later_sessions() {
+    let runtime = AcceptingFake::default();
+    let prepared = runtime.prepared.clone();
+    let catalog = resource_catalog();
+    let app = router(std::sync::Arc::new(
+        ManagedState::new(runtime).with_resource_catalog(catalog.clone()),
+    ));
+    let request = || {
+        json!({
+            "agent": "a",
+            "resources": [{
+                "type": "memory_store",
+                "memory_store_id": "mem_1",
+                "mount_path": "/mnt/memory"
+            }]
+        })
+    };
+
+    assert_eq!(
+        call(&app, "POST", "/v1/sessions", Some(request())).await.0,
+        StatusCode::OK
+    );
+    catalog
+        .publish_memory_config(
+            "default",
+            ConfigVersion::INITIAL,
+            MemoryStoreConfigVersion {
+                memory_store_id: "mem_1".into(),
+                version: ConfigVersion(2),
+                recall_policy: RecallPolicy {
+                    enabled: true,
+                    max_results: 2,
+                },
+                extraction_policy: ExtractionPolicy::default(),
+                retention_policy: RetentionPolicy::default(),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        call(&app, "POST", "/v1/sessions", Some(request())).await.0,
+        StatusCode::OK
+    );
+
+    let calls = prepared.lock().unwrap();
+    let version = |call: &SessionInit| match &call.resources.inputs[0].source {
+        awaken_session_contract::ResolvedInputSource::MemoryStore { config, .. } => config.version,
+        other => panic!("expected memory input, got {other:?}"),
+    };
+    assert_eq!(version(&calls[0]), ConfigVersion::INITIAL);
+    assert_eq!(version(&calls[1]), ConfigVersion(2));
+}
+
+#[tokio::test]
+async fn repository_token_is_sealed_before_the_effective_manifest() {
+    let runtime = AcceptingFake::default();
+    let prepared = runtime.prepared.clone();
+    let vaults = std::sync::Arc::new(awaken_protocol_managed::VaultState::new(
+        std::sync::Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
+        std::sync::Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new()),
+    ));
+    let app = router(std::sync::Arc::new(
+        ManagedState::new(runtime)
+            .with_vaults(vaults)
+            .with_resource_catalog(resource_catalog()),
+    ));
+
+    let secret = "ghp_manifest_must_not_contain_this"; // awaken-allow: secret
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/v1/sessions",
+        Some(json!({
+            "agent": "a",
+            "resources": [{
+                "type": "github_repository",
+                "url": "https://github.com/awaken/example.git",
+                "authorization_token": secret
+            }]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let calls = prepared.lock().unwrap();
+    let encoded = serde_json::to_string(&calls[0].resources).unwrap();
+    assert!(!encoded.contains(secret));
+    match &calls[0].resources.inputs[0].source {
+        awaken_session_contract::ResolvedInputSource::Repository { config, .. } => {
+            assert!(config.credential_binding.is_some());
+        }
+        other => panic!("expected repository input, got {other:?}"),
+    }
 }
 
 #[tokio::test]

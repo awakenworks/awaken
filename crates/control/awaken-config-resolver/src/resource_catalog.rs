@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use awaken_resource_contract::{
     ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, RepositoryConfigVersion,
     RepositoryDefinition, ResolvedMemoryStoreConfig, ResolvedRepositoryConfig, ResourceCatalog,
-    ResourceCatalogError, ResourceState,
+    ResourceCatalogError, ResourceConfigSource, ResourceState,
 };
 
 #[derive(Default)]
@@ -61,6 +61,68 @@ fn check_publish(
     Ok(())
 }
 
+impl ResourceConfigSource for InMemoryResourceCatalog {
+    fn resolve_memory_store(
+        &self,
+        workspace_id: &str,
+        id: &str,
+    ) -> Result<ResolvedMemoryStoreConfig, ResourceCatalogError> {
+        let state = self.0.lock().expect("resource catalog");
+        let definition = state
+            .memories
+            .get(id)
+            .filter(|definition| definition.workspace_id == workspace_id)
+            .cloned()
+            .ok_or_else(|| ResourceCatalogError::NotFound(id.into()))?;
+        if definition.state != ResourceState::Active {
+            return Err(ResourceCatalogError::NotActive {
+                id: id.into(),
+                state: definition.state,
+            });
+        }
+        let config = state
+            .memory_configs
+            .get(&(id.into(), definition.current_config_version))
+            .cloned()
+            .ok_or_else(|| {
+                ResourceCatalogError::Storage(format!(
+                    "MemoryStore `{id}` current config version is missing"
+                ))
+            })?;
+        Ok(ResolvedMemoryStoreConfig { definition, config })
+    }
+
+    fn resolve_repository(
+        &self,
+        workspace_id: &str,
+        id: &str,
+    ) -> Result<ResolvedRepositoryConfig, ResourceCatalogError> {
+        let state = self.0.lock().expect("resource catalog");
+        let definition = state
+            .repositories
+            .get(id)
+            .filter(|definition| definition.workspace_id == workspace_id)
+            .cloned()
+            .ok_or_else(|| ResourceCatalogError::NotFound(id.into()))?;
+        if definition.state != ResourceState::Active {
+            return Err(ResourceCatalogError::NotActive {
+                id: id.into(),
+                state: definition.state,
+            });
+        }
+        let config = state
+            .repository_configs
+            .get(&(id.into(), definition.current_config_version))
+            .cloned()
+            .ok_or_else(|| {
+                ResourceCatalogError::Storage(format!(
+                    "Repository `{id}` current config version is missing"
+                ))
+            })?;
+        Ok(ResolvedRepositoryConfig { definition, config })
+    }
+}
+
 impl ResourceCatalog for InMemoryResourceCatalog {
     fn create_memory_store(
         &self,
@@ -110,30 +172,6 @@ impl ResourceCatalog for InMemoryResourceCatalog {
             .get(id)
             .filter(|definition| definition.workspace_id == workspace_id)?;
         state.memory_configs.get(&(id.into(), version)).cloned()
-    }
-
-    fn resolve_memory_store(
-        &self,
-        workspace_id: &str,
-        id: &str,
-    ) -> Result<ResolvedMemoryStoreConfig, ResourceCatalogError> {
-        let definition = self
-            .memory_store(workspace_id, id)
-            .ok_or_else(|| ResourceCatalogError::NotFound(id.into()))?;
-        if definition.state != ResourceState::Active {
-            return Err(ResourceCatalogError::NotActive {
-                id: id.into(),
-                state: definition.state,
-            });
-        }
-        let config = self
-            .memory_config(workspace_id, id, definition.current_config_version)
-            .ok_or_else(|| {
-                ResourceCatalogError::Storage(format!(
-                    "MemoryStore `{id}` current config version is missing"
-                ))
-            })?;
-        Ok(ResolvedMemoryStoreConfig { definition, config })
     }
 
     fn publish_memory_config(
@@ -231,30 +269,6 @@ impl ResourceCatalog for InMemoryResourceCatalog {
             .get(id)
             .filter(|definition| definition.workspace_id == workspace_id)?;
         state.repository_configs.get(&(id.into(), version)).cloned()
-    }
-
-    fn resolve_repository(
-        &self,
-        workspace_id: &str,
-        id: &str,
-    ) -> Result<ResolvedRepositoryConfig, ResourceCatalogError> {
-        let definition = self
-            .repository(workspace_id, id)
-            .ok_or_else(|| ResourceCatalogError::NotFound(id.into()))?;
-        if definition.state != ResourceState::Active {
-            return Err(ResourceCatalogError::NotActive {
-                id: id.into(),
-                state: definition.state,
-            });
-        }
-        let config = self
-            .repository_config(workspace_id, id, definition.current_config_version)
-            .ok_or_else(|| {
-                ResourceCatalogError::Storage(format!(
-                    "Repository `{id}` current config version is missing"
-                ))
-            })?;
-        Ok(ResolvedRepositoryConfig { definition, config })
     }
 
     fn publish_repository_config(

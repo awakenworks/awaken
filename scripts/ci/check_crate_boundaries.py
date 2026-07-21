@@ -63,6 +63,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # guard→WorkspaceScope map. Open crates only, so the standalone shares it.
     "awaken-webhook-managed": {
         "awaken-session-contract",
+        "awaken-resource-contract",
         "awaken-tenancy",
         "awaken-authz-enforce",
         "awaken-webhook",
@@ -221,6 +222,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-session-contract",
         "awaken-config-store",
         "awaken-config-resolver",
+        # Secret-free resource identity/config ports; IAM stays a sibling plane.
+        "awaken-resource-contract",
         "awaken-tenancy",
         "awaken-ext-memory",
         "awaken-ext-compact",
@@ -833,6 +836,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # adapter defines the wire DTOs + encoder over them and re-exports each moved
         # port via a shim until consumers flip to the contract directly.
         "awaken-session-contract",
+        # Typed resource ids/bindings plus the Resource Catalog port used by this
+        # Managed ACL. Authorization policy remains outside the catalog.
+        "awaken-resource-contract",
         # The in-memory reference WorkQueue + EnvRegistry + session-repository backends
         # the Managed Default wires (the ports + value objects stay inward in
         # session-contract; the backends live beside the durable sqlite/postgres siblings).
