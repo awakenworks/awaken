@@ -519,9 +519,9 @@ pub async fn build_acp_managed_mcp_router() -> Router {
 /// The REAL-CLI, REAL-LLM twin of [`build_acp_managed_mcp_router`]: the managed plane
 /// with the **actual** `claude --acp` adapter (the catalog `claude` row, launched via
 /// `npx`) wired as the ACP backend, its model resolved from the operator env (KIMI:
-/// `ANTHROPIC_BASE_URL`/`ANTHROPIC_MODEL`/`ANTHROPIC_API_KEY`), and **β trusted-inline**
-/// MCP delivery so a session's vault-bound MCP token reaches the CLI's own MCP client and
-/// authenticates against the real server. Each thread's config home is isolated under
+/// `ANTHROPIC_BASE_URL`/`ANTHROPIC_MODEL`/`ANTHROPIC_API_KEY`), and α loopback-relay MCP
+/// delivery so the sandboxed CLI receives no vault secret while the host relay authenticates
+/// upstream. Each thread's config home is isolated under
 /// `AWAKEN_STORAGE_DIR/threads/<t>/config_home` — the CLI never touches the host's real
 /// `~/.claude`. Drives a real dynamic MCP tool call end to end. `AWAKEN_MODEL_MODE=acp-real-mcp`.
 pub async fn build_acp_real_mcp_router() -> Router {
@@ -540,13 +540,7 @@ pub async fn build_acp_real_mcp_router() -> Router {
     awaken_cli::build_management_router_with_host_customizer(
         Arc::new(McpToolModel),
         model_ref,
-        move |host| {
-            // β: this is a trusted-local CLI launch, so a staged MCP server's bearer may
-            // cross to the CLI inline (it must, to authenticate to the real MCP server —
-            // α would hand it an unresolved `session-mcp:` reference).
-            host.with_trusted_acp_mcp(true)
-                .with_projected_acp(cli, store_dir)
-        },
+        move |host| host.with_projected_acp(cli, store_dir),
     )
     .await
 }
