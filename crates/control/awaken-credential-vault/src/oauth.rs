@@ -171,21 +171,76 @@ pub(crate) async fn oauth_access_token(
     cached.access_token().await
 }
 
+#[cfg(all(test, windows))]
+pub(crate) fn test_stdout_command(output: &str) -> Vec<String> {
+    vec![
+        "cmd.exe".into(),
+        "/D".into(),
+        "/C".into(),
+        format!("echo|set /p={output} & exit /b 0"),
+    ]
+}
+
+#[cfg(all(test, not(windows)))]
+pub(crate) fn test_stdout_command(output: &str) -> Vec<String> {
+    vec!["printf".into(), output.into()]
+}
+
+#[cfg(all(test, windows))]
+fn test_empty_command() -> Vec<String> {
+    vec![
+        "cmd.exe".into(),
+        "/D".into(),
+        "/C".into(),
+        "exit /b 0".into(),
+    ]
+}
+
+#[cfg(all(test, not(windows)))]
+fn test_empty_command() -> Vec<String> {
+    vec!["printf".into(), "  \n\t  ".into()]
+}
+
+#[cfg(all(test, windows))]
+fn test_failing_command() -> Vec<String> {
+    vec![
+        "cmd.exe".into(),
+        "/D".into(),
+        "/S".into(),
+        "/C".into(),
+        "echo reauth-required 1>&2 & exit /b 3".into(),
+    ]
+}
+
+#[cfg(all(test, not(windows)))]
+fn test_failing_command() -> Vec<String> {
+    vec![
+        "sh".into(),
+        "-c".into(),
+        "echo reauth-required >&2; exit 3".into(),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn command_source(command: Vec<String>) -> CommandTokenSource {
+        let (program, args) = command.split_first().unwrap();
+        CommandTokenSource::new(program.clone(), args.to_vec())
+    }
+
     #[tokio::test]
     async fn command_stdout_becomes_the_token() {
         // A hermetic stand-in for the OAuth helper: `printf` emits a fixed token.
-        let source = CommandTokenSource::new("printf", ["ya29.test-token"]);
+        let source = command_source(test_stdout_command("ya29.test-token"));
         let token = source.access_token().await.unwrap();
         assert_eq!(token.expose_secret(), "ya29.test-token");
     }
 
     #[tokio::test]
     async fn a_failing_helper_is_an_oauth_error() {
-        let source = CommandTokenSource::new("false", Vec::<String>::new());
+        let source = command_source(test_failing_command());
         assert!(matches!(
             source.access_token().await,
             Err(CredentialError::OAuth(_))
@@ -196,7 +251,7 @@ mod tests {
     async fn a_nonzero_exit_surfaces_the_helper_stderr() {
         // A helper that fails and explains itself on stderr: the diagnostic must ride
         // out on the OAuth error so an operator sees *why* the refresh failed.
-        let source = CommandTokenSource::new("sh", ["-c", "echo reauth-required >&2; exit 3"]);
+        let source = command_source(test_failing_command());
         assert!(matches!(
             source.access_token().await,
             Err(CredentialError::OAuth(msg))
@@ -207,7 +262,7 @@ mod tests {
     #[tokio::test]
     async fn an_empty_token_is_rejected() {
         // A helper that "succeeds" but emits only whitespace refreshed nothing.
-        let source = CommandTokenSource::new("printf", ["  \\n\\t  "]);
+        let source = command_source(test_empty_command());
         assert!(matches!(
             source.access_token().await,
             Err(CredentialError::OAuth(msg)) if msg == "refresh returned an empty token"
@@ -273,7 +328,7 @@ mod tests {
     #[tokio::test]
     async fn oauth_access_token_runs_the_command_and_returns_its_stdout() {
         let id = CredentialSourceId("cred:ws:oauth-test-1".into());
-        let token = oauth_access_token(&id, &["printf".to_string(), "ya29.abc".to_string()])
+        let token = oauth_access_token(&id, &test_stdout_command("ya29.abc"))
             .await
             .unwrap();
         assert_eq!(token.expose_secret(), "ya29.abc");
@@ -285,11 +340,11 @@ mod tests {
         // id wins for the TTL: a second call with a different command for the same id
         // still returns the originally minted token (the entry is not rebuilt).
         let id = CredentialSourceId("cred:ws:oauth-cache-reuse".into());
-        let first = oauth_access_token(&id, &["printf".to_string(), "tok-first".to_string()])
+        let first = oauth_access_token(&id, &test_stdout_command("tok-first"))
             .await
             .unwrap();
         assert_eq!(first.expose_secret(), "tok-first");
-        let second = oauth_access_token(&id, &["printf".to_string(), "tok-second".to_string()])
+        let second = oauth_access_token(&id, &test_stdout_command("tok-second"))
             .await
             .unwrap();
         // Served from the cached CachingTokenSource, so still the first token.

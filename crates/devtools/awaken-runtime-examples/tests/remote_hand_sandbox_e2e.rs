@@ -8,6 +8,8 @@
 //! The brain's in-process registry is a trap (panics if touched), so a green run is
 //! proof the call went brain → hand → sandbox, not brain → in-process tool.
 
+#![cfg(unix)]
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 

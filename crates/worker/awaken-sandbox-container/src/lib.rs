@@ -762,7 +762,10 @@ fn staging_dir(
     let mut created = None;
     for attempt in 0..16 {
         let candidate = std::env::temp_dir().join(format!("{prefix}-{attempt}"));
+        #[cfg(unix)]
         let mut builder = std::fs::DirBuilder::new();
+        #[cfg(not(unix))]
+        let builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
         {
             use std::os::unix::fs::DirBuilderExt;

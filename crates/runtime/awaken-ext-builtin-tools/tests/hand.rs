@@ -220,10 +220,13 @@ async fn glob_invalid_pattern_is_a_typed_error() {
 
 #[tokio::test]
 async fn write_to_an_unwritable_path_is_a_typed_error() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let parent_file = dir.path().join("not-a-directory");
+    std::fs::write(&parent_file, "occupied").expect("write parent file");
     let err = tool("write")
         .invoke(call(
             "write",
-            serde_json::json!({ "path": "/no/such/dir/out.txt", "content": "y" }),
+            serde_json::json!({ "path": parent_file.join("out.txt"), "content": "y" }),
         ))
         .await
         .expect_err("bad dir");
@@ -274,6 +277,7 @@ async fn grep_with_no_matching_lines_returns_empty_success_not_an_error() {
 }
 
 #[tokio::test]
+#[cfg(unix)]
 async fn bash_terminated_by_signal_reports_a_signal_code() {
     // A command killed by a signal has no exit code; the error must name "signal"
     // rather than panic on the `None` exit status.
@@ -297,7 +301,7 @@ async fn bash_failure_surfaces_stderr_and_stdout_not_a_swallowed_error() {
     let err = tool("bash")
         .invoke(call(
             "bash",
-            serde_json::json!({ "command": "echo out-line; echo err-line >&2; exit 7" }),
+            serde_json::json!({ "command": failing_shell_command() }),
         ))
         .await
         .expect_err("nonzero exit");
@@ -305,6 +309,16 @@ async fn bash_failure_surfaces_stderr_and_stdout_not_a_swallowed_error() {
     assert!(msg.contains("exited 7"), "carries the exit code: {msg}");
     assert!(msg.contains("out-line"), "carries stdout: {msg}");
     assert!(msg.contains("err-line"), "carries stderr: {msg}");
+}
+
+#[cfg(windows)]
+fn failing_shell_command() -> &'static str {
+    "echo out-line & echo err-line 1>&2 & exit 7"
+}
+
+#[cfg(not(windows))]
+fn failing_shell_command() -> &'static str {
+    "echo out-line; echo err-line >&2; exit 7"
 }
 
 #[tokio::test]

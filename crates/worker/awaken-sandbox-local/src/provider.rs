@@ -449,7 +449,7 @@ impl LocalProvider {
     }
 
     fn build(&self, id: &str, outputs_path: &str) -> LocalSandbox {
-        let dir = self.base.join(id);
+        let dir = crate::sandbox_dir(&self.base, id);
         LocalSandbox {
             id: id.to_string(),
             root: IsolatedRoot::new(dir),
@@ -1123,11 +1123,24 @@ mod shred_tests {
     #[tokio::test]
     async fn a_spawned_local_process_reports_its_pid_and_reaps() {
         use awaken_provisioning_contract::ProcessHandle;
-        let child = TokioCommand::new("true").spawn().unwrap();
+        let mut command = successful_command();
+        let child = command.spawn().unwrap();
         let proc = LocalProcess::spawned(child);
         assert!(!proc.id().is_empty());
         let status = proc.wait().await.unwrap();
         assert_eq!(status.code, Some(0));
+    }
+
+    #[cfg(windows)]
+    fn successful_command() -> TokioCommand {
+        let mut command = TokioCommand::new("cmd.exe");
+        command.args(["/D", "/C", "exit /b 0"]);
+        command
+    }
+
+    #[cfg(not(windows))]
+    fn successful_command() -> TokioCommand {
+        TokioCommand::new("true")
     }
 }
 
@@ -1229,7 +1242,8 @@ mod workdir_helper_tests {
         // Seed a bare "remote" with one commit.
         let seed = base.join("seed");
         std::fs::create_dir_all(&seed).unwrap();
-        git(&seed, &["init", "-q", "-b", "main"]);
+        git(&seed, &["init", "-q"]);
+        git(&seed, &["checkout", "-q", "-b", "main"]);
         git(&seed, &["config", "user.email", "seed@t"]);
         git(&seed, &["config", "user.name", "seed"]);
         std::fs::write(seed.join("README.md"), "hello").unwrap();

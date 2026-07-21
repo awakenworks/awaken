@@ -21,7 +21,13 @@ impl FakeWorkerUpstream {
         let thread = std::thread::spawn(move || {
             while !thread_stop.load(Ordering::Acquire) {
                 match listener.accept() {
-                    Ok((stream, _)) => handle(stream),
+                    Ok((stream, _)) => {
+                        if thread_stop.load(Ordering::Acquire) {
+                            break;
+                        }
+                        stream.set_nonblocking(false).unwrap();
+                        handle(stream);
+                    }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(Duration::from_millis(2));
                     }

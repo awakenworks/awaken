@@ -537,7 +537,7 @@ impl NamespaceProvider {
             }
         }
 
-        let raw_root = self.base.join(&spec.scope);
+        let raw_root = crate::sandbox_dir(&self.base, &spec.scope);
         std::fs::create_dir_all(&raw_root).map_err(err)?;
         // `/var` is a symlink to `/private/var` on macOS. Seatbelt evaluates some
         // operations against the canonical vnode path, so build every rule/env/cwd
@@ -603,7 +603,7 @@ impl NamespaceProvider {
             .and_then(|v| v.as_str())
             .unwrap_or("/mnt/session/outputs")
             .to_string();
-        let raw_root = self.base.join(&handle.sandbox_id);
+        let raw_root = crate::sandbox_dir(&self.base, &handle.sandbox_id);
         let root = IsolatedRoot::new(std::fs::canonicalize(&raw_root).unwrap_or(raw_root));
         let host_workspace = root.resolve("/workspace").map_err(err)?;
         let host_outputs = root.resolve(&outputs_path).map_err(err)?;

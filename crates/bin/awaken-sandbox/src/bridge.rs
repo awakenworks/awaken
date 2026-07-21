@@ -117,11 +117,7 @@ mod tests {
         let (bridge, addr) = AcpBridge::bind("127.0.0.1:0").await.expect("bind");
         // A fake stdio "CLI": read one line from stdin, reply on stdout, exit — the
         // shape of an ACP CLI's newline-framed turn, without needing a real agent.
-        let argv = vec![
-            "sh".to_string(),
-            "-c".to_string(),
-            "read line; printf 'reply:%s\\n' \"$line\"".to_string(),
-        ];
+        let argv = echo_cli_command();
         let server = tokio::spawn(async move { bridge.run(&argv).await });
 
         let mut sock = TcpStream::connect(addr).await.expect("dial the bridge");
@@ -147,5 +143,25 @@ mod tests {
             "the CLI's stdout reply reached the dialed socket: {got:?}"
         );
         assert_eq!(exit, 0, "the bridge returns the CLI's exit code");
+    }
+
+    #[cfg(windows)]
+    fn echo_cli_command() -> Vec<String> {
+        vec![
+            "cmd.exe".into(),
+            "/D".into(),
+            "/V:ON".into(),
+            "/C".into(),
+            "set /p line= & echo reply:!line!".into(),
+        ]
+    }
+
+    #[cfg(not(windows))]
+    fn echo_cli_command() -> Vec<String> {
+        vec![
+            "sh".into(),
+            "-c".into(),
+            "read line; printf 'reply:%s\\n' \"$line\"".into(),
+        ]
     }
 }
