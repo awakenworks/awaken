@@ -1071,8 +1071,10 @@ impl SessionRuntime for ManagedHost {
                 }
             }
             for mount in &new.mounts {
-                if let awaken_provisioning_contract::MountSource::InlineBytes { contents, .. } =
-                    &mount.source
+                if !old.mounts.iter().any(|candidate| candidate == mount)
+                    && let awaken_provisioning_contract::MountSource::InlineBytes {
+                        contents, ..
+                    } = &mount.source
                 {
                     environment
                         .materialize_workspace_file(&mount.mount_path, contents)
