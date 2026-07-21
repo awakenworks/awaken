@@ -140,9 +140,10 @@ effects; those remain environmental.
   read-back. SQLite and PostgreSQL implement the same protocol.
 
 The production composition root now passes the durable SQLite/PostgreSQL admin
-store as the shared `ResourceStore`; the previous unconditional in-memory store
-was removed. Real child-process kill tests cover session, credential, and audit
-crash windows, and restart persistence covers HTTP audit plus resource bindings.
+store through the Workspace-mandatory `AgentInputBindingRepository`; the previous
+unconditional in-memory store and unscoped repository operations were removed.
+Real child-process kill tests cover session, credential, and audit crash windows,
+and restart persistence covers HTTP audit plus resource bindings.
 
 ## Environmental verification matrix
 

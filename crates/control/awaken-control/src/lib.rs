@@ -48,7 +48,7 @@ pub use crate::worker_stores::{
 use awaken_admin_config_api::{
     AdminState, CredentialProbe, InferenceProfileStore, McpStore, WebhookStore, admin_router,
 };
-use awaken_config_resolver::ResourceStore;
+use awaken_config_resolver::AgentInputBindingRepository;
 use awaken_config_service::{
     ConfigPlane, ConfigService, ConfigServiceAgentSource, capabilities_router, config_router,
 };
@@ -174,7 +174,7 @@ pub struct ControlRouterInput {
     /// Session aggregate plus lifecycle transactional outbox, shared with the data plane.
     pub sessions: Arc<dyn awaken_protocol_managed::ManagedSessionRepository>,
     /// Per-agent resource bindings, shared with the config service (ADR-0038).
-    pub resource_store: Arc<dyn ResourceStore>,
+    pub resource_store: Arc<dyn AgentInputBindingRepository>,
     /// The live credential probe (provider-backed), injected by the composition root.
     pub probe: Arc<dyn CredentialProbe>,
     /// The Managed vault state, shared with the data-plane managed state.

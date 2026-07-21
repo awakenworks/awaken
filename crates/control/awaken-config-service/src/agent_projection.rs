@@ -42,9 +42,11 @@ impl ConfigServiceAgentSource {
             .0
             .resources
             .as_ref()
-            .and_then(|store| match workspace_id {
-                Some(workspace_id) => store.get_agent_resource_in(workspace_id, agent_id),
-                None => store.get_agent_resource(agent_id),
+            .and_then(|store| {
+                store.get_agent_inputs(
+                    workspace_id.unwrap_or(awaken_config_store::DEFAULT_SCOPE),
+                    agent_id,
+                )
             })
             .map(|config| {
                 config

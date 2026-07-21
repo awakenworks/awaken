@@ -192,7 +192,7 @@ pub trait ConfigRegistry: Send + Sync {
 /// read filters by. It matches the `scope_id` column default in the schema, so a
 /// pre-tenancy row and a `DEFAULT_SCOPE` write are the same owner — the
 /// single-machine "seeded, not absent" default (ADR-0048 D2).
-pub const DEFAULT_SCOPE: &str = "default";
+pub use awaken_tenancy::DEFAULT_WORKSPACE_ID as DEFAULT_SCOPE;
 
 /// The scope-aware backing store — the infrastructure-facing half of the config
 /// port. Each method carries an owner [`ScopeId`], persisted as one opaque

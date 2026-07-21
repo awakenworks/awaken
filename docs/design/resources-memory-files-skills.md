@@ -222,7 +222,7 @@ reclamation. It stores neither a secret nor a process-local handle.
 | Component | Status | Owner | Responsibility | Must not own |
 |---|---|---|---|---|
 | `ResourceCatalog` | Target evolution of current config stores | Resource Catalog | Memory/Repository definitions, immutable config versions, current version, lifecycle state | content bytes, IAM policy, sandbox paths |
-| `AgentInputBindingRepository` | Existing as `ResourceStore`, rename/evolve | Agent Configuration | Workspace-scoped Agent default bindings and authoring revision | Session merge, content resolution, authorization |
+| `AgentInputBindingRepository` | Existing | Agent Configuration | Workspace-scoped Agent default bindings and authoring revision; every operation requires Workspace | Session merge, content resolution, authorization |
 | Managed Session adapter | Existing | Protocol/product ACL | parse/project Anthropic resources; accept temporary attachments | raw DTO leakage into neutral/resource services |
 | `SessionInputResolver` | Target; replaces duplicate merge/resolve | Session control plane | merge once, replace explicitly, validate mount paths, select current config versions, create `EffectiveSessionInputs` and prompts | secret material, runtime loop, physical mounts |
 | front-door PEP | Existing/evolving | Server edge | authenticate, construct trusted Workspace target, call PDP, enforce obligations | resource content and domain policy implementation |
@@ -606,7 +606,8 @@ internal config version remains an awaken governance detail.
 ### Rename or merge
 
 - rename `AgentResourceConfig.version` to `revision`;
-- evolve `ResourceStore` to `AgentInputBindingRepository`;
+- migrate `AgentResourceConfig` behind the now Workspace-mandatory
+  `AgentInputBindingRepository` to the canonical typed binding language;
 - replace `ResourceBinding.kind + resource_id` and string `SessionResource` with
   the typed common binding language;
 - merge protocol-side and Host-side resource composition into

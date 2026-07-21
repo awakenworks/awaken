@@ -1277,7 +1277,7 @@ async fn prepare_session_mounts_an_effective_memory_resource() {
         sandbox: None,
     };
 
-    // An effective Session input mounts without a ResourceStore on the host.
+    // An effective Session input mounts without an authoring repository on the host.
     managed.prepare_session("t-bound", bare("a")).await.unwrap();
     let dump = serde_json::to_string(&host.sandbox_spec("t-bound").mounts).unwrap();
     assert!(

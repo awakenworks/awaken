@@ -1,6 +1,6 @@
 //! Live Postgres admin-store conformance (feature `postgres`): the same three sync
 //! store ports the sqlite backend serves — [`InferenceProfileStore`], [`McpStore`],
-//! [`ResourceStore`] — exercised against a real Postgres.
+//! [`AgentInputBindingRepository`] — exercised against a real Postgres.
 //! Isolated in its own schema (baked into the connection URL's `search_path`), so
 //! it coexists with any other schema in the test database. Skips when no Postgres
 //! is reachable (`AWAKEN_TEST_DATABASE_URL`).
@@ -8,8 +8,9 @@
 
 use awaken_admin_config_api::PostgresAdminStore;
 use awaken_config_resolver::{
-    AgentMcpConfig, AgentResourceConfig, InferenceProfile, InferenceProfileStore, McpServerDef,
-    McpServerId, McpStore, ResourceAccess, ResourceBinding, ResourceKind, ResourceStore,
+    AgentInputBindingRepository, AgentMcpConfig, AgentResourceConfig, InferenceProfile,
+    InferenceProfileStore, McpServerDef, McpServerId, McpStore, ResourceAccess, ResourceBinding,
+    ResourceKind,
 };
 use awaken_credential_vault::CredentialBinding;
 use awaken_resource_contract::{
@@ -130,12 +131,12 @@ async fn postgres_admin_store_serves_every_port() {
 
     // InferenceProfileStore: round-trip + overwrite.
     assert!(InferenceProfileStore::get(&store, "p1").is_none());
-    store.put("p1".into(), profile("m1"));
+    InferenceProfileStore::put(&store, "p1".into(), profile("m1"));
     assert_eq!(
         InferenceProfileStore::get(&store, "p1").unwrap().model_id,
         "m1"
     );
-    store.put("p1".into(), profile("m2"));
+    InferenceProfileStore::put(&store, "p1".into(), profile("m2"));
     assert_eq!(
         InferenceProfileStore::get(&store, "p1").unwrap().model_id,
         "m2"
@@ -164,8 +165,8 @@ async fn postgres_admin_store_serves_every_port() {
     );
     assert!(store.get_agent_config("agent-2").is_none());
 
-    // ResourceStore: agent resource binding round-trip + overwrite.
-    assert!(store.get_agent_resource("agent-1").is_none());
+    // AgentInputBindingRepository: Workspace-scoped round-trip + overwrite.
+    assert!(store.get_agent_inputs("ws", "agent-1").is_none());
     let rc = AgentResourceConfig {
         agent_id: "agent-1".into(),
         resources: vec![ResourceBinding {
@@ -177,13 +178,14 @@ async fn postgres_admin_store_serves_every_port() {
         }],
         version: 1,
     };
-    ResourceStore::put_agent_resource(&store, rc.clone());
-    assert_eq!(store.get_agent_resource("agent-1").unwrap(), rc);
+    store.put_agent_inputs("ws", rc.clone());
+    assert_eq!(store.get_agent_inputs("ws", "agent-1").unwrap(), rc);
     let mut v2 = rc.clone();
     v2.version = 2;
     v2.resources.clear();
-    ResourceStore::put_agent_resource(&store, v2.clone());
-    assert_eq!(store.get_agent_resource("agent-1").unwrap(), v2);
+    store.put_agent_inputs("ws", v2.clone());
+    assert_eq!(store.get_agent_inputs("ws", "agent-1").unwrap(), v2);
+    assert!(store.get_agent_inputs("other", "agent-1").is_none());
 
     // ResourceCatalog: resource/config separation, monotonic CAS and Workspace
     // hiding. This port contains no authorization subject or policy input.
@@ -239,7 +241,7 @@ async fn postgres_admin_rows_survive_a_reconnect() {
         let store = tokio::task::spawn_blocking(move || PostgresAdminStore::connect(&u).unwrap())
             .await
             .unwrap();
-        store.put("p1".into(), profile("m1"));
+        InferenceProfileStore::put(&store, "p1".into(), profile("m1"));
         store.put_server(server("calc"));
         let (definition, initial) = memory();
         store.create_memory_store(definition, initial).unwrap();

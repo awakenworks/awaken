@@ -23,6 +23,12 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Seeded Workspace used by the anonymous single-machine composition.
+///
+/// This is an ownership coordinate, not an authorization decision. Authenticated
+/// compositions replace it at the edge with the Workspace selected by their PEP.
+pub const DEFAULT_WORKSPACE_ID: &str = "default";
+
 /// An opaque tenant/ownership handle. The core never interprets it — it does not
 /// know whether the id denotes a workspace, an org, or any tier. Identity only.
 ///

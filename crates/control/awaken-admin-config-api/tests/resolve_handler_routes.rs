@@ -64,7 +64,7 @@ fn harness_with(probe: Option<Arc<dyn CredentialProbe>>) -> Harness {
         secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
         profiles: Arc::new(awaken_admin_config_api::InMemoryProfileStore::new()),
         mcp: Arc::new(awaken_admin_config_api::InMemoryMcpStore::new()),
-        resources: Arc::new(awaken_admin_config_api::InMemoryResourceStore::new()),
+        resources: Arc::new(awaken_admin_config_api::InMemoryAgentInputBindingRepository::new()),
         probe,
         availability: Arc::new(AvailabilityLedger::new()),
     });

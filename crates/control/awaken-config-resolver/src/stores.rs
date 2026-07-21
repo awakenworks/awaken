@@ -207,68 +207,39 @@ impl WebhookStore for InMemoryWebhookStore {
     }
 }
 
-/// A store for per-agent [`AgentResourceConfig`] bindings (ADR-0038) — which
-/// resources an agent mounts. Sync + in-memory by default; the SQLite backend
-/// implements the same port over a scoped-migration table.
-pub trait ResourceStore: Send + Sync {
-    fn put_agent_resource(&self, config: AgentResourceConfig);
-    fn get_agent_resource(&self, agent_id: &str) -> Option<AgentResourceConfig>;
-
-    /// Workspace-scoped variants used by every platform edge. Legacy adapters
-    /// inherit the old behavior, while durable/platform stores override these
-    /// with a composite key so equal agent ids cannot collide across tenants.
-    fn put_agent_resource_in(&self, _workspace: &str, config: AgentResourceConfig) {
-        self.put_agent_resource(config);
-    }
-    fn get_agent_resource_in(
-        &self,
-        _workspace: &str,
-        agent_id: &str,
-    ) -> Option<AgentResourceConfig> {
-        self.get_agent_resource(agent_id)
-    }
+/// Repository for an Agent's default input bindings. Workspace is mandatory on
+/// every operation: ownership is an intrinsic aggregate key, while caller identity
+/// and policy remain outside this port.
+pub trait AgentInputBindingRepository: Send + Sync {
+    fn put_agent_inputs(&self, workspace_id: &str, config: AgentResourceConfig);
+    fn get_agent_inputs(&self, workspace_id: &str, agent_id: &str) -> Option<AgentResourceConfig>;
 }
 
-/// The default in-memory [`ResourceStore`], keyed by agent id.
+/// Default in-memory Agent-input repository, keyed by `(Workspace, Agent)`.
 #[derive(Default)]
-pub struct InMemoryResourceStore(std::sync::Mutex<HashMap<(String, String), AgentResourceConfig>>);
+pub struct InMemoryAgentInputBindingRepository(
+    std::sync::Mutex<HashMap<(String, String), AgentResourceConfig>>,
+);
 
-impl InMemoryResourceStore {
+impl InMemoryAgentInputBindingRepository {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 }
 
-impl ResourceStore for InMemoryResourceStore {
-    fn put_agent_resource(&self, config: AgentResourceConfig) {
+impl AgentInputBindingRepository for InMemoryAgentInputBindingRepository {
+    fn put_agent_inputs(&self, workspace_id: &str, config: AgentResourceConfig) {
         self.0
             .lock()
             .expect("agent resource configs")
-            .insert((String::new(), config.agent_id.clone()), config);
+            .insert((workspace_id.to_string(), config.agent_id.clone()), config);
     }
-    fn get_agent_resource(&self, agent_id: &str) -> Option<AgentResourceConfig> {
+    fn get_agent_inputs(&self, workspace_id: &str, agent_id: &str) -> Option<AgentResourceConfig> {
         self.0
             .lock()
             .expect("agent resource configs")
-            .get(&(String::new(), agent_id.to_string()))
-            .cloned()
-    }
-    fn put_agent_resource_in(&self, workspace: &str, config: AgentResourceConfig) {
-        self.0
-            .lock()
-            .expect("agent resource configs")
-            .insert((workspace.to_string(), config.agent_id.clone()), config);
-    }
-    fn get_agent_resource_in(
-        &self,
-        workspace: &str,
-        agent_id: &str,
-    ) -> Option<AgentResourceConfig> {
-        self.0
-            .lock()
-            .expect("agent resource configs")
-            .get(&(workspace.to_string(), agent_id.to_string()))
+            .get(&(workspace_id.to_string(), agent_id.to_string()))
             .cloned()
     }
 }
@@ -276,6 +247,48 @@ impl ResourceStore for InMemoryResourceStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{ResourceAccess, ResourceBinding, ResourceKind};
+
+    #[test]
+    fn agent_inputs_are_isolated_by_workspace_even_for_the_same_agent_id() {
+        let store = InMemoryAgentInputBindingRepository::new();
+        let config = |resource_id: &str| AgentResourceConfig {
+            agent_id: "shared-agent".into(),
+            resources: vec![ResourceBinding {
+                kind: ResourceKind::File,
+                resource_id: resource_id.into(),
+                mount_path: "/workspace/input.txt".into(),
+                access: ResourceAccess::ReadOnly,
+                instructions: None,
+            }],
+            version: 1,
+        };
+
+        store.put_agent_inputs("workspace-a", config("file-a"));
+        store.put_agent_inputs("workspace-b", config("file-b"));
+
+        assert_eq!(
+            store
+                .get_agent_inputs("workspace-a", "shared-agent")
+                .unwrap()
+                .resources[0]
+                .resource_id,
+            "file-a"
+        );
+        assert_eq!(
+            store
+                .get_agent_inputs("workspace-b", "shared-agent")
+                .unwrap()
+                .resources[0]
+                .resource_id,
+            "file-b"
+        );
+        assert!(
+            store
+                .get_agent_inputs("workspace-c", "shared-agent")
+                .is_none()
+        );
+    }
 
     // ---- SEC: WebhookStore tenant fence + delete/disabled semantics ----
 

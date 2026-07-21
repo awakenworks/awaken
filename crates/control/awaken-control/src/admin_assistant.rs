@@ -14,7 +14,8 @@ use awaken_admin_assistant::{
     PlatformCapabilities, PluginInfo, ResourceInventory, ResourceSpec, admin_assistant_config,
 };
 use awaken_config_resolver::{
-    AgentResourceConfig, McpStore, ResourceAccess, ResourceBinding, ResourceKind, ResourceStore,
+    AgentInputBindingRepository, AgentResourceConfig, McpStore, ResourceAccess, ResourceBinding,
+    ResourceKind,
 };
 use awaken_config_service::{ConfigPlane, RESERVED_ADMIN_SCOPE};
 use awaken_config_store::{AgentConfig, DEFAULT_SCOPE, ManagementEffect};
@@ -259,17 +260,17 @@ pub struct ConfigServiceDraftStore {
     plane: ConfigPlane,
     scope: ScopeId,
     /// The SEPARATE data-plane resource store (ADR-0038): which resources an agent
-    /// mounts, keyed by agent id. The assistant authors bindings through the same
+    /// mounts, keyed by workspace + agent id. The assistant authors bindings through the same
     /// `DraftStore` port so a single tool call fills in a whole agent — config plus its
     /// mounted resources — even though the two persist to different stores.
-    resources: Arc<dyn ResourceStore>,
+    resources: Arc<dyn AgentInputBindingRepository>,
 }
 
 impl ConfigServiceDraftStore {
     pub fn new(
         plane: ConfigPlane,
         scope: impl Into<ScopeId>,
-        resources: Arc<dyn ResourceStore>,
+        resources: Arc<dyn AgentInputBindingRepository>,
     ) -> Self {
         let store = Self {
             plane,
@@ -302,7 +303,7 @@ const RESOURCE_EFFECT_KIND: &str = "agent_resource_binding";
 async fn apply_pending_resource_effects(
     plane: &ConfigPlane,
     scope: &ScopeId,
-    resources: &dyn ResourceStore,
+    resources: &dyn AgentInputBindingRepository,
 ) -> Result<usize, String> {
     let effects = plane.pending_management_effects(scope).await?;
     let mut completed = 0;
@@ -312,8 +313,12 @@ async fn apply_pending_resource_effects(
         }
         let config: AgentResourceConfig =
             serde_json::from_value(effect.payload).map_err(|error| error.to_string())?;
-        resources.put_agent_resource(config.clone());
-        if resources.get_agent_resource(&config.agent_id).as_ref() != Some(&config) {
+        resources.put_agent_inputs(scope.as_str(), config.clone());
+        if resources
+            .get_agent_inputs(scope.as_str(), &config.agent_id)
+            .as_ref()
+            != Some(&config)
+        {
             return Err(format!(
                 "resource store did not durably read back binding `{}`",
                 config.agent_id
@@ -463,12 +468,15 @@ impl DraftStore for ConfigServiceDraftStore {
         resources: Vec<ResourceSpec>,
     ) -> Result<(), String> {
         self.resources
-            .put_agent_resource(resource_config(agent_id, resources)?);
+            .put_agent_inputs(self.scope.as_str(), resource_config(agent_id, resources)?);
         Ok(())
     }
 
     async fn get_resources(&self, agent_id: &str) -> Result<Vec<ResourceSpec>, String> {
-        let Some(cfg) = self.resources.get_agent_resource(agent_id) else {
+        let Some(cfg) = self
+            .resources
+            .get_agent_inputs(self.scope.as_str(), agent_id)
+        else {
             return Ok(Vec::new());
         };
         Ok(cfg
@@ -491,7 +499,9 @@ impl DraftStore for ConfigServiceDraftStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_config_resolver::{InMemoryMcpStore, McpServerDef, McpServerId};
+    use awaken_config_resolver::{
+        InMemoryAgentInputBindingRepository, InMemoryMcpStore, McpServerDef, McpServerId,
+    };
     use awaken_config_service::{
         ConfigPlane, ConfigService, ModelResolver, ResolvedModel, ScopedToolCatalog,
         StaticToolCatalog,
@@ -588,6 +598,44 @@ mod tests {
             }],
             ..Default::default()
         }
+    }
+
+    #[tokio::test]
+    async fn draft_resource_bindings_keep_equal_agent_ids_in_their_workspace() {
+        let plane = ConfigPlane::new(
+            Arc::new(ConfigService::new()),
+            Arc::new(SqliteConfigStore::open_in_memory().unwrap()),
+            Arc::new(StaticToolCatalog(Vec::new())),
+        );
+        let resources = Arc::new(InMemoryAgentInputBindingRepository::new());
+        let workspace_a =
+            ConfigServiceDraftStore::new(plane.clone(), "workspace-a", resources.clone());
+        let workspace_b = ConfigServiceDraftStore::new(plane, "workspace-b", resources);
+        let binding = |resource_id: &str| ResourceSpec {
+            kind: "file".into(),
+            resource_id: resource_id.into(),
+            mount_path: None,
+            access: Some("read_only".into()),
+            instructions: None,
+        };
+
+        workspace_a
+            .put_resources("shared-agent", vec![binding("file-a")])
+            .await
+            .unwrap();
+        workspace_b
+            .put_resources("shared-agent", vec![binding("file-b")])
+            .await
+            .unwrap();
+
+        assert_eq!(
+            workspace_a.get_resources("shared-agent").await.unwrap()[0].resource_id,
+            "file-a"
+        );
+        assert_eq!(
+            workspace_b.get_resources("shared-agent").await.unwrap()[0].resource_id,
+            "file-b"
+        );
     }
 
     #[tokio::test]

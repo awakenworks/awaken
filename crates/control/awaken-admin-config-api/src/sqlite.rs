@@ -16,8 +16,8 @@ use std::sync::{Arc, Mutex};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use awaken_config_resolver::{
-    AgentMcpConfig, AgentResourceConfig, InferenceProfile, InferenceProfileStore, McpServerDef,
-    McpStore, ResourceStore, WebhookEndpointDef, WebhookStore,
+    AgentInputBindingRepository, AgentMcpConfig, AgentResourceConfig, InferenceProfile,
+    InferenceProfileStore, McpServerDef, McpStore, WebhookEndpointDef, WebhookStore,
 };
 
 use crate::schema::admin_bundle;
@@ -106,43 +106,15 @@ impl SqliteAdminStore {
             .expect("read admin row");
         data.map(|d| serde_json::from_str(&d).expect("decode admin row"))
     }
-
-    /// Upsert an agent's resource binding (ADR-0038). Inherent (not a router port
-    /// yet): the aggregate + schema land first; the HTTP surface follows.
-    pub fn put_agent_resource(&self, config: AgentResourceConfig) {
-        self.put_row(
-            "agent_resource",
-            "agent_id",
-            &config.agent_id.clone(),
-            &config,
-        );
-    }
-
-    /// One agent's resource binding, `None` when the agent has none.
-    pub fn get_agent_resource(&self, agent_id: &str) -> Option<AgentResourceConfig> {
-        self.get_row("agent_resource", "agent_id", agent_id)
-    }
 }
 
-impl ResourceStore for SqliteAdminStore {
-    fn put_agent_resource(&self, config: AgentResourceConfig) {
-        // Fully-qualified so this resolves to the inherent method (durable upsert),
-        // not the trait method being defined.
-        SqliteAdminStore::put_agent_resource(self, config);
-    }
-    fn get_agent_resource(&self, agent_id: &str) -> Option<AgentResourceConfig> {
-        SqliteAdminStore::get_agent_resource(self, agent_id)
-    }
-    fn put_agent_resource_in(&self, workspace: &str, config: AgentResourceConfig) {
-        let key = format!("{workspace}\u{1f}{}", config.agent_id);
+impl AgentInputBindingRepository for SqliteAdminStore {
+    fn put_agent_inputs(&self, workspace_id: &str, config: AgentResourceConfig) {
+        let key = format!("{workspace_id}\u{1f}{}", config.agent_id);
         self.put_row("agent_resource", "agent_id", &key, &config);
     }
-    fn get_agent_resource_in(
-        &self,
-        workspace: &str,
-        agent_id: &str,
-    ) -> Option<AgentResourceConfig> {
-        let key = format!("{workspace}\u{1f}{agent_id}");
+    fn get_agent_inputs(&self, workspace_id: &str, agent_id: &str) -> Option<AgentResourceConfig> {
+        let key = format!("{workspace_id}\u{1f}{agent_id}");
         self.get_row("agent_resource", "agent_id", &key)
     }
 }
@@ -337,7 +309,7 @@ mod tests {
     #[test]
     fn agent_resource_binding_round_trips_and_overwrites() {
         let store = SqliteAdminStore::open_in_memory().unwrap();
-        assert!(store.get_agent_resource("agent-1").is_none());
+        assert!(store.get_agent_inputs("workspace-a", "agent-1").is_none());
 
         let config = AgentResourceConfig {
             agent_id: "agent-1".into(),
@@ -350,8 +322,11 @@ mod tests {
             }],
             version: 1,
         };
-        store.put_agent_resource(config.clone());
-        assert_eq!(store.get_agent_resource("agent-1").unwrap(), config);
+        store.put_agent_inputs("workspace-a", config.clone());
+        assert_eq!(
+            store.get_agent_inputs("workspace-a", "agent-1").unwrap(),
+            config
+        );
 
         // Upsert by agent_id replaces the whole binding set.
         let mut v2 = config.clone();
@@ -363,11 +338,15 @@ mod tests {
             instructions: None,
         });
         v2.version = 2;
-        store.put_agent_resource(v2);
-        let got = store.get_agent_resource("agent-1").unwrap();
+        store.put_agent_inputs("workspace-a", v2);
+        let got = store.get_agent_inputs("workspace-a", "agent-1").unwrap();
         assert_eq!(got.resources.len(), 2);
         assert_eq!(got.version, 2);
-        assert!(store.get_agent_resource("agent-2").is_none());
+        assert!(store.get_agent_inputs("workspace-a", "agent-2").is_none());
+        assert!(
+            store.get_agent_inputs("workspace-b", "agent-1").is_none(),
+            "Workspace is a mandatory aggregate key"
+        );
     }
 
     #[test]

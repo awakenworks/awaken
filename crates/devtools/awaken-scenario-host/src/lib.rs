@@ -1473,7 +1473,7 @@ pub async fn build_config_router() -> Router {
             awaken_config_store::DEFAULT_SCOPE,
             // The scenario host has no durable resource store in scope; an in-memory one
             // satisfies the port so the assistant can bind resources onto a draft.
-            Arc::new(awaken_config_resolver::InMemoryResourceStore::new()),
+            Arc::new(awaken_config_resolver::InMemoryAgentInputBindingRepository::new()),
         )),
         // A fresh in-memory environment registry satisfies the author port for the
         // scenario host (no durable env state in scope).
