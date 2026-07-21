@@ -407,57 +407,10 @@ async fn inline_content_reaches_the_pod_as_a_configmap_volume() {
         ok
     };
 
-<<<<<<< HEAD
-    let mut forward = std::process::Command::new("kubectl")
-        .args([
-            "port-forward",
-            &format!("pod/{pod}"),
-            &format!("{local_port}:8080"),
-        ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("spawn port-forward");
-
-    let mut got = String::new();
-    if ready {
-        let mut channel = None;
-        for _ in 0..100 {
-            match awaken_agent_channel::AgentTransport::open_channel(&sandbox).await {
-                Ok(c) => {
-                    channel = Some(c);
-                    break;
-                }
-                Err(_) => tokio::time::sleep(Duration::from_millis(200)).await,
-            }
-        }
-        if let Some(mut channel) = channel {
-            let _ = channel.write_all(b"hello\n").await;
-            let _ = channel.flush().await;
-            let mut buf = vec![0u8; 512];
-            for _ in 0..50 {
-                match tokio::time::timeout(Duration::from_secs(2), channel.read(&mut buf)).await {
-                    Ok(Ok(0)) => break,
-                    Ok(Ok(n)) => {
-                        got.push_str(&String::from_utf8_lossy(&buf[..n]));
-                        if got.contains("turn_end") {
-                            break;
-                        }
-                    }
-                    _ => break,
-                }
-            }
-        }
-    }
-
-    let _ = forward.kill();
-    let _ = forward.wait();
-=======
     assert!(ready, "the agent Pod must reach Running");
     let got = exchange(&sandbox, cat_mount_argv())
         .await
         .expect("read the ConfigMap mount from the agent exec");
->>>>>>> c458b9919 (🛡️ test(sandbox): prove worker replacement substrates)
     let _ = pc::Sandbox::dispose(&sandbox).await;
     let _ = kubectl(&["delete", "pod", &pod, "--ignore-not-found", "--now"]);
 
@@ -528,57 +481,10 @@ async fn a_file_resolved_from_the_blob_source_reaches_the_pod() {
         ok
     };
 
-<<<<<<< HEAD
-    let mut forward = std::process::Command::new("kubectl")
-        .args([
-            "port-forward",
-            &format!("pod/{pod}"),
-            &format!("{local_port}:8080"),
-        ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("spawn port-forward");
-
-    let mut got = String::new();
-    if ready {
-        let mut channel = None;
-        for _ in 0..100 {
-            match awaken_agent_channel::AgentTransport::open_channel(&sandbox).await {
-                Ok(c) => {
-                    channel = Some(c);
-                    break;
-                }
-                Err(_) => tokio::time::sleep(Duration::from_millis(200)).await,
-            }
-        }
-        if let Some(mut channel) = channel {
-            let _ = channel.write_all(b"hello\n").await;
-            let _ = channel.flush().await;
-            let mut buf = vec![0u8; 512];
-            for _ in 0..50 {
-                match tokio::time::timeout(Duration::from_secs(2), channel.read(&mut buf)).await {
-                    Ok(Ok(0)) => break,
-                    Ok(Ok(n)) => {
-                        got.push_str(&String::from_utf8_lossy(&buf[..n]));
-                        if got.contains("turn_end") {
-                            break;
-                        }
-                    }
-                    _ => break,
-                }
-            }
-        }
-    }
-
-    let _ = forward.kill();
-    let _ = forward.wait();
-=======
     assert!(ready, "the agent Pod must reach Running");
     let got = exchange(&sandbox, cat_mount_argv())
         .await
         .expect("read the resolved File mount from the agent exec");
->>>>>>> c458b9919 (🛡️ test(sandbox): prove worker replacement substrates)
     let _ = pc::Sandbox::dispose(&sandbox).await;
     let _ = kubectl(&["delete", "pod", &pod, "--ignore-not-found", "--now"]);
 
@@ -633,57 +539,10 @@ async fn a_binary_file_reaches_the_pod_via_configmap_binary_data() {
         ok
     };
 
-<<<<<<< HEAD
-    let mut forward = std::process::Command::new("kubectl")
-        .args([
-            "port-forward",
-            &format!("pod/{pod}"),
-            &format!("{local_port}:8080"),
-        ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("spawn port-forward");
-
-    let mut got = String::new();
-    if ready {
-        let mut channel = None;
-        for _ in 0..100 {
-            match awaken_agent_channel::AgentTransport::open_channel(&sandbox).await {
-                Ok(c) => {
-                    channel = Some(c);
-                    break;
-                }
-                Err(_) => tokio::time::sleep(Duration::from_millis(200)).await,
-            }
-        }
-        if let Some(mut channel) = channel {
-            let _ = channel.write_all(b"hello\n").await;
-            let _ = channel.flush().await;
-            let mut buf = vec![0u8; 512];
-            for _ in 0..50 {
-                match tokio::time::timeout(Duration::from_secs(2), channel.read(&mut buf)).await {
-                    Ok(Ok(0)) => break,
-                    Ok(Ok(n)) => {
-                        got.push_str(&String::from_utf8_lossy(&buf[..n]));
-                        if got.contains("turn_end") {
-                            break;
-                        }
-                    }
-                    _ => break,
-                }
-            }
-        }
-    }
-
-    let _ = forward.kill();
-    let _ = forward.wait();
-=======
     assert!(ready, "the agent Pod must reach Running");
     let got = exchange(&sandbox, grep_binary_argv())
         .await
         .expect("read the binaryData mount from the agent exec");
->>>>>>> c458b9919 (🛡️ test(sandbox): prove worker replacement substrates)
     let _ = pc::Sandbox::dispose(&sandbox).await;
     let _ = kubectl(&["delete", "pod", &pod, "--ignore-not-found", "--now"]);
 
