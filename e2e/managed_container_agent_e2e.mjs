@@ -47,6 +47,94 @@ async function afterPendingActivation(operation) {
   throw last;
 }
 
+async function exercisePodmanEnvironment(client, name, sandbox, expectSuccess) {
+  const environment = await client.beta.environments.create({
+    name: `podman-${name}`,
+    config: { type: 'local', sandbox },
+    betas: BETAS,
+  });
+  const session = await client.beta.sessions.create({
+    agent: 'assistant',
+    metadata: { 'awaken.runtime': 'acp:custom' },
+    environment_id: environment.id,
+    betas: BETAS,
+  });
+  let sendFailure;
+  try {
+    await client.beta.sessions.events.send(session.id, {
+      events: [{ type: 'user.message', content: [{ type: 'text', text: `exercise ${name}` }] }],
+      betas: BETAS,
+    });
+  } catch (error) {
+    sendFailure = error;
+  }
+  const events = [];
+  for await (const event of client.beta.sessions.events.list(session.id, { betas: BETAS })) {
+    events.push(event);
+  }
+  if (expectSuccess) {
+    assert.equal(sendFailure, undefined, `${name} should realize: ${sendFailure}`);
+    assert.ok(
+      events.some(
+        (event) => event.type === 'agent.message'
+          && (event.content ?? []).some((content) => String(content.text ?? '').includes(MARKER)),
+      ),
+      `${name} must run the containerized agent: ${JSON.stringify(events)}`,
+    );
+  } else {
+    assert.ok(
+      sendFailure || events.some((event) => event.type === 'session.error'),
+      `${name} must fail closed instead of falling back to the default image: ${JSON.stringify(events)}`,
+    );
+  }
+  await client.beta.sessions.delete(session.id, { betas: BETAS });
+  await client.beta.environments.delete(environment.id, { betas: BETAS });
+}
+
+async function exercisePodmanRootfsMatrix(client) {
+  await exercisePodmanEnvironment(client, 'host-userland', {
+    environment: { kind: 'sandbox' },
+    network: { mode: 'allowlist', hosts: ['example.invalid'] },
+    limits: { cpu_millis: 1000, memory_bytes: 536870912, pids: 128 },
+  }, true);
+  await exercisePodmanEnvironment(client, 'explicit-image', {
+    environment: { kind: 'image', reference: IMAGE },
+    network: { mode: 'none' },
+  }, true);
+  await exercisePodmanEnvironment(client, 'scope-fallback', {
+    environment: { kind: 'scope' },
+  }, true);
+  await exercisePodmanEnvironment(client, 'local-dir-fallback', {
+    environment: { kind: 'local_dir', path_template: '/tmp/not-a-container-root' },
+  }, true);
+  await exercisePodmanEnvironment(client, 'readonly-root', {
+    environment: {
+      kind: 'isolated_root',
+      base: { source: 'dir', path_template: `${TMP}/missing-readonly-root` },
+      writable_base: false,
+    },
+  }, false);
+  await exercisePodmanEnvironment(client, 'writable-root', {
+    environment: {
+      kind: 'isolated_root',
+      base: { source: 'dir', path_template: `${TMP}/missing-writable-root` },
+      writable_base: true,
+    },
+  }, false);
+  await exercisePodmanEnvironment(client, 'tarball-root', {
+    environment: {
+      kind: 'isolated_root',
+      base: { source: 'tarball', reference: `${TMP}/missing-root.tar` },
+      writable_base: false,
+    },
+  }, false);
+  const remaining = testContainerNames({ all: true });
+  assert.ok(
+    remaining.every((name) => name.startsWith('awaken-warmpool-')),
+    `every rootfs matrix Session must be released; only unused warm capacity may remain: ${remaining}`,
+  );
+}
+
 function git(args, cwd) {
   return execFileSync('git', args, { cwd, encoding: 'utf8' });
 }
@@ -76,6 +164,13 @@ function testContainers({ all = false } = {}) {
   const args = ['ps'];
   if (all) args.push('-a');
   args.push('-q', '--filter', 'label=awaken.sandbox=1', '--filter', `ancestor=${IMAGE}`);
+  return execFileSync(ENGINE, args, { encoding: 'utf8' }).trim().split(/\s+/).filter(Boolean);
+}
+
+function testContainerNames({ all = false } = {}) {
+  const args = ['ps'];
+  if (all) args.push('-a');
+  args.push('--format', '{{.Names}}', '--filter', 'label=awaken.sandbox=1', '--filter', `ancestor=${IMAGE}`);
   return execFileSync(ENGINE, args, { encoding: 'utf8' }).trim().split(/\s+/).filter(Boolean);
 }
 
@@ -166,6 +261,7 @@ async function main() {
       // Disable the reaper's periodic sweep noise during the short test; the startup
       // sweep still runs (proving it is harmless with no leaked containers present).
       AWAKEN_SANDBOX_REAP_INTERVAL: '3600',
+      AWAKEN_CONTAINER_EGRESS_PROXY: 'http://127.0.0.1:9',
     },
     stdio: ['ignore', 'inherit', 'inherit'],
   });
@@ -364,6 +460,11 @@ async function main() {
       'CONTAINER-MEMORY-OK',
       'container memory writes must reconcile through the host at Session release',
     );
+
+    if (ENGINE === 'podman') {
+      await exercisePodmanRootfsMatrix(client);
+      console.log('  ok: Managed environment declarations drive Podman image/private-root/network/limit planning');
+    }
 
     console.log(
       `E2E PASS: container agent — ACP, hand, file, memory, repository, workspace skill and immutable delivered skill shared one Session-owned ${ENGINE} environment.`,
