@@ -22,7 +22,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_ext_builtin_tools::executable_hand_tools;
-use awaken_provisioning_contract as pc;
 use awaken_runtime_contract::llm::ToolCall;
 use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
 use serde_json::Value;
@@ -474,69 +473,6 @@ pub fn content_fingerprint(bytes: &[u8]) -> String {
     blake3::hash(bytes).to_hex().to_string()
 }
 
-/// A typed provisioning input carried in [`SandboxSpec::mounts`] as an opaque
-/// `Value`. The local provider realizes the variants it understands
-/// ([`Mount::from_value`]) and ignores the rest (forward-compat), so another
-/// repo's provider can add mount kinds without a breaking change (ADR-0035 D1).
-/// Conversion is explicit (not derived) so this crate depends only on
-/// `serde_json`, honoring its crate-boundary allow-list.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Mount {
-    /// A read-only resource file, realized under the environment's `.mnt/` root
-    /// and referenced by logical path (no host path crosses the boundary, G3).
-    Resource(ResourceMount),
-}
-
-impl Mount {
-    /// Serialize to the opaque `Value` carried in [`SandboxSpec::mounts`].
-    pub fn to_value(&self) -> Value {
-        match self {
-            Mount::Resource(r) => serde_json::json!({
-                "kind": "resource",
-                "id": r.id,
-                "content_hash": r.content_hash,
-                "logical_path": r.logical_path,
-                "content": r.content,
-                "access": match r.access {
-                    pc::MountAccess::ReadOnly => "read_only",
-                    pc::MountAccess::ReadWrite => "read_write",
-                },
-            }),
-        }
-    }
-
-    /// Parse a carried mount, or `None` when the `kind` is unknown or a required
-    /// field is missing — both are ignored (forward-compat, ADR-0035 D1).
-    pub fn from_value(v: &Value) -> Option<Mount> {
-        let field = |key: &str| v.get(key).and_then(Value::as_str).map(str::to_string);
-        match v.get("kind").and_then(Value::as_str)? {
-            "resource" => Some(Mount::Resource(ResourceMount {
-                id: field("id")?,
-                content_hash: field("content_hash").unwrap_or_default(),
-                logical_path: field("logical_path")?,
-                content: field("content")?,
-                access: match v.get("access").and_then(Value::as_str) {
-                    Some("read_only") => pc::MountAccess::ReadOnly,
-                    Some("read_write") | None => pc::MountAccess::ReadWrite,
-                    Some(_) => return None,
-                },
-            })),
-            _ => None,
-        }
-    }
-}
-
-/// A resource file provisioned into the environment. `content` is realized under
-/// `.mnt/<logical_path>`; `content_hash`, when non-empty, is verified fail-closed.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ResourceMount {
-    pub id: String,
-    pub content_hash: String,
-    pub logical_path: String,
-    pub content: String,
-    pub access: pc::MountAccess,
-}
-
 /// A `SKILL.md`-bearing directory discovered under the environment. Neutral file
 /// data — no skill semantics — so the sandbox stays unaware of the skill model
 /// (the host parses it). `dir` is a **logical** path under the root (usable by
@@ -748,49 +684,6 @@ mod tests {
         let cmd = out["command"].as_str().unwrap();
         // The user command lands as a single fully-quoted token with the quote escaped.
         assert!(cmd.ends_with(r#"'-c' 'a'\''b'"#), "got: {cmd}");
-    }
-
-    #[test]
-    fn mount_from_value_ignores_unknown_kinds_and_missing_fields_and_round_trips() {
-        // Forward-compat contract (ADR-0035 D1): an unknown `kind` or a resource missing
-        // a required field parses to `None` (ignored, never an error); `content_hash` is
-        // optional (defaults empty); and a well-formed resource round-trips through the
-        // opaque `Value` carrier byte-for-byte.
-        assert_eq!(
-            Mount::from_value(&serde_json::json!({ "kind": "future_thing", "x": 1 })),
-            None,
-            "an unknown kind is ignored, not an error"
-        );
-        // kind=resource but no `id` / `logical_path` / `content` → None (skipped).
-        assert_eq!(
-            Mount::from_value(&serde_json::json!({ "kind": "resource", "id": "r" })),
-            None,
-            "a resource missing logical_path/content is ignored"
-        );
-        // A hashless resource is admitted with an empty content_hash (unwrap_or_default).
-        let hashless = Mount::from_value(&serde_json::json!({
-            "kind": "resource", "id": "r", "logical_path": "a.txt", "content": "hi",
-        }))
-        .unwrap();
-        assert_eq!(
-            hashless,
-            Mount::Resource(ResourceMount {
-                id: "r".into(),
-                content_hash: String::new(),
-                logical_path: "a.txt".into(),
-                content: "hi".into(),
-                access: pc::MountAccess::ReadWrite,
-            })
-        );
-        // Round-trip: to_value → from_value is the identity on a full resource.
-        let full = Mount::Resource(ResourceMount {
-            id: "r1".into(),
-            content_hash: "h".into(),
-            logical_path: "dir/a.txt".into(),
-            content: "bytes".into(),
-            access: pc::MountAccess::ReadOnly,
-        });
-        assert_eq!(Mount::from_value(&full.to_value()), Some(full));
     }
 
     // ---- HandOutput ----

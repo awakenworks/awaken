@@ -54,6 +54,7 @@ pub(crate) async fn resolve_source(
         pc::MountSource::Secret { reference, .. } => reference.as_str(),
         // Inline ephemeral content ships in the spec — no store hit, no id.
         pc::MountSource::Inline { contents } => return Some(contents.clone().into_bytes()),
+        pc::MountSource::InlineBytes { contents, .. } => return Some(contents.clone()),
         pc::MountSource::Other(v) => {
             return v
                 .get("content")
@@ -83,6 +84,7 @@ pub(crate) fn declared_hash(source: &pc::MountSource) -> Option<&str> {
         pc::MountSource::File { content_hash, .. } => content_hash.as_deref(),
         pc::MountSource::Resource { content_hash, .. } => content_hash.as_deref(),
         pc::MountSource::Secret { content_hash, .. } => content_hash.as_deref(),
+        pc::MountSource::InlineBytes { content_hash, .. } => content_hash.as_deref(),
         _ => None,
     }
 }
@@ -793,6 +795,18 @@ mod shred_tests {
             resolve_source(&inline, &blobs, &none_store).await,
             Some(b"inline".to_vec())
         );
+        let binary = vec![0, 0xff, 0x80, b'\n'];
+        let carried = MountSource::InlineBytes {
+            contents: binary.clone(),
+            content_hash: Some(content_fingerprint(&binary)),
+        };
+        assert_eq!(
+            resolve_source(&carried, &blobs, &none_store).await,
+            Some(binary.clone()),
+            "binary input must round-trip without UTF-8 coercion"
+        );
+        assert!(verify(&carried, &binary).is_ok());
+        assert!(verify(&carried, b"corrupt").is_err());
         // A memory store is not byte-resolvable through this path.
         let mem = MountSource::MemoryStore {
             store_id: "m".into(),
@@ -821,6 +835,13 @@ mod shred_tests {
                 store_id: "m".into(),
             }),
             None
+        );
+        assert_eq!(
+            declared_hash(&MountSource::InlineBytes {
+                contents: Vec::new(),
+                content_hash: Some("carried-hash".into()),
+            }),
+            Some("carried-hash")
         );
 
         let src = MountSource::File {

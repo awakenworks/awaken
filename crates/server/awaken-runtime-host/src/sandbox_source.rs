@@ -342,20 +342,12 @@ impl ThreadResources {
     }
 
     /// The staged file/resource mounts for `thread`, mapped to the neutral
-    /// [`pc::MountRequirement`] the bwrap provider realizes (reusing the native path's
-    /// `mount_to_requirement`). Empty when none are staged.
+    /// [`pc::MountRequirement`] the provider realizes. Empty when none are staged.
     fn mounts_for(&self, thread: &str) -> Vec<pc::MountRequirement> {
         self.0
             .lock()
             .ok()
-            .and_then(|g| {
-                g.get(thread).map(|s| {
-                    s.mounts
-                        .iter()
-                        .map(crate::provisioning::mount_to_requirement)
-                        .collect()
-                })
-            })
+            .and_then(|g| g.get(thread).map(|s| s.mounts.clone()))
             .unwrap_or_default()
     }
 }
@@ -1323,18 +1315,21 @@ mod tests {
         // ADR-0038 resources bound to a session must reach the isolated ACP sandbox,
         // not only the in-process Workdir — the same registry the native sandbox_spec
         // reads, mapped to bwrap-realizable mounts.
-        use awaken_sandbox_local::{Mount, ResourceMount};
         let registry = ThreadResources::default();
         registry.0.lock().unwrap().insert(
             "t1".to_string(),
             crate::provisioning::StagedResources {
-                mounts: vec![Mount::Resource(ResourceMount {
-                    id: "id-data".into(),
-                    content_hash: String::new(),
-                    logical_path: "data.csv".into(),
-                    content: "a,b\n".into(),
+                mounts: vec![pc::MountRequirement {
+                    mount_id: "id-data".into(),
+                    source: pc::MountSource::InlineBytes {
+                        contents: b"a,b\n".to_vec(),
+                        content_hash: None,
+                    },
+                    mount_path: ".mnt/data.csv".into(),
                     access: awaken_provisioning_contract::MountAccess::ReadWrite,
-                })],
+                    lifetime: pc::MountLifetime::PerRun,
+                    required: true,
+                }],
                 ..Default::default()
             },
         );
@@ -1423,18 +1418,21 @@ mod tests {
         // The no-bwrap path (A): the Workdir backend (LocalProvider) needs no OS-native
         // sandbox, yet still materializes the session's staged resource mounts — so a
         // bwrap-less worker delivers resources, not only MCP.
-        use awaken_sandbox_local::{Mount, ResourceMount};
         let registry = ThreadResources::default();
         registry.0.lock().unwrap().insert(
             "t".to_string(),
             crate::provisioning::StagedResources {
-                mounts: vec![Mount::Resource(ResourceMount {
-                    id: "id-x".into(),
-                    content_hash: String::new(),
-                    logical_path: "data.csv".into(),
-                    content: "a,b\n".into(),
+                mounts: vec![pc::MountRequirement {
+                    mount_id: "id-x".into(),
+                    source: pc::MountSource::InlineBytes {
+                        contents: b"a,b\n".to_vec(),
+                        content_hash: None,
+                    },
+                    mount_path: ".mnt/data.csv".into(),
                     access: awaken_provisioning_contract::MountAccess::ReadWrite,
-                })],
+                    lifetime: pc::MountLifetime::PerRun,
+                    required: true,
+                }],
                 ..Default::default()
             },
         );

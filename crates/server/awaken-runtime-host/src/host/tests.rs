@@ -5,6 +5,14 @@ use awaken_agent_contract::agent::message::Role;
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse};
 use std::sync::atomic::AtomicUsize;
 
+fn carried_mount_bytes(mount: &awaken_provisioning_contract::MountRequirement) -> Vec<u8> {
+    let awaken_provisioning_contract::MountSource::InlineBytes { contents, .. } = &mount.source
+    else {
+        panic!("expected a carried resource source")
+    };
+    contents.clone()
+}
+
 /// A model that blocks on its second inference (the first revision round) until
 /// a gate is released, so a concurrent `interrupt` can land while the outcome
 /// loop is mid-run. Its reply never contains the rubric, so the guard steers.
@@ -611,9 +619,9 @@ async fn attach_resource_stages_the_mount_and_evicts_the_cached_sandbox() {
         dump.contains("data.txt"),
         "mount realized at the resource path: {dump}"
     );
-    assert!(
-        dump.contains("hello-attached"),
-        "mount carries the file's bytes"
+    assert_eq!(
+        carried_mount_bytes(spec.mounts.last().unwrap()),
+        b"hello-attached"
     );
 
     // Detach removes exactly that mount again.
@@ -788,9 +796,9 @@ async fn prepare_session_mounts_an_effective_memory_resource() {
         dump.contains("mnt/memory"),
         "the bound memory store is mounted at its path: {dump}"
     );
-    assert!(
-        dump.contains("BANANA-42"),
-        "the mount carries the store's bytes: {dump}"
+    assert_eq!(
+        carried_mount_bytes(&host.sandbox_spec("t-bound").mounts[0]),
+        b"the secret code is BANANA-42"
     );
 
     // An empty effective input set mounts nothing.
@@ -810,14 +818,12 @@ async fn prepare_session_mounts_an_effective_memory_resource() {
 #[tokio::test]
 async fn prepare_session_mounts_effective_file_and_stages_effective_repo() {
     use awaken_protocol_managed::{ResourceAccess, SessionInit, SessionResource, SessionRuntime};
+    use awaken_provisioning_contract::{MountAccess, MountSource};
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
 
     // Seed a file blob and pass the already-resolved File and Repository inputs.
-    let file_id = host
-        .file_store()
-        .put(b"port is 8080")
-        .await
-        .expect("put blob");
+    let binary = vec![0, 0xff, b'R', 0x80, b'\n'];
+    let file_id = host.file_store().put(&binary).await.expect("put blob");
     host.grant_file(host.local_workspace(), &file_id);
     let managed = crate::ManagedHost::new(host.clone());
 
@@ -857,21 +863,107 @@ async fn prepare_session_mounts_effective_file_and_stages_effective_repo() {
         .await
         .unwrap();
 
-    // The file is a byte mount carrying its content, at its path.
-    let dump = serde_json::to_string(&host.sandbox_spec("t-multi").mounts).unwrap();
-    assert!(
-        dump.contains("files/notes.txt"),
-        "bound file mounted at its path: {dump}"
-    );
-    assert!(
-        dump.contains("port is 8080"),
-        "file mount carries its bytes: {dump}"
-    );
+    // The exact bytes and their content identity cross the neutral mount contract;
+    // no UTF-8 conversion can corrupt binary input.
+    let spec = host.sandbox_spec("t-multi");
+    let mount = &spec.mounts[0];
+    assert_eq!(mount.mount_path, ".mnt/mnt/files/notes.txt");
+    assert_eq!(mount.access, MountAccess::ReadOnly);
+    let MountSource::InlineBytes {
+        contents,
+        content_hash,
+    } = &mount.source
+    else {
+        panic!("effective File input must use the binary-safe carried source")
+    };
+    assert_eq!(contents, &binary);
+    assert_eq!(content_hash.as_deref(), Some(file_id.as_str()));
 
     // The repo is staged for a host-side clone (not a byte mount).
     let repos = host.thread_repos("t-multi");
     assert_eq!(repos.len(), 1, "the bound repo is staged for cloning");
     assert_eq!(repos[0].url, "https://github.com/awaken/example.git");
+}
+
+#[tokio::test]
+async fn file_activation_rejects_bytes_that_do_not_match_the_file_id() {
+    use awaken_file_store::{FileStore, FileStoreError};
+    use awaken_protocol_managed::{ResourceAccess, SessionResource, SessionRuntime};
+
+    struct CorruptFileStore;
+
+    #[async_trait::async_trait]
+    impl FileStore for CorruptFileStore {
+        async fn put(&self, _bytes: &[u8]) -> Result<String, FileStoreError> {
+            unreachable!("test only reads the corrupt entry")
+        }
+
+        async fn get(&self, _id: &str) -> Result<Option<Vec<u8>>, FileStoreError> {
+            Ok(Some(b"different bytes".to_vec()))
+        }
+
+        async fn list(&self) -> Result<Vec<String>, FileStoreError> {
+            Ok(Vec::new())
+        }
+
+        async fn delete(&self, _id: &str) -> Result<bool, FileStoreError> {
+            Ok(false)
+        }
+    }
+
+    let declared_id = awaken_sandbox_local::content_fingerprint(b"declared bytes");
+    let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub");
+    raw_host.file_store = Arc::new(CorruptFileStore);
+    let host = Arc::new(raw_host);
+    host.grant_file(host.local_workspace(), &declared_id);
+    let managed = crate::ManagedHost::new(host.clone());
+    let mut init = bare_session("a", host.local_workspace());
+    init.resources = vec![SessionResource {
+        kind: "file".into(),
+        id: declared_id,
+        mount_path: "/mnt/input.bin".into(),
+        access: ResourceAccess::ReadOnly,
+        instructions: None,
+        auth_token: None,
+        git_ref: None,
+    }];
+
+    let error = managed.prepare_session("t-corrupt-file", init).await;
+
+    assert!(
+        error.unwrap_err().message.contains("content hash mismatch"),
+        "corrupt content must fail before Agent execution"
+    );
+}
+
+#[tokio::test]
+async fn file_activation_enforces_workspace_ownership_without_iam_policy_logic() {
+    use awaken_protocol_managed::{ResourceAccess, SessionResource, SessionRuntime};
+
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let file_id = host.file_store().put(b"workspace-a").await.unwrap();
+    host.grant_file("workspace-a", &file_id);
+    let managed = crate::ManagedHost::new(host);
+    let mut init = bare_session("a", "workspace-b");
+    init.resources = vec![SessionResource {
+        kind: "file".into(),
+        id: file_id,
+        mount_path: "/mnt/input.txt".into(),
+        access: ResourceAccess::ReadOnly,
+        instructions: None,
+        auth_token: None,
+        git_ref: None,
+    }];
+
+    let error = managed.prepare_session("t-cross-workspace", init).await;
+
+    assert!(
+        error
+            .unwrap_err()
+            .message
+            .contains("not found in this workspace"),
+        "resource integrity rejects a foreign Workspace id without parsing IAM policy"
+    );
 }
 
 /// Managed-Agents model: a `github_repository` session resource clones host-side AND injects
@@ -1127,10 +1219,9 @@ async fn runtime_stages_exactly_the_effective_resource_list() {
         "the carried effective store is the only staged store"
     );
 
-    let dump = serde_json::to_string(&host.sandbox_spec("t-g3").mounts).unwrap();
-    assert!(
-        dump.contains("WIRE-BYTES"),
-        "the wire bytes are mounted: {dump}"
+    assert_eq!(
+        carried_mount_bytes(&host.sandbox_spec("t-g3").mounts[0]),
+        b"WIRE-BYTES"
     );
 }
 
@@ -1186,10 +1277,10 @@ async fn an_effective_resource_mounts_on_a_worker_without_the_binding_repository
         .prepare_session("t-g5-worker", init)
         .await
         .unwrap();
-    let worker_dump = serde_json::to_string(&db_less.sandbox_spec("t-g5-worker").mounts).unwrap();
-    assert!(
-        worker_dump.contains("CARRIED-BYTES"),
-        "the effective input is sufficient for a DB-less worker: {worker_dump}"
+    assert_eq!(
+        carried_mount_bytes(&db_less.sandbox_spec("t-g5-worker").mounts[0]),
+        b"CARRIED-BYTES",
+        "the effective input is sufficient for a DB-less worker"
     );
     assert!(
         !db_less.thread_memory_mounts("t-g5-worker").is_empty(),

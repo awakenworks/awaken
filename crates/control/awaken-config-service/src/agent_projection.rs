@@ -63,11 +63,12 @@ impl ConfigServiceAgentSource {
                             .to_string(),
                             id: binding.resource_id,
                             mount_path: binding.mount_path,
-                            access: match binding.access {
-                                awaken_config_resolver::ResourceAccess::ReadOnly => {
+                            access: match (binding.kind, binding.access) {
+                                (Kind::File, _)
+                                | (_, awaken_config_resolver::ResourceAccess::ReadOnly) => {
                                     awaken_session_contract::ResourceAccess::ReadOnly
                                 }
-                                awaken_config_resolver::ResourceAccess::ReadWrite => {
+                                (_, awaken_config_resolver::ResourceAccess::ReadWrite) => {
                                     awaken_session_contract::ResourceAccess::ReadWrite
                                 }
                             },

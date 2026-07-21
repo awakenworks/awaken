@@ -76,6 +76,39 @@ async fn provision_resource_mount_end_to_end() {
 }
 
 #[tokio::test]
+async fn carried_binary_resource_round_trips_to_the_sandbox_file() {
+    let base = unique_base("binary");
+    let bytes = vec![0, 0xff, 0x80, b'R', b'\n'];
+    let mut s = spec("binary");
+    s.mounts.push(pc::MountRequirement {
+        mount_id: "binary-file".into(),
+        source: pc::MountSource::InlineBytes {
+            contents: bytes.clone(),
+            content_hash: Some(content_fingerprint(&bytes)),
+        },
+        mount_path: ".mnt/input.bin".into(),
+        access: pc::MountAccess::ReadWrite,
+        lifetime: pc::MountLifetime::PerRun,
+        required: true,
+    });
+
+    let env = LocalProvider::new(&base)
+        .create_sandbox(&s)
+        .await
+        .expect("binary mount succeeds");
+
+    assert_eq!(
+        std::fs::read(base.join("binary/.mnt/input.bin")).unwrap(),
+        bytes
+    );
+    assert_eq!(
+        env.realized()[0].content_hash,
+        Some(content_fingerprint(&bytes))
+    );
+    env.dispose().await.unwrap();
+}
+
+#[tokio::test]
 async fn provision_fails_closed_on_content_hash_mismatch() {
     let base = unique_base("bad-hash");
     let provider = LocalProvider::new(&base).with_blob("x", b"the real content".to_vec());

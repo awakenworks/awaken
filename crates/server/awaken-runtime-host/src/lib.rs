@@ -242,6 +242,16 @@ struct ManagedMcp {
 /// mount path the agent reads (`.mnt/<logical>` for file/memory, the working-tree
 /// path for a repo) plus access + instructions. Deterministic, so the live detach
 /// path can reproduce and remove the exact fragment it staged.
+fn effective_resource_access(
+    res: &awaken_protocol_managed::SessionResource,
+) -> awaken_protocol_managed::ResourceAccess {
+    if res.kind == "file" {
+        awaken_protocol_managed::ResourceAccess::ReadOnly
+    } else {
+        res.access
+    }
+}
+
 fn resource_prompt(res: &awaken_protocol_managed::SessionResource) -> String {
     let logical = res.mount_path.trim_start_matches('/').to_string();
     let (kind, mount_path) = match res.kind.as_str() {
@@ -262,7 +272,7 @@ fn resource_prompt(res: &awaken_protocol_managed::SessionResource) -> String {
         kind,
         resource_id: res.id.clone(),
         mount_path,
-        access: match res.access {
+        access: match effective_resource_access(res) {
             awaken_protocol_managed::ResourceAccess::ReadOnly => {
                 awaken_config_resolver::ResourceAccess::ReadOnly
             }
@@ -289,7 +299,6 @@ impl ManagedHost {
         workspace: &str,
         res: &awaken_protocol_managed::SessionResource,
     ) -> Result<crate::provisioning::StagedResources, RunError> {
-        use awaken_sandbox_local::{Mount, ResourceMount};
         let mut staged = crate::provisioning::StagedResources::default();
         let logical = res.mount_path.trim_start_matches('/').to_string();
         // github_repository is a host-side `git clone` (ADR-0038), not a byte mount —
@@ -304,7 +313,7 @@ impl ManagedHost {
                     .auth_token
                     .clone()
                     .map(awaken_agent_contract::RedactedString::from),
-                access: match res.access {
+                access: match effective_resource_access(res) {
                     awaken_protocol_managed::ResourceAccess::ReadOnly => {
                         awaken_provisioning_contract::MountAccess::ReadOnly
                     }
@@ -329,7 +338,16 @@ impl ManagedHost {
                 )));
             }
             "file" => match self.host.file_store().get(&res.id).await {
-                Ok(Some(bytes)) => String::from_utf8_lossy(&bytes).into_owned(),
+                Ok(Some(bytes)) => {
+                    let actual = awaken_sandbox_local::content_fingerprint(&bytes);
+                    if actual != res.id {
+                        return Err(RunError::bad_request(format!(
+                            "file resource `{}` content hash mismatch (realized `{actual}`)",
+                            res.id
+                        )));
+                    }
+                    bytes
+                }
                 _ => {
                     return Err(RunError::bad_request(format!(
                         "file resource `{}` not found in the blob store",
@@ -345,23 +363,30 @@ impl ManagedHost {
                     )));
                 };
                 staged.memory_mounts.push((res.id.clone(), logical.clone()));
-                String::from_utf8_lossy(&bytes).into_owned()
+                bytes
             }
         };
-        staged.mounts.push(Mount::Resource(ResourceMount {
-            id: res.id.clone(),
-            content_hash: String::new(),
-            logical_path: logical,
-            content,
-            access: match res.access {
-                awaken_protocol_managed::ResourceAccess::ReadOnly => {
-                    awaken_provisioning_contract::MountAccess::ReadOnly
-                }
-                awaken_protocol_managed::ResourceAccess::ReadWrite => {
-                    awaken_provisioning_contract::MountAccess::ReadWrite
-                }
-            },
-        }));
+        let content_hash = (res.kind == "file").then(|| res.id.clone());
+        staged
+            .mounts
+            .push(awaken_provisioning_contract::MountRequirement {
+                mount_id: res.id.clone(),
+                source: awaken_provisioning_contract::MountSource::InlineBytes {
+                    contents: content,
+                    content_hash,
+                },
+                mount_path: format!(".mnt/{logical}"),
+                access: match effective_resource_access(res) {
+                    awaken_protocol_managed::ResourceAccess::ReadOnly => {
+                        awaken_provisioning_contract::MountAccess::ReadOnly
+                    }
+                    awaken_protocol_managed::ResourceAccess::ReadWrite => {
+                        awaken_provisioning_contract::MountAccess::ReadWrite
+                    }
+                },
+                lifetime: awaken_provisioning_contract::MountLifetime::PerRun,
+                required: true,
+            });
         Ok(staged)
     }
 

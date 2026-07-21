@@ -6,12 +6,10 @@
 
 use std::sync::Arc;
 
+use crate::host::SharedHost;
 use awaken_file_store::FileStore;
 use awaken_provisioning_contract as pc;
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_sandbox_local::Mount;
-
-use crate::host::SharedHost;
 
 /// The sandbox-absolute outputs dir (must be absolute for `prepare_environment`);
 /// resolved under the root to `<root>/outputs`, which `list_files("outputs")` reads.
@@ -33,30 +31,11 @@ pub(crate) fn agent_run_sandbox_spec(thread: &str) -> pc::SandboxSpec {
     }
 }
 
-/// Project a staged legacy [`Mount`] into the neutral pc [`MountRequirement`] the
-/// Workdir provider realizes. A resource's inline bytes ride `MountSource::Other`
-/// (self-contained — the host already resolved them at staging, `content_hash` is
-/// empty), realized read-write under `.mnt/<logical>` (the Workdir tier cannot
-/// OS-enforce read-only, matching the legacy realization).
-pub(crate) fn mount_to_requirement(mount: &Mount) -> pc::MountRequirement {
-    match mount {
-        Mount::Resource(r) => pc::MountRequirement {
-            mount_id: r.id.clone(),
-            source: pc::MountSource::Other(serde_json::json!({ "content": r.content })),
-            mount_path: format!(".mnt/{}", r.logical_path),
-            access: r.access,
-            lifetime: pc::MountLifetime::PerRun,
-            required: true,
-        },
-    }
-}
-
-/// A thread's staged resources (ADR-0038): the legacy [`Mount`]s realized into its
-/// sandbox plus the prompt fragments appended to its system prompt. Built by a
-/// session's `prepare_session` from the wire `resources[]`.
+/// A thread's staged neutral mount requirements plus the prompt fragments derived
+/// from the same effective Session inputs.
 #[derive(Default, Clone)]
 pub(crate) struct StagedResources {
-    pub mounts: Vec<Mount>,
+    pub mounts: Vec<pc::MountRequirement>,
     pub prompts: Vec<String>,
     /// The `(memory_store_id, logical_path)` of each read-write memory mount, so
     /// `harvest_thread_memory` can read the realized file back into the store after a
@@ -89,7 +68,7 @@ impl SharedHost {
             .lock()
             .unwrap()
             .get(thread)
-            .map(|staged| staged.mounts.iter().map(mount_to_requirement).collect())
+            .map(|staged| staged.mounts.clone())
             .unwrap_or_default();
         // Egress denial is a Workdir-tier bwrap convenience (not admission-gated
         // network isolation, which this tier cannot enforce), so it rides `extra`.
@@ -151,9 +130,10 @@ impl SharedHost {
     pub(crate) fn remove_thread_resource(&self, thread: &str, logical: &str, prompt: &str) {
         let mut all = self.thread_resources.lock().unwrap();
         if let Some(entry) = all.get_mut(thread) {
-            entry.mounts.retain(|m| match m {
-                Mount::Resource(rm) => rm.logical_path != logical,
-            });
+            let realized_path = format!(".mnt/{logical}");
+            entry
+                .mounts
+                .retain(|mount| mount.mount_path != realized_path);
             entry.repos.retain(|r| r.logical != logical);
             entry.memory_mounts.retain(|(_, l)| l != logical);
             entry.prompts.retain(|p| p != prompt);
@@ -594,7 +574,7 @@ mod provisioning_registry_tests {
     use super::*;
     use crate::host::SharedHost;
     use awaken_runtime_contract::llm::{ChatRequest, ChatResponse};
-    use awaken_sandbox_local::{LocalProvider, ResourceMount};
+    use awaken_sandbox_local::LocalProvider;
 
     /// The logical path a staged resource realizes under, recovered from a projected
     /// pc mount (`.mnt/<logical>`) so the registry assertions stay resource-oriented.
@@ -627,14 +607,18 @@ mod provisioning_registry_tests {
     }
 
     /// A resource mount realized read-only under `.mnt/<logical>`.
-    fn resource_mount(logical: &str) -> Mount {
-        Mount::Resource(ResourceMount {
-            id: format!("id-{logical}"),
-            content_hash: String::new(),
-            logical_path: logical.to_string(),
-            content: format!("content of {logical}"),
+    fn resource_mount(logical: &str) -> pc::MountRequirement {
+        pc::MountRequirement {
+            mount_id: format!("id-{logical}"),
+            source: pc::MountSource::InlineBytes {
+                contents: format!("content of {logical}").into_bytes(),
+                content_hash: None,
+            },
+            mount_path: format!(".mnt/{logical}"),
             access: pc::MountAccess::ReadOnly,
-        })
+            lifetime: pc::MountLifetime::PerRun,
+            required: true,
+        }
     }
 
     fn repo_stage(logical: &str) -> RepoStage {
