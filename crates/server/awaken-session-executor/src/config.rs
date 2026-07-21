@@ -128,8 +128,22 @@ pub(crate) fn server_gate_with(
     authored: Option<PermissionRuleset>,
     extra_allowed: &[String],
 ) -> Arc<dyn awaken_runtime_contract::permission::ToolGateHook> {
-    Arc::new(PermissionGate::new(Arc::new(
-        RuleBasedToolPermissionPolicy::new(effective_ruleset(authored, extra_allowed)),
+    Arc::new(PermissionGate::new(server_permission_policy(
+        authored,
+        extra_allowed,
+    )))
+}
+
+/// The policy behind the native gate, shared with ACP so both runtimes reach the
+/// same authorization decision before a tool effect. The gate remains the native
+/// projection; ACP adapts this neutral policy to `session/request_permission`.
+pub(crate) fn server_permission_policy(
+    authored: Option<PermissionRuleset>,
+    extra_allowed: &[String],
+) -> Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy> {
+    Arc::new(RuleBasedToolPermissionPolicy::new(effective_ruleset(
+        authored,
+        extra_allowed,
     )))
 }
 
