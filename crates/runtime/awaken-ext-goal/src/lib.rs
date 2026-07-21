@@ -7,6 +7,11 @@
 //! The grader is async: [`KeywordGrader`] is a deterministic offline judge, while
 //! [`AgentToolGrader`] invokes a host-supplied ordinary Agent-backed tool.
 
+/// Runtime-neutral Outcome lifecycle vocabulary. This pure domain module is the
+/// ADR-0064 replacement for the Native-only guard loop below; the legacy adapter
+/// remains temporarily while Host wiring migrates through P3-P6.
+pub mod outcome;
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
