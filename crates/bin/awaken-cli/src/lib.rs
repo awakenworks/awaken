@@ -950,8 +950,8 @@ async fn management_router_over(
     // shared catalog + advertised tools; the validator runs the publish-time compile
     // check on drafts in the tenant scope; Runtime history records every call and
     // mutating tools additionally enter the durable config-change path.
-    let admin_execs = awaken_admin_assistant::admin_tools(
-        Arc::new(awaken_control::CatalogCapabilityReader::new(
+    let capability_reader = Arc::new(
+        awaken_control::CatalogCapabilityReader::new(
             // The LIVE catalog repo — models/providers an operator adds after startup
             // are visible on the next capabilities call (not a frozen seed snapshot).
             catalog.clone(),
@@ -969,7 +969,11 @@ async fn management_router_over(
             // (shared skill store). Both handles are assembled by this composition root
             // before the host, so the assistant enumerates real memory stores + skills.
             Some(resource_inventory),
-        )),
+        )
+        .with_scope(platform_workspace.clone()),
+    );
+    let admin_execs = awaken_admin_assistant::admin_tools(
+        capability_reader,
         Arc::new(awaken_control::ConfigServiceDraftValidator::new(
             plane.clone(),
             platform_workspace.clone(),
