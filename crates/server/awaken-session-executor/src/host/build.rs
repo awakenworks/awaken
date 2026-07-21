@@ -7,6 +7,7 @@ use awaken_runtime_contract::delegation::{RemoteAgent, RunDelegationService};
 /// Backend-neutral resource ports selected atomically by an outer composition
 /// root. This is a wiring value, not a resource aggregate or authorization
 /// context; it contains no principal, credential, role, policy, or PDP result.
+#[derive(Clone)]
 pub struct ResourcePlanePorts {
     file_store: Arc<dyn awaken_file_store::FileStore>,
     memory_repository: Arc<dyn awaken_memory_store::MemoryRepository>,
@@ -27,6 +28,24 @@ impl ResourcePlanePorts {
             skill_store,
             lifecycle,
         }
+    }
+
+    /// Decompose the wiring value at an outer composition root that also mounts
+    /// the resource APIs. All returned ports still refer to the same opened family.
+    pub fn into_parts(
+        self,
+    ) -> (
+        Arc<dyn awaken_file_store::FileStore>,
+        Arc<dyn awaken_memory_store::MemoryRepository>,
+        Arc<dyn awaken_skill_store::SkillStore>,
+        Arc<dyn awaken_protocol_managed::resource_plane::ResourceLifecycleRepository>,
+    ) {
+        (
+            self.file_store,
+            self.memory_repository,
+            self.skill_store,
+            self.lifecycle,
+        )
     }
 }
 

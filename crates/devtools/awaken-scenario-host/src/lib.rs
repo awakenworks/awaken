@@ -668,8 +668,8 @@ pub async fn build_acp_container_router() -> Router {
         .unwrap_or_else(|| {
             std::env::temp_dir().join(format!("awaken-acp-container-{}", std::process::id()))
         });
-    let host = SharedHost::new(Arc::new(EchoModel), "awaken")
-        .with_skill_store(storage_dir.join("skills_catalog"));
+    let resources = awaken_server::embedded_resource_plane(&storage_dir);
+    let host = SharedHost::new_with_resource_plane(Arc::new(EchoModel), "awaken", resources);
     awaken_server::install_platform_memory_data_plane(&host);
     let host = host
         .with_store_dir(storage_dir)

@@ -244,6 +244,7 @@ mod tests {
             container_id: "scan-container".into(),
             outputs_path: "/outputs".into(),
             realized: Vec::new(),
+            recovered: false,
             lifecycle: Arc::new(crate::ContainerLifecycle::completed()),
         }
     }

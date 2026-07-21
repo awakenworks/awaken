@@ -165,7 +165,11 @@ impl SessionEnvironment {
             Self::Workdir(sandbox) => Ok(sandbox.list_files(subdir)),
             Self::Namespace(sandbox) => Ok(sandbox.list_files(subdir)),
             Self::Container { sandbox, .. } => {
-                let root = container_files::read_root(subdir, sandbox.outputs_path())?;
+                let root = if subdir.starts_with('/') {
+                    subdir.to_string()
+                } else {
+                    container_files::read_root(subdir, sandbox.outputs_path())?
+                };
                 sandbox.read_files(&root).await.map(|files| {
                     files
                         .into_iter()
@@ -174,6 +178,10 @@ impl SessionEnvironment {
                 })
             }
         }
+    }
+
+    pub(crate) fn needs_recovered_memory_reconciliation(&self) -> bool {
+        matches!(self, Self::Container { sandbox, .. } if sandbox.is_recovered())
     }
 
     pub(crate) fn scan_skill_dir(&self, subdir: &str) -> Vec<DiscoveredSkillFile> {
