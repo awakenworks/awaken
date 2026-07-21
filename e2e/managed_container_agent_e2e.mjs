@@ -235,12 +235,15 @@ async function main() {
       '-c',
       'printf %s CONTAINER-MEMORY-OK > /workspace/.mnt/notes/container.txt',
     ]);
-    await client.get(`/v1/files?scope_id=${session.id}`);
+    // Copy-backed MemoryRepository mounts reconcile only at the Session's terminal
+    // release edge. Read-only resource APIs must never acquire this write side effect.
+    await client.beta.sessions.delete(session.id, { betas: BETAS });
+    assert.equal(testContainers({ all: true }).length, 0, 'Session release must reap its container');
     const harvested = await client.get(`/v1/memory_stores/${memory.id}/memories`);
     assert.equal(
       harvested.data.find((entry) => entry.path === '/container.txt')?.content,
       'CONTAINER-MEMORY-OK',
-      'container memory writes must harvest through the host',
+      'container memory writes must reconcile through the host at Session release',
     );
 
     console.log(
