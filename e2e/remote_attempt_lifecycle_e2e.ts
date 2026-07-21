@@ -88,6 +88,30 @@ async function startPeer(): Promise<{
         json(response, 200, {
           task: task('cancel-task', 'cancel-context', 'input-required', 'approve?'),
         });
+      } else if (text.includes('need remote auth')) {
+        json(response, 200, {
+          task: task('auth-task', 'auth-context', 'auth-required', 'supply delegated auth'),
+        });
+      } else if (message.contextId === 'auth-context') {
+        json(response, 200, {
+          task: task('auth-finished', 'auth-context', 'completed', 'REMOTE-AUTH-DONE'),
+        });
+      } else if (text.includes('completed artifact')) {
+        const completed = task('artifact-task', 'terminal-context', 'completed');
+        completed.artifacts = [{ artifactId: 'artifact-1', parts: [{ text: 'REMOTE-ARTIFACT-DONE' }] }];
+        json(response, 200, { task: completed });
+      } else if (text.includes('failed terminal')) {
+        json(response, 200, {
+          task: task('failed-task', 'terminal-context', 'failed', 'REMOTE-FAILED-DONE'),
+        });
+      } else if (text.includes('rejected terminal')) {
+        const rejected = task('rejected-task', 'terminal-context', 'rejected');
+        rejected.history = [{ messageId: 'rejected-history', role: 'agent', parts: [{ text: 'REMOTE-REJECTED-DONE' }] }];
+        json(response, 200, { task: rejected });
+      } else if (text.includes('canceled terminal')) {
+        json(response, 200, {
+          task: task('canceled-task', 'terminal-context', 'canceled', 'REMOTE-CANCELED-DONE'),
+        });
       } else {
         json(response, 400, { error: { message: `unexpected message: ${text}` } });
       }
@@ -187,6 +211,13 @@ async function createSession(): Promise<string> {
   return created.body.id;
 }
 
+async function sendText(thread: string, text: string): Promise<void> {
+  const response = await api('POST', `/v1/sessions/${thread}/events`, {
+    events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
+  });
+  assert.equal(response.status, 200, `${text}: ${JSON.stringify(response.body)}`);
+}
+
 function dispatchDatabases(root: string): string[] {
   const pending = [root];
   const found: string[] = [];
@@ -208,6 +239,16 @@ function committedState(root: string, thread: string): string {
     [database, `SELECT data FROM runtime_state_command WHERE thread_id = '${thread.replaceAll("'", "''")}' ORDER BY id`],
     { encoding: 'utf8' },
   );
+}
+
+function taskReferenceCleared(root: string, thread: string): boolean {
+  const commands = committedState(root, thread)
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((row) => JSON.parse(row))
+    .filter((command) => command.scope === 'Run' && command.key === '__a2a_task');
+  return commands.length > 0 && commands.at(-1)?.action === 'Remove';
 }
 
 async function waitForMessage(thread: string, marker: string, timeoutMs = 30_000): Promise<any[]> {
@@ -355,8 +396,51 @@ async function main(): Promise<void> {
     );
     await waitForDispatchGone(cancelThread, cancelSubmit.body.run_id);
 
+    // 4) Every terminal A2A state and every reply carrier is projected without
+    // being collapsed to a false success. These are separate Sessions so their
+    // committed run causes remain independently observable.
+    for (const [prompt, marker] of [
+      ['completed artifact', 'REMOTE-ARTIFACT-DONE'],
+      ['failed terminal', 'REMOTE-FAILED-DONE'],
+      ['rejected terminal', 'REMOTE-REJECTED-DONE'],
+      ['canceled terminal', 'REMOTE-CANCELED-DONE'],
+    ] as const) {
+      const thread = await createSession();
+      await sendText(thread, prompt);
+      await waitForMessage(thread, marker);
+      assert.ok(
+        taskReferenceCleared(storage, thread),
+        `${prompt} cleared its durable task reference`,
+      );
+    }
+
+    // 5) auth-required is a first-class await boundary (distinct from user input)
+    // and resumes on the exact committed context/task identity.
+    const authThread = await createSession();
+    await sendText(authThread, 'need remote auth');
+    const authResume = await api('POST', `/v1/sessions/${authThread}/events`, {
+      events: [
+        {
+          type: 'user.custom_tool_result',
+          custom_tool_use_id: 'auth-task',
+          content: [{ type: 'text', text: 'delegated-auth-ready' }],
+          is_error: false,
+        },
+      ],
+    });
+    assert.equal(authResume.status, 200, `remote auth resumed: ${JSON.stringify(authResume.body)}`);
+    await waitForMessage(authThread, 'REMOTE-AUTH-DONE');
+    const authMessage = peer.sent.find((message) => message.text === 'delegated-auth-ready');
+    assert.equal(authMessage?.contextId, 'auth-context', 'auth resume retained remote context');
+
+    // 6) A remote send rejection is committed as an error outcome and never
+    // fabricated into a successful answer.
+    const errorThread = await createSession();
+    await sendText(errorThread, 'trigger remote send rejection');
+    await waitForMessage(errorThread, 'remote agent error');
+
     console.log(
-      'REMOTE ATTEMPT TS API E2E PASS: crash reattach/no resend, input resume/context continuity, and pinned-task cancellation.',
+      'REMOTE ATTEMPT TS API E2E PASS: crash reattach, input/auth resume, terminal states, send failure, and pinned-task cancellation.',
     );
   } finally {
     await stopServer(server).catch(() => {});
