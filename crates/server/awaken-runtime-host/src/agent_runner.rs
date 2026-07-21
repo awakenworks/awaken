@@ -287,7 +287,17 @@ pub(crate) async fn run_configured_agent_until_boundary(
                     "child Run origin does not match its parent relationship".to_string(),
                 ));
             }
-            Ok((None, Some(ResumeCommand::from_ticket(&ticket, result, 0))))
+            let mut activation = RunActivation::new(
+                child_run_id.clone(),
+                thread_id.clone(),
+                config.clone(),
+                Vec::new(),
+            );
+            activation.delegation_origin = Some(origin);
+            Ok((
+                Some(activation),
+                Some(ResumeCommand::from_ticket(&ticket, result, 0)),
+            ))
         }
         _ => {
             return Err(AgentRunError::Configuration(
@@ -341,7 +351,7 @@ pub(crate) async fn run_configured_agent_until_boundary(
                     }
                 }
             }
-            (None, Some(command)) => {
+            (Some(_), Some(command)) => {
                 let ticket = reader.resume_ticket(&child_run_id).ok_or_else(|| {
                     AgentRunError::Configuration(format!(
                         "child Run {:?} is not awaiting",
@@ -381,7 +391,7 @@ pub(crate) async fn run_configured_agent_until_boundary(
         let runs = DirectRunIngress::new(Arc::new(runtime));
         match operation {
             (Some(activation), None) => runs.start(activation, context).await,
-            (None, Some(command)) => runs.resume(command, context).await,
+            (Some(activation), Some(command)) => runs.resume(activation, command, context).await,
             _ => unreachable!("operation construction is exhaustive"),
         }
         .map_err(AgentRunError::Runtime)?

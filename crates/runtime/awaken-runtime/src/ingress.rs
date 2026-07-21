@@ -34,7 +34,12 @@ pub trait RunService: Send + Sync {
     ) -> Result<RunState>;
 
     /// Resume a Run from its committed ticket with a typed response.
-    async fn resume(&self, command: ResumeCommand, context: RuntimeRunContext) -> Result<RunState>;
+    async fn resume(
+        &self,
+        activation: RunActivation,
+        command: ResumeCommand,
+        context: RuntimeRunContext,
+    ) -> Result<RunState>;
 
     /// Cancel a Run by id. Durable ingress persists intent before signalling;
     /// direct ingress can only address a currently-live run.
@@ -85,11 +90,13 @@ impl RunService for DirectRunIngress {
         self.executor.execute(activation, context).await
     }
 
-    async fn resume(&self, command: ResumeCommand, context: RuntimeRunContext) -> Result<RunState> {
-        let reader = context.reader.clone().ok_or_else(|| {
-            Error::Execution("RunService::resume requires committed-history wiring".to_string())
-        })?;
-        self.runtime.resume(command, reader.as_ref(), context).await
+    async fn resume(
+        &self,
+        activation: RunActivation,
+        command: ResumeCommand,
+        context: RuntimeRunContext,
+    ) -> Result<RunState> {
+        self.executor.resume(activation, command, context).await
     }
 
     async fn cancel(&self, run_id: &RunId) -> std::result::Result<(), ControlError> {

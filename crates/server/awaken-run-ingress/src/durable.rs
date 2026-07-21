@@ -309,22 +309,18 @@ impl<S: Dispatch + 'static> RunService for DurableRunIngress<S> {
         activation: RunActivation,
         context: RuntimeRunContext,
     ) -> ExecResult<RunState> {
-        use awaken_runtime_contract::execution::RunExecutor;
-        self.worker.runtime().execute(activation, context).await
+        let executor = self.worker.attempt_executor();
+        executor.execute(activation, context).await
     }
 
     async fn resume(
         &self,
+        activation: RunActivation,
         command: ResumeCommand,
         context: RuntimeRunContext,
     ) -> ExecResult<RunState> {
-        let reader = context.reader.clone().ok_or_else(|| {
-            ExecError::Execution("RunService::resume requires committed-history wiring".to_string())
-        })?;
-        self.worker
-            .runtime()
-            .resume(command, reader.as_ref(), context)
-            .await
+        let executor = self.worker.attempt_executor();
+        executor.resume(activation, command, context).await
     }
 
     async fn cancel(&self, run_id: &RunId) -> Result<(), ControlError> {

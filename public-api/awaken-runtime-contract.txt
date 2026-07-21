@@ -229,6 +229,7 @@ pub awaken_runtime_contract::execution::ExecutorCapabilities::wait: awaken_runti
 impl awaken_runtime_contract::execution::ExecutorCapabilities
 pub const awaken_runtime_contract::execution::ExecutorCapabilities::NATIVE: Self
 pub trait awaken_runtime_contract::execution::RunAttemptExecutor: awaken_runtime_contract::execution::RunExecutor
+pub fn awaken_runtime_contract::execution::RunAttemptExecutor::cancel<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<()>> + core::marker::Send + 'async_trait)>> where Self: core::marker::Sync + 'async_trait, 'life0: 'async_trait
 pub fn awaken_runtime_contract::execution::RunAttemptExecutor::resume<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::resume::ResumeCommand, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::RunState>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_runtime_contract::execution::RunExecutor: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::execution::RunExecutor::capabilities(&self) -> awaken_runtime_contract::execution::ExecutorCapabilities

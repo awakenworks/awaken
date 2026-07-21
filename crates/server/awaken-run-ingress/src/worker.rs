@@ -110,6 +110,13 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             .expect("attempt executor lock poisoned") = executor;
     }
 
+    pub(crate) fn attempt_executor(&self) -> Arc<dyn RunAttemptExecutor> {
+        self.attempt_executor
+            .read()
+            .expect("attempt executor lock poisoned")
+            .clone()
+    }
+
     /// Override how a claimed worker commit is applied. Database-less workers
     /// inject the server-side atomic implementation; local workers keep the
     /// guarded store implementation installed by [`new`](Self::new).
@@ -371,13 +378,19 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         // before model/credential/sandbox materialization: terminal control must
         // remain possible when the execution dependency being cancelled is down.
         if claimed.cancellation_requested {
+            let attempt_executor = self.attempt_executor();
+            let context = self.execution_context_with(&claim, &None);
+            if let Err(error) = attempt_executor
+                .cancel(activation.clone(), context.clone())
+                .await
+            {
+                return self
+                    .settle_if_terminal_or_raise(&run_id, lease_epoch, &all_pending, error)
+                    .await;
+            }
             let result = self
                 .runtime
-                .cancel_run(
-                    run_id.clone(),
-                    activation.thread_id.clone(),
-                    self.execution_context_with(&claim, &None),
-                )
+                .cancel_run(run_id.clone(), activation.thread_id.clone(), context)
                 .await;
             let state = match result {
                 Ok(state) => state,
@@ -394,11 +407,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 .then_some((run_id, state)));
         }
 
-        let attempt_executor = self
-            .attempt_executor
-            .read()
-            .expect("attempt executor lock poisoned")
-            .clone();
+        let attempt_executor = self.attempt_executor();
         // Resolve this run's model to an executor once, before the activation is
         // consumed, and route every inference in this drive through it: the run's
         // effective model (its per-run override, else its snapshot binding) resolved

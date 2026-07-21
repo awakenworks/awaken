@@ -37,6 +37,7 @@ use harness::{
 struct RecordingAttemptExecutor {
     executes: AtomicUsize,
     resumes: AtomicUsize,
+    cancels: AtomicUsize,
 }
 
 impl RecordingAttemptExecutor {
@@ -85,6 +86,15 @@ impl RunAttemptExecutor for RecordingAttemptExecutor {
     ) -> ExecutionResult<RunState> {
         self.resumes.fetch_add(1, Ordering::SeqCst);
         Self::finish(&activation, &context).await
+    }
+
+    async fn cancel(
+        &self,
+        _activation: RunActivation,
+        _context: RuntimeRunContext,
+    ) -> ExecutionResult<()> {
+        self.cancels.fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
 }
 
@@ -171,6 +181,34 @@ async fn installed_attempt_executor_drives_a_fresh_durable_run() {
     );
     assert_eq!(selected.executes.load(Ordering::SeqCst), 1);
     assert_eq!(selected.resumes.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn unified_foreground_service_uses_the_installed_attempt_executor() {
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let ingress = DurableRunIngress::new(text_runtime(), store, commit);
+    let selected = Arc::new(RecordingAttemptExecutor::default());
+    ingress.install_attempt_executor(selected.clone());
+
+    RunService::start(
+        &ingress,
+        activation("foreground-start"),
+        RuntimeRunContext::new(),
+    )
+    .await
+    .expect("foreground start routes through the selected executor");
+    RunService::resume(
+        &ingress,
+        activation("run-1"),
+        allow_command(),
+        RuntimeRunContext::new(),
+    )
+    .await
+    .expect("foreground resume routes through the selected executor");
+
+    assert_eq!(selected.executes.load(Ordering::SeqCst), 1);
+    assert_eq!(selected.resumes.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
@@ -897,6 +935,35 @@ async fn unified_run_service_cancel_is_durable_for_a_queued_run() {
     assert_eq!(
         RunService::cancel(&ingress, &RunId("run-1".to_string())).await,
         Err(awaken_runtime_contract::control::Error::NotActive)
+    );
+}
+
+#[tokio::test]
+async fn durable_cancel_invokes_the_selected_executor_before_terminal_commit() {
+    let runtime = text_runtime();
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let ingress = DurableRunIngress::new(runtime, store.clone(), commit.clone());
+    let selected = Arc::new(RecordingAttemptExecutor::default());
+    ingress.install_attempt_executor(selected.clone());
+    store
+        .enqueue(RunDispatch::new(activation("run-1")))
+        .await
+        .unwrap();
+
+    RunService::cancel(&ingress, &RunId("run-1".to_string()))
+        .await
+        .expect("durable cancellation");
+
+    assert_eq!(selected.cancels.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        awaken_agent_contract::thread::read::run_store::RunStore::get(
+            commit.as_ref(),
+            &RunId("run-1".to_string()),
+        )
+        .expect("terminal record")
+        .state,
+        RunState::Ended(EndCause::Cancelled)
     );
 }
 

@@ -78,6 +78,20 @@ pub(crate) struct SessionCtx {
 }
 
 impl SessionCtx {
+    pub(crate) fn resume_activation(
+        &self,
+        ticket: &awaken_agent_contract::agent::awaiting::ResumeTicket,
+    ) -> RunActivation {
+        let mut activation = RunActivation::new(
+            ticket.run_id.clone(),
+            self.thread_id.clone(),
+            self.config.clone(),
+            Vec::new(),
+        );
+        activation.delegation_origin = ticket.delegation_origin.clone();
+        activation
+    }
+
     /// A run context carrying a fresh cancellation token, registered on this ctx so
     /// a concurrent `interrupt` can cancel the run it drives. Only one run is in
     /// flight per thread at a time (the `state` lock serializes them), so the slot

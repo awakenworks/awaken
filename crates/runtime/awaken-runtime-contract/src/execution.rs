@@ -95,6 +95,22 @@ pub trait RunAttemptExecutor: RunExecutor {
         command: crate::resume::ResumeCommand,
         context: crate::runtime_context::RuntimeRunContext,
     ) -> Result<RunState>;
+
+    /// Abort external work retained by this Run, if the executor owns any.
+    ///
+    /// Durable ingress invokes this after claiming and fencing a cancellation
+    /// intent but before it commits the local terminal `Cancelled` fact. Native
+    /// and local-only executors have nothing external to release, so the default
+    /// is an idempotent no-op. Remote executors recover their opaque execution
+    /// reference from committed state in `context` and fail the cancellation when
+    /// delivery cannot be confirmed, leaving the durable intent retryable.
+    async fn cancel(
+        &self,
+        _activation: crate::activation::RunActivation,
+        _context: crate::runtime_context::RuntimeRunContext,
+    ) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
