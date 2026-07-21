@@ -132,6 +132,14 @@ Project, or WorkUnit.
 Awaken's resource scope stops at Workspace. Higher-level products translate
 their own Project or work concepts before calling this boundary.
 
+The local/cloud composition root applies a separate resource PEP to File,
+MemoryStore, and Skill HTTP families. Embedded mode and Awaken Cloud mode use
+different identity adapters but the same action/scope decision shape. Only an
+explicit allow stamps `WorkspaceScope`; the inner Resource Catalog and content
+stores never receive a principal, credential, role, decision, or policy object.
+No-login local mode omits the PEP and injects the platform-provisioned default
+Workspace, preserving the same resource contracts without a fake identity.
+
 ### D5: Lifecycle stages have explicit component owners
 
 | Stage | Owning component | Responsibility |

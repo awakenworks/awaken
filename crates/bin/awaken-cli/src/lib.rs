@@ -844,6 +844,11 @@ async fn management_router_over(
     // deployments + environments + config plane + capabilities), guard applied over
     // admin + vault only. Returns the webhook sink the data plane feeds.
     let deployment_state = Arc::new(awaken_protocol_managed::DeploymentState::new());
+    // Keep the IAM handles for the sibling resource PEP. The authoring router owns
+    // its PEP; File/Memory/Skill routes are wrapped independently after the data
+    // router is assembled, so neither plane depends on the other's services.
+    let resource_iam = iam.clone();
+    let resource_remote_iam = remote_iam.clone();
     let (mgmt, webhook_sink) = awaken_control::control_router(awaken_control::ControlRouterInput {
         catalog,
         credentials: credentials.clone(),
@@ -927,12 +932,23 @@ async fn management_router_over(
     // surface so a `/v1/workspaces/{ws}/…` request is captured, rewritten to its flat
     // `/v1/…` form, and its `{ws}` stamped as the edge scope before it re-enters
     // routing. Flat requests fall through unchanged.
-    let mut flat = awaken_server::mount_with_managed_and_resource_catalog(
+    let mut data = awaken_server::mount_with_managed_and_resource_catalog(
         host,
         managed_state,
         resource_catalog,
-    )
-    .merge(mgmt);
+    );
+    if let Some(iam) = resource_iam {
+        data = data.layer(axum::middleware::from_fn_with_state(
+            iam,
+            awaken_control::authz::resource_guard,
+        ));
+    } else if let Some(remote_iam) = resource_remote_iam {
+        data = data.layer(axum::middleware::from_fn_with_state(
+            remote_iam,
+            awaken_control::authz::cloud_resource_guard,
+        ));
+    }
+    let mut flat = data.merge(mgmt);
     // Serving tools to an external MCP client is disabled until an operator sets a
     // dedicated bearer. This avoids turning the management toolset into an open
     // mutation surface while still making the `awaken` binary the complete adapter.
