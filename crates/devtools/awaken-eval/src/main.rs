@@ -5,6 +5,8 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+type AcpLaunchArgs = (Vec<String>, Vec<(String, String)>);
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -22,6 +24,18 @@ async fn main() -> ExitCode {
     }
     if args.first().map(String::as_str) == Some("outcome-select-acp-failures") {
         return select_acp_failures(&args[1..]);
+    }
+    if args.first().map(String::as_str) == Some("compact-score") {
+        return score_compact(&args[1..]);
+    }
+    if args.first().map(String::as_str) == Some("compact-run-acp") {
+        return run_compact_acp(&args[1..]).await;
+    }
+    if args.first().map(String::as_str) == Some("memory-score") {
+        return score_memory(&args[1..]);
+    }
+    if args.first().map(String::as_str) == Some("memory-run-acp") {
+        return run_memory_acp(&args[1..]).await;
     }
     let Some(path) = args.first() else {
         eprintln!(
@@ -185,30 +199,10 @@ async fn run_outcome_acp(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let argv: Vec<String> = match serde_json::from_str(argv_json) {
-        Ok(argv) => argv,
+    let (argv, env) = match acp_launch(argv_json) {
+        Ok(launch) => launch,
         Err(error) => {
-            eprintln!("invalid ACP argv JSON: {error}");
-            return ExitCode::from(2);
-        }
-    };
-    if argv.is_empty() {
-        eprintln!("ACP argv must not be empty");
-        return ExitCode::from(2);
-    }
-    let env: Vec<(String, String)> = match std::env::var("AWAKEN_EVAL_ACP_ENV_JSON") {
-        Ok(value) => {
-            match serde_json::from_str::<std::collections::BTreeMap<String, String>>(&value) {
-                Ok(env) => env.into_iter().collect(),
-                Err(error) => {
-                    eprintln!("invalid AWAKEN_EVAL_ACP_ENV_JSON: {error}");
-                    return ExitCode::from(2);
-                }
-            }
-        }
-        Err(std::env::VarError::NotPresent) => Vec::new(),
-        Err(error) => {
-            eprintln!("failed to read AWAKEN_EVAL_ACP_ENV_JSON: {error}");
+            eprintln!("{error}");
             return ExitCode::from(2);
         }
     };
@@ -244,6 +238,163 @@ async fn run_outcome_acp(args: &[String]) -> ExitCode {
     } else {
         ExitCode::FAILURE
     }
+}
+
+fn acp_launch(argv_json: &str) -> Result<AcpLaunchArgs, String> {
+    let argv: Vec<String> = serde_json::from_str(argv_json)
+        .map_err(|error| format!("invalid ACP argv JSON: {error}"))?;
+    if argv.is_empty() {
+        return Err("ACP argv must not be empty".into());
+    }
+    let env = match std::env::var("AWAKEN_EVAL_ACP_ENV_JSON") {
+        Ok(value) => serde_json::from_str::<std::collections::BTreeMap<String, String>>(&value)
+            .map_err(|error| format!("invalid AWAKEN_EVAL_ACP_ENV_JSON: {error}"))?
+            .into_iter()
+            .collect(),
+        Err(std::env::VarError::NotPresent) => Vec::new(),
+        Err(error) => return Err(format!("failed to read AWAKEN_EVAL_ACP_ENV_JSON: {error}")),
+    };
+    Ok((argv, env))
+}
+
+async fn run_compact_acp(args: &[String]) -> ExitCode {
+    let [dataset_path, artifact_path, argv_json] = args else {
+        eprintln!("usage: awaken-eval compact-run-acp <dataset.json> <artifact.json> <argv-json>");
+        return ExitCode::from(2);
+    };
+    let dataset = match awaken_eval::store::load_compact_dataset(&PathBuf::from(dataset_path)) {
+        Ok(dataset) => dataset,
+        Err(error) => {
+            eprintln!("failed to load compact dataset: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    let (argv, env) = match acp_launch(argv_json) {
+        Ok(launch) => launch,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::from(2);
+        }
+    };
+    let observations = awaken_eval::compact_eval::run_acp(&dataset, argv, env).await;
+    finish_compact(&dataset, &observations, Some(artifact_path))
+}
+
+fn score_compact(args: &[String]) -> ExitCode {
+    let [dataset_path, observations_path] = args else {
+        eprintln!("usage: awaken-eval compact-score <dataset.json> <observations.json>");
+        return ExitCode::from(2);
+    };
+    let dataset = match awaken_eval::store::load_compact_dataset(&PathBuf::from(dataset_path)) {
+        Ok(dataset) => dataset,
+        Err(error) => {
+            eprintln!("failed to load compact dataset: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    let observations =
+        match awaken_eval::store::load_compact_observations(&PathBuf::from(observations_path)) {
+            Ok(observations) => observations,
+            Err(error) => {
+                eprintln!("failed to load compact observations: {error}");
+                return ExitCode::from(2);
+            }
+        };
+    finish_compact(&dataset, &observations, None)
+}
+
+fn finish_compact(
+    dataset: &awaken_eval::compact_eval::CompactDataset,
+    observations: &[awaken_eval::compact_eval::CompactObservation],
+    artifact_path: Option<&str>,
+) -> ExitCode {
+    if let Some(path) = artifact_path
+        && let Err(error) = save_json(path, observations)
+    {
+        eprintln!("failed to save compact artifact: {error}");
+        return ExitCode::from(2);
+    }
+    let report = awaken_eval::compact_eval::score(dataset, observations);
+    println!("{}", serde_json::to_string_pretty(&report).unwrap());
+    if report.exact_cases == report.total_cases {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+async fn run_memory_acp(args: &[String]) -> ExitCode {
+    let [dataset_path, artifact_path, argv_json] = args else {
+        eprintln!("usage: awaken-eval memory-run-acp <dataset.json> <artifact.json> <argv-json>");
+        return ExitCode::from(2);
+    };
+    let dataset = match awaken_eval::store::load_memory_dataset(&PathBuf::from(dataset_path)) {
+        Ok(dataset) => dataset,
+        Err(error) => {
+            eprintln!("failed to load memory dataset: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    let (argv, env) = match acp_launch(argv_json) {
+        Ok(launch) => launch,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::from(2);
+        }
+    };
+    let observations = awaken_eval::memory_eval::run_acp(&dataset, argv, env).await;
+    finish_memory(&dataset, &observations, Some(artifact_path))
+}
+
+fn score_memory(args: &[String]) -> ExitCode {
+    let [dataset_path, observations_path] = args else {
+        eprintln!("usage: awaken-eval memory-score <dataset.json> <observations.json>");
+        return ExitCode::from(2);
+    };
+    let dataset = match awaken_eval::store::load_memory_dataset(&PathBuf::from(dataset_path)) {
+        Ok(dataset) => dataset,
+        Err(error) => {
+            eprintln!("failed to load memory dataset: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    let observations =
+        match awaken_eval::store::load_memory_observations(&PathBuf::from(observations_path)) {
+            Ok(observations) => observations,
+            Err(error) => {
+                eprintln!("failed to load memory observations: {error}");
+                return ExitCode::from(2);
+            }
+        };
+    finish_memory(&dataset, &observations, None)
+}
+
+fn finish_memory(
+    dataset: &awaken_eval::memory_eval::MemoryDataset,
+    observations: &[awaken_eval::memory_eval::MemoryObservation],
+    artifact_path: Option<&str>,
+) -> ExitCode {
+    if let Some(path) = artifact_path
+        && let Err(error) = save_json(path, observations)
+    {
+        eprintln!("failed to save memory artifact: {error}");
+        return ExitCode::from(2);
+    }
+    let report = awaken_eval::memory_eval::score(dataset, observations);
+    println!("{}", serde_json::to_string_pretty(&report).unwrap());
+    if report.extraction_exact == report.extraction_total
+        && report.selection_exact == report.selection_total
+    {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+fn save_json(path: &str, value: &(impl serde::Serialize + ?Sized)) -> std::io::Result<()> {
+    let data = serde_json::to_string_pretty(value)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    std::fs::write(path, data)
 }
 
 fn import_claude(args: &[String]) -> ExitCode {

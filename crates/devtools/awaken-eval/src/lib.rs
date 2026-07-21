@@ -8,6 +8,9 @@
 //! JSON through [`store`]. `Purpose::EvalRecording` is the consent purpose a
 //! record-from-real-run path attributes captures to (see `awaken-data-subject`).
 
+pub mod acp_runner;
+pub mod compact_eval;
+pub mod memory_eval;
 pub mod outcome_acp;
 pub mod outcome_judge;
 pub mod record;

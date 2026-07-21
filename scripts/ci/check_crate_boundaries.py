@@ -1215,7 +1215,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     "awaken-eval": {
         "awaken-agent-contract",
         "awaken-runtime-contract",
-        "awaken-runtime", "awaken-ext-goal", "awaken-run-executor-acp",
+        "awaken-runtime", "awaken-ext-goal", "awaken-ext-compact", "awaken-ext-memory", "awaken-run-executor-acp",
         "async-trait", "rusqlite", "thiserror",
         "serde",
         "serde_json",
