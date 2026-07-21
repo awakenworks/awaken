@@ -18,9 +18,53 @@ use awaken_connection_plan::{
 };
 use awaken_ext_builtin_tools::executable_hand_tools;
 use awaken_tool_relay::{HandSession, serve_hand};
+use tokio::io::{AsyncRead, AsyncWrite};
+
+struct StdioChannel {
+    read: tokio::io::Stdin,
+    write: tokio::io::Stdout,
+}
+
+impl AsyncRead for StdioChannel {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.read).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for StdioChannel {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut self.write).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.write).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.write).poll_shutdown(cx)
+    }
+}
 
 /// Where the hand serves the executor channel.
 pub enum HandBind {
+    /// Serve one hand session directly over this process's stdin/stdout. Container
+    /// Session environments use this with their attached exec channel, avoiding a
+    /// second network or rendezvous transport inside the same sandbox.
+    Stdio,
     /// A unix socket at a filesystem path (works under `--network none`; the ONLY
     /// transport across a network-denied sandbox boundary — C5).
     Unix(String),
@@ -40,6 +84,7 @@ const DEFAULT_NATS_SUBJECT: &str = "awaken.hand.exec";
 /// `--dial <addr>` (hand dials the brain rendezvous), or `--nats <url> [--subject <s>]`.
 pub fn parse_hand_args(args: &[String]) -> Result<HandBind, String> {
     match args {
+        [flag] if flag == "--stdio" => Ok(HandBind::Stdio),
         [flag, path, ..] if flag == "--unix" => Ok(HandBind::Unix(path.clone())),
         [flag, addr, ..] if flag == "--listen" => Ok(HandBind::Tcp(addr.clone())),
         [flag, addr, ..] if flag == "--dial" => Ok(HandBind::Dial(addr.clone())),
@@ -48,7 +93,7 @@ pub fn parse_hand_args(args: &[String]) -> Result<HandBind, String> {
             subject: subject_flag(rest).unwrap_or_else(|| DEFAULT_NATS_SUBJECT.to_string()),
         }),
         _ => Err(
-            "hand requires `--unix <path>`, `--listen <addr>`, `--dial <addr>`, \
+            "hand requires `--stdio`, `--unix <path>`, `--listen <addr>`, `--dial <addr>`, \
                   or `--nats <url> [--subject <s>]`"
                 .into(),
         ),
@@ -66,6 +111,16 @@ fn subject_flag(rest: &[String]) -> Option<String> {
 /// connection is served concurrently over a fresh [`HandSession`].
 pub async fn serve(bind: HandBind) -> Result<(), String> {
     match bind {
+        HandBind::Stdio => {
+            let channel = StdioChannel {
+                read: tokio::io::stdin(),
+                write: tokio::io::stdout(),
+            };
+            let session = HandSession::new(executable_hand_tools());
+            serve_hand(channel, session)
+                .await
+                .map_err(|error| format!("hand stdio: {error}"))
+        }
         HandBind::Unix(path) => {
             let listener = bind_unix(&ConnectionPlan::unix_listen(&path))
                 .map_err(|e| format!("hand bind unix://{path}: {e}"))?;
@@ -187,6 +242,10 @@ mod tests {
 
     #[test]
     fn parse_hand_args_reads_unix_and_tcp_binds() {
+        assert!(matches!(
+            parse_hand_args(&["--stdio".into()]).unwrap(),
+            HandBind::Stdio
+        ));
         assert!(matches!(
             parse_hand_args(&["--unix".into(), "/rv/hand.sock".into()]).unwrap(),
             HandBind::Unix(p) if p == "/rv/hand.sock"
