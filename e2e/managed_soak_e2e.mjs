@@ -2,10 +2,12 @@
 // TS SDK against awaken-server (echo model).
 //
 // Drives one session through many running<->idle cycles and asserts the machine
-// stays well-formed for the whole run: every turn appends exactly one agent.message
-// (the correct echo, in order) and one session.status_idle{end_turn}; event ids are
-// globally unique and strictly monotonic; the session is idle between turns and at
-// the end. Catches leaks/regressions that only show up after sustained cycling
+// stays well-formed for the whole run: every turn appends exactly one
+// session.status_running, one agent.message (the correct echo, in order), and one
+// session.status_idle{end_turn}; event ids are globally unique and stable when reread;
+// the session is idle between turns and at the end. Catches leaks/regressions that only
+// show up after sustained cycling. IDs need not be numerically monotonic in ledger order:
+// streaming preview reserves an agent.message id before the running marker is committed.
 // (id reuse, dropped/duplicated status events, drift into a non-idle state).
 //
 // Tune with SOAK_TURNS (default 150). Run: (from e2e/)  SOAK_TURNS=300 node managed_soak_e2e.mjs
@@ -45,12 +47,21 @@ async function main() {
 
       // The state machine's ledger after the whole run.
       const events = await listAll(client, session.id);
+      const runnings = events.filter((e) => e.type === 'session.status_running');
       const messages = events.filter((e) => e.type === 'agent.message');
       const idles = events.filter((e) => e.type === 'session.status_idle');
 
+      assert.equal(runnings.length, TURNS, `exactly one status_running per turn (${runnings.length}/${TURNS})`);
       assert.equal(messages.length, TURNS, `exactly one agent.message per turn (${messages.length}/${TURNS})`);
       assert.equal(idles.length, TURNS, `exactly one status_idle per turn (${idles.length}/${TURNS})`);
-      assert.equal(events.length, 2 * TURNS, 'no stray events accumulated');
+      assert.equal(events.length, 3 * TURNS, 'no stray events accumulated');
+      for (let i = 0; i < TURNS; i++) {
+        assert.deepEqual(
+          events.slice(i * 3, i * 3 + 3).map((e) => e.type),
+          ['session.status_running', 'agent.message', 'session.status_idle'],
+          `turn ${i} kept the running -> message -> idle lifecycle order`,
+        );
+      }
 
       // Echoes are in order — the machine never reordered or dropped a turn.
       for (let i = 0; i < TURNS; i++) {
@@ -59,17 +70,17 @@ async function main() {
       // Every idle is a clean end_turn.
       assert.ok(idles.every((e) => e.stop_reason.type === 'end_turn'), 'every turn ended with end_turn');
 
-      // Ids are globally unique and strictly monotonic across the whole soak.
+      // IDs are globally unique and stable across a second read. A streaming preview
+      // reserves each message id before the surrounding lifecycle markers, so numeric
+      // ordering is deliberately not a ledger-order invariant.
       const ids = events.map((e) => e.id);
       assert.equal(new Set(ids).size, ids.length, 'no event id was reused across the soak');
-      const nums = ids.map((id) => Number(id.replace(/\D/g, '')));
-      for (let i = 1; i < nums.length; i++) {
-        assert.ok(nums[i] > nums[i - 1], `event ids are strictly increasing (${ids[i - 1]} -> ${ids[i]})`);
-      }
+      assert.ok(ids.every((id) => /^evt_\d+$/.test(id)), 'every event id has the stable evt_<sequence> shape');
+      assert.deepEqual((await listAll(client, session.id)).map((e) => e.id), ids, 'event ids are stable when reread');
 
       const finalStatus = (await client.beta.sessions.retrieve(session.id, { betas: BETAS })).status;
       assert.equal(finalStatus, 'idle', 'the session is idle at the end of the soak');
-      pass(`${TURNS} running<->idle cycles: ordered echoes, unique+monotonic ids, clean end_turn, idle at rest`);
+      pass(`${TURNS} running<->idle cycles: ordered echoes, unique+stable ids, clean end_turn, idle at rest`);
     });
 
     console.log(`E2E PASS: session state machine stable across ${TURNS} turns (soak) via TS SDK.`);
