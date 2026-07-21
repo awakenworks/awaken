@@ -33,7 +33,7 @@ use awaken_sandbox_local::LocalProvider;
 use crate::agent_catalog::AgentCatalog;
 use crate::agent_runner::run_configured_agent;
 use crate::background::BackgroundRuns;
-use crate::judge::HostAgentTool;
+use crate::judge::AuxAgentTool;
 
 // The config pieces the host wires (registering the default extractor agent).
 pub use awaken_ext_memory::{DEFAULT_MEMORY_INSTRUCTIONS, default_memory_agent};
@@ -44,7 +44,7 @@ static EXTRACTION_OWNER_SEQ: AtomicU64 = AtomicU64::new(1);
 
 /// A [`RecallSelector`] backed by the `memory-selector` sub-agent: a single-step,
 /// tool-free, plugin-free run driven through the shared aux-run port
-/// through the same ordinary Agent-backed tool used by the judge and compactor.
+/// through the same ordinary Agent-backed tool used by the compactor.
 /// Its configuration activates no plugins, so memory
 /// recall cannot recursively invoke itself; the port keeps its usage outside the
 /// user session's accounting projection (housekeeping, not delegated work).
@@ -62,7 +62,7 @@ impl AgentSelector {
             .join("awaken-server")
             .join(format!("{}-mem-select", std::process::id()));
         Self {
-            agent_tool: Arc::new(HostAgentTool {
+            agent_tool: Arc::new(AuxAgentTool {
                 llm,
                 provider: LocalProvider::new(base),
                 catalog,

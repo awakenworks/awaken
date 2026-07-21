@@ -1,6 +1,6 @@
 //! Constructing and running an Agent through the ordinary Run lifecycle.
 //!
-//! Native delegation (`agent_run`), the goal judge, and skill forks all use this
+//! Native delegation (`agent_run`) and skill forks use this
 //! substrate. A delegated Agent receives a first-class child Run identity, the
 //! same durable context and capabilities as a directly initiated Agent, and the
 //! same delegation executor, so nested delegation is not a special execution

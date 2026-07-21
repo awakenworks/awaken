@@ -7,16 +7,15 @@
 //! composition-root choice: it coerces to `Arc<dyn Coordinator>` / `&dyn
 //! ThreadReader` without trait upcasting, while exposing the two extra reads the
 //! host projects — the awaiting position (to recover a session after a restart) and
-//! the committed outcome rounds.
+//! the awaiting position used for restart recovery.
 
 use awaken_agent_contract::agent::awaiting::ResumeTicket;
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::run::{Id as RunId, Record as RunRecord, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::audit::kind::Kind;
 use awaken_agent_contract::thread::commit::coordinator::{Coordinator, Error};
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
-use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
+use awaken_agent_contract::thread::read::checkpoint::CheckpointReader;
 use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use std::sync::Arc;
@@ -54,9 +53,6 @@ pub(crate) trait HostStore: Coordinator + ThreadReader + RunStore + Send + Sync 
     fn latest_run(&self, thread: &ThreadId) -> Option<RunRecord>;
     /// The awaiting run on `thread`, if any, recovered from committed truth.
     fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, ResumeTicket)>;
-    /// Payloads of committed `Continuation` (outcome-round) events for `thread`, in
-    /// commit order — projected from durable truth so round history survives a restart.
-    fn continuation_payloads(&self, thread: &ThreadId) -> Vec<serde_json::Value>;
 }
 
 /// Recover the awaiting position from a durable backend's fact-derived read model
@@ -70,19 +66,6 @@ fn awaiting_from_reader<R: CheckpointReader>(
     (&ticket.thread_id == thread).then_some((run.id, ticket))
 }
 
-/// Continuation payloads from any `CheckpointReader` (the fs/postgres shape).
-fn continuation_from_reader<R: CheckpointReader>(
-    reader: &R,
-    thread: &ThreadId,
-) -> Vec<serde_json::Value> {
-    reader
-        .list_events(&EventScope::Thread(thread.clone()), None, usize::MAX)
-        .into_iter()
-        .filter(|event| event.kind == Kind::Continuation)
-        .map(|event| event.payload)
-        .collect()
-}
-
 impl HostStore for MemoryCommitCoordinator {
     fn latest_run(&self, _thread: &ThreadId) -> Option<RunRecord> {
         self.committed().latest_run
@@ -91,14 +74,6 @@ impl HostStore for MemoryCommitCoordinator {
         let run = self.committed().latest_run?;
         let ticket = self.resume_ticket_for(&run.id)?;
         (&ticket.thread_id == thread).then_some((run.id, ticket))
-    }
-    fn continuation_payloads(&self, _thread: &ThreadId) -> Vec<serde_json::Value> {
-        self.committed()
-            .events
-            .into_iter()
-            .filter(|event| event.kind == Kind::Continuation)
-            .map(|event| event.payload)
-            .collect()
     }
 }
 
@@ -110,9 +85,6 @@ impl HostStore for SqliteCommitCoordinator {
         // Inherent method wins over the trait method in resolution — not recursive.
         SqliteCommitCoordinator::open_wait_for_thread(self, thread)
     }
-    fn continuation_payloads(&self, thread: &ThreadId) -> Vec<serde_json::Value> {
-        continuation_from_reader(self, thread)
-    }
 }
 
 impl HostStore for FsCommitCoordinator {
@@ -122,9 +94,6 @@ impl HostStore for FsCommitCoordinator {
     fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, ResumeTicket)> {
         awaiting_from_reader(self, thread)
     }
-    fn continuation_payloads(&self, thread: &ThreadId) -> Vec<serde_json::Value> {
-        continuation_from_reader(self, thread)
-    }
 }
 
 impl HostStore for PostgresCommitCoordinator {
@@ -133,9 +102,6 @@ impl HostStore for PostgresCommitCoordinator {
     }
     fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, ResumeTicket)> {
         awaiting_from_reader(self, thread)
-    }
-    fn continuation_payloads(&self, thread: &ThreadId) -> Vec<serde_json::Value> {
-        continuation_from_reader(self, thread)
     }
 }
 
@@ -156,16 +122,6 @@ impl HostCommit {
         match self {
             HostCommit::Local(store) => store.open_wait_for_thread(thread),
             HostCommit::Remote(_) => None,
-        }
-    }
-
-    /// Payloads of committed `Continuation` (outcome-round) events for `thread`, in
-    /// commit order — projected from durable truth, so the round history survives a
-    /// restart.
-    pub(crate) fn continuation_payloads(&self, thread: &ThreadId) -> Vec<serde_json::Value> {
-        match self {
-            HostCommit::Local(store) => store.continuation_payloads(thread),
-            HostCommit::Remote(_) => Vec::new(),
         }
     }
 }

@@ -140,6 +140,7 @@ impl SharedHost {
         sink: Option<Arc<dyn StreamSink>>,
     ) -> Result<RunResult, HostError> {
         let ctx = self.ctx_for(thread, agent).await?;
+        let _execution = ctx.execution.lock().await;
         let mut st = ctx.state.lock().await;
         if st.awaiting_run.is_some() && !supersede {
             return Err(HostError::bad_request("thread is awaiting a tool decision"));
@@ -177,50 +178,33 @@ impl SharedHost {
         // resume) so it spans an awaiting→resumed turn.
         st.compactions_before =
             awaken_ext_compact::compaction_count(&ctx.commit.committed_state(&ctx.thread_id));
-        // Prepare the activation (register snapshot + mint ids),
-        // then deliver it through the ingress seam. Direct ingress executes inline,
-        // so this is behavior-identical to the former `start_run` call.
-        let (mut run_id, mut activation) =
-            ctx.runtime
-                .prepare(&ctx.config, thread.to_string(), messages);
-        // Stamp the thread's per-turn model override (R2/R5) onto the activation, OFF
-        // the fingerprinted snapshot, so the resolve seam (here or on a claiming
-        // worker) picks the effective model without a session-level registry.
-        activation.model_ref_override = self.inference_routing.override_for(thread);
-        if ctx.durable {
-            // The durable path needs a run id that is unique across a restart: the
-            // runtime's in-process id counter resets to 1 on restart and would
-            // collide with an already-committed terminal run, which the dispatch
-            // worker's terminal-run guard then skips (never re-running a finished
-            // run) — silently dropping the turn. A wall-clock + sequence id cannot
-            // collide with a prior process's ids.
-            let uid = RunId(format!(
-                "run-{}-{}",
-                now_ms(),
-                BASE_SEQ.fetch_add(1, Ordering::SeqCst)
-            ));
-            activation.run_id = uid.clone();
-            run_id = uid;
-        }
-        // Durable ingress queues the run through the dispatch store and drives it
-        // via the worker (`submit_background`); a superseding submit first marks the
-        // thread's stale pending/awaiting dispatches superseded (ADR-0022); direct
-        // ingress runs it inline (`submit`). All drive to the same terminal/awaiting
-        // state and commit through the same boundary, so `finish_step` is identical.
-        // R3/R4: route to the ACP executor for acp:* threads, else the native
-        // ingress (direct / durable / superseding). See `crate::run_exec`.
-        *ctx.active_run.lock().expect("active run mutex poisoned") = Some(run_id.clone());
-        let state = self
-            .execute_activation(&ctx, activation, supersede, sink)
-            .await;
-        {
-            let mut active_run = ctx.active_run.lock().expect("active run mutex poisoned");
-            if active_run.as_ref() == Some(&run_id) {
-                *active_run = None;
-            }
-        }
-        let state = state?;
+        drop(st);
+        let executed = self
+            .execute_snapshot(
+                &ctx,
+                crate::run_exec::SnapshotRunRequest {
+                    run_id: None,
+                    thread_id: ctx.thread_id.clone(),
+                    snapshot: ctx.config.clone(),
+                    input: messages,
+                    continuity: crate::run_exec::Continuity::Continue,
+                    purpose: crate::run_exec::RunPurpose::UserTurn,
+                    model_ref_override: self.inference_routing.override_for(thread),
+                    supersede,
+                    sink,
+                    cancellation_mirror: None,
+                },
+            )
+            .await?;
+        let run_id = executed.run_id;
+        let state = executed.state;
+        debug_assert_eq!(executed.before, before);
+        debug_assert_eq!(
+            executed.new_messages,
+            ctx.commit.committed_messages(&ctx.thread_id)[before..]
+        );
         let terminal_commit_id = run_id.0.clone();
+        let mut st = ctx.state.lock().await;
         let result = self.finish_step(&ctx, &mut st, run_id, state, before, thread)?;
         drop(st);
         self.run_aux_after_step(&ctx, thread, &terminal_commit_id, &result.state)
@@ -524,8 +508,11 @@ impl SharedHost {
         resume: HostResume,
     ) -> Result<RunResult, HostError> {
         let ctx = self.ctx_for(thread, None).await?;
-        let mut st = ctx.state.lock().await;
-        let run_id = st
+        let _execution = ctx.execution.lock().await;
+        let run_id = ctx
+            .state
+            .lock()
+            .await
             .awaiting_run
             .clone()
             .ok_or_else(|| HostError::bad_request("no awaiting run to resume"))?;
@@ -554,6 +541,7 @@ impl SharedHost {
             let command = ResumeCommand::from_ticket(&ticket, ResumeResult::Input(content), 0);
             let state = self.drive_resume(&ctx, activation, command).await?;
             let terminal_commit_id = run_id.0.clone();
+            let mut st = ctx.state.lock().await;
             let result = self.finish_step(&ctx, &mut st, run_id, state, before, thread)?;
             drop(st);
             self.run_aux_after_step(&ctx, thread, &terminal_commit_id, &result.state)
@@ -614,6 +602,7 @@ impl SharedHost {
             let command = ResumeCommand::from_ticket(&ticket, result, 0);
             let state = self.drive_resume(&ctx, activation, command).await?;
             let terminal_commit_id = run_id.0.clone();
+            let mut st = ctx.state.lock().await;
             let result = self.finish_step(&ctx, &mut st, run_id, state, before, thread)?;
             drop(st);
             self.run_aux_after_step(&ctx, thread, &terminal_commit_id, &result.state)
@@ -645,95 +634,12 @@ impl SharedHost {
         let command = ResumeCommand::from_ticket(&ticket, result, 0);
         let state = self.drive_resume(&ctx, activation, command).await?;
         let terminal_commit_id = run_id.0.clone();
+        let mut st = ctx.state.lock().await;
         let result = self.finish_step(&ctx, &mut st, run_id, state, before, thread)?;
         drop(st);
         self.run_aux_after_step(&ctx, thread, &terminal_commit_id, &result.state)
             .await;
         Ok(result)
-    }
-
-    /// Define an outcome and drive the grade->revise loop over `thread`, bounded
-    /// by `max_iterations`. Revision rounds auto-approve tools (the goal loop
-    /// drives to a deliverable).
-    pub async fn define_outcome(
-        &self,
-        thread: &str,
-        description: &str,
-        rubric: &str,
-        max_iterations: u32,
-    ) -> Result<HostOutcomeReport, HostError> {
-        let ctx = self.ctx_for(thread, None).await?;
-        let mut st = ctx.state.lock().await;
-        let goal = GoalSpec::new(description, rubric, max_iterations);
-
-        // The runtime owns the grade->revise loop: a goal-enabled runtime whose
-        // run-end guard steers revisions until the goal is met or the budget is
-        // spent. The host drives one run and projects the rounds it committed. The
-        // guard shares the thread's committed history and sandbox root.
-        let goal_runtime = build_runtime(self.llm.clone(), ctx.env.as_ref())
-            .with_plugin(Arc::new(GoalPlugin::new(goal, self.grader.clone())));
-        // The goal run auto-approves tools to drive to a deliverable, so it does not
-        // advertise `agent_run` (which awaits and is host-fulfilled, not auto-run).
-        // The outcome/goal run does not offer skills (ADR-0036): it auto-approves
-        // tools to drive a deliverable and does not register the `Skill` tool.
-        let config = server_config(
-            "assistant",
-            &self.model_ref,
-            &self.client_tools,
-            &HashSet::new(),
-            &["goal".to_string()],
-            &self.plugin_config,
-            &[],
-            awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
-        );
-
-        // One run: the guard re-derives and grades the deliverable, then steers
-        // revisions. Outcome rounds auto-approve tools. Empty input re-infers over
-        // the committed history. A concurrent `interrupt` cancels this run.
-        let state = goal_runtime
-            .run_to_completion(
-                &config,
-                thread,
-                Vec::<Message>::new(),
-                ctx.context(),
-                |_| ResumeResult::allow(),
-            )
-            .await
-            .map_err(|e| HostError::internal(e.to_string()))?;
-
-        // Project from DURABLE truth: the committed `Continuation` events the run
-        // recorded, each carrying the round's opaque detail (result + explanation).
-        // A `consumed_rounds` cursor scopes this to the rounds this call produced.
-        let rounds: Vec<serde_json::Value> = ctx.commit.continuation_payloads(&ctx.thread_id);
-        let fresh = &rounds[st.consumed_rounds.min(rounds.len())..];
-        st.consumed_rounds = rounds.len();
-
-        let outcome_id = format!("outc_{thread}");
-        let all = ctx.commit.committed_messages(&ctx.thread_id);
-        let mut iterations: Vec<HostOutcomeIteration> = fresh
-            .iter()
-            .enumerate()
-            .map(|(i, detail)| HostOutcomeIteration {
-                messages: if i == 0 { all.clone() } else { Vec::new() },
-                outcome_id: outcome_id.clone(),
-                iteration: i as u32 + 1,
-                result: detail_str(detail, "result"),
-                explanation: detail_str(detail, "explanation"),
-            })
-            .collect();
-        // An interrupted run ends `Cancelled` before the guard can conclude, so
-        // no terminal `Continuation` was committed. Report the outcome as
-        // `interrupted` — distinct from satisfied/failed/max_iterations.
-        if matches!(state, RunState::Ended(EndCause::Cancelled)) {
-            iterations.push(HostOutcomeIteration {
-                messages: Vec::new(),
-                outcome_id: outcome_id.clone(),
-                iteration: iterations.len() as u32 + 1,
-                result: "interrupted".to_string(),
-                explanation: "the outcome was interrupted".to_string(),
-            });
-        }
-        Ok(HostOutcomeReport { iterations })
     }
 
     /// Project the step's delta, update the awaiting position, and publish the
@@ -890,15 +796,6 @@ fn child_ticket(
         .child_run_id
         .clone();
     ctx.commit.resume_ticket(&child_run_id)
-}
-
-/// Read a string field from an opaque round detail, defaulting to empty.
-fn detail_str(detail: &serde_json::Value, key: &str) -> String {
-    detail
-        .get(key)
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string()
 }
 
 /// Read the pending tool off an awaiting ticket, classifying it client-executed

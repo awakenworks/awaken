@@ -171,14 +171,13 @@ is the whole change, subject to:
 
 This is its own initiative; compaction is its first client.
 
-### D5: Converge the three aux-agent ports into one run-subagent port (deferred)
+### D5: Converge auxiliary-Agent execution (partially superseded)
 
-`Summarizer` (ext-compact, `plugin.rs:29`), `DelegateRunner` (ext-goal,
-`lib.rs:218`), and `RunDelegationService` / `agent_run` (delegation) are three traits
-whose host impls all bottom out in `run_configured_agent`. Collapse them into a
-single neutral "run a sub-agent" capability port; remote A2A delegates
-(`delegate.rs:87`, `remote_run`) stay separate (network semantics). Fewer ports,
-one substrate — a simplification, not a feature cut.
+Outcome Judge execution no longer uses the former ext-goal `DelegateRunner`:
+[ADR-0064](0064-runtime-owned-outcome-orchestration.md) routes its pinned snapshot
+through the ordinary backend-neutral Run boundary. Compaction, memory selection,
+and Native delegation still share `run_configured_agent`; remote A2A delegates
+remain separate because they have network semantics.
 
 ## Development-Ready Design (G14) — D3
 
