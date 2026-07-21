@@ -29,6 +29,10 @@ impl LlmExecutor for GrantExecutor {
 struct ReferenceMaterializer;
 
 impl InferenceExecutorMaterializer for ReferenceMaterializer {
+    fn supported_access_schemes(&self) -> &'static [&'static str] {
+        &["credential-reference/v1"]
+    }
+
     fn materialize_pinned(
         &self,
         _model_ref: &str,

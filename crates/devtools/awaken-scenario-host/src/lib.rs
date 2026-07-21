@@ -246,6 +246,10 @@ pub async fn run_echo_worker(upstream: &str) -> Result<(), Box<dyn std::error::E
     struct EchoWorkerProvider;
 
     impl InferenceExecutorMaterializer for EchoWorkerProvider {
+        fn supported_access_schemes(&self) -> &'static [&'static str] {
+            &["host-executor/v1"]
+        }
+
         fn materialize_pinned(
             &self,
             model_ref: &str,

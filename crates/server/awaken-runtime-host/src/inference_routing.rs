@@ -19,6 +19,14 @@ use awaken_runtime_contract::llm::LlmExecutor;
 /// executor. Selecting models and routes is deliberately outside this port; the
 /// materializer may only consume the exact activation and access it is given.
 pub trait InferenceExecutorMaterializer: Send + Sync {
+    /// Access schemes this execution adapter can materialize. Worker composition
+    /// derives its immutable capability manifest from this declaration so
+    /// placement and materialization cannot be configured independently and
+    /// drift. These are execution capabilities, not authorization grants.
+    fn supported_access_schemes(&self) -> &'static [&'static str] {
+        &[]
+    }
+
     /// Materialize one configuration-pinned model/access pair. The implementation
     /// may inject referenced credential material, but must not resolve or select a
     /// different model, route, scope, or credential.

@@ -68,12 +68,7 @@ impl WorkerLifecycle {
 pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error>> {
     let stores = awaken_control::open_inference_materialization_stores_from_env().await;
     let materializer = CredentialInferenceMaterializer::new(stores.credentials, stores.secrets);
-    run_configured(
-        WorkerUpstream::new(upstream),
-        Some(Arc::new(materializer)),
-        &["credential-source/v1"],
-    )
-    .await
+    run_configured(WorkerUpstream::new(upstream), Some(Arc::new(materializer))).await
 }
 
 /// Run a genuinely secretless worker with a deployment-provided materializer.
@@ -84,20 +79,19 @@ pub async fn run_with_inference_materializer(
     upstream: &str,
     materializer: Arc<dyn InferenceExecutorMaterializer>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    run_configured(WorkerUpstream::new(upstream), Some(materializer), &[]).await
+    run_configured(WorkerUpstream::new(upstream), Some(materializer)).await
 }
 
 async fn run_configured(
     upstream: WorkerUpstream,
     materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,
-    built_in_capabilities: &[&str],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let upstream_url = upstream.base_url().to_string();
     let control = WorkerControlClient::new(upstream.clone());
     let registration = control
         .register(
             new_incarnation_id()?,
-            worker_manifest(built_in_capabilities),
+            worker_manifest(materializer.as_deref()),
         )
         .await
         .map_err(std::io::Error::other)?;
@@ -229,7 +223,7 @@ fn new_incarnation_id() -> Result<String, getrandom::Error> {
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
-fn worker_manifest(built_in_capabilities: &[&str]) -> WorkerManifest {
+fn worker_manifest(materializer: Option<&dyn InferenceExecutorMaterializer>) -> WorkerManifest {
     use awaken_provisioning_contract::{IsolationClass, SandboxCapabilities};
     let tier = std::env::var("AWAKEN_SANDBOX_TIER").unwrap_or_else(|_| "namespace".to_string());
     let (sandbox, backend) = match tier.as_str() {
@@ -263,8 +257,9 @@ fn worker_manifest(built_in_capabilities: &[&str]) -> WorkerManifest {
     };
     let mut capabilities = std::collections::BTreeSet::from(["native-runtime".to_string()]);
     capabilities.extend(
-        built_in_capabilities
-            .iter()
+        materializer
+            .into_iter()
+            .flat_map(InferenceExecutorMaterializer::supported_access_schemes)
             .map(|capability| (*capability).to_string()),
     );
     capabilities.extend(
@@ -360,7 +355,36 @@ fn grace_window(graceful: bool, configured_secs: Option<u64>) -> std::time::Dura
 
 #[cfg(test)]
 mod grace_tests {
-    use super::grace_window;
+    use std::sync::Arc;
+
+    use awaken_runtime_contract::{InferenceAccess, llm::LlmExecutor};
+
+    use super::{InferenceExecutorMaterializer, grace_window, worker_manifest};
+
+    struct SchemeMaterializer;
+
+    impl InferenceExecutorMaterializer for SchemeMaterializer {
+        fn supported_access_schemes(&self) -> &'static [&'static str] {
+            &["test-access/v1"]
+        }
+
+        fn materialize_pinned(
+            &self,
+            _model_ref: &str,
+            _access: &InferenceAccess,
+        ) -> Option<Arc<dyn LlmExecutor>> {
+            None
+        }
+    }
+
+    #[test]
+    fn worker_manifest_derives_materialization_capabilities_from_the_adapter() {
+        let materializer = SchemeMaterializer;
+        let manifest = worker_manifest(Some(&materializer));
+
+        assert!(manifest.capabilities.contains("native-runtime"));
+        assert!(manifest.capabilities.contains("test-access/v1"));
+    }
 
     #[test]
     fn sigint_exits_promptly_sigterm_waits() {
