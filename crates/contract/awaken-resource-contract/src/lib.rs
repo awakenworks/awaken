@@ -25,8 +25,8 @@ mod input;
 pub use catalog::{
     ClonePolicy, ConfigVersion, ExtractionPolicy, MemoryStoreConfigVersion, MemoryStoreDefinition,
     RecallPolicy, RepositoryConfigVersion, RepositoryDefinition, ResolvedMemoryStoreConfig,
-    ResolvedRepositoryConfig, ResourceCatalog, ResourceCatalogError, ResourceState,
-    RetentionPolicy,
+    ResolvedRepositoryConfig, ResourceCatalog, ResourceCatalogError, ResourceConfigSource,
+    ResourceState, RetentionPolicy,
 };
 pub use input::{
     BindingId, FileId, InputBinding, InputResourceId, MemoryStoreId, RepositoryId, ResourceAccess,

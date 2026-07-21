@@ -167,6 +167,23 @@ pub enum ResourceCatalogError {
     Storage(String),
 }
 
+/// Narrow read port consumed by Session resolution. It deliberately exposes no
+/// authoring or lifecycle mutation, following interface segregation: resolving
+/// an execution manifest cannot publish, suspend, archive, or delete resources.
+pub trait ResourceConfigSource: Send + Sync {
+    fn resolve_memory_store(
+        &self,
+        workspace_id: &str,
+        id: &str,
+    ) -> Result<ResolvedMemoryStoreConfig, ResourceCatalogError>;
+
+    fn resolve_repository(
+        &self,
+        workspace_id: &str,
+        id: &str,
+    ) -> Result<ResolvedRepositoryConfig, ResourceCatalogError>;
+}
+
 /// Secret-free Resource Catalog application port. Authorization decisions are made
 /// outside this boundary; Workspace ownership and lifecycle are intrinsic invariants.
 pub trait ResourceCatalog: Send + Sync {
@@ -265,4 +282,22 @@ pub trait ResourceCatalog: Send + Sync {
         id: &str,
         state: ResourceState,
     ) -> Result<(), ResourceCatalogError>;
+}
+
+impl<T: ResourceCatalog + ?Sized> ResourceConfigSource for T {
+    fn resolve_memory_store(
+        &self,
+        workspace_id: &str,
+        id: &str,
+    ) -> Result<ResolvedMemoryStoreConfig, ResourceCatalogError> {
+        ResourceCatalog::resolve_memory_store(self, workspace_id, id)
+    }
+
+    fn resolve_repository(
+        &self,
+        workspace_id: &str,
+        id: &str,
+    ) -> Result<ResolvedRepositoryConfig, ResourceCatalogError> {
+        ResourceCatalog::resolve_repository(self, workspace_id, id)
+    }
 }

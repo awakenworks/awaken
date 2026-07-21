@@ -158,7 +158,7 @@ impl ManagedState {
             .collect::<Result<Vec<_>, _>>()?;
         // This is the one composition point. Runtime receives this exact effective
         // list and never re-opens the Agent binding repository.
-        let effective_resources = awaken_session_contract::SessionInputResolver::resolve(
+        let effective_resources = awaken_session_contract::SessionInputResolver::resolve_legacy(
             config_view
                 .as_ref()
                 .map(|view| view.resources.as_slice())
