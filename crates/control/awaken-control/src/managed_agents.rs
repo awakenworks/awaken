@@ -142,7 +142,7 @@ fn config_from_create(id: String, params: AgentCreateParams) -> AgentConfig {
         metadata: params.metadata,
         mcp_servers: params.mcp_servers,
         skills: params.skills,
-        multiagent: params.multiagent.filter(|value| !value.is_null()),
+        multiagent: params.multiagent,
         archived_at: None,
         tool_overrides: Vec::new(),
         recovery_policies: BTreeMap::new(),
@@ -297,7 +297,7 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
             config.tool_ids = tools.iter().filter_map(tool_id).collect();
         }
         if let Some(multiagent) = params.multiagent {
-            config.multiagent = Some(multiagent).filter(|value| !value.is_null());
+            config.multiagent = Some(multiagent);
         }
         match self
             .plane
