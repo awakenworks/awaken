@@ -17,36 +17,18 @@ use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::{
     Error as ExecutionError, Result as ExecutionResult, RunAttemptExecutor, RunExecutor,
 };
-use awaken_runtime_contract::permission::{ToolCall, ToolPermissionPolicy, ToolPermissionVerdict};
+use awaken_runtime_contract::permission::ToolCapabilityNarrowing;
 use awaken_runtime_contract::resolved::Backend;
 use awaken_runtime_contract::resume::ResumeCommand;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
-pub(crate) enum RunPurpose {
-    UserTurn,
-    OutcomeWorker,
-    OutcomeGrader,
-    Memory,
-    Compact,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
-pub(crate) enum Continuity {
-    Continue,
-    Fresh,
-}
 
 pub(crate) struct SnapshotRunRequest {
     pub(crate) run_id: Option<RunId>,
     pub(crate) thread_id: ThreadId,
     pub(crate) snapshot: ExecutableAgentSnapshot,
     pub(crate) input: Vec<Message>,
-    pub(crate) continuity: Continuity,
-    pub(crate) purpose: RunPurpose,
+    pub(crate) tool_capability_narrowing: ToolCapabilityNarrowing,
     pub(crate) model_ref_override: Option<String>,
     pub(crate) supersede: bool,
     pub(crate) sink: Option<Arc<dyn StreamSink>>,
@@ -65,23 +47,11 @@ pub(crate) struct SnapshotRunResult {
     pub(crate) before: usize,
 }
 
-struct DenyAllTools;
-
 struct ActivationOptions {
-    purpose: RunPurpose,
     supersede: bool,
     sink: Option<Arc<dyn StreamSink>>,
     cancellation_mirror:
         Option<Arc<std::sync::Mutex<Option<awaken_runtime_contract::CancellationToken>>>>,
-}
-
-#[async_trait::async_trait]
-impl ToolPermissionPolicy for DenyAllTools {
-    async fn evaluate(&self, _call: &ToolCall) -> ToolPermissionVerdict {
-        ToolPermissionVerdict::Deny {
-            reason: "this Run purpose does not permit tools".into(),
-        }
-    }
 }
 
 /// The one executor router owned by a Session. Backend identity comes only from
@@ -177,9 +147,6 @@ impl SharedHost {
                 "snapshot Run thread does not match its Session context",
             ));
         }
-        self.enforce_purpose_policy(request.purpose, &request.snapshot)?;
-        let _ = self.snapshot_capabilities(&request.snapshot)?;
-
         let before = ctx.commit.committed_messages(&ctx.thread_id).len();
         let (generated_run_id, mut activation) = ctx.runtime.prepare(
             &request.snapshot,
@@ -199,9 +166,7 @@ impl SharedHost {
         });
         activation.run_id = run_id.clone();
         activation.model_ref_override = request.model_ref_override;
-        match request.continuity {
-            Continuity::Continue | Continuity::Fresh => {}
-        }
+        activation.tool_capability_narrowing = request.tool_capability_narrowing;
 
         *ctx.active_run.lock().expect("active run mutex poisoned") = Some(run_id.clone());
         let state = self
@@ -209,7 +174,6 @@ impl SharedHost {
                 ctx,
                 activation,
                 ActivationOptions {
-                    purpose: request.purpose,
                     supersede: request.supersede,
                     sink: request.sink,
                     cancellation_mirror: request.cancellation_mirror,
@@ -230,43 +194,6 @@ impl SharedHost {
             new_messages: all[before.min(all.len())..].to_vec(),
             before,
         })
-    }
-
-    pub(crate) fn snapshot_capabilities(
-        &self,
-        snapshot: &ExecutableAgentSnapshot,
-    ) -> Result<awaken_runtime_contract::execution::ExecutorCapabilities, HostError> {
-        match Backend::from_ref(&snapshot.resolved_spec.model_binding.backend_ref) {
-            Backend::Native => Ok(awaken_runtime_contract::execution::ExecutorCapabilities::NATIVE),
-            Backend::Acp { .. } => self
-                .acp
-                .as_ref()
-                .map(
-                    |_| awaken_runtime_contract::execution::ExecutorCapabilities {
-                        cancellation: awaken_runtime_contract::execution::Cancellation::RemoteAbort,
-                        wait: awaken_runtime_contract::execution::Wait::Auth,
-                    },
-                )
-                .ok_or_else(|| HostError::bad_request("ACP backend is not configured")),
-            Backend::Remote { .. } => Err(HostError::bad_request(
-                "root A2A snapshot execution is not configured on this host",
-            )),
-        }
-    }
-
-    fn enforce_purpose_policy(
-        &self,
-        purpose: RunPurpose,
-        snapshot: &ExecutableAgentSnapshot,
-    ) -> Result<(), HostError> {
-        if purpose == RunPurpose::OutcomeGrader
-            && !snapshot.resolved_spec.tool_descriptors.is_empty()
-        {
-            return Err(HostError::bad_request(
-                "Outcome Grader snapshots must not declare tools",
-            ));
-        }
-        Ok(())
     }
 
     /// Execute `activation`: the ACP executor when the session chose
@@ -328,9 +255,6 @@ impl SharedHost {
             }
             if let Some(sink) = options.sink {
                 context = context.with_stream_sink(sink);
-            }
-            if options.purpose == RunPurpose::OutcomeGrader {
-                context = context.with_tool_permission_policy(Arc::new(DenyAllTools));
             }
             let result = ctx
                 .ingress
@@ -438,6 +362,7 @@ mod tests {
             input: vec![Message::text(MessageId("input".into()), Role::User, "go")],
             delegation_origin: None,
             model_ref_override: None,
+            tool_capability_narrowing: Default::default(),
         }
     }
 

@@ -149,6 +149,7 @@ async fn replay(case: &Case) -> (String, bool, Vec<String>) {
         }],
         delegation_origin: None,
         model_ref_override: None,
+        tool_capability_narrowing: Default::default(),
     };
 
     let commit = Arc::new(MemoryCommitCoordinator::new());

@@ -26,6 +26,7 @@ use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::{
     Cancellation, Error, ExecutorCapabilities, Result, RunAttemptExecutor, RunExecutor, Wait,
 };
+use awaken_runtime_contract::permission::ToolCapabilityNarrowing;
 use awaken_runtime_contract::resolved::Backend;
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult, validate_resume};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
@@ -83,6 +84,20 @@ impl A2aRunExecutor {
             transport_for: Arc::new(|url| Arc::new(HttpTransport::new(url)) as Arc<dyn Transport>),
         }
     }
+}
+
+fn ensure_supported_narrowing(
+    activation: &RunActivation,
+    context: &RuntimeRunContext,
+) -> Result<()> {
+    if activation.tool_capability_narrowing == ToolCapabilityNarrowing::DenyAll
+        || context.tool_permission_policy.is_some()
+    {
+        return Err(Error::Execution(
+            "A2A cannot prove enforcement of this Run's deny-all tool capability".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// The turn's prompt: the concatenated text of the activation's input.
@@ -267,6 +282,7 @@ impl RunExecutor for A2aRunExecutor {
         activation: RunActivation,
         context: RuntimeRunContext,
     ) -> Result<RunState> {
+        ensure_supported_narrowing(&activation, &context)?;
         let Ok(endpoint) = endpoint_of(&activation) else {
             // Reached without a remote backend — a wiring fault; fail closed.
             return finish_terminal(
@@ -348,6 +364,7 @@ impl RunAttemptExecutor for A2aRunExecutor {
         command: ResumeCommand,
         context: RuntimeRunContext,
     ) -> Result<RunState> {
+        ensure_supported_narrowing(&activation, &context)?;
         let reader = context
             .reader
             .as_ref()
@@ -689,7 +706,24 @@ mod tests {
             input: vec![Message::text(MessageId("u".into()), Role::User, "go")],
             delegation_origin: None,
             model_ref_override: None,
+            tool_capability_narrowing: Default::default(),
         }
+    }
+
+    #[test]
+    fn remote_execution_fails_closed_when_tool_denial_cannot_be_proven() {
+        let restricted = activation("a2a:https://agent.example").without_tools();
+        let error = ensure_supported_narrowing(&restricted, &RuntimeRunContext::new())
+            .expect_err("an opaque remote Agent cannot enforce local tool denial");
+        assert!(error.to_string().contains("cannot prove enforcement"));
+
+        let context = RuntimeRunContext::new().with_tool_permission_policy(Arc::new(
+            awaken_runtime_contract::permission::DenyAllTools::new("attempt restriction"),
+        ));
+        assert!(
+            ensure_supported_narrowing(&activation("a2a:https://agent.example"), &context).is_err(),
+            "process-local narrowing must not be silently ignored either"
+        );
     }
 
     #[tokio::test]

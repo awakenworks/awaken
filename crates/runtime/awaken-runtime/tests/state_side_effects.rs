@@ -148,6 +148,7 @@ fn activation(tool_ids: &[&str]) -> RunActivation {
         }],
         delegation_origin: None,
         model_ref_override: None,
+        tool_capability_narrowing: Default::default(),
     }
 }
 

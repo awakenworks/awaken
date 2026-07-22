@@ -499,8 +499,8 @@ async fn interrupt_is_a_noop_when_nothing_runs() {
 }
 
 #[tokio::test]
-async fn snapshot_run_is_the_ordinary_turn_execution_boundary() {
-    use crate::run_exec::{Continuity, RunPurpose, SnapshotRunRequest};
+async fn snapshot_run_is_the_ordinary_run_execution_boundary() {
+    use crate::run_exec::SnapshotRunRequest;
 
     let host = SharedHost::new(Arc::new(MemoryHostModel), "stub");
     let ctx = host.ctx_for("snapshot-run", None).await.expect("context");
@@ -512,8 +512,7 @@ async fn snapshot_run_is_the_ordinary_turn_execution_boundary() {
                 thread_id: ctx.thread_id.clone(),
                 snapshot: ctx.config.clone(),
                 input: user("hello"),
-                continuity: Continuity::Continue,
-                purpose: RunPurpose::UserTurn,
+                tool_capability_narrowing: Default::default(),
                 model_ref_override: None,
                 supersede: false,
                 sink: None,
@@ -531,16 +530,12 @@ async fn snapshot_run_is_the_ordinary_turn_execution_boundary() {
     assert_eq!(result.before, 0);
     assert_eq!(result.new_messages.len(), 2, "user + assistant delta");
     assert_eq!(result.new_messages.last().unwrap().text_content(), "ok");
-    assert_eq!(
-        host.snapshot_capabilities(&ctx.config)
-            .expect("native capabilities"),
-        awaken_runtime_contract::execution::ExecutorCapabilities::NATIVE
-    );
 }
 
 #[tokio::test]
-async fn outcome_grader_snapshot_with_tools_is_rejected_before_execution() {
-    use crate::run_exec::{Continuity, RunPurpose, SnapshotRunRequest};
+async fn tool_bearing_snapshot_can_be_restricted_at_the_run_boundary() {
+    use crate::run_exec::SnapshotRunRequest;
+    use awaken_runtime_contract::permission::ToolCapabilityNarrowing;
     use awaken_runtime_contract::resolved::ToolDescriptor;
 
     let host = SharedHost::new(Arc::new(MemoryHostModel), "stub");
@@ -556,7 +551,7 @@ async fn outcome_grader_snapshot_with_tools_is_rejected_before_execution() {
             serde_json::json!({"type": "object"}),
         ));
 
-    let error = host
+    let result = host
         .execute_snapshot(
             &ctx,
             SnapshotRunRequest {
@@ -564,8 +559,7 @@ async fn outcome_grader_snapshot_with_tools_is_rejected_before_execution() {
                 thread_id: ctx.thread_id.clone(),
                 snapshot,
                 input: user("grade"),
-                continuity: Continuity::Fresh,
-                purpose: RunPurpose::OutcomeGrader,
+                tool_capability_narrowing: ToolCapabilityNarrowing::DenyAll,
                 model_ref_override: None,
                 supersede: false,
                 sink: None,
@@ -573,11 +567,12 @@ async fn outcome_grader_snapshot_with_tools_is_rejected_before_execution() {
             },
         )
         .await
-        .expect_err("tool-bearing grader must fail closed");
+        .expect("declared tools do not bypass a per-Run deny-all restriction");
 
-    assert_eq!(error.kind, HostErrorKind::BadRequest);
-    assert!(error.message.contains("must not declare tools"));
-    assert!(host.committed_messages("unsafe-grader").await.is_empty());
+    assert!(matches!(
+        result.state,
+        RunState::Ended(EndCause::NaturalEnd)
+    ));
 }
 
 /// A model that blocks on its first inference until released, so a concurrent

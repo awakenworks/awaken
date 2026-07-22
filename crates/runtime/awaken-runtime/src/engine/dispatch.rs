@@ -76,8 +76,8 @@ pub(super) async fn run_tool_calls(
     let mut precomputed_gates = std::collections::VecDeque::new();
     if parallel_delegations {
         for call in &calls {
-            let outcome = gate_decision(runtime, call, env, store).await;
-            if runtime.gate().is_some() {
+            let outcome = gate_decision(runtime, call, env, store, context).await;
+            if runtime.gate().is_some() || context.tool_permission_policy.is_some() {
                 ledger.audit.push(permission_audit(call, &outcome));
             }
             precomputed_gates.push_back(outcome);
@@ -115,10 +115,15 @@ pub(super) async fn run_tool_calls(
         } else {
             let (outcome, already_audited) = match precomputed_gates.pop_front() {
                 Some(outcome) => (outcome, true),
-                None => (gate_decision(runtime, &call, env, store).await, false),
+                None => (
+                    gate_decision(runtime, &call, env, store, context).await,
+                    false,
+                ),
             };
             // Audit the decision of a real (policy-backed) gate (ADR-0030).
-            if !already_audited && runtime.gate().is_some() {
+            if !already_audited
+                && (runtime.gate().is_some() || context.tool_permission_policy.is_some())
+            {
                 ledger.audit.push(permission_audit(&call, &outcome));
             }
             match outcome {
@@ -615,8 +620,8 @@ pub(super) async fn recover_tool_batch(
         // capability-governed recovery.
         let was_requested = matches!(&durable.phase, ToolCallPhase::Requested);
         if was_requested && call.tool_id != awaken_runtime_contract::resolved::TOOL_OPEN_ID {
-            let gate = gate_decision(runtime, &call, env, store).await;
-            if runtime.gate().is_some() {
+            let gate = gate_decision(runtime, &call, env, store, context).await;
+            if runtime.gate().is_some() || context.tool_permission_policy.is_some() {
                 ledger.audit.push(permission_audit(&call, &gate));
             }
             match gate {
