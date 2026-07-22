@@ -465,4 +465,26 @@ mod tests {
         assert_eq!(report.duplicate_observation_ids, ["dup"]);
         assert!(!report.results[0].schema_valid);
     }
+
+    #[test]
+    fn committed_adversarial_dataset_covers_terminal_and_recoverable_boundaries() {
+        let dataset: JudgeDataset = serde_json::from_str(include_str!(
+            "../fixtures/outcome-judge-adversarial-v1.json"
+        ))
+        .unwrap();
+        dataset.validate().unwrap();
+        assert_eq!(dataset.cases.len(), 6);
+        assert!(
+            dataset
+                .cases
+                .iter()
+                .any(|case| case.id == "adversarial-failed-evidence-injection")
+        );
+        assert!(
+            dataset
+                .cases
+                .iter()
+                .any(|case| case.id == "adversarial-revision-alternative-route")
+        );
+    }
 }

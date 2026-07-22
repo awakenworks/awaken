@@ -293,4 +293,24 @@ mod tests {
                 .any(|case| case.id == "instruction-injection")
         );
     }
+
+    #[test]
+    fn committed_adversarial_dataset_covers_adjacent_and_distant_state() {
+        let dataset: CompactDataset =
+            serde_json::from_str(include_str!("../fixtures/compact-adversarial-v1.json")).unwrap();
+        dataset.validate().unwrap();
+        assert_eq!(dataset.cases.len(), 4);
+        assert!(
+            dataset
+                .cases
+                .iter()
+                .any(|case| case.id == "completed-source-durable-consequence")
+        );
+        assert!(
+            dataset
+                .cases
+                .iter()
+                .any(|case| case.id == "distant-override-with-injection")
+        );
+    }
 }

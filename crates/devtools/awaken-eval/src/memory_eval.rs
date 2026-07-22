@@ -493,4 +493,25 @@ mod tests {
                 .any(|case| case.id == "select-untrusted-memory")
         );
     }
+
+    #[test]
+    fn committed_adversarial_dataset_covers_filtering_and_sufficient_selection() {
+        let dataset: MemoryDataset =
+            serde_json::from_str(include_str!("../fixtures/memory-adversarial-v1.json")).unwrap();
+        dataset.validate().unwrap();
+        assert_eq!(dataset.extraction_cases.len(), 4);
+        assert_eq!(dataset.selection_cases.len(), 4);
+        assert!(
+            dataset
+                .extraction_cases
+                .iter()
+                .any(|case| case.id == "extract-revoked-preference")
+        );
+        assert!(
+            dataset
+                .selection_cases
+                .iter()
+                .any(|case| case.id == "select-causal-chain-with-cap")
+        );
+    }
 }
