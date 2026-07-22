@@ -7,6 +7,19 @@ Apache-2.0; code packages may use their own file or package license metadata.
 Start with [docs/README.md](docs/README.md) for the bounded contexts, runtime
 coverage target, architecture invariants, and documentation checks.
 
+## Quick start
+
+Build and launch the management API and web console on one port:
+
+```console
+cargo run -p awaken-cli --bin awaken -- start
+```
+
+Open `http://127.0.0.1:8080`. The command builds `web/dist` with `pnpm` when it
+is missing. Set `AWAKEN_HTTP_ADDR` to change the listener or `AWAKEN_WEB_DIST`
+to serve an existing console build. Running `awaken` without `start` keeps the
+API-only behavior.
+
 ## License
 
 Apache License, Version 2.0. See [LICENSE](LICENSE).
