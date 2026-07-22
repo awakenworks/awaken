@@ -5,8 +5,7 @@
 //! identities and persists the resulting state transitions.
 
 use async_trait::async_trait;
-use awaken_runtime_contract::Message;
-use awaken_runtime_contract::RunId;
+use awaken_runtime_contract::{ExecutableAgentSnapshot, Message, RunId};
 use serde::{Deserialize, Serialize};
 
 pub const MIN_ITERATIONS: u32 = 1;
@@ -145,35 +144,14 @@ impl std::error::Error for GraderError {}
 
 #[async_trait]
 pub trait Grader: Send + Sync {
-    async fn grade(&self, input: &GradingInput) -> Result<Grade, GraderError>;
-}
-
-/// Offline reference Grader used by deterministic tests and local demos.
-pub struct KeywordGrader;
-
-#[async_trait]
-impl Grader for KeywordGrader {
-    async fn grade(&self, input: &GradingInput) -> Result<Grade, GraderError> {
-        let deliverable = input.transcript[input.message_start.min(input.transcript.len())
-            ..input.message_end.min(input.transcript.len())]
-            .iter()
-            .map(Message::text_content)
-            .collect::<Vec<_>>()
-            .join("\n");
-        let satisfied = input.rubric.0.is_empty() || deliverable.contains(&input.rubric.0);
-        Ok(Grade {
-            decision: if satisfied {
-                GradeDecision::Satisfied
-            } else {
-                GradeDecision::NeedsRevision
-            },
-            explanation: if satisfied {
-                "deliverable satisfies the rubric".into()
-            } else {
-                format!("deliverable must satisfy the rubric ({:?})", input.rubric.0)
-            },
-        })
-    }
+    /// Evaluate through the immutable Agent snapshot pinned in the Outcome
+    /// binding. Implementations must not substitute current configuration when
+    /// recovering an already-active Outcome.
+    async fn grade(
+        &self,
+        snapshot: &ExecutableAgentSnapshot,
+        input: &GradingInput,
+    ) -> Result<Grade, GraderError>;
 }
 
 #[derive(Deserialize)]
@@ -597,7 +575,6 @@ mod proofs {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_runtime_contract::{MessageId, Role};
 
     fn definition(max_iterations: u32) -> Definition {
         Definition::new("ship", "all tests pass", max_iterations).unwrap()
@@ -928,27 +905,5 @@ mod tests {
                 "unexpectedly accepted {reply:?}"
             );
         }
-    }
-
-    #[tokio::test]
-    async fn keyword_grader_uses_only_the_evaluated_message_range() {
-        let input = GradingInput {
-            outcome_id: Id("o".into()),
-            iteration: 0,
-            description: "ship".into(),
-            rubric: Rubric("PASS".into()),
-            transcript: vec![
-                Message::text(MessageId("old".into()), Role::Assistant, "PASS"),
-                Message::text(MessageId("new".into()), Role::Assistant, "not yet"),
-            ],
-            message_start: 1,
-            message_end: 2,
-            worker_state: serde_json::json!({}),
-            evidence: Vec::new(),
-        };
-        assert_eq!(
-            KeywordGrader.grade(&input).await.unwrap().decision,
-            GradeDecision::NeedsRevision
-        );
     }
 }

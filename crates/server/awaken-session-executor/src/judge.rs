@@ -21,14 +21,17 @@ use crate::run_exec::BoundRunExecutor;
 /// recovery, restrictions, and parsing remain in `awaken-ext-goal`.
 pub(crate) struct HostAgentGrader<'a> {
     pub(crate) host: &'a SharedHost,
-    pub(crate) snapshot: &'a ExecutableAgentSnapshot,
     pub(crate) worker_cancel:
         Arc<std::sync::Mutex<Option<awaken_runtime_contract::CancellationToken>>>,
 }
 
 #[async_trait::async_trait]
 impl Grader for HostAgentGrader<'_> {
-    async fn grade(&self, input: &GradingInput) -> Result<Grade, GraderError> {
+    async fn grade(
+        &self,
+        snapshot: &ExecutableAgentSnapshot,
+        input: &GradingInput,
+    ) -> Result<Grade, GraderError> {
         let thread = grader_thread_id(&input.outcome_id, input.iteration);
         let context = self
             .host
@@ -37,14 +40,9 @@ impl Grader for HostAgentGrader<'_> {
             .map_err(|error| GraderError::Execution(error.to_string()))?;
         let executor = BoundRunExecutor::new(self.host, context.clone())
             .with_cancellation_mirror(self.worker_cancel.clone());
-        AgentGrader::new(
-            &executor,
-            context.commit.as_ref(),
-            self.snapshot,
-            RuntimeRunContext::new(),
-        )
-        .grade(input)
-        .await
+        AgentGrader::new(&executor, context.commit.as_ref(), RuntimeRunContext::new())
+            .grade(snapshot, input)
+            .await
     }
 }
 
@@ -154,15 +152,10 @@ mod tests {
         let thread = grader_thread_id(&input.outcome_id, input.iteration);
         let context = host.ctx_for(&thread.0, None).await.unwrap();
         let executor = BoundRunExecutor::new(&host, context.clone());
-        let grade = AgentGrader::new(
-            &executor,
-            context.commit.as_ref(),
-            &snapshot,
-            RuntimeRunContext::new(),
-        )
-        .grade(&input)
-        .await
-        .unwrap();
+        let grade = AgentGrader::new(&executor, context.commit.as_ref(), RuntimeRunContext::new())
+            .grade(&snapshot, &input)
+            .await
+            .unwrap();
 
         assert_eq!(grade.decision, GradeDecision::NeedsRevision);
         assert_eq!(grade.explanation, "add coverage");
@@ -191,15 +184,10 @@ mod tests {
         let thread = grader_thread_id(&input.outcome_id, input.iteration);
         let context = host.ctx_for(&thread.0, None).await.unwrap();
         let executor = BoundRunExecutor::new(&host, context.clone());
-        let error = AgentGrader::new(
-            &executor,
-            context.commit.as_ref(),
-            &snapshot,
-            RuntimeRunContext::new(),
-        )
-        .grade(&input)
-        .await
-        .unwrap_err();
+        let error = AgentGrader::new(&executor, context.commit.as_ref(), RuntimeRunContext::new())
+            .grade(&snapshot, &input)
+            .await
+            .unwrap_err();
         assert!(matches!(error, GraderError::InvalidOutput(_)));
     }
 }

@@ -4,7 +4,7 @@ use std::sync::atomic::Ordering;
 
 use awaken_ext_goal::controller::{Controller, Error as ControllerError};
 use awaken_ext_goal::grader::{DEFAULT_JUDGE_INSTRUCTIONS, default_judge_agent};
-use awaken_ext_goal::outcome::{Definition, Grader, Id, KeywordGrader};
+use awaken_ext_goal::outcome::{Definition, Id};
 use awaken_ext_goal::state::Binding;
 
 use crate::host::{
@@ -40,15 +40,10 @@ impl SharedHost {
                 )
             }),
         };
-        let host_grader = self.judge_snapshot.as_ref().map(|_| HostAgentGrader {
+        let host_grader = HostAgentGrader {
             host: self,
-            snapshot: &binding.grader,
             worker_cancel: ctx.cancel.clone(),
-        });
-        let keyword_grader = KeywordGrader;
-        let grader: &dyn Grader = host_grader
-            .as_ref()
-            .map_or(&keyword_grader as &dyn Grader, |grader| grader);
+        };
         let executor = BoundRunExecutor::new(self, ctx.clone());
         let controller = Controller::new(
             &ctx.thread_id,
@@ -56,7 +51,7 @@ impl SharedHost {
             ctx.commit.as_ref(),
             &executor,
             awaken_runtime_contract::RuntimeRunContext::new(),
-            grader,
+            &host_grader,
         );
         let report = controller
             .define_or_resume(
@@ -142,7 +137,10 @@ mod tests {
 
     #[tokio::test]
     async fn satisfied_outcome_runs_one_zero_based_evaluation() {
-        let model = Arc::new(SequenceModel::new(&["contains FINAL"]));
+        let model = Arc::new(SequenceModel::new(&[
+            "contains FINAL",
+            r#"{"result":"satisfied","explanation":"rubric met"}"#,
+        ]));
         let host = SharedHost::new(model.clone(), "stub");
         let report = host
             .define_outcome("satisfied", "finish", "FINAL", 3)
@@ -151,12 +149,17 @@ mod tests {
         assert_eq!(report.iterations.len(), 1);
         assert_eq!(report.iterations[0].iteration, 0);
         assert_eq!(report.iterations[0].result, "satisfied");
-        assert_eq!(model.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(model.calls.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
     async fn revision_feedback_drives_a_second_graded_worker_run() {
-        let model = Arc::new(SequenceModel::new(&["draft", "now FINAL"]));
+        let model = Arc::new(SequenceModel::new(&[
+            "draft",
+            r#"{"result":"needs_revision","explanation":"add FINAL"}"#,
+            "now FINAL",
+            r#"{"result":"satisfied","explanation":"rubric met"}"#,
+        ]));
         let host = SharedHost::new(model.clone(), "stub");
         let report = host
             .define_outcome("revision", "finish", "FINAL", 3)
@@ -170,12 +173,16 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![(0, "needs_revision"), (1, "satisfied")]
         );
-        assert_eq!(model.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(model.calls.load(Ordering::SeqCst), 4);
     }
 
     #[tokio::test]
     async fn exhausted_budget_runs_one_ungraded_acknowledgment() {
-        let model = Arc::new(SequenceModel::new(&["draft", "acknowledged"]));
+        let model = Arc::new(SequenceModel::new(&[
+            "draft",
+            r#"{"result":"needs_revision","explanation":"add FINAL"}"#,
+            "acknowledged",
+        ]));
         let host = SharedHost::new(model.clone(), "stub");
         let report = host
             .define_outcome("max", "finish", "FINAL", 1)
@@ -190,6 +197,6 @@ mod tests {
                 .iter()
                 .any(|message| message.text_content() == "acknowledged")
         );
-        assert_eq!(model.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(model.calls.load(Ordering::SeqCst), 3);
     }
 }
