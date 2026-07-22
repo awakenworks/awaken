@@ -123,6 +123,38 @@ async function judgeDecisionAndSchemaPaths(port) {
   }
 }
 
+async function executionFailurePath(port, failedKind) {
+  const upstream = await startUpstream('revise', {
+    failArrivalKind: failedKind,
+    faultStatus: 400,
+  });
+  const spawned = spawnServer('outcome-matrix', port, {
+    ...realServerEnv('revise', upstream, { mode: 'outcome-matrix' }),
+    AWAKEN_OUTCOME_JUDGE_RUNTIME: 'native',
+  });
+  try {
+    await waitForPort(port);
+    const client = clientFor(spawned.baseUrl);
+    const session = await createSession(client);
+    await assert.rejects(
+      defineOutcome(client, session.id, 'FINAL'),
+      (error) => typeof error?.status === 'number' && error.status >= 500,
+      `${failedKind} provider failure must surface as infrastructure failure`,
+    );
+    assert.ok(upstream.arrivals.includes(failedKind), `${failedKind} was not exercised`);
+    const ends = (await listEvents(client, session.id))
+      .filter((event) => event.type === 'span.outcome_evaluation_end');
+    assert.ok(
+      ends.every((event) => event.result !== 'failed'),
+      `${failedKind} infrastructure failure must not become a rubric decision`,
+    );
+    pass(`${failedKind} provider failure remains an infrastructure failure`);
+  } finally {
+    await stopServer(spawned.server).catch(() => {});
+    upstream.close();
+  }
+}
+
 async function recoverAfterJudgeCrash(port) {
   const storage = mkdtempSync(path.join(tmpdir(), 'awaken-outcome-recovery-'));
   const upstream = await startUpstream('revise', { delayMs: 700 });
@@ -187,6 +219,8 @@ async function main() {
   await interruptAt(39542, 2, 'FINAL', 3, 'Judge');
   await interruptAt(39543, 3, 'NEVER_PRESENT_TOKEN', 1, 'acknowledgment');
   await judgeDecisionAndSchemaPaths(39544);
+  await executionFailurePath(39546, 'outcome-initial');
+  await executionFailurePath(39547, 'outcome-judge');
   await recoverAfterJudgeCrash(39545);
   console.log('E2E PASS: Managed Outcome interruption, Judge failures, and crash recovery.');
 }

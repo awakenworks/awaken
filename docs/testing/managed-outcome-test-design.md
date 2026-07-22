@@ -24,6 +24,7 @@ the oracle; model intent is not inferred from conversational prose.
 | concurrency/stale write | stale aggregate version on Worker Thread state | transition rejected; evaluation not duplicated | Outcome extension state-codec version-guard tests |
 | interruption phase | Worker / Judge / final acknowledgment in flight | terminal `interrupted`; no later Grade | `managed_outcome_recovery_e2e.ts` |
 | Judge decision/schema | terminal `failed` / malformed JSON | failed evaluation / fail-closed stable error | `managed_outcome_recovery_e2e.ts` |
+| fault partition | Worker provider failure / Grader provider failure | infrastructure 5xx; never rubric `failed` | `managed_outcome_recovery_e2e.ts` |
 | crash boundary | SIGKILL after Worker commit, during Judge inference | recover Judge; never repeat committed Worker | `managed_outcome_recovery_e2e.ts` |
 | command transition | interrupt in live phase and repeat after terminal | first wins, terminal state is idempotent | Outcome domain and adapter interrupt tests |
 
