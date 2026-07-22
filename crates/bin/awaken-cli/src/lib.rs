@@ -1044,7 +1044,8 @@ async fn management_router_over(
         awaken_resource_reclaimer::ResourceReclaimer::new(
             format!("awaken-resource-reclaimer:{}", std::process::id()),
             30_000,
-            host.resource_lifecycle(),
+            host.resource_lifecycle()
+                .expect("resource-plane composition installs lifecycle repository"),
             resource_reclamation.clone(),
         )
         .expect("construct resource reclaimer")

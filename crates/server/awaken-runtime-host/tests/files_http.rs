@@ -4,9 +4,16 @@
 //! id. Covers upload / get-metadata / download / delete, the idempotency contract,
 //! and the fail-closed arms (no `file` part, unknown id, empty scope).
 
-use std::sync::Arc;
+use std::collections::BTreeSet;
+use std::sync::{Arc, Mutex};
 
 use awaken_managed_routers::files_router;
+use awaken_protocol_managed::resource_plane::{
+    AcquireResourceReclamationOutcome, PutResourcePurgeOutcome, ResourceKind,
+    ResourceLifecycleRepository, ResourcePurgeError, ResourcePurgeIntent, ResourcePurgeRepository,
+    ResourceReclamationFence, ResourceReference, ResourceReferenceIndex, ResourceReferenceKind,
+    ResourceReferenceRecord, ResourceTarget,
+};
 use awaken_runtime_contract::llm::{ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult};
 use awaken_runtime_host::SharedHost;
 use awaken_tenancy::WorkspaceScope;
@@ -24,9 +31,133 @@ impl LlmExecutor for NoLlm {
     }
 }
 
+#[derive(Default)]
+struct TestResourceLifecycle {
+    references: Mutex<BTreeSet<ResourceReferenceRecord>>,
+}
+
+#[async_trait::async_trait]
+impl ResourcePurgeRepository for TestResourceLifecycle {
+    async fn put(
+        &self,
+        _intent: ResourcePurgeIntent,
+    ) -> Result<PutResourcePurgeOutcome, ResourcePurgeError> {
+        Ok(PutResourcePurgeOutcome::Inserted)
+    }
+
+    async fn get(
+        &self,
+        _intent_id: &str,
+    ) -> Result<Option<ResourcePurgeIntent>, ResourcePurgeError> {
+        Ok(None)
+    }
+
+    async fn recoverable(
+        &self,
+        _now_unix_ms: u64,
+        _limit: usize,
+    ) -> Result<Vec<ResourcePurgeIntent>, ResourcePurgeError> {
+        Ok(Vec::new())
+    }
+
+    async fn save(
+        &self,
+        _expected_revision: u64,
+        _intent: ResourcePurgeIntent,
+    ) -> Result<(), ResourcePurgeError> {
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl ResourceReferenceIndex for TestResourceLifecycle {
+    async fn add_reference(
+        &self,
+        record: ResourceReferenceRecord,
+    ) -> Result<bool, ResourcePurgeError> {
+        Ok(self.references.lock().unwrap().insert(record))
+    }
+
+    async fn remove_reference(
+        &self,
+        record: &ResourceReferenceRecord,
+    ) -> Result<bool, ResourcePurgeError> {
+        Ok(self.references.lock().unwrap().remove(record))
+    }
+
+    async fn replace_references(
+        &self,
+        kind: ResourceReferenceKind,
+        reference_id: &str,
+        records: Vec<ResourceReferenceRecord>,
+    ) -> Result<(), ResourcePurgeError> {
+        let mut references = self.references.lock().unwrap();
+        references.retain(|record| {
+            record.reference.kind != kind || record.reference.reference_id != reference_id
+        });
+        references.extend(records);
+        Ok(())
+    }
+
+    async fn references(
+        &self,
+        target: &ResourceTarget,
+    ) -> Result<Vec<ResourceReference>, ResourcePurgeError> {
+        Ok(self
+            .references
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|record| &record.target == target)
+            .map(|record| record.reference.clone())
+            .collect())
+    }
+
+    async fn references_for_resource(
+        &self,
+        kind: ResourceKind,
+        resource_id: &str,
+    ) -> Result<Vec<ResourceReferenceRecord>, ResourcePurgeError> {
+        Ok(self
+            .references
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|record| record.target.kind == kind && record.target.resource_id == resource_id)
+            .cloned()
+            .collect())
+    }
+}
+
+#[async_trait::async_trait]
+impl ResourceReclamationFence for TestResourceLifecycle {
+    async fn acquire_reclamation(
+        &self,
+        _intent_id: &str,
+        _target: &ResourceTarget,
+    ) -> Result<AcquireResourceReclamationOutcome, ResourcePurgeError> {
+        Ok(AcquireResourceReclamationOutcome::Acquired)
+    }
+
+    async fn release_reclamation(
+        &self,
+        _intent_id: &str,
+        _target: &ResourceTarget,
+    ) -> Result<bool, ResourcePurgeError> {
+        Ok(true)
+    }
+}
+
 fn router() -> Router {
-    let host = Arc::new(SharedHost::new(Arc::new(NoLlm), "test"));
+    let lifecycle: Arc<dyn ResourceLifecycleRepository> =
+        Arc::new(TestResourceLifecycle::default());
+    let host =
+        Arc::new(SharedHost::new(Arc::new(NoLlm), "test").with_resource_lifecycle(lifecycle));
     files_router(host)
+}
+
+fn router_without_lifecycle() -> Router {
+    files_router(Arc::new(SharedHost::new(Arc::new(NoLlm), "test")))
 }
 
 const BOUNDARY: &str = "X-AWAKEN-BOUNDARY";
@@ -141,6 +272,18 @@ async fn upload_download_metadata_and_delete_roundtrip() {
     assert_eq!(receipt["type"], "file_deleted");
     let (status, _) = delete(&router, &format!("/v1/files/{id}")).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn upload_fails_closed_without_a_composition_root_lifecycle_port() {
+    let (status, body) = upload(&router_without_lifecycle(), "orphan.txt", b"orphan").await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("not configured by the composition root")),
+        "{body}"
+    );
 }
 
 #[tokio::test]

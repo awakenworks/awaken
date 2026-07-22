@@ -20,6 +20,8 @@ use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
+mod support;
+
 struct NoLlm;
 #[async_trait::async_trait]
 impl LlmExecutor for NoLlm {
@@ -36,8 +38,11 @@ fn router_with_store() -> (Router, std::path::PathBuf) {
         std::process::id(),
         SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
-    let host =
-        Arc::new(SharedHost::new(Arc::new(NoLlm), "test").with_skill_store(dir.join("store")));
+    let host = Arc::new(
+        SharedHost::new(Arc::new(NoLlm), "test")
+            .with_resource_lifecycle(support::resource_lifecycle())
+            .with_skill_store(dir.join("store")),
+    );
     (skills_router(host), dir)
 }
 static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);

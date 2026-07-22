@@ -72,12 +72,12 @@ impl ResourcePurgeGuard for HostResourceReclamation {
         };
         let records = if target.kind == ResourceKind::File {
             self.host
-                .resource_lifecycle
+                .required_resource_lifecycle()?
                 .references_for_resource(target.kind, &target.resource_id)
                 .await?
         } else {
             self.host
-                .resource_lifecycle
+                .required_resource_lifecycle()?
                 .references(target)
                 .await?
                 .into_iter()

@@ -35,7 +35,6 @@ RESOURCE_APPLICATION_SOURCES = (
     "crates/server/awaken-runtime-host/src/memory_store_api.rs",
     "crates/server/awaken-runtime-host/src/memory_stores.rs",
     "crates/server/awaken-runtime-host/src/provisioning.rs",
-    "crates/server/awaken-runtime-host/src/resource_lifecycle.rs",
     "crates/server/awaken-runtime-host/src/resource_reclamation.rs",
     "crates/server/awaken-runtime-host/src/resource_scope.rs",
     "crates/server/awaken-runtime-host/src/skill_catalog.rs",
