@@ -20,9 +20,10 @@ use awaken_ext_memory::{
     DEFAULT_SELECTOR_INSTRUCTIONS, EXTRACT_PROMPT, MEMORY_AGENT_ID, MemoryExtractionController,
     MemoryExtractionDriver, MemoryExtractionError, MemoryExtractionIntent,
     MemoryExtractionMutation, MemoryExtractionRepository, MemoryExtractorSnapshot,
-    MemoryMutationReceipt, MemoryStoreHandle, MemoryTerminalExtraction, MemoryTerminalObserver,
-    RecallBounds, RecallSelector, SELECTOR_AGENT_ID, WriteMemoryTool, default_selector_agent,
-    parse_indices, sanitize_stem, select_input,
+    MemoryMutationReceipt, MemoryStoreHandle, MemoryTerminalExtraction,
+    MemoryTerminalExtractionRequest, MemoryTerminalObserver, RecallBounds, RecallSelector,
+    SELECTOR_AGENT_ID, WriteMemoryTool, default_selector_agent, parse_indices, sanitize_stem,
+    select_input,
 };
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::tool::RawTool;
@@ -495,31 +496,18 @@ impl BoundMemory {
         if self.runtime.catalog.resolve(MEMORY_AGENT_ID).is_none() {
             return Ok(());
         }
-        // Drop recalled-memory messages from the seed: they are injected context,
-        // not new conversation facts. Without this the extractor re-saves what it
-        // just recalled (a cross-thread self-copy loop).
-        let seed: Vec<Message> = committed
-            .into_iter()
-            .filter(|m| {
-                !m.id
-                    .0
-                    .starts_with(awaken_ext_memory::RECALL_MESSAGE_ID_PREFIX)
+        self.runtime
+            .extraction_controller()
+            .enqueue_terminal(MemoryTerminalExtractionRequest {
+                workspace_id: self.workspace_id.clone(),
+                session_id: thread.to_string(),
+                terminal_run_id: terminal_commit_id.to_string(),
+                memory_store_id: self.memory_store_id.clone(),
+                memory_config_version: self.memory_config_version,
+                committed_transcript: committed,
+                extractor,
             })
-            .collect();
-        let idempotency_key = format!("{thread}:{terminal_commit_id}");
-        let intent_id = format!("memory-extraction:{idempotency_key}");
-        let intent = MemoryExtractionIntent::new(
-            intent_id,
-            idempotency_key,
-            self.workspace_id.clone(),
-            thread,
-            terminal_commit_id,
-            self.memory_store_id.clone(),
-            self.memory_config_version,
-            seed,
-            extractor,
-        )?;
-        self.runtime.extraction_controller().enqueue(intent).await?;
+            .await?;
         self.reconcile(thread).await;
         Ok(())
     }

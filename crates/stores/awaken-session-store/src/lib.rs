@@ -867,13 +867,15 @@ mod tests {
     }
 
     fn extraction(id: &str, key: &str) -> awaken_ext_memory::MemoryExtractionIntent {
-        awaken_ext_memory::MemoryExtractionIntent::new(
+        awaken_ext_memory::MemoryExtractionIntent::new_range(
             id,
             key,
             "ws-a",
             "sesn-1",
             "terminal-1",
             "memory-1",
+            1,
+            1,
             1,
             Vec::new(),
             awaken_ext_memory::MemoryExtractorSnapshot {
@@ -924,6 +926,7 @@ mod tests {
 
         let reopened = SqliteManagedSessionRepository::open(&path).unwrap();
         let recovered = reopened.recoverable_extractions(10).await.unwrap();
+        assert_eq!(reopened.extraction_cursor("sesn-1").await.unwrap(), 1);
         assert_eq!(recovered, vec![claimed]);
         assert_eq!(recovered[0].status, MemoryExtractionStatus::Claimed);
         assert!(matches!(
@@ -1227,6 +1230,7 @@ mod tests {
             repo.recoverable_extractions(10).await.unwrap(),
             vec![claimed]
         );
+        assert_eq!(repo.extraction_cursor("sesn-1").await.unwrap(), 1);
     }
 
     /// Postgres parity for the ADR-0051 owner `scope_id` — the same atomic

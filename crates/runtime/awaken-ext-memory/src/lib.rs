@@ -37,7 +37,7 @@ pub use extraction::{
     MemoryExtractionIntent, MemoryExtractionMutation, MemoryExtractionPolicy,
     MemoryExtractionReceipt, MemoryExtractionRepository, MemoryExtractionStatus,
     MemoryExtractorSnapshot, MemoryMutationReceipt, MemoryTerminalExtraction,
-    MemoryTerminalObserver, PutMemoryExtractionOutcome,
+    MemoryTerminalExtractionRequest, MemoryTerminalObserver, PutMemoryExtractionOutcome,
 };
 pub use localfs::{Entry, MemoryDir, MemoryStoreHandle, sanitize_stem};
 pub use recall::{RecallBounds, recall_block, recall_relevant};

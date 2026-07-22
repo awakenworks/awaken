@@ -111,6 +111,27 @@ impl MemoryExtractionRepository for SqliteManagedSessionRepository {
         .transpose()
     }
 
+    async fn extraction_cursor(&self, session_id: &str) -> Result<usize, MemoryExtractionError> {
+        let conn = self.conn.lock().map_err(|error| {
+            MemoryExtractionError::Storage(format!("session repository lock: {error}"))
+        })?;
+        let mut statement = conn
+            .prepare("SELECT data FROM managed_memory_extraction")
+            .map_err(|error| MemoryExtractionError::Storage(error.to_string()))?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|error| MemoryExtractionError::Storage(error.to_string()))?;
+        let mut cursor = 0;
+        for row in rows {
+            let data = row.map_err(|error| MemoryExtractionError::Storage(error.to_string()))?;
+            let intent = decode(&data)?;
+            if intent.session_id == session_id {
+                cursor = cursor.max(intent.transcript_cursor());
+            }
+        }
+        Ok(cursor)
+    }
+
     async fn recoverable_extractions(
         &self,
         limit: usize,
@@ -238,6 +259,21 @@ impl MemoryExtractionRepository for PostgresManagedSessionRepository {
             .map_err(|error| MemoryExtractionError::Storage(error.to_string()))?
             .map(|row| decode(row.get("data")))
             .transpose()
+    }
+
+    async fn extraction_cursor(&self, session_id: &str) -> Result<usize, MemoryExtractionError> {
+        let rows = sqlx::query("SELECT data FROM managed_memory_extraction")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|error| MemoryExtractionError::Storage(error.to_string()))?;
+        let mut cursor = 0;
+        for row in rows {
+            let intent = decode(row.get("data"))?;
+            if intent.session_id == session_id {
+                cursor = cursor.max(intent.transcript_cursor());
+            }
+        }
+        Ok(cursor)
     }
 
     async fn recoverable_extractions(

@@ -83,6 +83,11 @@ pub struct MemoryExtractionIntent {
     pub terminal_commit_id: String,
     pub memory_store_id: String,
     pub memory_config_version: u64,
+    /// Half-open committed transcript range owned by this intent.
+    #[serde(default)]
+    pub transcript_start: usize,
+    #[serde(default)]
+    pub transcript_end: usize,
     pub transcript: Vec<Message>,
     pub extractor: MemoryExtractorSnapshot,
     pub status: MemoryExtractionStatus,
@@ -170,6 +175,36 @@ impl MemoryExtractionIntent {
         transcript: Vec<Message>,
         extractor: MemoryExtractorSnapshot,
     ) -> Result<Self, MemoryExtractionError> {
+        let transcript_end = transcript.len();
+        Self::new_range(
+            intent_id,
+            idempotency_key,
+            workspace_id,
+            session_id,
+            terminal_commit_id,
+            memory_store_id,
+            memory_config_version,
+            0,
+            transcript_end,
+            transcript,
+            extractor,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_range(
+        intent_id: impl Into<String>,
+        idempotency_key: impl Into<String>,
+        workspace_id: impl Into<String>,
+        session_id: impl Into<String>,
+        terminal_commit_id: impl Into<String>,
+        memory_store_id: impl Into<String>,
+        memory_config_version: u64,
+        transcript_start: usize,
+        transcript_end: usize,
+        transcript: Vec<Message>,
+        extractor: MemoryExtractorSnapshot,
+    ) -> Result<Self, MemoryExtractionError> {
         let intent = Self {
             intent_id: intent_id.into(),
             idempotency_key: idempotency_key.into(),
@@ -178,6 +213,8 @@ impl MemoryExtractionIntent {
             terminal_commit_id: terminal_commit_id.into(),
             memory_store_id: memory_store_id.into(),
             memory_config_version,
+            transcript_start,
+            transcript_end,
             transcript,
             extractor,
             status: MemoryExtractionStatus::Pending,
@@ -214,6 +251,16 @@ impl MemoryExtractionIntent {
         if self.memory_config_version == 0 {
             return Err(MemoryExtractionError::Invalid(
                 "memory_config_version must be positive".into(),
+            ));
+        }
+        let legacy_range =
+            self.transcript_start == 0 && self.transcript_end == 0 && !self.transcript.is_empty();
+        if !legacy_range
+            && (self.transcript_end < self.transcript_start
+                || self.transcript_end - self.transcript_start != self.transcript.len())
+        {
+            return Err(MemoryExtractionError::Invalid(
+                "transcript range must match the captured messages".into(),
             ));
         }
         if self.mutations.iter().any(|mutation| {
@@ -290,8 +337,21 @@ impl MemoryExtractionIntent {
             && self.terminal_commit_id == other.terminal_commit_id
             && self.memory_store_id == other.memory_store_id
             && self.memory_config_version == other.memory_config_version
+            && self.transcript_start == other.transcript_start
+            && self.transcript_cursor() == other.transcript_cursor()
             && self.transcript == other.transcript
             && self.extractor == other.extractor
+    }
+
+    /// Durable cursor after this intent's captured transcript. Legacy serialized
+    /// intents predate explicit ranges and therefore own their full transcript.
+    #[must_use]
+    pub fn transcript_cursor(&self) -> usize {
+        if self.transcript_end == 0 && !self.transcript.is_empty() {
+            self.transcript.len()
+        } else {
+            self.transcript_end
+        }
     }
 
     /// Acquire or recover the lease for a non-terminal intent.
@@ -512,6 +572,11 @@ pub trait MemoryExtractionRepository: Send + Sync {
         intent_id: &str,
     ) -> Result<Option<MemoryExtractionIntent>, MemoryExtractionError>;
 
+    /// Greatest committed transcript boundary already owned by an intent for the
+    /// Session. Pending work counts: once its intent is durable, later terminal
+    /// Runs must not capture the same messages again.
+    async fn extraction_cursor(&self, session_id: &str) -> Result<usize, MemoryExtractionError>;
+
     async fn recoverable_extractions(
         &self,
         limit: usize,
@@ -549,6 +614,17 @@ pub trait MemoryExtractionDriver: Send + Sync {
         intent: &MemoryExtractionIntent,
         mutation: &MemoryExtractionMutation,
     ) -> Result<MemoryMutationReceipt, String>;
+}
+
+/// Frozen inputs prepared by an embedding adapter for one terminal Run.
+pub struct MemoryTerminalExtractionRequest {
+    pub workspace_id: String,
+    pub session_id: String,
+    pub terminal_run_id: String,
+    pub memory_store_id: String,
+    pub memory_config_version: u64,
+    pub committed_transcript: Vec<Message>,
+    pub extractor: MemoryExtractorSnapshot,
 }
 
 /// Embedding adapter used by the Memory-owned terminal observer after it has read
@@ -663,6 +739,60 @@ impl MemoryExtractionController {
                 ))
             };
         }
+        self.repository.put_extraction_if_absent(intent).await
+    }
+
+    /// Create the stable terminal-Run intent over only the transcript suffix not
+    /// already owned by an earlier durable intent.
+    pub async fn enqueue_terminal(
+        &self,
+        request: MemoryTerminalExtractionRequest,
+    ) -> Result<PutMemoryExtractionOutcome, MemoryExtractionError> {
+        let idempotency_key = format!("{}:{}", request.session_id, request.terminal_run_id);
+        let intent_id = format!("memory-extraction:{idempotency_key}");
+        if let Some(existing) = self.repository.get_extraction(&intent_id).await? {
+            let same_binding = existing.workspace_id == request.workspace_id
+                && existing.session_id == request.session_id
+                && existing.terminal_commit_id == request.terminal_run_id
+                && existing.memory_store_id == request.memory_store_id
+                && existing.memory_config_version == request.memory_config_version
+                && existing.extractor == request.extractor;
+            return if same_binding {
+                Ok(PutMemoryExtractionOutcome::Existing)
+            } else {
+                Err(MemoryExtractionError::IdempotencyConflict(idempotency_key))
+            };
+        }
+        let committed_transcript: Vec<_> = request
+            .committed_transcript
+            .into_iter()
+            .filter(|message| !message.id.0.starts_with(crate::RECALL_MESSAGE_ID_PREFIX))
+            .collect();
+        let start = self
+            .repository
+            .extraction_cursor(&request.session_id)
+            .await?;
+        if start > committed_transcript.len() {
+            return Err(MemoryExtractionError::Invalid(format!(
+                "extraction cursor {start} exceeds committed transcript length {}",
+                committed_transcript.len()
+            )));
+        }
+        let end = committed_transcript.len();
+        let transcript = committed_transcript[start..].to_vec();
+        let intent = MemoryExtractionIntent::new_range(
+            intent_id,
+            idempotency_key,
+            request.workspace_id,
+            request.session_id,
+            request.terminal_run_id,
+            request.memory_store_id,
+            request.memory_config_version,
+            start,
+            end,
+            transcript,
+            request.extractor,
+        )?;
         self.repository.put_extraction_if_absent(intent).await
     }
 
@@ -1014,7 +1144,7 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct TestRepository(Mutex<Option<MemoryExtractionIntent>>);
+    struct TestRepository(Mutex<Vec<MemoryExtractionIntent>>);
 
     #[async_trait]
     impl MemoryExtractionRepository for TestRepository {
@@ -1023,7 +1153,10 @@ mod tests {
             intent: MemoryExtractionIntent,
         ) -> Result<PutMemoryExtractionOutcome, MemoryExtractionError> {
             let mut stored = self.0.lock().unwrap();
-            match stored.as_ref() {
+            match stored.iter().find(|existing| {
+                existing.intent_id == intent.intent_id
+                    || existing.idempotency_key == intent.idempotency_key
+            }) {
                 Some(existing) if existing.same_request(&intent) => {
                     Ok(PutMemoryExtractionOutcome::Existing)
                 }
@@ -1031,7 +1164,7 @@ mod tests {
                     intent.idempotency_key,
                 )),
                 None => {
-                    *stored = Some(intent);
+                    stored.push(intent);
                     Ok(PutMemoryExtractionOutcome::Inserted)
                 }
             }
@@ -1045,9 +1178,24 @@ mod tests {
                 .0
                 .lock()
                 .unwrap()
-                .as_ref()
-                .filter(|intent| intent.intent_id == intent_id)
+                .iter()
+                .find(|intent| intent.intent_id == intent_id)
                 .cloned())
+        }
+
+        async fn extraction_cursor(
+            &self,
+            session_id: &str,
+        ) -> Result<usize, MemoryExtractionError> {
+            Ok(self
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|intent| intent.session_id == session_id)
+                .map(MemoryExtractionIntent::transcript_cursor)
+                .max()
+                .unwrap_or(0))
         }
 
         async fn recoverable_extractions(
@@ -1058,10 +1206,10 @@ mod tests {
                 .0
                 .lock()
                 .unwrap()
-                .as_ref()
-                .filter(|intent| !intent.status.is_terminal() && limit > 0)
+                .iter()
+                .filter(|intent| !intent.status.is_terminal())
+                .take(limit)
                 .cloned()
-                .into_iter()
                 .collect())
         }
 
@@ -1071,13 +1219,16 @@ mod tests {
             intent: MemoryExtractionIntent,
         ) -> Result<(), MemoryExtractionError> {
             let mut stored = self.0.lock().unwrap();
-            let Some(current) = stored.as_ref() else {
+            let Some(position) = stored
+                .iter()
+                .position(|current| current.intent_id == intent.intent_id)
+            else {
                 return Err(MemoryExtractionError::NotFound(intent.intent_id));
             };
-            if current.revision != expected_revision {
+            if stored[position].revision != expected_revision {
                 return Err(MemoryExtractionError::RevisionConflict(intent.intent_id));
             }
-            *stored = Some(intent);
+            stored[position] = intent;
             Ok(())
         }
     }
@@ -1187,6 +1338,72 @@ mod tests {
         assert_eq!(failed.status, MemoryExtractionStatus::TerminalFailed);
         assert_eq!(failed.last_error.as_deref(), Some("binding revoked"));
         assert_eq!(driver.extraction_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn terminal_enqueue_uses_a_durable_filtered_transcript_cursor() {
+        let repository = Arc::new(TestRepository::default());
+        let controller = MemoryExtractionController::new(repository.clone(), "worker-a");
+        let recall = Message::text(
+            Id(format!("{}-1", crate::RECALL_MESSAGE_ID_PREFIX)),
+            Role::System,
+            "old recalled context",
+        );
+        let first = Message::text(Id("m1".into()), Role::User, "first new fact");
+        let second = Message::text(Id("m2".into()), Role::User, "second new fact");
+        let request = |run: &str, transcript: Vec<Message>| MemoryTerminalExtractionRequest {
+            workspace_id: "ws-a".into(),
+            session_id: "session-1".into(),
+            terminal_run_id: run.into(),
+            memory_store_id: "memory-1".into(),
+            memory_config_version: 2,
+            committed_transcript: transcript,
+            extractor: intent().extractor,
+        };
+
+        controller
+            .enqueue_terminal(request("run-1", vec![recall.clone(), first.clone()]))
+            .await
+            .unwrap();
+        controller
+            .enqueue_terminal(request(
+                "run-2",
+                vec![recall.clone(), first.clone(), second.clone()],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            controller
+                .enqueue_terminal(request("run-2", vec![recall, first, second.clone()]))
+                .await
+                .unwrap(),
+            PutMemoryExtractionOutcome::Existing
+        );
+
+        let first_intent = repository
+            .get_extraction("memory-extraction:session-1:run-1")
+            .await
+            .unwrap()
+            .unwrap();
+        let second_intent = repository
+            .get_extraction("memory-extraction:session-1:run-2")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (first_intent.transcript_start, first_intent.transcript_end),
+            (0, 1)
+        );
+        assert_eq!(
+            first_intent.transcript,
+            vec![Message::text(Id("m1".into()), Role::User, "first new fact")]
+        );
+        assert_eq!(
+            (second_intent.transcript_start, second_intent.transcript_end),
+            (1, 2)
+        );
+        assert_eq!(second_intent.transcript, vec![second]);
+        assert_eq!(repository.extraction_cursor("session-1").await.unwrap(), 2);
     }
 
     struct TerminalReader(Vec<Message>);
