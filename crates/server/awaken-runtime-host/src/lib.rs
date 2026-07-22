@@ -1010,7 +1010,11 @@ impl SessionRuntime for ManagedHost {
     ) -> Result<(), RunError> {
         self.host
             .register_thread_workspace(thread, &init.workspace_id);
-        self.host.skills.reload_cache_in(&init.workspace_id).await;
+        self.host
+            .skills
+            .reload_cache_in(&init.workspace_id)
+            .await
+            .map_err(|error| RunError::bad_request(error.to_string()))?;
         match &init.resources.skills {
             Some(bindings) => {
                 let versions = self

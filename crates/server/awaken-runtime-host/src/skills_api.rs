@@ -460,13 +460,13 @@ async fn create_skill(
 async fn list_skills(
     State(state): State<Arc<SkillsApi>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
-) -> impl IntoResponse {
+) -> axum::response::Response {
     import_legacy_registry(&state, &workspace).await;
-    let data = state
-        .host
-        .skills
-        .definitions(&workspace)
-        .await
+    let definitions = match state.host.skills.definitions(&workspace).await {
+        Ok(definitions) => definitions,
+        Err(error) => return store_error(error),
+    };
+    let data = definitions
         .iter()
         .map(project_definition)
         .collect::<Vec<_>>();
@@ -474,6 +474,7 @@ async fn list_skills(
         StatusCode::OK,
         Json(json!({ "data": data, "has_more": false, "next_page": null })),
     )
+        .into_response()
 }
 
 async fn retrieve_skill(

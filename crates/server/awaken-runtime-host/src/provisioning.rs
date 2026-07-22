@@ -724,6 +724,7 @@ mod provisioning_registry_tests {
             host.skills
                 .definitions(host.local_workspace())
                 .await
+                .unwrap()
                 .is_empty()
         );
         host.persist_authored_skills(host.local_workspace(), &env)
@@ -732,6 +733,7 @@ mod provisioning_registry_tests {
             .skills
             .definitions(host.local_workspace())
             .await
+            .unwrap()
             .into_iter()
             .map(|definition| definition.id)
             .collect::<Vec<_>>();

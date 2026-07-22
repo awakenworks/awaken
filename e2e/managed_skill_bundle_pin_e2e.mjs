@@ -89,6 +89,34 @@ async function runAndReadLastReply(client, sessionId, text) {
   return JSON.stringify(replies.at(-1).content);
 }
 
+function onlySkillAggregate(storageDir) {
+  const root = path.join(storageDir, 'skills');
+  const files = fs.readdirSync(root, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .flatMap((workspace) => fs.readdirSync(path.join(root, workspace.name), { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+      .map((entry) => path.join(root, workspace.name, entry.name)));
+  assert.equal(files.length, 1, `one durable Skill aggregate exists: ${JSON.stringify(files)}`);
+  return files[0];
+}
+
+async function assertCorruptAggregateRejected(baseUrl, aggregatePath, clean, label, mutate) {
+  const damaged = structuredClone(clean);
+  mutate(damaged);
+  fs.writeFileSync(aggregatePath, JSON.stringify(damaged));
+  try {
+    const response = await request(baseUrl, 'GET', `/v1/skills/${clean.definition.id}/versions/2`);
+    assert.equal(response.status, 500, `${label} fails closed: ${JSON.stringify(response.body)}`);
+    assert.match(
+      JSON.stringify(response.body),
+      /invalid persisted Skill aggregate/u,
+      `${label} reports repository corruption`,
+    );
+  } finally {
+    fs.writeFileSync(aggregatePath, JSON.stringify(clean));
+  }
+}
+
 async function main() {
   const managementDir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-skill-pin-mgmt-'));
   const storageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-skill-pin-store-'));
@@ -158,7 +186,93 @@ async function main() {
     assert.ok(!currentReply.includes(V1), 'new Session does not select retired v1');
     pass('restart preserves old Session pin while a new Session selects v2');
 
-    console.log('E2E PASS: binary Skill bundle + exact Session version pin + retirement/restart.');
+    // The repository must reject damaged durable state before either its API or
+    // runtime can project it. Exercise every persisted aggregate invariant through
+    // the real HTTP composition, restoring the valid bytes between faults.
+    const aggregatePath = onlySkillAggregate(managementDir);
+    const cleanAggregate = JSON.parse(fs.readFileSync(aggregatePath, 'utf8'));
+    const corruptions = [
+      ['Workspace identity mismatch', (value) => { value.definition.workspace_id = 'forged'; }],
+      ['Skill identity mismatch', (value) => { value.definition.id = 'forged'; }],
+      ['empty version history', (value) => { value.versions = {}; }],
+      ['last version drift', (value) => { value.definition.last_version = 99; }],
+      ['unknown retired version', (value) => { value.retired_versions.push(99); }],
+      ['no visible version', (value) => { value.retired_versions = [1, 2]; }],
+      ['latest version drift', (value) => { value.definition.latest_version = 1; }],
+      ['zero version', (value) => {
+        value.versions = { 0: { ...value.versions['2'], version: 0 }, 1: value.versions['1'] };
+        value.definition.last_version = 1;
+        value.definition.latest_version = 0;
+      }],
+      ['version key drift', (value) => { value.versions['2'].version = 1; }],
+      ['version owner drift', (value) => { value.versions['2'].skill_id = 'forged'; }],
+      ['empty bundle', (value) => { value.versions['2'].files = []; }],
+      ['missing SKILL.md', (value) => { value.versions['2'].files[0].path = 'README.md'; }],
+      ['bundle content changed', (value) => {
+        const content = value.versions['2'].files[0].content;
+        content[content.length - 1] ^= 1;
+      }],
+    ];
+    for (const [label, mutate] of corruptions) {
+      await assertCorruptAggregateRejected(
+        second.baseUrl,
+        aggregatePath,
+        cleanAggregate,
+        label,
+        mutate,
+      );
+    }
+    fs.writeFileSync(aggregatePath, '{');
+    try {
+      const malformed = await request(second.baseUrl, 'GET', `/v1/skills/${skillId}/versions/2`);
+      assert.equal(malformed.status, 500, 'malformed aggregate JSON fails closed');
+      assert.match(JSON.stringify(malformed.body), /malformed JSON/u);
+    } finally {
+      fs.writeFileSync(aggregatePath, JSON.stringify(cleanAggregate));
+    }
+    const forgedPath = path.join(path.dirname(aggregatePath), '00.json');
+    fs.writeFileSync(forgedPath, JSON.stringify(cleanAggregate));
+    try {
+      const poisonedList = await request(second.baseUrl, 'GET', '/v1/skills');
+      assert.equal(poisonedList.status, 500, 'aggregate under a forged filesystem key fails closed');
+      assert.match(JSON.stringify(poisonedList.body), /filesystem key/u);
+    } finally {
+      fs.rmSync(forgedPath, { force: true });
+    }
+    pass('all durable Skill aggregate corruption is rejected at the repository boundary');
+
+    // A cold process must not trust a stale in-memory catalog. Damage the immutable
+    // bytes, restart, and prove both a retained Session pin and a fresh resolution
+    // fail before model execution instead of drifting to another version.
+    await stopServer(second.server);
+    server = null;
+    const damaged = structuredClone(cleanAggregate);
+    const retainedContent = damaged.versions['1'].files[0].content;
+    retainedContent[retainedContent.length - 1] ^= 1;
+    fs.writeFileSync(aggregatePath, JSON.stringify(damaged));
+    const third = spawnServer('management-skills', PORT, env);
+    server = third.server;
+    await waitForPort(PORT);
+    client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: third.baseUrl });
+    await assert.rejects(
+      runAndReadLastReply(client, pinned.id, 'do not run a corrupted retained Skill'),
+      (error) => {
+        assert.equal(error.status, 400, `retained Session corruption is a client-visible rejection: ${error}`);
+        assert.match(error.message, /invalid persisted Skill aggregate/u);
+        return true;
+      },
+    );
+    await assert.rejects(
+      createSession(client),
+      (error) => {
+        assert.equal(error.status, 400, `fresh resolution corruption is rejected: ${error}`);
+        assert.match(error.message, /invalid persisted Skill aggregate/u);
+        return true;
+      },
+    );
+    pass('restart cannot bypass bundle integrity for retained or newly resolved Sessions');
+
+    console.log('E2E PASS: binary bundle + exact pin + restart and corruption fail-closed.');
   } finally {
     if (server) await stopServer(server);
     fs.rmSync(managementDir, { recursive: true, force: true });

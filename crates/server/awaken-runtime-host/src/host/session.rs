@@ -373,7 +373,10 @@ impl SharedHost {
         let delivered = if frozen.is_some() {
             frozen
         } else {
-            self.skills.reload_cache_in(&workspace).await;
+            self.skills
+                .reload_cache_in(&workspace)
+                .await
+                .map_err(|error| HostError::internal(error.to_string()))?;
             self.skills
                 .has_store()
                 .then(|| self.skills.cache_snapshot_in(&workspace))
