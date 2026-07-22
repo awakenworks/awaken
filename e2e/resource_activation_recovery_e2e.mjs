@@ -215,7 +215,7 @@ function receipts(directory) {
   const output = execFileSync('sqlite3', [
     '-json',
     database,
-    'SELECT data FROM resource_purge_intents',
+    'SELECT data FROM resource_lifecycle_purge_intents',
   ]).toString().trim();
   return output ? JSON.parse(output).map((row) => JSON.parse(row.data)) : [];
 }
@@ -338,7 +338,7 @@ async function main() {
       lifecycleDatabase,
       `
         CREATE TRIGGER reject_repository_purge_schedule
-          BEFORE INSERT ON resource_purge_intents
+          BEFORE INSERT ON resource_lifecycle_purge_intents
           WHEN NEW.data LIKE ${sqlQuote(`%${purgeSchedule.repositoryId}%`)}
         BEGIN
           SELECT RAISE(ABORT, 'injected Repository purge scheduling failure');

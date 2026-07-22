@@ -95,6 +95,7 @@ use crate::provisioning::StagedResources;
 mod build;
 pub use build::ResourcePlanePorts;
 mod completion;
+pub(crate) use completion::remote_worker_placement;
 mod run;
 mod session;
 mod session_ctx;
@@ -218,6 +219,17 @@ pub struct SharedHost {
     /// handle (like [`Self::thread_egress`]) so a sandboxed ACP channel source can carry
     /// the same resource mounts into the bwrap/container sandbox it launches the CLI in.
     pub(crate) thread_resources: std::sync::Arc<std::sync::Mutex<HashMap<String, StagedResources>>>,
+    /// Secret-free, frozen Session resource inputs retained for durable dispatch.
+    /// `StagedResources` is a process-local realization cache (and may contain
+    /// ephemeral credentials); this manifest is the serializable authority a cold
+    /// worker installs before creating the Session environment.
+    pub(crate) thread_resource_manifests:
+        std::sync::Mutex<HashMap<String, awaken_protocol_managed::SessionResourceManifest>>,
+    /// Cold-worker installer for the frozen dispatch manifest. It owns only weak
+    /// host wiring plus resource/credential ports, so installing it cannot create
+    /// an `Arc<SharedHost>` cycle.
+    pub(crate) dispatch_resource_preparer:
+        std::sync::RwLock<Option<crate::DispatchResourcePreparer>>,
     /// Per-thread network-egress denial, set by a session's `prepare_session` from its
     /// environment's networking policy. A thread with no entry (or `false`) shares the
     /// host network; `true` runs its `bash` under a `bwrap --unshare-net` namespace

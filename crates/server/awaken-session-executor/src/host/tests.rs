@@ -2270,6 +2270,98 @@ async fn activation_validates_the_frozen_config_without_selecting_current_again(
     assert!(error.message.contains("not active"));
 }
 
+#[tokio::test]
+async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately() {
+    use awaken_protocol_managed::SessionRuntime;
+    use awaken_skill_store::{SkillBundleFile, SkillDefinition, SkillVersion, bundle_sha256};
+
+    let storage = tempfile::tempdir().expect("storage");
+    let host = Arc::new(
+        SharedHost::new(Arc::new(OkModel), "stub")
+            .with_skill_store(storage.path().join("skills"))
+            .with_store_dir(storage.path()),
+    );
+    let workspace = host.local_workspace().to_string();
+    let files = vec![
+        SkillBundleFile {
+            path: "SKILL.md".into(),
+            content: b"---\nname: governed\ndescription: governed\n---\nuse it".to_vec(),
+        },
+        SkillBundleFile {
+            path: "scripts/old.sh".into(),
+            content: b"exit 0".to_vec(),
+        },
+    ];
+    let hash = bundle_sha256(&files);
+    host.skills
+        .create(
+            SkillDefinition {
+                id: "governed".into(),
+                workspace_id: workspace.clone(),
+                display_title: None,
+                latest_version: 1,
+                last_version: 1,
+            },
+            SkillVersion {
+                id: "skver_governed_1".into(),
+                skill_id: "governed".into(),
+                version: 1,
+                name: "governed".into(),
+                description: "governed".into(),
+                directory: "/skills/governed".into(),
+                bundle_sha256: hash.clone(),
+                files,
+            },
+        )
+        .await
+        .expect("durable SkillStore")
+        .expect("create Skill");
+    let managed = managed_with_resource_source(host.clone());
+    let mut init = bare_session("a", &workspace);
+    init.resources.skills = Some(vec![awaken_protocol_managed::ResolvedSkillBinding {
+        skill_id: "governed".into(),
+        version: 1,
+        bundle_sha256: hash,
+    }]);
+    managed
+        .prepare_session("skill-revoke", init)
+        .await
+        .expect("prepare pinned Skill");
+    managed
+        .run(
+            "a",
+            "skill-revoke",
+            vec![ContentBlock::Text {
+                text: "open the environment".into(),
+            }],
+        )
+        .await
+        .expect("materialize Skill");
+    let delivered = storage
+        .path()
+        .join("sandboxes/skill-revoke/.skills/governed/scripts/old.sh");
+    assert!(delivered.is_file(), "pinned Skill support file exists");
+
+    managed
+        .apply_session_inputs(
+            "skill-revoke",
+            &workspace,
+            &awaken_protocol_managed::ResolvedSessionResources {
+                inputs: Vec::new(),
+                skills: Some(Vec::new()),
+            },
+        )
+        .await
+        .expect("replace with explicit empty Skill selection");
+    assert!(
+        !storage
+            .path()
+            .join("sandboxes/skill-revoke/.skills")
+            .exists(),
+        "the old delivered tree is gone before another Run can read it"
+    );
+}
+
 /// G5 — the effective resource reference crosses the node boundary, so a worker needs
 /// access to the resource data plane but not to the Agent authoring repository.
 #[tokio::test]
@@ -2351,6 +2443,54 @@ async fn claimed_snapshot_is_the_worker_session_authority() {
     assert_eq!(
         ctx.config.resolved_spec.catalog_fingerprint.0,
         "sha256:published"
+    );
+}
+
+#[test]
+fn durable_dispatch_carries_the_frozen_session_resource_manifest_and_scope() {
+    let host = SharedHost::new(Arc::new(OkModel), "host-default");
+    let thread = "t-dispatch-resources";
+    let manifest = awaken_protocol_managed::SessionResourceManifest::new(
+        "workspace-a",
+        awaken_protocol_managed::ResolvedSessionResources {
+            inputs: Vec::new(),
+            skills: Some(Vec::new()),
+        },
+    );
+    host.register_thread_resource_manifest(thread, manifest.clone());
+    let snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("agent-a")
+        .fingerprint("sha256:dispatch-resources")
+        .build();
+    let activation = awaken_runtime_contract::RunActivation::new(
+        awaken_agent_contract::agent::run::Id("run-dispatch-resources".into()),
+        awaken_agent_contract::agent::thread::Id(thread.into()),
+        snapshot,
+        Vec::new(),
+    );
+
+    let dispatch = host
+        .resolved_dispatch(activation)
+        .expect("decorate durable dispatch");
+    let carried = crate::provisioning::decode_session_resource_envelope(
+        dispatch
+            .session_resources
+            .as_ref()
+            .expect("resource envelope"),
+    )
+    .expect("decode resource envelope");
+    assert_eq!(carried, manifest);
+    assert_eq!(
+        dispatch.execution_scope,
+        Some(awaken_tenancy::ExecutionScopeRef(
+            awaken_tenancy::ScopeId::from("workspace-a")
+        ))
+    );
+    assert!(
+        dispatch
+            .placement
+            .required_capabilities
+            .contains(awaken_dispatch::SESSION_RESOURCES_CAPABILITY),
+        "mixed local/remote deployments must not expose the manifest to an ineligible worker"
     );
 }
 

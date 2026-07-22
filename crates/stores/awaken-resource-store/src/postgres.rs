@@ -15,13 +15,11 @@ use awaken_resource_contract::{
 use sqlx::postgres::PgPool;
 use sqlx::{Postgres, Row, Transaction};
 
-use crate::schema::resource_lifecycle_bundle;
+use crate::schema::{NS, resource_lifecycle_bundle};
 use crate::{
     decode_intent, encode_intent, kind_name, parse_reference_kind, reference_kind_name,
     status_name, storage, to_i64, validate_fence_request, validate_reference, validate_replacement,
 };
-
-const NS: &str = "resource_lifecycle";
 
 /// Multi-node durable resource lifecycle state.
 pub struct PostgresResourceStore {

@@ -116,7 +116,7 @@ def _without_cfg_test_module(content: str) -> str:
     """Return the production prefix before a conventional trailing test module."""
 
     marker = re.search(
-        r"(?m)^\s*#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*\n\s*mod\s+tests\s*\{",
+        r"(?m)^\s*#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*\n\s*mod\s+[A-Za-z_][A-Za-z0-9_]*\s*\{",
         content,
     )
     return content if marker is None else content[: marker.start()]
@@ -156,6 +156,15 @@ def _rust_violations(content: str) -> list[str]:
     return violations
 
 
+def _has_unversioned_ddl(path: Path, content: str) -> bool:
+    if path.name == "schema.rs":
+        return False
+    production = _without_cfg_test_module(content)
+    uncommented = re.sub(r"/\*.*?\*/", "", production, flags=re.DOTALL)
+    uncommented = re.sub(r"//[^\n]*", "", uncommented)
+    return re.search(r"\bCREATE\s+TABLE\b", uncommented, flags=re.IGNORECASE) is not None
+
+
 def selftest() -> None:
     allowed = "pub struct Config { pub workspace_id: String, pub recall_policy: RecallPolicy }"
     assert not _rust_violations(allowed)
@@ -175,6 +184,14 @@ def selftest() -> None:
     assert any(
         "process environment" in item
         for item in _rust_violations(environment_workspace)
+    )
+    assert _has_unversioned_ddl(Path("sqlite.rs"), 'conn.execute("CREATE TABLE raw (id TEXT)")')
+    assert not _has_unversioned_ddl(
+        Path("sqlite.rs"),
+        '#[cfg(test)]\nmod tests { const LEGACY: &str = "CREATE TABLE old (id TEXT)"; }',
+    )
+    assert not _has_unversioned_ddl(
+        Path("schema.rs"), 'const V1: &str = "CREATE TABLE {prefix}_row (id TEXT)";'
     )
 
 
@@ -202,8 +219,14 @@ def check_all(repo_root: Path, crates: Path) -> list[str]:
                 )
 
         for path in sorted((manifest_path.parent / "src").rglob("*.rs")):
-            for violation in _rust_violations(path.read_text(encoding="utf-8")):
+            content = path.read_text(encoding="utf-8")
+            for violation in _rust_violations(content):
                 errors.append(f"{path.relative_to(repo_root)}: {violation}")
+            if _has_unversioned_ddl(path, content):
+                errors.append(
+                    f"{path.relative_to(repo_root)}: resource adapter embeds unversioned DDL; "
+                    "use its scoped migration bundle"
+                )
 
         for path in sorted(manifest_path.parent.rglob("*.sql")):
             sql = re.sub(r"--[^\n]*", "", path.read_text(encoding="utf-8"))

@@ -18,7 +18,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 #[cfg(feature = "postgres")]
 mod postgres;
-#[cfg(feature = "postgres")]
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 mod schema;
 
 #[cfg(feature = "postgres")]
@@ -43,41 +43,77 @@ impl SqliteResourceStore {
     pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self, ResourcePurgeError> {
         let connection = Connection::open(path).map_err(|error| storage(error.to_string()))?;
         connection
-            .execute_batch(
-                "PRAGMA journal_mode = WAL;
-                 CREATE TABLE IF NOT EXISTS resource_purge_intents (
-                   intent_id TEXT PRIMARY KEY,
-                   idempotency_key TEXT NOT NULL UNIQUE,
-                   revision INTEGER NOT NULL,
-                   status TEXT NOT NULL,
-                   requested_at_unix_ms INTEGER NOT NULL,
-                   not_before_unix_ms INTEGER NOT NULL,
-                   lease_expires_at_unix_ms INTEGER,
-                   data TEXT NOT NULL
-                 );
-                 CREATE INDEX IF NOT EXISTS resource_purge_recoverable
-                   ON resource_purge_intents(status, not_before_unix_ms, lease_expires_at_unix_ms);
-                 CREATE TABLE IF NOT EXISTS resource_references (
-                   workspace_id TEXT NOT NULL,
-                   resource_kind TEXT NOT NULL,
-                   resource_id TEXT NOT NULL,
-                   reference_kind TEXT NOT NULL,
-                   reference_id TEXT NOT NULL,
-                   PRIMARY KEY(workspace_id, resource_kind, resource_id, reference_kind, reference_id)
-                 );
-                 CREATE INDEX IF NOT EXISTS resource_references_reverse
-                   ON resource_references(resource_kind, resource_id);
-                 CREATE TABLE IF NOT EXISTS resource_reclamation_fences (
-                   resource_kind TEXT NOT NULL,
-                   resource_id TEXT NOT NULL,
-                   intent_id TEXT NOT NULL,
-                   PRIMARY KEY(resource_kind, resource_id)
-                 );",
-            )
+            .execute_batch("PRAGMA journal_mode = WAL;")
             .map_err(|error| storage(error.to_string()))?;
-        Ok(Self {
+        let store = Self {
             connection: Mutex::new(connection),
-        })
+        };
+        store.ensure_schema()?;
+        store.import_legacy_unscoped_schema()?;
+        Ok(store)
+    }
+
+    /// Apply the versioned `resource_lifecycle` migration scope idempotently.
+    pub fn ensure_schema(&self) -> Result<(), ResourcePurgeError> {
+        let connection = self.connection();
+        let bundle =
+            schema::resource_lifecycle_bundle().map_err(|error| storage(error.to_string()))?;
+        awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(schema::NS)
+            .map_err(|error| storage(error.to_string()))?
+            .run_bundle(&connection, &bundle)
+            .map_err(|error| storage(error.to_string()))?;
+        Ok(())
+    }
+
+    /// One-time compatibility import from the pre-migration unscoped SQLite
+    /// tables. The canonical scoped rows win on every conflict, so reopening is
+    /// idempotent and stale legacy rows can never overwrite newer state.
+    fn import_legacy_unscoped_schema(&self) -> Result<(), ResourcePurgeError> {
+        let mut connection = self.connection();
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| storage(error.to_string()))?;
+        for (legacy, import_sql) in [
+            (
+                "resource_purge_intents",
+                "INSERT OR IGNORE INTO resource_lifecycle_purge_intents
+                   (intent_id, idempotency_key, revision, status, requested_at_unix_ms,
+                    not_before_unix_ms, lease_expires_at_unix_ms, data)
+                 SELECT intent_id, idempotency_key, revision, status, requested_at_unix_ms,
+                        not_before_unix_ms, lease_expires_at_unix_ms, data
+                 FROM resource_purge_intents",
+            ),
+            (
+                "resource_references",
+                "INSERT OR IGNORE INTO resource_lifecycle_references
+                   (workspace_id, resource_kind, resource_id, reference_kind, reference_id)
+                 SELECT workspace_id, resource_kind, resource_id, reference_kind, reference_id
+                 FROM resource_references",
+            ),
+            (
+                "resource_reclamation_fences",
+                "INSERT OR IGNORE INTO resource_lifecycle_reclamation_fences
+                   (resource_kind, resource_id, intent_id)
+                 SELECT resource_kind, resource_id, intent_id
+                 FROM resource_reclamation_fences",
+            ),
+        ] {
+            let exists = transaction
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+                    [legacy],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(|error| storage(error.to_string()))?;
+            if exists {
+                transaction
+                    .execute(import_sql, [])
+                    .map_err(|error| storage(error.to_string()))?;
+            }
+        }
+        transaction
+            .commit()
+            .map_err(|error| storage(error.to_string()))
     }
 
     fn connection(&self) -> parking_lot::MutexGuard<'_, Connection> {
@@ -100,7 +136,7 @@ impl ResourceReclamationFence for SqliteResourceStore {
             .map_err(|error| storage(error.to_string()))?;
         let existing = transaction
             .query_row(
-                "SELECT intent_id FROM resource_reclamation_fences
+                "SELECT intent_id FROM resource_lifecycle_reclamation_fences
                  WHERE resource_kind = ?1 AND resource_id = ?2",
                 params![kind_name(target.kind), target.resource_id],
                 |row| row.get::<_, String>(0),
@@ -121,7 +157,7 @@ impl ResourceReclamationFence for SqliteResourceStore {
         }
         transaction
             .execute(
-                "INSERT INTO resource_reclamation_fences
+                "INSERT INTO resource_lifecycle_reclamation_fences
                  (resource_kind, resource_id, intent_id) VALUES (?1, ?2, ?3)",
                 params![kind_name(target.kind), target.resource_id, intent_id],
             )
@@ -144,7 +180,7 @@ impl ResourceReclamationFence for SqliteResourceStore {
             .map_err(|error| storage(error.to_string()))?;
         let existing = transaction
             .query_row(
-                "SELECT intent_id FROM resource_reclamation_fences
+                "SELECT intent_id FROM resource_lifecycle_reclamation_fences
                  WHERE resource_kind = ?1 AND resource_id = ?2",
                 params![kind_name(target.kind), target.resource_id],
                 |row| row.get::<_, String>(0),
@@ -155,7 +191,7 @@ impl ResourceReclamationFence for SqliteResourceStore {
             Some(owner) if owner == intent_id => {
                 transaction
                     .execute(
-                        "DELETE FROM resource_reclamation_fences
+                        "DELETE FROM resource_lifecycle_reclamation_fences
                      WHERE resource_kind = ?1 AND resource_id = ?2 AND intent_id = ?3",
                         params![kind_name(target.kind), target.resource_id, intent_id],
                     )
@@ -186,7 +222,7 @@ impl ResourcePurgeRepository for SqliteResourceStore {
             .map_err(|error| storage(error.to_string()))?;
         let existing = transaction
             .query_row(
-                "SELECT data FROM resource_purge_intents
+                "SELECT data FROM resource_lifecycle_purge_intents
                  WHERE intent_id = ?1 OR idempotency_key = ?2 LIMIT 1",
                 params![intent.intent_id, intent.idempotency_key],
                 |row| row.get::<_, String>(0),
@@ -206,7 +242,7 @@ impl ResourcePurgeRepository for SqliteResourceStore {
         let data = encode_intent(&intent)?;
         transaction
             .execute(
-                "INSERT INTO resource_purge_intents
+                "INSERT INTO resource_lifecycle_purge_intents
                  (intent_id, idempotency_key, revision, status, requested_at_unix_ms,
                   not_before_unix_ms, lease_expires_at_unix_ms, data)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -234,7 +270,7 @@ impl ResourcePurgeRepository for SqliteResourceStore {
     ) -> Result<Option<ResourcePurgeIntent>, ResourcePurgeError> {
         self.connection()
             .query_row(
-                "SELECT data FROM resource_purge_intents WHERE intent_id = ?1",
+                "SELECT data FROM resource_lifecycle_purge_intents WHERE intent_id = ?1",
                 params![intent_id],
                 |row| row.get::<_, String>(0),
             )
@@ -252,7 +288,7 @@ impl ResourcePurgeRepository for SqliteResourceStore {
         let connection = self.connection();
         let mut statement = connection
             .prepare(
-                "SELECT data FROM resource_purge_intents
+                "SELECT data FROM resource_lifecycle_purge_intents
                  WHERE status NOT IN ('completed', 'terminal_failed')
                    AND not_before_unix_ms <= ?1
                    AND (lease_expires_at_unix_ms IS NULL OR lease_expires_at_unix_ms <= ?1)
@@ -282,7 +318,7 @@ impl ResourcePurgeRepository for SqliteResourceStore {
         let changed = self
             .connection()
             .execute(
-                "UPDATE resource_purge_intents
+                "UPDATE resource_lifecycle_purge_intents
                  SET revision = ?3, status = ?4, lease_expires_at_unix_ms = ?5, data = ?6
                  WHERE intent_id = ?1 AND revision = ?2",
                 params![
@@ -320,7 +356,7 @@ impl ResourceReferenceIndex for SqliteResourceStore {
         sqlite_ensure_unfenced(&transaction, &record.target)?;
         let changed = transaction
             .execute(
-                "INSERT OR IGNORE INTO resource_references
+                "INSERT OR IGNORE INTO resource_lifecycle_references
                  (workspace_id, resource_kind, resource_id, reference_kind, reference_id)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
                 reference_params(&record),
@@ -341,7 +377,7 @@ impl ResourceReferenceIndex for SqliteResourceStore {
         Ok(self
             .connection()
             .execute(
-                "DELETE FROM resource_references
+                "DELETE FROM resource_lifecycle_references
                  WHERE workspace_id = ?1 AND resource_kind = ?2 AND resource_id = ?3
                    AND reference_kind = ?4 AND reference_id = ?5",
                 reference_params(record),
@@ -366,14 +402,14 @@ impl ResourceReferenceIndex for SqliteResourceStore {
         }
         transaction
             .execute(
-                "DELETE FROM resource_references WHERE reference_kind = ?1 AND reference_id = ?2",
+                "DELETE FROM resource_lifecycle_references WHERE reference_kind = ?1 AND reference_id = ?2",
                 params![reference_kind_name(kind), reference_id],
             )
             .map_err(|error| storage(error.to_string()))?;
         for record in records {
             transaction
                 .execute(
-                    "INSERT INTO resource_references
+                    "INSERT INTO resource_lifecycle_references
                      (workspace_id, resource_kind, resource_id, reference_kind, reference_id)
                      VALUES (?1, ?2, ?3, ?4, ?5)",
                     reference_params(&record),
@@ -392,7 +428,7 @@ impl ResourceReferenceIndex for SqliteResourceStore {
         let connection = self.connection();
         let mut statement = connection
             .prepare(
-                "SELECT reference_kind, reference_id FROM resource_references
+                "SELECT reference_kind, reference_id FROM resource_lifecycle_references
                  WHERE workspace_id = ?1 AND resource_kind = ?2 AND resource_id = ?3
                  ORDER BY reference_kind, reference_id",
             )
@@ -425,7 +461,7 @@ impl ResourceReferenceIndex for SqliteResourceStore {
         let connection = self.connection();
         let mut statement = connection
             .prepare(
-                "SELECT workspace_id, reference_kind, reference_id FROM resource_references
+                "SELECT workspace_id, reference_kind, reference_id FROM resource_lifecycle_references
                  WHERE resource_kind = ?1 AND resource_id = ?2
                  ORDER BY workspace_id, reference_kind, reference_id",
             )
@@ -477,7 +513,7 @@ fn sqlite_ensure_unfenced(
 ) -> Result<(), ResourcePurgeError> {
     let exists = connection
         .query_row(
-            "SELECT 1 FROM resource_reclamation_fences
+            "SELECT 1 FROM resource_lifecycle_reclamation_fences
              WHERE resource_kind = ?1 AND resource_id = ?2",
             params![kind_name(target.kind), target.resource_id],
             |_| Ok(()),
@@ -503,7 +539,7 @@ fn sqlite_references_for_identity(
 ) -> Result<Vec<ResourceReferenceRecord>, ResourcePurgeError> {
     let mut statement = connection
         .prepare(
-            "SELECT workspace_id, reference_kind, reference_id FROM resource_references
+            "SELECT workspace_id, reference_kind, reference_id FROM resource_lifecycle_references
              WHERE resource_kind = ?1 AND resource_id = ?2
              ORDER BY workspace_id, reference_kind, reference_id",
         )
@@ -820,6 +856,57 @@ mod tests {
     #[tokio::test]
     async fn sqlite_in_memory_conforms() {
         repository_spec(&SqliteResourceStore::in_memory().unwrap()).await;
+    }
+
+    #[test]
+    fn sqlite_records_the_scoped_resource_lifecycle_migration() {
+        let store = SqliteResourceStore::in_memory().unwrap();
+        let applied = store
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM resource_lifecycle_schema_migrations
+                 WHERE bundle_id = 'awaken.resource_lifecycle' AND version = 1",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        assert_eq!(applied, 1);
+    }
+
+    #[tokio::test]
+    async fn sqlite_imports_pre_migration_unscoped_references_once() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("legacy-resources.db");
+        let legacy = Connection::open(&path).unwrap();
+        legacy
+            .execute_batch(
+                "CREATE TABLE resource_references (
+                   workspace_id TEXT NOT NULL,
+                   resource_kind TEXT NOT NULL,
+                   resource_id TEXT NOT NULL,
+                   reference_kind TEXT NOT NULL,
+                   reference_id TEXT NOT NULL,
+                   PRIMARY KEY(workspace_id, resource_kind, resource_id, reference_kind, reference_id)
+                 );
+                 INSERT INTO resource_references VALUES
+                   ('workspace-a', 'file', 'hash-1', 'workspace_ownership', 'ownership-a');",
+            )
+            .unwrap();
+        drop(legacy);
+
+        let store = SqliteResourceStore::open(&path).unwrap();
+        let target = ResourceTarget::new("workspace-a", ResourceKind::File, "hash-1");
+        assert_eq!(
+            store.references(&target).await.unwrap(),
+            vec![ResourceReference {
+                kind: ResourceReferenceKind::WorkspaceOwnership,
+                reference_id: "ownership-a".into(),
+            }]
+        );
+        drop(store);
+
+        let reopened = SqliteResourceStore::open(&path).unwrap();
+        assert_eq!(reopened.references(&target).await.unwrap().len(), 1);
     }
 
     proptest! {

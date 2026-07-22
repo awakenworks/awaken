@@ -1,11 +1,11 @@
 //! The shared credential-materialization store subset a database-less **worker**
 //! opens, exactly as the Serve composition opens it.
 //!
-//! A worker holds no catalog, config, session, or admin store. Publication has
-//! already pinned endpoint + credential access into the executable snapshot, so
-//! execution needs only the **credential** repo and sealed **secret** store. This
-//! module opens exactly those two ports from a [`ControlStoreConfig`], plus the
-//! seal-key resolution the durable path needs.
+//! Publication has already pinned endpoint + credential access into the executable
+//! snapshot, so inference execution needs only the **credential** repo and sealed
+//! **secret** store. Resource-capable workers may additionally open the narrow
+//! Resource Catalog validation port; they never open config authoring or Session
+//! stores and never evaluate IAM policy.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -13,6 +13,7 @@ use std::sync::Arc;
 use crate::control_stores::{ControlStoreConfig, StoreBackend};
 
 /// The two ports needed to materialize snapshot-pinned inference access.
+#[derive(Clone)]
 pub struct InferenceMaterializationStores {
     pub credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
     pub secrets: Arc<dyn awaken_credential_vault::SecretStore>,
@@ -96,30 +97,77 @@ fn in_memory_inference_materialization_stores() -> InferenceMaterializationStore
 /// the Serve composition selects persistence:
 ///
 /// - `AWAKEN_MGMT_DIR=<dir>` — the per-component durable backends under `<dir>` (each
-///   honoring its `AWAKEN_<COMPONENT>_DB` override), secrets AEAD-sealed under the
-///   seal key from exactly one of `AWAKEN_MGMT_SEAL_KEY` / `AWAKEN_MGMT_SEAL_KEY_FILE`.
+///   honoring its `AWAKEN_<COMPONENT>_DB` override).
+/// - an explicit `AWAKEN_CREDENTIAL_DB` — open that credential backend even on a
+///   database-less remote worker that intentionally has no management directory.
+///
+/// Durable secrets use the control seal key (`AWAKEN_CONTROL_SEAL_KEY[_FILE]`, with
+/// the legacy `AWAKEN_MGMT_SEAL_KEY[_FILE]` alias).
 /// - unset — in-memory stores.
 pub async fn open_inference_materialization_stores_from_env() -> InferenceMaterializationStores {
-    match std::env::var("AWAKEN_MGMT_DIR") {
-        Ok(dir) => {
+    let root = std::env::var("AWAKEN_MGMT_DIR")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var("AWAKEN_CREDENTIAL_DB")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                // Only the explicit credential component is opened below; the
+                // fallback root is never used as a second resource/config truth.
+                .map(|_| std::path::PathBuf::from("."))
+        });
+    match root {
+        Some(dir) => {
             let key = mgmt_seal_key_from_env();
-            let cfg = ControlStoreConfig::from_env(Path::new(&dir));
+            let cfg = ControlStoreConfig::from_env(&dir);
             open_inference_materialization_stores(&cfg, &key).await
         }
-        Err(_) => in_memory_inference_materialization_stores(),
+        None => in_memory_inference_materialization_stores(),
     }
 }
 
-/// The AEAD key for the durable shared stores, from `AWAKEN_MGMT_SEAL_KEY` (inline)
-/// or `AWAKEN_MGMT_SEAL_KEY_FILE` (a path). Exactly one must be set. Panics loudly
-/// when unset, both-set, unreadable, or malformed — the same fail-closed behavior as
-/// the Serve composition (a worker that sealed nothing or read a wrong key is worse
-/// than one that refuses to start). The pure resolution lives once in
-/// `awaken_credential_vault` (shared with the Serve root); this only wires the env.
+/// Open only the shared Resource Catalog validation port required by a remote
+/// execution worker. The worker never opens authoring/session stores and never
+/// evaluates IAM policy; it checks intrinsic Workspace ownership, lifecycle state,
+/// and the config version already frozen in the dispatch manifest.
+pub async fn open_shared_resource_validator_from_env() -> Result<
+    Option<Arc<dyn awaken_protocol_managed::resource_plane::ResourceBindingValidator>>,
+    String,
+> {
+    let Some(url) = std::env::var("AWAKEN_ADMIN_DB")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return Ok(None);
+    };
+    if !(url.starts_with("postgres://") || url.starts_with("postgresql://")) {
+        return Err(
+            "a remote resource worker requires AWAKEN_ADMIN_DB to be a shared postgres URL"
+                .to_string(),
+        );
+    }
+    let store = tokio::task::spawn_blocking(move || {
+        awaken_admin_config_api::PostgresAdminStore::connect(&url)
+    })
+    .await
+    .map_err(|error| format!("join shared Resource Catalog connect: {error}"))?
+    .map_err(|error| format!("connect shared Resource Catalog: {error}"))?;
+    Ok(Some(Arc::new(store)))
+}
+
+/// The AEAD key for durable shared credentials. The canonical control names and
+/// their one-release management aliases follow the same precedence as the Serve
+/// composition. A worker that reads the wrong key is worse than one that refuses
+/// to start, so missing, conflicting, unreadable, and malformed input fails closed.
 fn mgmt_seal_key_from_env() -> [u8; 32] {
     let hex = awaken_credential_vault::resolve_seal_key_hex(
-        std::env::var("AWAKEN_MGMT_SEAL_KEY").ok(),
-        std::env::var("AWAKEN_MGMT_SEAL_KEY_FILE").ok(),
+        std::env::var("AWAKEN_CONTROL_SEAL_KEY")
+            .ok()
+            .or_else(|| std::env::var("AWAKEN_MGMT_SEAL_KEY").ok()),
+        std::env::var("AWAKEN_CONTROL_SEAL_KEY_FILE")
+            .ok()
+            .or_else(|| std::env::var("AWAKEN_MGMT_SEAL_KEY_FILE").ok()),
         |p| std::fs::read_to_string(p),
     )
     .unwrap_or_else(|reason| panic!("{reason}."));

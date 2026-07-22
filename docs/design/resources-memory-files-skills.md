@@ -184,6 +184,26 @@ struct ResolvedRepositoryInput {
 The manifest is serializable and secret-free. It contains no host path, live
 handle, credential value, Memory entry version, or Git commit.
 
+At the durable execution boundary it is wrapped, not copied into another model:
+
+```rust
+struct SessionResourceManifest {
+    workspace_id: String,
+    resources: ResolvedSessionResources,
+}
+```
+
+`RunDispatch` persists this envelope beside `execution_scope`. A claiming worker
+must prove the two Workspace coordinates are equal, install the manifest through
+its injected resource ports, and only then create or adopt the Session sandbox.
+The envelope never carries a principal, policy decision, credential value, local
+path, Memory entry revision, or Repository commit.
+
+The dispatch bounded context treats `resources` as an opaque serialized payload;
+one Runtime Host ACL performs the lossless encode/decode against
+`ResolvedSessionResources`. This preserves the typed Session model without adding
+a Dispatch-to-Session dependency edge or duplicating resource resolution.
+
 `skills = None` identifies a legacy Session; `Some([])` is an explicit empty
 selection. Skill bundle bytes remain in the Skill repository and are loaded by
 the frozen id/version/hash only.
@@ -274,7 +294,7 @@ resource-specific repositories enforce their own intrinsic invariants.
 | Bind Agent default | Agent Configuration service | `AgentInputBindingRepository`, PEP/PDP | identity-only `InputBinding`, authoring revision increments |
 | Attach to Session | Managed Session adapter | PEP/PDP | temporary `SessionInputAttachment` |
 | Resolve | `SessionInputResolver` | Agent binding repo, Resource Catalog, PEP result | `ResolvedSessionResources`; Memory/Repo config versions selected once |
-| Activate File | `SessionResourceCoordinator` | `FileStore`, `SandboxProvider` | read-only mount + activation `Active` |
+| Activate File | `SessionResourceCoordinator` | `FileStore`, `SandboxProvider` | immutable-source working copy with no write-back + activation `Active` |
 | Activate Memory | `SessionResourceCoordinator` | `MemoryRepository`, Memory realizer | `ScopedMemoryStore`/mount + activation `Active` |
 | Activate Repo | `SessionResourceCoordinator` | Repository realizer, Vault, Sandbox | current clone + working tree; credential lease not persisted |
 | Use | sandbox/tool adapters | File/Memory/Git domain ports | domain writes and receipts; no second config resolve |
@@ -360,9 +380,10 @@ File config or version lookup exists.
 ### Activate and use
 
 The coordinator asks `FileStore` for binary bytes and the Sandbox provider
-materializes them read-only. The actual bytes must hash back to `FileId`.
-Text conversion is forbidden. An Agent may edit a working copy, but the result
-is a new File or Artifact; the original blob is never overwritten.
+verifies them against `FileId`. It materializes a disposable Session working copy;
+the copy may be edited, but it has no write-back path to the immutable FileStore
+object. Text conversion is forbidden. Edited bytes become a new File or Artifact
+only through an explicit publish; the original blob is never overwritten.
 
 ### Release and reclaim
 
@@ -620,6 +641,14 @@ effective resource identities, authorization decision, and activation leases
 bound for the Session constrain the offloaded operation; an external worker does
 not re-resolve Agent defaults or widen resource access.
 
+For durable Run execution, capability placement makes that constraint executable:
+`session-resources/v1` requires a shared File/Memory/Skill/lifecycle family plus
+the Resource Catalog validator; `repository-credentials/v1` additionally requires
+a shared credential injection seam. A resource-ineligible worker cannot claim the
+dispatch. On every retry the eligible worker repeats live ownership, lifecycle,
+frozen-config-integrity, and credential-revocation checks before using the retained
+or rebuilt environment.
+
 ## Anthropic Compatibility
 
 The Managed adapter owns Anthropic DTOs and projects the effective resource list.
@@ -646,6 +675,12 @@ internal config version remains an awaken governance detail.
 - Vault credential references and host-side secret materialization.
 - the unified Workspace-scoped Skill aggregate repository and version-pinned
   Session Skill bindings.
+- durable root and delegated dispatches carry the same Workspace-scoped frozen
+  resource manifest; cold workers install it before sandbox creation and placement
+  excludes workers without the required shared resource/credential seams.
+- delivered Skill bundles form one exact `.skills` projection: rebuilding replaces
+  the tree, and changing to an empty or different pin removes obsolete scripts,
+  references, templates, and binary assets before the next Run.
 
 ### Completed consolidation
 
@@ -751,7 +786,7 @@ reconciler. It never silently marks the resource released.
 | Area | Required proof |
 |---|---|
 | Binding | Agent defaults and Session attachments merge once; explicit replacement only; mount collision fails |
-| File | binary round-trip; content-id validation; read-only mount; shared-blob ownership isolation; safe GC |
+| File | binary round-trip; content-id validation; edited Session copy cannot mutate original FileId; shared-blob ownership isolation; safe GC |
 | Memory | config update affects only later Sessions; current content remains shared; read-only extraction denied; CAS conflict loses no update |
 | Repository | config update affects later Sessions; no commit pin in manifest; credentials absent from logs/prompt/disk; remote is never deleted by GC |
 | Skill | binary bundle round-trip; traversal rejected; restart preserves history; v1 Session keeps v1 after v2 publication; hash mismatch fails closed |
@@ -760,9 +795,11 @@ reconciler. It never silently marks the resource released.
 | Reclamation | no referenced File purge; a racing cross-node reference loses to or blocks the durable fence; crash resumes the same fence; Memory drains handles/jobs; Repository cleanup removes only local material |
 | Boundary | Runtime Core receives no product DTO, IAM policy, secret, absolute host path, Project, or WorkUnit |
 
-Formal checks should model the common state machine, live deny overlay, and the
-rule that purge requires zero active references/leases. E2E scenarios should
-cover all three resources from configuration through Session use and recovery to
+`SessionResourceActivation.tla`, `ResourceDispatch.tla`, and
+`ResourceReclamation.tla` model the common activation state machine, one-time
+configuration pin plus live deny overlay, and the rule that physical purge
+requires the current fence with zero references and leases. E2E scenarios cover
+the resource families from configuration through Session use and recovery to
 release/reclamation.
 
 ## First Vertical Slice
@@ -771,7 +808,8 @@ release/reclamation.
    storage backends.
 2. Preserve access, reject mount collisions, generate prompts from the effective
    manifest, and remove the second Host merge.
-3. Make File materialization binary-safe and read-only.
+3. Make File materialization binary-safe and keep Session working copies outside
+   FileStore mutation.
 4. Add Memory/Repository config versions and platform-managed Repository ids.
 5. Route Memory mount/API/recall/extraction/history/redaction through one
    `MemoryRepository`; remove blob/harvest.

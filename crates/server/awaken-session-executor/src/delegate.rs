@@ -446,6 +446,7 @@ mod durable_cancel_tests {
             reader: commit.clone(),
             owner: "child-owner".to_string(),
             claimed_commit: None,
+            session_resources: None,
         };
         let mut delegates = Delegates::new();
         delegates.add_local(HashSet::from(["researcher".to_string()]));
