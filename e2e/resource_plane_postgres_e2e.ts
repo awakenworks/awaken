@@ -253,6 +253,30 @@ function resourceIntent(container: string, resourceId: string): Record<string, a
   return output ? JSON.parse(output) : undefined;
 }
 
+function managedSessionResources(
+  container: string,
+  sessionId: string,
+): Record<string, any> {
+  const output = psql(
+    container,
+    `SELECT effective_inputs_json FROM managed_session WHERE session_id=${sqlLiteral(sessionId)}`,
+  );
+  assert.notEqual(output, '', `missing durable Session ${sessionId}`);
+  return JSON.parse(output);
+}
+
+function writeManagedSessionResources(
+  container: string,
+  sessionId: string,
+  resources: Record<string, any>,
+): void {
+  psql(
+    container,
+    `UPDATE managed_session SET effective_inputs_json=${sqlLiteral(JSON.stringify(resources))}::jsonb ` +
+      `WHERE session_id=${sqlLiteral(sessionId)}`,
+  );
+}
+
 function extractionIntent(
   container: string,
   sessionId: string,
@@ -748,6 +772,106 @@ async function main(): Promise<void> {
       ),
       'the completed Postgres receipt corresponds to content in the bound MemoryStore',
     );
+
+    // A live resource attachment creates a new Session activation generation and
+    // therefore revalidates every frozen governed input, including the existing
+    // Repository binding. Corrupt the shared Postgres aggregate between requests:
+    // no node may infer Repository configuration from the mutable remote, and a
+    // failed generation remains pending and contains an error receipt; the SQLite
+    // cold-start matrix above proves durable recovery. Here each corruption case is
+    // isolated by restoring the captured Postgres Session row between requests.
+    const createTimeRepositoryIds = psql(
+      pg.container,
+      `SELECT id FROM admin_resource_catalog WHERE kind='repository' ` +
+        `AND id LIKE ${sqlLiteral(`managed:${session.body.id}:repository:%`)} ORDER BY id`,
+    ).split('\n').filter(Boolean);
+    assert.equal(
+      createTimeRepositoryIds.length,
+      1,
+      `expected one create-time Repository aggregate: ${JSON.stringify(createTimeRepositoryIds)}`,
+    );
+    const [createTimeRepositoryId] = createTimeRepositoryIds;
+    const canonicalRepositoryRecord = resourceCatalogRecord(
+      pg.container,
+      'repository',
+      createTimeRepositoryId,
+    );
+    const repositoryConfigVersion = String(
+      canonicalRepositoryRecord.definition.current_config_version,
+    );
+    const stableSessionResources = managedSessionResources(pg.container, session.body.id);
+    const corruptRepositoryRecords = [
+      {
+        ...structuredClone(canonicalRepositoryRecord),
+        definition: { ...canonicalRepositoryRecord.definition, id: 'forged-repository-id' },
+      },
+      {
+        ...structuredClone(canonicalRepositoryRecord),
+        definition: { ...canonicalRepositoryRecord.definition, workspace_id: '' },
+      },
+      {
+        ...structuredClone(canonicalRepositoryRecord),
+        definition: { ...canonicalRepositoryRecord.definition, current_config_version: 0 },
+      },
+      (() => {
+        const value = structuredClone(canonicalRepositoryRecord);
+        delete value.configs[repositoryConfigVersion];
+        return value;
+      })(),
+      (() => {
+        const value = structuredClone(canonicalRepositoryRecord);
+        value.configs[repositoryConfigVersion].repository_id = 'forged-repository-id';
+        return value;
+      })(),
+      (() => {
+        const value = structuredClone(canonicalRepositoryRecord);
+        value.configs[repositoryConfigVersion].version = 99;
+        return value;
+      })(),
+    ];
+    for (const [index, corrupt] of corruptRepositoryRecords.entries()) {
+      writeResourceCatalogRecord(
+        pg.container,
+        'repository',
+        createTimeRepositoryId,
+        corrupt,
+      );
+      const denied = await json(
+        'POST',
+        scoped(WORKSPACE, `sessions/${session.body.id}/resources`),
+        {
+          type: 'file',
+          file_id: fileId,
+          mount_path: `/workspace/catalog-probe-${index}.txt`,
+        },
+      );
+      assert.equal(denied.status, 400, `${index}: ${JSON.stringify(denied.body)}`);
+      assert.match(JSON.stringify(denied.body), /resource catalog storage failure/u, `${index}`);
+      assert.equal(server.exitCode, null, `${index}: Repository corruption crashed the process`);
+      const pending = managedSessionResources(pg.container, session.body.id);
+      assert.notEqual(pending.pending, undefined, `${index}: failed generation was not durable`);
+      assert.equal(pending.activations.at(-1).state, 'prepared', `${index}`);
+      assert.equal(pending.activations.at(-1).attempts, 1, `${index}`);
+      assert.match(pending.activations.at(-1).last_error, /resource catalog/u, `${index}`);
+      writeResourceCatalogRecord(
+        pg.container,
+        'repository',
+        createTimeRepositoryId,
+        canonicalRepositoryRecord,
+      );
+      writeManagedSessionResources(pg.container, session.body.id, stableSessionResources);
+    }
+    const unchangedResources = await json(
+      'GET',
+      scoped(WORKSPACE, `sessions/${session.body.id}/resources`),
+    );
+    assert.equal(unchangedResources.status, 200, JSON.stringify(unchangedResources.body));
+    assert.deepEqual(
+      unchangedResources.body.data.map((resource: { type: string }) => resource.type),
+      ['memory_store', 'github_repository'],
+      'recovered probe generations were removed without changing original bindings',
+    );
+
     const repositoryResource = await json(
       'POST',
       scoped(WORKSPACE, `sessions/${session.body.id}/resources`),

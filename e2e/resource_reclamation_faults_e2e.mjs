@@ -164,6 +164,7 @@ function seedRepository(root) {
 async function main() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-reclamation-faults-'));
   const lifecycle = path.join(directory, 'resource-lifecycle.db');
+  const files = path.join(directory, 'files.db');
   const bin = binary();
   let server = start(bin, directory);
   try {
@@ -175,6 +176,11 @@ async function main() {
     const corruptReference = await upload('corrupt-reference', 'corrupt-reference.txt');
     const alreadyOwned = await upload('already-owned-fence', 'already-owned.txt');
     const fencedBinding = await upload('fenced-binding', 'fenced-binding.txt');
+    const physicalFailure = await upload('physical-failure', 'physical-failure.txt');
+    const combinedFailure = await upload('combined-failure', 'combined-failure.txt');
+    const lateGuardError = await upload('late-guard-error', 'late-guard-error.txt');
+    const saveConflict = await upload('save-conflict', 'save-conflict.txt');
+    const saveFailure = await upload('save-failure', 'save-failure.txt');
     const skillId = `fault-skill-${process.pid}`;
     assert.equal((await json('POST', 'skills', {
       id: skillId,
@@ -188,6 +194,11 @@ async function main() {
       durableBlockers,
       corruptReference,
       alreadyOwned,
+      physicalFailure,
+      combinedFailure,
+      lateGuardError,
+      saveConflict,
+      saveFailure,
     ]) {
       assert.equal((await json('DELETE', `files/${fileId}`)).status, 200);
     }
@@ -203,6 +214,9 @@ async function main() {
     const tombstone = fs.readFileSync(skillAggregate);
     const alreadyOwnedIntent = intentFor(directory, alreadyOwned);
     assert.ok(alreadyOwnedIntent, 'the logical delete durably scheduled reclamation');
+    const saveConflictIntent = intentFor(directory, saveConflict);
+    const saveFailureIntent = intentFor(directory, saveFailure);
+    assert.ok(saveConflictIntent && saveFailureIntent);
 
     // The three triggers/rows model distinct production races at durable seams:
     // a foreign reclaimer already owns one identity; a reference appears after
@@ -244,11 +258,64 @@ async function main() {
         BEGIN
           SELECT RAISE(ABORT, 'injected release failure');
         END;
+        CREATE TRIGGER inject_late_guard_error
+          AFTER INSERT ON resource_reclamation_fences
+          WHEN NEW.resource_id = ${sqlQuote(lateGuardError)}
+        BEGIN
+          INSERT INTO resource_references(
+            workspace_id, resource_kind, resource_id, reference_kind, reference_id
+          ) VALUES (
+            ${sqlQuote(WORKSPACE)}, 'file', ${sqlQuote(lateGuardError)},
+            'future_unknown_kind', 'late-corrupt-reference'
+          );
+        END;
+        CREATE TRIGGER reject_combined_release
+          BEFORE DELETE ON resource_reclamation_fences
+          WHEN OLD.resource_id = ${sqlQuote(combinedFailure)}
+        BEGIN
+          SELECT RAISE(ABORT, 'injected combined release failure');
+        END;
+        CREATE TRIGGER ignore_claim_save
+          BEFORE UPDATE ON resource_purge_intents
+          WHEN OLD.intent_id = ${sqlQuote(saveConflictIntent.intent_id)}
+        BEGIN
+          SELECT RAISE(IGNORE);
+        END;
+        CREATE TRIGGER reject_claim_save
+          BEFORE UPDATE ON resource_purge_intents
+          WHEN OLD.intent_id = ${sqlQuote(saveFailureIntent.intent_id)}
+        BEGIN
+          SELECT RAISE(ABORT, 'injected claim save failure');
+        END;
+      `,
+    );
+    sqlite(
+      files,
+      `
+        CREATE TRIGGER reject_physical_purge
+          BEFORE DELETE ON file_store_blob
+          WHEN OLD.id = ${sqlQuote(physicalFailure)}
+        BEGIN
+          SELECT RAISE(ABORT, 'injected physical purge failure');
+        END;
+        CREATE TRIGGER reject_combined_physical_purge
+          BEFORE DELETE ON file_store_blob
+          WHEN OLD.id = ${sqlQuote(combinedFailure)}
+        BEGIN
+          SELECT RAISE(ABORT, 'injected combined physical purge failure');
+        END;
       `,
     );
 
-    server = start(bin, directory);
+    server = start(bin, directory, { captureStderr: true });
     await ready(server);
+    await waitForStderr(server, /injected claim save failure/u);
+    assert.equal(intentFor(directory, saveConflict).attempts, 0);
+    assert.equal(intentFor(directory, saveFailure).attempts, 0);
+    sqlite(
+      lifecycle,
+      `DROP TRIGGER ignore_claim_save; DROP TRIGGER reject_claim_save;`,
+    );
 
     // A reclamation fence is an intrinsic resource consistency boundary, not an
     // IAM decision. Even after the API edge admitted this same-workspace request,
@@ -341,7 +408,17 @@ async function main() {
 
     const failed = await waitFor(
       directory,
-      [releaseFailure, contended, lateReference, durableBlockers, corruptReference, skillId],
+      [
+        releaseFailure,
+        contended,
+        lateReference,
+        durableBlockers,
+        corruptReference,
+        physicalFailure,
+        combinedFailure,
+        lateGuardError,
+        skillId,
+      ],
       (intent) => intent.status === 'pending'
         && intent.attempts >= 1
         && (intent.target.resource_id !== skillId
@@ -369,6 +446,12 @@ async function main() {
       ],
     );
     assert.match(byResource.get(corruptReference).last_error, /unknown resource reference kind/u);
+    assert.match(byResource.get(physicalFailure).last_error, /injected physical purge failure/u);
+    assert.match(
+      byResource.get(combinedFailure).last_error,
+      /injected combined physical purge failure; failed to release reclamation fence:.*injected combined release failure/u,
+    );
+    assert.match(byResource.get(lateGuardError).last_error, /unknown resource reference kind/u);
 
     // Remove only the injected faults. The coordinator must reuse each durable
     // intent/fence and complete; no API delete is repeated.
@@ -378,15 +461,24 @@ async function main() {
       `
         DROP TRIGGER inject_late_reference;
         DROP TRIGGER reject_release;
+        DROP TRIGGER inject_late_guard_error;
+        DROP TRIGGER reject_combined_release;
         DELETE FROM resource_references
           WHERE resource_id = ${sqlQuote(lateReference)}
             AND reference_id = 'late-session-reference';
         DELETE FROM resource_references
           WHERE resource_id IN (${sqlQuote(durableBlockers)}, ${sqlQuote(corruptReference)});
+        DELETE FROM resource_references
+          WHERE resource_id = ${sqlQuote(lateGuardError)}
+            AND reference_id = 'late-corrupt-reference';
         DELETE FROM resource_reclamation_fences
           WHERE resource_id = ${sqlQuote(contended)}
             AND intent_id = 'external-reclaimer';
       `,
+    );
+    sqlite(
+      files,
+      `DROP TRIGGER reject_physical_purge; DROP TRIGGER reject_combined_physical_purge;`,
     );
     const completed = await waitFor(
       directory,
@@ -397,6 +489,11 @@ async function main() {
         durableBlockers,
         corruptReference,
         alreadyOwned,
+        physicalFailure,
+        combinedFailure,
+        lateGuardError,
+        saveConflict,
+        saveFailure,
         fencedRepository,
         skillId,
       ],
