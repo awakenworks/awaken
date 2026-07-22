@@ -187,6 +187,32 @@ function sqlLiteral(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
 }
 
+function resourceCatalogRecord(
+  container: string,
+  kind: string,
+  id: string,
+): Record<string, any> {
+  const output = psql(
+    container,
+    `SELECT data FROM admin_resource_catalog WHERE kind=${sqlLiteral(kind)} AND id=${sqlLiteral(id)}`,
+  );
+  assert.notEqual(output, '', `missing ${kind} Resource Catalog row ${id}`);
+  return JSON.parse(output);
+}
+
+function writeResourceCatalogRecord(
+  container: string,
+  kind: string,
+  id: string,
+  record: Record<string, any>,
+): void {
+  psql(
+    container,
+    `UPDATE admin_resource_catalog SET data=${sqlLiteral(JSON.stringify(record))}::jsonb ` +
+      `WHERE kind=${sqlLiteral(kind)} AND id=${sqlLiteral(id)}`,
+  );
+}
+
 function seedLegacyMemoryIdentities(container: string, canonicalId: string): void {
   const rows = [
     {
@@ -553,6 +579,56 @@ async function main(): Promise<void> {
     );
     assert.equal(restoredMemoryConfig.body.version, 2);
     assert.equal(restoredMemoryConfig.body.recall_policy.max_results, 19);
+    const canonicalMemoryRecord = resourceCatalogRecord(
+      pg.container,
+      'memory_store',
+      memoryId,
+    );
+    const corruptMemoryRecords = [
+      {
+        ...structuredClone(canonicalMemoryRecord),
+        definition: { ...canonicalMemoryRecord.definition, id: 'forged-memory-id' },
+      },
+      {
+        ...structuredClone(canonicalMemoryRecord),
+        definition: { ...canonicalMemoryRecord.definition, workspace_id: '' },
+      },
+      {
+        ...structuredClone(canonicalMemoryRecord),
+        definition: { ...canonicalMemoryRecord.definition, current_config_version: 0 },
+      },
+      (() => {
+        const value = structuredClone(canonicalMemoryRecord);
+        delete value.configs[String(value.definition.current_config_version)];
+        return value;
+      })(),
+      (() => {
+        const value = structuredClone(canonicalMemoryRecord);
+        value.configs['2'].memory_store_id = 'forged-memory-id';
+        return value;
+      })(),
+      (() => {
+        const value = structuredClone(canonicalMemoryRecord);
+        value.configs['2'].version = 99;
+        return value;
+      })(),
+    ];
+    for (const corrupt of corruptMemoryRecords) {
+      writeResourceCatalogRecord(pg.container, 'memory_store', memoryId, corrupt);
+      const failedClosed = await json('GET', scoped(WORKSPACE, 'memory_stores'));
+      assert.equal(failedClosed.status, 500, JSON.stringify(failedClosed.body));
+      assert.equal(server.exitCode, null, 'catalog corruption must not crash the process');
+      writeResourceCatalogRecord(
+        pg.container,
+        'memory_store',
+        memoryId,
+        canonicalMemoryRecord,
+      );
+      assert.equal(
+        (await json('GET', scoped(WORKSPACE, `memory_stores/${memoryId}`))).status,
+        200,
+      );
+    }
     const legacyPgId = `legacy-pg-owned-${process.pid}`;
     const migratedLegacy = await json('GET', scoped(WORKSPACE, `memory_stores/${legacyPgId}`));
     assert.equal(migratedLegacy.status, 200);
