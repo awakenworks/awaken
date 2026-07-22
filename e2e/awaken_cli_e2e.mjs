@@ -204,6 +204,53 @@ async function main() {
     r = await req(base, 'PUT', `/v1/config/agents/${AGENT}/resources`, resources(-1));
     assert.equal(r.status, 422, `negative resource revision rejected at authoring: ${JSON.stringify(r.json)}`);
     assert.equal(r.json.code, 'invalid_revision');
+
+    // Upgrade boundary: old `resources/version` rows are accepted once and
+    // normalized into the canonical typed input language. File access narrows to
+    // read-only; mutable Memory/Repository bindings retain authored access. Removed
+    // output/Skill axes fail closed instead of entering the input union.
+    const legacyAgent = 'legacy-input-agent';
+    r = await req(base, 'PUT', `/v1/config/agents/${legacyAgent}/resources`, {
+      agent_id: 'forged-path-id',
+      version: 1,
+      resources: [
+        {
+          kind: 'file', resource_id: 'legacy-file', mount_path: '/workspace/file',
+          access: 'read_write', instructions: 'immutable input',
+        },
+        {
+          kind: 'memory_store', resource_id: 'legacy-memory', mount_path: '/workspace/memory',
+          access: 'read_write',
+        },
+        {
+          kind: 'github_repository', resource_id: 'legacy-repository',
+          mount_path: '/workspace/repository', access: 'read_only',
+        },
+      ],
+    });
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    assert.equal(r.json.agent_id, legacyAgent, 'path Agent id is authoritative');
+    assert.equal(r.json.revision, 1);
+    assert.deepEqual(
+      r.json.inputs.map((input) => input.target.kind),
+      ['file', 'memory_store', 'repository'],
+    );
+    assert.equal(r.json.inputs[0].access, 'read_only');
+    assert.equal(r.json.inputs[1].access, 'read_write');
+    assert.equal(r.json.inputs[2].access, 'read_only');
+    for (const removedKind of ['outputs', 'skill']) {
+      r = await req(base, 'PUT', `/v1/config/agents/${legacyAgent}/resources`, {
+        agent_id: legacyAgent,
+        version: 2,
+        resources: [{
+          kind: removedKind,
+          resource_id: 'removed-axis',
+          mount_path: '/workspace/removed',
+          access: 'read_only',
+        }],
+      });
+      assert.equal(r.status, 422, `${removedKind} legacy binding fails closed: ${JSON.stringify(r.json)}`);
+    }
     r = await req(base, 'PUT', `/v1/config/agents/${AGENT}/resources`, resources(1));
     assert.equal(r.status, 200, `valid resource revision staged: ${JSON.stringify(r.json)}`);
     r = await req(base, 'POST', `/v1/config/agents/${AGENT}/publish`, undefined);
