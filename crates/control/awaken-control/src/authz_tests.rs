@@ -786,35 +786,7 @@ fn af2_credential_id_routes_map_read_and_write_sub_actions() {
 }
 
 #[test]
-fn project_resources_remain_inside_the_workspace_authorization_scope() {
-    assert_eq!(
-        action_for(&Method::GET, "/v1/config/projects/proj_alpha"),
-        Some(RouteAuthz::Scoped {
-            action: WORKSPACE_READ,
-            scope: ScopeClass::Workspace,
-        })
-    );
-    assert_eq!(
-        target_scope(
-            ScopeClass::Workspace,
-            "ws_acme",
-            "/v1/config/projects/proj_alpha/agents/a/mcp",
-        ),
-        Some(ScopeRef::Workspace {
-            workspace_id: WorkspaceId("ws_acme".into()),
-        })
-    );
-    assert_eq!(
-        target_scope(ScopeClass::Workspace, "ws_acme", "/v1/config/projects"),
-        Some(ScopeRef::Workspace {
-            workspace_id: WorkspaceId("ws_acme".into()),
-        }),
-        "project is resource data in Runtime, not an authorization scope"
-    );
-}
-
-#[test]
-fn af_covers_the_deployment_environment_agent_and_project_families() {
+fn af_covers_the_deployment_environment_and_agent_families() {
     // The route table is the authz decision point: a mutation accidentally
     // mapped to a `*.read` action would be a silent authz fail-open. These
     // families were unasserted; lock every read→read / mutation→write row (and
@@ -830,7 +802,7 @@ fn af_covers_the_deployment_environment_agent_and_project_families() {
     let post = Method::POST;
     let put = Method::PUT;
 
-    // -- config: endpoints / mcp-servers / inference-profiles / authoring agents / projects --
+    // -- config: endpoints / mcp-servers / inference-profiles / authoring agents --
     assert_eq!(
         scoped(get.clone(), "/v1/config/endpoints/ep1"),
         Some(WORKSPACE_READ)
@@ -879,25 +851,11 @@ fn af_covers_the_deployment_environment_agent_and_project_families() {
         scoped(put.clone(), "/v1/config/agents/a1"),
         Some(WORKSPACE_WRITE)
     );
-    assert_eq!(
-        scoped(get.clone(), "/v1/config/projects"),
-        Some(WORKSPACE_READ)
-    );
-    assert_eq!(
-        scoped(get.clone(), "/v1/config/projects/pr1"),
-        Some(WORKSPACE_READ)
-    );
-    assert_eq!(
-        scoped(put.clone(), "/v1/config/projects/pr1"),
-        Some(WORKSPACE_WRITE)
-    );
-    assert_eq!(
-        scoped(get.clone(), "/v1/config/projects/pr1/agents/a1/mcp"),
-        Some(WORKSPACE_READ)
-    );
+    assert_eq!(scoped(get.clone(), "/v1/config/projects"), None);
     assert_eq!(
         scoped(put.clone(), "/v1/config/projects/pr1/agents/a1/mcp"),
-        Some(WORKSPACE_WRITE)
+        None,
+        "Project routes are outside awaken and must fail closed"
     );
 
     // -- the vault credential archive sub-action writes --

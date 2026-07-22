@@ -97,7 +97,6 @@ async fn every_documented_operation_is_mounted() {
     for (template, item) in paths {
         for (method, _) in item.as_object().expect("path item object") {
             let uri = template
-                .replace("{project_id}", "probe-project")
                 .replace("{agent_id}", "probe-agent")
                 .replace("{model_id}", "probe-model")
                 .replace("{id}", "probe-id");

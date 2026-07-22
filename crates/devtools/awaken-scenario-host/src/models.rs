@@ -154,7 +154,6 @@ impl LlmExecutor for MemoryProbeModel {
                     tool_id: "write_memory".to_string(),
                     arguments: serde_json::json!({
                         "name": name,
-                        "kind": "project",
                         "content": content
                     }),
                 }]),

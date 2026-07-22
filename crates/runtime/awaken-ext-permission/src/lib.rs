@@ -112,33 +112,16 @@ pub enum Mode {
     BypassPermissions,
 }
 
-/// Where a rule came from in the settings hierarchy (Claude Code scopes). Carried
-/// for audit/precedence metadata; the decision uses pattern specificity.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum PermissionRuleScope {
-    User,
-    #[default]
-    Project,
-    Local,
-    Session,
-}
-
 /// One rule: a pattern and the behavior it grants.
 #[derive(Debug, Clone)]
 pub struct PermissionRule {
     pub pattern: ToolCallPattern,
     pub behavior: ToolPermissionBehavior,
-    pub scope: PermissionRuleScope,
 }
 
 impl PermissionRule {
     pub fn new(pattern: ToolCallPattern, behavior: ToolPermissionBehavior) -> Self {
-        Self {
-            pattern,
-            behavior,
-            scope: PermissionRuleScope::default(),
-        }
+        Self { pattern, behavior }
     }
 }
 
