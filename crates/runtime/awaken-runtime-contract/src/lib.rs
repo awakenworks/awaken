@@ -58,8 +58,13 @@ pub use plugin::{
 // `RunEndContext.conversation: &[Message]`). Re-exported so an extension that
 // consumes those ports names them here, without a direct `agent-contract` edge.
 pub use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-pub use awaken_agent_contract::agent::run::Id as RunId;
-pub use awaken_agent_contract::agent::state::Store;
+pub use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
+pub use awaken_agent_contract::agent::state::{Command as StateCommand, Key as StateKey};
+pub use awaken_agent_contract::agent::state::{MergePolicy, Scope, Store};
+pub use awaken_agent_contract::agent::thread::Id as ThreadId;
+pub use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
+pub use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
+pub use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 // The cancellation token surfaced through `RunEndContext`/`RuntimeRunContext`;
 // re-exported so an extension forwards it without a direct `tokio-util` edge.
 pub use resolution::{

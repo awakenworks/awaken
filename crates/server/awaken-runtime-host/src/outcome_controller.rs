@@ -9,14 +9,14 @@ use awaken_ext_goal::outcome::{
     Definition, Evaluation, EvaluationResult, ExecutionFailure, Grade, Grader, GraderError,
     GradingInput, Id, KeywordGrader, Phase, State, WorkerRunKind,
 };
+use awaken_ext_goal::state::{
+    Aggregate, Binding, ThreadOutcomeState, acknowledgment_run_id, grader_run_id, worker_run_id,
+};
 
 use crate::host::{
     BASE_SEQ, HostError, HostOutcomeIteration, HostOutcomeReport, SessionCtx, SharedHost, now_ms,
 };
 use crate::judge::{AgentGrader, DEFAULT_JUDGE_INSTRUCTIONS, default_judge_agent};
-use crate::outcome_state::{
-    Aggregate, Binding, ThreadOutcomeState, acknowledgment_run_id, grader_run_id, worker_run_id,
-};
 use crate::run_exec::SnapshotRunRequest;
 
 struct WorkerExecution {
@@ -449,7 +449,7 @@ fn domain_error(error: awaken_ext_goal::outcome::Error) -> HostError {
     HostError::internal(error.to_string())
 }
 
-fn outcome_state_error(error: crate::outcome_state::Error) -> HostError {
+fn outcome_state_error(error: awaken_ext_goal::state::Error) -> HostError {
     HostError::internal(error.to_string())
 }
 

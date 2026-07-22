@@ -22,8 +22,8 @@ use awaken_sandbox_local::LocalProvider;
 
 use crate::agent_catalog::AgentCatalog;
 use crate::host::{SessionCtx, SharedHost};
-use crate::outcome_state::{grader_run_id, grader_thread_id};
 use crate::run_exec::SnapshotRunRequest;
+use awaken_ext_goal::state::{grader_run_id, grader_thread_id};
 
 /// Default judge instructions. The outcome loop supplies the goal, rubric, and
 /// deliverable in the prompt; the judge returns a JSON verdict the grader parses.
