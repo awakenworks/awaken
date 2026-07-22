@@ -113,20 +113,22 @@ Anthropic Outcome is a product specialization:
 
 | Product concept | Neutral mapping |
 |---|---|
-| `user.define_outcome` | `outcome::Definition` / durable Worker Thread Outcome state |
-| outcome evaluation span | continuation verdict fact / trace projection |
-| `satisfied`, `needs_revision`, etc. | product mapping of opaque `GoalOutcome` detail |
-| max iterations | goal extension policy and runtime backstop |
+| `user.define_outcome` | command adapted to `outcome::Definition` and the Outcome Runtime Extension |
+| outcome evaluation span | projection of durable Outcome Evaluation records |
+| `satisfied`, `needs_revision`, etc. | product mapping of `outcome::EvaluationResult` |
+| max iterations | Outcome extension policy plus the Runtime Step ceiling as a runaway backstop |
 
-The runtime core records opaque verdicts and terminal conclusions. The product
-adapter owns public outcome names and compatibility behavior.
+The Outcome Extension owns Iterations, Worker/Grader Runs, and recovery over
+durable Worker Thread state. Runtime Core records neutral Run facts; the product
+adapter owns public outcome names, wire compatibility, and external-runtime
+input projection. Neither Runtime Core nor ACP learns Outcome vocabulary.
 
 ## First Vertical Slice
 
 For a Managed Agents-compatible product slice:
 
 1. define one public request DTO;
-2. map it to one neutral runtime activation or goal command;
+2. map it to one neutral runtime activation or Outcome extension command;
 3. execute through server/runtime ports;
 4. project one committed fact to one public event;
 5. add snapshot tests proving no public names leak into runtime errors.

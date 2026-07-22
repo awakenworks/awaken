@@ -51,6 +51,7 @@ use awaken_runtime_contract::permission::{ToolCall, ToolPermissionPolicy, ToolPe
 use awaken_runtime_contract::resolved::Backend;
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult, validate_resume};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
+use awaken_runtime_contract::terminal::{CommittedTerminalRun, deliver_committed_terminal};
 
 /// An already-launched ACP agent: the duplex channel plus the process handle for
 /// reaping. The host produces this — locally by launching the CLI into a sandbox,
@@ -864,6 +865,14 @@ async fn commit(
     messages: Vec<Message>,
     state: Vec<StateCommand>,
 ) -> Result<()> {
+    let terminal = match disposition.state() {
+        RunState::Ended(cause) => Some(CommittedTerminalRun {
+            run_id: disposition.run_id().clone(),
+            thread_id: thread_id.clone(),
+            cause,
+        }),
+        RunState::Running | RunState::Awaiting => None,
+    };
     if let Some(coordinator) = &context.commit {
         awaken_agent_contract::thread::commit::commit_run(
             coordinator.as_ref(),
@@ -874,6 +883,12 @@ async fn commit(
         )
         .await
         .map_err(|e| Error::Commit(e.to_string()))?;
+
+        if let Some(terminal) = &terminal {
+            // Observation is post-commit and failure-isolated by the shared
+            // runtime-contract helper. Stable-id recovery may redeliver.
+            let _ = deliver_committed_terminal(&context.terminal_observers, terminal).await;
+        }
     }
     Ok(())
 }

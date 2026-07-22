@@ -66,7 +66,7 @@ The detailed rule is
 | Entity | run, thread, message, config record, credential record | Identity is not authorization |
 | Value object | `ExecutableAgentSnapshot`, `RunActivation`, `ResolvedSpec`, `BackendProfile`, `StateKey`, effect payload, capability descriptor, content hash | Immutable, serializable where it crosses a boundary |
 | Live context | `RuntimeRunContext`, stream/input handles, commit-source wiring | Process-local wiring recreated by the host; never durable request data |
-| Domain service | resolver, continuation guard, permission evaluator, plugin hook runner, registry materializer | Stateless or explicit state dependencies through ports |
+| Domain/application service | resolver, continuation guard, Outcome controller, permission evaluator, plugin hook runner, terminal observer, registry materializer | Stateless or explicit state dependencies through ports; a bounded-context application service is not a Server Host owner |
 | Repository | store traits under the runtime/server contract boundary | No product policy inside repositories |
 | Domain event/fact | committed runtime facts and `EventRecord` values | Emitted after the commit boundary, then projected outward |
 | Anti-corruption layer | protocol adapters, external product bridges, A2A/ACP mappers | Translate public names at the edge only |
