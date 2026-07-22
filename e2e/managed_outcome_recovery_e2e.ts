@@ -148,7 +148,13 @@ async function recoverAfterJudgeCrash(port) {
     const receivedAtCrash = upstream.received;
     assert.equal(receivedAtCrash, 2, 'crash occurs after Worker commit and during Judge inference');
 
-    spawned = spawnServer('outcome-matrix', port, environment);
+    spawned = spawnServer('outcome-matrix', port, {
+      ...environment,
+      // Deliberately change current configuration. Recovery must use the Native
+      // Judge snapshot persisted in the active Outcome binding, not this ACP
+      // default selected by the restarted process.
+      AWAKEN_OUTCOME_JUDGE_RUNTIME: 'acp',
+    });
     await waitForPort(port);
     client = clientFor(spawned.baseUrl);
     await defineOutcome(client, session.id, 'FINAL');
@@ -169,7 +175,7 @@ async function recoverAfterJudgeCrash(port) {
       upstream.arrivals.filter((kind) => kind === 'outcome-judge').length >= 3,
       `the interrupted Judge plus two recovered evaluations are observable: ${upstream.arrivals}`,
     );
-    pass('SIGKILL during Judge recovers from Thread truth without duplicate Worker inference');
+    pass('SIGKILL recovery uses Thread truth and its pinned Judge snapshot');
   } finally {
     await stopServer(spawned.server).catch(() => {});
     upstream.close();
