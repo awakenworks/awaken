@@ -1,4 +1,271 @@
 pub mod awaken_eval
+pub mod awaken_eval::acp_runner
+pub struct awaken_eval::acp_runner::ToolFreeAcpRunner
+impl awaken_eval::acp_runner::ToolFreeAcpRunner
+pub fn awaken_eval::acp_runner::ToolFreeAcpRunner::new(alloc::vec::Vec<alloc::string::String>, alloc::vec::Vec<(alloc::string::String, alloc::string::String)>) -> Self
+pub async fn awaken_eval::acp_runner::ToolFreeAcpRunner::run(&self, &str, usize, &str, alloc::string::String, usize) -> core::result::Result<alloc::string::String, alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
+pub mod awaken_eval::compact_eval
+pub struct awaken_eval::compact_eval::CompactCase
+pub awaken_eval::compact_eval::CompactCase::forbidden_terms: alloc::vec::Vec<alloc::string::String>
+pub awaken_eval::compact_eval::CompactCase::id: alloc::string::String
+pub awaken_eval::compact_eval::CompactCase::required_terms: alloc::vec::Vec<alloc::string::String>
+pub awaken_eval::compact_eval::CompactCase::transcript: alloc::string::String
+pub struct awaken_eval::compact_eval::CompactCaseScore
+pub awaken_eval::compact_eval::CompactCaseScore::case_id: alloc::string::String
+pub awaken_eval::compact_eval::CompactCaseScore::forbidden_dropped: usize
+pub awaken_eval::compact_eval::CompactCaseScore::forbidden_total: usize
+pub awaken_eval::compact_eval::CompactCaseScore::nonempty: bool
+pub awaken_eval::compact_eval::CompactCaseScore::passed: bool
+pub awaken_eval::compact_eval::CompactCaseScore::required_found: usize
+pub awaken_eval::compact_eval::CompactCaseScore::required_total: usize
+pub struct awaken_eval::compact_eval::CompactDataset
+pub awaken_eval::compact_eval::CompactDataset::cases: alloc::vec::Vec<awaken_eval::compact_eval::CompactCase>
+pub awaken_eval::compact_eval::CompactDataset::name: alloc::string::String
+pub awaken_eval::compact_eval::CompactDataset::version: u32
+impl awaken_eval::compact_eval::CompactDataset
+pub fn awaken_eval::compact_eval::CompactDataset::validate(&self) -> core::result::Result<(), alloc::string::String>
+pub struct awaken_eval::compact_eval::CompactObservation
+pub awaken_eval::compact_eval::CompactObservation::case_id: alloc::string::String
+pub awaken_eval::compact_eval::CompactObservation::error: core::option::Option<alloc::string::String>
+pub awaken_eval::compact_eval::CompactObservation::latency_ms: u64
+pub awaken_eval::compact_eval::CompactObservation::output: alloc::string::String
+pub struct awaken_eval::compact_eval::CompactReport
+pub awaken_eval::compact_eval::CompactReport::cases: alloc::vec::Vec<awaken_eval::compact_eval::CompactCaseScore>
+pub awaken_eval::compact_eval::CompactReport::duplicate_observation_ids: alloc::vec::Vec<alloc::string::String>
+pub awaken_eval::compact_eval::CompactReport::errored_cases: usize
+pub awaken_eval::compact_eval::CompactReport::exact_cases: usize
+pub awaken_eval::compact_eval::CompactReport::forbidden_dropped: usize
+pub awaken_eval::compact_eval::CompactReport::forbidden_total: usize
+pub awaken_eval::compact_eval::CompactReport::observed_cases: usize
+pub awaken_eval::compact_eval::CompactReport::required_found: usize
+pub awaken_eval::compact_eval::CompactReport::required_total: usize
+pub awaken_eval::compact_eval::CompactReport::total_cases: usize
+pub awaken_eval::compact_eval::CompactReport::unexpected_observation_ids: alloc::vec::Vec<alloc::string::String>
+pub async fn awaken_eval::compact_eval::run_acp(&awaken_eval::compact_eval::CompactDataset, alloc::vec::Vec<alloc::string::String>, alloc::vec::Vec<(alloc::string::String, alloc::string::String)>) -> alloc::vec::Vec<awaken_eval::compact_eval::CompactObservation>
+pub fn awaken_eval::compact_eval::score(&awaken_eval::compact_eval::CompactDataset, &[awaken_eval::compact_eval::CompactObservation]) -> awaken_eval::compact_eval::CompactReport
+pub mod awaken_eval::memory_eval
+pub struct awaken_eval::memory_eval::ExtractionCase
+pub awaken_eval::memory_eval::ExtractionCase::expected_term_groups: alloc::vec::Vec<alloc::vec::Vec<alloc::string::String>>
+pub awaken_eval::memory_eval::ExtractionCase::forbidden_terms: alloc::vec::Vec<alloc::string::String>
+pub awaken_eval::memory_eval::ExtractionCase::id: alloc::string::String
+pub awaken_eval::memory_eval::ExtractionCase::transcript: alloc::string::String
+pub struct awaken_eval::memory_eval::ExtractionScore
+pub awaken_eval::memory_eval::ExtractionScore::case_id: alloc::string::String
+pub awaken_eval::memory_eval::ExtractionScore::expected_found: usize
+pub awaken_eval::memory_eval::ExtractionScore::expected_total: usize
+pub awaken_eval::memory_eval::ExtractionScore::forbidden_dropped: usize
+pub awaken_eval::memory_eval::ExtractionScore::forbidden_total: usize
+pub awaken_eval::memory_eval::ExtractionScore::passed: bool
+pub awaken_eval::memory_eval::ExtractionScore::schema_valid: bool
+pub struct awaken_eval::memory_eval::MemoryDataset
+pub awaken_eval::memory_eval::MemoryDataset::extraction_cases: alloc::vec::Vec<awaken_eval::memory_eval::ExtractionCase>
+pub awaken_eval::memory_eval::MemoryDataset::name: alloc::string::String
+pub awaken_eval::memory_eval::MemoryDataset::selection_cases: alloc::vec::Vec<awaken_eval::memory_eval::SelectionCase>
+pub awaken_eval::memory_eval::MemoryDataset::version: u32
+impl awaken_eval::memory_eval::MemoryDataset
+pub fn awaken_eval::memory_eval::MemoryDataset::validate(&self) -> core::result::Result<(), alloc::string::String>
+pub struct awaken_eval::memory_eval::MemoryObservation
+pub awaken_eval::memory_eval::MemoryObservation::case_id: alloc::string::String
+pub awaken_eval::memory_eval::MemoryObservation::error: core::option::Option<alloc::string::String>
+pub awaken_eval::memory_eval::MemoryObservation::latency_ms: u64
+pub awaken_eval::memory_eval::MemoryObservation::output: alloc::string::String
+pub struct awaken_eval::memory_eval::MemoryReport
+pub awaken_eval::memory_eval::MemoryReport::expected_memories_found: usize
+pub awaken_eval::memory_eval::MemoryReport::expected_memories_total: usize
+pub awaken_eval::memory_eval::MemoryReport::extraction_cases: alloc::vec::Vec<awaken_eval::memory_eval::ExtractionScore>
+pub awaken_eval::memory_eval::MemoryReport::extraction_errors: usize
+pub awaken_eval::memory_eval::MemoryReport::extraction_exact: usize
+pub awaken_eval::memory_eval::MemoryReport::extraction_observed: usize
+pub awaken_eval::memory_eval::MemoryReport::extraction_schema_valid: usize
+pub awaken_eval::memory_eval::MemoryReport::extraction_total: usize
+pub awaken_eval::memory_eval::MemoryReport::forbidden_terms_dropped: usize
+pub awaken_eval::memory_eval::MemoryReport::forbidden_terms_total: usize
+pub awaken_eval::memory_eval::MemoryReport::selection_cases: alloc::vec::Vec<awaken_eval::memory_eval::SelectionScore>
+pub awaken_eval::memory_eval::MemoryReport::selection_errors: usize
+pub awaken_eval::memory_eval::MemoryReport::selection_exact: usize
+pub awaken_eval::memory_eval::MemoryReport::selection_expected: usize
+pub awaken_eval::memory_eval::MemoryReport::selection_observed: usize
+pub awaken_eval::memory_eval::MemoryReport::selection_returned: usize
+pub awaken_eval::memory_eval::MemoryReport::selection_schema_valid: usize
+pub awaken_eval::memory_eval::MemoryReport::selection_total: usize
+pub awaken_eval::memory_eval::MemoryReport::selection_true_positive: usize
+pub struct awaken_eval::memory_eval::SelectionCase
+pub awaken_eval::memory_eval::SelectionCase::expected_indices: alloc::vec::Vec<usize>
+pub awaken_eval::memory_eval::SelectionCase::id: alloc::string::String
+pub awaken_eval::memory_eval::SelectionCase::max: usize
+pub awaken_eval::memory_eval::SelectionCase::memories: alloc::vec::Vec<alloc::string::String>
+pub awaken_eval::memory_eval::SelectionCase::query: alloc::string::String
+pub struct awaken_eval::memory_eval::SelectionScore
+pub awaken_eval::memory_eval::SelectionScore::actual_indices: alloc::vec::Vec<usize>
+pub awaken_eval::memory_eval::SelectionScore::case_id: alloc::string::String
+pub awaken_eval::memory_eval::SelectionScore::expected_indices: alloc::vec::Vec<usize>
+pub awaken_eval::memory_eval::SelectionScore::passed: bool
+pub awaken_eval::memory_eval::SelectionScore::schema_valid: bool
+pub awaken_eval::memory_eval::SelectionScore::true_positive: usize
+pub async fn awaken_eval::memory_eval::run_acp(&awaken_eval::memory_eval::MemoryDataset, alloc::vec::Vec<alloc::string::String>, alloc::vec::Vec<(alloc::string::String, alloc::string::String)>) -> alloc::vec::Vec<awaken_eval::memory_eval::MemoryObservation>
+pub fn awaken_eval::memory_eval::score(&awaken_eval::memory_eval::MemoryDataset, &[awaken_eval::memory_eval::MemoryObservation]) -> awaken_eval::memory_eval::MemoryReport
+pub mod awaken_eval::outcome_acp
+pub struct awaken_eval::outcome_acp::AcpBatchResult
+pub awaken_eval::outcome_acp::AcpBatchResult::case_ids: alloc::vec::Vec<alloc::string::String>
+pub awaken_eval::outcome_acp::AcpBatchResult::error: core::option::Option<alloc::string::String>
+pub awaken_eval::outcome_acp::AcpBatchResult::latency_ms: u64
+pub awaken_eval::outcome_acp::AcpBatchResult::raw_output: alloc::string::String
+pub struct awaken_eval::outcome_acp::AcpEvaluationArtifact
+pub awaken_eval::outcome_acp::AcpEvaluationArtifact::batches: alloc::vec::Vec<awaken_eval::outcome_acp::AcpBatchResult>
+pub awaken_eval::outcome_acp::AcpEvaluationArtifact::observations: alloc::vec::Vec<awaken_eval::outcome_judge::JudgeObservation>
+pub async fn awaken_eval::outcome_acp::run_dataset(&awaken_eval::outcome_judge::JudgeDataset, alloc::vec::Vec<alloc::string::String>, alloc::vec::Vec<(alloc::string::String, alloc::string::String)>, usize) -> awaken_eval::outcome_acp::AcpEvaluationArtifact
+pub mod awaken_eval::outcome_judge
+pub enum awaken_eval::outcome_judge::DatasetError
+pub awaken_eval::outcome_judge::DatasetError::DuplicateCaseId(alloc::string::String)
+pub awaken_eval::outcome_judge::DatasetError::EmptyCaseId
+pub awaken_eval::outcome_judge::DatasetError::EmptyDataset
+pub awaken_eval::outcome_judge::DatasetError::EmptyName
+pub awaken_eval::outcome_judge::DatasetError::EmptyReasonTerm(alloc::string::String)
+pub awaken_eval::outcome_judge::DatasetError::IncompleteCase(alloc::string::String)
+pub awaken_eval::outcome_judge::DatasetError::UnsupportedVersion(u32)
+pub enum awaken_eval::outcome_judge::SourceKind
+pub awaken_eval::outcome_judge::SourceKind::Authored
+pub awaken_eval::outcome_judge::SourceKind::ClaudeTranscriptDerived
+pub awaken_eval::outcome_judge::SourceKind::CodexTranscriptDerived
+pub awaken_eval::outcome_judge::SourceKind::PublicDataset
+pub struct awaken_eval::outcome_judge::CaseResult
+pub awaken_eval::outcome_judge::CaseResult::case_id: alloc::string::String
+pub awaken_eval::outcome_judge::CaseResult::decision_correct: bool
+pub awaken_eval::outcome_judge::CaseResult::detail: alloc::string::String
+pub awaken_eval::outcome_judge::CaseResult::expected: awaken_ext_goal::outcome::GradeDecision
+pub awaken_eval::outcome_judge::CaseResult::explanation_grounded: core::option::Option<bool>
+pub awaken_eval::outcome_judge::CaseResult::predicted: core::option::Option<awaken_ext_goal::outcome::GradeDecision>
+pub awaken_eval::outcome_judge::CaseResult::satisfaction_correct: bool
+pub awaken_eval::outcome_judge::CaseResult::schema_valid: bool
+pub awaken_eval::outcome_judge::CaseResult::unsafe_accept: bool
+pub struct awaken_eval::outcome_judge::JudgeCase
+pub awaken_eval::outcome_judge::JudgeCase::deliverable: alloc::string::String
+pub awaken_eval::outcome_judge::JudgeCase::description: alloc::string::String
+pub awaken_eval::outcome_judge::JudgeCase::evidence: alloc::vec::Vec<awaken_ext_goal::outcome::DeliverableEvidence>
+pub awaken_eval::outcome_judge::JudgeCase::expected: awaken_ext_goal::outcome::GradeDecision
+pub awaken_eval::outcome_judge::JudgeCase::id: alloc::string::String
+pub awaken_eval::outcome_judge::JudgeCase::required_reason_terms: alloc::vec::Vec<alloc::string::String>
+pub awaken_eval::outcome_judge::JudgeCase::rubric: alloc::string::String
+pub awaken_eval::outcome_judge::JudgeCase::source: awaken_eval::outcome_judge::SourceKind
+pub awaken_eval::outcome_judge::JudgeCase::tags: alloc::vec::Vec<alloc::string::String>
+pub awaken_eval::outcome_judge::JudgeCase::worker_state: serde_json::value::Value
+impl awaken_eval::outcome_judge::JudgeCase
+pub fn awaken_eval::outcome_judge::JudgeCase::grading_input(&self) -> awaken_ext_goal::outcome::GradingInput
+pub struct awaken_eval::outcome_judge::JudgeDataset
+pub awaken_eval::outcome_judge::JudgeDataset::cases: alloc::vec::Vec<awaken_eval::outcome_judge::JudgeCase>
+pub awaken_eval::outcome_judge::JudgeDataset::name: alloc::string::String
+pub awaken_eval::outcome_judge::JudgeDataset::schema_version: u32
+impl awaken_eval::outcome_judge::JudgeDataset
+pub fn awaken_eval::outcome_judge::JudgeDataset::validate(&self) -> core::result::Result<(), awaken_eval::outcome_judge::DatasetError>
+pub struct awaken_eval::outcome_judge::JudgeMetrics
+pub awaken_eval::outcome_judge::JudgeMetrics::confusion: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::collections::btree::map::BTreeMap<alloc::string::String, usize>>
+pub awaken_eval::outcome_judge::JudgeMetrics::decision_correct: usize
+pub awaken_eval::outcome_judge::JudgeMetrics::exact_accuracy: f64
+pub awaken_eval::outcome_judge::JudgeMetrics::explanation_grounded: usize
+pub awaken_eval::outcome_judge::JudgeMetrics::grounded_explanation_rate: f64
+pub awaken_eval::outcome_judge::JudgeMetrics::grounding_scored: usize
+pub awaken_eval::outcome_judge::JudgeMetrics::observed: usize
+pub awaken_eval::outcome_judge::JudgeMetrics::satisfaction_agreement: f64
+pub awaken_eval::outcome_judge::JudgeMetrics::satisfaction_correct: usize
+pub awaken_eval::outcome_judge::JudgeMetrics::schema_compliance: f64
+pub awaken_eval::outcome_judge::JudgeMetrics::schema_valid: usize
+pub awaken_eval::outcome_judge::JudgeMetrics::total: usize
+pub awaken_eval::outcome_judge::JudgeMetrics::unsafe_accepts: usize
+pub struct awaken_eval::outcome_judge::JudgeObservation
+pub awaken_eval::outcome_judge::JudgeObservation::case_id: alloc::string::String
+pub awaken_eval::outcome_judge::JudgeObservation::latency_ms: core::option::Option<u64>
+pub awaken_eval::outcome_judge::JudgeObservation::output: alloc::string::String
+pub struct awaken_eval::outcome_judge::JudgeReport
+pub awaken_eval::outcome_judge::JudgeReport::dataset: alloc::string::String
+pub awaken_eval::outcome_judge::JudgeReport::duplicate_observation_ids: alloc::vec::Vec<alloc::string::String>
+pub awaken_eval::outcome_judge::JudgeReport::metrics: awaken_eval::outcome_judge::JudgeMetrics
+pub awaken_eval::outcome_judge::JudgeReport::results: alloc::vec::Vec<awaken_eval::outcome_judge::CaseResult>
+pub awaken_eval::outcome_judge::JudgeReport::unexpected_observation_ids: alloc::vec::Vec<alloc::string::String>
+pub const awaken_eval::outcome_judge::SCHEMA_VERSION: u32
+pub fn awaken_eval::outcome_judge::score(&awaken_eval::outcome_judge::JudgeDataset, &[awaken_eval::outcome_judge::JudgeObservation]) -> awaken_eval::outcome_judge::JudgeReport
+pub mod awaken_eval::public_benchmark
+pub enum awaken_eval::public_benchmark::Choice
+pub awaken_eval::public_benchmark::Choice::A
+pub awaken_eval::public_benchmark::Choice::B
+pub struct awaken_eval::public_benchmark::BenchmarkObservation
+pub awaken_eval::public_benchmark::BenchmarkObservation::case_id: alloc::string::String
+pub awaken_eval::public_benchmark::BenchmarkObservation::error: core::option::Option<alloc::string::String>
+pub awaken_eval::public_benchmark::BenchmarkObservation::latency_ms: u64
+pub awaken_eval::public_benchmark::BenchmarkObservation::output: alloc::string::String
+pub struct awaken_eval::public_benchmark::BinomialMetrics
+pub awaken_eval::public_benchmark::BinomialMetrics::ci95_high: f64
+pub awaken_eval::public_benchmark::BinomialMetrics::ci95_low: f64
+pub awaken_eval::public_benchmark::BinomialMetrics::correct: usize
+pub awaken_eval::public_benchmark::BinomialMetrics::rate: f64
+pub awaken_eval::public_benchmark::BinomialMetrics::total: usize
+pub struct awaken_eval::public_benchmark::PairwiseCase
+pub awaken_eval::public_benchmark::PairwiseCase::expected: awaken_eval::public_benchmark::Choice
+pub awaken_eval::public_benchmark::PairwiseCase::id: alloc::string::String
+pub awaken_eval::public_benchmark::PairwiseCase::prompt: alloc::string::String
+pub awaken_eval::public_benchmark::PairwiseCase::response_a: alloc::string::String
+pub awaken_eval::public_benchmark::PairwiseCase::response_b: alloc::string::String
+pub awaken_eval::public_benchmark::PairwiseCase::subset: alloc::string::String
+pub struct awaken_eval::public_benchmark::PairwiseCrossReport
+pub awaken_eval::public_benchmark::PairwiseCrossReport::agreement: awaken_eval::public_benchmark::BinomialMetrics
+pub awaken_eval::public_benchmark::PairwiseCrossReport::both_correct: usize
+pub awaken_eval::public_benchmark::PairwiseCrossReport::both_wrong: usize
+pub awaken_eval::public_benchmark::PairwiseCrossReport::cohens_kappa: f64
+pub awaken_eval::public_benchmark::PairwiseCrossReport::dataset: alloc::string::String
+pub awaken_eval::public_benchmark::PairwiseCrossReport::disagreement_case_ids: alloc::vec::Vec<alloc::string::String>
+pub awaken_eval::public_benchmark::PairwiseCrossReport::jointly_valid: usize
+pub awaken_eval::public_benchmark::PairwiseCrossReport::left_invalid_case_ids: alloc::vec::Vec<alloc::string::String>
+pub awaken_eval::public_benchmark::PairwiseCrossReport::left_only_correct: usize
+pub awaken_eval::public_benchmark::PairwiseCrossReport::right_invalid_case_ids: alloc::vec::Vec<alloc::string::String>
+pub awaken_eval::public_benchmark::PairwiseCrossReport::right_only_correct: usize
+pub awaken_eval::public_benchmark::PairwiseCrossReport::total: usize
+pub struct awaken_eval::public_benchmark::PairwiseDataset
+pub awaken_eval::public_benchmark::PairwiseDataset::cases: alloc::vec::Vec<awaken_eval::public_benchmark::PairwiseCase>
+pub awaken_eval::public_benchmark::PairwiseDataset::name: alloc::string::String
+pub awaken_eval::public_benchmark::PairwiseDataset::version: u32
+impl awaken_eval::public_benchmark::PairwiseDataset
+pub fn awaken_eval::public_benchmark::PairwiseDataset::validate(&self) -> core::result::Result<(), alloc::string::String>
+pub struct awaken_eval::public_benchmark::PairwiseReport
+pub awaken_eval::public_benchmark::PairwiseReport::accuracy: awaken_eval::public_benchmark::BinomialMetrics
+pub awaken_eval::public_benchmark::PairwiseReport::accuracy_when_a_is_better: awaken_eval::public_benchmark::BinomialMetrics
+pub awaken_eval::public_benchmark::PairwiseReport::accuracy_when_b_is_better: awaken_eval::public_benchmark::BinomialMetrics
+pub awaken_eval::public_benchmark::PairwiseReport::by_subset: alloc::collections::btree::map::BTreeMap<alloc::string::String, awaken_eval::public_benchmark::BinomialMetrics>
+pub awaken_eval::public_benchmark::PairwiseReport::dataset: alloc::string::String
+pub awaken_eval::public_benchmark::PairwiseReport::duplicate_observation_ids: alloc::vec::Vec<alloc::string::String>
+pub awaken_eval::public_benchmark::PairwiseReport::mean_latency_ms: f64
+pub awaken_eval::public_benchmark::PairwiseReport::observed: usize
+pub awaken_eval::public_benchmark::PairwiseReport::provider_errors: usize
+pub awaken_eval::public_benchmark::PairwiseReport::schema_valid: awaken_eval::public_benchmark::BinomialMetrics
+pub awaken_eval::public_benchmark::PairwiseReport::total: usize
+pub awaken_eval::public_benchmark::PairwiseReport::unexpected_observation_ids: alloc::vec::Vec<alloc::string::String>
+pub struct awaken_eval::public_benchmark::ReferenceCompactCase
+pub awaken_eval::public_benchmark::ReferenceCompactCase::id: alloc::string::String
+pub awaken_eval::public_benchmark::ReferenceCompactCase::query: alloc::string::String
+pub awaken_eval::public_benchmark::ReferenceCompactCase::reference: alloc::string::String
+pub awaken_eval::public_benchmark::ReferenceCompactCase::transcript: alloc::string::String
+pub struct awaken_eval::public_benchmark::ReferenceCompactDataset
+pub awaken_eval::public_benchmark::ReferenceCompactDataset::cases: alloc::vec::Vec<awaken_eval::public_benchmark::ReferenceCompactCase>
+pub awaken_eval::public_benchmark::ReferenceCompactDataset::name: alloc::string::String
+pub awaken_eval::public_benchmark::ReferenceCompactDataset::version: u32
+impl awaken_eval::public_benchmark::ReferenceCompactDataset
+pub fn awaken_eval::public_benchmark::ReferenceCompactDataset::validate(&self) -> core::result::Result<(), alloc::string::String>
+pub struct awaken_eval::public_benchmark::ReferenceCompactReport
+pub awaken_eval::public_benchmark::ReferenceCompactReport::dataset: alloc::string::String
+pub awaken_eval::public_benchmark::ReferenceCompactReport::mean_compression_ratio: f64
+pub awaken_eval::public_benchmark::ReferenceCompactReport::mean_latency_ms: f64
+pub awaken_eval::public_benchmark::ReferenceCompactReport::mean_token_f1: f64
+pub awaken_eval::public_benchmark::ReferenceCompactReport::mean_token_precision: f64
+pub awaken_eval::public_benchmark::ReferenceCompactReport::mean_token_recall: f64
+pub awaken_eval::public_benchmark::ReferenceCompactReport::observed: usize
+pub awaken_eval::public_benchmark::ReferenceCompactReport::provider_errors: usize
+pub awaken_eval::public_benchmark::ReferenceCompactReport::total: usize
+pub fn awaken_eval::public_benchmark::compare_pairwise(&awaken_eval::public_benchmark::PairwiseDataset, &[awaken_eval::public_benchmark::BenchmarkObservation], &[awaken_eval::public_benchmark::BenchmarkObservation]) -> awaken_eval::public_benchmark::PairwiseCrossReport
+pub fn awaken_eval::public_benchmark::import_locomo_selection(&serde_json::value::Value, usize, usize) -> core::result::Result<awaken_eval::memory_eval::MemoryDataset, alloc::string::String>
+pub fn awaken_eval::public_benchmark::import_qmsum_documents(&[serde_json::value::Value], usize) -> core::result::Result<awaken_eval::public_benchmark::ReferenceCompactDataset, alloc::string::String>
+pub fn awaken_eval::public_benchmark::import_rewardbench2_rows(&serde_json::value::Value, usize) -> core::result::Result<awaken_eval::public_benchmark::PairwiseDataset, alloc::string::String>
+pub async fn awaken_eval::public_benchmark::run_pairwise_acp(&awaken_eval::public_benchmark::PairwiseDataset, alloc::vec::Vec<alloc::string::String>, alloc::vec::Vec<(alloc::string::String, alloc::string::String)>) -> alloc::vec::Vec<awaken_eval::public_benchmark::BenchmarkObservation>
+pub async fn awaken_eval::public_benchmark::run_reference_compact_acp(&awaken_eval::public_benchmark::ReferenceCompactDataset, alloc::vec::Vec<alloc::string::String>, alloc::vec::Vec<(alloc::string::String, alloc::string::String)>) -> alloc::vec::Vec<awaken_eval::public_benchmark::BenchmarkObservation>
+pub fn awaken_eval::public_benchmark::score_pairwise(&awaken_eval::public_benchmark::PairwiseDataset, &[awaken_eval::public_benchmark::BenchmarkObservation]) -> awaken_eval::public_benchmark::PairwiseReport
+pub fn awaken_eval::public_benchmark::score_reference_compact(&awaken_eval::public_benchmark::ReferenceCompactDataset, &[awaken_eval::public_benchmark::BenchmarkObservation]) -> awaken_eval::public_benchmark::ReferenceCompactReport
 pub mod awaken_eval::record
 pub fn awaken_eval::record::case_from_run(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, &[awaken_agent_contract::agent::message::Message]) -> awaken_eval::Case
 pub mod awaken_eval::replay
@@ -11,8 +278,33 @@ pub fn awaken_eval::replay::Evaluator::with_judge(self, alloc::sync::Arc<dyn awa
 pub async fn awaken_eval::replay::run_case(&awaken_eval::Case) -> awaken_eval::CaseScore
 pub async fn awaken_eval::replay::run_dataset(&awaken_eval::Dataset) -> awaken_eval::Report
 pub mod awaken_eval::store
+pub fn awaken_eval::store::load_compact_dataset(&std::path::Path) -> core::io::error::Result<awaken_eval::compact_eval::CompactDataset>
+pub fn awaken_eval::store::load_compact_observations(&std::path::Path) -> core::io::error::Result<alloc::vec::Vec<awaken_eval::compact_eval::CompactObservation>>
 pub fn awaken_eval::store::load_dataset(&std::path::Path) -> core::io::error::Result<awaken_eval::Dataset>
+pub fn awaken_eval::store::load_judge_dataset(&std::path::Path) -> core::io::error::Result<awaken_eval::outcome_judge::JudgeDataset>
+pub fn awaken_eval::store::load_judge_observations(&std::path::Path) -> core::io::error::Result<alloc::vec::Vec<awaken_eval::outcome_judge::JudgeObservation>>
+pub fn awaken_eval::store::load_memory_dataset(&std::path::Path) -> core::io::error::Result<awaken_eval::memory_eval::MemoryDataset>
+pub fn awaken_eval::store::load_memory_observations(&std::path::Path) -> core::io::error::Result<alloc::vec::Vec<awaken_eval::memory_eval::MemoryObservation>>
 pub fn awaken_eval::store::save_dataset(&std::path::Path, &awaken_eval::Dataset) -> core::io::error::Result<()>
+pub fn awaken_eval::store::save_judge_dataset(&std::path::Path, &awaken_eval::outcome_judge::JudgeDataset) -> core::io::error::Result<()>
+pub mod awaken_eval::transcript_corpus
+pub struct awaken_eval::transcript_corpus::ClaudeImportStats
+pub awaken_eval::transcript_corpus::ClaudeImportStats::duplicates_skipped: usize
+pub awaken_eval::transcript_corpus::ClaudeImportStats::files_scanned: usize
+pub awaken_eval::transcript_corpus::ClaudeImportStats::goal_status_rows: usize
+pub awaken_eval::transcript_corpus::ClaudeImportStats::needs_revision_available: usize
+pub awaken_eval::transcript_corpus::ClaudeImportStats::rows_without_deliverable: usize
+pub awaken_eval::transcript_corpus::ClaudeImportStats::satisfied_available: usize
+pub awaken_eval::transcript_corpus::ClaudeImportStats::selected: usize
+pub awaken_eval::transcript_corpus::ClaudeImportStats::sentinel_rows_skipped: usize
+pub struct awaken_eval::transcript_corpus::CodexImportStats
+pub awaken_eval::transcript_corpus::CodexImportStats::completed_goals: usize
+pub awaken_eval::transcript_corpus::CodexImportStats::completion_calls: usize
+pub awaken_eval::transcript_corpus::CodexImportStats::matched_transcripts: usize
+pub awaken_eval::transcript_corpus::CodexImportStats::rows_without_deliverable: usize
+pub awaken_eval::transcript_corpus::CodexImportStats::selected: usize
+pub fn awaken_eval::transcript_corpus::import_claude_goals(&std::path::Path, impl core::convert::Into<alloc::string::String>, usize) -> core::io::error::Result<(awaken_eval::outcome_judge::JudgeDataset, awaken_eval::transcript_corpus::ClaudeImportStats)>
+pub fn awaken_eval::transcript_corpus::import_codex_goals(&std::path::Path, &std::path::Path, impl core::convert::Into<alloc::string::String>, usize) -> core::io::error::Result<(awaken_eval::outcome_judge::JudgeDataset, awaken_eval::transcript_corpus::CodexImportStats)>
 pub enum awaken_eval::Expectation
 pub awaken_eval::Expectation::JudgeScore
 pub awaken_eval::Expectation::JudgeScore::min_score: u8

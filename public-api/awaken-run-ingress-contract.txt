@@ -8,10 +8,12 @@ pub use awaken_run_ingress_contract::PlacementContext
 pub use awaken_run_ingress_contract::PlacementError
 pub use awaken_run_ingress_contract::PlacementPolicy
 pub use awaken_run_ingress_contract::PlacementRequirements
+pub use awaken_run_ingress_contract::REPOSITORY_CREDENTIALS_CAPABILITY
 pub use awaken_run_ingress_contract::RankedWorker
 pub use awaken_run_ingress_contract::RegisteredWorker
 pub use awaken_run_ingress_contract::RegistryError
 pub use awaken_run_ingress_contract::RegistryMutation
+pub use awaken_run_ingress_contract::SESSION_RESOURCES_CAPABILITY
 pub use awaken_run_ingress_contract::WorkerAssignment
 pub use awaken_run_ingress_contract::WorkerDirectory
 pub use awaken_run_ingress_contract::WorkerHeartbeat
@@ -142,6 +144,7 @@ pub struct awaken_run_ingress_contract::run_dispatch::RunDispatch
 pub awaken_run_ingress_contract::run_dispatch::RunDispatch::activation: awaken_runtime_contract::activation::RunActivation
 pub awaken_run_ingress_contract::run_dispatch::RunDispatch::execution_scope: core::option::Option<awaken_tenancy::ExecutionScopeRef>
 pub awaken_run_ingress_contract::run_dispatch::RunDispatch::placement: awaken_worker_contract::PlacementRequirements
+pub awaken_run_ingress_contract::run_dispatch::RunDispatch::session_resources: core::option::Option<awaken_run_ingress_contract::run_dispatch::SessionResourceEnvelope>
 pub awaken_run_ingress_contract::run_dispatch::RunDispatch::session_thread_id: core::option::Option<awaken_agent_contract::agent::thread::Id>
 pub awaken_run_ingress_contract::run_dispatch::RunDispatch::traceparent: core::option::Option<alloc::string::String>
 impl awaken_run_ingress_contract::run_dispatch::RunDispatch
@@ -152,7 +155,13 @@ pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::session_thread_id
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::thread_id(&self) -> &awaken_agent_contract::agent::thread::Id
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_execution_scope(self, awaken_tenancy::ExecutionScopeRef) -> Self
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_placement(self, awaken_worker_contract::PlacementRequirements) -> Self
+pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_session_resources(self, awaken_run_ingress_contract::run_dispatch::SessionResourceEnvelope) -> Self
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_traceparent(self, core::option::Option<alloc::string::String>) -> Self
+pub struct awaken_run_ingress_contract::run_dispatch::SessionResourceEnvelope
+pub awaken_run_ingress_contract::run_dispatch::SessionResourceEnvelope::resolved_resources_json: alloc::string::String
+pub awaken_run_ingress_contract::run_dispatch::SessionResourceEnvelope::workspace_id: alloc::string::String
+impl awaken_run_ingress_contract::run_dispatch::SessionResourceEnvelope
+pub fn awaken_run_ingress_contract::run_dispatch::SessionResourceEnvelope::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
 pub enum awaken_run_ingress_contract::CasOutcome
 pub awaken_run_ingress_contract::CasOutcome::Applied
 pub awaken_run_ingress_contract::CasOutcome::NotFound
@@ -222,6 +231,7 @@ pub struct awaken_run_ingress_contract::RunDispatch
 pub awaken_run_ingress_contract::RunDispatch::activation: awaken_runtime_contract::activation::RunActivation
 pub awaken_run_ingress_contract::RunDispatch::execution_scope: core::option::Option<awaken_tenancy::ExecutionScopeRef>
 pub awaken_run_ingress_contract::RunDispatch::placement: awaken_worker_contract::PlacementRequirements
+pub awaken_run_ingress_contract::RunDispatch::session_resources: core::option::Option<awaken_run_ingress_contract::run_dispatch::SessionResourceEnvelope>
 pub awaken_run_ingress_contract::RunDispatch::session_thread_id: core::option::Option<awaken_agent_contract::agent::thread::Id>
 pub awaken_run_ingress_contract::RunDispatch::traceparent: core::option::Option<alloc::string::String>
 impl awaken_run_ingress_contract::run_dispatch::RunDispatch
@@ -232,7 +242,13 @@ pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::session_thread_id
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::thread_id(&self) -> &awaken_agent_contract::agent::thread::Id
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_execution_scope(self, awaken_tenancy::ExecutionScopeRef) -> Self
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_placement(self, awaken_worker_contract::PlacementRequirements) -> Self
+pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_session_resources(self, awaken_run_ingress_contract::run_dispatch::SessionResourceEnvelope) -> Self
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_traceparent(self, core::option::Option<alloc::string::String>) -> Self
+pub struct awaken_run_ingress_contract::SessionResourceEnvelope
+pub awaken_run_ingress_contract::SessionResourceEnvelope::resolved_resources_json: alloc::string::String
+pub awaken_run_ingress_contract::SessionResourceEnvelope::workspace_id: alloc::string::String
+impl awaken_run_ingress_contract::run_dispatch::SessionResourceEnvelope
+pub fn awaken_run_ingress_contract::run_dispatch::SessionResourceEnvelope::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
 pub struct awaken_run_ingress_contract::SubmitOptions
 pub awaken_run_ingress_contract::SubmitOptions::dedupe_key: core::option::Option<alloc::string::String>
 pub awaken_run_ingress_contract::SubmitOptions::priority: i64
