@@ -1202,6 +1202,7 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-inference-contract",
+ "futures-util",
  "serde",
  "serde_json",
  "sha2 0.10.9",
