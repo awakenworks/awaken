@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use awaken_config_service::StaticToolCatalog;
+use awaken_config_service::{ConfigService, StaticToolCatalog};
 use awaken_config_store::SqliteConfigStore;
 use awaken_tenancy::{ScopeId, WorkspaceScope};
 use axum::middleware::Next;

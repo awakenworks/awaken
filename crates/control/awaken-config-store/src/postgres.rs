@@ -474,6 +474,32 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         }
     }
 
+    async fn list_config_revisions_scoped(
+        &self,
+        scope: &ScopeId,
+        id: &str,
+    ) -> Result<Vec<AgentConfigRevision>, ConfigStoreError> {
+        let rows = sqlx::query(&format!(
+            "SELECT data, generation FROM {NS}_agent_revision \
+             WHERE scope_id = $1 AND id = $2 ORDER BY generation ASC"
+        ))
+        .bind(&scope.0)
+        .bind(id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(reject)?;
+        let mut revisions = Vec::with_capacity(rows.len());
+        for row in rows {
+            let Json(config): Json<AgentConfig> = row.try_get("data").map_err(reject)?;
+            let revision: i64 = row.try_get("generation").map_err(reject)?;
+            revisions.push(AgentConfigRevision {
+                config,
+                revision: u64::try_from(revision).map_err(reject)?,
+            });
+        }
+        Ok(revisions)
+    }
+
     async fn list_configs_scoped(
         &self,
         scope: &ScopeId,

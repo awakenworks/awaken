@@ -534,6 +534,38 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         .await
     }
 
+    async fn list_config_revisions_scoped(
+        &self,
+        scope: &ScopeId,
+        id: &str,
+    ) -> Result<Vec<AgentConfigRevision>, ConfigStoreError> {
+        let id = id.to_string();
+        let scope = scope.0.clone();
+        self.with_conn(move |conn, p| {
+            let mut statement = conn
+                .prepare(&format!(
+                    "SELECT data, generation FROM {p}_agent_revision \
+                     WHERE scope_id = ?1 AND id = ?2 ORDER BY generation ASC"
+                ))
+                .map_err(reject)?;
+            let rows = statement
+                .query_map(params![scope, id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?))
+                })
+                .map_err(reject)?;
+            let mut revisions = Vec::new();
+            for row in rows {
+                let (data, revision) = row.map_err(reject)?;
+                revisions.push(AgentConfigRevision {
+                    config: serde_json::from_str(&data).map_err(reject)?,
+                    revision,
+                });
+            }
+            Ok(revisions)
+        })
+        .await
+    }
+
     async fn list_configs_scoped(
         &self,
         scope: &ScopeId,

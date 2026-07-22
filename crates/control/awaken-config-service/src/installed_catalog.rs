@@ -56,6 +56,13 @@ impl InstalledAgentCatalog {
             .map(|entry| entry.snapshot.clone())
     }
 
+    pub(crate) fn uninstall(&self, workspace: &str, agent_id: &str) {
+        self.entries
+            .lock()
+            .expect("installed Agent catalog")
+            .remove(&(workspace.to_string(), agent_id.to_string()));
+    }
+
     pub(crate) fn agents_referencing_skill(
         &self,
         workspace_id: &str,

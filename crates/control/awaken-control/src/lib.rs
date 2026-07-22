@@ -18,6 +18,7 @@
 pub mod admin_assistant;
 pub mod authz;
 pub mod control_stores;
+mod managed_agents;
 pub mod worker_stores;
 
 #[cfg(test)]
@@ -38,6 +39,7 @@ pub use crate::authz::{
     embedded_iam_for_tenant, embedded_iam_for_workspace,
 };
 pub use crate::control_stores::{ControlStoreConfig, StoreBackend};
+pub use crate::managed_agents::ConfigPlaneManagedAgentRepository;
 // The database-less worker's materialization subset (Stage C): only the credential
 // vault + secret store needed by snapshot-pinned inference access.
 pub use crate::worker_stores::{
@@ -49,9 +51,7 @@ use awaken_admin_config_api::{
     AdminState, CredentialProbe, InferenceProfileStore, McpStore, WebhookStore, admin_router,
 };
 use awaken_config_resolver::AgentInputBindingRepository;
-use awaken_config_service::{
-    ConfigPlane, ConfigService, ConfigServiceAgentSource, capabilities_router, config_router,
-};
+use awaken_config_service::{ConfigPlane, capabilities_router, config_router};
 use awaken_config_store::{AuditedConfigWrite, DEFAULT_SCOPE, ManagementAuditRecord};
 use awaken_credential_vault::SecretStore;
 use awaken_credential_vault::repo::CredentialRepo;
@@ -186,8 +186,6 @@ pub struct ControlRouterInput {
     pub deployment_state: Arc<DeploymentState>,
     /// The config authoring plane (scope edge over the config service).
     pub plane: ConfigPlane,
-    /// The scope-free config service (also wired into the host), for the `/v1/agents` projection.
-    pub config_service: Arc<ConfigService>,
     /// The host's global tool descriptors, for `GET /v1/capabilities`.
     pub global_tools: Vec<ToolDescriptor>,
     /// The org id stamped on webhook deliveries (`AWAKEN_ORG_ID`).
@@ -219,7 +217,6 @@ pub fn control_router(input: ControlRouterInput) -> (Router, Arc<WebhookLifecycl
         env_state,
         deployment_state,
         plane,
-        config_service,
         global_tools,
         org_id,
         iam,
@@ -269,10 +266,9 @@ pub fn control_router(input: ControlRouterInput) -> (Router, Arc<WebhookLifecycl
     // `/v1/agents` projects the config plane it hosts: an agent published via
     // `/v1/config/agents` is retrievable as a managed-wire projection of that single
     // truth (no second store), which is how the console probes the assistant.
-    let agents = agents_router(Arc::new(
-        AgentRegistryState::new()
-            .with_config_source(Arc::new(ConfigServiceAgentSource(config_service))),
-    ));
+    let agents = agents_router(Arc::new(AgentRegistryState::from_repository(Arc::new(
+        managed_agents::ConfigPlaneManagedAgentRepository::new(audit_plane.clone()),
+    ))));
     // Capability snapshot (`GET /v1/capabilities`): the host's tool descriptors +
     // installable plugins (with config schema) so the console authors data-driven.
     let capabilities = capabilities_router(global_tools);

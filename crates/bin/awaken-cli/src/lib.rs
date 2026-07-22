@@ -997,7 +997,6 @@ async fn management_router_over(
         env_state: env_state.clone(),
         deployment_state: deployment_state.clone(),
         plane,
-        config_service: config_service.clone(),
         global_tools: global,
         org_id: Some(local_org_id()),
         iam,
