@@ -8,6 +8,7 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
+import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -196,6 +197,37 @@ async function startPostgres(): Promise<{ container: string; url: string }> {
   throw new Error('timed out waiting for disposable Postgres');
 }
 
+const STAGE_PORT_FIRST = 12_000;
+const STAGE_PORT_COUNT = 15_000;
+
+async function canBind(port: number): Promise<boolean> {
+  return new Promise((resolve, reject) => {
+    const reservation = net.createServer();
+    reservation.once('error', (error: NodeJS.ErrnoException) => {
+      if (error.code === 'EADDRINUSE') resolve(false);
+      else reject(error);
+    });
+    reservation.listen(port, '127.0.0.1', () => {
+      reservation.close((error) => {
+        if (error) reject(error);
+        else resolve(true);
+      });
+    });
+  });
+}
+
+function stagePortAllocator(): () => Promise<number> {
+  let cursor = (process.pid * 53) % STAGE_PORT_COUNT;
+  return async () => {
+    for (let attempt = 0; attempt < STAGE_PORT_COUNT; attempt += 1) {
+      const port = STAGE_PORT_FIRST + cursor;
+      cursor = (cursor + 1) % STAGE_PORT_COUNT;
+      if (await canBind(port)) return port;
+    }
+    throw new Error('no free non-ephemeral stage E2E port');
+  };
+}
+
 async function main(): Promise<void> {
   for (const scenario of scenarios) {
     assert.ok(
@@ -211,18 +243,22 @@ async function main(): Promise<void> {
   }
 
   const postgres = await startPostgres();
-  // Keep stage ports below Linux's default ephemeral range so Docker's
-  // dynamically-published Postgres port cannot occupy one. A per-process block
-  // also lets independent stage runs coexist without sharing fixed ports.
-  const portBase = 12_000 + (process.pid % 200) * 50;
+  // Keep stage ports below Linux's default ephemeral range, but probe each port
+  // before handing it to a child. PID-derived fixed blocks can alias and also
+  // collide with unrelated host services during concurrent CI/local runs.
+  const nextStagePort = stagePortAllocator();
   const passed = new Set<string>();
   try {
     for (const [index, scenario] of scenarios.entries()) {
       console.log(`\n[stage-e2e ${index + 1}/${scenarios.length}] ${scenario.id}`);
+      const port = await nextStagePort();
+      const workerPort = await nextStagePort();
+      const configPort = await nextStagePort();
       const environment = {
         ...process.env,
-        E2E_PORT: String(portBase + index),
-        E2E_WORKER_PORT: String(portBase + 25 + index),
+        E2E_PORT: String(port),
+        E2E_WORKER_PORT: String(workerPort),
+        E2E_CONFIG_PORT: String(configPort),
         ...(scenario.postgres
           ? {
               AWAKEN_DATABASE_URL: postgres.url,
