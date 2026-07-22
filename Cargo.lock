@@ -1075,6 +1075,7 @@ dependencies = [
  "async-trait",
  "awaken-resource-contract",
  "awaken-scoped-migration",
+ "awaken-scoped-migration-sqlite",
  "parking_lot",
  "proptest",
  "rusqlite",

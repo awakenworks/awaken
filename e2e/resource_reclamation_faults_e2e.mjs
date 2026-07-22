@@ -114,7 +114,7 @@ function intents(directory) {
     '.timeout 10000',
     '-json',
     database,
-    'SELECT data FROM resource_purge_intents ORDER BY intent_id',
+    'SELECT data FROM resource_lifecycle_purge_intents ORDER BY intent_id',
   ]).toString().trim();
   return output ? JSON.parse(output).map((row) => JSON.parse(row.data)) : [];
 }
@@ -186,6 +186,19 @@ async function main() {
       id: skillId,
       content: `---\nname: ${skillId}\ndescription: fault recovery\n---\nRecover safely.`,
     })).status, 200);
+    // Hold the Skill before logical deletion so the live reclaimer cannot win
+    // the race and physically purge its tombstone before the process is killed.
+    // After the crash this hold is atomically replaced by the foreign fence used
+    // by the fault campaign below.
+    sqlite(
+      lifecycle,
+      `INSERT INTO resource_lifecycle_references(
+         workspace_id, resource_kind, resource_id, reference_kind, reference_id
+       ) VALUES (
+         ${sqlQuote(WORKSPACE)}, 'skill', ${sqlQuote(skillId)},
+         'retention_hold', 'fault-injection-hold'
+       );`,
+    );
 
     for (const fileId of [
       releaseFailure,
@@ -224,13 +237,17 @@ async function main() {
     sqlite(
       lifecycle,
       `
-        INSERT INTO resource_reclamation_fences(resource_kind, resource_id, intent_id)
+        INSERT INTO resource_lifecycle_reclamation_fences(resource_kind, resource_id, intent_id)
           VALUES ('file', ${sqlQuote(contended)}, 'external-reclaimer');
-        INSERT INTO resource_reclamation_fences(resource_kind, resource_id, intent_id)
+        DELETE FROM resource_lifecycle_references
+          WHERE resource_kind = 'skill' AND resource_id = ${sqlQuote(skillId)}
+            AND reference_kind = 'retention_hold'
+            AND reference_id = 'fault-injection-hold';
+        INSERT INTO resource_lifecycle_reclamation_fences(resource_kind, resource_id, intent_id)
           VALUES ('skill', ${sqlQuote(skillId)}, 'external-skill-reclaimer');
-        INSERT INTO resource_reclamation_fences(resource_kind, resource_id, intent_id)
+        INSERT INTO resource_lifecycle_reclamation_fences(resource_kind, resource_id, intent_id)
           VALUES ('file', ${sqlQuote(alreadyOwned)}, ${sqlQuote(alreadyOwnedIntent.intent_id)});
-        INSERT INTO resource_references(
+        INSERT INTO resource_lifecycle_references(
           workspace_id, resource_kind, resource_id, reference_kind, reference_id
         ) VALUES
           (${sqlQuote(WORKSPACE)}, 'file', ${sqlQuote(durableBlockers)}, 'logical_lifecycle', 'logical-1'),
@@ -242,10 +259,10 @@ async function main() {
           (${sqlQuote(WORKSPACE)}, 'file', ${sqlQuote(durableBlockers)}, 'retention_hold', 'hold-1'),
           (${sqlQuote(WORKSPACE)}, 'file', ${sqlQuote(corruptReference)}, 'future_unknown_kind', 'bad-1');
         CREATE TRIGGER inject_late_reference
-          AFTER INSERT ON resource_reclamation_fences
+          AFTER INSERT ON resource_lifecycle_reclamation_fences
           WHEN NEW.resource_id = ${sqlQuote(lateReference)}
         BEGIN
-          INSERT INTO resource_references(
+          INSERT INTO resource_lifecycle_references(
             workspace_id, resource_kind, resource_id, reference_kind, reference_id
           ) VALUES (
             ${sqlQuote(WORKSPACE)}, 'file', ${sqlQuote(lateReference)},
@@ -253,16 +270,16 @@ async function main() {
           );
         END;
         CREATE TRIGGER reject_release
-          BEFORE DELETE ON resource_reclamation_fences
+          BEFORE DELETE ON resource_lifecycle_reclamation_fences
           WHEN OLD.resource_id = ${sqlQuote(releaseFailure)}
         BEGIN
           SELECT RAISE(ABORT, 'injected release failure');
         END;
         CREATE TRIGGER inject_late_guard_error
-          AFTER INSERT ON resource_reclamation_fences
+          AFTER INSERT ON resource_lifecycle_reclamation_fences
           WHEN NEW.resource_id = ${sqlQuote(lateGuardError)}
         BEGIN
-          INSERT INTO resource_references(
+          INSERT INTO resource_lifecycle_references(
             workspace_id, resource_kind, resource_id, reference_kind, reference_id
           ) VALUES (
             ${sqlQuote(WORKSPACE)}, 'file', ${sqlQuote(lateGuardError)},
@@ -270,19 +287,19 @@ async function main() {
           );
         END;
         CREATE TRIGGER reject_combined_release
-          BEFORE DELETE ON resource_reclamation_fences
+          BEFORE DELETE ON resource_lifecycle_reclamation_fences
           WHEN OLD.resource_id = ${sqlQuote(combinedFailure)}
         BEGIN
           SELECT RAISE(ABORT, 'injected combined release failure');
         END;
         CREATE TRIGGER ignore_claim_save
-          BEFORE UPDATE ON resource_purge_intents
+          BEFORE UPDATE ON resource_lifecycle_purge_intents
           WHEN OLD.intent_id = ${sqlQuote(saveConflictIntent.intent_id)}
         BEGIN
           SELECT RAISE(IGNORE);
         END;
         CREATE TRIGGER reject_claim_save
-          BEFORE UPDATE ON resource_purge_intents
+          BEFORE UPDATE ON resource_lifecycle_purge_intents
           WHEN OLD.intent_id = ${sqlQuote(saveFailureIntent.intent_id)}
         BEGIN
           SELECT RAISE(ABORT, 'injected claim save failure');
@@ -328,7 +345,7 @@ async function main() {
     assert.equal(fencedSession.status, 200, JSON.stringify(fencedSession.body));
     sqlite(
       lifecycle,
-      `INSERT INTO resource_reclamation_fences(resource_kind, resource_id, intent_id)
+      `INSERT INTO resource_lifecycle_reclamation_fences(resource_kind, resource_id, intent_id)
          VALUES ('file', ${sqlQuote(fencedBinding)}, 'external-active-fence');`,
     );
     const fencedActivation = await json(
@@ -344,7 +361,7 @@ async function main() {
     assert.equal(
       sqlite(
         lifecycle,
-        `SELECT count(*) FROM resource_references
+        `SELECT count(*) FROM resource_lifecycle_references
           WHERE resource_kind = 'file' AND resource_id = ${sqlQuote(fencedBinding)}
             AND reference_kind = 'session_binding';`,
       ).trim(),
@@ -352,7 +369,7 @@ async function main() {
     );
     sqlite(
       lifecycle,
-      `DELETE FROM resource_reclamation_fences
+      `DELETE FROM resource_lifecycle_reclamation_fences
         WHERE resource_kind = 'file' AND resource_id = ${sqlQuote(fencedBinding)}
           AND intent_id = 'external-active-fence';`,
     );
@@ -369,7 +386,7 @@ async function main() {
     const fencedRepository = `managed:${repositorySession.body.id}:repository:${repositoryBinding}`;
     sqlite(
       lifecycle,
-      `INSERT INTO resource_reclamation_fences(resource_kind, resource_id, intent_id)
+      `INSERT INTO resource_lifecycle_reclamation_fences(resource_kind, resource_id, intent_id)
          VALUES ('repository', ${sqlQuote(fencedRepository)}, 'external-repository-fence');`,
     );
     const repositoryActivation = await json(
@@ -390,7 +407,7 @@ async function main() {
     assert.equal(intentFor(directory, fencedRepository).status, 'pending');
     sqlite(
       lifecycle,
-      `DELETE FROM resource_reclamation_fences
+      `DELETE FROM resource_lifecycle_reclamation_fences
         WHERE resource_kind = 'repository' AND resource_id = ${sqlQuote(fencedRepository)}
           AND intent_id = 'external-repository-fence';`,
     );
@@ -401,7 +418,7 @@ async function main() {
     fs.writeFileSync(skillAggregate, '{broken-skill-aggregate');
     sqlite(
       lifecycle,
-      `DELETE FROM resource_reclamation_fences
+      `DELETE FROM resource_lifecycle_reclamation_fences
         WHERE resource_kind = 'skill' AND resource_id = ${sqlQuote(skillId)}
           AND intent_id = 'external-skill-reclaimer';`,
     );
@@ -463,15 +480,15 @@ async function main() {
         DROP TRIGGER reject_release;
         DROP TRIGGER inject_late_guard_error;
         DROP TRIGGER reject_combined_release;
-        DELETE FROM resource_references
+        DELETE FROM resource_lifecycle_references
           WHERE resource_id = ${sqlQuote(lateReference)}
             AND reference_id = 'late-session-reference';
-        DELETE FROM resource_references
+        DELETE FROM resource_lifecycle_references
           WHERE resource_id IN (${sqlQuote(durableBlockers)}, ${sqlQuote(corruptReference)});
-        DELETE FROM resource_references
+        DELETE FROM resource_lifecycle_references
           WHERE resource_id = ${sqlQuote(lateGuardError)}
             AND reference_id = 'late-corrupt-reference';
-        DELETE FROM resource_reclamation_fences
+        DELETE FROM resource_lifecycle_reclamation_fences
           WHERE resource_id = ${sqlQuote(contended)}
             AND intent_id = 'external-reclaimer';
       `,
@@ -539,7 +556,7 @@ async function main() {
       server.stderrText = '';
       sqlite(
         lifecycle,
-        `UPDATE resource_purge_intents
+        `UPDATE resource_lifecycle_purge_intents
            SET status = 'pending', not_before_unix_ms = 0,
                lease_expires_at_unix_ms = NULL, data = ${sqlQuote(JSON.stringify(corrupt))}
          WHERE intent_id = ${sqlQuote(completedIntent.intent_id)};`,
@@ -549,7 +566,7 @@ async function main() {
     }
     sqlite(
       lifecycle,
-      `UPDATE resource_purge_intents
+      `UPDATE resource_lifecycle_purge_intents
          SET status = 'completed',
              not_before_unix_ms = ${completedIntent.not_before_unix_ms},
              lease_expires_at_unix_ms = NULL,
