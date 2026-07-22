@@ -678,6 +678,9 @@ internal config version remains an awaken governance detail.
 - durable root and delegated dispatches carry the same Workspace-scoped frozen
   resource manifest; cold workers install it before sandbox creation and placement
   excludes workers without the required shared resource/credential seams.
+- delivered Skill bundles form one exact `.skills` projection: rebuilding replaces
+  the tree, and changing to an empty or different pin removes obsolete scripts,
+  references, templates, and binary assets before the next Run.
 
 ### Completed consolidation
 

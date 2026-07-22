@@ -353,8 +353,11 @@ At Session creation the selected latest version is frozen into
 `ResolvedSessionResources.skills`. Retry and restart load that exact version and
 verify its bundle SHA-256. The Runtime materializer revalidates relative paths,
 rejects traversal/symlinks, preserves binary bytes, and writes supporting files
-under `.skills/<skill-id>`. `allowed_tools` remains a monotonic gate layered after
-platform authorization, so a Skill can only remove tool authority.
+under `.skills/<skill-id>`. The `.skills` directory is an exact runtime-owned
+projection: every context rebuild replaces it, and a manifest transition removes
+the old tree before the next Run can read a retired script or support file.
+`allowed_tools` remains a monotonic gate layered after platform authorization, so
+a Skill can only remove tool authority.
 
 Deleting one version is therefore a logical retirement from authoring/list views,
 not physical byte deletion: its ordinal is never reused and an already-persisted

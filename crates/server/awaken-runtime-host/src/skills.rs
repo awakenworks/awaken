@@ -27,7 +27,7 @@ use awaken_skill_store::SkillVersion;
 /// skill written this run is discovered (ADR-0036 D8). A hand/agent definition can
 /// negotiate a different dir via its `plugin_config.skills_dir`; this is the fallback.
 pub(crate) const DEFAULT_SKILLS_SUBDIR: &str = "skills";
-const DELIVERED_SKILLS_SUBDIR: &str = ".skills";
+pub(crate) const DELIVERED_SKILLS_SUBDIR: &str = ".skills";
 
 /// Bridges the sandbox [`LocalSandbox`] to the [`SkillSource`] port: scans the
 /// workspace skill dir live, returning neutral file data. The host owns this bridge
@@ -174,6 +174,12 @@ pub(crate) async fn wire_skills(
         )));
     }
     if let Some(delivered) = delivered {
+        // `.skills` is a complete runtime-owned projection, not an append-only
+        // cache. Clear it before every rebuild so a retired Skill or a file removed
+        // by a newer immutable version cannot remain reachable through read/bash.
+        env.remove_workspace_path(DELIVERED_SKILLS_SUBDIR)
+            .await
+            .map_err(|error| error.to_string())?;
         let mut files = Vec::with_capacity(delivered.len());
         for version in delivered {
             if awaken_skill_store::bundle_sha256(&version.files) != version.bundle_sha256 {

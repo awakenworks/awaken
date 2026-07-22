@@ -1195,6 +1195,14 @@ impl SessionRuntime for ManagedHost {
             .await?;
         let new = self.host.thread_resources_snapshot(thread);
         if let Some(environment) = live_environment {
+            // Delivered Skills are an exact, runtime-owned tree. Remove the old
+            // projection at the manifest transition itself; the rebuilt context
+            // materializes only the newly frozen versions. Authored `skills/`
+            // remains independently owned and is untouched.
+            environment
+                .remove_workspace_path(crate::skills::DELIVERED_SKILLS_SUBDIR)
+                .await
+                .map_err(|error| RunError::internal(error.to_string()))?;
             for mount in &old.mounts {
                 if !new
                     .mounts

@@ -22,6 +22,8 @@ const THREAD = `resource-session-${process.pid}`;
 const GRANT = 'resource-manifest-e2e';
 const FILE_BYTES = Buffer.from('immutable input selected by the frozen Session manifest\n');
 const MOUNT_PATH = 'uploads/input.txt';
+const SKILL_NAME = `remote-worker-skill-${process.pid}`;
+const SKILL_BINARY = Buffer.from([0, 159, 146, 150, 255, 13, 0, 10]);
 
 const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -132,6 +134,40 @@ async function uploadFile(): Promise<string> {
   return JSON.parse(text).id;
 }
 
+async function uploadSkill(): Promise<{ skill_id: string; version: number; bundle_sha256: string }> {
+  const form = new FormData();
+  form.append(
+    'file',
+    new Blob([
+      `---\nname: ${SKILL_NAME}\ndescription: frozen remote worker Skill\n---\nRead the supporting asset.`,
+    ], { type: 'text/markdown' }),
+    'SKILL.md',
+  );
+  form.append(
+    'file',
+    new Blob([SKILL_BINARY], { type: 'application/octet-stream' }),
+    'assets/data.bin',
+  );
+  const created = await fetch(`${CONFIG_BASE}/v1/workspaces/${WORKSPACE}/skills`, {
+    method: 'POST',
+    body: form,
+  });
+  const createdText = await created.text();
+  assert.equal(created.status, 200, `Skill upload accepted: ${createdText}`);
+  const skillId = JSON.parse(createdText).id;
+  const version = await fetch(
+    `${CONFIG_BASE}/v1/workspaces/${WORKSPACE}/skills/${skillId}/versions/1`,
+  );
+  const versionText = await version.text();
+  assert.equal(version.status, 200, `Skill version retrieved: ${versionText}`);
+  const projected = JSON.parse(versionText);
+  return {
+    skill_id: skillId,
+    version: Number(projected.version),
+    bundle_sha256: projected.bundle_sha256,
+  };
+}
+
 async function registerSeedWorker(): Promise<{ id: string; identity: any }> {
   const id = `resource-seed-${process.pid}`;
   const registration = await post(
@@ -177,7 +213,7 @@ async function registerSeedWorker(): Promise<{ id: string; identity: any }> {
   return { id, identity };
 }
 
-function resourceEnvelope(fileId?: string, workspace = WORKSPACE): any {
+function resourceEnvelope(fileId?: string, workspace = WORKSPACE, skill?: any): any {
   const inputs = fileId === undefined
     ? []
     : [{
@@ -188,7 +224,7 @@ function resourceEnvelope(fileId?: string, workspace = WORKSPACE): any {
       }];
   return {
     workspace_id: workspace,
-    resolved_resources_json: JSON.stringify({ inputs, skills: [] }),
+    resolved_resources_json: JSON.stringify({ inputs, skills: skill === undefined ? [] : [skill] }),
   };
 }
 
@@ -305,6 +341,7 @@ async function main(): Promise<void> {
     await waitForPort(CONFIG_PORT, 180_000, management);
     await waitForPort(PORT, 180_000, cell);
     const fileId = await uploadFile();
+    const skill = await uploadSkill();
     const seedWorker = await registerSeedWorker();
 
     await post(`/v1/durable/threads/${THREAD}-seed/submit_background`, { text: 'seed activation' });
@@ -312,7 +349,7 @@ async function main(): Promise<void> {
       await post('/v1/worker/dispatch/claim', { identity: seedWorker.identity }, seedWorker.id)
     ).claimed;
     assert.ok(seedClaim, 'seed worker claimed a server-created activation');
-    const first = runRequest(seedClaim.request, 'attach', resourceEnvelope(fileId));
+    const first = runRequest(seedClaim.request, 'attach', resourceEnvelope(fileId, WORKSPACE, skill));
     await post('/v1/worker/dispatch/enqueue', { request: first }, seedWorker.id);
 
     // The manifest itself causes a placement requirement. A worker without the
@@ -354,23 +391,35 @@ async function main(): Promise<void> {
     await waitForPort(WORKER_ADMIN_PORT, 180_000, worker);
 
     const projectedFile = path.join(workerStorage, 'sandboxes', THREAD, '.mnt', MOUNT_PATH);
+    const projectedSkill = path.join(
+      workerStorage,
+      'sandboxes',
+      THREAD,
+      '.skills',
+      skill.skill_id,
+      'assets',
+      'data.bin',
+    );
     await waitUntilSettled(THREAD).catch((error) => {
       throw new Error(`${error instanceof Error ? error.message : error}\nworker output:\n${workerOutput}`);
     });
     await waitForFile(projectedFile, FILE_BYTES);
+    await waitForFile(projectedSkill, SKILL_BINARY);
 
     // An explicit empty successor is semantically meaningful: it must route to a
     // resource-capable worker and remove the projection from the live Session.
     await enqueueAndAwait(runRequest(seedClaim.request, 'detach', resourceEnvelope()), seedWorker.id);
     await waitForFile(projectedFile, undefined);
+    await waitForFile(path.join(workerStorage, 'sandboxes', THREAD, '.skills'), undefined);
 
     // Rebinding uses the same immutable shared File bytes; neither the cell nor
     // worker consults a node-local resource copy or current Agent defaults.
     await enqueueAndAwait(
-      runRequest(seedClaim.request, 'reattach', resourceEnvelope(fileId)),
+      runRequest(seedClaim.request, 'reattach', resourceEnvelope(fileId, WORKSPACE, skill)),
       seedWorker.id,
     );
     await waitForFile(projectedFile, FILE_BYTES);
+    await waitForFile(projectedSkill, SKILL_BINARY);
     for (const relative of ['files.db', 'memory_fs.db', 'resource-lifecycle.db', 'skills']) {
       assert.equal(
         fs.existsSync(path.join(workerStorage, relative)),
@@ -385,7 +434,7 @@ async function main(): Promise<void> {
     const foreign = runRequest(
       seedClaim.request,
       'foreign',
-      resourceEnvelope(fileId, `${WORKSPACE}-other`),
+      resourceEnvelope(fileId, `${WORKSPACE}-other`, skill),
     );
     foreign.activation.thread_id = foreignThread;
     foreign.session_thread_id = foreignThread;
@@ -399,7 +448,7 @@ async function main(): Promise<void> {
 
     assert.ok(!workerOutput.includes(FILE_BYTES.toString()), 'worker logs do not expose File bytes');
     console.log(
-      'WORKER RESOURCE MANIFEST TS E2E PASS: capability placement, frozen File attach, explicit detach, reattach, and cross-Workspace fail-closed behavior crossed real cell/worker processes.',
+      'WORKER RESOURCE MANIFEST TS E2E PASS: capability placement, frozen File/Skill attach, exact-tree detach, reattach, and cross-Workspace fail-closed behavior crossed real cell/worker processes.',
     );
   } finally {
     if (worker) await stopServer(worker).catch(() => {});
