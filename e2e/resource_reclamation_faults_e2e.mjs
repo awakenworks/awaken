@@ -101,12 +101,17 @@ function sqlQuote(value) {
 }
 
 function sqlite(database, sql) {
-  return execFileSync('sqlite3', [database], { input: sql, encoding: 'utf8' });
+  return execFileSync('sqlite3', ['-cmd', '.timeout 10000', database], {
+    input: sql,
+    encoding: 'utf8',
+  });
 }
 
 function intents(directory) {
   const database = path.join(directory, 'resource-lifecycle.db');
   const output = execFileSync('sqlite3', [
+    '-cmd',
+    '.timeout 10000',
     '-json',
     database,
     'SELECT data FROM resource_purge_intents ORDER BY intent_id',
