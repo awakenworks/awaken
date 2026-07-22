@@ -15,6 +15,19 @@ async function req(base, method, uri, rawBody) {
   return { status: res.status };
 }
 
+async function createSession(base, resources) {
+  const res = await fetch(`${base}/v1/sessions`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'anthropic-beta': 'managed-agents-2026-04-01',
+    },
+    body: JSON.stringify({ agent: 'assistant', resources }),
+  });
+  const text = await res.text();
+  return { status: res.status, body: text ? JSON.parse(text) : null };
+}
+
 async function main() {
   await withRealServer('echo', 38265, async (base) => {
     for (const uri of [
@@ -32,6 +45,25 @@ async function main() {
     const r = await req(base, 'POST', '/v1/skills', '{ not valid json');
     assert.ok(r.status >= 400 && r.status < 500, `malformed skill upload -> 4xx (got ${r.status})`);
     pass('a malformed resource-plane body is a client error');
+
+    // Cause/effect matrix at the Managed anti-corruption boundary. Each shape
+    // would otherwise create an ungoverned or ambiguous mount; none may be
+    // silently dropped from resources[].
+    const malformedSessionResources = [
+      { type: 'future_resource', id: 'opaque' },
+      { type: 'file' },
+      { type: 'file', file_id: 7 },
+      { type: 'memory_store' },
+      { type: 'memory_store', memory_store_id: 'm', access: 'owner' },
+      { type: 'github_repository' },
+      { type: 'github_repository', url: '/tmp/repo', checkout: { type: 'tag', name: 'v1' } },
+    ];
+    for (const [index, resource] of malformedSessionResources.entries()) {
+      const denied = await createSession(base, [resource]);
+      assert.equal(denied.status, 400, `${index}: ${JSON.stringify(denied.body)}`);
+      assert.match(JSON.stringify(denied.body), /invalid resource/u, `${index}`);
+    }
+    pass('unsupported and malformed Session resource unions fail closed');
 
     console.log('E2E PASS: resource-plane API error/edge paths (files/memory/skills).');
   });
