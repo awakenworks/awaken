@@ -107,7 +107,10 @@ impl SharedHost {
                         .expect("open durable Memory extraction repository"),
                     )
                 }
-                None => Arc::new(awaken_session_store::InMemorySessionRepository::default()),
+                None => Arc::new(
+                    awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                        .expect("open ephemeral Memory extraction repository"),
+                ),
             };
         let memory = Arc::new(crate::memory::MemoryRuntime::new(
             llm.clone(),

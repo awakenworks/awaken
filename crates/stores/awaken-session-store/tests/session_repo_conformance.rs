@@ -1,6 +1,6 @@
 //! Trait-generic **conformance suite** for the `ManagedSessionRepository` port — the
-//! shared behavioural contract every backend must satisfy, run against both the in-memory
-//! reference and the SQLite backend (ADR-0059, the `awaken-store-conformance` pattern).
+//! shared behavioural contract every backend must satisfy (ADR-0059, the
+//! `awaken-store-conformance` pattern).
 //!
 //! Every save also persists an owner scope in the same repository operation. The generic
 //! suite checks that universal invariant for both backends; durable restart persistence
@@ -9,7 +9,7 @@
 use awaken_session_contract::{
     ManagedSessionRepository, PersistedSession, ScopedPersistedSession, SessionLifecycleFact,
 };
-use awaken_session_store::{InMemorySessionRepository, SqliteManagedSessionRepository};
+use awaken_session_store::SqliteManagedSessionRepository;
 use serde_json::json;
 
 fn block<F: std::future::Future>(f: F) -> F::Output {
@@ -170,11 +170,6 @@ async fn run_suite<R: ManagedSessionRepository>(fresh: impl Fn() -> R) {
 }
 
 // ── Backend rows: each must pass the identical universal suite ───────────────────
-
-#[test]
-fn in_memory_backend_conforms() {
-    block(run_suite(InMemorySessionRepository::default));
-}
 
 #[test]
 fn sqlite_backend_conforms() {

@@ -71,7 +71,7 @@ pub use awaken_session_contract::{
     PutMemoryExtractionOutcome, ResolvedInput, ResolvedInputSource, ResolvedSessionResources,
     ResolvedSkillBinding, resource_plane,
 };
-pub use awaken_session_store::InMemorySessionRepository;
+pub use awaken_session_store::SqliteManagedSessionRepository;
 pub use state::{
     AgentCapabilities, BuiltinTool, CustomTool, DelegatedRun, LiveInboxEntry, LiveInboxError,
     LiveInboxSnapshot, ManagedState, McpServerBinding, OutcomeIteration, OutcomeReport, Pending,

@@ -16,6 +16,7 @@ use awaken_resource_contract::{
     ResourceState, RetentionPolicy,
 };
 use awaken_session_contract::ManagedSessionRepository;
+use awaken_session_store::SqliteManagedSessionRepository;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -493,7 +494,9 @@ async fn repository_token_is_sealed_before_the_effective_manifest() {
 #[tokio::test]
 async fn terminal_session_retires_only_its_compatibility_repository_definition() {
     let catalog = resource_catalog();
-    let repo = std::sync::Arc::new(awaken_session_store::InMemorySessionRepository::default());
+    let repo = std::sync::Arc::new(
+        SqliteManagedSessionRepository::open_in_memory().expect("open ephemeral Session store"),
+    );
     let state = ManagedState::new(AcceptingFake::default())
         .with_resource_catalog(catalog.clone())
         .with_session_repo(repo.clone());
@@ -624,7 +627,9 @@ async fn failed_live_activation_rolls_back_before_reporting_failure() {
     let runtime = AcceptingFake::default();
     let fail_next = runtime.fail_next_apply.clone();
     let applied = runtime.applied.clone();
-    let repo = std::sync::Arc::new(awaken_session_store::InMemorySessionRepository::default());
+    let repo = std::sync::Arc::new(
+        SqliteManagedSessionRepository::open_in_memory().expect("open ephemeral Session store"),
+    );
     let state = ManagedState::new(runtime)
         .with_session_repo(repo.clone())
         .with_resource_catalog(resource_catalog());
