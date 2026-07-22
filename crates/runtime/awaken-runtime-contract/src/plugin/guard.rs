@@ -18,9 +18,8 @@ pub struct RunEndContext<'a> {
     /// run-scoped continuation counter. A guard reads it to enforce its own
     /// iteration budget; the runtime also caps total steps as a runaway backstop.
     pub forced_continuations: usize,
-    /// The run's cancellation token, if any. A guard that grades through a judge
-    /// sub-run forwards it, so cancelling the parent cancels the judge too rather
-    /// than orphaning it.
+    /// The Run's cancellation token, if any. A guard that consults an auxiliary
+    /// Run forwards it, so cancelling the parent does not orphan that Run.
     pub cancellation: Option<&'a tokio_util::sync::CancellationToken>,
     /// The run's read-only materialized state, so a continuation predicate can
     /// inspect accumulated state (e.g. whether a machine instance is terminal).
@@ -43,11 +42,11 @@ pub enum RunEndDecision {
 }
 
 /// A run-end continuation guard: consulted at the natural-end boundary to decide
-/// whether the Run ends or takes another steered Step (e.g. goal/outcome
-/// evaluation). The runtime consults registered guards in dependency order and
+/// whether the Run ends or takes another steered Step. The runtime consults
+/// registered guards in dependency order and
 /// takes the first that steers; if none steer, the run ends carrying the last
-/// guard's completion detail. Async so a guard can grade through an external
-/// judge before deciding.
+/// guard's completion detail. Async so a guard can consult an external service
+/// or auxiliary Run before deciding.
 #[async_trait]
 pub trait RunEndGuard: Send + Sync {
     /// Stable id, checked against the plugin's `CapabilityBound` (G30).

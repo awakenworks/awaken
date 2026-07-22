@@ -423,8 +423,8 @@ impl Runtime {
     }
 
     /// Perform a committed `ScheduledAction` (ADR-0020): run the deferred action
-    /// the awaiting run committed and commit the resumed outcome. Fails closed if
-    /// the run is not awaiting on a `ScheduledAction` ticket.
+    /// the awaiting Run committed and commit the resumed result. Fails closed if
+    /// the Run is not awaiting on a `ScheduledAction` ticket.
     pub async fn perform_scheduled_action(
         &self,
         run_id: &RunId,
@@ -454,7 +454,7 @@ impl LiveRunControl for Runtime {
     fn deliver(&self, command: LiveCommand) -> Result<(), ControlError> {
         match command {
             // Cancellation is cooperative: signal the token; the loop observes it
-            // at the next step boundary and commits a terminal Cancelled outcome.
+            // at the next Step boundary and commits a terminal Cancelled result.
             LiveCommand::Cancel { run_id } => {
                 let active = self.active_runs.lock();
                 active.get(&run_id).ok_or(ControlError::NotActive)?.cancel();

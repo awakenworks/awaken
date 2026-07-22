@@ -15,9 +15,8 @@ use std::time::{Duration, Instant};
 use awaken_runtime_contract::metrics::MetricsRecorder;
 use parking_lot::Mutex;
 
-/// Tuning for [`CircuitBreaker`]. The defaults mirror the goal runtime:
-/// 5 consecutive failures open the circuit for a 30s cooldown, then one
-/// half-open probe decides.
+/// Tuning for [`CircuitBreaker`]. Five consecutive failures open the circuit
+/// for a 30s cooldown, then one half-open probe decides.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CircuitBreakerConfig {
     /// Consecutive counted failures that open the circuit.

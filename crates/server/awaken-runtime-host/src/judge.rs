@@ -69,9 +69,9 @@ impl RawTool for AuxAgentTool {
             .map_err(|error| ToolError::InvalidArguments(error.to_string()))?;
         let n = self.seq.fetch_add(1, Ordering::SeqCst);
         let name = format!("{}-agent-run-{n}", request.agent_id);
-        // Every sub-run behind this port is out-of-band housekeeping (compaction
-        // or memory selection), not the Worker's turn — its usage stays
-        // isolated on its own sub-thread rather than folding into the parent tally.
+        // Every Run behind this port is out-of-band housekeeping (compaction or
+        // memory selection), not the Worker Run — its usage stays isolated on
+        // its own Thread rather than folding into the parent tally.
         let (text, _usage) = crate::agent_runner::run_configured_agent(
             &self.catalog,
             crate::agent_runner::AgentRunSandbox::Fresh(&self.provider),
