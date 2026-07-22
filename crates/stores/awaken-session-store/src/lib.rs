@@ -21,12 +21,10 @@ use awaken_session_contract::{
     SessionLifecycleFact, SessionResourceState,
 };
 
-// The in-memory reference backends (plain + scoped) live here beside the durable
-// siblings (issue A / Phase 1); the ports + PersistedSession value + the
-// ScopedSessionRepo decorator stay inward in `awaken-session-contract`.
+// The in-memory reference backend lives here beside the durable siblings.
 mod extraction;
 mod inmem;
-pub use inmem::{InMemoryScopedSessionStore, InMemorySessionRepository};
+pub use inmem::InMemorySessionRepository;
 use rusqlite::{Connection, OptionalExtension, params};
 use sqlx::Row;
 use sqlx::postgres::PgPool;
