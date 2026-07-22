@@ -56,6 +56,9 @@ impl ConfigPlaneManagedAgentRepository {
         workspace_id: &str,
         id: &str,
     ) -> Result<Option<AgentConfigRevision>, ManagedAgentError> {
+        if workspace_id == RESERVED_ADMIN_SCOPE {
+            return Ok(None);
+        }
         let current = self
             .plane
             .get_versioned(&Self::scope(workspace_id), id)
@@ -63,7 +66,11 @@ impl ConfigPlaneManagedAgentRepository {
             .map_err(ManagedAgentError::Storage)?;
         if current.is_some()
             || workspace_id != self.platform_workspace
-            || id != awaken_admin_assistant::ADMIN_ASSISTANT_AGENT_ID
+            || self
+                .plane
+                .service()
+                .installed_in(workspace_id, id)
+                .is_none()
         {
             return Ok(current);
         }
@@ -71,6 +78,18 @@ impl ConfigPlaneManagedAgentRepository {
             .get_versioned(&ScopeId::from(RESERVED_ADMIN_SCOPE), id)
             .await
             .map_err(ManagedAgentError::Storage)
+    }
+
+    fn project_current(&self, workspace_id: &str, mut revision: AgentConfigRevision) -> Agent {
+        if let Some(snapshot) = self
+            .plane
+            .service()
+            .installed_in(workspace_id, &revision.config.id)
+        {
+            let binding = snapshot.resolved_spec.model_binding;
+            revision.config.model_binding = ModelSelection::Pinned(binding);
+        }
+        project(revision)
     }
 
     async fn publish_if_resolvable(
@@ -171,6 +190,11 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
         workspace_id: &str,
         params: AgentCreateParams,
     ) -> Result<Agent, ManagedAgentError> {
+        if workspace_id == RESERVED_ADMIN_SCOPE {
+            return Err(ManagedAgentError::Invalid(
+                "reserved configuration scope is not an execution Workspace".into(),
+            ));
+        }
         let scope = Self::scope(workspace_id);
         let id = new_agent_id(workspace_id);
         let config = config_from_create(id.clone(), params);
@@ -193,11 +217,14 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
     async fn retrieve(&self, workspace_id: &str, id: &str) -> Result<Agent, ManagedAgentError> {
         self.versioned_for_read(workspace_id, id)
             .await?
-            .map(project)
+            .map(|revision| self.project_current(workspace_id, revision))
             .ok_or(ManagedAgentError::NotFound)
     }
 
     async fn list(&self, workspace_id: &str) -> Result<Vec<Agent>, ManagedAgentError> {
+        if workspace_id == RESERVED_ADMIN_SCOPE {
+            return Ok(Vec::new());
+        }
         let scope = Self::scope(workspace_id);
         let configs = self
             .plane
@@ -212,7 +239,7 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
                 .await
                 .map_err(ManagedAgentError::Storage)?
                 .ok_or_else(|| ManagedAgentError::Storage("listed Agent disappeared".into()))?;
-            agents.push(project(versioned));
+            agents.push(self.project_current(workspace_id, versioned));
         }
         Ok(agents)
     }
@@ -223,6 +250,9 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
         id: &str,
         params: AgentUpdateParams,
     ) -> Result<Agent, ManagedAgentError> {
+        if workspace_id == RESERVED_ADMIN_SCOPE {
+            return Err(ManagedAgentError::NotFound);
+        }
         let scope = Self::scope(workspace_id);
         let current = self
             .plane
@@ -286,6 +316,9 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
     }
 
     async fn archive(&self, workspace_id: &str, id: &str) -> Result<Agent, ManagedAgentError> {
+        if workspace_id == RESERVED_ADMIN_SCOPE {
+            return Err(ManagedAgentError::NotFound);
+        }
         let scope = Self::scope(workspace_id);
         let current = self
             .plane
@@ -323,6 +356,9 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
         workspace_id: &str,
         id: &str,
     ) -> Result<Vec<Agent>, ManagedAgentError> {
+        if workspace_id == RESERVED_ADMIN_SCOPE {
+            return Err(ManagedAgentError::NotFound);
+        }
         let mut revisions = self
             .plane
             .list_revisions(&Self::scope(workspace_id), id)
@@ -330,7 +366,11 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
             .map_err(ManagedAgentError::Storage)?;
         if revisions.is_empty()
             && workspace_id == self.platform_workspace
-            && id == awaken_admin_assistant::ADMIN_ASSISTANT_AGENT_ID
+            && self
+                .plane
+                .service()
+                .installed_in(workspace_id, id)
+                .is_some()
         {
             revisions = self
                 .plane
@@ -475,10 +515,18 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("config.sqlite");
         let plane = plane(path.to_str().unwrap());
+        let mut config = awaken_admin_assistant::admin_assistant_config();
+        config.model_binding = ModelSelection::pinned("provider", "model-a", "backend");
+        config.tool_ids.clear();
         plane
-            .put(
+            .put(&ScopeId::from(RESERVED_ADMIN_SCOPE), &config)
+            .await
+            .unwrap();
+        plane
+            .publish_for_execution_workspace(
                 &ScopeId::from(RESERVED_ADMIN_SCOPE),
-                &awaken_admin_assistant::admin_assistant_config(),
+                "workspace-a",
+                &config.id,
             )
             .await
             .unwrap();
