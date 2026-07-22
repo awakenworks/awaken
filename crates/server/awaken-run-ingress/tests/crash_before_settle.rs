@@ -26,7 +26,7 @@
 mod harness;
 
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
@@ -42,11 +42,33 @@ use awaken_run_ingress::{
 };
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::resume::ResumeResult;
+use awaken_runtime_contract::runtime_context::RuntimeRunContext;
+use awaken_runtime_contract::terminal::{
+    CommittedTerminalRun, RunTerminalObserver, RunTerminalObserverError,
+};
 use awaken_store_sqlite::SqliteCommitCoordinator;
 
 use harness::{THREAD, TICKET, activation, input_echo_runtime, pending, tool_runtime};
 
 const LEASE: u64 = 1_000;
+
+#[derive(Default)]
+struct TerminalCount(AtomicUsize);
+
+#[async_trait::async_trait]
+impl RunTerminalObserver for TerminalCount {
+    fn observer_id(&self) -> &str {
+        "durable-recovery-test"
+    }
+
+    async fn observe(
+        &self,
+        _terminal: &CommittedTerminalRun,
+    ) -> Result<(), RunTerminalObserverError> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
 
 fn allow() -> ResumeResult {
     ResumeResult::Decision {
@@ -437,7 +459,9 @@ async fn recovering_a_terminal_run_consumes_its_delivered_unbound_input() {
 
     // Recovery: the worker reclaims the now-terminal run, settles Done, and consumes
     // the delivered unbound input from committed truth.
+    let observer = Arc::new(TerminalCount::default());
     let worker = DispatchWorker::new(runtime.clone(), store.clone(), commit.clone(), "w")
+        .with_context(RuntimeRunContext::new().with_terminal_observer(observer.clone()))
         .with_lease_ms(LEASE);
     let recovered = worker.tick(LEASE + 1).await.unwrap();
     assert_eq!(
@@ -448,6 +472,11 @@ async fn recovering_a_terminal_run_consumes_its_delivered_unbound_input() {
     assert!(
         !list_has_u1(store.as_ref(), &thread).await,
         "the delivered unbound input is consumed on the recovery settle, not orphaned"
+    );
+    assert_eq!(
+        observer.0.load(Ordering::SeqCst),
+        1,
+        "recovery redelivers the committed terminal fact after the crash gap"
     );
 
     // A later fresh run on the same thread does NOT drain u1 again: exactly one
@@ -472,6 +501,11 @@ async fn recovering_a_terminal_run_consumes_its_delivered_unbound_input() {
             .count(),
         1,
         "the user's unbound input drove exactly one run — no duplicate re-delivery"
+    );
+    assert_eq!(
+        observer.0.load(Ordering::SeqCst),
+        2,
+        "the later run uses the same observer through ordinary durable execution"
     );
 }
 

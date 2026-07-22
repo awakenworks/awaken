@@ -817,6 +817,7 @@ pub trait awaken_runtime_contract::terminal::RunTerminalObserver: core::marker::
 pub fn awaken_runtime_contract::terminal::RunTerminalObserver::observe<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::terminal::CommittedTerminalRun) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_runtime_contract::terminal::RunTerminalObserverError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_contract::terminal::RunTerminalObserver::observer_id(&self) -> &str
 pub async fn awaken_runtime_contract::terminal::deliver_committed_terminal(&[alloc::sync::Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>], &awaken_runtime_contract::terminal::CommittedTerminalRun) -> alloc::vec::Vec<awaken_runtime_contract::terminal::RunTerminalDeliveryFailure>
+pub async fn awaken_runtime_contract::terminal::redeliver_committed_terminal(&dyn awaken_agent_contract::thread::read::thread_reader::ThreadReader, &[alloc::sync::Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>], &awaken_agent_contract::agent::run::Id, &awaken_agent_contract::agent::thread::Id) -> core::option::Option<alloc::vec::Vec<awaken_runtime_contract::terminal::RunTerminalDeliveryFailure>>
 pub mod awaken_runtime_contract::tool
 pub enum awaken_runtime_contract::tool::ToolError
 pub awaken_runtime_contract::tool::ToolError::Execution(alloc::string::String)

@@ -9,6 +9,7 @@
 use async_trait::async_trait;
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use std::sync::Arc;
 
 /// The neutral committed fact delivered to terminal observers.
@@ -78,11 +79,62 @@ pub async fn deliver_committed_terminal(
     failures
 }
 
+/// Redeliver a terminal observation from committed truth.
+///
+/// Durable ingress and stable-id embedded execution call this after recovery.
+/// `None` means the Run is absent or not terminal; `Some` means the committed
+/// terminal fact was delivered, even when individual observers failed.
+pub async fn redeliver_committed_terminal(
+    reader: &dyn ThreadReader,
+    observers: &[Arc<dyn RunTerminalObserver>],
+    run_id: &RunId,
+    thread_id: &ThreadId,
+) -> Option<Vec<RunTerminalDeliveryFailure>> {
+    let Some(awaken_agent_contract::agent::run::RunState::Ended(cause)) = reader.run_state(run_id)
+    else {
+        return None;
+    };
+    Some(
+        deliver_committed_terminal(
+            observers,
+            &CommittedTerminalRun {
+                run_id: run_id.clone(),
+                thread_id: thread_id.clone(),
+                cause,
+            },
+        )
+        .await,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_agent_contract::agent::run::Failure;
+    use std::sync::Mutex;
 
     struct PanickingObserver;
+
+    #[derive(Default)]
+    struct RecordingObserver(Mutex<Vec<EndCause>>);
+
+    #[async_trait]
+    impl RunTerminalObserver for RecordingObserver {
+        fn observer_id(&self) -> &str {
+            "recording-observer"
+        }
+
+        async fn observe(
+            &self,
+            terminal: &CommittedTerminalRun,
+        ) -> Result<(), RunTerminalObserverError> {
+            self.0
+                .lock()
+                .expect("terminal observations mutex")
+                .push(terminal.cause.clone());
+            Ok(())
+        }
+    }
 
     #[async_trait]
     impl RunTerminalObserver for PanickingObserver {
@@ -111,5 +163,39 @@ mod tests {
         assert_eq!(failures.len(), 1);
         assert_eq!(failures[0].observer_id, "panicking-observer");
         assert_eq!(failures[0].error, "observer panicked");
+    }
+
+    #[tokio::test]
+    async fn every_native_terminal_cause_uses_the_same_delivery_contract() {
+        let observer = Arc::new(RecordingObserver::default());
+        let erased: Arc<dyn RunTerminalObserver> = observer.clone();
+        let causes = vec![
+            EndCause::NaturalEnd,
+            EndCause::Cancelled,
+            EndCause::Stopped("budget".to_string()),
+            EndCause::MaxSteps,
+            EndCause::Error(Failure::Inference {
+                code: "provider_error".to_string(),
+                message: "failed".to_string(),
+            }),
+        ];
+
+        for (index, cause) in causes.iter().enumerate() {
+            let terminal = CommittedTerminalRun {
+                run_id: RunId(format!("run-{index}")),
+                thread_id: ThreadId("thread".to_string()),
+                cause: cause.clone(),
+            };
+            assert!(
+                deliver_committed_terminal(std::slice::from_ref(&erased), &terminal)
+                    .await
+                    .is_empty()
+            );
+        }
+
+        assert_eq!(
+            observer.0.lock().expect("observations mutex").as_slice(),
+            causes.as_slice()
+        );
     }
 }

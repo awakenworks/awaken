@@ -14,12 +14,14 @@ use awaken_agent_contract::agent::awaiting::AwaitReason;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
+use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::execution::RunAttemptExecutor;
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
+use awaken_runtime_contract::terminal::redeliver_committed_terminal;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
@@ -374,6 +376,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
 
         let run_id = claimed.request.run_id().clone();
         let activation = claimed.request.activation.clone();
+        let thread_id = claimed.request.thread_id().clone();
         // The fence token this drive holds. Every settle below carries it so a stale
         // owner (whose lease lapsed and was re-claimed under a higher epoch) is
         // rejected and abandons instead of clobbering the reclaimer's dispatch.
@@ -396,7 +399,13 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 .await
             {
                 return self
-                    .settle_if_terminal_or_raise(&run_id, lease_epoch, &all_pending, error)
+                    .settle_if_terminal_or_raise(
+                        &run_id,
+                        &thread_id,
+                        lease_epoch,
+                        &all_pending,
+                        error,
+                    )
                     .await;
             }
             let result = self
@@ -407,7 +416,13 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 Ok(state) => state,
                 Err(error) => {
                     return self
-                        .settle_if_terminal_or_raise(&run_id, lease_epoch, &all_pending, error)
+                        .settle_if_terminal_or_raise(
+                            &run_id,
+                            &thread_id,
+                            lease_epoch,
+                            &all_pending,
+                            error,
+                        )
                         .await;
                 }
             };
@@ -454,7 +469,13 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                     Ok(state) => state,
                     Err(err) => {
                         return self
-                            .settle_if_terminal_or_raise(&run_id, lease_epoch, &all_pending, err)
+                            .settle_if_terminal_or_raise(
+                                &run_id,
+                                &thread_id,
+                                lease_epoch,
+                                &all_pending,
+                                err,
+                            )
                             .await;
                     }
                 }
@@ -483,6 +504,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                                 return self
                                     .settle_if_terminal_or_raise(
                                         &run_id,
+                                        &thread_id,
                                         lease_epoch,
                                         &all_pending,
                                         err,
@@ -512,6 +534,8 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             // terminal run, and any orphan pending is dropped on settle.
             None => match self.reader.run_state(&run_id) {
                 Some(state @ RunState::Ended(_)) => {
+                    let thread = claimed.request.thread_id().clone();
+                    self.redeliver_terminal_observers(&run_id, &thread).await;
                     // A recovered fresh run that already committed a terminal record:
                     // its crashed prior attempt may have drained unbound idle-thread
                     // input (ADR-0021) into this run's committed transcript but died
@@ -524,7 +548,6 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                     // is left for a future run (no loss). Without this, the run's own
                     // bound pending is dropped but a delivered unbound row lingers and
                     // is drained a SECOND time by the next fresh run (a duplicate).
-                    let thread = claimed.request.thread_id().clone();
                     let delivered: std::collections::HashSet<String> = self
                         .reader
                         .committed_messages(&thread)
@@ -593,6 +616,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                             return self
                                 .settle_if_terminal_or_raise(
                                     &run_id,
+                                    &thread_id,
                                     lease_epoch,
                                     &all_pending,
                                     err,
@@ -619,6 +643,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                             return self
                                 .settle_if_terminal_or_raise(
                                     &run_id,
+                                    &thread_id,
                                     lease_epoch,
                                     &all_pending,
                                     err,
@@ -699,17 +724,45 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     async fn settle_if_terminal_or_raise(
         &self,
         run_id: &RunId,
+        thread_id: &ThreadId,
         epoch: u64,
         consumed: &[String],
         err: impl Into<Error>,
     ) -> Result<Option<(RunId, RunState)>, Error> {
         match self.reader.run_state(run_id) {
-            Some(state @ RunState::Ended(_)) => Ok(self
-                .settle(run_id, epoch, DispatchOutcome::Done, consumed)
-                .await?
-                .applied()
-                .then_some((run_id.clone(), state))),
+            Some(state @ RunState::Ended(_)) => {
+                // This path lost a terminal-commit race. Redelivery is expected:
+                // the winning attempt may have crashed after commit and observers
+                // suppress duplicate effects by `(observer_id, run_id)`.
+                self.redeliver_terminal_observers(run_id, thread_id).await;
+                Ok(self
+                    .settle(run_id, epoch, DispatchOutcome::Done, consumed)
+                    .await?
+                    .applied()
+                    .then_some((run_id.clone(), state)))
+            }
             _ => Err(err.into()),
+        }
+    }
+
+    async fn redeliver_terminal_observers(&self, run_id: &RunId, thread_id: &ThreadId) {
+        let context = self.execution_context();
+        if let Some(failures) = redeliver_committed_terminal(
+            self.reader.as_ref(),
+            &context.terminal_observers,
+            run_id,
+            thread_id,
+        )
+        .await
+        {
+            for failure in failures {
+                tracing::warn!(
+                    observer.id = %failure.observer_id,
+                    awaken.run.id = %run_id.0,
+                    error = %failure.error,
+                    "recovered terminal observer failed; recovery may redeliver"
+                );
+            }
         }
     }
 
