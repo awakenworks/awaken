@@ -381,7 +381,7 @@ impl SharedHost {
         }
         // Delegation is a runtime concern: inject the executor so the kernel runs
         // `agent_run` as a sub-agent (native or remote), not the tool registry.
-        if let Some(service) = self.run_delegation(env.clone(), commit.clone())? {
+        if let Some(service) = self.run_delegation(thread, env.clone(), commit.clone())? {
             runtime = runtime.with_run_delegation(service);
         }
         // Skills are fronted by two stable tools (ADR-0036); all skill behavior is
@@ -858,6 +858,10 @@ impl SharedHost {
         self.thread_resources
             .lock()
             .expect("thread resources mutex poisoned")
+            .remove(thread);
+        self.thread_resource_manifests
+            .lock()
+            .expect("thread resource manifests mutex poisoned")
             .remove(thread);
         self.thread_egress.remove(thread);
         self.thread_sandbox.remove(thread);

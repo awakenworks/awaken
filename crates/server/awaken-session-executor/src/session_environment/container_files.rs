@@ -170,15 +170,27 @@ pub(super) async fn remove(
     logical: &str,
 ) -> Result<(), pc::SandboxError> {
     let path = logical_path(logical)?;
-    let process = sandbox
-        .spawn(pc::Command {
-            argv: vec!["rm".into(), "-rf".into(), "--".into(), path],
-            cwd: "/workspace".into(),
-            env: Vec::new(),
-            stdio: pc::Stdio::Null,
-        })
-        .await?;
+    let process = sandbox.spawn(removal_command(path)).await?;
     require_success(process.wait().await?, "container workspace removal")
+}
+
+fn removal_command(path: String) -> pc::Command {
+    pc::Command {
+        argv: vec![
+            "sh".into(),
+            "-c".into(),
+            // Runtime-owned Skill trees are deliberately chmod'd read-only,
+            // including their directories. Restore only owner write permission
+            // before removing the already-jailed path; without this, an
+            // unprivileged container user cannot revoke an old exact projection.
+            "chmod -R u+w -- \"$1\" 2>/dev/null || true; rm -rf -- \"$1\"".into(),
+            "awaken-remove-workspace-path".into(),
+            path,
+        ],
+        cwd: "/workspace".into(),
+        env: Vec::new(),
+        stdio: pc::Stdio::Null,
+    }
 }
 
 #[cfg(test)]
@@ -240,5 +252,17 @@ mod tests {
                 "accepted {unsafe_path}"
             );
         }
+    }
+
+    #[test]
+    fn removal_restores_owner_write_before_deleting_a_read_only_tree() {
+        let command = removal_command("/workspace/.skills".into());
+        assert_eq!(command.argv[0], "sh");
+        assert_eq!(command.argv[1], "-c");
+        assert_eq!(
+            command.argv[2],
+            "chmod -R u+w -- \"$1\" 2>/dev/null || true; rm -rf -- \"$1\""
+        );
+        assert_eq!(command.argv[4], "/workspace/.skills");
     }
 }

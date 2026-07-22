@@ -195,9 +195,21 @@ Active/Released commits follow it. Startup reconciliation reads the separately
 persisted trusted owner envelope and never imports a principal, role, API key,
 PDP decision, or policy document into this state machine.
 
+Durable dispatch carries `SessionResourceManifest { workspace_id, resources }`
+beside the executable Agent snapshot. This envelope is secret-free and is not a
+second Session model: `resources` is the exact persisted
+`ResolvedSessionResources`, while `workspace_id` is the trusted intrinsic
+partition already recorded by the Session. A cold worker verifies that it equals
+the dispatch `execution_scope`, installs it before sandbox creation, and never
+re-reads current Agent bindings. Delegated child Runs inherit the same envelope
+because they execute in the parent's Session environment.
+
 ### D6: Each resource reclaims according to its own invariant
 
-- File deletion removes a Workspace ownership edge first. Physical blob GC requires no
+- File activation verifies immutable bytes and creates a Session-local copy with
+  no write-back authority. An Agent may edit that working copy, but publishing it
+  creates a new File or Artifact; it can never mutate the original `FileId`. File
+  deletion removes a Workspace ownership edge first. Physical blob GC requires no
   remaining ownership edges, Agent bindings, active/effective Session references,
   Artifacts, or retention hold.
 - Memory Session release closes the scoped handle but never deletes long-term
@@ -269,6 +281,15 @@ requires the Resource Catalog/Agent-binding store (`AWAKEN_ADMIN_DB`) to be
 shared; startup fails closed when shared execution is combined with a local
 resource configuration catalog.
 
+Remote worker placement requires `session-resources/v1` whenever a frozen
+manifest is present, including an explicit empty selection: the capability also
+owns revocation of material from an earlier manifest. A credentialed Repository additionally
+requires `repository-credentials/v1`. A worker advertises the former only when
+both the shared resource backend family and shared Resource Catalog validator are
+installed, and the latter only with an explicit shared credential backend. Missing
+or mismatched wiring is therefore an admission incompatibility, not a late
+node-local fallback.
+
 ### D7: Memory has one data truth
 
 Mount, recall, extraction, Memory API, version history, and redaction operate on
@@ -332,8 +353,11 @@ At Session creation the selected latest version is frozen into
 `ResolvedSessionResources.skills`. Retry and restart load that exact version and
 verify its bundle SHA-256. The Runtime materializer revalidates relative paths,
 rejects traversal/symlinks, preserves binary bytes, and writes supporting files
-under `.skills/<skill-id>`. `allowed_tools` remains a monotonic gate layered after
-platform authorization, so a Skill can only remove tool authority.
+under `.skills/<skill-id>`. The `.skills` directory is an exact runtime-owned
+projection: every context rebuild replaces it, and a manifest transition removes
+the old tree before the next Run can read a retired script or support file.
+`allowed_tools` remains a monotonic gate layered after platform authorization, so
+a Skill can only remove tool authority.
 
 Deleting one version is therefore a logical retirement from authoring/list views,
 not physical byte deletion: its ordinal is never reused and an already-persisted
@@ -350,7 +374,8 @@ The first coherent slice is:
 2. resolve Agent defaults and Session attachments once at Session creation;
 3. preserve `ResourceAccess` through activation and generate prompts from the
    effective result;
-4. make File mounts binary-safe and read-only;
+4. make File projections binary-safe and disconnect their writable working copies
+   from FileStore mutation;
 5. add versioned Memory/Repository definitions and resolve their current config
    version into the Session manifest;
 6. route all Memory use through `MemoryRepository`, then remove blob/harvest;
@@ -380,8 +405,8 @@ The first coherent slice is:
   CAS prevents silent lost updates; no snapshot isolation is promised.
 - Memory/Repository config version repositories and activation reconciliation
   add durable control-plane state.
-- Existing string DTOs, duplicate merge logic, and Memory blob compatibility
-  paths require migration before the design is fully active.
+- Versioned resource-plane schemas and one-time legacy imports add an explicit
+  deployment migration step, even though runtime dual writes have been removed.
 
 ### Rejected alternatives
 

@@ -91,7 +91,11 @@ async function upload(workspace, content, filename = 'input.txt') {
 function receipts(directory) {
   const database = path.join(directory, 'resource-lifecycle.db');
   if (!fs.existsSync(database)) return [];
-  const raw = execFileSync('sqlite3', ['-json', database, 'SELECT data FROM resource_purge_intents'])
+  const raw = execFileSync('sqlite3', [
+    '-json',
+    database,
+    'SELECT data FROM resource_lifecycle_purge_intents',
+  ])
     .toString()
     .trim();
   return raw ? JSON.parse(raw).map((row) => JSON.parse(row.data)) : [];
@@ -135,6 +139,15 @@ async function main() {
   let server = start(bin, directory);
   try {
     await ready();
+    assert.equal(
+      scalar(
+        path.join(directory, 'resource-lifecycle.db'),
+        `SELECT count(*) FROM resource_lifecycle_schema_migrations
+           WHERE bundle_id='awaken.resource_lifecycle' AND version=1`,
+      ),
+      1,
+      'resource lifecycle schema is applied through its scoped migration ledger',
+    );
 
     // Crash after the API committed durable intent + logical revoke. Startup
     // recovery must finish the same intent without another delete request.

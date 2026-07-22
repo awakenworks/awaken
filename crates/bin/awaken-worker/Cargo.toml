@@ -17,7 +17,9 @@ path = "src/main.rs"
 # its activation snapshot) to the real DB-configured provider via
 # snapshot-pinned inference access over the SAME credential store `awaken-cli`
 # opens — no catalog re-resolution and no mocks. `NoModelConfiguredExecutor` is
-# only the auxiliary fallback for a run whose model is not yet published.
+# only the auxiliary fallback for a run whose model is not yet published. A worker
+# explicitly configured for shared resources additionally opens data-plane clients
+# plus the narrow ResourceBindingValidator; it still owns no authoring/Session store.
 [features]
 # Container sandbox tiers (AWAKEN_SANDBOX_TIER=docker|podman|k8s), passed through to
 # the shared host via awaken-server so a database-less worker can realize its ACP

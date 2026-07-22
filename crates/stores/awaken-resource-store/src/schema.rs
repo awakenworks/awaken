@@ -3,6 +3,7 @@
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 
 pub const BUNDLE_ID: &str = "awaken.resource_lifecycle";
+pub const NS: &str = "resource_lifecycle";
 
 const FILES: &[(&str, &str)] = &[(
     "V0001__resource_lifecycle.sql",

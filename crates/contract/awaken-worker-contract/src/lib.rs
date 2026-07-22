@@ -16,6 +16,15 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+/// Worker can install a frozen Workspace-scoped Session resource manifest over
+/// shared File/Memory/Skill/lifecycle and Resource Catalog ports.
+pub const SESSION_RESOURCES_CAPABILITY: &str = "session-resources/v1";
+
+/// Worker can inject a frozen Repository config's opaque credential reference at
+/// realization time. Kept separate so a secretless worker remains eligible for
+/// File/Memory/Skill and public Repository inputs.
+pub const REPOSITORY_CREDENTIALS_CAPABILITY: &str = "repository-credentials/v1";
+
 pub const CURRENT_CONTRACT_VERSION: u32 = 1;
 
 /// One concrete worker process. `worker_id` names the logical slot;

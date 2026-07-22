@@ -120,11 +120,16 @@ production logic.
 - `WebhookOutbox.tla`, `ErasureSaga.tla`, and `CredentialCreation.tla` cover
   atomic lifecycle/outbox commit, checkpointed erasure, and durable
   credential-intent recovery.
-- `MemoryCAS.tla`, `ToolResultProtocol.tla`, and `WorkerDrain.tla` cover memory
-  generation/rename/conditional-delete safety, cross-protocol result correlation,
-  and the drain admission fence.
+- `MemoryCAS.tla`, `SkillVersionPin.tla`, `ToolResultProtocol.tla`, and
+  `WorkerDrain.tla` cover memory generation/rename/conditional-delete safety,
+  immutable Skill pin retention and validation, cross-protocol result
+  correlation, and the drain admission fence.
 - `AuditCommit.tla` and `ConfigActivation.tla` cover transactional durable audit,
   replay fencing, and generation-fenced publication installation.
+- `InferenceAccessPublication.tla` covers immutable access publication and
+  dispatch-time pinning across route change, revocation, and fallback.
+- `McpServer.tla` covers request/notification response cardinality,
+  cancellation, progress finality, and sessionless stream lifecycle.
 - `ManagementAuditIntent.tla`, `CredentialInventory.tla`, and
   `ResourceBindingEffect.tla` cover audit-before-write admission for stores that
   cannot share the config transaction, namespace-fenced orphan cleanup, and the
@@ -138,6 +143,14 @@ production logic.
 - `SessionResourceActivation.tla` covers durable prepare-before-IO activation,
   exact revision issuance, commit/rollback, terminal release, and the rule that
   a terminated Session can never reactivate a pending resource generation.
+- `ResourceDispatch.tla` covers one-time configuration pinning, mutable content,
+  worker capability admission, Workspace equality, explicit-empty revocation,
+  and the live lifecycle deny evaluated at each activation attempt.
+- `ResourceReclamation.tla` covers logical delete, durable claim recovery,
+  physical-identity fencing, reference/lease exclusion, idempotent purge, and
+  receipt generation fencing. A receipt proves that one purge occurred while
+  fenced and unreferenced; it does not assert permanent absence of a shared
+  content-addressed File blob that a later owner may recreate.
 - `WorkerReplacement.tla` composes authored route resolution, dispatch-time
   candidate pinning, worker claims, credential materialization, execution and
   settlement with concurrent route change, rotation, revocation, worker crash,
@@ -191,7 +204,7 @@ graphs with zero invariant violations and zero states left on the queue:
 | --- | ---: | ---: | ---: |
 | RunIngress | 339 | 31 | 7 |
 | WorkQueue | 131,475 | 12,484 | 15 |
-| Delegation | 7,867 | 1,413 | 16 |
+| Delegation | 5,835 | 1,097 | 14 |
 | ToolBatch | 1,414 | 979 | 12 |
 | RuntimeSystem | 110,923 | 12,896 | 13 |
 | RuntimeImplementation | 1,323,147 | 619,008 | 24 |
@@ -212,11 +225,16 @@ graphs with zero invariant violations and zero states left on the queue:
 | WorkerDrain | 15 | 11 | 8 |
 | AuditCommit | 10 | 6 | 4 |
 | ConfigActivation | 85 | 35 | 9 |
+| InferenceAccessPublication | 466 | 234 | 9 |
 | ResourceBindingEffect | 21 | 10 | 6 |
 | AgentInputRevision | 297 | 65 | 9 |
 | SessionResourceActivation | 61 | 39 | 9 |
+| ResourceDispatch | 66,535 | 11,952 | 15 |
+| ResourceReclamation | 11,156 | 2,514 | 17 |
 | ManagementAuditIntent | 15 | 8 | 5 |
 | CredentialInventory | 7 | 4 | 3 |
+| SkillVersionPin | 747 | 184 | 8 |
+| McpServer | 15 | 15 | 6 |
 | WorkerReplacement | 452,881 | 98,160 | 16 |
 
 These are bounded exhaustive checks, not unbounded liveness proofs. The bounds
