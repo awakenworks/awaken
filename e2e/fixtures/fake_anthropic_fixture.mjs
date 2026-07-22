@@ -355,8 +355,8 @@ function systemLines(parsed) {
   return systemText(parsed);
 }
 
-// `opts`: `{ behavior, failuresBeforeSuccess, alwaysFail, faultStatus, delayMs,
-// firstDelayMs }`.
+// `opts`: `{ behavior, failuresBeforeSuccess, alwaysFail, failArrivalKind,
+// faultStatus, delayMs, firstDelayMs }`.
 // `behavior` (default `'default'`) selects the reproduced scenario model; the
 // fault-injection knobs drive the runtime's retry + circuit-breaker + error paths.
 export function startFakeAnthropic(apiKey, opts = {}) {
@@ -368,6 +368,7 @@ export function startFakeAnthropic(apiKey, opts = {}) {
     delayMs = 0,
     firstDelayMs = 0,
     failModel = null,
+    failArrivalKind = null,
   } = opts;
   const reply_of = BEHAVIORS[behavior];
   if (!reply_of) throw new Error(`unknown fake-anthropic behavior: ${behavior}`);
@@ -382,13 +383,12 @@ export function startFakeAnthropic(apiKey, opts = {}) {
       state.received += 1;
       const arrival = JSON.parse(body || '{}');
       const arrivalUsers = allUserText(arrival);
-      state.arrivals.push(
-        arrivalUsers.includes('Evaluate this Outcome input') ? 'outcome-judge'
-          : arrivalUsers.includes('Revise the deliverable') ? 'outcome-revision'
-            : arrivalUsers.includes('iteration limit was reached') ? 'outcome-ack'
-              : arrivalUsers.includes('Work toward this Outcome') ? 'outcome-initial'
-                : 'other',
-      );
+      const arrivalKind = arrivalUsers.includes('Evaluate this Outcome input') ? 'outcome-judge'
+        : arrivalUsers.includes('Revise the deliverable') ? 'outcome-revision'
+          : arrivalUsers.includes('iteration limit was reached') ? 'outcome-ack'
+            : arrivalUsers.includes('Work toward this Outcome') ? 'outcome-initial'
+              : 'other';
+      state.arrivals.push(arrivalKind);
       const responseDelay = state.received === 1 ? firstDelayMs || delayMs : delayMs;
       if (responseDelay > 0) await new Promise((r) => setTimeout(r, responseDelay));
       const presented = req.headers['x-api-key'] ?? (req.headers.authorization ?? '').replace(/^Bearer /, '');
@@ -405,6 +405,12 @@ export function startFakeAnthropic(apiKey, opts = {}) {
       }
       state.attempts += 1;
       const parsed = JSON.parse(body || '{}');
+      if (failArrivalKind === arrivalKind) {
+        state.requests.push({ url: req.url, model: parsed.model, stream: !!parsed.stream, failed: true });
+        res.writeHead(faultStatus, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ type: 'error', error: { type: 'api_error', message: `${arrivalKind} failed` } }));
+        return;
+      }
       // Per-model fault (#1): fail exactly the named model with a retryable
       // overloaded error, so a run fails over to its pool fallback. The attempt is
       // recorded (marked `failed`) so a test can see both models were tried in order.
