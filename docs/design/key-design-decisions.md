@@ -116,13 +116,17 @@ ADR. Permission policy stays mutable and separate from replayable descriptors.
 **Problem.** Putting outcome semantics into the runtime core would encode one
 product's model of "done" into every run.
 
-**Decision.** The runtime provides neutral continuation mechanisms: async
-`ContinuationGuard`, structured opaque verdicts, thread-scoped state effects, and
-`TerminationReason::Concluded`. `awaken-ext-goal` owns Outcome lifecycle and grading, and
-goal classifications. Product protocols map onto that extension.
+**Decision.** Runtime Core provides neutral Run/Thread/Step execution,
+`ContinuationGuard`, committed terminal observation, and Thread state. Runtime
+Extension is broader than Plugin: `awaken-ext-goal` owns the cross-Run Outcome
+controller, lifecycle, grading, stable identities, and state codec. Product
+protocols map onto that extension; the Runtime Host only composes neutral
+execution and infrastructure adapters.
 
-**Consequence.** The kernel records and replays verdicts but does not interpret
-goal semantics. Anthropic Outcome mapping belongs in a product adapter.
+**Consequence.** The kernel records Run facts and opaque continuation detail but
+does not interpret goal semantics. Anthropic Outcome mapping belongs in a product
+adapter. Outcome remains usable by an embedded Runtime without the Managed
+application.
 
 ---
 

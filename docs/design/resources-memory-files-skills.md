@@ -267,7 +267,7 @@ process-local handle.
 | `SessionResourceCoordinator` | Existing in Managed Session application service | Session application/host | activation state, ordered provision/release, recovery handoff | Agent config loading, IAM policy language |
 | `FileStore` | Existing | File data plane | immutable content-addressed bytes | Workspace authorization; mutable overwrite |
 | `MemoryRepository` | Existing canonical port | Memory data plane | scoped entries, CAS, atomic history, redaction, retention hooks | Agent/Session binding and IAM policy |
-| `MemoryRuntime` | Existing | Runtime Host | store-less recall selector/extractor capability and background-run drain | resource identity, default store, IAM policy |
+| `MemoryRuntime` | Existing, moving to extension ownership | `awaken-ext-memory` | recall Plugin, terminal extraction observer, selector/extractor capability, stable intent/receipt | resource identity, default store, IAM policy, Host lifecycle |
 | `BoundMemory` | Existing | Session Runtime | one resolved store handle + pinned policy + maximum access shared by recall/extraction | workspace lookup, current-config resolution, authorization |
 | `RepositoryRealizer` | Existing neutral port | Environment adapter | clone current remote config, construct working tree, publish Agent-authored commits with ephemeral transport credentials | remote repository ownership, authorization policy, or commit pinning |
 | `CredentialResolver`/Vault | Existing | Credential product domain | turn a credential binding into a short-lived lease and rotate/revoke it | Agent prompt, persisted Session secret material |
@@ -298,6 +298,8 @@ resource-specific repositories enforce their own intrinsic invariants.
 | Activate Memory | `SessionResourceCoordinator` | `MemoryRepository`, Memory realizer | `ScopedMemoryStore`/mount + activation `Active` |
 | Activate Repo | `SessionResourceCoordinator` | Repository realizer, Vault, Sandbox | current clone + working tree; credential lease not persisted |
 | Use | sandbox/tool adapters | File/Memory/Git domain ports | domain writes and receipts; no second config resolve |
+| Recall for Run | Memory Recall Plugin | scoped Memory handle, optional Selector Agent | Run-scoped request-only `ContextMessages`; query derives from current `RunInput` |
+| Extract after terminal Run | Memory Extraction terminal observer | committed Run/Thread facts, Extractor Agent, Memory repository | stable extraction intent and receipt; at-least-once delivery is idempotent |
 | Release | `SessionResourceCoordinator` | Sandbox manager, Vault, per-kind realizer | activation `Released`; sandbox-local material removed |
 | Reconcile crash | `ResourceReclaimer` | Session activation repository, workers | stale activation released or retried |
 | Archive/Delete | Resource Catalog service | PEP/PDP, resource repository | live deny state/tombstone before physical cleanup |
@@ -435,6 +437,20 @@ returns a capability-limited `ScopedMemoryStore`. Recall, extraction, mounted
 file operations, public Memory API operations, history, and redaction all use
 that same repository.
 
+Recall is an in-Run `BeforeInference` Plugin. It derives its relevance query from
+the current `RunInput`, writes request-only context to Run-scoped
+`ContextMessages`, and reuses that committed selection across later Steps and
+Resume of the same Run. It does not infer a query by scanning the last User
+message in the whole Thread.
+
+Extraction is not a Step hook, continuation guard, or Host callback. After a
+terminal `RunState::Ended` fact commits, the Memory Extension's
+`RunTerminalObserver` receives an at-least-once observation and creates or reuses
+`memory-extraction/{thread_id}/{run_id}`. The Extractor Agent runs asynchronously,
+CAS-applies mutations, and records a receipt. Recovery redelivers a terminal
+observation or resumes a pending intent; Awaiting is not terminal. Observer
+failure cannot alter the committed `RunResult`.
+
 ```text
 Session S1 resolves config v3
 Session S2 resolves config v4
@@ -450,7 +466,9 @@ data and are not binding pins.
 
 Release closes/detaches the scoped handle; it never deletes the store. Reliable
 extraction must reach a durable receipt or a durable retry/terminal conclusion
-before the activation is considered fully settled.
+before the activation is considered fully settled. The Runtime Host supplies the
+scoped handles and durable adapters but does not decide extraction eligibility,
+cursor movement, prompt policy, or mutation semantics.
 
 Suspension denies new opens and later writes. Deletion creates a tombstone,
 rejects all operations, drains active handles and extraction jobs, applies

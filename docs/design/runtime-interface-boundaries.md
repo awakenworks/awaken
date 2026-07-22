@@ -55,7 +55,8 @@ owns the role catalog; the flow document owns ordering and handoff rules.
 | Resolution | Runtime Core plus Config edge | `ResolvedSpec`, `CatalogFingerprint`, `ResolvedRun`, `RunResolver` | live registry objects, pins, tenant scopes, factories across the config edge | fingerprint/catalog mismatch fails before execution |
 | Execution | Runtime Core | `AgentRuntime`, `RunActivation`, optional pre-resolved plan, `StreamSink` | HTTP route state and public protocol names | backend requirements are checked before execution |
 | Persistence | Runtime Core and Store contracts | runtime persistence policy, checkpoint access, `RuntimeResumeStore`, `CommitCoordinator` | split reader/writer pairs or side writes | read-only writes fail; read/write derives reader from coordinator |
-| Plugin extension | Runtime Core extension seam | `Plugin::resolve` contributions merged into `ResolvedExecutionEnv` | direct store mutation, unregistered hooks, product labels | duplicate owners fail; hook output is validated and committed or rejected |
+| In-Run Plugin extension | Runtime Core extension seam | `Plugin::resolve` contributions merged into `ResolvedExecutionEnv` | cross-Run workflow ownership, direct store mutation, unregistered hooks, product labels | duplicate owners fail; hook output is validated and committed or rejected |
+| Committed-terminal extension | Runtime extension seam | `RunTerminalObserver` receives an already-committed `Ended` Run at least once | changing `RunResult`, treating Awaiting as terminal, non-idempotent direct side effects | stable intent/receipt and recovery redelivery are required |
 | Tool decision | Runtime Core plus permission extension | descriptor visibility, tool gate/policy decision, tool execution result | authorization hidden in visibility, selection, or backend location | visibility grants perception only; invocation still gates |
 | Wait/resume | Product adapter plus Runtime Core live control | neutral result for one pending aawaiting run (e.g. a client-executed tool call) | public tool-use DTOs, config/admin writes, global catalog mutation | unknown, duplicate, expired, thread-mismatched, or descriptor-mismatched results fail closed |
 
@@ -75,6 +76,7 @@ seam is smaller when split by authority:
 | `AgentSnapshotCatalog` | list current executable snapshots for configuration surfaces | runtime execution, config mutation, admin workflow |
 | `RuntimeCapabilitySource` | report the runtime's installed plugin/tool/backend capability surface | config publication, authorization, execution |
 | `PluginManifest` | declare plugin id, config sections, and `CapabilityBound`, and validate config through the single `validate_section` | runtime handles, plugin behavior, a parallel validator |
+| `RunTerminalObserver` | react to an already-committed terminal Run through a stable extension intent | Run control, terminal commit authority, product projection |
 | `RuntimeCatalogInstaller` | atomically install a complete runtime catalog publication | config CRUD, registry compilation, live control, run execution |
 | `CommitCoordinatorSource` | expose the runtime commit coordinator for durable ingress construction | execution semantics |
 | `RunIngress` | server-facing delivery semantics and capability reporting | runtime internals or durable ingress internals |
@@ -113,6 +115,7 @@ design documents. API signatures and parameter details stay in Rustdoc.
 | `StreamSink` | live stream output port | best-effort delivery of `StreamEvent` across the boundary | runtime execution, current caller/server connection | commit ownership, product protocol mapping, durable replay truth | live delivery is mistaken for durable truth or product-shaped events | G1, G10, G13; sink/projection tests |
 | `EventSubscriber` | durable event delivery port | subscribe to committed `EventRecord` / `DurableEvent` values for projection | event store, committed records, downstream projection | live stream delivery, protocol naming, commit authority | projection observes uncommitted runtime output | G1, G10, G13; durable event subscription tests |
 | `Plugin` | extension factory | `manifest()` plus `resolve(cx) -> Contributions`; config-dependent artifacts compiled once at resolve | resolved `AgentSpec` via `ResolveContext`, declared config sections | direct store mutation, mutable registration side effects, run handles | plugin bypasses policy, or config is recompiled per call | G8, G9, G14, G30; resolve-once and no-bypass tests |
+| `RunTerminalObserver` | post-commit extension observer | at-least-once reaction to committed `RunState::Ended` | committed Run/Thread facts, stable extension intent/receipt | Complete/Continue decisions, `RunResult` mutation, Awaiting notification, direct non-idempotent effects | crash gap loses work or duplicate delivery repeats work | G12, G13; terminal redelivery and duplicate-intent tests |
 | `Contributions` | contribution value | one plugin's resolved tools, hooks, gates, guards, transforms, and state keys | `ResolveContext` output | cross-plugin merge, durability, authorization | a plugin's contributions cannot be reasoned about as one value | G8, G30; contribution serde tests |
 | `CapabilityBound` | declared bound value | the upper bound of what a plugin may contribute (set/namespace for identity-bearing kinds; flag for singleton powers) | `PluginManifest` | authorization grant, the authoritative inventory | a contribution exceeds what was declared and is caught only at runtime | G9, G21, G30; `actual ⊆ declared` fail-closed tests |
 | `ResolvedExecutionEnv` | aggregate root | merge of every selected plugin's `Contributions` for one run: uniqueness scoped to the active set, declared `requires` order, and `enforce_bound` | each plugin's `Contributions`, runtime catalog | host process environment, product session state, per-run live wiring | duplicate ids, incidental ordering, or out-of-bound contributions pass silently | G8, G14, G30; merge-conflict, ordering, and bound tests |
@@ -284,14 +287,14 @@ observable, and extensible:
 
 | Supporting axis | Relationship to the primary axes |
 |---|---|
-| Activation | turns adapter/server input into neutral `RunActivation` for execution |
+| Activation | translates adapter/server input into neutral `RunActivation` for execution |
 | Snapshot execution | selects an inline or by-id `ExecutableAgentSnapshot` for a run/thread before activation finishes |
 | Resolution | consumes configuration publication and materializes an execution plan |
 | State | records live runtime mutations that execution may stage into commit |
 | Event | carries live stream output and committed projection source data |
 | Wait/resume | pauses execution on a structured await reason and resumes through live control after adapter projection |
 | Commit | turns staged runtime truth into durable facts; all projections derive after it |
-| Extension | contributes hooks, tools, transforms, guards, and state keys during resolution |
+| Extension | contributes in-Run Plugin behavior, cross-Run workflows, or committed-terminal reactions through distinct neutral seams |
 
 The relationship is:
 
@@ -323,7 +326,7 @@ the `ThreadCommit`.
 | Event | live and durable neutral runtime event shapes | `StreamEvent`, `EventDraft`, durable event staging | `EventRecord` after commit and event subscription source | public protocol names, commit authority |
 | Wait/resume | pending awaiting-run boundary (e.g. client-executed tool) | resolved pending request and later neutral resume command | pending `ResumeTicket`, validated resume input, result fact after commit | public result ids as truth, config/admin mutation |
 | Commit | durable runtime truth for thread/run/message/state/event records | `ThreadCommit` passed to `CommitCoordinator` | committed facts, events, messages, state, and resume-visible records | executing hooks/tools, protocol DTO projection, side writes |
-| Extension | installable runtime behavior contribution | `Plugin::resolve` during resolution | hooks, tools, gates, transforms, keys, handlers in `ResolvedExecutionEnv` | direct store mutation, permission bypass, product labels |
+| Extension | installable runtime behavior | in-Run `Plugin`, cross-Run workflow controller, or committed-terminal observer | declared hooks/tools/guards or neutral Run/Thread ports | direct store mutation, permission bypass, product labels, universal Hook authority |
 
 ## Runtime Axis Flows
 
@@ -344,6 +347,7 @@ enters, where it changes hands, and which port is allowed to make the next value
 | Wait/resume | aawaiting run records pending id, fingerprint, deadline, and authorization state (e.g. a client-executed tool call) -> adapter projects a public wait after commit -> adapter maps public result to neutral resume -> `LiveRunControl` wakes the pending boundary | runtime owns pending-request validation; adapter owns public event/result names | public result ids do not become runtime truth; inbound results cannot mutate config/admin/catalog state |
 | Commit | resume read via `RuntimeResumeStore` -> runtime resolves disabled/read-only/read-write persistence access -> stage `ThreadCommit` with messages, run projection, state export, and event drafts -> `CommitCoordinator` commits atomically -> facts/records become visible; durable ingress verifies same-source wiring at construction | runtime proposes a commit; coordinator owns the durable write mechanism; run ingress owns the same-source guard | read and write must come from the same commit source; no side writes |
 | Extension | selected plugin ids -> `Plugin::resolve` -> `Contributions` -> `ResolvedExecutionEnv` merge (uniqueness, declared order, `enforce_bound`) -> hooks, tools, guards, handlers, transforms, and keys run through declared surfaces -> outputs validate and stage | plugins declare behavior; runtime validates and stages the effects | plugins cannot mutate stores, bypass gates, exceed their bound, or introduce product labels |
+| Committed-terminal reaction | terminal `ThreadCommit` succeeds -> committed `RunState::Ended` is observable -> `RunTerminalObserver` creates/reuses a stable intent -> asynchronous work records a receipt -> recovery redelivers missing or pending work | commit owns terminal truth; extension owns its intent/effect/receipt; observer has no Run control authority | Awaiting never enters the path; observer failure does not rewrite `RunResult`; duplicate delivery is expected |
 
 ## Axis Lifecycle Catalog
 
@@ -363,11 +367,12 @@ not copy).
 | Resolution | `ResolvedRun`, `Resolver` / `RunResolver` | [ADR-0002](../adr/0002-resolver-role-demarcation.md) |
 | Live control | `LiveRunControl` | [run-ingress-message-delivery.md](run-ingress-message-delivery.md) |
 | Execution | `RunExecutor`, run phases / terminal reason | [runtime-behavior.md](runtime-behavior.md) |
+| Committed-terminal extension | `RunTerminalObserver`, extension intent/receipt | [ADR-0064](../adr/0064-runtime-owned-outcome-orchestration.md) |
 | State | `StateStore` / `StateCommand` / `MutationBatch` | [runtime-behavior.md](runtime-behavior.md) |
 | Event | `StreamEvent` / `EventRecord` / `StreamSink` | [commit-fact-projection-taxonomy.md](commit-fact-projection-taxonomy.md) |
 | Wait/resume (scheduled, client-tool, decision) | `ScheduledAction`, `ResumeTicket` + `ResumeValidator`, durable dispatch | [ADR-0003](../adr/0003-deferred-work-mechanism-selection.md) |
 | Commit | `ThreadCommit` / `CommitCoordinator` | [commit-fact-projection-taxonomy.md](commit-fact-projection-taxonomy.md) |
-| Extension | `Plugin` / `Contributions` / `ResolvedExecutionEnv` | [runtime-behavior.md](runtime-behavior.md) |
+| Extension | `Plugin` / `Contributions` / `ResolvedExecutionEnv`; cross-Run controller; `RunTerminalObserver` | [runtime-behavior.md](runtime-behavior.md), [ADR-0064](../adr/0064-runtime-owned-outcome-orchestration.md) |
 
 The axis flow and ownership tables above name where each value enters and changes
 hands; the per-axis enforcing tests are in the guardrail index
@@ -497,6 +502,12 @@ concept.
 | Scheduled action | `register_scheduled_action` | runtime request for later work | durable wake belongs to dispatch/server |
 | Effect handler | `register_effect` | typed side-effect handling | durable truth still commits through runtime facts |
 | Lifecycle seed | `on_activate` / `on_deactivate` | restricted state seed | no batch splicing or commit bypass |
+
+Committed-terminal observation is deliberately not another `PhaseHookPoint`:
+Step phases end before durable terminal truth exists. It is registered by Runtime
+extension composition, checks the frozen Snapshot's selected extension ids, and
+reacts only to a committed `Ended` Run. Do not add parallel PostRun, AfterRun,
+Stop, or Cancel Hook families.
 
 `plugin_ids` controls which plugins are loaded. The active plugin scope controls
 which loaded plugins contribute runtime behavior. An empty active scope means all

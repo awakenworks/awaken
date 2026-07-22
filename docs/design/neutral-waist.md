@@ -23,7 +23,8 @@ Use the existing runtime vocabulary first.
 | `ToolExecutor` | Invoke the selected tool in-process through a neutral call/result port | The runtime invokes the tool by id; the port carries no authorization |
 | `StreamSink` | Stream live runtime progress to callers | Facts still commit through `CommitCoordinator` |
 | `EventReader` / `EventSubscriber` | Read or subscribe to committed durable event records | Cannot create or erase runtime truth |
-| `ContinuationGuard` | Decide whether a natural-end run should continue | Async, replayable verdicts; no product outcome semantics |
+| `ContinuationGuard` | Decide whether a natural-end Run should complete or continue before terminal commit | Async, replayable verdicts; no product outcome semantics |
+| `RunTerminalObserver` | React to an already-committed terminal Run | At-least-once notification; cannot change `RunResult` or commit authority |
 
 These ports are the "waist": server and product code can adapt to them, but the
 runtime core must not import server routes, public protocol names, or execution
@@ -60,19 +61,26 @@ from the activation are checked against the profile:
 Unsupported capability is a typed pre-execution failure, not a late runtime
 surprise.
 
-## Goal Continuation
+## Runtime Extension Lifecycles
 
-Goal evaluation uses the runtime extension seam:
+Runtime Extension is broader than an in-Run `Plugin`:
 
-1. `ContinuationGuard` evaluates at the natural end of a run.
-2. The guard returns a structured opaque verdict.
-3. Replay reuses recorded verdicts and never re-grades.
-4. `awaken-ext-goal` owns the pure Outcome lifecycle and grading vocabulary; Runtime Host owns orchestration.
-5. Product adapters map Anthropic Outcome or other public concepts onto the
-   extension.
+1. `PhaseHook` observes and returns staged reactions at one Step phase.
+2. `ContinuationGuard` decides Complete/Continue at natural end, before terminal
+   commit.
+3. `RunTerminalObserver` reacts after an `Ended` Run fact commits; delivery is
+   at least once and the observer cannot alter the committed `RunResult`.
 
-The runtime records "this run concluded with code/detail"; it does not know what
-"satisfied" or "needs revision" means.
+Memory Recall and Compact use `BeforeInference`. Memory Extraction uses a
+terminal observer plus a stable durable intent/receipt. Outcome is a cross-Run
+workflow extension: `awaken-ext-goal` owns its controller and grading vocabulary,
+while the Runtime Host supplies neutral execution, Thread, commit, and backend
+adapters. Product adapters map Anthropic Outcome or other public concepts onto
+that extension.
+
+`cancel_run` and `stop_run` are commands that converge on the terminal commit;
+they are not Hook points. Runtime Core never interprets "satisfied",
+"needs revision", Memory, or Compact semantics.
 
 ## Direct Development Guidance
 
@@ -94,6 +102,8 @@ When adding execution behavior:
   `RunActivation`; those belong in `RuntimeRunContext`.
 - No authorization grant implied by tool location, backend capability, or catalog
   visibility.
+- No universal lifecycle Hook and no separate PostRun/AfterRun/Stop/Cancel Hook
+  family; the three extension roles above retain distinct authority.
 
 ## Guardrails
 

@@ -32,8 +32,8 @@ does it bottom out. Two traces answered it precisely.
 
 ### What already holds (ground truth)
 
-The compactor is **already a normal agent run**, at the same execution altitude
-as a top-level turn:
+The compactor is **already a normal Agent Run**, at the same execution altitude
+as a top-level Run:
 
 - Every locally-runnable agent — the main assistant, native delegates, and the
   auxiliary agents (memory extractor, judge, compactor) — is one entry in the
@@ -49,9 +49,9 @@ as a top-level turn:
 - Native delegates (`awaken-runtime-host/src/delegate.rs`, `native_run` →
   `run_agent`) and the goal judge
   (`awaken-runtime-host/src/judge.rs`, `KernelJudgeRunner` → `run_configured_agent`)
-  ride the **same** substrate. A top-level session turn reaches the **same**
-  `RunExecutor::execute` (`awaken-runtime-host/src/turn_exec.rs:19` → ingress →
-  `runtime.execute`).
+ride the **same** substrate. A top-level Session Run reaches the **same**
+`RunExecutor::execute` (Host Run execution → ingress →
+`runtime.execute`).
 
 So at the execution layer the compactor and the main assistant's Run go through
 one seam. A delegated Agent receives the initiating Run's durable commit/history
@@ -97,7 +97,7 @@ context-plane responsibility. Pushing it into an agent yields either the
 self-management paradox (the model must reliably self-trim — an infra concern
 leaking into the agent's task) or infinite regress (the deciding agent itself
 grows context and needs a decider). Therefore the trigger + rewrite stays a thin
-`PhaseHook` (`CompactPlugin`, `awaken-ext-compact/src/plugin.rs:137`). This is
+`PhaseHook` (`CompactPlugin`, `awaken-ext-compact/src/plugin.rs`). This is
 the irreducible non-agent core; everything else is an agent run.
 
 ### D2: The event is a **projected** parent-thread marker, never emitted by the extension (G16)
@@ -122,7 +122,7 @@ The compaction hook already returns a `PhaseReaction { state, context }`
 request-only summary), leaving `state` empty. On a fold it also stages a durable
 marker (G3) via the generic KV command it is already allowed to use
 (`awaken-agent-contract/src/agent/state.rs:62`, `Command::set`), keyed by the
-turn's `run_id` so the host reads it back exactly once:
+Run's `run_id` so the adapter reads it back exactly once:
 
 ```
 Command::set(Scope::Thread, MergePolicy::Commutative,
@@ -131,13 +131,12 @@ Command::set(Scope::Thread, MergePolicy::Commutative,
 
 Carriage and projection are symmetric to the outcome-eval precedent:
 
-- `TurnOutcome` (`state.rs:46`) gains `compacted: bool` (neutral).
-- `SessionRuntime::run_turn`'s host impl reads that marker back from durable
-  thread state at the **terminal** step only (`finish_step`), so an awaiting→resumed
-  turn — which shares one `run_id` — surfaces it exactly once.
-- `append_turn` (`state.rs:1208`) pushes an `OutboundKind::ThreadContextCompacted {}`
-  **before** the turn's message events (compaction runs `BeforeInference`), then
-  the existing `project_turn`.
+- The neutral Run result gains a `compacted` marker.
+- The Session Runtime adapter reads that marker from durable Thread state when
+  the Run settles, so Awaiting→Resume — which shares one `run_id` — surfaces it
+  exactly once after the Run reaches its reporting boundary.
+- The Managed projection pushes `OutboundKind::ThreadContextCompacted {}` before
+  that Run's message events because compaction runs at `BeforeInference`.
 - `dto.rs` adds the variant + `type_str` (`"agent.thread_context_compacted"`). The
   `AgentEvent` transcoder (`project.rs:126`) is **not** touched — compaction is
   not a committed message.
@@ -155,7 +154,7 @@ below the adapter.
 
 The elegant end state makes compaction a first-class *system-triggered subagent*:
 run the compactor on a **child session thread** (`parent_thread_id` = the main
-thread) against the session's **durable** commit store, so the summarization turn
+Thread) against the Session's **durable** commit store, so the summarization Run
 is observable through the thread API for free and the marker references its child
 thread. The concrete gap is exactly (a) from Context — the isolated
 `MemoryCommitCoordinator` in `subagent.rs` — not any missing "agent-ness."
@@ -174,10 +173,12 @@ This is its own initiative; compaction is its first client.
 ### D5: Converge auxiliary-Agent execution (partially superseded)
 
 Outcome Judge execution no longer uses the former ext-goal `DelegateRunner`:
-[ADR-0064](0064-runtime-owned-outcome-orchestration.md) routes its pinned snapshot
-through the ordinary backend-neutral Run boundary. Compaction, memory selection,
-and Native delegation still share `run_configured_agent`; remote A2A delegates
-remain separate because they have network semantics.
+[ADR-0064](0064-runtime-owned-outcome-orchestration.md) places its controller and
+Agent-backed Grader in the Outcome Runtime Extension and routes the pinned Judge
+snapshot through the ordinary backend-neutral Run boundary. Compaction and
+Memory selection remain ordinary auxiliary Agent Runs; their duplicate Host
+runner is migration debt, not a separate lifecycle contract. Remote A2A
+delegates remain separate because they have network semantics.
 
 ## Development-Ready Design (G14) — D3
 
@@ -188,16 +189,16 @@ Change list, each additive:
    replay (cache hit) returns context only. Only the folding step stages the fact.
 2. `awaken-runtime-host/src/compact.rs` / `subagent.rs`: no behavior change; the
    staged command commits through the existing path.
-3. `awaken-runtime-host` `SessionRuntime::run_turn` impl: read back
-   `compaction/*` thread keys committed this turn → `TurnOutcome.compactions`.
+3. Runtime Host Run completion: read back `compaction/*` Thread keys committed
+   by this Run into the neutral Run result.
 4. `awaken-protocol-managed/src/dto.rs`: add
    `OutboundKind::ThreadContextCompacted { pre_compaction_tokens: Option<u64> }`
    + `type_str` arm.
-5. `awaken-protocol-managed/src/state.rs`: `TurnOutcome.compactions`; `append_turn`
-   pushes the marker before `project_turn`.
+5. `awaken-protocol-managed/src/state.rs`: project the neutral compaction marker
+   before the Run's message projection.
 6. Test — `e2e/managed_compaction_e2e.mjs`: keep the summary-injection assertion;
    add that the event stream contains `agent.thread_context_compacted` **before**
-   the folding turn's `agent.message`. Unit: an ext-compact test that a fold
+   the folding Run's `agent.message`. Unit: an ext-compact test that a fold
    stages a `compaction/<step>` state command.
 
 ## Consequences

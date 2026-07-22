@@ -79,6 +79,13 @@ The named harnesses in the strict gate invoke production pure functions directly
   - every accepted Grade selects exactly the decision- and budget-authorized phase;
   - terminal Outcome states are absorbing.
 
+The Outcome controller and Thread-state codec belong to the Outcome Runtime
+Extension. Runtime Host adapters are not part of the formal domain transition
+kernel. The committed-terminal observer slice additionally requires executable
+tests for after-commit ordering, Awaiting exclusion, redelivery, and stable
+intent/receipt idempotency; it must not be modeled as a Step hook or continuation
+decision.
+
 The relationship and tool-call harnesses verify the same transition kernels
 used by `DelegationRegistry` and `ToolBatch`; they are not copies of the
 production logic.
