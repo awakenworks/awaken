@@ -99,7 +99,7 @@ pub use crate::worker_control_client::WorkerControlClient;
 // per-thread egress handle a composition root wires it with.
 pub use crate::data_subject_api::{consent_router, erasure_router, install_capture_sink};
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
-pub use crate::memory_store_api::{memory_stores_router, memory_stores_router_with_catalog};
+pub use crate::memory_store_api::memory_stores_router_with_catalog;
 pub use crate::redact::PiiRedactor;
 pub use crate::sandbox_source::{
     AcpSandboxBindings, BoundLocalChannelSource, LaunchSource, SandboxChannelSource, ThreadEgress,

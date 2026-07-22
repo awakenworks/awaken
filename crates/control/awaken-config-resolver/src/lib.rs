@@ -41,7 +41,6 @@ pub trait InferenceAccessPublisher: Send + Sync {
     >;
 }
 
-mod resource_catalog;
 /// Read ports for the authored aggregates (`McpStore`, `InferenceProfileStore`,
 /// `AgentInputBindingRepository`) + in-memory reference impls. They live on the
 /// read side so the runtime host reads config without depending on the authoring HTTP crate
@@ -49,7 +48,6 @@ mod resource_catalog;
 pub mod stores;
 /// Telemetry ceiling composition (ADR-0050 D3): Org baseline tightened by lower layers.
 pub mod telemetry;
-pub use resource_catalog::InMemoryResourceCatalog;
 pub use stores::{
     AgentInputBindingRepository, AgentInputRepositoryError, InMemoryAgentInputBindingRepository,
     InMemoryMcpStore, InMemoryProfileStore, InMemoryWebhookStore, InferenceProfileStore, McpStore,

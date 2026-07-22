@@ -9,6 +9,7 @@ import tomllib
 from pathlib import Path
 
 import _arch_fitness
+import _crate_dependency_fitness
 import _resource_plane_fitness
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 CRATES = REPO_ROOT / "crates"
@@ -1689,7 +1690,6 @@ FORBIDDEN_NEUTRAL_IMPL_TRAITS = {
     "RawTool": "neutral crates may define the RawTool mechanism, but concrete implementations belong in extensions/adapters",
 }
 
-
 def load_manifest(path: Path) -> dict:
     with path.open("rb") as handle:
         return tomllib.load(handle)
@@ -1697,13 +1697,6 @@ def load_manifest(path: Path) -> dict:
 
 def package_name(manifest: dict) -> str:
     return str(manifest["package"]["name"])
-
-
-def dependency_names(manifest: dict) -> set[str]:
-    deps: set[str] = set()
-    for section in ("dependencies", "dev-dependencies", "build-dependencies"):
-        deps.update(manifest.get(section, {}).keys())
-    return deps
 
 
 def iter_crate_manifests() -> list[Path]:
@@ -1714,22 +1707,12 @@ def iter_crate_manifests() -> list[Path]:
 
 
 def check_dependencies() -> list[str]:
-    errors: list[str] = []
-    for manifest_path in iter_crate_manifests():
-        manifest = load_manifest(manifest_path)
-        name = package_name(manifest)
-        allowed = ALLOWED_DEPS.get(name)
-        if allowed is None:
-            errors.append(f"{manifest_path.relative_to(REPO_ROOT)}: unknown crate boundary")
-            continue
-
-        unexpected = dependency_names(manifest) - allowed
-        if unexpected:
-            errors.append(
-                f"{manifest_path.relative_to(REPO_ROOT)}: disallowed dependencies: "
-                + ", ".join(sorted(unexpected))
-            )
-    return errors
+    return _crate_dependency_fitness.check_allowed_dependencies(
+        repo_root=REPO_ROOT,
+        manifest_paths=iter_crate_manifests(),
+        load_manifest=load_manifest,
+        allowed_deps=ALLOWED_DEPS,
+    )
 
 
 def text_files(crate_name: str) -> list[Path]:

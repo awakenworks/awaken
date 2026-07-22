@@ -342,6 +342,19 @@ mod tests {
             .expect("open ephemeral managed Session repository")
     }
 
+    fn ephemeral_resource_catalog() -> awaken_admin_config_api::SqliteAdminStore {
+        awaken_admin_config_api::SqliteAdminStore::open_in_memory()
+            .expect("open ephemeral Resource Catalog")
+    }
+
+    type RestoredRuntime = (
+        String,
+        Option<String>,
+        usize,
+        bool,
+        Option<serde_json::Value>,
+    );
+
     /// A runtime that reports a non-empty committed transcript, so a session can
     /// rehydrate. Every operational method is unused by these tests.
     #[derive(Clone, Default)]
@@ -356,17 +369,7 @@ mod tests {
             >,
         >,
         restored_environments: Arc<std::sync::Mutex<Vec<(String, String, String)>>>,
-        restored_runtimes: Arc<
-            std::sync::Mutex<
-                Vec<(
-                    String,
-                    Option<String>,
-                    usize,
-                    bool,
-                    Option<serde_json::Value>,
-                )>,
-            >,
-        >,
+        restored_runtimes: Arc<std::sync::Mutex<Vec<RestoredRuntime>>>,
         order: Arc<std::sync::Mutex<Vec<&'static str>>>,
     }
 
@@ -803,13 +806,13 @@ mod tests {
         );
         assert_eq!(
             restored_runtimes.lock().unwrap().as_slice(),
-            &[((
+            &[(
                 "sesn_1".to_string(),
                 Some("acp:custom".to_string()),
                 0,
                 true,
                 Some(serde_json::json!({"isolation": "namespace"})),
-            ))],
+            )],
             "the complete secret-free runtime pin is restored"
         );
         assert_eq!(
@@ -886,7 +889,7 @@ mod tests {
     #[tokio::test]
     async fn live_input_mutations_survive_restart_without_changing_resource_identity() {
         let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
-        let catalog = Arc::new(awaken_config_resolver::InMemoryResourceCatalog::new());
+        let catalog = Arc::new(ephemeral_resource_catalog());
         let state = ManagedState::new(RehydrateFake::default())
             .with_session_repo(repo.clone())
             .with_resource_catalog(catalog.clone());

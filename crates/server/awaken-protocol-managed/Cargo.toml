@@ -50,6 +50,7 @@ form_urlencoded = "1"
 tracing = "0.1"
 
 [dev-dependencies]
+awaken-admin-config-api = { workspace = true, features = ["sqlite"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
