@@ -327,13 +327,18 @@ async function main() {
     for (const corrupt of corruptions) {
       const data = JSON.stringify(corrupt);
       persistRecoverableRaw(database, validCompleted.intent_id, data);
-      await sleep(800);
+      await hardKill(servers.pop());
+      const probe = spawnServer('memory', PORT, environment);
+      servers.push(probe.server);
+      await waitForPort(PORT);
+      client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
+      await client.beta.sessions.events.send(session.id, { betas: BETAS, events: [] });
       assert.equal(
         rawIntent(database, validCompleted.intent_id),
         data,
         'a corrupt extraction aggregate must not be claimed or rewritten',
       );
-      assert.equal(second.server.exitCode, null, 'corrupt extraction crashed the process');
+      assert.equal(probe.server.exitCode, null, 'corrupt extraction crashed the process');
     }
     persistIntent(database, validCompleted, false);
 

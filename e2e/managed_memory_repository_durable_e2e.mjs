@@ -30,6 +30,10 @@ const drain = async (p) => {
   return out;
 };
 
+async function rejectsStatus(operation, status, message) {
+  await assert.rejects(operation, (error) => error.status === status, message);
+}
+
 async function main() {
   fs.rmSync(STORE_DIR, { recursive: true, force: true });
   let { server } = spawnServer('echo', PORT, { AWAKEN_STORAGE_DIR: STORE_DIR });
@@ -165,6 +169,130 @@ async function main() {
       'a deleted memory is 404',
     );
     pass('error paths: 400 invalid path, 404 unknown, 404 after delete');
+
+    // -- complete public error graph -----------------------------------------
+    const oversized = 'x'.repeat(102_401);
+    await rejectsStatus(
+      () => c.beta.memoryStores.memories.create(store.id, {
+        path: '/too-large.md', content: oversized, betas: BETAS,
+      }),
+      400,
+      'oversized Memory creation is rejected',
+    );
+    await rejectsStatus(
+      () => c.beta.memoryStores.memories.update(mem.id, {
+        memory_store_id: store.id, content: oversized, betas: BETAS,
+      }),
+      400,
+      'oversized Memory update is rejected',
+    );
+    await rejectsStatus(
+      () => c.beta.memoryStores.memories.update(mem.id, {
+        memory_store_id: store.id, path: '../escape.md', betas: BETAS,
+      }),
+      400,
+      'unsafe Memory rename is rejected',
+    );
+    await rejectsStatus(
+      () => c.beta.memoryStores.memories.update('mem_does_not_exist', {
+        memory_store_id: store.id, content: 'missing', betas: BETAS,
+      }),
+      404,
+      'unknown Memory update is 404',
+    );
+    await rejectsStatus(
+      () => c.beta.memoryStores.memories.delete('mem_does_not_exist', {
+        memory_store_id: store.id, betas: BETAS,
+      }),
+      404,
+      'unknown Memory delete is 404',
+    );
+
+    const versions = await drain(c.beta.memoryStores.memoryVersions.list(store.id, {
+      betas: BETAS,
+    }));
+    assert.ok(versions.length > 0);
+    await rejectsStatus(
+      () => c.get(`/v1/memory_stores/${store.id}/memory_versions/memver_missing`),
+      404,
+      'unknown Memory version is 404',
+    );
+    await rejectsStatus(
+      () => c.post(`/v1/memory_stores/${store.id}/memory_versions/memver_missing/redact`),
+      404,
+      'unknown Memory version redaction is 404',
+    );
+    await rejectsStatus(
+      () => c.get(`/v1/memory_stores/${store.id}/config_versions/not-an-integer`),
+      400,
+      'non-integer config version is rejected',
+    );
+    await rejectsStatus(
+      () => c.get(`/v1/memory_stores/${store.id}/config_versions/999`),
+      404,
+      'unknown config version is 404',
+    );
+    await rejectsStatus(
+      () => c.post(`/v1/memory_stores/${store.id}/config`, { body: {} }),
+      400,
+      'config publication requires a CAS version',
+    );
+    await rejectsStatus(
+      () => c.post(`/v1/memory_stores/${store.id}/config`, {
+        body: { expected_config_version: 1 },
+      }),
+      400,
+      'config publication requires a policy change',
+    );
+    for (const [field, value] of [
+      ['recall_policy', { enabled: 'yes' }],
+      ['extraction_policy', { enabled: 'yes' }],
+      ['retention_policy', { retention_days: 'forever' }],
+    ]) {
+      await rejectsStatus(
+        () => c.post(`/v1/memory_stores/${store.id}/config`, {
+          body: { expected_config_version: 1, [field]: value },
+        }),
+        400,
+        `${field} must preserve its typed schema`,
+      );
+    }
+
+    const missingStore = 'memstore_does_not_exist';
+    const missingStoreOperations = [
+      () => c.get(`/v1/memory_stores/${missingStore}`),
+      () => c.post(`/v1/memory_stores/${missingStore}`, { body: { description: 'missing' } }),
+      () => c.get(`/v1/memory_stores/${missingStore}/config`),
+      () => c.get(`/v1/memory_stores/${missingStore}/config_versions/1`),
+      () => c.post(`/v1/memory_stores/${missingStore}/archive`),
+      () => c.delete(`/v1/memory_stores/${missingStore}`),
+      () => c.get(`/v1/memory_stores/${missingStore}/memories`),
+      () => c.post(`/v1/memory_stores/${missingStore}/memories`, {
+        body: { path: '/missing.md', content: 'missing' },
+      }),
+      () => c.get(`/v1/memory_stores/${missingStore}/memories/mem_missing`),
+      () => c.post(`/v1/memory_stores/${missingStore}/memories/mem_missing`, {
+        body: { content: 'missing' },
+      }),
+      () => c.delete(`/v1/memory_stores/${missingStore}/memories/mem_missing`),
+      () => c.get(`/v1/memory_stores/${missingStore}/memory_versions`),
+      () => c.get(`/v1/memory_stores/${missingStore}/memory_versions/memver_missing`),
+      () => c.post(`/v1/memory_stores/${missingStore}/memory_versions/memver_missing/redact`),
+    ];
+    for (const operation of missingStoreOperations) {
+      await rejectsStatus(operation, 404, 'a nested operation cannot invent a missing store');
+    }
+
+    const archived = await c.beta.memoryStores.create({ name: 'archived', betas: BETAS });
+    await c.post(`/v1/memory_stores/${archived.id}/archive`);
+    await rejectsStatus(
+      () => c.post(`/v1/memory_stores/${archived.id}/memories`, {
+        body: { path: '/after-archive.md', content: 'forbidden' },
+      }),
+      404,
+      'an archived MemoryStore cannot accept mutable content',
+    );
+    pass('public Memory error graph fails closed at every aggregate boundary');
 
     // -- RESTART over the same storage dir ------------------------------------
     await stopServer(server);
