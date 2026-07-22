@@ -117,7 +117,7 @@ impl Plugin for OutOfBoundPlugin {
     }
 }
 
-/// Requests a tool on its first turn, then ends with text — so a gate decision on
+/// Requests a tool in its first Step, then ends with text — so a gate decision on
 /// that one call is observable.
 struct ToolThenTextLlm {
     calls: AtomicUsize,

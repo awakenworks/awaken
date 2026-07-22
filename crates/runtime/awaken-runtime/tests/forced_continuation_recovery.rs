@@ -33,7 +33,7 @@ use awaken_runtime_contract::snapshot::{
 const FINGERPRINT: &str = "catalog-a";
 const SNAPSHOT_ID: &str = "snapshot-1";
 
-/// Always ends its turn with text, so every step is a natural-end boundary the
+/// Always ends its response with text, so every Step is a natural-end boundary the
 /// run-end guard is consulted at.
 struct TextLlm;
 #[async_trait::async_trait]
@@ -48,7 +48,7 @@ impl LlmExecutor for TextLlm {
 }
 
 /// Steers while `forced_continuations < steer_budget` (recording each value it
-/// saw), and requests a pause on its steering turn so the run awaits at the very
+/// saw), and requests a pause on its steering Step so the Run awaits at the very
 /// next boundary — after the steer feedback is committed. Once the budget is
 /// reached it completes.
 struct PauseGuard {

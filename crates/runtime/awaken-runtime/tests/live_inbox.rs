@@ -1,6 +1,6 @@
 //! Live-inbox consumption: messages queued on the attempt's inbox are drained
 //! at the natural-end boundary, folded into the transcript as re-identified
-//! turns, and shown to the model before any run-end decision. An empty inbox
+//! Steps, and shown to the model before any Run-end decision. An empty inbox
 //! changes nothing.
 
 use std::sync::Arc;
@@ -28,7 +28,7 @@ use awaken_runtime_contract::snapshot::{
 const FP: &str = "catalog-a";
 
 /// Replies with every user message it was shown, joined — the reply reveals
-/// exactly which turns reached the model.
+/// exactly which inference Steps reached the model.
 struct EchoUserLlm;
 #[async_trait::async_trait]
 impl LlmExecutor for EchoUserLlm {
@@ -90,7 +90,7 @@ fn runtime() -> Runtime {
     runtime
 }
 
-fn turn(run_id: &str, text: &str) -> RunActivation {
+fn activation(run_id: &str, text: &str) -> RunActivation {
     RunActivation {
         run_id: RunId(run_id.to_string()),
         thread_id: ThreadId("thread-1".to_string()),
@@ -121,11 +121,14 @@ async fn queued_messages_are_folded_in_before_the_run_ends() {
     let ctx = RuntimeRunContext::new()
         .with_commit(commit.clone())
         .with_live_inbox(inbox.clone());
-    let state = runtime.execute(turn("r1", "First."), ctx).await.unwrap();
+    let state = runtime
+        .execute(activation("r1", "First."), ctx)
+        .await
+        .unwrap();
     assert!(matches!(state, RunState::Ended(_)));
 
     let committed = commit.committed_messages(&ThreadId("thread-1".to_string()));
-    // The injected turn is committed with a run-scoped id, not the client's.
+    // The injected message is committed with a Run-scoped id, not the client's.
     let injected = committed
         .iter()
         .find(|m| m.id.0 == "r1-inbox-0")
@@ -137,7 +140,7 @@ async fn queued_messages_are_folded_in_before_the_run_ends() {
         "caller-supplied id never reaches the transcript"
     );
 
-    // The model saw the injection: its final reply echoes both user turns.
+    // The model saw the injection: its final reply echoes both user messages.
     let reply = committed
         .iter()
         .rfind(|m| m.role == Role::Assistant)
@@ -151,7 +154,7 @@ async fn queued_messages_are_folded_in_before_the_run_ends() {
 #[tokio::test]
 async fn a_requested_pause_awaits_the_run_at_the_next_boundary() {
     // ADR-0054: an operator pause is a durable await at the next safe boundary, not
-    // a mid-step freeze. The run commits its turn, then awaits (not ends).
+    // a mid-Step freeze. The Run commits its response, then awaits (not ends).
     let runtime = runtime();
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let pause = PauseSignal::new();
@@ -160,16 +163,19 @@ async fn a_requested_pause_awaits_the_run_at_the_next_boundary() {
     let ctx = RuntimeRunContext::new()
         .with_commit(commit.clone())
         .with_pause(pause);
-    let state = runtime.execute(turn("rp", "Work."), ctx).await.unwrap();
+    let state = runtime
+        .execute(activation("rp", "Work."), ctx)
+        .await
+        .unwrap();
     assert!(
         matches!(state, RunState::Awaiting),
         "a requested pause awaits the run, got {state:?}"
     );
-    // Commit-then-await: the assistant turn is durable before the await.
+    // Commit-then-await: the assistant response is durable before the await.
     let committed = commit.committed_messages(&ThreadId("thread-1".to_string()));
     assert!(
         committed.iter().any(|m| m.role == Role::Assistant),
-        "the turn committed before awaiting"
+        "the response committed before awaiting"
     );
 }
 
@@ -184,7 +190,10 @@ async fn a_batch_drains_in_order_with_sequential_ids() {
     let ctx = RuntimeRunContext::new()
         .with_commit(commit.clone())
         .with_live_inbox(inbox);
-    runtime.execute(turn("r2", "Start."), ctx).await.unwrap();
+    runtime
+        .execute(activation("r2", "Start."), ctx)
+        .await
+        .unwrap();
 
     let committed = commit.committed_messages(&ThreadId("thread-1".to_string()));
     let ids: Vec<&str> = committed
@@ -210,22 +219,28 @@ async fn an_empty_or_absent_inbox_leaves_the_run_untouched() {
     let runtime = runtime();
     let commit = Arc::new(MemoryCommitCoordinator::new());
 
-    // Absent inbox (the default context) — single echo turn, natural end.
+    // Absent inbox (the default context) — single echo Step, natural end.
     let ctx = RuntimeRunContext::new().with_commit(commit.clone());
-    let state = runtime.execute(turn("r3", "Solo."), ctx).await.unwrap();
+    let state = runtime
+        .execute(activation("r3", "Solo."), ctx)
+        .await
+        .unwrap();
     assert!(matches!(state, RunState::Ended(_)));
 
     // Present but empty inbox — identical outcome.
     let ctx = RuntimeRunContext::new()
         .with_commit(commit.clone())
         .with_live_inbox(LiveInbox::new());
-    let state = runtime.execute(turn("r4", "Alone."), ctx).await.unwrap();
+    let state = runtime
+        .execute(activation("r4", "Alone."), ctx)
+        .await
+        .unwrap();
     assert!(matches!(state, RunState::Ended(_)));
 
     let committed = commit.committed_messages(&ThreadId("thread-1".to_string()));
     assert!(
         !committed.iter().any(|m| m.id.0.contains("-inbox-")),
-        "no injected turns appear without queued input"
+        "no injected messages appear without queued input"
     );
     let replies: Vec<String> = committed
         .iter()

@@ -768,7 +768,7 @@ async fn drive(
 
     // A reclaimed Running run may have died after committing a Requested/Executing
     // tool batch. Recover that explicit Run-scoped entity before asking the model
-    // for another turn. Terminal calls are reused, never re-entered.
+    // for another Step. Terminal calls are reused, never re-entered.
     if let Some(batch) = ActiveToolBatch::load(&store)
         .map_err(|error| Error::Execution(error.to_string()))?
         .filter(|batch| batch.run_id == *run_id && batch.phase != ToolBatchPhase::Finalized)

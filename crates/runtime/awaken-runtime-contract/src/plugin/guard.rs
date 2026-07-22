@@ -8,7 +8,7 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::state::Store;
 
 /// What a run-end guard sees when the model/tool loop reaches a natural end (a
-/// text-only turn). Immutable: a guard reads the conversation and the run-scoped
+/// text-only inference Step). Immutable: a guard reads the conversation and the Run-scoped
 /// forced-continuation count, then returns a decision.
 pub struct RunEndContext<'a> {
     pub run_id: RunId,
@@ -34,7 +34,7 @@ pub struct RunEndContext<'a> {
 pub enum RunEndDecision {
     /// End the run. `detail` is surfaced to the host as an opaque round result.
     Complete { detail: serde_json::Value },
-    /// Continue for another turn: append `feedback` as a user message and loop.
+    /// Continue with another Step: append `feedback` as a user message and loop.
     /// `detail` describes this non-terminal round, opaque to the runtime.
     Steer {
         feedback: String,
@@ -43,7 +43,7 @@ pub enum RunEndDecision {
 }
 
 /// A run-end continuation guard: consulted at the natural-end boundary to decide
-/// whether the run ends or takes another steered turn (e.g. goal/outcome
+/// whether the Run ends or takes another steered Step (e.g. goal/outcome
 /// evaluation). The runtime consults registered guards in dependency order and
 /// takes the first that steers; if none steer, the run ends carrying the last
 /// guard's completion detail. Async so a guard can grade through an external

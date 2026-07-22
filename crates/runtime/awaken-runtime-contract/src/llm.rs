@@ -46,55 +46,55 @@ pub struct ToolCall {
     pub arguments: serde_json::Value,
 }
 
-/// One model response: the assistant turn plus optional usage.
+/// One model response: the assistant message plus optional usage.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChatResponse {
     pub output: AssistantOutput,
     pub usage: Option<TokenUsage>,
-    /// Why the turn ended, when the provider reports it. `None` means the
+    /// Why the response ended, when the provider reports it. `None` means the
     /// provider gave no reason; the runtime treats that as a natural end.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop_reason: Option<StopReason>,
 }
 
-/// Provider-neutral reason a turn stopped. `MaxTokens` is the one the loop
-/// acts on: it marks a truncated turn that may need continuation recovery.
+/// Provider-neutral reason a response stopped. `MaxTokens` is the one the loop
+/// acts on: it marks a truncated response that may need continuation recovery.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StopReason {
     /// The model finished naturally.
     EndTurn,
     /// The output hit the response token limit and was truncated.
     MaxTokens,
-    /// The turn stopped to invoke one or more tools.
+    /// The response stopped to invoke one or more tools.
     ToolUse,
     /// A configured stop sequence matched.
     StopSequence,
-    /// A safety/content filter ended the turn.
+    /// A safety/content filter ended the response.
     ContentFilter,
 }
 
-/// One assistant turn as a list of content blocks. Text and tool requests may
-/// interleave (`vec![Text, ToolUse, Text]`); a text-only turn is a natural end,
-/// a turn with any `ToolUse` continues the loop.
+/// One assistant response as a list of content blocks. Text and tool requests may
+/// interleave (`vec![Text, ToolUse, Text]`); a text-only response is a natural end,
+/// a response with any `ToolUse` continues the Step loop.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AssistantOutput {
     pub blocks: Vec<ContentBlock>,
 }
 
 impl AssistantOutput {
-    /// A text-only turn.
+    /// A text-only response.
     pub fn text(text: impl Into<String>) -> Self {
         Self {
             blocks: vec![ContentBlock::text(text)],
         }
     }
 
-    /// A turn from explicit blocks (text and/or tool requests).
+    /// A response from explicit blocks (text and/or tool requests).
     pub fn from_blocks(blocks: Vec<ContentBlock>) -> Self {
         Self { blocks }
     }
 
-    /// A turn from execution-side tool calls, each mapped to a `ToolUse` block.
+    /// A response from execution-side tool calls, each mapped to a `ToolUse` block.
     pub fn from_tool_calls(calls: Vec<ToolCall>) -> Self {
         Self {
             blocks: calls
@@ -104,12 +104,12 @@ impl AssistantOutput {
         }
     }
 
-    /// The turn's combined text across its `Text` blocks.
+    /// The response's combined text across its `Text` blocks.
     pub fn text_content(&self) -> String {
         extract_text(&self.blocks)
     }
 
-    /// The tool calls this turn requests, in order, projected onto the
+    /// The tool calls this response requests, in order, projected onto the
     /// execution-side [`ToolCall`] (`ToolUse.id`/`name`/`input`).
     pub fn tool_calls(&self) -> Vec<ToolCall> {
         self.blocks
@@ -140,7 +140,7 @@ pub struct TokenUsage {
 }
 
 impl TokenUsage {
-    /// Field-wise saturating sum, used to accumulate usage across steps/turns.
+    /// Field-wise saturating sum, used to accumulate usage across Steps.
     #[must_use]
     pub fn saturating_add(self, other: Self) -> Self {
         Self {
@@ -159,7 +159,7 @@ impl TokenUsage {
 }
 
 /// A thread's accumulated token usage **attributed per model** (a session may span
-/// several models — per-turn overrides, sub-agents, native vs an external runtime).
+/// several models — per-Run overrides, sub-agents, native vs an external runtime).
 /// The neutral truth the runtime records; adapters project the [`total`](Self::total)
 /// (or the per-model breakdown) onto their wire. Stored under [`THREAD_USAGE_STATE_KEY`].
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -177,7 +177,7 @@ impl ThreadUsage {
 
     /// Fold another tally into this one, per model — the seam that rolls a
     /// sub-agent's usage (recorded on its own isolated thread) into the parent
-    /// thread's running total, so a delegated turn's tokens are not lost. Each
+    /// Thread's running total, so a delegated Run's tokens are not lost. Each
     /// model's counts accumulate independently (a sub-agent may run a different
     /// model than its parent).
     pub fn merge(&mut self, other: &ThreadUsage) {
@@ -419,7 +419,7 @@ impl Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// Where a provider pushes a turn's content as it streams. Best-effort live
+/// Where a provider pushes a response's content as it streams. Best-effort live
 /// progress only — never committed truth, which is the returned `ChatResponse`
 /// (G10/G13). The runtime implements this to forward chunks to its live stream.
 #[async_trait]
@@ -445,7 +445,7 @@ pub trait DeltaSink: Send + Sync {
 pub trait LlmExecutor: Send + Sync {
     async fn infer(&self, request: ChatRequest) -> Result<ChatResponse>;
 
-    /// Stream the turn's text to `sink` as it arrives, returning the same
+    /// Stream the response's text to `sink` as it arrives, returning the same
     /// assembled response `infer` would. The default is a faithful degenerate
     /// stream — it runs `infer` and pushes the whole text as one chunk — so a
     /// non-streaming provider needs no extra code; a streaming provider overrides
@@ -516,7 +516,7 @@ mod usage_tests {
         let mut tally = ThreadUsage::default();
         tally.record("fast", u(10, 5));
         tally.record("slow", u(100, 50));
-        tally.record("fast", u(1, 1)); // a second turn on the same model accumulates
+        tally.record("fast", u(1, 1)); // a second Step on the same model accumulates
         assert_eq!(tally.by_model.get("fast").copied(), Some(u(11, 6)));
         assert_eq!(tally.by_model.get("slow").copied(), Some(u(100, 50)));
         // The session-level total sums across every model.

@@ -54,7 +54,7 @@ impl MetricsRecorder for SpyRecorder {
     }
 }
 
-/// One text turn with reported usage.
+/// One text response with reported usage.
 struct OkLlm;
 #[async_trait::async_trait]
 impl LlmExecutor for OkLlm {
@@ -153,7 +153,7 @@ async fn a_successful_turn_records_an_ok_inference_metric_with_model_and_tokens(
     assert_eq!(*output, Some(7));
 }
 
-/// One tool call to `echo`, then a closing text turn.
+/// One tool call to `echo`, then a closing text response.
 struct ToolThenText {
     calls: AtomicUsize,
 }
@@ -208,7 +208,7 @@ async fn a_tool_call_records_a_tool_metric_with_id_and_outcome() {
     // The tool chokepoint recorded exactly one `echo` execution, outcome `ok`.
     let tools = spy.tools.lock().unwrap();
     assert_eq!(&*tools, &[("echo".to_string(), "ok".to_string())]);
-    // Two inference calls were metered too (the tool turn, then the text turn).
+    // Two inference calls were metered too (the tool response, then the text response).
     assert_eq!(spy.inferences.lock().unwrap().len(), 2);
 }
 

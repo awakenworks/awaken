@@ -16,7 +16,7 @@ pub struct RunActivation {
     pub delegation_origin: Option<awaken_agent_contract::agent::delegation::DelegationOrigin>,
     /// Per-run model override (R5): the model ref to run THIS attempt on, when it
     /// differs from the agent's published binding. Deliberately OFF the fingerprinted
-    /// snapshot — a per-turn model switch is a run-time choice, not a catalog change,
+    /// snapshot — a per-Run model switch is a runtime choice, not a catalog change,
     /// so it must not mint a new `catalog_fingerprint` (mirrors how display metadata
     /// is excluded from the content address). Absent ⇒ the run uses its snapshot's
     /// `model_binding.model_ref`. This names *which* model to run; the runtime never
@@ -168,7 +168,7 @@ mod tests {
     }
 
     /// The override is off the fingerprinted snapshot — switching it must not change
-    /// the snapshot identity (a per-turn model switch is not a catalog change).
+    /// the snapshot identity (a per-Run model switch is not a catalog change).
     #[test]
     fn overriding_the_model_does_not_touch_the_snapshot_fingerprint() {
         let base = RunActivation::for_binding("bound");

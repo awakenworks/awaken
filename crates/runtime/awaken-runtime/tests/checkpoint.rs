@@ -173,7 +173,7 @@ async fn an_interrupted_step_recovers_in_process_and_leaves_no_checkpoint() {
     .await;
 
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
-    // The committed turn is the whole text, continued across the drop.
+    // The committed response is the whole text, continued across the drop.
     assert_eq!(assistant_text(&commit), "Hello world");
     // The run concluded in-process, so the checkpoint it flushed at the boundary
     // was cleared — nothing lingers to resume.
@@ -202,7 +202,7 @@ async fn a_pre_seeded_checkpoint_resumes_the_first_step() {
     .await;
 
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
-    // The committed turn carries the recovered prefix stitched onto the fresh text.
+    // The committed response carries the recovered prefix stitched onto the fresh text.
     assert_eq!(assistant_text(&commit), "Resumed and done");
     // The consumed checkpoint is cleared once the step concludes.
     assert!(checkpoints.get(RUN_ID).await.is_none());

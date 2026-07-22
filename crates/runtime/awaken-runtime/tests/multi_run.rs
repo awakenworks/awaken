@@ -1,4 +1,4 @@
-//! Multi-turn conversation: a fresh run on a thread continues the conversation
+//! Multi-Run conversation: a fresh Run on a Thread continues the conversation
 //! when a history reader is wired. The runtime loads the thread's
 //! committed messages — the caller never assembles history.
 
@@ -87,7 +87,7 @@ fn runtime() -> Runtime {
     runtime
 }
 
-fn turn(message_id: &str, text: &str) -> RunActivation {
+fn activation(message_id: &str, text: &str) -> RunActivation {
     RunActivation {
         run_id: RunId(message_id.to_string()),
         thread_id: ThreadId("thread-1".to_string()),
@@ -104,28 +104,28 @@ fn turn(message_id: &str, text: &str) -> RunActivation {
 }
 
 #[tokio::test]
-async fn a_fresh_turn_continues_the_thread_with_a_reader() {
+async fn a_fresh_run_continues_the_thread_with_a_reader() {
     let runtime = runtime();
     let commit: Arc<MemoryCommitCoordinator> = Arc::new(MemoryCommitCoordinator::new());
     let reader: Arc<dyn ThreadReader> = commit.clone();
 
-    // Turn 1: the model sees only this turn's input.
+    // Run 1: the model sees only this Run's input.
     let ctx = RuntimeRunContext::new()
         .with_commit(commit.clone())
         .with_reader(reader.clone());
     let state = runtime
-        .execute(turn("t1", "My name is Sam."), ctx)
+        .execute(activation("t1", "My name is Sam."), ctx)
         .await
         .unwrap();
     assert!(matches!(state, RunState::Ended(_)));
 
-    // Turn 2: a fresh run on the same thread; the runtime loads turn 1 from the
-    // committed history, so the model sees both user turns.
+    // Run 2: a fresh Run on the same Thread; the runtime loads Run 1 from the
+    // committed history, so the model sees both user messages.
     let ctx = RuntimeRunContext::new()
         .with_commit(commit.clone())
         .with_reader(reader.clone());
     runtime
-        .execute(turn("t2", "What is my name?"), ctx)
+        .execute(activation("t2", "What is my name?"), ctx)
         .await
         .unwrap();
 
@@ -137,21 +137,27 @@ async fn a_fresh_turn_continues_the_thread_with_a_reader() {
     assert_eq!(
         reply.text_content(),
         "My name is Sam.|What is my name?",
-        "turn 2 saw turn 1's user message from committed history"
+        "Run 2 saw Run 1's user message from committed history"
     );
 }
 
 #[tokio::test]
-async fn without_a_reader_a_fresh_turn_starts_clean() {
-    // No reader: the run sees only its own input (single-turn). This is the
+async fn without_a_reader_a_fresh_run_starts_clean() {
+    // No reader: the Run sees only its own input. This is the
     // backward-compatible default.
     let runtime = runtime();
     let commit: Arc<MemoryCommitCoordinator> = Arc::new(MemoryCommitCoordinator::new());
 
     let ctx = RuntimeRunContext::new().with_commit(commit.clone());
-    runtime.execute(turn("t1", "First."), ctx).await.unwrap();
+    runtime
+        .execute(activation("t1", "First."), ctx)
+        .await
+        .unwrap();
     let ctx = RuntimeRunContext::new().with_commit(commit.clone());
-    runtime.execute(turn("t2", "Second."), ctx).await.unwrap();
+    runtime
+        .execute(activation("t2", "Second."), ctx)
+        .await
+        .unwrap();
 
     let reply = commit
         .committed_messages(&ThreadId("thread-1".to_string()))

@@ -21,7 +21,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// How an executor can be stopped in flight. The host branches on this before it
 /// offers cancel/interrupt for a run — the axis is worth typing because it differs
 /// across execution altitudes (ADR-0055): the native loop observes a cooperative
-/// token at a boundary; an ACP/A2A backend aborts an opaque remote turn.
+/// token at a boundary; an ACP/A2A backend aborts an opaque remote attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cancellation {
     /// The executor cannot be stopped in flight.
@@ -29,7 +29,7 @@ pub enum Cancellation {
     /// A cooperative cancellation token observed at the next safe boundary (the
     /// native engine).
     CooperativeToken,
-    /// The executor aborts an opaque remote/CLI turn (ACP interrupt / A2A cancel).
+    /// The executor aborts an opaque remote/CLI attempt (ACP interrupt / A2A cancel).
     RemoteAbort,
 }
 
@@ -74,7 +74,7 @@ pub trait RunExecutor: Send + Sync {
     ) -> Result<RunState>;
 
     /// The in-flight-control surface this executor supports. Defaults to the
-    /// native-engine model; a backend over an opaque remote/CLI turn overrides it.
+    /// native-engine model; a backend over an opaque remote/CLI attempt overrides it.
     fn capabilities(&self) -> ExecutorCapabilities {
         ExecutorCapabilities::NATIVE
     }

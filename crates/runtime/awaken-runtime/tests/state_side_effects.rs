@@ -1,10 +1,10 @@
-//! Tool-produced state side-effects across *multiple* tool calls in one turn.
+//! Tool-produced state side-effects across *multiple* tool calls in one Step.
 //!
 //! Ported (adapted) from the reference `tool_side_effects.rs`. The reference's
 //! `ToolOutput::with_command` + `StateKey`/merge-strategy model maps here onto
 //! `ToolOutput::with_state(Vec<StateCommand>)` + `MergePolicy`. Behaviors covered:
 //!   * a tool that stages no state commits nothing extra (empty command);
-//!   * two tool calls in one turn each staging a `Commutative` write to the same
+//!   * two tool calls in one Step each staging a `Commutative` write to the same
 //!     key both commit and shallow-merge;
 //!   * two tool calls each staging an `Exclusive` write to the same key conflict
 //!     and fail closed (no partial commit) — the batch validated across calls.
@@ -37,7 +37,7 @@ use awaken_runtime_contract::snapshot::{
 };
 use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
 
-/// Emits a single turn with the given tool calls, then ends with text.
+/// Emits a single Step with the given tool calls, then ends with text.
 struct CallsThenEnd {
     calls: std::sync::Mutex<Option<Vec<ToolCall>>>,
     seen: AtomicUsize,
@@ -186,7 +186,7 @@ async fn tool_with_no_state_commits_nothing_extra() {
     );
 }
 
-/// Two tool calls in one turn, each staging a `Commutative` object write to the
+/// Two tool calls in one Step, each staging a `Commutative` object write to the
 /// same key, both commit and shallow-merge into one value.
 #[tokio::test]
 async fn parallel_commutative_tool_writes_merge() {
@@ -251,7 +251,7 @@ async fn parallel_commutative_tool_writes_merge() {
     );
 }
 
-/// Two tool calls in one turn each staging an `Exclusive` write to the same key
+/// Two tool calls in one Step each staging an `Exclusive` write to the same key
 /// conflict across the accumulated batch and fail closed — no state is committed.
 #[tokio::test]
 async fn parallel_exclusive_tool_writes_conflict_fail_closed() {

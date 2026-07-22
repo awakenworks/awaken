@@ -4,7 +4,7 @@
 //! runtime carries only an opaque [`DataSubjectId`] (never the subject's
 //! attributes or PII); the [`DataSubjectResolver`] port — the one customization
 //! seam — answers the consent ceiling and executes erasure, consulted at the
-//! run/turn boundary and never on the inference hot path.
+//! Run boundary and never on the inference hot path.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -55,7 +55,7 @@ pub struct ErasureError(pub String);
 
 /// Resolves the consent ceiling and executes erasure for a data subject (D10a).
 /// The **one** customization seam: swap the impl to change where subject facts
-/// come from. Consulted at the run/turn boundary, never on the inference hot
+/// come from. Consulted at the Run boundary, never on the inference hot
 /// path.
 #[async_trait]
 pub trait DataSubjectResolver: Send + Sync {

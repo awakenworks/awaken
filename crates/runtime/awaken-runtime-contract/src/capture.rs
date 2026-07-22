@@ -5,7 +5,7 @@
 //! (prompt/completion/tool text — personal data under GDPR). [`ContentCapture`]
 //! is the total-ordered lattice deciding how much content a run may record;
 //! [`CaptureDecision`] is the single opaque primitive the runtime/sinks receive
-//! for one run/turn — they hold only this, never scope, consent, or subject
+//! for one Run — they hold only this, never scope, consent, or subject
 //! attributes (D5).
 
 use std::borrow::Cow;
@@ -86,7 +86,7 @@ impl ContentRedactor for NoopRedactor {
 }
 
 /// The resolved, opaque privacy primitive handed to the runtime/sinks for one
-/// run/turn (D5). Resolution (the `meet` of ceiling × request × consent) happens
+/// Run (D5). Resolution (the `meet` of ceiling × request × consent) happens
 /// at the config/host boundary; the runtime holds only `{level, redactor}` and
 /// an opaque subject id — never scope, consent, or subject attributes.
 #[derive(Clone)]
