@@ -417,7 +417,7 @@ impl MemoryRuntime {
             platform,
             resource_validator,
             workspace_id: workspace_id.into(),
-            memory_store_id: config.memory_store_id.clone(),
+            memory_store_id: config.memory_store_id.to_string(),
             memory_config_version: config.version.0,
             bounds,
             recall_enabled: config.recall_policy.enabled,
@@ -721,6 +721,12 @@ impl crate::host::SharedHost {
         self.memory_stores.fs_handle()
     }
 
+    /// The Workspace-scoped Skill aggregate port shared by HTTP authoring and
+    /// runtime activation. `None` means this host has no durable Skill plane.
+    pub fn skill_store(&self) -> Option<Arc<dyn awaken_skill_store::SkillStore>> {
+        self.skills.store_handle()
+    }
+
     /// Install the worker adapter behind the neutral provisioning port. This is
     /// intentionally separate from [`SharedHost::new`](crate::SharedHost::new):
     /// runtime-host must not depend on a FUSE/copy implementation crate.
@@ -747,18 +753,13 @@ impl crate::host::SharedHost {
     }
 
     pub(crate) fn register_thread_memory(&self, thread: &str, memory: Option<Arc<BoundMemory>>) {
-        self.thread_memory
-            .lock()
-            .expect("thread memory mutex poisoned")
-            .insert(thread.to_string(), memory);
+        self.session_slots
+            .update(thread, |slot| slot.memory = memory);
     }
 
     pub(crate) fn memory_for_thread(&self, thread: &str) -> Option<Arc<BoundMemory>> {
-        self.thread_memory
-            .lock()
-            .expect("thread memory mutex poisoned")
-            .get(thread)
-            .cloned()
+        self.session_slots
+            .read(thread, |slot| slot.memory.clone())
             .flatten()
     }
 
@@ -846,7 +847,7 @@ impl crate::host::SharedHost {
         >,
     ) {
         let writable = access == awaken_protocol_managed::resource_plane::ResourceAccess::ReadWrite;
-        let handle = self.platform_memory_handle(config.memory_store_id.clone(), writable);
+        let handle = self.platform_memory_handle(config.memory_store_id.to_string(), writable);
         let bound = self.memory.bind(
             thread,
             workspace_id,

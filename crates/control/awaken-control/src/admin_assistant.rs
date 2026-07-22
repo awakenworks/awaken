@@ -118,6 +118,7 @@ impl CapabilityReader for CatalogCapabilityReader {
         let mcp_servers = self
             .mcp
             .list_servers()
+            .unwrap_or_default()
             .into_iter()
             .map(|s| s.id.0)
             .collect();
@@ -211,7 +212,7 @@ impl ResourceInventory for HostResourceInventory {
             .list_memory_stores(&self.skill_workspace)
             .unwrap_or_default()
             .into_iter()
-            .map(|d| d.id)
+            .map(|d| d.id.to_string())
             .collect()
     }
 
@@ -223,7 +224,7 @@ impl ResourceInventory for HostResourceInventory {
             .await
             .unwrap_or_default()
             .into_iter()
-            .map(|definition| definition.id)
+            .map(|definition| definition.id.to_string())
             .collect()
     }
 }
@@ -323,6 +324,7 @@ async fn apply_pending_resource_effects(
             .map_err(|error| error.to_string())?;
         if resources
             .get_agent_inputs(scope.as_str(), &config.agent_id)
+            .map_err(|error| error.to_string())?
             .as_ref()
             != Some(&config)
         {
@@ -445,6 +447,7 @@ impl DraftStore for ConfigServiceDraftStore {
         let revision = self
             .resources
             .get_agent_inputs(self.scope.as_str(), &draft.id)
+            .map_err(|error| error.to_string())?
             .map_or(1, |current| current.revision + 1);
         let resource_config = resources
             .map(|resources| resource_config(&draft.id, resources, revision))
@@ -484,6 +487,7 @@ impl DraftStore for ConfigServiceDraftStore {
         let revision = self
             .resources
             .get_agent_inputs(self.scope.as_str(), agent_id)
+            .map_err(|error| error.to_string())?
             .map_or(1, |current| current.revision + 1);
         self.resources
             .put_agent_inputs(
@@ -498,6 +502,7 @@ impl DraftStore for ConfigServiceDraftStore {
         let Some(cfg) = self
             .resources
             .get_agent_inputs(self.scope.as_str(), agent_id)
+            .map_err(|error| error.to_string())?
         else {
             return Ok(Vec::new());
         };
@@ -709,7 +714,8 @@ mod tests {
             url: "https://mcp.example".into(),
             credential_binding: CredentialBinding::None,
             version: 1,
-        });
+        })
+        .unwrap();
         // A config plane over an empty store → no existing agents.
         let plane = ConfigPlane::new(
             Arc::new(ConfigService::new()),
@@ -768,6 +774,7 @@ mod tests {
                         metadata: std::collections::BTreeMap::new(),
                         state,
                         current_config_version: ConfigVersion::INITIAL,
+                        timestamps: Default::default(),
                     },
                     MemoryStoreConfigVersion {
                         memory_store_id: id.into(),
@@ -792,6 +799,7 @@ mod tests {
                     display_title: None,
                     latest_version: 1,
                     last_version: 1,
+                    timestamps: Default::default(),
                 },
                 SkillVersion {
                     id: "skver-greet-1".into(),
@@ -802,6 +810,7 @@ mod tests {
                     directory: "/skills/greet".into(),
                     bundle_sha256: bundle_sha256(&files),
                     files,
+                    created_unix_nanos: 0,
                 },
             )
             .await

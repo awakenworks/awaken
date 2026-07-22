@@ -255,10 +255,12 @@ fn durable_management_stores(dir: &std::path::Path, key: &[u8; 32]) -> Managemen
         .expect("open credential.db under AWAKEN_MGMT_DIR");
     let blobs = awaken_credential_vault::SqliteSealedBlobStore::open(&db("credential.db"))
         .expect("open credential.db sealed-blob store under AWAKEN_MGMT_DIR");
-    let admin = Arc::new(
-        awaken_admin_config_api::SqliteAdminStore::open(&db("admin.db"))
-            .expect("open admin.db under AWAKEN_MGMT_DIR"),
-    );
+    let admin = awaken_admin_config_api::SqliteAdminStore::open(&db("admin.db"))
+        .expect("open admin.db under AWAKEN_MGMT_DIR");
+    admin
+        .migrate_legacy_memory_stores()
+        .expect("migrate legacy MemoryStore catalog rows");
+    let admin = Arc::new(admin);
     let sessions = Arc::new(
         awaken_runtime_host::SqliteManagedSessionRepository::open(&db("sessions.db"))
             .expect("open sessions.db under AWAKEN_MGMT_DIR"),
@@ -395,10 +397,12 @@ async fn open_management_stores(
     let admin_catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>;
     match &cfg.admin {
         StoreBackend::Sqlite(p) => {
-            let admin = Arc::new(
-                awaken_admin_config_api::SqliteAdminStore::open(&path(p))
-                    .expect("open admin sqlite"),
-            );
+            let admin = awaken_admin_config_api::SqliteAdminStore::open(&path(p))
+                .expect("open admin sqlite");
+            admin
+                .migrate_legacy_memory_stores()
+                .expect("migrate legacy MemoryStore catalog rows");
+            let admin = Arc::new(admin);
             admin_profiles = admin.clone();
             admin_mcp = admin.clone();
             admin_resources = admin.clone();
@@ -417,6 +421,9 @@ async fn open_management_stores(
                 .expect("join admin postgres connect")
                 .expect("connect admin postgres"),
             );
+            admin
+                .migrate_legacy_memory_stores()
+                .expect("migrate legacy MemoryStore catalog rows");
             admin_profiles = admin.clone();
             admin_mcp = admin.clone();
             admin_resources = admin.clone();
@@ -838,6 +845,14 @@ async fn management_router_over(
         SharedHost::provision_local_workspace,
         SharedHost::provision_local_workspace_at,
     );
+    if let Some(root) = workspace_root.as_deref() {
+        let migrated = awaken_server::migrate_legacy_skill_registry(root, skill_store.as_ref())
+            .await
+            .unwrap_or_else(|error| panic!("legacy Skill migration failed: {error}"));
+        if migrated > 0 {
+            eprintln!("migrated {migrated} legacy Skill aggregate(s)");
+        }
+    }
     // Finish or compensate any credential creation interrupted by a prior hard
     // process crash before exposing the management/data planes.
     if let Err(error) = awaken_credential_vault::repo::recover_credential_creations(
@@ -1112,7 +1127,7 @@ async fn management_router_over(
         ManagedState::new(
             ManagedHost::new(host.clone())
                 .with_resource_validator(resource_catalog.clone())
-                .with_mcp(credentials, secrets, mcp_store),
+                .with_credentials(credentials, secrets),
         )
         .with_vaults(vault_state)
         .with_environments(env_state)

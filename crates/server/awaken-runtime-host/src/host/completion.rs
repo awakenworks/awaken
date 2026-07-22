@@ -4,6 +4,7 @@
 use super::*;
 use awaken_run_ingress::PlacementRequirements;
 use awaken_runtime_contract::InferenceAccess;
+use std::collections::HashMap;
 
 pub(crate) fn remote_worker_placement(
     access: Option<&InferenceAccess>,

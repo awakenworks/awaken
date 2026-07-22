@@ -12,6 +12,7 @@ use awaken_config_store::{AgentConfig, AgentConfigRevision, ConfigWrite, ModelSe
 use awaken_protocol_managed::types::ModelConfig;
 use awaken_protocol_managed::types::agent::{Agent, AgentCreateParams, AgentUpdateParams};
 use awaken_protocol_managed::{ManagedAgentError, ManagedAgentRepository};
+use awaken_runtime_contract::agent_bindings::AgentMcpServerBinding;
 use awaken_tenancy::ScopeId;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -123,9 +124,41 @@ fn tool_id(value: &Value) -> Option<String> {
     }
 }
 
-fn config_from_create(id: String, params: AgentCreateParams) -> AgentConfig {
+fn typed_mcp_servers(values: Vec<Value>) -> Result<Vec<AgentMcpServerBinding>, ManagedAgentError> {
+    values
+        .into_iter()
+        .map(|value| {
+            serde_json::from_value(value)
+                .map_err(|error| ManagedAgentError::Invalid(error.to_string()))
+        })
+        .collect()
+}
+
+fn typed_skill_ids(values: Vec<Value>) -> Result<Vec<String>, ManagedAgentError> {
+    values
+        .into_iter()
+        .map(|value| {
+            value
+                .as_str()
+                .or_else(|| value.get("id").and_then(Value::as_str))
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(str::to_string)
+                .ok_or_else(|| {
+                    ManagedAgentError::Invalid(
+                        "Skill must be a non-empty id or object with `id`".into(),
+                    )
+                })
+        })
+        .collect()
+}
+
+fn config_from_create(
+    id: String,
+    params: AgentCreateParams,
+) -> Result<AgentConfig, ManagedAgentError> {
     let model = params.model.into_config();
-    AgentConfig {
+    Ok(AgentConfig {
         id,
         instructions: params.system.unwrap_or_default(),
         max_steps: 8,
@@ -140,14 +173,14 @@ fn config_from_create(id: String, params: AgentCreateParams) -> AgentConfig {
         name: Some(params.name),
         description: params.description,
         metadata: params.metadata,
-        mcp_servers: params.mcp_servers,
-        skills: params.skills,
+        mcp_servers: typed_mcp_servers(params.mcp_servers)?,
+        skill_ids: typed_skill_ids(params.skills)?,
         multiagent: params.multiagent,
         archived_at: None,
         tool_overrides: Vec::new(),
         recovery_policies: BTreeMap::new(),
         compaction: None,
-    }
+    })
 }
 
 fn wire_tools(ids: &[String]) -> Vec<Value> {
@@ -175,8 +208,16 @@ fn project(revision: AgentConfigRevision) -> Agent {
         model: ModelConfig::new(model),
         system: (!config.instructions.is_empty()).then_some(config.instructions),
         metadata: config.metadata,
-        mcp_servers: config.mcp_servers,
-        skills: config.skills,
+        mcp_servers: config
+            .mcp_servers
+            .into_iter()
+            .map(|server| json!(server))
+            .collect(),
+        skills: config
+            .skill_ids
+            .into_iter()
+            .map(|id| json!({"id": id}))
+            .collect(),
         tools: wire_tools(&config.tool_ids),
         multiagent: config.multiagent,
         version: revision.revision,
@@ -197,7 +238,7 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
         }
         let scope = Self::scope(workspace_id);
         let id = new_agent_id(workspace_id);
-        let config = config_from_create(id.clone(), params);
+        let config = config_from_create(id.clone(), params)?;
         match self
             .plane
             .put_if_revision(&scope, &config, 0)
@@ -288,10 +329,10 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
             config.metadata = metadata;
         }
         if let Some(mcp_servers) = params.mcp_servers {
-            config.mcp_servers = mcp_servers;
+            config.mcp_servers = typed_mcp_servers(mcp_servers)?;
         }
         if let Some(skills) = params.skills {
-            config.skills = skills;
+            config.skill_ids = typed_skill_ids(skills)?;
         }
         if let Some(tools) = params.tools {
             config.tool_ids = tools.iter().filter_map(tool_id).collect();

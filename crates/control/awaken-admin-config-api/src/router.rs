@@ -14,10 +14,10 @@ use std::sync::Arc;
 use awaken_agent_contract::RedactedString;
 use awaken_api_contract::{ApiError, PROBLEM_JSON_CONTENT_TYPE, REQUEST_ID_HEADER};
 use awaken_config_resolver::{
-    AgentInputBindingRepository, AgentInputConfig, AgentMcpConfig, InferenceProfile,
-    InferenceProfileStore, McpServerDef, McpServerId, McpStore, ResolveError, ResolvedInference,
-    SourceLookup, cooldown_deadline, resolve_inference, resolve_mcp_servers, resolve_profile,
-    resolve_profile_candidates,
+    AgentInputBindingRepository, AgentInputConfig, AgentMcpConfig, ConfigRepositoryError,
+    InferenceProfile, InferenceProfileStore, McpServerDef, McpServerId, McpStore, ResolveError,
+    ResolvedInference, SourceLookup, cooldown_deadline, resolve_inference, resolve_mcp_servers,
+    resolve_profile, resolve_profile_candidates,
 };
 use awaken_credential_vault::repo::{CredentialRepo, enter_credential};
 use awaken_credential_vault::{
@@ -199,6 +199,16 @@ fn repo_problem(error: &RepoError, rid: &str) -> Problem {
         status,
         code,
         "Catalog error",
+        error.to_string(),
+        rid,
+    ))
+}
+
+fn config_repository_problem(error: &ConfigRepositoryError, rid: &str) -> Problem {
+    Problem(ApiError::new(
+        500,
+        "repository_unavailable",
+        "Configuration repository unavailable",
         error.to_string(),
         rid,
     ))
@@ -502,6 +512,7 @@ async fn resolve_profile_candidates_route(
     let profile = state
         .profiles
         .get(&id)
+        .map_err(|error| config_repository_problem(&error, &rid))?
         .ok_or_else(|| profile_missing(&id, &rid))?;
     let scoped_workspace = scope.map(|Extension(scope)| scope.0);
     let workspace = scoped_workspace.clone().unwrap_or(request.workspace_id);
@@ -696,17 +707,22 @@ async fn put_profile(
     headers: HeaderMap,
     Json(mut profile): Json<InferenceProfile>,
 ) -> Result<Json<InferenceProfile>, Problem> {
+    let rid = req_id(&headers);
     if let Some(Extension(scope)) = scope {
         if state
             .profiles
             .get(&id)
+            .map_err(|error| config_repository_problem(&error, &rid))?
             .is_some_and(|current| current.workspace_id != scope.0)
         {
-            return Err(profile_missing(&id, &req_id(&headers)));
+            return Err(profile_missing(&id, &rid));
         }
         profile.workspace_id = scope.0;
     }
-    state.profiles.put(id, profile.clone());
+    state
+        .profiles
+        .put(id, profile.clone())
+        .map_err(|error| config_repository_problem(&error, &rid))?;
     Ok(Json(profile))
 }
 
@@ -719,6 +735,7 @@ async fn get_profile(
     let profile = state
         .profiles
         .get(&id)
+        .map_err(|error| config_repository_problem(&error, &req_id(&headers)))?
         .ok_or_else(|| profile_missing(&id, &req_id(&headers)))?;
     if scope.is_some_and(|Extension(scope)| profile.workspace_id != scope.0) {
         return Err(profile_missing(&id, &req_id(&headers)));
@@ -746,6 +763,7 @@ async fn resolve_profile_route(
     let profile = state
         .profiles
         .get(&id)
+        .map_err(|error| config_repository_problem(&error, &rid))?
         .ok_or_else(|| profile_missing(&id, &rid))?;
     let scoped_workspace = scope.map(|Extension(scope)| scope.0);
     let workspace = scoped_workspace.clone().unwrap_or(request.workspace_id);
@@ -791,6 +809,7 @@ async fn put_mcp_server(
         if state
             .mcp
             .get_server(&def.id.0)
+            .map_err(|error| config_repository_problem(&error, &rid))?
             .is_some_and(|current| current.workspace_id != scope.0)
         {
             return Err(mcp_server_missing(&def.id.0, &rid));
@@ -822,7 +841,10 @@ async fn put_mcp_server(
             }
         }
     }
-    state.mcp.put_server(def.clone());
+    state
+        .mcp
+        .put_server(def.clone())
+        .map_err(|error| config_repository_problem(&error, &rid))?;
     Ok(Json(def))
 }
 
@@ -835,6 +857,7 @@ async fn get_mcp_server(
     let def = state
         .mcp
         .get_server(&id)
+        .map_err(|error| config_repository_problem(&error, &req_id(&headers)))?
         .ok_or_else(|| mcp_server_missing(&id, &req_id(&headers)))?;
     if scope.is_some_and(|Extension(scope)| def.workspace_id != scope.0) {
         return Err(mcp_server_missing(&id, &req_id(&headers)));
@@ -845,12 +868,16 @@ async fn get_mcp_server(
 async fn list_mcp_servers(
     State(state): State<AdminState>,
     scope: Option<Extension<ResourceWorkspace>>,
-) -> Json<Vec<McpServerDef>> {
-    let mut servers = state.mcp.list_servers();
+    headers: HeaderMap,
+) -> Result<Json<Vec<McpServerDef>>, Problem> {
+    let mut servers = state
+        .mcp
+        .list_servers()
+        .map_err(|error| config_repository_problem(&error, &req_id(&headers)))?;
     if let Some(Extension(scope)) = scope {
         servers.retain(|server| server.workspace_id == scope.0);
     }
-    Json(servers)
+    Ok(Json(servers))
 }
 
 /// Bind which MCP servers an agent uses. The path agent id is authoritative, and
@@ -873,12 +900,17 @@ async fn put_agent_mcp(
         && state
             .mcp
             .get_agent_config(&config.agent_id)
+            .map_err(|error| config_repository_problem(&error, &rid))?
             .is_some_and(|current| current.workspace_id != *workspace)
     {
         return Err(agent_mcp_missing(&config.agent_id, &rid));
     }
     for server_id in &config.mcp_server_ids {
-        let Some(server) = state.mcp.get_server(&server_id.0) else {
+        let Some(server) = state
+            .mcp
+            .get_server(&server_id.0)
+            .map_err(|error| config_repository_problem(&error, &rid))?
+        else {
             return Err(mcp_server_missing(&server_id.0, &rid));
         };
         if server.workspace_id != workspace {
@@ -886,7 +918,10 @@ async fn put_agent_mcp(
         }
     }
     config.workspace_id = workspace;
-    state.mcp.put_agent_config(config.clone());
+    state
+        .mcp
+        .put_agent_config(config.clone())
+        .map_err(|error| config_repository_problem(&error, &rid))?;
     Ok(Json(config))
 }
 
@@ -899,6 +934,7 @@ async fn get_agent_mcp(
     let config = state
         .mcp
         .get_agent_config(&agent_id)
+        .map_err(|error| config_repository_problem(&error, &req_id(&headers)))?
         .ok_or_else(|| agent_mcp_missing(&agent_id, &req_id(&headers)))?;
     if scope.is_some_and(|Extension(scope)| config.workspace_id != scope.0) {
         return Err(agent_mcp_missing(&agent_id, &req_id(&headers)));
@@ -940,6 +976,7 @@ async fn get_agent_inputs(
     state
         .resources
         .get_agent_inputs(&workspace, &agent_id)
+        .map_err(|error| agent_input_write_problem(error, &req_id(&headers)))?
         .map(Json)
         .ok_or_else(|| agent_inputs_missing(&agent_id, &req_id(&headers)))
 }
@@ -1003,6 +1040,7 @@ async fn resolve_agent_mcp(
     let config = state
         .mcp
         .get_agent_config(&agent_id)
+        .map_err(|error| config_repository_problem(&error, &rid))?
         .ok_or_else(|| agent_mcp_missing(&agent_id, &rid))?;
     let scoped_workspace = scope.map(|Extension(scope)| scope.0);
     let workspace = scoped_workspace.clone().unwrap_or(request.workspace_id);
@@ -1014,6 +1052,7 @@ async fn resolve_agent_mcp(
         let def = state
             .mcp
             .get_server(&server_id.0)
+            .map_err(|error| config_repository_problem(&error, &rid))?
             .ok_or_else(|| mcp_server_missing(&server_id.0, &rid))?;
         if def.workspace_id != workspace {
             return Err(mcp_server_missing(&server_id.0, &rid));

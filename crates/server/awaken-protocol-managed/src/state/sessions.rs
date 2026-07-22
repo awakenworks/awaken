@@ -211,17 +211,18 @@ impl ManagedState {
                 catalog
                     .create_repository(
                         awaken_resource_contract::RepositoryDefinition {
-                            id: repository_id.clone(),
-                            workspace_id: owner_scope.clone(),
+                            id: repository_id.clone().into(),
+                            workspace_id: owner_scope.clone().into(),
                             name: format!("Session repository {index}"),
                             description: "Managed compatibility Session input".into(),
                             metadata: Default::default(),
                             state: awaken_resource_contract::ResourceState::Active,
                             current_config_version:
                                 awaken_resource_contract::ConfigVersion::INITIAL,
+                            timestamps: Default::default(),
                         },
                         awaken_resource_contract::RepositoryConfigVersion {
-                            repository_id: repository_id.clone(),
+                            repository_id: repository_id.clone().into(),
                             version: awaken_resource_contract::ConfigVersion::INITIAL,
                             remote_url: remote_url.clone(),
                             credential_binding,
@@ -269,11 +270,6 @@ impl ManagedState {
                     .map_err(StateError::Run)?,
             );
         }
-        let resource_dtos: Vec<serde_json::Value> = resolved_resources
-            .inputs
-            .iter()
-            .map(|input| resolved_resource_dto(&id, input))
-            .collect();
         // Resolve the session's environment (defaulting to the local one) and its
         // networking policy once, for both the SessionInit (staged before the first
         // turn) and the echoed Session object.
@@ -405,8 +401,8 @@ impl ManagedState {
             archived_at: None,
             title: req.title,
             metadata: req.metadata,
-            // The session's create-time mounts, echoed so the client can list/get them.
-            resources: resource_dtos,
+            // Resource wire values are projected from `resource_state` on response.
+            resources: Vec::new(),
             outcome_evaluations: Vec::new(),
             status: "idle",
             stats: SessionStats::default(),
@@ -428,16 +424,15 @@ impl ManagedState {
             .save_owned_with_lifecycle(&owner_scope, persisted.clone(), created_fact.clone())
             .await;
         self.owners.lock().unwrap().insert(id.clone(), owner_scope);
-        self.sessions.lock().unwrap().insert(
-            id.clone(),
-            SessionRecord {
-                agent_id,
-                session: session.clone(),
-                resource_state: persisted.resources,
-                events: Vec::new(),
-                child_threads: Vec::new(),
-            },
-        );
+        let record = SessionRecord {
+            agent_id,
+            session,
+            resource_state: persisted.resources,
+            events: Vec::new(),
+            child_threads: Vec::new(),
+        };
+        let session = record.session_projection();
+        self.sessions.lock().unwrap().insert(id.clone(), record);
         // Dispatch only after the active activation and Session lifecycle fact are
         // durable. A worker can never claim a work item whose resource intent is
         // still merely Prepared.
@@ -717,43 +712,32 @@ impl ManagedState {
         persisted: Option<PersistedSession>,
     ) -> Session {
         let caps = self.runtime.capabilities_for(id);
-        let (
-            agent_id,
-            model,
-            environment_id,
-            title,
-            metadata,
-            mcp_servers,
-            resource_state,
-            status,
-            archived_at,
-        ) = match persisted {
-            Some(p) => (
-                p.agent_id,
-                p.model,
-                p.environment_id,
-                p.title,
-                p.metadata,
-                p.mcp_servers,
-                p.resources,
-                match p.status.as_str() {
-                    "terminated" => "terminated",
-                    _ => "idle",
-                },
-                p.archived_at,
-            ),
-            None => (
-                "assistant".to_string(),
-                self.runtime.model(),
-                "env_local".to_string(),
-                None,
-                Default::default(),
-                Vec::new(),
-                Default::default(),
-                "idle",
-                None,
-            ),
-        };
+        let (agent_id, model, environment_id, title, metadata, mcp_servers, status, archived_at) =
+            match persisted {
+                Some(p) => (
+                    p.agent_id,
+                    p.model,
+                    p.environment_id,
+                    p.title,
+                    p.metadata,
+                    p.mcp_servers,
+                    match p.status.as_str() {
+                        "terminated" => "terminated",
+                        _ => "idle",
+                    },
+                    p.archived_at,
+                ),
+                None => (
+                    "assistant".to_string(),
+                    self.runtime.model(),
+                    "env_local".to_string(),
+                    None,
+                    Default::default(),
+                    Vec::new(),
+                    "idle",
+                    None,
+                ),
+            };
         let deployment_id = metadata.get("awaken.deployment_id").cloned();
         Session {
             id: id.to_string(),
@@ -777,12 +761,7 @@ impl ManagedState {
             archived_at,
             title,
             metadata,
-            resources: resource_state
-                .active
-                .inputs
-                .iter()
-                .map(|input| resolved_resource_dto(id, input))
-                .collect(),
+            resources: Vec::new(),
             outcome_evaluations: Vec::new(),
             status,
             stats: SessionStats::default(),
@@ -896,14 +875,17 @@ impl ManagedState {
         let sessions = self.sessions.lock().unwrap();
         sessions
             .get(id)
-            .map(|r| r.session.clone())
+            .map(SessionRecord::session_projection)
             .ok_or(StateError::NotFound)
     }
 
     /// `GET /v1/sessions` — every session, ascending id (deterministic).
     pub fn list_sessions(&self) -> Vec<Session> {
         let sessions = self.sessions.lock().unwrap();
-        let mut out: Vec<Session> = sessions.values().map(|r| r.session.clone()).collect();
+        let mut out: Vec<Session> = sessions
+            .values()
+            .map(SessionRecord::session_projection)
+            .collect();
         out.sort_by(|a, b| a.id.cmp(&b.id));
         out
     }
@@ -924,7 +906,7 @@ impl ManagedState {
                     .get(&r.session.id)
                     .map_or(scope == DEFAULT_SCOPE, |owner| owner == scope)
             })
-            .map(|r| r.session.clone())
+            .map(SessionRecord::session_projection)
             .collect();
         out.sort_by(|a, b| a.id.cmp(&b.id));
         out
@@ -972,7 +954,7 @@ impl ManagedState {
             },
             processed_at: Some(PROCESSED_AT.to_string()),
         });
-        Ok(record.session.clone())
+        Ok(record.session_projection())
     }
 
     /// `DELETE /v1/sessions/{id}` — commit a terminal `session.deleted` event,
@@ -1140,7 +1122,7 @@ impl ManagedState {
                     processed_at: Some(PROCESSED_AT.to_string()),
                 });
             }
-            record.session.clone()
+            record.session_projection()
         };
         // Archive is terminal (no further turns run on this session), so reap its
         // sandbox — but only on the transition, so a re-archive (idempotent) does

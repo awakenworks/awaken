@@ -85,6 +85,7 @@ fn memory() -> (MemoryStoreDefinition, MemoryStoreConfigVersion) {
             metadata: Default::default(),
             state: ResourceState::Active,
             current_config_version: ConfigVersion::INITIAL,
+            timestamps: Default::default(),
         },
         MemoryStoreConfigVersion {
             memory_store_id: "memory-1".into(),
@@ -106,6 +107,7 @@ fn repository() -> (RepositoryDefinition, RepositoryConfigVersion) {
             metadata: Default::default(),
             state: ResourceState::Active,
             current_config_version: ConfigVersion::INITIAL,
+            timestamps: Default::default(),
         },
         RepositoryConfigVersion {
             repository_id: "repo-1".into(),
@@ -130,27 +132,38 @@ async fn postgres_admin_store_serves_every_port() {
         .unwrap();
 
     // InferenceProfileStore: round-trip + overwrite.
-    assert!(InferenceProfileStore::get(&store, "p1").is_none());
-    InferenceProfileStore::put(&store, "p1".into(), profile("m1"));
+    assert!(InferenceProfileStore::get(&store, "p1").unwrap().is_none());
+    InferenceProfileStore::put(&store, "p1".into(), profile("m1")).unwrap();
     assert_eq!(
-        InferenceProfileStore::get(&store, "p1").unwrap().model_id,
+        InferenceProfileStore::get(&store, "p1")
+            .unwrap()
+            .unwrap()
+            .model_id,
         "m1"
     );
-    InferenceProfileStore::put(&store, "p1".into(), profile("m2"));
+    InferenceProfileStore::put(&store, "p1".into(), profile("m2")).unwrap();
     assert_eq!(
-        InferenceProfileStore::get(&store, "p1").unwrap().model_id,
+        InferenceProfileStore::get(&store, "p1")
+            .unwrap()
+            .unwrap()
+            .model_id,
         "m2"
     );
 
     // McpStore: round-trip, sorted list, agent binding.
-    store.put_server(server("zeta"));
-    store.put_server(server("alpha"));
+    store.put_server(server("zeta")).unwrap();
+    store.put_server(server("alpha")).unwrap();
     assert_eq!(
-        store.get_server("zeta").unwrap().url,
+        store.get_server("zeta").unwrap().unwrap().url,
         "http://zeta.example/"
     );
-    assert!(store.get_server("missing").is_none());
-    let ids: Vec<String> = store.list_servers().into_iter().map(|s| s.id.0).collect();
+    assert!(store.get_server("missing").unwrap().is_none());
+    let ids: Vec<String> = store
+        .list_servers()
+        .unwrap()
+        .into_iter()
+        .map(|s| s.id.0)
+        .collect();
     assert_eq!(ids, vec!["alpha".to_string(), "zeta".to_string()]);
     let cfg = AgentMcpConfig {
         workspace_id: "ws".into(),
@@ -158,15 +171,19 @@ async fn postgres_admin_store_serves_every_port() {
         mcp_server_ids: vec![McpServerId("alpha".into())],
         version: 1,
     };
-    store.put_agent_config(cfg.clone());
+    store.put_agent_config(cfg.clone()).unwrap();
     assert_eq!(
-        store.get_agent_config("agent-1").unwrap().mcp_server_ids,
+        store
+            .get_agent_config("agent-1")
+            .unwrap()
+            .unwrap()
+            .mcp_server_ids,
         cfg.mcp_server_ids
     );
-    assert!(store.get_agent_config("agent-2").is_none());
+    assert!(store.get_agent_config("agent-2").unwrap().is_none());
 
     // AgentInputBindingRepository: Workspace-scoped round-trip + overwrite.
-    assert!(store.get_agent_inputs("ws", "agent-1").is_none());
+    assert!(store.get_agent_inputs("ws", "agent-1").unwrap().is_none());
     let rc = AgentInputConfig {
         agent_id: "agent-1".into(),
         inputs: vec![InputBinding {
@@ -179,13 +196,21 @@ async fn postgres_admin_store_serves_every_port() {
         revision: 1,
     };
     store.put_agent_inputs("ws", rc.clone()).unwrap();
-    assert_eq!(store.get_agent_inputs("ws", "agent-1").unwrap(), rc);
+    assert_eq!(
+        store.get_agent_inputs("ws", "agent-1").unwrap(),
+        Some(rc.clone())
+    );
     let mut v2 = rc.clone();
     v2.revision = 2;
     v2.inputs.clear();
     store.put_agent_inputs("ws", v2.clone()).unwrap();
-    assert_eq!(store.get_agent_inputs("ws", "agent-1").unwrap(), v2);
-    assert!(store.get_agent_inputs("other", "agent-1").is_none());
+    assert_eq!(store.get_agent_inputs("ws", "agent-1").unwrap(), Some(v2));
+    assert!(
+        store
+            .get_agent_inputs("other", "agent-1")
+            .unwrap()
+            .is_none()
+    );
 
     // ResourceCatalog: resource/config separation, monotonic CAS and Workspace
     // hiding. This port contains no authorization subject or policy input.
@@ -255,8 +280,8 @@ async fn postgres_admin_rows_survive_a_reconnect() {
         let store = tokio::task::spawn_blocking(move || PostgresAdminStore::connect(&u).unwrap())
             .await
             .unwrap();
-        InferenceProfileStore::put(&store, "p1".into(), profile("m1"));
-        store.put_server(server("calc"));
+        InferenceProfileStore::put(&store, "p1".into(), profile("m1")).unwrap();
+        store.put_server(server("calc")).unwrap();
         let (definition, initial) = memory();
         store.create_memory_store(definition, initial).unwrap();
     }
@@ -264,10 +289,13 @@ async fn postgres_admin_rows_survive_a_reconnect() {
         .await
         .unwrap();
     assert_eq!(
-        InferenceProfileStore::get(&store, "p1").unwrap().model_id,
+        InferenceProfileStore::get(&store, "p1")
+            .unwrap()
+            .unwrap()
+            .model_id,
         "m1"
     );
-    assert_eq!(store.list_servers().len(), 1);
+    assert_eq!(store.list_servers().unwrap().len(), 1);
     assert_eq!(
         store
             .resolve_memory_store("ws", "memory-1")

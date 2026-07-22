@@ -35,7 +35,7 @@ fn router() -> Router {
         SharedHost::new(Arc::new(NoLlm), "test")
             .with_resource_lifecycle(support::resource_lifecycle()),
     );
-    memory_stores_router_with_catalog(host, resource_catalog())
+    memory_stores_router_with_catalog(host.memory_repository(), resource_catalog(), host)
 }
 
 fn resource_catalog() -> Arc<awaken_admin_config_api::SqliteAdminStore> {
@@ -263,7 +263,7 @@ async fn workspace_and_lifecycle_are_intrinsic_resource_guards() {
             .with_resource_lifecycle(support::resource_lifecycle()),
     );
     let catalog = resource_catalog();
-    let router = memory_stores_router_with_catalog(host, catalog);
+    let router = memory_stores_router_with_catalog(host.memory_repository(), catalog, host);
     let (status, created) = call_scoped(
         &router,
         "workspace-a",

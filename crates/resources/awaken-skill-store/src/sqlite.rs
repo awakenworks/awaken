@@ -138,8 +138,8 @@ impl SkillStore for SqliteSkillStore {
             retired_versions: Default::default(),
             deleted: false,
         };
-        let ws = aggregate.definition.workspace_id.clone();
-        let id = aggregate.definition.id.clone();
+        let ws = aggregate.definition.workspace_id.to_string();
+        let id = aggregate.definition.id.to_string();
         let data = serde_json::to_string(&aggregate).map_err(storage)?;
         with_conn(&self.conn, move |conn| {
             conn.execute(
@@ -427,6 +427,7 @@ mod tests {
                 display_title: None,
                 latest_version: 1,
                 last_version: 1,
+                timestamps: Default::default(),
             },
             SkillVersion {
                 id: "skver-greet-1".into(),
@@ -437,6 +438,7 @@ mod tests {
                 directory: "/skills/greet".into(),
                 bundle_sha256: crate::bundle_sha256(&files),
                 files,
+                created_unix_nanos: 0,
             },
         )
     }

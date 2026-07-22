@@ -52,7 +52,7 @@ mod types;
 pub(crate) use helpers::{content_text, rubric_text, session_usage_value};
 pub(crate) use resource::{
     ParsedInputTarget, ParsedSessionInput, input_binding, parse_session_input,
-    resolved_resource_dto,
+    resolved_resource_dto, resource_binding_id,
 };
 pub use types::{
     AgentCapabilities, BuiltinTool, CustomTool, DelegatedRun, LiveInboxEntry, LiveInboxError,
@@ -71,6 +71,23 @@ struct SessionRecord {
     /// by `list_threads`/`get_thread`; each is announced by a `session.thread_created`
     /// event (ADR-0047 D4, first slice).
     child_threads: Vec<serde_json::Value>,
+}
+
+impl SessionRecord {
+    /// Project the HTTP Session DTO from the typed aggregate state. The stored
+    /// `Session` intentionally keeps `resources` empty so JSON can never become
+    /// a second mutable resource index.
+    fn session_projection(&self) -> Session {
+        let mut session = self.session.clone();
+        session.resources = self
+            .resource_state
+            .active
+            .inputs
+            .iter()
+            .map(|input| resolved_resource_dto(&session.id, input))
+            .collect();
+        session
+    }
 }
 
 /// The adapter's in-memory session store plus the runtime port.
@@ -747,8 +764,10 @@ mod tests {
             1,
             "the accepted MCP server is restored"
         );
-        assert_eq!(session.resources.len(), 1);
-        assert_eq!(session.resources[0]["file_id"], "file-hash");
+        assert!(
+            session.resources.is_empty(),
+            "the stored Session DTO must not duplicate typed resource state"
+        );
     }
 
     #[test]
@@ -790,6 +809,8 @@ mod tests {
         );
         assert_eq!(session.title.as_deref(), Some("My session"));
         assert_eq!(session.agent.mcp_servers.len(), 1);
+        assert_eq!(session.resources.len(), 1);
+        assert_eq!(session.resources[0]["file_id"], "file-hash");
         assert_eq!(
             restored.lock().unwrap().as_slice(),
             &[(

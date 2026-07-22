@@ -43,7 +43,7 @@ fn router_with_store() -> (Router, std::path::PathBuf) {
             .with_resource_lifecycle(support::resource_lifecycle())
             .with_skill_store(dir.join("store")),
     );
-    (skills_router(host), dir)
+    (skills_router(host.skill_store(), host), dir)
 }
 static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -291,7 +291,7 @@ async fn legacy_json_create_fails_closed_without_a_durable_store() {
     // No `with_skill_store`: the host has no durable skill catalog, so the legacy
     // `{id, content}` delivery has nowhere to land → 409 (fail closed, no silent drop).
     let host = Arc::new(SharedHost::new(Arc::new(NoLlm), "test"));
-    let router = skills_router(host);
+    let router = skills_router(host.skill_store(), host);
     let (status, v) = post_json(
         &router,
         "/v1/skills",
@@ -327,7 +327,7 @@ async fn legacy_json_create_delivers_with_a_durable_store() {
 #[tokio::test]
 async fn sdk_multipart_create_fails_closed_without_a_durable_store() {
     let host = Arc::new(SharedHost::new(Arc::new(NoLlm), "test"));
-    let router = skills_router(host);
+    let router = skills_router(host.skill_store(), host);
     // Multipart fails closed (409) when nothing durable backs it…
     let (status, created) = post_multipart(&router, "/v1/skills", SKILL_V1).await;
     assert_eq!(

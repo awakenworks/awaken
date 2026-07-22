@@ -35,19 +35,22 @@ async fn status(app: &Router, uri: &str) -> StatusCode {
 #[tokio::test]
 async fn the_resource_planes_merge_over_one_host_without_route_conflicts() {
     let host = Arc::new(SharedHost::new(Arc::new(NoLlm), "test"));
+    let purge: Arc<dyn awaken_protocol_managed::resource_plane::ResourcePurgeScheduler> =
+        host.clone();
 
     // Merge the same way the assembly binary does: every plane's router over the one
     // shared host, plus the static model directory.
     let app = Router::new()
         .merge(memory_stores_router_with_catalog(
-            host.clone(),
+            host.memory_repository(),
             Arc::new(
                 awaken_admin_config_api::SqliteAdminStore::open_in_memory()
                     .expect("open ephemeral Resource Catalog"),
             ),
+            purge.clone(),
         ))
         .merge(files_router(host.clone()))
-        .merge(skills_router(host.clone()))
+        .merge(skills_router(host.skill_store(), purge))
         .merge(models_router(Arc::new(default_models())));
 
     // Each plane's list entrypoint answers on the assembled app (200, not a 404 from a

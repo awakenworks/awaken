@@ -6,10 +6,9 @@
 //! `awaken-runtime-host` so the host stays the substrate and this wire surface stays
 //! a thin adapter — the composition layer (`awaken-server`) mounts them onto the app.
 //!
-//! Not every per-plane router qualifies: `memory_stores_router` and `skills_router`
-//! reach into the host's internal `MemoryStores` / `SkillCatalog` subsystems (private
-//! fields, `awaken_skill_store`), so they are the HTTP face of those subsystems and
-//! stay in `awaken-runtime-host` rather than leak the subsystems' method surface.
+//! Memory and Skill routers now consume their repository and purge ports directly;
+//! they no longer reach through `SharedHost`. Their physical module move can remain
+//! mechanical because the dependency boundary is already enforced by constructors.
 
 mod files;
 mod models;

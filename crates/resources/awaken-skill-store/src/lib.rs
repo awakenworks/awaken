@@ -68,7 +68,8 @@ pub fn catalog_id(name: &str) -> String {
 
 // The aggregate port + values live in the port-only contract crate.
 pub use awaken_resource_contract::{
-    SkillBundleFile, SkillDefinition, SkillStore, SkillStoreError, SkillVersion,
+    SkillBundleFile, SkillDefinition, SkillId, SkillStore, SkillStoreError, SkillVersion,
+    SkillVersionId,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,11 +94,12 @@ pub(crate) fn legacy_aggregate(workspace: &str, id: &str, content: &[u8]) -> Ski
             display_title: None,
             latest_version: 1,
             last_version: 1,
+            timestamps: Default::default(),
         },
         versions: BTreeMap::from([(
             1,
             SkillVersion {
-                id: format!("skver_{}_1", sanitize_stem(id)),
+                id: format!("skver_{}_1", sanitize_stem(id)).into(),
                 skill_id: id.into(),
                 version: 1,
                 name: id.into(),
@@ -105,6 +107,7 @@ pub(crate) fn legacy_aggregate(workspace: &str, id: &str, content: &[u8]) -> Ski
                 directory: format!("/skills/{}", sanitize_stem(id)),
                 bundle_sha256: bundle_sha256(&files),
                 files,
+                created_unix_nanos: 0,
             },
         )]),
         retired_versions: Default::default(),
@@ -132,7 +135,9 @@ pub(crate) fn validate_create(
     definition: &SkillDefinition,
     version: &SkillVersion,
 ) -> Result<(), SkillStoreError> {
-    if definition.id.trim().is_empty() || definition.workspace_id.trim().is_empty() {
+    if definition.id.as_str().trim().is_empty()
+        || definition.workspace_id.as_str().trim().is_empty()
+    {
         return Err(SkillStoreError::Invalid(
             "skill and Workspace ids must be non-empty".into(),
         ));
@@ -174,7 +179,9 @@ pub(crate) fn decode_aggregate(
 ) -> Result<SkillAggregate, SkillStoreError> {
     let aggregate: SkillAggregate = serde_json::from_slice(data)
         .map_err(|error| corrupt(format!("malformed JSON: {error}")))?;
-    if aggregate.definition.workspace_id != workspace_id || aggregate.definition.id != skill_id {
+    if aggregate.definition.workspace_id.as_str() != workspace_id
+        || aggregate.definition.id.as_str() != skill_id
+    {
         return Err(corrupt("stored identity does not match its repository key"));
     }
     let Some((&last, _)) = aggregate.versions.last_key_value() else {
@@ -205,7 +212,7 @@ pub(crate) fn decode_aggregate(
     for (ordinal, version) in &aggregate.versions {
         if *ordinal == 0
             || version.version != *ordinal
-            || version.skill_id != skill_id
+            || version.skill_id.as_str() != skill_id
             || version.files.is_empty()
             || version.skill_md().is_none()
             || version.bundle_sha256 != bundle_sha256(&version.files)
@@ -223,7 +230,9 @@ pub(crate) fn append_to(
     version: SkillVersion,
 ) -> Result<(), SkillStoreError> {
     if aggregate.deleted {
-        return Err(SkillStoreError::NotFound(aggregate.definition.id.clone()));
+        return Err(SkillStoreError::NotFound(
+            aggregate.definition.id.to_string(),
+        ));
     }
     if version.skill_id != aggregate.definition.id
         || version.version != aggregate.definition.last_version.saturating_add(1)
@@ -241,6 +250,10 @@ pub(crate) fn append_to(
     }
     aggregate.definition.latest_version = version.version;
     aggregate.definition.last_version = version.version;
+    aggregate
+        .definition
+        .timestamps
+        .touch(version.created_unix_nanos);
     aggregate.versions.insert(version.version, version);
     Ok(())
 }
@@ -281,7 +294,7 @@ pub(crate) fn remove_version_from(
 #[derive(Default)]
 pub struct InMemorySkillStore {
     // workspace_id → (id → complete aggregate)
-    inner: Mutex<BTreeMap<String, BTreeMap<String, SkillAggregate>>>,
+    inner: Mutex<BTreeMap<String, BTreeMap<SkillId, SkillAggregate>>>,
 }
 
 impl InMemorySkillStore {
@@ -302,7 +315,7 @@ impl SkillStore for InMemorySkillStore {
         let mut inner = self.inner.lock().unwrap();
         let workspace = inner.entry(definition.workspace_id.clone()).or_default();
         if workspace.contains_key(&definition.id) {
-            return Err(SkillStoreError::AlreadyExists(definition.id));
+            return Err(SkillStoreError::AlreadyExists(definition.id.to_string()));
         }
         workspace.insert(
             definition.id.clone(),
@@ -325,7 +338,7 @@ impl SkillStore for InMemorySkillStore {
         let mut inner = self.inner.lock().unwrap();
         let aggregate = inner
             .get_mut(workspace_id)
-            .and_then(|workspace| workspace.get_mut(skill_id))
+            .and_then(|workspace| workspace.get_mut(&SkillId::from(skill_id)))
             .ok_or_else(|| SkillStoreError::NotFound(skill_id.into()))?;
         append_to(aggregate, version)
     }
@@ -340,7 +353,7 @@ impl SkillStore for InMemorySkillStore {
             .lock()
             .unwrap()
             .get(workspace_id)
-            .and_then(|ws| ws.get(skill_id))
+            .and_then(|ws| ws.get(&SkillId::from(skill_id)))
             .filter(|aggregate| !aggregate.deleted)
             .map(|aggregate| aggregate.definition.clone()))
     }
@@ -374,7 +387,7 @@ impl SkillStore for InMemorySkillStore {
             .lock()
             .unwrap()
             .get(workspace_id)
-            .and_then(|ws| ws.get(skill_id))
+            .and_then(|ws| ws.get(&SkillId::from(skill_id)))
             .and_then(|aggregate| aggregate.versions.get(&version).cloned()))
     }
 
@@ -388,7 +401,7 @@ impl SkillStore for InMemorySkillStore {
             .lock()
             .unwrap()
             .get(workspace_id)
-            .and_then(|ws| ws.get(skill_id))
+            .and_then(|ws| ws.get(&SkillId::from(skill_id)))
             .filter(|aggregate| !aggregate.deleted)
             .map(|aggregate| {
                 aggregate
@@ -410,7 +423,7 @@ impl SkillStore for InMemorySkillStore {
         let mut inner = self.inner.lock().unwrap();
         let Some(aggregate) = inner
             .get_mut(workspace_id)
-            .and_then(|workspace| workspace.get_mut(skill_id))
+            .and_then(|workspace| workspace.get_mut(&SkillId::from(skill_id)))
         else {
             return Ok(false);
         };
@@ -425,7 +438,7 @@ impl SkillStore for InMemorySkillStore {
         let mut inner = self.inner.lock().unwrap();
         let Some(aggregate) = inner
             .get_mut(workspace_id)
-            .and_then(|workspace| workspace.get_mut(skill_id))
+            .and_then(|workspace| workspace.get_mut(&SkillId::from(skill_id)))
         else {
             return Ok(false);
         };
@@ -445,7 +458,8 @@ impl SkillStore for InMemorySkillStore {
         let Some(workspace) = inner.get_mut(workspace_id) else {
             return Ok(0);
         };
-        let Some(aggregate) = workspace.get(skill_id) else {
+        let skill_id = SkillId::from(skill_id);
+        let Some(aggregate) = workspace.get(&skill_id) else {
             return Ok(0);
         };
         if !aggregate.deleted {
@@ -454,7 +468,7 @@ impl SkillStore for InMemorySkillStore {
             ));
         }
         let versions = aggregate.versions.len() as u64;
-        workspace.remove(skill_id);
+        workspace.remove(&skill_id);
         Ok(versions)
     }
 }
@@ -516,10 +530,12 @@ impl FsSkillStore {
     }
 
     fn write_aggregate(&self, aggregate: &SkillAggregate) -> Result<(), SkillStoreError> {
-        let dir = self.ws_dir(&aggregate.definition.workspace_id);
+        let dir = self.ws_dir(aggregate.definition.workspace_id.as_str());
         std::fs::create_dir_all(&dir).map_err(|error| SkillStoreError::Io(error.to_string()))?;
-        let path =
-            self.aggregate_path(&aggregate.definition.workspace_id, &aggregate.definition.id);
+        let path = self.aggregate_path(
+            aggregate.definition.workspace_id.as_str(),
+            aggregate.definition.id.as_str(),
+        );
         let temp = path.with_extension(format!("json.tmp-{}", std::process::id()));
         let bytes = serde_json::to_vec(aggregate)
             .map_err(|error| SkillStoreError::Storage(error.to_string()))?;
@@ -568,10 +584,10 @@ impl SkillStore for FsSkillStore {
         validate_create(&definition, &initial_version)?;
         let _guard = self.gate.lock().unwrap();
         if self
-            .read_aggregate(&definition.workspace_id, &definition.id)?
+            .read_aggregate(definition.workspace_id.as_str(), definition.id.as_str())?
             .is_some()
         {
-            return Err(SkillStoreError::AlreadyExists(definition.id));
+            return Err(SkillStoreError::AlreadyExists(definition.id.to_string()));
         }
         self.write_aggregate(&SkillAggregate {
             definition,
@@ -629,11 +645,13 @@ impl SkillStore for FsSkillStore {
                     std::fs::read(&path).map_err(|error| SkillStoreError::Io(error.to_string()))?;
                 let aggregate: SkillAggregate = serde_json::from_slice(&bytes)
                     .map_err(|error| corrupt(format!("malformed JSON: {error}")))?;
-                let aggregate = decode_aggregate(&bytes, workspace_id, &aggregate.definition.id)?;
-                if path != self.aggregate_path(workspace_id, &aggregate.definition.id) {
+                let aggregate =
+                    decode_aggregate(&bytes, workspace_id, aggregate.definition.id.as_str())?;
+                if path != self.aggregate_path(workspace_id, aggregate.definition.id.as_str()) {
                     return Err(corrupt("stored identity does not match its filesystem key"));
                 }
-                if aggregate.definition.workspace_id == workspace_id && !aggregate.deleted {
+                if aggregate.definition.workspace_id.as_str() == workspace_id && !aggregate.deleted
+                {
                     out.push(aggregate.definition);
                 }
             }
@@ -744,9 +762,10 @@ mod tests {
                 display_title: None,
                 latest_version: 1,
                 last_version: 1,
+                timestamps: Default::default(),
             },
             SkillVersion {
-                id: format!("skver-{id}-1"),
+                id: format!("skver-{id}-1").into(),
                 skill_id: id.into(),
                 version: 1,
                 name: id.into(),
@@ -754,6 +773,7 @@ mod tests {
                 directory: format!("/skills/{id}"),
                 bundle_sha256: bundle_sha256(&files),
                 files,
+                created_unix_nanos: 0,
             },
         )
     }
@@ -879,7 +899,7 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
-            .map(|definition| definition.id)
+            .map(|definition| definition.id.to_string())
             .collect();
         assert_eq!(ids, vec!["greet", "review"]);
         std::fs::remove_dir_all(&root).ok();

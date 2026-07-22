@@ -5,6 +5,7 @@
 //! projection details from growing the config-plane orchestration module.
 
 use awaken_config_store::{AgentConfig, ModelSelection, ToolOverride};
+use awaken_runtime_contract::agent_bindings::AgentMcpServerBinding;
 use serde_json::{Value, json};
 
 fn managed_tool_id(value: &Value) -> Option<String> {
@@ -70,6 +71,25 @@ pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig
                 .collect()
         })
         .unwrap_or_default();
+    let mcp_servers = array("mcp_servers")
+        .into_iter()
+        .map(|value| {
+            serde_json::from_value::<AgentMcpServerBinding>(value)
+                .map_err(|error| error.to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let skill_ids = array("skills")
+        .into_iter()
+        .map(|value| {
+            value
+                .as_str()
+                .or_else(|| value.get("id").and_then(Value::as_str))
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(str::to_string)
+                .ok_or_else(|| "Skill must be a non-empty id or object with `id`".to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(AgentConfig {
         id,
         instructions: string("system").unwrap_or_default(),
@@ -97,8 +117,8 @@ pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig
         name: string("name"),
         description: string("description"),
         metadata,
-        mcp_servers: array("mcp_servers"),
-        skills: array("skills"),
+        mcp_servers,
+        skill_ids,
         multiagent: body.get("multiagent").filter(|v| !v.is_null()).cloned(),
         archived_at: string("archived_at"),
         tool_overrides,
@@ -135,7 +155,7 @@ pub fn managed_from_agent_config(config: &AgentConfig, published: bool) -> Value
         "tools": config.tool_ids,
         "recovery_policies": config.recovery_policies,
         "mcp_servers": config.mcp_servers,
-        "skills": config.skills,
+        "skills": config.skill_ids,
         "multiagent": config.multiagent,
         "archived_at": config.archived_at,
         "max_steps": config.max_steps,

@@ -28,6 +28,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_config_store::{AgentConfig, ManagementAuditRecord, ModelSelection, ToolOverride};
+use awaken_runtime_contract::agent_bindings::AgentMcpServerBinding;
 use awaken_runtime_contract::resolved::{ContextPolicy, ToolDescriptor};
 use awaken_runtime_contract::tool::{
     RawTool, ToolCall, ToolError, ToolOutput, current_tool_operation_id,
@@ -797,6 +798,44 @@ struct DraftArgs {
     resources: Vec<InputSpec>,
 }
 
+fn typed_mcp_servers(values: Vec<serde_json::Value>) -> Result<Vec<AgentMcpServerBinding>, String> {
+    values
+        .into_iter()
+        .enumerate()
+        .map(|(index, value)| {
+            let object = value
+                .as_object()
+                .ok_or_else(|| format!("mcp_servers entry {index} must be an object"))?;
+            let name = object
+                .get("name")
+                .or_else(|| object.get("id"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let url = object
+                .get("url")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            Ok(AgentMcpServerBinding { name, url })
+        })
+        .collect()
+}
+
+fn typed_skill_ids(values: Vec<serde_json::Value>) -> Result<Vec<String>, String> {
+    values
+        .into_iter()
+        .enumerate()
+        .map(|(index, value)| {
+            value
+                .as_str()
+                .or_else(|| value.get("id").and_then(serde_json::Value::as_str))
+                .map(str::to_string)
+                .ok_or_else(|| format!("skills entry {index} must be an id or object with `id`"))
+        })
+        .collect()
+}
+
 struct DraftAgent {
     validator: Arc<dyn DraftValidator>,
     store: Arc<dyn DraftStore>,
@@ -837,6 +876,14 @@ impl RawTool for DraftAgent {
             .unwrap_or(ModelSelection::Auto);
         let plugin_ids = plugin_ids_of(&args.plugin_config);
         let resources = args.resources;
+        let mcp_servers = match typed_mcp_servers(args.mcp_servers) {
+            Ok(value) => value,
+            Err(error) => return Ok(ToolOutput::error(call.call_id, error)),
+        };
+        let skill_ids = match typed_skill_ids(args.skills) {
+            Ok(value) => value,
+            Err(error) => return Ok(ToolOutput::error(call.call_id, error)),
+        };
         let config = AgentConfig {
             id: args.id,
             instructions: args.instructions,
@@ -853,8 +900,8 @@ impl RawTool for DraftAgent {
             description: args.description,
             tool_overrides: args.tool_overrides,
             recovery_policies: Default::default(),
-            mcp_servers: args.mcp_servers,
-            skills: args.skills,
+            mcp_servers,
+            skill_ids,
             multiagent: args.multiagent,
             archived_at: None,
             metadata: args.metadata,
@@ -997,10 +1044,16 @@ impl RawTool for PatchAgent {
             config.context_policy = cp;
         }
         if let Some(v) = patch.mcp_servers {
-            config.mcp_servers = v;
+            config.mcp_servers = match typed_mcp_servers(v) {
+                Ok(value) => value,
+                Err(error) => return Ok(ToolOutput::error(call.call_id, error)),
+            };
         }
         if let Some(v) = patch.skills {
-            config.skills = v;
+            config.skill_ids = match typed_skill_ids(v) {
+                Ok(value) => value,
+                Err(error) => return Ok(ToolOutput::error(call.call_id, error)),
+            };
         }
         if let Some(v) = patch.multiagent {
             config.multiagent = Some(v);

@@ -49,6 +49,7 @@ pub use resource_scope::RequiredWorkspaceScope;
 mod run_exec;
 mod sandbox_source;
 mod session_environment;
+mod session_slot;
 pub use session_environment::HandExecutorFactory;
 mod skill_catalog;
 mod skills;
@@ -252,13 +253,11 @@ fn to_step_outcome(result: RunResult) -> Result<StepOutcome, RunError> {
 }
 
 /// The Managed Agents `SessionRuntime` port implemented over the shared host.
-/// Holds only an `Arc<SharedHost>` (plus, on the management server, the MCP
-/// stores `prepare_session` reads), so it composes with any other adapter bound
-/// to the same host.
+/// Holds only an `Arc<SharedHost>` plus runtime-side materialization ports, so it
+/// composes with any other adapter bound to the same host.
 pub struct ManagedHost {
     host: Arc<SharedHost>,
     credentials: Option<CredentialInjector>,
-    mcp: Option<ManagedMcp>,
     resource_validator: Option<Arc<dyn awaken_resource_contract::ResourceBindingValidator>>,
 }
 
@@ -268,12 +267,6 @@ pub struct ManagedHost {
 struct CredentialInjector {
     credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
     secrets: Arc<dyn awaken_credential_vault::SecretStore>,
-}
-
-/// The authored agent↔MCP configuration store. Credential materialization is
-/// delegated to [`CredentialInjector`] instead of being owned by this component.
-struct ManagedMcp {
-    mcp_store: Arc<dyn awaken_config_resolver::McpStore>,
 }
 
 /// Weak, cloneable worker-side projection of the Managed Session resource
@@ -300,7 +293,6 @@ impl DispatchResourcePreparer {
         let managed = ManagedHost {
             host,
             credentials: self.credentials.clone(),
-            mcp: None,
             resource_validator: self.resource_validator.clone(),
         };
         let previous = managed.host.thread_resource_manifest(thread);
@@ -378,7 +370,6 @@ impl ManagedHost {
         let managed = Self {
             host,
             credentials: None,
-            mcp: None,
             resource_validator: None,
         };
         managed.refresh_dispatch_resource_preparer();
@@ -686,10 +677,8 @@ impl ManagedHost {
                     .await
                     .map_err(|error| RunError::bad_request(error.to_string()))?;
                 self.host
-                    .thread_skills
-                    .lock()
-                    .expect("thread skills mutex poisoned")
-                    .insert(thread.to_string(), versions);
+                    .session_slots
+                    .update(thread, |slot| slot.skills = Some(versions));
             }
             None => {
                 // Legacy records retain the historical global-catalog behavior;
@@ -700,10 +689,8 @@ impl ManagedHost {
                     .await
                     .map_err(|error| RunError::bad_request(error.to_string()))?;
                 self.host
-                    .thread_skills
-                    .lock()
-                    .expect("thread skills mutex poisoned")
-                    .remove(thread);
+                    .session_slots
+                    .update(thread, |slot| slot.skills = None);
             }
         }
         self.stage_effective_inputs(thread, workspace, resources)
@@ -715,11 +702,8 @@ impl ManagedHost {
 
         let checks = self
             .host
-            .thread_resources
-            .lock()
-            .expect("thread resources mutex poisoned")
-            .get(thread)
-            .map(|resources| resources.binding_checks.clone())
+            .session_slots
+            .read(thread, |slot| slot.resources.binding_checks.clone())
             .unwrap_or_default();
         if checks.is_empty() {
             return Ok(());
@@ -770,28 +754,8 @@ impl ManagedHost {
         Ok(())
     }
 
-    /// Wire the MCP stores so `prepare_session` materializes a session's MCP
-    /// credential bindings and merges the management plane's agent↔MCP config
-    /// (ADR-0043 Phase 3). Hosts built without this keep the trait's no-op
-    /// `prepare_session`, so no other server mode changes behavior.
-    #[must_use]
-    pub fn with_mcp(
-        mut self,
-        credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
-        secrets: Arc<dyn awaken_credential_vault::SecretStore>,
-        mcp_store: Arc<dyn awaken_config_resolver::McpStore>,
-    ) -> Self {
-        self.credentials = Some(CredentialInjector {
-            credentials,
-            secrets,
-        });
-        self.mcp = Some(ManagedMcp { mcp_store });
-        self.refresh_dispatch_resource_preparer();
-        self
-    }
-
-    /// Wire credential injection without enabling authored MCP configuration.
-    /// Repository realization uses this seam directly.
+    /// Wire runtime credential injection for the already-frozen Session bindings
+    /// and Repository realization.
     #[must_use]
     pub fn with_credentials(
         mut self,
@@ -804,62 +768,6 @@ impl ManagedHost {
         });
         self.refresh_dispatch_resource_preparer();
         self
-    }
-}
-
-/// A resolver credential lookup prefetched from the repo, scoped to exactly the
-/// sources and pools the given MCP server defs' bindings name. The admin resolve
-/// route builds its lookup by listing a workspace; the managed session ingress
-/// has no workspace parameter on the wire, so it prefetches per binding instead —
-/// same lookup shape, same fail-closed outcome (a missing source stays absent and
-/// `resolve_mcp_servers` errors on it).
-#[derive(Default)]
-struct PrefetchedSourceLookup {
-    sources: std::collections::HashMap<String, awaken_credential_vault::CredentialSource>,
-    pools: std::collections::HashMap<String, awaken_credential_vault::CredentialPool>,
-}
-
-impl awaken_config_resolver::SourceLookup for PrefetchedSourceLookup {
-    fn get(&self, id: &str) -> Option<&awaken_credential_vault::CredentialSource> {
-        self.sources.get(id)
-    }
-    fn get_pool(&self, id: &str) -> Option<&awaken_credential_vault::CredentialPool> {
-        self.pools.get(id)
-    }
-}
-
-impl PrefetchedSourceLookup {
-    /// Fetch every source/pool the defs' bindings reference. A row the repo does
-    /// not hold is simply not inserted; resolution then fails closed on it.
-    async fn for_defs(
-        defs: &[awaken_config_resolver::McpServerDef],
-        repo: &dyn awaken_credential_vault::repo::CredentialRepo,
-    ) -> Self {
-        use awaken_credential_vault::CredentialBinding;
-        let mut lookup = Self::default();
-        for def in defs {
-            match &def.credential_binding {
-                CredentialBinding::None => {}
-                CredentialBinding::Exact {
-                    credential_source_id,
-                } => {
-                    if let Ok(row) = repo.get(credential_source_id).await {
-                        lookup.sources.insert(row.id.0.clone(), row);
-                    }
-                }
-                CredentialBinding::OneOfCredentialPool { credential_pool_id } => {
-                    if let Ok(pool) = repo.get_pool(credential_pool_id).await {
-                        for member in &pool.members {
-                            if let Ok(row) = repo.get(&member.credential_source_id).await {
-                                lookup.sources.insert(row.id.0.clone(), row);
-                            }
-                        }
-                        lookup.pools.insert(pool.id.0.clone(), pool);
-                    }
-                }
-            }
-        }
-        lookup
     }
 }
 
@@ -1082,18 +990,11 @@ impl SessionRuntime for ManagedHost {
     /// 1. Each binding's vault credential is materialized to a bearer (a binding
     ///    without a credential stays bearer-less); a missing/broken credential
     ///    row is the caller's fault (`bad_request`, fail closed).
-    /// 2. Management-plane merge: the agent's authored [`AgentMcpConfig`]
-    ///    (admin `/v1/config/agents/{id}/mcp`), resolved through
-    ///    `resolve_mcp_servers`, is appended AFTER the session-inline servers;
-    ///    on a duplicate URL the session-inline server wins. A management-plane
-    ///    config that cannot resolve is the deployment's fault (`internal`,
-    ///    fail closed — the admin routes validated it at write time).
-    /// 3. The prepared set is staged on the shared host; the thread's first turn
+    /// 2. The prepared set is staged on the shared host; the thread's first turn
     ///    connects them (`SharedHost::register_thread_mcp` → `ctx_for`).
     ///
-    /// Hosts built without [`ManagedHost::with_mcp`] keep the trait's no-op.
-    ///
-    /// [`AgentMcpConfig`]: awaken_config_resolver::AgentMcpConfig
+    /// Authored Agent MCP defaults are resolved before Session creation and
+    /// persisted in `SessionInit`; this runtime path never reads current config.
     async fn rebind_model(&self, thread: &str, model: &str) -> Result<(), RunError> {
         // R5: re-stage the thread's model and evict its cached context so the next
         // turn rebuilds with the newly resolved executor (native switch is O(1); an
@@ -1179,17 +1080,13 @@ impl SessionRuntime for ManagedHost {
                     .await
                     .map_err(|error| RunError::bad_request(error.to_string()))?;
                 self.host
-                    .thread_skills
-                    .lock()
-                    .expect("thread skills mutex poisoned")
-                    .insert(thread.to_string(), versions);
+                    .session_slots
+                    .update(thread, |slot| slot.skills = Some(versions));
             }
             None => {
                 self.host
-                    .thread_skills
-                    .lock()
-                    .expect("thread skills mutex poisoned")
-                    .remove(thread);
+                    .session_slots
+                    .update(thread, |slot| slot.skills = None);
             }
         }
         let repository_mcp = self
@@ -1302,18 +1199,17 @@ impl SessionRuntime for ManagedHost {
         let repo_mcp = self
             .stage_resource_manifest(thread, &init.workspace_id, &init.resources)
             .await?;
-        let Some(credentials) = &self.credentials else {
-            return Ok(());
-        };
-        let Some(mcp) = &self.mcp else {
-            self.host.register_thread_mcp(thread, repo_mcp);
-            return Ok(());
-        };
         let mut prepared: Vec<crate::host::PreparedMcpServer> =
             Vec::with_capacity(init.mcp_servers.len());
         for binding in &init.mcp_servers {
             let (bearer, refresh) = match &binding.credential_source_id {
                 Some(source_id) => {
+                    let credentials = self.credentials.as_ref().ok_or_else(|| {
+                        RunError::bad_request(format!(
+                            "mcp server `{}` requires a configured credential vault",
+                            binding.name
+                        ))
+                    })?;
                     // Re-type the port's neutral id string into the vault's domain id.
                     let source_id = awaken_credential_vault::CredentialSourceId(source_id.clone());
                     let row = credentials.credentials.get(&source_id).await.map_err(|e| {
@@ -1353,58 +1249,6 @@ impl SessionRuntime for ManagedHost {
                 bearer,
                 refresh,
             });
-        }
-        // The agent's authored workspace-level MCP binding. The aggregate carries
-        // its owner, so execution verifies the config and every referenced server
-        // against the already-trusted session workspace without a side projection.
-        let authored = mcp
-            .mcp_store
-            .get_agent_config(&init.agent_id)
-            .filter(|config| config.workspace_id == init.workspace_id)
-            .map(|config| config.mcp_server_ids);
-        if let Some(mcp_server_ids) = authored {
-            let config_ids = mcp_server_ids;
-            let mut defs = Vec::with_capacity(config_ids.len());
-            for server_id in &config_ids {
-                let def = mcp.mcp_store.get_server(&server_id.0).ok_or_else(|| {
-                    RunError::internal(format!(
-                        "agent `{}` references unknown mcp server `{}`",
-                        init.agent_id, server_id.0
-                    ))
-                })?;
-                if def.workspace_id != init.workspace_id {
-                    return Err(RunError::internal(format!(
-                        "agent `{}` references an mcp server outside its workspace",
-                        init.agent_id
-                    )));
-                }
-                defs.push(def);
-            }
-            let lookup = PrefetchedSourceLookup::for_defs(&defs, &*credentials.credentials).await;
-            let resolved =
-                awaken_config_resolver::resolve_mcp_servers(&defs, &lookup, &*credentials.secrets)
-                    .await
-                    .map_err(|e| {
-                        RunError::internal(format!(
-                            "agent `{}` mcp config did not resolve: {e}",
-                            init.agent_id
-                        ))
-                    })?;
-            for server in resolved {
-                // Session-inline wins on a duplicate URL: the caller's explicit
-                // request (and its vault binding) overrides the authored default.
-                if prepared.iter().any(|p| p.url == server.url) {
-                    continue;
-                }
-                prepared.push(crate::host::PreparedMcpServer {
-                    name: server.name,
-                    url: server.url,
-                    bearer: server.credential,
-                    // Management-plane servers resolve through the admin
-                    // credential model, which has no OAuth refresh object.
-                    refresh: None,
-                });
-            }
         }
         // Fold in the GitHub MCP servers bridged from github_repository resources, skipping a
         // name already staged (an explicit MCP binding of the same name wins).

@@ -10,7 +10,8 @@ use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
 };
 use awaken_scenario_host::{
-    EchoModel, build_custom_router, build_delegation_router, build_graded_router, build_router,
+    EchoModel, ReviseModel, build_custom_router, build_delegation_router, build_graded_router,
+    build_router,
 };
 use axum::Router;
 use axum::body::Body;
@@ -35,8 +36,14 @@ async fn json_call(
         })
         .unwrap();
     let resp = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "{method} {uri}");
+    let status = resp.status();
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "{method} {uri}: {}",
+        String::from_utf8_lossy(&bytes)
+    );
     serde_json::from_slice(&bytes).unwrap()
 }
 
@@ -206,50 +213,6 @@ async fn hitl_write_awaits_then_confirms_and_reads_rooted() {
     assert!(read_result_text(&list).contains("HELLO-SANDBOX"));
 }
 
-/// A model serving both Outcome roles: it grades Worker output through the
-/// pinned Judge path, and revises a rejected draft to include "FINAL".
-struct ReviseModel;
-
-#[async_trait::async_trait]
-impl LlmExecutor for ReviseModel {
-    async fn infer(
-        &self,
-        request: ChatRequest,
-    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
-        let last_user = request
-            .messages
-            .iter()
-            .rev()
-            .find(|m| m.role == Role::User)
-            .map(|m| {
-                m.content
-                    .iter()
-                    .filter_map(|b| match b {
-                        ContentBlock::Text { text } => Some(text.as_str()),
-                        _ => None,
-                    })
-                    .collect::<String>()
-            })
-            .unwrap_or_default();
-        let reply = if last_user.contains("Evaluate this Outcome input") {
-            if last_user.contains("\"rubric\":\"FINAL\"") && last_user.contains("FINAL answer") {
-                r#"{"result":"satisfied","explanation":"accepted FINAL"}"#
-            } else {
-                r#"{"result":"needs_revision","explanation":"include FINAL"}"#
-            }
-        } else if last_user.contains("Revise the deliverable") {
-            "FINAL answer"
-        } else {
-            "a rough draft"
-        };
-        Ok(ChatResponse {
-            output: AssistantOutput::text(reply),
-            usage: None,
-            stop_reason: None,
-        })
-    }
-}
-
 async fn define_outcome(app: &Router, session: &str, rubric: &str) -> serde_json::Value {
     json_call(
         app,
@@ -283,7 +246,11 @@ async fn outcome_iterates_until_satisfied() {
         .filter(|e| e["type"] == "span.outcome_evaluation_end")
         .collect();
     assert!(ends.len() >= 2, "expected at least two evaluation rounds");
-    assert_eq!(ends.first().unwrap()["result"], "needs_revision");
+    assert_eq!(
+        ends.first().unwrap()["result"],
+        "needs_revision",
+        "outcome evaluation events: {ends:?}"
+    );
     assert_eq!(ends.last().unwrap()["result"], "satisfied");
     // The revision that satisfied the goal was projected.
     let messages: Vec<&str> = list["data"]
@@ -365,7 +332,11 @@ async fn outcome_graded_by_a_judge_subagent() {
         .filter(|e| e["type"] == "span.outcome_evaluation_end")
         .collect();
     assert!(ends.len() >= 2, "expected at least two judge-graded rounds");
-    assert_eq!(ends.first().unwrap()["result"], "needs_revision");
+    assert_eq!(
+        ends.first().unwrap()["result"],
+        "needs_revision",
+        "outcome evaluation events: {ends:?}"
+    );
     assert_eq!(ends.last().unwrap()["result"], "satisfied");
 }
 
@@ -757,9 +728,8 @@ async fn sessions_are_isolated() {
     );
 }
 
-/// A model that blocks on its second inference (the first revision round) so a
-/// concurrent `user.interrupt` HTTP request can land mid-outcome. Its reply never
-/// contains the rubric, so the outcome would otherwise loop to the budget.
+/// A model that blocks on its second inference (the first grader run) so a
+/// concurrent `user.interrupt` HTTP request can land mid-outcome.
 struct GatedReviseModel {
     gate: std::sync::Arc<tokio::sync::Notify>,
     reached: std::sync::Arc<tokio::sync::Notify>,
@@ -820,8 +790,8 @@ async fn managed_user_interrupt_reports_interrupted() {
     );
     let id = create_session(&app).await;
 
-    // Drive an outcome whose rubric is never met; the model blocks it mid second
-    // round. Run it on a task so the test can interrupt concurrently.
+    // The model blocks the first Agent-backed grading run. Drive it on a task so
+    // the test can interrupt concurrently.
     let app2 = app.clone();
     let id2 = id.clone();
     let task = tokio::spawn(async move {
@@ -861,7 +831,7 @@ async fn managed_user_interrupt_reports_interrupted() {
         .iter()
         .filter(|e| e["type"] == "span.outcome_evaluation_end")
         .collect();
-    assert_eq!(ends.first().unwrap()["result"], "needs_revision");
+    assert_eq!(ends.len(), 1, "outcome evaluation events: {ends:?}");
     assert_eq!(
         ends.last().unwrap()["result"],
         "interrupted",

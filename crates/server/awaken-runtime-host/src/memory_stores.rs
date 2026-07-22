@@ -39,14 +39,10 @@ impl MemoryStores {
                 // Keep the original physical filename for an in-place upgrade; it is
                 // storage layout, not the public/domain name of the repository port.
                 let db = dir.join("memory_fs.db");
-                let store = awaken_memory_store::SqliteMemoryRepository::open(
+                awaken_memory_store::SqliteMemoryRepository::open(
                     db.to_str().expect("memory-fs db path is valid UTF-8"),
                 )
-                .expect("open durable memory-fs sqlite store");
-                store
-                    .import_legacy_versions(&dir.join("resource-api.db"))
-                    .expect("import legacy memory version sidecar");
-                store
+                .expect("open durable memory-fs sqlite store")
             }
             // No durable dir → an ephemeral in-memory database (dies with the process).
             None => awaken_memory_store::SqliteMemoryRepository::open_in_memory()

@@ -110,6 +110,7 @@ impl ConfigService {
             .map(|store| {
                 store
                     .list_agent_inputs(workspace_id)
+                    .unwrap_or_default()
                     .into_iter()
                     .filter(|config| config.inputs.iter().any(|input| &input.target == target))
                     .map(|config| config.agent_id)

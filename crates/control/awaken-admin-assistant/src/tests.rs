@@ -402,9 +402,14 @@ async fn draft_agent_round_trips_mcp_skills_multiagent_and_metadata() {
     let stored = h.store.stored("full").unwrap();
     assert_eq!(
         stored.mcp_servers,
-        vec![serde_json::json!({ "id": "github" })]
+        vec![
+            awaken_runtime_contract::agent_bindings::AgentMcpServerBinding {
+                name: "github".into(),
+                url: String::new(),
+            }
+        ]
     );
-    assert_eq!(stored.skills, vec![serde_json::json!({ "id": "greet" })]);
+    assert_eq!(stored.skill_ids, vec!["greet"]);
     assert_eq!(
         stored.multiagent,
         Some(serde_json::json!({ "workers": ["a", "b"] }))

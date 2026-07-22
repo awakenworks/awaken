@@ -27,10 +27,11 @@ pub use catalog::{
     ClonePolicy, ConfigVersion, ExtractionPolicy, MemoryStoreConfigVersion, MemoryStoreDefinition,
     RecallPolicy, RepositoryConfigVersion, RepositoryDefinition, ResourceBindingValidator,
     ResourceCatalog, ResourceCatalogError, ResourceCatalogRules, ResourceConfigSource,
-    ResourceState, RetentionPolicy,
+    ResourceState, ResourceTimestamps, RetentionPolicy,
 };
 pub use input::{
     BindingId, FileId, InputBinding, InputResourceId, MemoryStoreId, RepositoryId, ResourceAccess,
+    SkillId, SkillVersionId,
 };
 pub use lifecycle::{
     AcquireResourceReclamationOutcome, PutResourcePurgeOutcome, ResourceKind,
@@ -102,14 +103,16 @@ pub struct SkillBundleFile {
 /// content; it contains no principal, role, policy, API key, or runtime host path.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillVersion {
-    pub id: String,
-    pub skill_id: String,
+    pub id: SkillVersionId,
+    pub skill_id: SkillId,
     pub version: u64,
     pub name: String,
     pub description: String,
     pub directory: String,
     pub bundle_sha256: String,
     pub files: Vec<SkillBundleFile>,
+    #[serde(default)]
+    pub created_unix_nanos: u64,
 }
 
 impl SkillVersion {
@@ -129,7 +132,7 @@ impl SkillVersion {
 /// policy decision.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillDefinition {
-    pub id: String,
+    pub id: SkillId,
     pub workspace_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_title: Option<String>,
@@ -137,6 +140,8 @@ pub struct SkillDefinition {
     /// Highest version number ever assigned. It never decreases or reuses a
     /// retired version number.
     pub last_version: u64,
+    #[serde(default)]
+    pub timestamps: ResourceTimestamps,
 }
 
 /// A durable, workspace-scoped repository for the complete Skill aggregate.

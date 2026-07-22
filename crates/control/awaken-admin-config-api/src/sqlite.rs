@@ -5,11 +5,10 @@
 //! connection (one `admin.db` file; the two aggregates share one bundle, so one
 //! connection keeps the composition root simple and the ledger in one place).
 //!
-//! The store ports are *sync* and have no error channel (their contract, like
-//! the in-memory impls' `lock().expect(..)`, is that a broken store is a
-//! panic-worthy invariant violation, not a recoverable condition), so unlike
-//! the async catalog/credential adapters there is no `spawn_blocking` — every
-//! call is one short statement under the connection mutex.
+//! Profile and MCP ports expose storage errors to the application layer; malformed
+//! rows and unavailable SQLite storage therefore become HTTP 500 responses rather
+//! than panics or false not-found results. Calls remain synchronous and short under
+//! the connection mutex.
 
 use std::sync::{Arc, Mutex};
 
@@ -17,8 +16,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use awaken_config_resolver::{
     AgentInputBindingRepository, AgentInputConfig, AgentInputRepositoryError, AgentMcpConfig,
-    InferenceProfile, InferenceProfileStore, McpServerDef, McpStore, WebhookEndpointDef,
-    WebhookStore, validate_agent_input_revision,
+    ConfigRepositoryError, InferenceProfile, InferenceProfileStore, McpServerDef, McpStore,
+    WebhookEndpointDef, WebhookStore, validate_agent_input_revision,
 };
 
 use crate::schema::admin_bundle;
@@ -62,21 +61,24 @@ impl SqliteAdminStore {
             .map_err(|err| StoreError::Migrate(err.to_string()))?
             .run_bundle(&conn, &bundle)
             .map_err(|err| StoreError::Migrate(err.to_string()))?;
-        let store = Self {
+        Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
-        };
-        store
-            .migrate_legacy_memory_stores()
-            .map_err(|error| StoreError::Migrate(error.to_string()))?;
-        Ok(store)
+        })
     }
 
     /// Upsert one JSON row by primary key.
-    fn put_row<T: serde::Serialize>(&self, table: &str, key_col: &str, key: &str, value: &T) {
-        let data = serde_json::to_string(value).expect("serialize admin row");
+    fn put_row<T: serde::Serialize>(
+        &self,
+        table: &str,
+        key_col: &str,
+        key: &str,
+        value: &T,
+    ) -> Result<(), ConfigRepositoryError> {
+        let data = serde_json::to_string(value)
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
         self.conn
             .lock()
-            .expect("admin store")
+            .map_err(|_| ConfigRepositoryError::Storage("admin store mutex poisoned".into()))?
             .execute(
                 &format!(
                     "INSERT INTO {NS}_{table} ({key_col}, data) VALUES (?1, ?2) \
@@ -84,7 +86,8 @@ impl SqliteAdminStore {
                 ),
                 params![key, data],
             )
-            .expect("write admin row");
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        Ok(())
     }
 
     /// One JSON row by primary key, deserialized; `None` when absent.
@@ -93,19 +96,23 @@ impl SqliteAdminStore {
         table: &str,
         key_col: &str,
         key: &str,
-    ) -> Option<T> {
+    ) -> Result<Option<T>, ConfigRepositoryError> {
         let data: Option<String> = self
             .conn
             .lock()
-            .expect("admin store")
+            .map_err(|_| ConfigRepositoryError::Storage("admin store mutex poisoned".into()))?
             .query_row(
                 &format!("SELECT data FROM {NS}_{table} WHERE {key_col} = ?1"),
                 params![key],
                 |row| row.get(0),
             )
             .optional()
-            .expect("read admin row");
-        data.map(|d| serde_json::from_str(&d).expect("decode admin row"))
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        data.map(|data| {
+            serde_json::from_str(&data)
+                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))
+        })
+        .transpose()
     }
 }
 
@@ -116,7 +123,10 @@ impl AgentInputBindingRepository for SqliteAdminStore {
         config: AgentInputConfig,
     ) -> Result<(), AgentInputRepositoryError> {
         let key = format!("{workspace_id}\u{1f}{}", config.agent_id);
-        let mut conn = self.conn.lock().expect("admin store");
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|_| AgentInputRepositoryError::Storage("admin store mutex poisoned".into()))?;
         let tx = conn
             .transaction()
             .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
@@ -149,144 +159,189 @@ impl AgentInputBindingRepository for SqliteAdminStore {
         tx.commit()
             .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))
     }
-    fn get_agent_inputs(&self, workspace_id: &str, agent_id: &str) -> Option<AgentInputConfig> {
+    fn get_agent_inputs(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+    ) -> Result<Option<AgentInputConfig>, AgentInputRepositoryError> {
         let key = format!("{workspace_id}\u{1f}{agent_id}");
         self.get_row("agent_resource", "agent_id", &key)
+            .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))
     }
-    fn list_agent_inputs(&self, workspace_id: &str) -> Vec<AgentInputConfig> {
+    fn list_agent_inputs(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<AgentInputConfig>, AgentInputRepositoryError> {
         let prefix = format!("{workspace_id}\u{1f}");
-        let conn = self.conn.lock().expect("admin store");
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| AgentInputRepositoryError::Storage("admin store mutex poisoned".into()))?;
         let mut statement = conn
             .prepare(&format!(
                 "SELECT agent_id, data FROM {NS}_agent_resource ORDER BY agent_id"
             ))
-            .expect("list Agent input configs");
-        statement
+            .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
+        let rows = statement
             .query_map([], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })
-            .expect("query Agent input configs")
-            .filter_map(Result::ok)
-            .filter(|(key, _)| key.starts_with(&prefix))
-            .filter_map(|(_, data)| serde_json::from_str(&data).ok())
+            .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
+        rows.map(|row| row.map_err(|error| AgentInputRepositoryError::Storage(error.to_string())))
+            .filter(|row| {
+                row.as_ref()
+                    .map_or(true, |(key, _)| key.starts_with(&prefix))
+            })
+            .map(|row| {
+                let (_, data) = row?;
+                serde_json::from_str(&data)
+                    .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))
+            })
             .collect()
     }
 }
 
 impl InferenceProfileStore for SqliteAdminStore {
-    fn put(&self, id: String, profile: InferenceProfile) {
-        self.put_row("inference_profile", "id", &id, &profile);
+    fn put(&self, id: String, profile: InferenceProfile) -> Result<(), ConfigRepositoryError> {
+        self.put_row("inference_profile", "id", &id, &profile)
     }
-    fn get(&self, id: &str) -> Option<InferenceProfile> {
+    fn get(&self, id: &str) -> Result<Option<InferenceProfile>, ConfigRepositoryError> {
         self.get_row("inference_profile", "id", id)
     }
 }
 
 impl McpStore for SqliteAdminStore {
-    fn put_server(&self, def: McpServerDef) {
-        self.put_row("mcp_server", "id", &def.id.0.clone(), &def);
+    fn put_server(&self, def: McpServerDef) -> Result<(), ConfigRepositoryError> {
+        self.put_row("mcp_server", "id", &def.id.0.clone(), &def)
     }
-    fn get_server(&self, id: &str) -> Option<McpServerDef> {
+    fn get_server(&self, id: &str) -> Result<Option<McpServerDef>, ConfigRepositoryError> {
         self.get_row("mcp_server", "id", id)
     }
-    fn list_servers(&self) -> Vec<McpServerDef> {
+    fn list_servers(&self) -> Result<Vec<McpServerDef>, ConfigRepositoryError> {
         // Sorted by id, matching the in-memory store's ordering contract.
-        let conn = self.conn.lock().expect("admin store");
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| ConfigRepositoryError::Storage("admin store mutex poisoned".into()))?;
         let mut stmt = conn
             .prepare(&format!("SELECT data FROM {NS}_mcp_server ORDER BY id"))
-            .expect("prepare admin list");
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
         let rows = stmt
             .query_map([], |row| row.get::<_, String>(0))
-            .expect("list admin rows");
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
         rows.map(|data| {
-            serde_json::from_str(&data.expect("read admin row")).expect("decode admin row")
+            let data = data.map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+            serde_json::from_str(&data)
+                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))
         })
         .collect()
     }
-    fn put_agent_config(&self, config: AgentMcpConfig) {
-        self.put_row("agent_mcp", "agent_id", &config.agent_id.clone(), &config);
+    fn put_agent_config(&self, config: AgentMcpConfig) -> Result<(), ConfigRepositoryError> {
+        self.put_row("agent_mcp", "agent_id", &config.agent_id.clone(), &config)
     }
-    fn get_agent_config(&self, agent_id: &str) -> Option<AgentMcpConfig> {
+    fn get_agent_config(
+        &self,
+        agent_id: &str,
+    ) -> Result<Option<AgentMcpConfig>, ConfigRepositoryError> {
         self.get_row("agent_mcp", "agent_id", agent_id)
     }
 }
 
 impl WebhookStore for SqliteAdminStore {
-    fn put(&self, def: WebhookEndpointDef) {
-        self.put_row("webhook", "id", &def.id.clone(), &def);
+    fn put(&self, def: WebhookEndpointDef) -> Result<(), ConfigRepositoryError> {
+        self.put_row("webhook", "id", &def.id.clone(), &def)
     }
-    fn get(&self, id: &str) -> Option<WebhookEndpointDef> {
+    fn get(&self, id: &str) -> Result<Option<WebhookEndpointDef>, ConfigRepositoryError> {
         self.get_row("webhook", "id", id)
     }
-    fn list(&self, workspace_id: &str) -> Vec<WebhookEndpointDef> {
+    fn list(&self, workspace_id: &str) -> Result<Vec<WebhookEndpointDef>, ConfigRepositoryError> {
         // Scan the (low-cardinality) webhook rows and filter by owner in Rust —
         // the generic row helpers key by id; workspace lives inside the JSON.
-        let conn = self.conn.lock().expect("admin store");
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| ConfigRepositoryError::Storage("admin store mutex poisoned".into()))?;
         let mut stmt = conn
             .prepare(&format!("SELECT data FROM {NS}_webhook ORDER BY id"))
-            .expect("prepare webhook list");
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
         let rows = stmt
             .query_map([], |row| row.get::<_, String>(0))
-            .expect("list webhook rows");
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
         rows.map(|data| {
-            serde_json::from_str::<WebhookEndpointDef>(&data.expect("read admin row"))
-                .expect("decode admin row")
+            let data = data.map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+            serde_json::from_str::<WebhookEndpointDef>(&data)
+                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))
         })
-        .filter(|d| d.workspace_id == workspace_id)
+        .filter(|row| {
+            row.as_ref()
+                .map_or(true, |def| def.workspace_id == workspace_id)
+        })
         .collect()
     }
-    fn delete(&self, id: &str) -> bool {
+    fn delete(&self, id: &str) -> Result<bool, ConfigRepositoryError> {
         let n = self
             .conn
             .lock()
-            .expect("admin store")
+            .map_err(|_| ConfigRepositoryError::Storage("admin store mutex poisoned".into()))?
             .execute(
                 &format!("DELETE FROM {NS}_webhook WHERE id = ?1"),
                 params![id],
             )
-            .expect("delete webhook row");
-        n > 0
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        Ok(n > 0)
     }
-    fn enqueue_outbox(&self, event: awaken_config_resolver::WebhookOutboxEvent) -> bool {
-        let data = serde_json::to_string(&event).expect("encode webhook outbox event");
-        self.conn
+    fn enqueue_outbox(
+        &self,
+        event: awaken_config_resolver::WebhookOutboxEvent,
+    ) -> Result<bool, ConfigRepositoryError> {
+        let data = serde_json::to_string(&event)
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        Ok(self
+            .conn
             .lock()
-            .expect("admin store")
+            .map_err(|_| ConfigRepositoryError::Storage("admin store mutex poisoned".into()))?
             .execute(
                 &format!(
                     "INSERT OR IGNORE INTO {NS}_webhook_outbox (event_id, data) VALUES (?1, ?2)"
                 ),
                 params![event.id, data],
             )
-            .expect("enqueue webhook outbox event")
-            > 0
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?
+            > 0)
     }
-    fn pending_outbox(&self) -> Vec<awaken_config_resolver::WebhookOutboxEvent> {
-        let conn = self.conn.lock().expect("admin store");
+    fn pending_outbox(
+        &self,
+    ) -> Result<Vec<awaken_config_resolver::WebhookOutboxEvent>, ConfigRepositoryError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| ConfigRepositoryError::Storage("admin store mutex poisoned".into()))?;
         let mut stmt = conn
             .prepare(&format!(
                 "SELECT data FROM {NS}_webhook_outbox ORDER BY created_at, event_id"
             ))
-            .expect("prepare webhook outbox list");
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
         let rows = stmt
             .query_map([], |row| row.get::<_, String>(0))
-            .expect("list webhook outbox");
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
         rows.map(|data| {
-            serde_json::from_str(&data.expect("read webhook outbox row"))
-                .expect("decode webhook outbox row")
+            let data = data.map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+            serde_json::from_str(&data)
+                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))
         })
         .collect()
     }
-    fn complete_outbox(&self, event_id: &str) -> bool {
-        self.conn
+    fn complete_outbox(&self, event_id: &str) -> Result<bool, ConfigRepositoryError> {
+        Ok(self
+            .conn
             .lock()
-            .expect("admin store")
+            .map_err(|_| ConfigRepositoryError::Storage("admin store mutex poisoned".into()))?
             .execute(
                 &format!("DELETE FROM {NS}_webhook_outbox WHERE event_id = ?1"),
                 params![event_id],
             )
-            .expect("complete webhook outbox event")
-            > 0
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?
+            > 0)
     }
 }
 
@@ -323,15 +378,21 @@ mod tests {
     #[test]
     fn profile_round_trip_and_overwrite() {
         let store = SqliteAdminStore::open_in_memory().unwrap();
-        assert!(InferenceProfileStore::get(&store, "p1").is_none());
-        InferenceProfileStore::put(&store, "p1".into(), profile("m1"));
+        assert!(InferenceProfileStore::get(&store, "p1").unwrap().is_none());
+        InferenceProfileStore::put(&store, "p1".into(), profile("m1")).unwrap();
         assert_eq!(
-            InferenceProfileStore::get(&store, "p1").unwrap().model_id,
+            InferenceProfileStore::get(&store, "p1")
+                .unwrap()
+                .unwrap()
+                .model_id,
             "m1"
         );
-        InferenceProfileStore::put(&store, "p1".into(), profile("m2"));
+        InferenceProfileStore::put(&store, "p1".into(), profile("m2")).unwrap();
         assert_eq!(
-            InferenceProfileStore::get(&store, "p1").unwrap().model_id,
+            InferenceProfileStore::get(&store, "p1")
+                .unwrap()
+                .unwrap()
+                .model_id,
             "m2"
         );
     }
@@ -339,14 +400,19 @@ mod tests {
     #[test]
     fn mcp_server_and_agent_config_round_trip_sorted() {
         let store = SqliteAdminStore::open_in_memory().unwrap();
-        store.put_server(server("zeta"));
-        store.put_server(server("alpha"));
+        store.put_server(server("zeta")).unwrap();
+        store.put_server(server("alpha")).unwrap();
         assert_eq!(
-            store.get_server("zeta").unwrap().url,
+            store.get_server("zeta").unwrap().unwrap().url,
             "http://zeta.example/"
         );
-        assert!(store.get_server("missing").is_none());
-        let ids: Vec<String> = store.list_servers().into_iter().map(|s| s.id.0).collect();
+        assert!(store.get_server("missing").unwrap().is_none());
+        let ids: Vec<String> = store
+            .list_servers()
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id.0)
+            .collect();
         assert_eq!(ids, vec!["alpha".to_string(), "zeta".to_string()]);
 
         let config = AgentMcpConfig {
@@ -355,18 +421,27 @@ mod tests {
             mcp_server_ids: vec![McpServerId("alpha".into())],
             version: 1,
         };
-        store.put_agent_config(config.clone());
+        store.put_agent_config(config.clone()).unwrap();
         assert_eq!(
-            store.get_agent_config("agent-1").unwrap().mcp_server_ids,
+            store
+                .get_agent_config("agent-1")
+                .unwrap()
+                .unwrap()
+                .mcp_server_ids,
             config.mcp_server_ids
         );
-        assert!(store.get_agent_config("agent-2").is_none());
+        assert!(store.get_agent_config("agent-2").unwrap().is_none());
     }
 
     #[test]
     fn agent_resource_binding_round_trips_and_overwrites() {
         let store = SqliteAdminStore::open_in_memory().unwrap();
-        assert!(store.get_agent_inputs("workspace-a", "agent-1").is_none());
+        assert!(
+            store
+                .get_agent_inputs("workspace-a", "agent-1")
+                .unwrap()
+                .is_none()
+        );
 
         let config = AgentInputConfig {
             agent_id: "agent-1".into(),
@@ -384,7 +459,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             store.get_agent_inputs("workspace-a", "agent-1").unwrap(),
-            config
+            Some(config.clone())
         );
 
         // Upsert by agent_id replaces the whole binding set.
@@ -398,12 +473,23 @@ mod tests {
         });
         v2.revision = 2;
         store.put_agent_inputs("workspace-a", v2).unwrap();
-        let got = store.get_agent_inputs("workspace-a", "agent-1").unwrap();
+        let got = store
+            .get_agent_inputs("workspace-a", "agent-1")
+            .unwrap()
+            .unwrap();
         assert_eq!(got.inputs.len(), 2);
         assert_eq!(got.revision, 2);
-        assert!(store.get_agent_inputs("workspace-a", "agent-2").is_none());
         assert!(
-            store.get_agent_inputs("workspace-b", "agent-1").is_none(),
+            store
+                .get_agent_inputs("workspace-a", "agent-2")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            store
+                .get_agent_inputs("workspace-b", "agent-1")
+                .unwrap()
+                .is_none(),
             "Workspace is a mandatory aggregate key"
         );
     }
@@ -415,25 +501,52 @@ mod tests {
         let path = path.to_str().unwrap();
         {
             let store = SqliteAdminStore::open(path).unwrap();
-            InferenceProfileStore::put(&store, "p1".into(), profile("m1"));
-            store.put_server(server("calc"));
-            store.put_agent_config(AgentMcpConfig {
-                workspace_id: "ws".into(),
-                agent_id: "agent-1".into(),
-                mcp_server_ids: vec![McpServerId("calc".into())],
-                version: 1,
-            });
+            InferenceProfileStore::put(&store, "p1".into(), profile("m1")).unwrap();
+            store.put_server(server("calc")).unwrap();
+            store
+                .put_agent_config(AgentMcpConfig {
+                    workspace_id: "ws".into(),
+                    agent_id: "agent-1".into(),
+                    mcp_server_ids: vec![McpServerId("calc".into())],
+                    version: 1,
+                })
+                .unwrap();
         }
         // Reopen: the migration is idempotent and the rows are still there.
         let store = SqliteAdminStore::open(path).unwrap();
         assert_eq!(
-            InferenceProfileStore::get(&store, "p1").unwrap().model_id,
+            InferenceProfileStore::get(&store, "p1")
+                .unwrap()
+                .unwrap()
+                .model_id,
             "m1"
         );
-        assert_eq!(store.list_servers().len(), 1);
+        assert_eq!(store.list_servers().unwrap().len(), 1);
         assert_eq!(
-            store.get_agent_config("agent-1").unwrap().mcp_server_ids,
+            store
+                .get_agent_config("agent-1")
+                .unwrap()
+                .unwrap()
+                .mcp_server_ids,
             vec![McpServerId("calc".into())]
         );
+    }
+
+    #[test]
+    fn malformed_profile_row_uses_the_repository_error_channel() {
+        let store = SqliteAdminStore::open_in_memory().unwrap();
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute(
+                &format!("INSERT INTO {NS}_inference_profile(id, data) VALUES ('bad', '{{')"),
+                [],
+            )
+            .unwrap();
+        assert!(matches!(
+            InferenceProfileStore::get(&store, "bad"),
+            Err(ConfigRepositoryError::Storage(_))
+        ));
     }
 }

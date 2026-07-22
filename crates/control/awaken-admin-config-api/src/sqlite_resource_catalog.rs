@@ -16,6 +16,13 @@ use crate::sqlite::{NS, SqliteAdminStore};
 const MEMORY: &str = "memory_store";
 const REPOSITORY: &str = "repository";
 
+fn now_nanos() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos().min(u64::MAX as u128) as u64)
+        .unwrap_or_default()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct MemoryRecord {
     definition: MemoryStoreDefinition,
@@ -52,7 +59,7 @@ fn storage(error: impl ToString) -> ResourceCatalogError {
 impl SqliteAdminStore {
     /// Idempotently import owned rows from the retired identity table into the
     /// Resource Catalog. This is an upgrade adapter, never a live read fallback.
-    pub(crate) fn migrate_legacy_memory_stores(&self) -> Result<(), ResourceCatalogError> {
+    pub fn migrate_legacy_memory_stores(&self) -> Result<(), ResourceCatalogError> {
         let rows = {
             let conn = self.conn.lock().expect("resource catalog");
             let mut statement = conn
@@ -74,8 +81,8 @@ impl SqliteAdminStore {
             let id = legacy.id;
             let result = self.create_memory_store(
                 MemoryStoreDefinition {
-                    id: id.clone(),
-                    workspace_id: legacy.workspace_id,
+                    id: id.clone().into(),
+                    workspace_id: legacy.workspace_id.into(),
                     name: legacy.name,
                     description: legacy.description,
                     metadata: legacy.metadata,
@@ -85,9 +92,10 @@ impl SqliteAdminStore {
                         ResourceState::Active
                     },
                     current_config_version: ConfigVersion::INITIAL,
+                    timestamps: Default::default(),
                 },
                 MemoryStoreConfigVersion {
-                    memory_store_id: id,
+                    memory_store_id: id.into(),
                     version: ConfigVersion::INITIAL,
                     recall_policy: Default::default(),
                     extraction_policy: Default::default(),
@@ -214,7 +222,7 @@ impl ResourceConfigSource for SqliteAdminStore {
     ) -> Result<MemoryStoreConfigVersion, ResourceCatalogError> {
         let record = self
             .memory_record(id)?
-            .filter(|record| record.definition.workspace_id == workspace_id)
+            .filter(|record| record.definition.workspace_id.as_str() == workspace_id)
             .ok_or_else(|| ResourceCatalogError::NotFound(id.into()))?;
         ResourceCatalogRules::validate_live_definition(id, record.definition.state)?;
         let version = record.definition.current_config_version;
@@ -234,7 +242,7 @@ impl ResourceConfigSource for SqliteAdminStore {
     ) -> Result<RepositoryConfigVersion, ResourceCatalogError> {
         let record = self
             .repository_record(id)?
-            .filter(|record| record.definition.workspace_id == workspace_id)
+            .filter(|record| record.definition.workspace_id.as_str() == workspace_id)
             .ok_or_else(|| ResourceCatalogError::NotFound(id.into()))?;
         ResourceCatalogRules::validate_live_definition(id, record.definition.state)?;
         let version = record.definition.current_config_version;
@@ -257,7 +265,7 @@ impl ResourceBindingValidator for SqliteAdminStore {
     ) -> Result<(), ResourceCatalogError> {
         let record = self
             .memory_record(id)?
-            .filter(|record| record.definition.workspace_id == workspace_id)
+            .filter(|record| record.definition.workspace_id.as_str() == workspace_id)
             .ok_or_else(|| ResourceCatalogError::NotFound(id.into()))?;
         ResourceCatalogRules::validate_live_definition(id, record.definition.state)?;
         let config =
@@ -279,7 +287,7 @@ impl ResourceBindingValidator for SqliteAdminStore {
     ) -> Result<(), ResourceCatalogError> {
         let record = self
             .repository_record(id)?
-            .filter(|record| record.definition.workspace_id == workspace_id)
+            .filter(|record| record.definition.workspace_id.as_str() == workspace_id)
             .ok_or_else(|| ResourceCatalogError::NotFound(id.into()))?;
         ResourceCatalogRules::validate_live_definition(id, record.definition.state)?;
         let config =
@@ -301,16 +309,16 @@ impl ResourceCatalog for SqliteAdminStore {
         initial_config: MemoryStoreConfigVersion,
     ) -> Result<(), ResourceCatalogError> {
         ResourceCatalogRules::validate_initial(
-            &definition.id,
-            &definition.workspace_id,
+            definition.id.as_str(),
+            definition.workspace_id.as_str(),
             definition.current_config_version,
-            &initial_config.memory_store_id,
+            initial_config.memory_store_id.as_str(),
             initial_config.version,
         )?;
         let id = definition.id.clone();
         self.insert_catalog_record(
             MEMORY,
-            &id,
+            id.as_str(),
             &MemoryRecord {
                 definition,
                 configs: BTreeMap::from([(ConfigVersion::INITIAL, initial_config)]),
@@ -325,7 +333,7 @@ impl ResourceCatalog for SqliteAdminStore {
     ) -> Result<Option<MemoryStoreDefinition>, ResourceCatalogError> {
         Ok(self
             .memory_record(id)?
-            .filter(|record| record.definition.workspace_id == workspace_id)
+            .filter(|record| record.definition.workspace_id.as_str() == workspace_id)
             .map(|record| record.definition))
     }
 
@@ -359,7 +367,7 @@ impl ResourceCatalog for SqliteAdminStore {
         Ok(records
             .into_iter()
             .filter(|record| {
-                record.definition.workspace_id == workspace_id
+                record.definition.workspace_id.as_str() == workspace_id
                     && !matches!(
                         record.definition.state,
                         ResourceState::Archived | ResourceState::Deleted
@@ -374,9 +382,9 @@ impl ResourceCatalog for SqliteAdminStore {
         definition: MemoryStoreDefinition,
     ) -> Result<(), ResourceCatalogError> {
         let id = definition.id.clone();
-        self.update_catalog_record::<MemoryRecord, _>(MEMORY, &id, |record| {
+        self.update_catalog_record::<MemoryRecord, _>(MEMORY, id.as_str(), |record| {
             if record.definition.workspace_id != definition.workspace_id {
-                return Err(ResourceCatalogError::NotFound(id.clone()));
+                return Err(ResourceCatalogError::NotFound(id.to_string()));
             }
             if record.definition.state != definition.state
                 || record.definition.current_config_version != definition.current_config_version
@@ -400,7 +408,7 @@ impl ResourceCatalog for SqliteAdminStore {
     ) -> Result<Option<MemoryStoreConfigVersion>, ResourceCatalogError> {
         Ok(self
             .memory_record(id)?
-            .filter(|record| record.definition.workspace_id == workspace_id)
+            .filter(|record| record.definition.workspace_id.as_str() == workspace_id)
             .and_then(|record| record.configs.get(&version).cloned()))
     }
 
@@ -411,19 +419,19 @@ impl ResourceCatalog for SqliteAdminStore {
         config: MemoryStoreConfigVersion,
     ) -> Result<(), ResourceCatalogError> {
         let id = config.memory_store_id.clone();
-        self.update_catalog_record::<MemoryRecord, _>(MEMORY, &id, |record| {
-            if record.definition.workspace_id != workspace_id {
-                return Err(ResourceCatalogError::NotFound(id.clone()));
+        self.update_catalog_record::<MemoryRecord, _>(MEMORY, id.as_str(), |record| {
+            if record.definition.workspace_id.as_str() != workspace_id {
+                return Err(ResourceCatalogError::NotFound(id.to_string()));
             }
             ResourceCatalogRules::validate_publish(
-                &record.definition.id,
+                record.definition.id.as_str(),
                 record.definition.current_config_version,
                 expected_current,
                 config.version,
             )?;
             if record.definition.state == ResourceState::Deleted {
                 return Err(ResourceCatalogError::NotActive {
-                    id: record.definition.id.clone(),
+                    id: record.definition.id.to_string(),
                     state: ResourceState::Deleted,
                 });
             }
@@ -439,11 +447,13 @@ impl ResourceCatalog for SqliteAdminStore {
         id: &str,
         state: ResourceState,
     ) -> Result<(), ResourceCatalogError> {
+        let at = now_nanos();
         self.update_catalog_record::<MemoryRecord, _>(MEMORY, id, |record| {
-            if record.definition.workspace_id != workspace_id {
+            if record.definition.workspace_id.as_str() != workspace_id {
                 return Err(ResourceCatalogError::NotFound(id.into()));
             }
             record.definition.state = state;
+            record.definition.timestamps.transition_to(state, at);
             Ok(())
         })
     }
@@ -454,16 +464,16 @@ impl ResourceCatalog for SqliteAdminStore {
         initial_config: RepositoryConfigVersion,
     ) -> Result<(), ResourceCatalogError> {
         ResourceCatalogRules::validate_initial(
-            &definition.id,
-            &definition.workspace_id,
+            definition.id.as_str(),
+            definition.workspace_id.as_str(),
             definition.current_config_version,
-            &initial_config.repository_id,
+            initial_config.repository_id.as_str(),
             initial_config.version,
         )?;
         let id = definition.id.clone();
         self.insert_catalog_record(
             REPOSITORY,
-            &id,
+            id.as_str(),
             &RepositoryRecord {
                 definition,
                 configs: BTreeMap::from([(ConfigVersion::INITIAL, initial_config)]),
@@ -478,7 +488,7 @@ impl ResourceCatalog for SqliteAdminStore {
     ) -> Result<Option<RepositoryDefinition>, ResourceCatalogError> {
         Ok(self
             .repository_record(id)?
-            .filter(|record| record.definition.workspace_id == workspace_id)
+            .filter(|record| record.definition.workspace_id.as_str() == workspace_id)
             .map(|record| record.definition))
     }
 
@@ -490,7 +500,7 @@ impl ResourceCatalog for SqliteAdminStore {
     ) -> Result<Option<RepositoryConfigVersion>, ResourceCatalogError> {
         Ok(self
             .repository_record(id)?
-            .filter(|record| record.definition.workspace_id == workspace_id)
+            .filter(|record| record.definition.workspace_id.as_str() == workspace_id)
             .and_then(|record| record.configs.get(&version).cloned()))
     }
 
@@ -501,19 +511,19 @@ impl ResourceCatalog for SqliteAdminStore {
         config: RepositoryConfigVersion,
     ) -> Result<(), ResourceCatalogError> {
         let id = config.repository_id.clone();
-        self.update_catalog_record::<RepositoryRecord, _>(REPOSITORY, &id, |record| {
-            if record.definition.workspace_id != workspace_id {
-                return Err(ResourceCatalogError::NotFound(id.clone()));
+        self.update_catalog_record::<RepositoryRecord, _>(REPOSITORY, id.as_str(), |record| {
+            if record.definition.workspace_id.as_str() != workspace_id {
+                return Err(ResourceCatalogError::NotFound(id.to_string()));
             }
             ResourceCatalogRules::validate_publish(
-                &record.definition.id,
+                record.definition.id.as_str(),
                 record.definition.current_config_version,
                 expected_current,
                 config.version,
             )?;
             if record.definition.state == ResourceState::Deleted {
                 return Err(ResourceCatalogError::NotActive {
-                    id: record.definition.id.clone(),
+                    id: record.definition.id.to_string(),
                     state: ResourceState::Deleted,
                 });
             }
@@ -529,11 +539,13 @@ impl ResourceCatalog for SqliteAdminStore {
         id: &str,
         state: ResourceState,
     ) -> Result<(), ResourceCatalogError> {
+        let at = now_nanos();
         self.update_catalog_record::<RepositoryRecord, _>(REPOSITORY, id, |record| {
-            if record.definition.workspace_id != workspace_id {
+            if record.definition.workspace_id.as_str() != workspace_id {
                 return Err(ResourceCatalogError::NotFound(id.into()));
             }
             record.definition.state = state;
+            record.definition.timestamps.transition_to(state, at);
             Ok(())
         })
     }
@@ -554,6 +566,7 @@ mod tests {
                 metadata: BTreeMap::new(),
                 state: ResourceState::Active,
                 current_config_version: ConfigVersion::INITIAL,
+                timestamps: Default::default(),
             },
             MemoryStoreConfigVersion {
                 memory_store_id: "memory-1".into(),
@@ -575,6 +588,7 @@ mod tests {
                 metadata: BTreeMap::new(),
                 state: ResourceState::Active,
                 current_config_version: ConfigVersion::INITIAL,
+                timestamps: Default::default(),
             },
             RepositoryConfigVersion {
                 repository_id: "repo-1".into(),
@@ -703,6 +717,7 @@ mod tests {
         }
 
         let store = SqliteAdminStore::open(path.to_str().unwrap()).unwrap();
+        store.migrate_legacy_memory_stores().unwrap();
         let mut migrated = store
             .memory_store("workspace-a", "legacy-owned")
             .unwrap()
@@ -716,7 +731,7 @@ mod tests {
         );
         assert_eq!(
             store.list_memory_stores("workspace-a").unwrap()[0].id,
-            "legacy-owned"
+            "legacy-owned".into()
         );
 
         migrated.name = "Renamed".into();

@@ -116,8 +116,8 @@ impl SkillStore for PgSkillStore {
         sqlx::query(&format!(
             "INSERT INTO {NS}_aggregate (workspace_id, id, data) VALUES ($1, $2, $3)"
         ))
-        .bind(&aggregate.definition.workspace_id)
-        .bind(&aggregate.definition.id)
+        .bind(aggregate.definition.workspace_id.as_str())
+        .bind(aggregate.definition.id.as_str())
         .bind(data)
         .execute(&self.pool)
         .await
@@ -129,7 +129,7 @@ impl SkillStore for PgSkillStore {
                 .as_deref()
                 == Some("23505")
             {
-                SkillStoreError::AlreadyExists(aggregate.definition.id)
+                SkillStoreError::AlreadyExists(aggregate.definition.id.to_string())
             } else {
                 storage(error)
             }

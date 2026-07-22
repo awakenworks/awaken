@@ -81,13 +81,16 @@ fn mount_with_environments(host: Arc<SharedHost>) -> Router {
 /// authenticated PEP before these routers.
 pub fn build_unscoped_resource_router() -> Router {
     let host = Arc::new(SharedHost::new(Arc::new(EchoModel), "unscoped-resource"));
+    let purge: Arc<dyn awaken_protocol_managed::resource_plane::ResourcePurgeScheduler> =
+        host.clone();
     Router::new()
         .merge(files_router(host.clone()))
         .merge(memory_stores_router_with_catalog(
-            host.clone(),
+            host.memory_repository(),
             scenario_resource_catalog(),
+            purge.clone(),
         ))
-        .merge(skills_router(host))
+        .merge(skills_router(host.skill_store(), purge))
 }
 struct RouteProvider;
 
@@ -280,6 +283,9 @@ fn scenario_resource_catalog() -> Arc<dyn awaken_protocol_managed::ResourceCatal
     let catalog =
         awaken_admin_config_api::SqliteAdminStore::open(&root.join("admin.db").to_string_lossy())
             .expect("open durable scenario resource catalog");
+    catalog
+        .migrate_legacy_memory_stores()
+        .expect("migrate legacy scenario MemoryStore rows");
     Arc::new(catalog)
 }
 

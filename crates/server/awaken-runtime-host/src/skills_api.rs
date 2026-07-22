@@ -23,17 +23,25 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{Value, json};
 
-use crate::host::SharedHost;
 use crate::resource_scope::RequiredWorkspaceScope;
 
-const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
+fn now_nanos() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos().min(u64::MAX as u128) as u64)
+        .unwrap_or_default()
+}
+
+fn timestamp(nanos: u64) -> String {
+    awaken_protocol_managed::cron::to_rfc3339(nanos / 1_000_000)
+}
 
 fn project_definition(definition: &SkillDefinition) -> Value {
     json!({
         "id": definition.id,
         "type": "skill",
-        "created_at": OBJECT_AT,
-        "updated_at": OBJECT_AT,
+        "created_at": timestamp(definition.timestamps.created_unix_nanos),
+        "updated_at": timestamp(definition.timestamps.updated_unix_nanos),
         "display_title": definition.display_title,
         "latest_version": definition.latest_version.to_string(),
         "source": "api",
@@ -44,7 +52,7 @@ fn project_version(version: &SkillVersion) -> Value {
     json!({
         "id": version.id,
         "type": "skill_version",
-        "created_at": OBJECT_AT,
+        "created_at": timestamp(version.created_unix_nanos),
         "description": version.description,
         "directory": version.directory,
         "name": version.name,
@@ -58,34 +66,81 @@ fn project_version(version: &SkillVersion) -> Value {
 /// Skills API state. The durable repository is the only resource truth; there is
 /// deliberately no HTTP-local registry or authorization data here.
 struct SkillsApi {
-    host: Arc<SharedHost>,
-    legacy_imported: tokio::sync::Mutex<std::collections::HashSet<String>>,
+    store: Option<Arc<dyn awaken_skill_store::SkillStore>>,
+    purge: Arc<dyn awaken_protocol_managed::resource_plane::ResourcePurgeScheduler>,
 }
 
-#[derive(serde::Deserialize)]
-struct LegacySkillRecord {
-    display_title: Option<String>,
-    versions: Vec<LegacySkillVersion>,
-}
+impl SkillsApi {
+    async fn create(
+        &self,
+        definition: SkillDefinition,
+        version: SkillVersion,
+    ) -> Option<Result<(), SkillStoreError>> {
+        Some(self.store.as_ref()?.create(definition, version).await)
+    }
 
-#[derive(serde::Deserialize)]
-struct LegacySkillVersion {
-    id: String,
-    version: String,
-    name: String,
-    description: String,
-    directory: String,
-    content: String,
-    #[serde(default)]
-    files: BTreeMap<String, String>,
+    async fn append_version(
+        &self,
+        workspace: &str,
+        id: &str,
+        version: SkillVersion,
+    ) -> Option<Result<(), SkillStoreError>> {
+        Some(
+            self.store
+                .as_ref()?
+                .append_version(workspace, id, version)
+                .await,
+        )
+    }
+
+    async fn definition(
+        &self,
+        workspace: &str,
+        id: &str,
+    ) -> Option<Result<Option<SkillDefinition>, SkillStoreError>> {
+        Some(self.store.as_ref()?.definition(workspace, id).await)
+    }
+
+    async fn definitions(&self, workspace: &str) -> Result<Vec<SkillDefinition>, SkillStoreError> {
+        match &self.store {
+            Some(store) => store.list_definitions(workspace).await,
+            None => Ok(Vec::new()),
+        }
+    }
+
+    async fn versions(
+        &self,
+        workspace: &str,
+        id: &str,
+    ) -> Option<Result<Vec<SkillVersion>, SkillStoreError>> {
+        Some(self.store.as_ref()?.list_versions(workspace, id).await)
+    }
+
+    async fn delete(&self, workspace: &str, id: &str) -> Option<Result<bool, SkillStoreError>> {
+        Some(self.store.as_ref()?.delete_skill(workspace, id).await)
+    }
+
+    async fn delete_version(
+        &self,
+        workspace: &str,
+        id: &str,
+        version: u64,
+    ) -> Option<Result<bool, SkillStoreError>> {
+        Some(
+            self.store
+                .as_ref()?
+                .delete_version(workspace, id, version)
+                .await,
+        )
+    }
 }
 
 /// Mount the skills API over the host's durable skill catalog.
-pub fn skills_router(host: Arc<SharedHost>) -> Router {
-    let state = Arc::new(SkillsApi {
-        host,
-        legacy_imported: tokio::sync::Mutex::new(std::collections::HashSet::new()),
-    });
+pub fn skills_router(
+    store: Option<Arc<dyn awaken_skill_store::SkillStore>>,
+    purge: Arc<dyn awaken_protocol_managed::resource_plane::ResourcePurgeScheduler>,
+) -> Router {
+    let state = Arc::new(SkillsApi { store, purge });
     Router::new()
         .route("/v1/skills", post(create_skill).get(list_skills))
         .route("/v1/skills/{id}", get(retrieve_skill).delete(delete_skill))
@@ -106,138 +161,6 @@ pub fn skills_router(host: Arc<SharedHost>) -> Router {
             get(version_file),
         )
         .with_state(state)
-}
-
-/// One-time compatibility import of the former `resource-api.db::skill_records`
-/// projection into the sole Skill repository. It is scoped by Workspace and
-/// idempotent; no request identity or policy data crosses this resource seam.
-async fn import_legacy_registry(state: &SkillsApi, workspace: &str) {
-    {
-        let imported = state.legacy_imported.lock().await;
-        if imported.contains(workspace) {
-            return;
-        }
-    }
-    let Some(directory) = std::env::var("AWAKEN_STORAGE_DIR")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-    else {
-        state.legacy_imported.lock().await.insert(workspace.into());
-        return;
-    };
-    let database = std::path::PathBuf::from(directory).join("resource-api.db");
-    let workspace_owned = workspace.to_string();
-    let records = tokio::task::spawn_blocking(move || -> Vec<(String, LegacySkillRecord)> {
-        let Ok(connection) = rusqlite::Connection::open_with_flags(
-            database,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-        ) else {
-            return Vec::new();
-        };
-        let Ok(mut statement) = connection.prepare(
-            "SELECT skill_id, data FROM skill_records WHERE workspace_id = ?1 ORDER BY skill_id",
-        ) else {
-            return Vec::new();
-        };
-        statement
-            .query_map(rusqlite::params![workspace_owned], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })
-            .ok()
-            .into_iter()
-            .flatten()
-            .filter_map(|row| row.ok())
-            .filter_map(|(id, data)| serde_json::from_str(&data).ok().map(|record| (id, record)))
-            .collect()
-    })
-    .await
-    .unwrap_or_default();
-
-    for (id, record) in records {
-        let mut versions = Vec::with_capacity(record.versions.len());
-        for (index, legacy) in record.versions.into_iter().enumerate() {
-            let ordinal = legacy.version.parse::<u64>().unwrap_or((index + 1) as u64);
-            if ordinal != (index + 1) as u64 {
-                versions.clear();
-                break;
-            }
-            let mut files = legacy
-                .files
-                .into_iter()
-                .map(|(path, content)| SkillBundleFile {
-                    path,
-                    content: content.into_bytes(),
-                })
-                .collect::<Vec<_>>();
-            if !files
-                .iter()
-                .any(|file| file.path == "SKILL.md" || file.path.ends_with("/SKILL.md"))
-            {
-                files.push(SkillBundleFile {
-                    path: "SKILL.md".into(),
-                    content: legacy.content.into_bytes(),
-                });
-            }
-            versions.push(SkillVersion {
-                id: legacy.id,
-                skill_id: id.clone(),
-                version: ordinal,
-                name: legacy.name,
-                description: legacy.description,
-                directory: legacy.directory,
-                bundle_sha256: awaken_skill_store::bundle_sha256(&files),
-                files,
-            });
-        }
-        let Some(first) = versions.first().cloned() else {
-            continue;
-        };
-        let current = state
-            .host
-            .skills
-            .definition(workspace, &id)
-            .await
-            .and_then(Result::ok)
-            .flatten();
-        if current
-            .as_ref()
-            .is_some_and(|definition| definition.latest_version >= versions.len() as u64)
-        {
-            continue;
-        }
-        if let Some(existing) = current {
-            let _ = state.host.skills.delete(workspace, &existing.id).await;
-        }
-        if first.name != id {
-            let _ = state.host.skills.delete(workspace, &first.name).await;
-        }
-        let definition = SkillDefinition {
-            id: id.clone(),
-            workspace_id: workspace.into(),
-            display_title: record.display_title,
-            latest_version: 1,
-            last_version: 1,
-        };
-        if !matches!(
-            state.host.skills.create(definition, first).await,
-            Some(Ok(()))
-        ) {
-            continue;
-        }
-        for version in versions.into_iter().skip(1) {
-            if !matches!(
-                state
-                    .host
-                    .skills
-                    .append_version(workspace, &id, version)
-                    .await,
-                Some(Ok(()))
-            ) {
-                break;
-            }
-        }
-    }
-    state.legacy_imported.lock().await.insert(workspace.into());
 }
 
 fn err(status: StatusCode, message: impl Into<String>) -> axum::response::Response {
@@ -324,14 +247,16 @@ fn build_version(
         id: format!(
             "skver_{}_{ordinal}",
             awaken_skill_store::sanitize_stem(skill_id)
-        ),
-        skill_id: skill_id.to_string(),
+        )
+        .into(),
+        skill_id: skill_id.into(),
         version: ordinal,
         name: spec.name.clone(),
         description: spec.description.clone(),
         directory: format!("/skills/{}", awaken_skill_store::sanitize_stem(&spec.name)),
         bundle_sha256: awaken_skill_store::bundle_sha256(&files),
         files,
+        created_unix_nanos: now_nanos(),
     }
 }
 
@@ -359,7 +284,6 @@ async fn create_skill(
     headers: HeaderMap,
     body: axum::body::Body,
 ) -> axum::response::Response {
-    import_legacy_registry(&state, &workspace).await;
     let content_type = headers
         .get(axum::http::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
@@ -393,13 +317,16 @@ async fn create_skill(
         let id = awaken_skill_store::catalog_id(&parsed.name);
         let version = build_version(&id, &content, 1, bundle);
         let definition = SkillDefinition {
-            id: id.clone(),
-            workspace_id: workspace.clone(),
+            id: id.clone().into(),
+            workspace_id: workspace.clone().into(),
             display_title,
             latest_version: 1,
             last_version: 1,
+            timestamps: awaken_protocol_managed::resource_plane::ResourceTimestamps::created(
+                version.created_unix_nanos,
+            ),
         };
-        let Some(result) = state.host.skills.create(definition.clone(), version).await else {
+        let Some(result) = state.create(definition.clone(), version).await else {
             return err(
                 StatusCode::CONFLICT,
                 "this server has no durable skill store",
@@ -435,13 +362,16 @@ async fn create_skill(
         BTreeMap::from([("SKILL.md".to_owned(), content.as_bytes().to_vec())]),
     );
     let definition = SkillDefinition {
-        id: id.clone(),
-        workspace_id: workspace,
+        id: id.clone().into(),
+        workspace_id: workspace.into(),
         display_title: None,
         latest_version: 1,
         last_version: 1,
+        timestamps: awaken_protocol_managed::resource_plane::ResourceTimestamps::created(
+            version.created_unix_nanos,
+        ),
     };
-    let Some(result) = state.host.skills.create(definition, version).await else {
+    let Some(result) = state.create(definition, version).await else {
         return err(
             StatusCode::CONFLICT,
             "this server has no durable skill store",
@@ -461,8 +391,7 @@ async fn list_skills(
     State(state): State<Arc<SkillsApi>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
 ) -> axum::response::Response {
-    import_legacy_registry(&state, &workspace).await;
-    let definitions = match state.host.skills.definitions(&workspace).await {
+    let definitions = match state.definitions(&workspace).await {
         Ok(definitions) => definitions,
         Err(error) => return store_error(error),
     };
@@ -482,8 +411,7 @@ async fn retrieve_skill(
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
 ) -> axum::response::Response {
-    import_legacy_registry(&state, &workspace).await;
-    match state.host.skills.definition(&workspace, &id).await {
+    match state.definition(&workspace, &id).await {
         Some(Ok(Some(definition))) => {
             (StatusCode::OK, Json(project_definition(&definition))).into_response()
         }
@@ -498,8 +426,7 @@ async fn delete_skill(
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
 ) -> axum::response::Response {
-    import_legacy_registry(&state, &workspace).await;
-    let definition = match state.host.skills.definition(&workspace, &id).await {
+    let definition = match state.definition(&workspace, &id).await {
         Some(Ok(Some(definition))) => definition,
         Some(Err(error)) => return store_error(error),
         Some(Ok(None)) | None => {
@@ -511,8 +438,8 @@ async fn delete_skill(
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or_default();
     if let Err(error) = state
-        .host
-        .request_resource_purge(
+        .purge
+        .schedule_purge(
             ResourceTarget::new(&workspace, ResourceKind::Skill, &id),
             Some(definition.latest_version),
             now,
@@ -522,7 +449,7 @@ async fn delete_skill(
     {
         return err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
     }
-    match state.host.skills.delete(&workspace, &id).await {
+    match state.delete(&workspace, &id).await {
         Some(Ok(true)) => (
             StatusCode::OK,
             Json(json!({ "id": id, "type": "skill_deleted" })),
@@ -541,8 +468,7 @@ async fn create_version(
     Path(id): Path<String>,
     multipart: Multipart,
 ) -> axum::response::Response {
-    import_legacy_registry(&state, &workspace).await;
-    let definition = match state.host.skills.definition(&workspace, &id).await {
+    let definition = match state.definition(&workspace, &id).await {
         Some(Ok(Some(definition))) => definition,
         Some(Err(error)) => return store_error(error),
         Some(Ok(None)) | None => {
@@ -560,12 +486,7 @@ async fn create_version(
     };
     let version = build_version(&id, &content, definition.last_version + 1, bundle);
     let projected = project_version(&version);
-    match state
-        .host
-        .skills
-        .append_version(&workspace, &id, version)
-        .await
-    {
+    match state.append_version(&workspace, &id, version).await {
         Some(Ok(())) => (StatusCode::OK, Json(projected)).into_response(),
         Some(Err(error)) => store_error(error),
         None => err(
@@ -580,8 +501,7 @@ async fn list_versions(
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
 ) -> axum::response::Response {
-    import_legacy_registry(&state, &workspace).await;
-    match state.host.skills.versions(&workspace, &id).await {
+    match state.versions(&workspace, &id).await {
         Some(Ok(versions)) if !versions.is_empty() => {
             let data: Vec<Value> = versions.iter().map(project_version).collect();
             (
@@ -602,17 +522,15 @@ async fn find_version(
     reference: &str,
 ) -> Result<Option<SkillVersion>, SkillStoreError> {
     let versions = state
-        .host
-        .skills
         .versions(workspace, skill_id)
         .await
         .unwrap_or_else(|| Ok(Vec::new()))?;
     if reference == "latest" {
         return Ok(versions.into_iter().last());
     }
-    Ok(versions
-        .into_iter()
-        .find(|version| version.version.to_string() == reference || version.id == reference))
+    Ok(versions.into_iter().find(|version| {
+        version.version.to_string() == reference || version.id.as_str() == reference
+    }))
 }
 
 async fn retrieve_version(
@@ -620,7 +538,6 @@ async fn retrieve_version(
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path((id, version)): Path<(String, String)>,
 ) -> axum::response::Response {
-    import_legacy_registry(&state, &workspace).await;
     match find_version(&state, &workspace, &id, &version).await {
         Ok(Some(version)) => (StatusCode::OK, Json(project_version(&version))).into_response(),
         Ok(None) => err(StatusCode::NOT_FOUND, "skill version not found"),
@@ -633,18 +550,12 @@ async fn delete_version(
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path((id, version)): Path<(String, String)>,
 ) -> axum::response::Response {
-    import_legacy_registry(&state, &workspace).await;
     let found = match find_version(&state, &workspace, &id, &version).await {
         Ok(Some(version)) => version,
         Ok(None) => return err(StatusCode::NOT_FOUND, "skill version not found"),
         Err(error) => return store_error(error),
     };
-    match state
-        .host
-        .skills
-        .delete_version(&workspace, &id, found.version)
-        .await
-    {
+    match state.delete_version(&workspace, &id, found.version).await {
         Some(Ok(true)) => (
             StatusCode::OK,
             Json(json!({ "id": found.id, "type": "skill_version_deleted" })),
@@ -661,7 +572,6 @@ async fn version_content(
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path((id, version)): Path<(String, String)>,
 ) -> axum::response::Response {
-    import_legacy_registry(&state, &workspace).await;
     match find_version(&state, &workspace, &id, &version).await {
         Ok(Some(version)) => match version.skill_md() {
             Some(content) => (StatusCode::OK, content.to_vec()).into_response(),
@@ -679,7 +589,6 @@ async fn version_file(
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path((id, version, path)): Path<(String, String, String)>,
 ) -> axum::response::Response {
-    import_legacy_registry(&state, &workspace).await;
     let normalized = match normalize_bundle(vec![(path, Vec::new())]) {
         Ok(bundle) => bundle.into_keys().next().expect("one normalized path"),
         Err(error) => return err(StatusCode::BAD_REQUEST, error),
@@ -697,6 +606,7 @@ async fn version_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SharedHost;
     use awaken_runtime_contract::llm::{ChatRequest, ChatResponse};
     use awaken_tenancy::WorkspaceScope;
     use axum::body::Body;
@@ -753,7 +663,7 @@ mod tests {
                 "---\nname: private\ndescription: a\n---\nsecret-a",
             )
             .await;
-        let router = skills_router(host);
+        let router = skills_router(host.skill_store(), host);
         let id = "private";
         assert_eq!(
             get_in(&router, &format!("/v1/skills/{id}"), "ws_a").await.0,
@@ -791,7 +701,7 @@ mod tests {
                 "---\nname: Greeter\ndescription: hi\n---\nsay hello",
             )
             .await;
-        let router = skills_router(host);
+        let router = skills_router(host.skill_store(), host);
         let cid = "Greeter";
 
         // The advertised catalog id retrieves the skill via the durable fallback…

@@ -243,3 +243,16 @@ pub(crate) fn resolved_resource_dto(
     }
     serde_json::Value::Object(obj)
 }
+
+/// Recover the typed binding identity from the Managed wire resource id.
+/// Resource DTOs are projections only; callers use this value to locate the
+/// authoritative input in `SessionResourceState`.
+pub(crate) fn resource_binding_id(
+    session_id: &str,
+    resource_id: &str,
+) -> Option<awaken_resource_contract::BindingId> {
+    let binding_id = resource_id
+        .strip_prefix(session_id)?
+        .strip_prefix(":resource:")?;
+    (!binding_id.is_empty()).then(|| awaken_resource_contract::BindingId::from(binding_id))
+}

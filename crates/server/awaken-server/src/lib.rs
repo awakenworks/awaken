@@ -22,12 +22,12 @@ pub mod admin;
 pub mod console;
 pub mod dynamic_placement;
 pub mod inference_materializer;
+mod legacy_resource_migration;
 pub mod mcp_export;
 pub mod model_resolver;
 pub mod no_model;
 pub mod placement;
 mod relay_hand;
-pub mod resource_scope_fence;
 pub mod webhooks;
 mod worker_registry;
 pub mod workspace_path;
@@ -52,6 +52,7 @@ pub use awaken_runtime_host::{
     content_fingerprint, durable_ops_router, memory_stores_router_with_catalog, parse_skill_md,
     skills_router,
 };
+pub use legacy_resource_migration::migrate_legacy_skill_registry;
 pub use relay_hand::relay_hand_executor_factory;
 pub use worker_registry::{
     init_postgres as init_postgres_worker_registry, inject as init_worker_registry,
@@ -105,10 +106,16 @@ pub fn embedded_resource_plane(root: &std::path::Path) -> awaken_runtime_host::R
             awaken_skill_store::FsSkillStore::open(root.join("skills"))
                 .expect("open resource skill filesystem store"),
         ),
-        Arc::new(
-            awaken_resource_store::SqliteResourceStore::open(root.join("resource-lifecycle.db"))
-                .expect("open resource lifecycle sqlite"),
-        ),
+        Arc::new({
+            let lifecycle = awaken_resource_store::SqliteResourceStore::open(
+                root.join("resource-lifecycle.db"),
+            )
+            .expect("open resource lifecycle sqlite");
+            lifecycle
+                .migrate_legacy_unscoped_schema()
+                .expect("migrate legacy resource lifecycle rows");
+            lifecycle
+        }),
     )
 }
 
@@ -207,7 +214,6 @@ fn local_managed_state_over(
 ) -> Arc<ManagedState> {
     let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
     let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
-    let mcp_store = Arc::new(awaken_config_resolver::InMemoryMcpStore::new());
     let vaults = Arc::new(awaken_protocol_managed::VaultState::new(
         secrets.clone(),
         credentials.clone(),
@@ -230,7 +236,7 @@ fn local_managed_state_over(
     let managed = ManagedState::new(
         ManagedHost::new(host)
             .with_resource_validator(catalog.clone())
-            .with_mcp(credentials, secrets, mcp_store),
+            .with_credentials(credentials, secrets),
     );
     let managed = match session_repo {
         Some(repo) => managed.with_session_repo(repo),
@@ -371,13 +377,15 @@ fn mount_with_managed_over(
     // Tenant ownership for memory stores (ADR-0053 / ADR-0051): fence cross-tenant
     // access to a store (and its memories/versions) by the scope that created it. A
     // single-tenant deployment resolves to the default scope and is never fenced.
-    let memory_stores = memory_stores_router_with_catalog(host.clone(), resource_catalog.clone())
-        .layer(axum::middleware::from_fn_with_state(
-            crate::resource_scope_fence::MemoryStoreScopeFence::over(resource_catalog),
-            crate::resource_scope_fence::memory_store_scope_fence,
-        ));
+    let resource_purge: Arc<dyn awaken_protocol_managed::resource_plane::ResourcePurgeScheduler> =
+        host.clone();
+    let memory_stores = memory_stores_router_with_catalog(
+        host.memory_repository(),
+        resource_catalog.clone(),
+        resource_purge.clone(),
+    );
     // The skills API (`/v1/skills`) over the host's durable delivered-skill catalog.
-    let skills = skills_router(host.clone());
+    let skills = skills_router(host.skill_store(), resource_purge);
     // The Models API (`/v1/models`) over the deployment's model directory.
     let models = models_router(std::sync::Arc::new(default_models()));
     // ADR-0050: install the process-global captured-content sink and expose the

@@ -1007,6 +1007,12 @@ enum RouteAuthz {
         action: &'static str,
         scope: ScopeClass,
     },
+    /// Resource-plane route. Keeping this in the same classifier prevents the
+    /// management and resource PEPs from maintaining independent route tables.
+    Resource {
+        action: &'static str,
+        scope: ScopeClass,
+    },
     /// The `/v1/config/iam/tokens*` family: the guard authenticates and stamps
     /// the principal on the request; the handler authorizes `apikey.*` at the
     /// TARGET workspace (body/query for mint/list, the token's own workspace
@@ -1015,6 +1021,189 @@ enum RouteAuthz {
     /// the stamp, and these routes are only mounted when the guard is on.
     TokenAdmin,
 }
+
+/// One typed policy declaration per bounded HTTP family. Concrete endpoint
+/// membership stays in axum; this descriptor owns only the authorization
+/// namespace and plane, avoiding a shadow copy of every route template.
+#[derive(Debug, Clone, Copy)]
+struct RoutePolicyDescriptor {
+    prefix: &'static str,
+    policy: RouteFamilyPolicy,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum RouteFamilyPolicy {
+    Scoped {
+        read: &'static str,
+        write: &'static str,
+    },
+    Resource {
+        read: &'static str,
+        write: &'static str,
+    },
+    TokenAdmin,
+}
+
+const ROUTE_POLICIES: &[RoutePolicyDescriptor] = &[
+    RoutePolicyDescriptor {
+        prefix: "/v1/files",
+        policy: RouteFamilyPolicy::Resource {
+            read: FILE_READ,
+            write: FILE_WRITE,
+        },
+    },
+    RoutePolicyDescriptor {
+        prefix: "/v1/skills",
+        policy: RouteFamilyPolicy::Resource {
+            read: SKILL_READ,
+            write: SKILL_WRITE,
+        },
+    },
+    RoutePolicyDescriptor {
+        prefix: "/v1/memory_stores",
+        policy: RouteFamilyPolicy::Resource {
+            read: WORKSPACE_READ,
+            write: WORKSPACE_WRITE,
+        },
+    },
+    RoutePolicyDescriptor {
+        prefix: "/v1/config/iam/tokens",
+        policy: RouteFamilyPolicy::TokenAdmin,
+    },
+    RoutePolicyDescriptor {
+        prefix: "/v1/config/credentials",
+        policy: RouteFamilyPolicy::Scoped {
+            read: APIKEY_READ,
+            write: APIKEY_WRITE,
+        },
+    },
+    RoutePolicyDescriptor {
+        prefix: "/v1/config/credential-pools",
+        policy: RouteFamilyPolicy::Scoped {
+            read: APIKEY_READ,
+            write: APIKEY_WRITE,
+        },
+    },
+    RoutePolicyDescriptor {
+        prefix: "/v1/vaults",
+        policy: RouteFamilyPolicy::Scoped {
+            read: APIKEY_READ,
+            write: APIKEY_WRITE,
+        },
+    },
+    RoutePolicyDescriptor {
+        prefix: "/v1/config/providers",
+        policy: RouteFamilyPolicy::Scoped {
+            read: WORKSPACE_READ,
+            write: WORKSPACE_WRITE,
+        },
+    },
+    RoutePolicyDescriptor {
+        prefix: "/v1/config/endpoints",
+        policy: RouteFamilyPolicy::Scoped {
+            read: WORKSPACE_READ,
+            write: WORKSPACE_WRITE,
+        },
+    },
+    RoutePolicyDescriptor {
+        prefix: "/v1/config/offerings",
+        policy: RouteFamilyPolicy::Scoped {
+            read: WORKSPACE_READ,
+            write: WORKSPACE_WRITE,
+        },
+    },
+    RoutePolicyDescriptor {
+        prefix: "/v1/config/model-attributes",
+        policy: RouteFamilyPolicy::Scoped {
+            read: WORKSPACE_READ,
+            write: WORKSPACE_WRITE,
+        },
+    },
+    RoutePolicyDescriptor {
+        prefix: "/v1/config/catalog",
+        policy: RouteFamilyPolicy::Scoped {
+            read: WORKSPACE_READ,
+            write: WORKSPACE_WRITE,
+        },
+    },
+    RoutePolicyDescriptor {
+        prefix: "/v1/config/inference-profiles",
+        policy: RouteFamilyPolicy::Scoped {
+            read: WORKSPACE_READ,
+            write: WORKSPACE_WRITE,
+        },
+    },
+    RoutePolicyDescriptor {
+        prefix: "/v1/config/inference",
+        policy: RouteFamilyPolicy::Scoped {
+            read: WORKSPACE_READ,
+            write: WORKSPACE_WRITE,
+        },
+    },
+    RoutePolicyDescriptor {
+        prefix: "/v1/config/mcp-servers",
+        policy: RouteFamilyPolicy::Scoped {
+            read: WORKSPACE_READ,
+            write: WORKSPACE_WRITE,
+        },
+    },
+    RoutePolicyDescriptor {
+        prefix: "/v1/config/agents",
+        policy: RouteFamilyPolicy::Scoped {
+            read: WORKSPACE_READ,
+            write: WORKSPACE_WRITE,
+        },
+    },
+    RoutePolicyDescriptor {
+        prefix: "/v1/config/webhook-subscriptions",
+        policy: RouteFamilyPolicy::Scoped {
+            read: WORKSPACE_READ,
+            write: WORKSPACE_WRITE,
+        },
+    },
+    RoutePolicyDescriptor {
+        prefix: "/v1/user_profiles",
+        policy: RouteFamilyPolicy::Scoped {
+            read: WORKSPACE_READ,
+            write: WORKSPACE_WRITE,
+        },
+    },
+    RoutePolicyDescriptor {
+        prefix: "/v1/agents",
+        policy: RouteFamilyPolicy::Scoped {
+            read: WORKSPACE_READ,
+            write: WORKSPACE_WRITE,
+        },
+    },
+    RoutePolicyDescriptor {
+        prefix: "/v1/deployments",
+        policy: RouteFamilyPolicy::Scoped {
+            read: WORKSPACE_READ,
+            write: WORKSPACE_WRITE,
+        },
+    },
+    RoutePolicyDescriptor {
+        prefix: "/v1/deployment_runs",
+        policy: RouteFamilyPolicy::Scoped {
+            read: WORKSPACE_READ,
+            write: WORKSPACE_WRITE,
+        },
+    },
+    RoutePolicyDescriptor {
+        prefix: "/v1/environments",
+        policy: RouteFamilyPolicy::Scoped {
+            read: WORKSPACE_READ,
+            write: WORKSPACE_WRITE,
+        },
+    },
+    RoutePolicyDescriptor {
+        prefix: "/v1/capabilities",
+        policy: RouteFamilyPolicy::Scoped {
+            read: WORKSPACE_READ,
+            write: WORKSPACE_WRITE,
+        },
+    },
+];
 
 /// Resource classes whose target scope is centrally defined by the IAM resource
 /// model. Route handlers never choose a scope ad hoc.
@@ -1060,7 +1249,9 @@ pub async fn management_guard(
     };
 
     let (action, scope_class) = match route {
-        RouteAuthz::Scoped { action, scope } => (action, scope),
+        RouteAuthz::Scoped { action, scope } | RouteAuthz::Resource { action, scope } => {
+            (action, scope)
+        }
         RouteAuthz::TokenAdmin => {
             // Delegated authorization: no equality fence here — the handler
             // evaluates apikey.* at the TARGET workspace, and the scope graph
@@ -1150,12 +1341,13 @@ pub async fn cloud_management_guard(
     let Some(route) = action_for(req.method(), req.uri().path()) else {
         return forbidden("no management action is mapped for this route");
     };
-    let RouteAuthz::Scoped {
-        action,
-        scope: scope_class,
-    } = route
-    else {
-        return forbidden("API-token administration belongs to self-managed IAM");
+    let (action, scope_class) = match route {
+        RouteAuthz::Scoped { action, scope } | RouteAuthz::Resource { action, scope } => {
+            (action, scope)
+        }
+        RouteAuthz::TokenAdmin => {
+            return forbidden("API-token administration belongs to self-managed IAM");
+        }
     };
 
     let principal = match authz.authenticate(bearer_token(req.headers())) {
@@ -1214,7 +1406,8 @@ pub async fn resource_guard(
     mut req: Request,
     next: Next,
 ) -> Response {
-    let Some(action) = resource_action_for(req.method(), req.uri().path()) else {
+    let Some(RouteAuthz::Resource { action, .. }) = action_for(req.method(), req.uri().path())
+    else {
         return next.run(req).await;
     };
     let Some(presented) = bearer_token(req.headers()) else {
@@ -1262,7 +1455,8 @@ pub async fn cloud_resource_guard(
     mut req: Request,
     next: Next,
 ) -> Response {
-    let Some(action) = resource_action_for(req.method(), req.uri().path()) else {
+    let Some(RouteAuthz::Resource { action, .. }) = action_for(req.method(), req.uri().path())
+    else {
         return next.run(req).await;
     };
     let principal = match authz.authenticate(bearer_token(req.headers())) {
@@ -1343,180 +1537,52 @@ fn query_workspace_id(query: Option<&str>) -> Option<String> {
         .map(|(_, value)| value.replace('+', " "))
 }
 
-/// Map a management route + method to how it authorizes. Reads (GET) map to
-/// `*.read`; every mutation maps to a write action. Credential, pool, and
-/// vault surfaces live under `apikey.*`; catalog and admin aggregates under
-/// `workspace.*` (see the constants above for the role-fit rationale). The
-/// token-management family maps to [`RouteAuthz::TokenAdmin`] (target-workspace
-/// authorization in the handler).
+/// Classify the bounded route family and derive its action by method. The axum
+/// router remains the sole declaration of concrete routes: this function does
+/// not repeat every endpoint or parameter shape. It only declares the stable
+/// policy of each bounded family, so a newly mounted endpoint inherits that
+/// family's read/write rule and an unknown family still fails closed.
 fn action_for(method: &Method, path: &str) -> Option<RouteAuthz> {
-    let read = *method == Method::GET;
-    let scoped = |action| {
-        Some(RouteAuthz::Scoped {
-            action,
+    let is_read = matches!(*method, Method::GET | Method::HEAD);
+
+    // Resolution endpoints are side-effect-free previews even though their wire
+    // method is POST. Keep that semantic exception explicit and narrow.
+    if *method == Method::POST
+        && (path == "/v1/config/inference/resolve"
+            || path.ends_with("/resolve")
+            || path.ends_with("/resolve-candidates"))
+        && in_family(path, "/v1/config")
+    {
+        return Some(RouteAuthz::Scoped {
+            action: WORKSPACE_READ,
             scope: ScopeClass::Workspace,
-        })
-    };
-    let segments: Vec<&str> = path.trim_start_matches('/').split('/').collect();
-    match segments.as_slice() {
-        // -- catalog (providers / endpoints / offerings / snapshot) --
-        ["v1", "config", "catalog"] if read => scoped(WORKSPACE_READ),
-        ["v1", "config", "providers", _] | ["v1", "config", "endpoints", _] => scoped(if read {
-            WORKSPACE_READ
-        } else {
-            WORKSPACE_WRITE
-        }),
-        ["v1", "config", "offerings"] if !read => scoped(WORKSPACE_WRITE),
-        // -- credentials + pools --
-        ["v1", "config", "credentials"] => scoped(if read { APIKEY_READ } else { APIKEY_WRITE }),
-        ["v1", "config", "credentials", _] if read => scoped(APIKEY_READ),
-        ["v1", "config", "credentials", _, "archive" | "validate"] if !read => scoped(APIKEY_WRITE),
-        ["v1", "config", "credential-pools", _] => {
-            scoped(if read { APIKEY_READ } else { APIKEY_WRITE })
-        }
-        // -- API-token management (authn here, target-workspace authz in the
-        //    handler; see RouteAuthz::TokenAdmin) --
-        ["v1", "config", "iam", "tokens"] | ["v1", "config", "iam", "tokens", _] => {
-            Some(RouteAuthz::TokenAdmin)
-        }
-        // -- inference profiles + resolve dry-runs (secret-free projections) --
-        ["v1", "config", "inference-profiles", _] => scoped(if read {
-            WORKSPACE_READ
-        } else {
-            WORKSPACE_WRITE
-        }),
-        ["v1", "config", "inference-profiles", _, "resolve"] if !read => scoped(WORKSPACE_READ),
-        ["v1", "config", "inference", "resolve"] if !read => scoped(WORKSPACE_READ),
-        // -- MCP server defs + agent bindings --
-        ["v1", "config", "mcp-servers"] if read => scoped(WORKSPACE_READ),
-        ["v1", "config", "mcp-servers", _] => scoped(if read {
-            WORKSPACE_READ
-        } else {
-            WORKSPACE_WRITE
-        }),
-        ["v1", "config", "agents", _, "mcp"] => scoped(if read {
-            WORKSPACE_READ
-        } else {
-            WORKSPACE_WRITE
-        }),
-        ["v1", "config", "agents", _, "mcp", "resolve"] if !read => scoped(WORKSPACE_READ),
-        // -- the config authoring plane: rich AgentConfig drafts + lifecycle. The
-        //    console authors here directly (distinct from the /v1/agents registry). --
-        ["v1", "config", "agents"] if read => scoped(WORKSPACE_READ),
-        ["v1", "config", "agents", _, "validate" | "publish"] if !read => scoped(WORKSPACE_WRITE),
-        ["v1", "config", "agents", _] => scoped(if read {
-            WORKSPACE_READ
-        } else {
-            WORKSPACE_WRITE
-        }),
-        // -- the Managed vault front door --
-        ["v1", "vaults"] => scoped(if read { APIKEY_READ } else { APIKEY_WRITE }),
-        ["v1", "vaults", _] => scoped(if read { APIKEY_READ } else { APIKEY_WRITE }),
-        ["v1", "vaults", _, "archive"] if !read => scoped(APIKEY_WRITE),
-        ["v1", "vaults", _, "credentials"] => scoped(if read { APIKEY_READ } else { APIKEY_WRITE }),
-        ["v1", "vaults", _, "credentials", _] => {
-            scoped(if read { APIKEY_READ } else { APIKEY_WRITE })
-        }
-        [
-            "v1",
-            "vaults",
-            _,
-            "credentials",
-            _,
-            "mcp_oauth_validate" | "archive",
-        ] if !read => scoped(APIKEY_WRITE),
-        // -- user profiles (managed-account entities: workspace configuration) --
-        ["v1", "user_profiles"] => scoped(if read {
-            WORKSPACE_READ
-        } else {
-            WORKSPACE_WRITE
-        }),
-        ["v1", "user_profiles", _] => scoped(if read {
-            WORKSPACE_READ
-        } else {
-            WORKSPACE_WRITE
-        }),
-        ["v1", "user_profiles", _, "enrollment_url"] if !read => scoped(WORKSPACE_WRITE),
-        // -- the public agent registry (distinct from /v1/config/agents authoring) --
-        ["v1", "agents"] => scoped(if read {
-            WORKSPACE_READ
-        } else {
-            WORKSPACE_WRITE
-        }),
-        ["v1", "agents", _] => scoped(if read {
-            WORKSPACE_READ
-        } else {
-            WORKSPACE_WRITE
-        }),
-        ["v1", "agents", _, "versions"] if read => scoped(WORKSPACE_READ),
-        ["v1", "agents", _, "archive"] if !read => scoped(WORKSPACE_WRITE),
-        // -- deployments + deployment runs --
-        ["v1", "deployments"] => scoped(if read {
-            WORKSPACE_READ
-        } else {
-            WORKSPACE_WRITE
-        }),
-        ["v1", "deployments", _] => scoped(if read {
-            WORKSPACE_READ
-        } else {
-            WORKSPACE_WRITE
-        }),
-        [
-            "v1",
-            "deployments",
-            _,
-            "archive" | "pause" | "unpause" | "run",
-        ] if !read => scoped(WORKSPACE_WRITE),
-        ["v1", "deployment_runs"] | ["v1", "deployment_runs", _] if read => scoped(WORKSPACE_READ),
-        // -- environments + the self-hosted work queue --
-        ["v1", "environments"] => scoped(if read {
-            WORKSPACE_READ
-        } else {
-            WORKSPACE_WRITE
-        }),
-        ["v1", "environments", _] => scoped(if read {
-            WORKSPACE_READ
-        } else {
-            WORKSPACE_WRITE
-        }),
-        ["v1", "environments", _, "archive"] if !read => scoped(WORKSPACE_WRITE),
-        // Poll + stats + list are reads; ack/heartbeat/stop + work update are writes.
-        ["v1", "environments", _, "work"] if read => scoped(WORKSPACE_READ),
-        ["v1", "environments", _, "work", "poll" | "stats"] if read => scoped(WORKSPACE_READ),
-        ["v1", "environments", _, "work", _] => scoped(if read {
-            WORKSPACE_READ
-        } else {
-            WORKSPACE_WRITE
-        }),
-        [
-            "v1",
-            "environments",
-            _,
-            "work",
-            _,
-            "ack" | "heartbeat" | "stop",
-        ] if !read => scoped(WORKSPACE_WRITE),
-        _ => None,
+        });
     }
+
+    // The management guard is installed only over the composed management
+    // Router. Its concrete route table is therefore the membership declaration;
+    // these are the bounded management namespaces, not a second endpoint list.
+    let descriptor = ROUTE_POLICIES
+        .iter()
+        .find(|descriptor| in_family(path, descriptor.prefix))?;
+    Some(match descriptor.policy {
+        RouteFamilyPolicy::Scoped { read, write } => RouteAuthz::Scoped {
+            action: if is_read { read } else { write },
+            scope: ScopeClass::Workspace,
+        },
+        RouteFamilyPolicy::Resource { read, write } => RouteAuthz::Resource {
+            action: if is_read { read } else { write },
+            scope: ScopeClass::Workspace,
+        },
+        RouteFamilyPolicy::TokenAdmin => RouteAuthz::TokenAdmin,
+    })
 }
 
-/// Map only resource families owned by the platform resource plane. This table
-/// belongs to the application PEP, not to the resource stores. MemoryStore uses
-/// the coarse Workspace vocabulary awaken intentionally exposes; File and Skill
-/// reuse the standard preset namespaces already managed by awaken-iam.
-fn resource_action_for(method: &Method, path: &str) -> Option<&'static str> {
-    let read = matches!(*method, Method::GET | Method::HEAD);
-    let segments: Vec<&str> = path.trim_start_matches('/').split('/').collect();
-    match segments.as_slice() {
-        ["v1", "files", ..] => Some(if read { FILE_READ } else { FILE_WRITE }),
-        ["v1", "skills", ..] => Some(if read { SKILL_READ } else { SKILL_WRITE }),
-        ["v1", "memory_stores", ..] => Some(if read {
-            WORKSPACE_READ
-        } else {
-            WORKSPACE_WRITE
-        }),
-        _ => None,
-    }
+fn in_family(path: &str, prefix: &str) -> bool {
+    path == prefix
+        || path
+            .strip_prefix(prefix)
+            .is_some_and(|suffix| suffix.starts_with('/'))
 }
 
 /// Resolve the concrete IAM target from one centrally classified resource

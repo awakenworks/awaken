@@ -394,9 +394,13 @@ pub async fn connect_staged(staged: &[PreparedMcpServer]) -> Result<McpWiring, H
         let connection = awaken_ext_mcp::connect_tools(&server.name, Arc::new(transport))
             .await
             .map_err(|e| HostError::internal(format!("mcp server `{}`: {e}", server.name)))?;
+        // Authorization follows the executable registry, not its model-facing
+        // descriptor projection. A transport may expose an executable tool even
+        // when a compatibility descriptor is absent; deriving both registration
+        // and pre-authorization from RawTool::id keeps one capability truth.
         wiring
             .tool_ids
-            .extend(connection.descriptors.iter().map(|d| d.id.clone()));
+            .extend(connection.tools.iter().map(|tool| tool.id().to_string()));
         wiring.descriptors.extend(connection.descriptors);
         wiring.tools.extend(connection.tools);
     }
