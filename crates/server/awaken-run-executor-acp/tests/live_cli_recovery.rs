@@ -119,6 +119,7 @@ fn activation(cli: &str, prompt: &str) -> RunActivation {
         input: vec![Message::text(MessageId("u1".into()), Role::User, prompt)],
         delegation_origin: None,
         model_ref_override: None,
+        tool_capability_narrowing: Default::default(),
     }
 }
 

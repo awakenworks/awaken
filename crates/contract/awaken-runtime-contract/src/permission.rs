@@ -31,6 +31,50 @@ pub trait ToolPermissionPolicy: Send + Sync {
     async fn evaluate(&self, call: &ToolCall) -> ToolPermissionVerdict;
 }
 
+/// Serializable, per-Run restriction on the tool authority configured by the
+/// selected executor. `Configured` preserves that authority; `DenyAll` removes
+/// it. Neither variant can add authority, so executors may safely intersect this
+/// value with their platform permission policy after durable recovery.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolCapabilityNarrowing {
+    #[default]
+    Configured,
+    DenyAll,
+}
+
+impl ToolCapabilityNarrowing {
+    #[must_use]
+    pub fn is_configured(&self) -> bool {
+        *self == Self::Configured
+    }
+}
+
+/// A capability narrowing that denies every tool. Because per-Run policies are
+/// intersected with the configured host/plugin gates, this can remove authority
+/// but can never grant it.
+pub struct DenyAllTools {
+    reason: String,
+}
+
+impl DenyAllTools {
+    #[must_use]
+    pub fn new(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+        }
+    }
+}
+
+#[async_trait]
+impl ToolPermissionPolicy for DenyAllTools {
+    async fn evaluate(&self, _call: &ToolCall) -> ToolPermissionVerdict {
+        ToolPermissionVerdict::Deny {
+            reason: self.reason.clone(),
+        }
+    }
+}
+
 /// What the gate tells the loop to do with one tool call.
 #[derive(Debug, Clone, PartialEq)]
 pub enum GateOutcome {

@@ -94,6 +94,7 @@ impl ToolFreeAcpRunner {
             }],
             delegation_origin: None,
             model_ref_override: None,
+            tool_capability_narrowing: Default::default(),
         };
         let commit = Arc::new(MemoryCommitCoordinator::new());
         let context = RuntimeRunContext::new()
