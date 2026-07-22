@@ -100,8 +100,7 @@ pub(crate) fn to_chat_message(message: &Message) -> ChatMessage {
     }
 }
 
-/// What a truncated step is told so it resumes rather than restarts (mirrors
-/// the goal runtime's continuation prompt verbatim).
+/// What a truncated Step is told so it resumes rather than restarts.
 const CONTINUATION_PROMPT: &str = "Your response was cut off because it exceeded the output \
      token limit. Please break your work into smaller pieces. Continue from where you left off.";
 
