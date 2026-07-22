@@ -160,10 +160,12 @@ async function main() {
     },
     stdio: ['ignore', 'ignore', 'inherit'],
   });
+  let client;
+  let session;
 
   try {
     await ready(server);
-    const client = new Anthropic({
+    client = new Anthropic({
       apiKey: 'e2e-dummy',
       baseURL: `http://127.0.0.1:${PORT}`,
     });
@@ -194,7 +196,7 @@ async function main() {
       access_token: MCP_TOKEN,
       betas: BETAS,
     });
-    const session = await client.beta.sessions.create({
+    session = await client.beta.sessions.create({
       agent: 'assistant',
       environment_id: environmentResource.id,
       metadata: { 'awaken.runtime': 'acp:gemini' },
@@ -236,6 +238,13 @@ async function main() {
       'E2E PASS: production awaken projected model access, MCP, and File input into one Docker ACP run.',
     );
   } finally {
+    // The production sandbox is Session-owned and deliberately survives server
+    // shutdown for crash recovery. Dispose the Session while the server is live
+    // so this E2E does not strand a container (and its writable layer) on either
+    // success or an assertion failure.
+    if (client && session && server.exitCode === null && server.signalCode === null) {
+      await client.beta.sessions.delete(session.id, { betas: BETAS }).catch(() => {});
+    }
     await stop(server).catch(() => {});
     await fixture.close();
     spawnSync('docker', ['image', 'rm', '--force', IMAGE], { stdio: 'ignore' });
