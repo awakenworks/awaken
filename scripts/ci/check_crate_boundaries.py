@@ -310,6 +310,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "sha2",
         "thiserror",
         "async-trait",
+        # `FutureExt::catch_unwind` isolates a panicking terminal observer while
+        # preserving the caller task's neutral execution-local context.
+        "futures-util",
         "tokio",
         "tokio-util",
     },

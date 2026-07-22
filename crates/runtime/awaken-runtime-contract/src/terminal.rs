@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
+use futures_util::FutureExt;
 use std::sync::Arc;
 
 /// The neutral committed fact delivered to terminal observers.
@@ -60,19 +61,21 @@ pub async fn deliver_committed_terminal(
         let observer_id = observer.observer_id().to_string();
         let observer = observer.clone();
         let terminal = terminal.clone();
-        match tokio::spawn(async move { observer.observe(&terminal).await }).await {
+        // Poll in the caller task so execution-local context (tracing and future
+        // neutral task locals) reaches the observer. Catching unwind around the
+        // future retains panic isolation without a context-breaking task hop.
+        match std::panic::AssertUnwindSafe(observer.observe(&terminal))
+            .catch_unwind()
+            .await
+        {
             Ok(Ok(())) => {}
             Ok(Err(error)) => failures.push(RunTerminalDeliveryFailure {
                 observer_id,
                 error: error.to_string(),
             }),
-            Err(error) => failures.push(RunTerminalDeliveryFailure {
+            Err(_) => failures.push(RunTerminalDeliveryFailure {
                 observer_id,
-                error: if error.is_panic() {
-                    "observer panicked".to_string()
-                } else {
-                    "observer task was cancelled".to_string()
-                },
+                error: "observer panicked".to_string(),
             }),
         }
     }

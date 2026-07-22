@@ -8,6 +8,7 @@ license.workspace = true
 awaken-agent-contract.workspace = true
 awaken-inference-contract.workspace = true
 async-trait.workspace = true
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
