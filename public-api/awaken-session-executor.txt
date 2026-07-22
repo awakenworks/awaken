@@ -173,6 +173,10 @@ impl awaken_session_executor::PiiRedactor
 pub fn awaken_session_executor::PiiRedactor::new() -> Self
 impl awaken_runtime_contract::capture::ContentRedactor for awaken_session_executor::PiiRedactor
 pub fn awaken_session_executor::PiiRedactor::redact<'a>(&self, awaken_runtime_contract::capture::ContentKind, &'a str) -> alloc::borrow::Cow<'a, str>
+pub struct awaken_session_executor::PostgresMigrationLock
+impl awaken_session_executor::PostgresMigrationLock
+pub async fn awaken_session_executor::PostgresMigrationLock::acquire(&str) -> core::result::Result<Self, alloc::string::String>
+pub async fn awaken_session_executor::PostgresMigrationLock::release(self) -> core::result::Result<(), alloc::string::String>
 pub struct awaken_session_executor::PreparedMcpRefresh
 pub awaken_session_executor::PreparedMcpRefresh::access_token_ref: awaken_credential_vault::SecretRef
 pub awaken_session_executor::PreparedMcpRefresh::client_id: alloc::string::String
@@ -214,6 +218,7 @@ pub type awaken_session_executor::RequiredWorkspaceScope::Rejection = http::resp
 pub async fn awaken_session_executor::RequiredWorkspaceScope::from_request_parts(&mut http::request::Parts, &S) -> core::result::Result<Self, Self::Rejection>
 pub struct awaken_session_executor::ResourcePlanePorts
 impl awaken_session_executor::ResourcePlanePorts
+pub fn awaken_session_executor::ResourcePlanePorts::into_parts(self) -> (alloc::sync::Arc<dyn awaken_resource_contract::FileStore>, alloc::sync::Arc<dyn awaken_resource_contract::MemoryRepository>, alloc::sync::Arc<dyn awaken_resource_contract::SkillStore>, alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourceLifecycleRepository>)
 pub fn awaken_session_executor::ResourcePlanePorts::new(alloc::sync::Arc<dyn awaken_resource_contract::FileStore>, alloc::sync::Arc<dyn awaken_resource_contract::MemoryRepository>, alloc::sync::Arc<dyn awaken_resource_contract::SkillStore>, alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourceLifecycleRepository>) -> Self
 pub struct awaken_session_executor::SandboxChannelSource
 impl awaken_session_executor::SandboxChannelSource
@@ -266,7 +271,7 @@ pub fn awaken_session_executor::SharedHost::register_thread_mcp(&self, &str, all
 pub fn awaken_session_executor::SharedHost::register_thread_model(&self, &str, impl core::convert::Into<alloc::string::String>)
 pub fn awaken_session_executor::SharedHost::register_thread_sandbox(&self, &str, awaken_provisioning_contract::spec::SandboxOverride)
 pub fn awaken_session_executor::SharedHost::registered_thread_workspace(&self, &str) -> core::option::Option<alloc::string::String>
-pub fn awaken_session_executor::SharedHost::resource_lifecycle(&self) -> alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourceLifecycleRepository>
+pub fn awaken_session_executor::SharedHost::resource_lifecycle(&self) -> core::option::Option<alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourceLifecycleRepository>>
 pub fn awaken_session_executor::SharedHost::runs_local_dispatch_pool(&self) -> bool
 pub fn awaken_session_executor::SharedHost::storage_dir(&self) -> core::option::Option<&std::path::Path>
 pub fn awaken_session_executor::SharedHost::thread_egress(&self) -> awaken_session_executor::ThreadEgress
@@ -301,7 +306,7 @@ pub fn awaken_session_executor::SharedHost::with_upstream(self, impl core::conve
 pub fn awaken_session_executor::SharedHost::with_worker_upstream(self, awaken_session_executor::WorkerUpstream) -> Self
 impl awaken_session_executor::SharedHost
 pub fn awaken_session_executor::SharedHost::bind_resolved_memory(&self, &str, &str, &awaken_resource_contract::catalog::MemoryStoreConfigVersion, awaken_resource_contract::input::ResourceAccess, alloc::sync::Arc<dyn awaken_resource_contract::catalog::ResourceBindingValidator>)
-pub fn awaken_session_executor::SharedHost::install_memory_extraction_repository(&self, alloc::sync::Arc<dyn awaken_session_contract::memory_extraction::MemoryExtractionRepository>)
+pub fn awaken_session_executor::SharedHost::install_memory_extraction_repository(&self, alloc::sync::Arc<dyn awaken_ext_memory::extraction::MemoryExtractionRepository>)
 pub fn awaken_session_executor::SharedHost::install_memory_mounter(&self, alloc::sync::Arc<dyn awaken_provisioning_contract::sandbox::MemoryMounter>)
 pub fn awaken_session_executor::SharedHost::memory_repository(&self) -> alloc::sync::Arc<dyn awaken_resource_contract::MemoryRepository>
 impl awaken_session_executor::SharedHost
@@ -418,7 +423,6 @@ pub async fn awaken_session_executor::init_shared_postgres_commit(&str) -> core:
 pub async fn awaken_session_executor::init_shared_postgres_dispatch(&str) -> core::result::Result<(), alloc::string::String>
 pub fn awaken_session_executor::install_capture_sink(alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::CaptureSink>)
 pub fn awaken_session_executor::local_managed_session_repository(core::option::Option<&std::path::Path>) -> alloc::sync::Arc<dyn awaken_session_contract::session_repo::ManagedSessionRepository>
-pub fn awaken_session_executor::memory_stores_router(alloc::sync::Arc<awaken_session_executor::SharedHost>) -> axum::routing::Router
 pub fn awaken_session_executor::memory_stores_router_with_catalog(alloc::sync::Arc<awaken_session_executor::SharedHost>, alloc::sync::Arc<dyn awaken_resource_contract::catalog::ResourceCatalog>) -> axum::routing::Router
 pub fn awaken_session_executor::platform_plugin_capabilities() -> alloc::vec::Vec<awaken_runtime_contract::capability::PluginCapability>
 pub fn awaken_session_executor::registered_worker_transport_router(alloc::sync::Arc<awaken_session_executor::SharedHost>, alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>, alloc::sync::Arc<dyn awaken_worker_contract::PlacementPolicy>) -> axum::routing::Router
