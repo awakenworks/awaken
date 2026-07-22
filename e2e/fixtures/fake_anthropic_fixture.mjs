@@ -64,6 +64,20 @@ function allUserText(parsed) {
   return userMessages(parsed).map((m) => blockText(m.content)).join(' ');
 }
 
+function outcomeJudgeInput(parsed) {
+  const prompt = lastUserText(parsed);
+  if (!prompt.startsWith('Evaluate this Outcome input')) return null;
+  const payload = prompt.slice(prompt.indexOf('\n') + 1);
+  return JSON.parse(payload);
+}
+
+function evaluatedOutcomeText(input) {
+  return (input.transcript ?? [])
+    .slice(input.message_start, input.message_end)
+    .map((message) => blockText(message.content))
+    .join('\n');
+}
+
 // Every `tool_result` block across the transcript — one per prior tool-role turn.
 function toolResults(parsed) {
   const out = [];
@@ -154,14 +168,15 @@ export const BEHAVIORS = {
   revise(parsed) {
     const users = allUserText(parsed);
     if (users.includes('Evaluate this Outcome input')) {
-      if (users.includes('INVALID_JUDGE_OUTPUT')) return text('not a grade object');
-      if (users.includes('FORCE_FAILED_DECISION')) {
+      const input = outcomeJudgeInput(parsed);
+      if (input.rubric === 'INVALID_JUDGE_OUTPUT') return text('not a grade object');
+      if (input.rubric === 'FORCE_FAILED_DECISION') {
         return text(JSON.stringify({
           result: 'failed',
           explanation: 'native judge rejected the deliverable terminally',
         }));
       }
-      const satisfied = users.includes('FINAL answer');
+      const satisfied = evaluatedOutcomeText(input).includes(input.rubric);
       return text(JSON.stringify({
         result: satisfied ? 'satisfied' : 'needs_revision',
         explanation: satisfied ? 'native judge accepted evidence' : 'native judge requests FINAL',

@@ -439,12 +439,17 @@ impl LlmExecutor for GatedModel {
         &self,
         _request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
-        if self.calls.fetch_add(1, Ordering::SeqCst) == 1 {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        if call == 2 {
             self.reached.notify_one();
             self.gate.notified().await;
         }
         Ok(ChatResponse {
-            output: AssistantOutput::text("a rough draft"),
+            output: AssistantOutput::text(if call == 1 {
+                r#"{"result":"needs_revision","explanation":"finish the deliverable"}"#
+            } else {
+                "a rough draft"
+            }),
             usage: None,
             stop_reason: None,
         })
@@ -463,7 +468,7 @@ async fn interrupt_cancels_the_run_and_reports_interrupted() {
     let host = Arc::new(SharedHost::new(model, "scripted"));
 
     // Drive an outcome whose rubric is never met, so it would loop; the model
-    // blocks it mid second round.
+    // blocks it in the second Worker Run (after the first Judge Run).
     let driver = host.clone();
     let task = tokio::spawn(async move { driver.define_outcome("t1", "finish", "FINAL", 5).await });
 

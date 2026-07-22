@@ -5,8 +5,7 @@
 //! identities and persists the resulting state transitions.
 
 use async_trait::async_trait;
-use awaken_runtime_contract::Message;
-use awaken_runtime_contract::RunId;
+use awaken_runtime_contract::{ExecutableAgentSnapshot, Message, RunId};
 use serde::{Deserialize, Serialize};
 
 pub const MIN_ITERATIONS: u32 = 1;
@@ -145,7 +144,14 @@ impl std::error::Error for GraderError {}
 
 #[async_trait]
 pub trait Grader: Send + Sync {
-    async fn grade(&self, input: &GradingInput) -> Result<Grade, GraderError>;
+    /// Evaluate through the immutable Agent snapshot pinned in the Outcome
+    /// binding. Implementations must not substitute current configuration when
+    /// recovering an already-active Outcome.
+    async fn grade(
+        &self,
+        snapshot: &ExecutableAgentSnapshot,
+        input: &GradingInput,
+    ) -> Result<Grade, GraderError>;
 }
 
 /// Offline reference Grader used by deterministic tests and local demos.
@@ -153,7 +159,11 @@ pub struct KeywordGrader;
 
 #[async_trait]
 impl Grader for KeywordGrader {
-    async fn grade(&self, input: &GradingInput) -> Result<Grade, GraderError> {
+    async fn grade(
+        &self,
+        _snapshot: &ExecutableAgentSnapshot,
+        input: &GradingInput,
+    ) -> Result<Grade, GraderError> {
         let deliverable = input.transcript[input.message_start.min(input.transcript.len())
             ..input.message_end.min(input.transcript.len())]
             .iter()
@@ -947,7 +957,14 @@ mod tests {
             evidence: Vec::new(),
         };
         assert_eq!(
-            KeywordGrader.grade(&input).await.unwrap().decision,
+            KeywordGrader
+                .grade(
+                    &ExecutableAgentSnapshot::builder("offline-grader").build(),
+                    &input,
+                )
+                .await
+                .unwrap()
+                .decision,
             GradeDecision::NeedsRevision
         );
     }

@@ -517,9 +517,8 @@ impl SharedHost {
         self
     }
 
-    /// Grade outcomes with a real judge sub-agent (`judge_agent_id`) run through the
-    /// kernel, instead of the deterministic keyword grader. The judge grades in its
-    /// own fresh context.
+    /// Override the default tool-free Outcome Judge with the named Agent. The
+    /// Judge runs through the same Run boundary in its own fresh context.
     pub fn with_judge(mut self, judge_agent_id: impl Into<String>) -> Self {
         let id = judge_agent_id.into();
         let snapshot = default_judge_agent(&self.model_ref, &id, DEFAULT_JUDGE_INSTRUCTIONS);

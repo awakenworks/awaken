@@ -58,7 +58,6 @@ pub fn grading_prompt(input: &GradingInput) -> Result<String, GraderError> {
 pub struct AgentGrader<'a> {
     executor: &'a dyn RunExecutor,
     reader: &'a dyn ThreadReader,
-    snapshot: &'a ExecutableAgentSnapshot,
     context: RuntimeRunContext,
 }
 
@@ -67,13 +66,11 @@ impl<'a> AgentGrader<'a> {
     pub fn new(
         executor: &'a dyn RunExecutor,
         reader: &'a dyn ThreadReader,
-        snapshot: &'a ExecutableAgentSnapshot,
         context: RuntimeRunContext,
     ) -> Self {
         Self {
             executor,
             reader,
-            snapshot,
             context,
         }
     }
@@ -81,7 +78,11 @@ impl<'a> AgentGrader<'a> {
 
 #[async_trait::async_trait]
 impl Grader for AgentGrader<'_> {
-    async fn grade(&self, input: &GradingInput) -> Result<Grade, GraderError> {
+    async fn grade(
+        &self,
+        snapshot: &ExecutableAgentSnapshot,
+        input: &GradingInput,
+    ) -> Result<Grade, GraderError> {
         if input.message_start > input.message_end || input.message_end > input.transcript.len() {
             return Err(GraderError::Execution(
                 "evaluated message range is outside the committed transcript".into(),
@@ -99,7 +100,7 @@ impl Grader for AgentGrader<'_> {
             let mut activation = RunActivation::new(
                 run_id,
                 thread_id.clone(),
-                self.snapshot.clone(),
+                snapshot.clone(),
                 vec![Message::text(
                     MessageId(format!(
                         "outcome/{}/grader/{}/input",
