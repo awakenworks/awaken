@@ -20,6 +20,10 @@ pub mod recall;
 pub mod select;
 pub mod tool;
 
+/// Prefix reserved for request-only recalled context. Extraction excludes these
+/// messages because they are not new Thread facts to memorize again.
+pub const RECALL_MESSAGE_ID_PREFIX: &str = "mem-recall";
+
 pub use plugin::{
     MEMORY_PLUGIN_ID, MemoryConfig, MemoryPlugin, config_schema as memory_config_schema,
 };
@@ -32,7 +36,8 @@ pub use extraction::{
     MemoryExtractionController, MemoryExtractionDriver, MemoryExtractionError,
     MemoryExtractionIntent, MemoryExtractionMutation, MemoryExtractionPolicy,
     MemoryExtractionReceipt, MemoryExtractionRepository, MemoryExtractionStatus,
-    MemoryExtractorSnapshot, MemoryMutationReceipt, PutMemoryExtractionOutcome,
+    MemoryExtractorSnapshot, MemoryMutationReceipt, MemoryTerminalExtraction,
+    MemoryTerminalObserver, PutMemoryExtractionOutcome,
 };
 pub use localfs::{Entry, MemoryDir, MemoryStoreHandle, sanitize_stem};
 pub use recall::{RecallBounds, recall_block, recall_relevant};

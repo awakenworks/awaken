@@ -20,8 +20,9 @@ use awaken_ext_memory::{
     DEFAULT_SELECTOR_INSTRUCTIONS, EXTRACT_PROMPT, MEMORY_AGENT_ID, MemoryExtractionController,
     MemoryExtractionDriver, MemoryExtractionError, MemoryExtractionIntent,
     MemoryExtractionMutation, MemoryExtractionRepository, MemoryExtractorSnapshot,
-    MemoryMutationReceipt, MemoryStoreHandle, RecallBounds, RecallSelector, SELECTOR_AGENT_ID,
-    WriteMemoryTool, default_selector_agent, parse_indices, sanitize_stem, select_input,
+    MemoryMutationReceipt, MemoryStoreHandle, MemoryTerminalExtraction, MemoryTerminalObserver,
+    RecallBounds, RecallSelector, SELECTOR_AGENT_ID, WriteMemoryTool, default_selector_agent,
+    parse_indices, sanitize_stem, select_input,
 };
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::tool::RawTool;
@@ -95,10 +96,6 @@ impl RecallSelector for AgentSelector {
         parse_indices(&reply, manifest.len(), max)
     }
 }
-
-/// Message-id prefix for injected recall blocks. Shared so the host stamps it and
-/// extraction filters it (recall is context, not a conversation fact).
-pub const RECALL_MSG_PREFIX: &str = "mem-recall-";
 
 /// Runtime adapter over one already-authorized platform MemoryStore. It carries
 /// only data-plane identity and maximum access; authorization policy remains at
@@ -318,6 +315,30 @@ pub struct BoundMemory {
     extraction_enabled: bool,
 }
 
+struct BoundMemoryTerminalExtraction {
+    memory: Arc<BoundMemory>,
+    extractor: MemoryExtractorSnapshot,
+}
+
+#[async_trait]
+impl MemoryTerminalExtraction for BoundMemoryTerminalExtraction {
+    async fn extract_terminal(
+        &self,
+        terminal: &awaken_runtime_contract::terminal::CommittedTerminalRun,
+        transcript: Vec<Message>,
+    ) -> Result<(), String> {
+        self.memory
+            .trigger(
+                &terminal.thread_id.0,
+                &terminal.run_id.0,
+                transcript,
+                self.extractor.clone(),
+            )
+            .await
+            .map_err(|error| error.to_string())
+    }
+}
+
 impl MemoryRuntime {
     pub fn new(
         llm: Arc<dyn LlmExecutor>,
@@ -479,7 +500,11 @@ impl BoundMemory {
         // just recalled (a cross-thread self-copy loop).
         let seed: Vec<Message> = committed
             .into_iter()
-            .filter(|m| !m.id.0.starts_with(RECALL_MSG_PREFIX))
+            .filter(|m| {
+                !m.id
+                    .0
+                    .starts_with(awaken_ext_memory::RECALL_MESSAGE_ID_PREFIX)
+            })
             .collect();
         let idempotency_key = format!("{thread}:{terminal_commit_id}");
         let intent_id = format!("memory-extraction:{idempotency_key}");
@@ -680,6 +705,60 @@ impl crate::host::SharedHost {
             .get(thread)
             .cloned()
             .flatten()
+    }
+
+    pub(crate) fn memory_terminal_observer(
+        &self,
+        thread: &str,
+        snapshot: &awaken_runtime_contract::ExecutableAgentSnapshot,
+        reader: Arc<dyn awaken_agent_contract::thread::read::thread_reader::ThreadReader>,
+    ) -> Option<Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>> {
+        let memory = self
+            .memory_for_thread(thread)
+            .filter(|memory| memory.extraction_enabled())?;
+        if !snapshot
+            .resolved_spec
+            .plugin_ids
+            .iter()
+            .any(|id| id == awaken_ext_memory::MEMORY_PLUGIN_ID)
+        {
+            return None;
+        }
+        let config = awaken_ext_memory::MemoryConfig::from_value(
+            snapshot
+                .resolved_spec
+                .plugin_config
+                .get(awaken_ext_memory::MEMORY_PLUGIN_ID),
+        )
+        .unwrap_or_default();
+        let model_ref = self
+            .inference_routing
+            .model_ref(thread, &snapshot.resolved_spec.model_binding.model_ref);
+        let inference_access = snapshot
+            .metadata
+            .inference_access
+            .as_ref()
+            .and_then(|access| access.for_model(&model_ref));
+        let Some(inference_access) = inference_access else {
+            tracing::error!(
+                thread,
+                model_ref,
+                snapshot_id = %snapshot.id.0,
+                "memory extraction rejected: snapshot has no pinned inference access for model"
+            );
+            return None;
+        };
+        let extraction = Arc::new(BoundMemoryTerminalExtraction {
+            memory,
+            extractor: MemoryExtractorSnapshot {
+                agent_id: MEMORY_AGENT_ID.to_string(),
+                model_ref,
+                inference_access,
+                instructions: config.instructions,
+                extraction_prompt: config.extraction_prompt,
+            },
+        });
+        Some(Arc::new(MemoryTerminalObserver::new(reader, extraction)))
     }
 
     pub(crate) fn platform_memory_handle(
@@ -1016,7 +1095,7 @@ mod tests {
 
         // A committed history with a recalled-memory system message + a real turn.
         let recall = Message::text(
-            MessageId(format!("{RECALL_MSG_PREFIX}1")),
+            MessageId(format!("{}-1", awaken_ext_memory::RECALL_MESSAGE_ID_PREFIX)),
             Role::System,
             "RECALLED SECRET",
         );

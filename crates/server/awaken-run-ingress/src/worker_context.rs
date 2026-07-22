@@ -64,6 +64,15 @@ impl WorkerContext {
         self
     }
 
+    #[must_use]
+    pub(crate) fn with_terminal_observer(
+        mut self,
+        observer: Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>,
+    ) -> Self {
+        self.context = self.context.with_terminal_observer(observer);
+        self
+    }
+
     /// Install runtime-only inference materialization.
     #[must_use]
     pub(crate) fn with_inference_materializer(mut self, resolve: InferenceMaterializerFn) -> Self {

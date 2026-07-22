@@ -551,6 +551,54 @@ pub trait MemoryExtractionDriver: Send + Sync {
     ) -> Result<MemoryMutationReceipt, String>;
 }
 
+/// Embedding adapter used by the Memory-owned terminal observer after it has read
+/// the committed Thread transcript. Implementations prepare the frozen extractor
+/// and governed content-store binding; they do not decide lifecycle timing.
+#[async_trait]
+pub trait MemoryTerminalExtraction: Send + Sync {
+    async fn extract_terminal(
+        &self,
+        terminal: &awaken_runtime_contract::terminal::CommittedTerminalRun,
+        transcript: Vec<Message>,
+    ) -> Result<(), String>;
+}
+
+/// Memory Extraction's committed-terminal Runtime extension.
+pub struct MemoryTerminalObserver {
+    reader: std::sync::Arc<dyn awaken_agent_contract::thread::read::thread_reader::ThreadReader>,
+    extraction: std::sync::Arc<dyn MemoryTerminalExtraction>,
+}
+
+impl MemoryTerminalObserver {
+    #[must_use]
+    pub fn new(
+        reader: std::sync::Arc<
+            dyn awaken_agent_contract::thread::read::thread_reader::ThreadReader,
+        >,
+        extraction: std::sync::Arc<dyn MemoryTerminalExtraction>,
+    ) -> Self {
+        Self { reader, extraction }
+    }
+}
+
+#[async_trait]
+impl awaken_runtime_contract::terminal::RunTerminalObserver for MemoryTerminalObserver {
+    fn observer_id(&self) -> &str {
+        "memory-extraction"
+    }
+
+    async fn observe(
+        &self,
+        terminal: &awaken_runtime_contract::terminal::CommittedTerminalRun,
+    ) -> Result<(), awaken_runtime_contract::terminal::RunTerminalObserverError> {
+        let transcript = self.reader.committed_messages(&terminal.thread_id);
+        self.extraction
+            .extract_terminal(terminal, transcript)
+            .await
+            .map_err(awaken_runtime_contract::terminal::RunTerminalObserverError)
+    }
+}
+
 /// Operational policy for the at-least-once extraction worker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MemoryExtractionPolicy {
@@ -1139,5 +1187,67 @@ mod tests {
         assert_eq!(failed.status, MemoryExtractionStatus::TerminalFailed);
         assert_eq!(failed.last_error.as_deref(), Some("binding revoked"));
         assert_eq!(driver.extraction_calls.load(Ordering::SeqCst), 0);
+    }
+
+    struct TerminalReader(Vec<Message>);
+
+    impl awaken_agent_contract::thread::read::thread_reader::ThreadReader for TerminalReader {
+        fn committed_messages(
+            &self,
+            _thread_id: &awaken_agent_contract::agent::thread::Id,
+        ) -> Vec<Message> {
+            self.0.clone()
+        }
+
+        fn resume_ticket(
+            &self,
+            _run_id: &awaken_agent_contract::agent::run::Id,
+        ) -> Option<awaken_agent_contract::agent::awaiting::ResumeTicket> {
+            None
+        }
+    }
+
+    #[derive(Default)]
+    struct TerminalExtractionRecorder(Mutex<Vec<(String, Vec<Message>)>>);
+
+    #[async_trait]
+    impl MemoryTerminalExtraction for TerminalExtractionRecorder {
+        async fn extract_terminal(
+            &self,
+            terminal: &awaken_runtime_contract::terminal::CommittedTerminalRun,
+            transcript: Vec<Message>,
+        ) -> Result<(), String> {
+            self.0
+                .lock()
+                .unwrap()
+                .push((terminal.run_id.0.clone(), transcript));
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn terminal_observer_reads_only_committed_thread_truth() {
+        use awaken_runtime_contract::terminal::{CommittedTerminalRun, RunTerminalObserver};
+
+        let committed = vec![Message::text(Id("m1".into()), Role::User, "remember me")];
+        let extraction = Arc::new(TerminalExtractionRecorder::default());
+        let observer = MemoryTerminalObserver::new(
+            Arc::new(TerminalReader(committed.clone())),
+            extraction.clone(),
+        );
+
+        observer
+            .observe(&CommittedTerminalRun {
+                run_id: awaken_agent_contract::agent::run::Id("run-7".into()),
+                thread_id: awaken_agent_contract::agent::thread::Id("thread-1".into()),
+                cause: awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+            })
+            .await
+            .unwrap();
+
+        let observations = extraction.0.lock().unwrap();
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].0, "run-7");
+        assert_eq!(observations[0].1, committed);
     }
 }

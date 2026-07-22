@@ -144,6 +144,19 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
         self.worker.clone()
     }
 
+    /// Install a committed-terminal observer before the worker is shared.
+    #[must_use]
+    pub fn with_terminal_observer(
+        mut self,
+        observer: Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>,
+    ) -> Self {
+        let worker = Arc::into_inner(self.worker)
+            .expect("terminal observers must be configured before sharing the worker")
+            .with_terminal_observer(observer);
+        self.worker = Arc::new(worker);
+        self
+    }
+
     /// Replace the local guarded commit service with another atomic claimed-run
     /// implementation. Database-less workers use this to send one combined
     /// claim-and-commit request to the store-owning server.

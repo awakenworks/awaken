@@ -85,9 +85,16 @@ impl HostWorkerResolver {
         let mut worker = awaken_run_ingress::DispatchWorker::new(
             Arc::new(awaken_runtime::Runtime::new()),
             store,
-            commit,
+            commit.clone(),
             claimed.lease.owner.clone(),
         );
+        if let Some(observer) = host.memory_terminal_observer(
+            &thread_id.0,
+            &claimed.request.activation.snapshot,
+            commit,
+        ) {
+            worker = worker.with_terminal_observer(observer);
+        }
         if matches!(
             awaken_runtime_contract::resolved::Backend::from_ref(
                 &claimed
