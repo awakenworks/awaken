@@ -325,7 +325,7 @@ TLAPS, Java, or `tla2tools.jar` fails instead of producing a false green.
 `formal/coverage.json` is the versioned obligation ledger. The CI gate verifies
 that every evidence path exists and that at least 70% of formalizable safety
 obligations have a machine-checked production link. The current ledger is
-126/126, or 100%. Environmental properties are listed separately and never
+133/133, or 100%. Environmental properties are listed separately and never
 silently omitted or mislabeled as machine-linked merely to raise the percentage.
 
 ## Loom concurrency exploration
