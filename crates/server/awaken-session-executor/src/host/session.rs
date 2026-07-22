@@ -8,7 +8,8 @@ impl SharedHost {
     /// independently-owned Session environment and its live resource projection.
     /// Terminal cleanup remains the single responsibility of [`Self::end_session`].
     pub(crate) async fn evict_session_for_rebuild(&self, thread: &str) {
-        self.sessions.lock().await.remove(thread);
+        self.session_slots
+            .modify(thread, |slot| slot.runtime = None);
     }
 
     /// Build a thread's commit boundary under the configured store directory: a
@@ -221,8 +222,15 @@ impl SharedHost {
         published_snapshot: Option<awaken_runtime_contract::ExecutableAgentSnapshot>,
         adopted: Option<crate::session_environment::SessionEnvironment>,
     ) -> Result<Arc<SessionCtx>, HostError> {
-        let mut sessions = self.sessions.lock().await;
-        if let Some(ctx) = sessions.get(thread) {
+        let lifecycle = self
+            .session_slots
+            .update(thread, |slot| slot.lifecycle.clone());
+        let _lifecycle = lifecycle.lock().await;
+        if let Some(ctx) = self
+            .session_slots
+            .read(thread, |slot| slot.runtime.clone())
+            .flatten()
+        {
             if let Some(adopted) = adopted {
                 if ctx.env.handle() != adopted.handle() {
                     return Err(HostError::internal(format!(
@@ -234,15 +242,16 @@ impl SharedHost {
                 // it would tear down the shared underlying sandbox.
                 adopted.stop_bound_processes().await;
             }
-            let ctx = ctx.clone();
-            drop(sessions);
             let _ = ctx
                 .runtime
                 .reconcile_delegation_cancellations(&ctx.thread_id, ctx.commit.as_ref())
                 .await;
             return Ok(ctx);
         }
-        let retained = self.session_environments.lock().await.get(thread).cloned();
+        let retained = self
+            .session_slots
+            .read(thread, |slot| slot.environment.clone())
+            .flatten();
         let (env, needs_provision, needs_registration) = match (retained, adopted) {
             (Some(existing), Some(adopted)) => {
                 if existing.handle() != adopted.handle() {
@@ -277,10 +286,8 @@ impl SharedHost {
             }
         }
         if needs_registration {
-            self.session_environments
-                .lock()
-                .await
-                .insert(thread.to_string(), env.clone());
+            self.session_slots
+                .update(thread, |slot| slot.environment = Some(env.clone()));
         }
         let thread_id = ThreadId(thread.to_string());
         let commit = Arc::new(self.build_commit(thread).await?);
@@ -292,11 +299,8 @@ impl SharedHost {
         // composition (connect + discover, fail closed) lives in `crate::mcp`.
         // Read, not removed, so a retry re-attempts (and re-fails) the connect.
         let staged_mcp: Vec<PreparedMcpServer> = self
-            .thread_mcp
-            .lock()
-            .expect("thread mcp mutex poisoned")
-            .get(thread)
-            .cloned()
+            .session_slots
+            .read(thread, |slot| slot.mcp.clone())
             .unwrap_or_default();
         let mcp = crate::mcp::connect_staged(&staged_mcp).await?;
         // MCP tools are pre-authorized on this thread's gate: the session creator
@@ -400,11 +404,9 @@ impl SharedHost {
         // threads without a frozen manifest retain the latest-catalog compatibility
         // path. Presence of an empty frozen vector explicitly offers no Skills.
         let frozen = self
-            .thread_skills
-            .lock()
-            .expect("thread skills mutex poisoned")
-            .get(thread)
-            .cloned();
+            .session_slots
+            .read(thread, |slot| slot.skills.clone())
+            .flatten();
         let delivered = if frozen.is_some() {
             frozen
         } else {
@@ -444,7 +446,7 @@ impl SharedHost {
             (Some(skills), Some(selected)) => Some(
                 skills
                     .into_iter()
-                    .filter(|version| selected.contains(&version.skill_id))
+                    .filter(|version| selected.contains(version.skill_id.as_str()))
                     .collect(),
             ),
             (skills, None) => skills,
@@ -638,8 +640,8 @@ impl SharedHost {
             outcome: tokio::sync::Mutex::new(()),
             execution: tokio::sync::Mutex::new(()),
         });
-        sessions.insert(thread.to_string(), ctx.clone());
-        drop(sessions);
+        self.session_slots
+            .update(thread, |slot| slot.runtime = Some(ctx.clone()));
         // A prior process may have crashed after atomically ending the parent
         // and before delivering its remote child cancellations. Re-entering the
         // session redelivers those idempotent outbox entries.
@@ -675,7 +677,9 @@ impl SharedHost {
         &self,
         thread: &str,
     ) -> Option<Arc<crate::session_environment::SessionEnvironment>> {
-        self.session_environments.lock().await.get(thread).cloned()
+        self.session_slots
+            .read(thread, |slot| slot.environment.clone())
+            .flatten()
     }
 
     pub(crate) async fn session_environment_handle(
@@ -781,22 +785,24 @@ impl SharedHost {
         thread: &str,
         expected: &Arc<crate::session_environment::SessionEnvironment>,
     ) -> bool {
-        let mut sessions = self.sessions.lock().await;
-        let mut environments = self.session_environments.lock().await;
-        let still_observed = environments.get(thread).is_some_and(|current| {
-            Arc::ptr_eq(current, expected) && current.handle() == expected.handle()
-        });
-        if !still_observed {
-            return false;
-        }
-        let removed = environments.remove(thread);
-        if sessions.get(thread).is_some_and(|ctx| {
-            Arc::ptr_eq(&ctx.env, expected) && ctx.env.handle() == expected.handle()
-        }) {
-            sessions.remove(thread);
-        }
-        drop(environments);
-        drop(sessions);
+        let removed = self
+            .session_slots
+            .modify(thread, |slot| {
+                let still_observed = slot.environment.as_ref().is_some_and(|current| {
+                    Arc::ptr_eq(current, expected) && current.handle() == expected.handle()
+                });
+                if !still_observed {
+                    return None;
+                }
+                let removed = slot.environment.take();
+                if slot.runtime.as_ref().is_some_and(|ctx| {
+                    Arc::ptr_eq(&ctx.env, expected) && ctx.env.handle() == expected.handle()
+                }) {
+                    slot.runtime = None;
+                }
+                removed
+            })
+            .flatten();
         if let Some(environment) = removed {
             // The provider object may represent an unavailable external
             // sandbox. Only stop processes owned by this wrapper here; normal
@@ -814,13 +820,14 @@ impl SharedHost {
     /// Idempotent — a thread with no live session is a no-op.
     ///
     /// This is the ONLY place a Session-owned environment is reaped. Runtime-context
-    /// rebuilds retain it in `session_environments`; a terminal end removes that owner
-    /// entry and disposes exactly once. Repository publication and authored-Skill
+    /// rebuilds retain it in the Session runtime slot; a terminal end removes that
+    /// owner and disposes exactly once. Repository publication and authored-Skill
     /// persistence run at the caller's release boundary before this method; Memory
     /// copy reconciliation is owned by `Sandbox::dispose` through its mount guard.
     pub(crate) async fn end_session(&self, thread: &str) -> Result<(), HostError> {
-        let ctx = self.sessions.lock().await.remove(thread);
-        let env = self.session_environments.lock().await.remove(thread);
+        let (ctx, env) = self.session_slots.update(thread, |slot| {
+            (slot.runtime.take(), slot.environment.take())
+        });
         let dispose_result = if let Some(env) = env.or_else(|| ctx.map(|ctx| ctx.env.clone())) {
             if env.needs_recovered_memory_reconciliation() {
                 let mounter = self.memory_mounter().ok_or_else(|| {
@@ -856,29 +863,7 @@ impl SharedHost {
             .clear_session_references(thread)
             .await
             .map_err(|error| HostError::internal(error.to_string()));
-        self.thread_workspaces
-            .lock()
-            .expect("thread workspaces")
-            .remove(thread);
-        self.thread_memory
-            .lock()
-            .expect("thread memory mutex poisoned")
-            .remove(thread);
-        self.thread_mcp
-            .lock()
-            .expect("thread MCP mutex poisoned")
-            .remove(thread);
-        self.thread_resources
-            .lock()
-            .expect("thread resources mutex poisoned")
-            .remove(thread);
-        self.thread_resource_manifests
-            .lock()
-            .expect("thread resource manifests mutex poisoned")
-            .remove(thread);
-        self.thread_egress.remove(thread);
-        self.thread_sandbox.remove(thread);
-        self.inference_routing.remove(thread);
+        self.session_slots.remove(thread);
         if let Some(relay) = self.mcp_relay.get() {
             relay.remove_routes(thread);
         }

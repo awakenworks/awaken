@@ -64,6 +64,11 @@ impl SkillCatalog {
         self.store.is_some()
     }
 
+    pub(crate) fn store_handle(&self) -> Option<Arc<dyn SkillStore>> {
+        self.store.clone()
+    }
+
+    #[cfg(test)]
     pub(crate) async fn create(
         &self,
         definition: SkillDefinition,
@@ -73,13 +78,14 @@ impl SkillCatalog {
         let workspace = definition.workspace_id.clone();
         let result = store.create(definition, initial_version).await;
         if result.is_ok()
-            && let Err(error) = self.reload_cache_in(&workspace).await
+            && let Err(error) = self.reload_cache_in(workspace.as_str()).await
         {
             return Some(Err(error));
         }
         Some(result)
     }
 
+    #[cfg(test)]
     pub(crate) async fn append_version(
         &self,
         workspace: &str,
@@ -135,15 +141,20 @@ impl SkillCatalog {
             path: "SKILL.md".into(),
             content: content.as_bytes().to_vec(),
         }];
+        let created_unix_nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos().min(u64::MAX as u128) as u64)
+            .unwrap_or_default();
         let version = SkillVersion {
-            id: format!("skver_{id}_{next}"),
-            skill_id: id.clone(),
+            id: format!("skver_{id}_{next}").into(),
+            skill_id: id.clone().into(),
             version: next,
             name: parsed.name,
             description: parsed.description,
             directory: format!("/skills/{id}"),
             bundle_sha256: awaken_skill_store::bundle_sha256(&files),
             files,
+            created_unix_nanos,
         };
         let result = if existing.is_some() {
             store.append_version(workspace, &id, version).await
@@ -151,11 +162,15 @@ impl SkillCatalog {
             store
                 .create(
                     SkillDefinition {
-                        id,
-                        workspace_id: workspace.to_string(),
+                        id: id.into(),
+                        workspace_id: workspace.to_string().into(),
                         display_title: None,
                         latest_version: 1,
                         last_version: 1,
+                        timestamps:
+                            awaken_protocol_managed::resource_plane::ResourceTimestamps::created(
+                                created_unix_nanos,
+                            ),
                     },
                     version,
                 )
@@ -177,6 +192,7 @@ impl SkillCatalog {
         Some(self.store.as_ref()?.definition(workspace, id).await)
     }
 
+    #[cfg(test)]
     pub(crate) async fn definitions(
         &self,
         workspace: &str,
@@ -185,14 +201,6 @@ impl SkillCatalog {
             Some(store) => store.list_definitions(workspace).await,
             None => Ok(Vec::new()),
         }
-    }
-
-    pub(crate) async fn versions(
-        &self,
-        workspace: &str,
-        id: &str,
-    ) -> Option<Result<Vec<SkillVersion>, SkillStoreError>> {
-        Some(self.store.as_ref()?.list_versions(workspace, id).await)
     }
 
     pub(crate) async fn resolve_latest(
@@ -252,37 +260,6 @@ impl SkillCatalog {
         Ok(versions)
     }
 
-    pub(crate) async fn delete_version(
-        &self,
-        workspace: &str,
-        id: &str,
-        version: u64,
-    ) -> Option<Result<bool, SkillStoreError>> {
-        let store = self.store.as_ref()?;
-        let result = store.delete_version(workspace, id, version).await;
-        if result.as_ref().is_ok_and(|removed| *removed)
-            && let Err(error) = self.reload_cache_in(workspace).await
-        {
-            return Some(Err(error));
-        }
-        Some(result)
-    }
-
-    pub(crate) async fn delete(
-        &self,
-        workspace: &str,
-        id: &str,
-    ) -> Option<Result<bool, SkillStoreError>> {
-        let store = self.store.as_ref()?;
-        let result = store.delete_skill(workspace, id).await;
-        if result.as_ref().is_ok_and(|removed| *removed)
-            && let Err(error) = self.reload_cache_in(workspace).await
-        {
-            return Some(Err(error));
-        }
-        Some(result)
-    }
-
     pub(crate) async fn purge(
         &self,
         workspace: &str,
@@ -303,7 +280,7 @@ impl SkillCatalog {
             let mut snapshot = Vec::with_capacity(definitions.len());
             for definition in definitions {
                 let version = store
-                    .version(workspace, &definition.id, definition.latest_version)
+                    .version(workspace, definition.id.as_str(), definition.latest_version)
                     .await?
                     .ok_or_else(|| {
                         SkillStoreError::Storage(format!(
@@ -356,8 +333,8 @@ impl SkillCatalog {
         // A durable skill is advertised by its tagged catalog id (not its name) so the
         // official worker can download it — `/v1/skills` resolves the same id.
         for version in self.cache_snapshot_in(workspace) {
-            if !ids.contains(&version.skill_id) {
-                ids.push(version.skill_id);
+            if !ids.iter().any(|id| id == version.skill_id.as_str()) {
+                ids.push(version.skill_id.to_string());
             }
         }
         ids
@@ -375,7 +352,7 @@ mod tests {
             content: body.as_bytes().to_vec(),
         }];
         SkillVersion {
-            id: format!("skver-{id}-{ordinal}"),
+            id: format!("skver-{id}-{ordinal}").into(),
             skill_id: id.into(),
             version: ordinal,
             name: id.into(),
@@ -383,6 +360,7 @@ mod tests {
             directory: format!("/skills/{id}"),
             bundle_sha256: bundle_sha256(&files),
             files,
+            created_unix_nanos: ordinal,
         }
     }
 
@@ -423,6 +401,7 @@ mod tests {
                     display_title: None,
                     latest_version: 1,
                     last_version: 1,
+                    timestamps: Default::default(),
                 },
                 version("greet", 1, "---\ndescription: v1\n---\nONE"),
             )

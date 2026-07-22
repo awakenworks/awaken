@@ -6,16 +6,6 @@
 use super::*;
 
 impl ManagedState {
-    fn refresh_resource_projection(record: &mut SessionRecord) {
-        record.session.resources = record
-            .resource_state
-            .active
-            .inputs
-            .iter()
-            .map(|input| resolved_resource_dto(&record.session.id, input))
-            .collect();
-    }
-
     async fn activate_inputs(
         &self,
         session_id: &str,
@@ -89,7 +79,6 @@ impl ManagedState {
         let mut sessions = self.sessions.lock().unwrap();
         let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
         record.resource_state = persisted.resources;
-        Self::refresh_resource_projection(record);
         Ok(())
     }
 
@@ -136,16 +125,17 @@ impl ManagedState {
             catalog
                 .create_repository(
                     awaken_resource_contract::RepositoryDefinition {
-                        id: repository_id.clone(),
-                        workspace_id: owner_scope.to_string(),
+                        id: repository_id.clone().into(),
+                        workspace_id: owner_scope.to_string().into(),
                         name: "Live Session repository".into(),
                         description: "Managed compatibility Session input".into(),
                         metadata: Default::default(),
                         state: awaken_resource_contract::ResourceState::Active,
                         current_config_version: awaken_resource_contract::ConfigVersion::INITIAL,
+                        timestamps: Default::default(),
                     },
                     awaken_resource_contract::RepositoryConfigVersion {
-                        repository_id: repository_id.clone(),
+                        repository_id: repository_id.clone().into(),
                         version: awaken_resource_contract::ConfigVersion::INITIAL,
                         remote_url: remote_url.clone(),
                         credential_binding,
@@ -183,7 +173,13 @@ impl ManagedState {
     pub fn list_resources(&self, id: &str) -> Result<Vec<serde_json::Value>, StateError> {
         let sessions = self.sessions.lock().unwrap();
         let record = sessions.get(id).ok_or(StateError::NotFound)?;
-        Ok(record.session.resources.clone())
+        Ok(record
+            .resource_state
+            .active
+            .inputs
+            .iter()
+            .map(|input| resolved_resource_dto(id, input))
+            .collect())
     }
 
     pub async fn create_resource(
@@ -245,12 +241,7 @@ impl ManagedState {
             }
             return Err(error);
         }
-        self.sessions
-            .lock()
-            .unwrap()
-            .get(id)
-            .and_then(|record| record.session.resources.last().cloned())
-            .ok_or(StateError::NotFound)
+        Ok(resolved_resource_dto(id, &input))
     }
 
     pub fn get_resource(
@@ -260,12 +251,14 @@ impl ManagedState {
     ) -> Result<serde_json::Value, StateError> {
         let sessions = self.sessions.lock().unwrap();
         let record = sessions.get(id).ok_or(StateError::NotFound)?;
+        let binding_id = resource_binding_id(id, resource_id).ok_or(StateError::NotFound)?;
         record
-            .session
-            .resources
+            .resource_state
+            .active
+            .inputs
             .iter()
-            .find(|resource| resource["id"] == resource_id)
-            .cloned()
+            .find(|input| input.binding_id == binding_id)
+            .map(|input| resolved_resource_dto(id, input))
             .ok_or(StateError::NotFound)
     }
 
@@ -277,18 +270,19 @@ impl ManagedState {
     ) -> Result<serde_json::Value, StateError> {
         let _guard = self.resource_mutations.lock().await;
         let owner_scope = self.resolve_owner(id).await.ok_or(StateError::NotFound)?;
-        let (current, index) = {
+        let binding_id = resource_binding_id(id, resource_id).ok_or(StateError::NotFound)?;
+        let (current, previous) = {
             let sessions = self.sessions.lock().unwrap();
             let record = sessions.get(id).ok_or(StateError::NotFound)?;
-            let index = record
-                .session
-                .resources
+            let current = record.resource_state.active.clone();
+            let previous = current
+                .inputs
                 .iter()
-                .position(|resource| resource["id"] == resource_id)
+                .find(|input| input.binding_id == binding_id)
+                .cloned()
                 .ok_or(StateError::NotFound)?;
-            (record.resource_state.active.clone(), index)
+            (current, previous)
         };
-        let previous = current.inputs[index].clone();
         let mut replacement = previous.clone();
         if let Some(path) = patch.get("mount_path").and_then(serde_json::Value::as_str) {
             replacement.mount_path = path.to_string();
@@ -360,18 +354,19 @@ impl ManagedState {
     pub async fn delete_resource(&self, id: &str, resource_id: &str) -> Result<(), StateError> {
         let _guard = self.resource_mutations.lock().await;
         let owner_scope = self.resolve_owner(id).await.ok_or(StateError::NotFound)?;
-        let (current, index) = {
+        let binding_id = resource_binding_id(id, resource_id).ok_or(StateError::NotFound)?;
+        let (current, input) = {
             let sessions = self.sessions.lock().unwrap();
             let record = sessions.get(id).ok_or(StateError::NotFound)?;
-            let index = record
-                .session
-                .resources
+            let current = record.resource_state.active.clone();
+            let input = current
+                .inputs
                 .iter()
-                .position(|resource| resource["id"] == resource_id)
+                .find(|input| input.binding_id == binding_id)
+                .cloned()
                 .ok_or(StateError::NotFound)?;
-            (record.resource_state.active.clone(), index)
+            (current, input)
         };
-        let input = &current.inputs[index];
         if matches!(
             input.source,
             awaken_session_contract::ResolvedInputSource::MemoryStore { .. }
@@ -379,7 +374,7 @@ impl ManagedState {
             return Err(StateError::Run(RunError::bad_request(MEMORY_CREATE_ONLY)));
         }
         let (next, removed) = current
-            .detach(&input.binding_id)
+            .detach(&binding_id)
             .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
         self.activate_inputs(id, &owner_scope, next).await?;
         if let awaken_session_contract::ResolvedInputSource::Repository { repository_id, .. } =

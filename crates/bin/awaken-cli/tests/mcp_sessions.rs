@@ -396,48 +396,35 @@ async fn session_inline_mcp_server_with_vault_credential_converses_multi_turn() 
 async fn management_plane_agent_mcp_config_takes_effect_without_inline_servers() {
     let url = mock_calc_mcp().await;
     let app = build_management_router().await;
+    let vault_id = vault_with_calc_credential(&app, &url).await;
 
-    // Author the whole binding through the ADMIN routes: credential →
-    // McpServerDef (Exact binding) → AgentMcpConfig for `calc-agent`.
-    let (s, cred) = call(
-        &app,
-        "POST",
-        "/v1/config/credentials",
-        Some(json!({ "workspace_id": "ws", "kind": "vault", "secret": CALC_TOKEN })),
-    )
-    .await;
-    assert_eq!(s, StatusCode::CREATED);
-    let source_id = cred["id"].as_str().unwrap().to_string();
+    // Author one typed Agent definition and publish its immutable executable
+    // snapshot. MCP membership belongs to this aggregate; credential material
+    // remains in the selected Vault and is injected only during provisioning.
     let (s, _) = call(
         &app,
         "PUT",
-        "/v1/config/mcp-servers/calc-def",
+        "/v1/config/agents/calc-agent",
         Some(json!({
-            "id": "calc-def",
-            "display_name": "calc",
-            "url": url,
-            "credential_binding": { "type": "exact", "credential_source_id": source_id },
-            "version": 1
+            "name": "Calculator",
+            "model": "management",
+            "system": "Use the calculator tool and report its result.",
+            "mcp_servers": [{ "name": "calc", "url": url }]
         })),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
-    let (s, _) = call(
-        &app,
-        "PUT",
-        "/v1/config/agents/calc-agent/mcp",
-        Some(json!({ "agent_id": "calc-agent", "mcp_server_ids": ["calc-def"], "version": 1 })),
-    )
-    .await;
+    let (s, _) = call(&app, "POST", "/v1/config/agents/calc-agent/publish", None).await;
     assert_eq!(s, StatusCode::OK);
 
     // A session for `calc-agent` with NO inline mcp_servers: the management
-    // plane's config supplies the server + credential.
+    // plane's frozen Agent snapshot supplies the server and provisioning binds
+    // its URL to the selected Vault credential.
     let (s, session) = call(
         &app,
         "POST",
         "/v1/sessions",
-        Some(json!({ "agent": "calc-agent" })),
+        Some(json!({ "agent": "calc-agent", "vault_ids": [vault_id] })),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
@@ -456,9 +443,12 @@ async fn management_plane_agent_mcp_config_takes_effect_without_inline_servers()
         events
             .iter()
             .any(|e| e["type"] == "agent.mcp_tool_result" && e["content"][0]["text"] == "5"),
-        "the tool result is 5"
+        "the tool result is 5: {events:?}"
     );
-    assert!(agent_messages(&events).iter().any(|m| m.contains('5')));
+    assert!(
+        agent_messages(&events).iter().any(|m| m.contains('5')),
+        "final message reports 5: {events:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -1,8 +1,8 @@
 //! Config resolver (ADR-0043) — the management plane's *read/resolution face*.
 //! It owns **no aggregate**; it reads the config stores (`awaken-model-catalog`,
-//! `awaken-credential-vault`, and — in the assembly — agent config) and produces the
-//! already-resolved input the runtime executes: an [`InferenceTriple`] plus an
-//! already-materialized secret ([`RedactedString`]).
+//! `awaken-credential-vault`, and — in the assembly — agent config). Publication
+//! freezes runtime access through [`InferenceAccessPublisher`]; the concrete
+//! [`ResolvedInference`] path remains for management preview/probe operations.
 //!
 //! This is the crate formerly mislabeled "inference": it *resolves* config into
 //! an executable binding; it does **not** run inference (that is
@@ -49,9 +49,10 @@ pub mod stores;
 /// Telemetry ceiling composition (ADR-0050 D3): Org baseline tightened by lower layers.
 pub mod telemetry;
 pub use stores::{
-    AgentInputBindingRepository, AgentInputRepositoryError, InMemoryAgentInputBindingRepository,
-    InMemoryMcpStore, InMemoryProfileStore, InMemoryWebhookStore, InferenceProfileStore, McpStore,
-    WebhookOutboxEvent, WebhookStore, validate_agent_input_revision,
+    AgentInputBindingRepository, AgentInputRepositoryError, ConfigRepositoryError,
+    InMemoryAgentInputBindingRepository, InMemoryMcpStore, InMemoryProfileStore,
+    InMemoryWebhookStore, InferenceProfileStore, McpStore, WebhookOutboxEvent, WebhookStore,
+    validate_agent_input_revision,
 };
 pub use telemetry::{RedactionMode, TelemetryCeiling};
 
@@ -772,38 +773,6 @@ pub async fn resolve_mcp_servers(
     Ok(resolved)
 }
 
-/// The complete run input the resolver hands the run loop. Two parts travel
-/// together but are **not** merged: the [`ExecutableAgentSnapshot`] is
-/// serializable and secret-free (it can be persisted/replayed), while
-/// [`ResolvedInference`] carries the non-serializable `RedactedString` (it exists
-/// only in memory, for this run). This is the D6/D9-correct reading of "the
-/// snapshot carries the resolved credential" — the secret never enters the
-/// persisted snapshot.
-pub struct RunInput {
-    pub snapshot: awaken_runtime_contract::snapshot::ExecutableAgentSnapshot,
-    pub inference: ResolvedInference,
-}
-
-/// Orchestrate a run: take a compiled (agent-config) snapshot, read its selected
-/// model from `resolved_spec.model_binding`, resolve the inference triple +
-/// materialize the credential against the catalog/credential stores, and bundle
-/// both into a [`RunInput`]. The model is **never re-picked** here (G22): the
-/// snapshot's `model_ref` is authoritative.
-pub async fn resolve_run(
-    snapshot: awaken_runtime_contract::snapshot::ExecutableAgentSnapshot,
-    catalog: &ProviderCatalog,
-    binding: &CredentialBinding,
-    sources: &dyn SourceLookup,
-    secret_store: &dyn SecretStore,
-) -> Result<RunInput, ResolveError> {
-    let model_id = snapshot.resolved_spec.model_binding.model_ref.clone();
-    let inference = resolve_inference(catalog, &model_id, binding, sources, secret_store).await?;
-    Ok(RunInput {
-        snapshot,
-        inference,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -912,7 +881,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_input_snapshot_is_secret_free_while_credential_rides_alongside() {
+    async fn preview_resolution_does_not_mutate_secret_free_snapshot() {
         use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
         use awaken_runtime_contract::snapshot::{
             AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
@@ -959,9 +928,9 @@ mod tests {
             fingerprint: CatalogFingerprint("fp".into()),
         };
 
-        let run = resolve_run(
-            snapshot,
+        let inference = resolve_inference(
             &catalog(),
+            &snapshot.resolved_spec.model_binding.model_ref,
             &CredentialBinding::Exact {
                 credential_source_id: CredentialSourceId(source.id.0.clone()),
             },
@@ -972,14 +941,13 @@ mod tests {
         .unwrap();
 
         // The persisted snapshot serializes with NO plaintext secret (D6/D9).
-        let json = serde_json::to_string(&run.snapshot).unwrap();
+        let json = serde_json::to_string(&snapshot).unwrap();
         assert!(!json.contains("sk-topsecret"));
-        // The credential rides in the non-serialized inference half, at the seam.
         assert_eq!(
-            run.inference.credential.unwrap().expose_secret(),
+            inference.credential.unwrap().expose_secret(),
             "sk-topsecret"
         );
-        assert_eq!(run.inference.triple.model_id, "claude-opus-4-8");
+        assert_eq!(inference.triple.model_id, "claude-opus-4-8");
     }
 
     #[test]

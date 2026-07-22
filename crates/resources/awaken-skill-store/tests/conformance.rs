@@ -19,7 +19,7 @@ fn version(id: &str, ordinal: u64, marker: &[u8]) -> SkillVersion {
         },
     ];
     SkillVersion {
-        id: format!("skver_{id}_{ordinal}"),
+        id: format!("skver_{id}_{ordinal}").into(),
         skill_id: id.into(),
         version: ordinal,
         name: id.into(),
@@ -27,6 +27,7 @@ fn version(id: &str, ordinal: u64, marker: &[u8]) -> SkillVersion {
         directory: format!("/skills/{id}"),
         bundle_sha256: bundle_sha256(&files),
         files,
+        created_unix_nanos: ordinal,
     }
 }
 
@@ -37,6 +38,7 @@ fn definition(workspace: &str, id: &str) -> SkillDefinition {
         display_title: Some(id.into()),
         latest_version: 1,
         last_version: 1,
+        timestamps: Default::default(),
     }
 }
 

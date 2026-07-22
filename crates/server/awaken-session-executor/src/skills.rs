@@ -190,7 +190,7 @@ pub(crate) async fn wire_skills(
             }
             let directory = format!(
                 "{DELIVERED_SKILLS_SUBDIR}/{}",
-                awaken_skill_store::sanitize_stem(&version.skill_id)
+                awaken_skill_store::sanitize_stem(version.skill_id.as_str())
             );
             let materialized = version
                 .files
@@ -211,7 +211,7 @@ pub(crate) async fn wire_skills(
                 })?
                 .to_string();
             files.push(SkillFile {
-                id: version.skill_id,
+                id: version.skill_id.to_string(),
                 content,
                 dir: Some(directory),
             });
@@ -297,6 +297,7 @@ mod tests {
                     display_title: None,
                     latest_version: 1,
                     last_version: 1,
+                    timestamps: Default::default(),
                 },
                 SkillVersion {
                     id: "skver-greet-1".into(),
@@ -307,6 +308,7 @@ mod tests {
                     directory: "/skills/greet".into(),
                     bundle_sha256: bundle_sha256(&bundle),
                     files: bundle,
+                    created_unix_nanos: 0,
                 },
             )
             .await
@@ -315,7 +317,7 @@ mod tests {
         // The host's snapshot → SkillFiles.
         let version = store.version("ws", "greet", 1).await.unwrap().unwrap();
         let files = vec![SkillFile {
-            id: version.skill_id.clone(),
+            id: version.skill_id.to_string(),
             content: String::from_utf8(version.skill_md().unwrap().to_vec()).unwrap(),
             dir: None,
         }];

@@ -54,6 +54,7 @@ fn resource_catalog() -> std::sync::Arc<SqliteAdminStore> {
                     metadata: Default::default(),
                     state: ResourceState::Active,
                     current_config_version: ConfigVersion::INITIAL,
+                    timestamps: Default::default(),
                 },
                 MemoryStoreConfigVersion {
                     memory_store_id: id.into(),
@@ -551,6 +552,7 @@ async fn terminal_session_never_deletes_a_platform_repository_definition() {
                 metadata: Default::default(),
                 state: ResourceState::Active,
                 current_config_version: ConfigVersion::INITIAL,
+                timestamps: Default::default(),
             },
             RepositoryConfigVersion {
                 repository_id: "platform-repository".into(),

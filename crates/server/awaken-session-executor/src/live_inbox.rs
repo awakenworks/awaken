@@ -72,7 +72,10 @@ impl SharedHost {
     /// running. A pure lookup — never materializes a session — so wire
     /// handlers can probe without side effects.
     pub async fn live_inbox(&self, thread: &str) -> Option<LiveInbox> {
-        let sessions = self.sessions.lock().await;
-        sessions.get(thread)?.live_inbox()
+        self.session_slots
+            .read(thread, |slot| {
+                slot.runtime.as_ref().and_then(|ctx| ctx.live_inbox())
+            })
+            .flatten()
     }
 }

@@ -11,8 +11,7 @@
 //! even to the host loopback), the same [`ThreadEgress`] registrations that drive
 //! the native path's bash-tool jail.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
@@ -87,36 +86,27 @@ impl LaunchSource {
 /// [`SandboxChannelSource`] for the ACP agent launch. A thread with no entry
 /// shares the host network.
 #[derive(Clone, Default)]
-pub struct ThreadEgress(Arc<Mutex<HashMap<String, bool>>>);
+pub struct ThreadEgress(crate::session_slot::SessionRuntimeSlots);
 
 impl ThreadEgress {
     pub fn new() -> Self {
         Self::default()
     }
 
+    pub(crate) fn from_slots(slots: crate::session_slot::SessionRuntimeSlots) -> Self {
+        Self(slots)
+    }
+
     /// Register `thread`'s deny-egress policy (replaces any prior registration).
     pub fn set(&self, thread: &str, deny: bool) {
-        self.0
-            .lock()
-            .expect("thread egress mutex poisoned")
-            .insert(thread.to_string(), deny);
+        self.0.update(thread, |slot| slot.deny_egress = deny);
     }
 
     /// Whether `thread` is registered deny-egress.
     pub fn denies(&self, thread: &str) -> bool {
         self.0
-            .lock()
-            .expect("thread egress mutex poisoned")
-            .get(thread)
-            .copied()
+            .read(thread, |slot| slot.deny_egress)
             .unwrap_or(false)
-    }
-
-    pub(crate) fn remove(&self, thread: &str) {
-        self.0
-            .lock()
-            .expect("thread egress mutex poisoned")
-            .remove(thread);
     }
 }
 
@@ -127,41 +117,28 @@ impl ThreadEgress {
 /// keeps the host's synthesized spec. Mirrors [`ThreadEgress`] — the overlay's
 /// `NetworkPolicy` supersedes the coarse egress bool when both are present.
 #[derive(Clone, Default)]
-pub struct ThreadSandbox(
-    Arc<Mutex<HashMap<String, awaken_provisioning_contract::SandboxOverride>>>,
-);
+pub struct ThreadSandbox(crate::session_slot::SessionRuntimeSlots);
 
 impl ThreadSandbox {
     pub fn new() -> Self {
         Self::default()
     }
 
+    pub(crate) fn from_slots(slots: crate::session_slot::SessionRuntimeSlots) -> Self {
+        Self(slots)
+    }
+
     /// Register `thread`'s sandbox overlay (replaces any prior registration).
     pub fn set(&self, thread: &str, over: awaken_provisioning_contract::SandboxOverride) {
-        self.0
-            .lock()
-            .expect("thread sandbox mutex poisoned")
-            .insert(thread.to_string(), over);
+        self.0.update(thread, |slot| slot.sandbox = Some(over));
     }
 
     /// Overlay `thread`'s override onto `spec` (no-op when unregistered).
     pub fn apply(&self, thread: &str, spec: pc::SandboxSpec) -> pc::SandboxSpec {
-        match self
-            .0
-            .lock()
-            .expect("thread sandbox mutex poisoned")
-            .get(thread)
-        {
-            Some(over) => over.apply(spec),
-            None => spec,
-        }
-    }
-
-    pub(crate) fn remove(&self, thread: &str) {
         self.0
-            .lock()
-            .expect("thread sandbox mutex poisoned")
-            .remove(thread);
+            .read(thread, |slot| slot.sandbox.clone())
+            .flatten()
+            .map_or(spec.clone(), |over| over.apply(spec))
     }
 }
 
@@ -341,13 +318,11 @@ const WORKDIR_CONFIG_HOME: &str = ".acp-config";
 /// does into the bwrap sandbox it launches the CLI in. Opaque like [`ThreadEgress`] —
 /// the internal `StagedResources` never crosses the public boundary.
 #[derive(Clone, Default)]
-pub struct ThreadResources(Arc<Mutex<HashMap<String, crate::provisioning::StagedResources>>>);
+pub struct ThreadResources(crate::session_slot::SessionRuntimeSlots);
 
 impl ThreadResources {
     /// Wrap the host's registry handle (the same `Arc` `sandbox_spec` reads).
-    pub(crate) fn new(
-        inner: Arc<Mutex<HashMap<String, crate::provisioning::StagedResources>>>,
-    ) -> Self {
+    pub(crate) fn new(inner: crate::session_slot::SessionRuntimeSlots) -> Self {
         Self(inner)
     }
 
@@ -355,9 +330,7 @@ impl ThreadResources {
     /// [`pc::MountRequirement`] the provider realizes. Empty when none are staged.
     fn mounts_for(&self, thread: &str) -> Vec<pc::MountRequirement> {
         self.0
-            .lock()
-            .ok()
-            .and_then(|g| g.get(thread).map(|s| s.mounts.clone()))
+            .read(thread, |slot| slot.resources.mounts.clone())
             .unwrap_or_default()
     }
 }
@@ -1048,6 +1021,7 @@ pub(crate) fn spawn_container_reaper<R: awaken_sandbox_container::ContainerRunti
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
 
     fn base() -> std::path::PathBuf {
         std::env::temp_dir().join(format!("awaken-sbxsrc-ut-{}", std::process::id()))
@@ -1305,9 +1279,8 @@ mod tests {
         // not only the in-process Workdir — the same registry the native sandbox_spec
         // reads, mapped to bwrap-realizable mounts.
         let registry = ThreadResources::default();
-        registry.0.lock().unwrap().insert(
-            "t1".to_string(),
-            crate::provisioning::StagedResources {
+        registry.0.update("t1", |slot| {
+            slot.resources = crate::provisioning::StagedResources {
                 mounts: vec![pc::MountRequirement {
                     mount_id: "id-data".into(),
                     source: pc::MountSource::InlineBytes {
@@ -1320,8 +1293,8 @@ mod tests {
                     required: true,
                 }],
                 ..Default::default()
-            },
-        );
+            }
+        });
         let src = SandboxChannelSource::new(base(), AcpLaunch::custom(vec!["a".into()], vec![]))
             .with_thread_resources(registry);
         let spec = src.spec("t1");
@@ -1408,9 +1381,8 @@ mod tests {
         // sandbox, yet still materializes the session's staged resource mounts — so a
         // bwrap-less worker delivers resources, not only MCP.
         let registry = ThreadResources::default();
-        registry.0.lock().unwrap().insert(
-            "t".to_string(),
-            crate::provisioning::StagedResources {
+        registry.0.update("t", |slot| {
+            slot.resources = crate::provisioning::StagedResources {
                 mounts: vec![pc::MountRequirement {
                     mount_id: "id-x".into(),
                     source: pc::MountSource::InlineBytes {
@@ -1423,8 +1395,8 @@ mod tests {
                     required: true,
                 }],
                 ..Default::default()
-            },
-        );
+            }
+        });
         let source = SandboxChannelSource::workdir(
             base(),
             LaunchSource::Fixed(AcpLaunch::custom(successful_command(), vec![])),

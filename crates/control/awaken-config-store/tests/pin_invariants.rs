@@ -165,8 +165,13 @@ fn configs_round_trip_through_json_losslessly() {
         "acp".into(),
         json!({ "compact_window": 120_000, "mcp_servers": [{"name": "gh"}] }),
     )]);
-    full.skills = vec![json!({"id": "review"})];
-    full.mcp_servers = vec![json!({"name": "gh", "url": "https://mcp.example"})];
+    full.skill_ids = vec!["review".into()];
+    full.mcp_servers = vec![
+        awaken_runtime_contract::agent_bindings::AgentMcpServerBinding {
+            name: "gh".into(),
+            url: "https://mcp.example".into(),
+        },
+    ];
 
     for cfg in [
         config("agent-native", "genai"),

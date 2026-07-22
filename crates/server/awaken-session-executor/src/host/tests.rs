@@ -207,7 +207,7 @@ use awaken_resource_contract::ResourceAccess;
 
 fn bind_test_memory(host: &SharedHost, thread: &str, store_id: &str, writable: bool) {
     let config = awaken_resource_contract::MemoryStoreConfigVersion {
-        memory_store_id: store_id.to_string(),
+        memory_store_id: store_id.to_string().into(),
         version: awaken_resource_contract::ConfigVersion::INITIAL,
         recall_policy: Default::default(),
         extraction_policy: Default::default(),
@@ -273,7 +273,7 @@ fn effective_resources(
                     "memory_store" => ResolvedInputSource::MemoryStore {
                         memory_store_id: MemoryStoreId::from(resource.id.clone()),
                         config: awaken_resource_contract::MemoryStoreConfigVersion {
-                            memory_store_id: resource.id.clone(),
+                            memory_store_id: resource.id.clone().into(),
                             version: awaken_resource_contract::ConfigVersion::INITIAL,
                             recall_policy: Default::default(),
                             extraction_policy: Default::default(),
@@ -283,7 +283,7 @@ fn effective_resources(
                     "github_repository" => ResolvedInputSource::Repository {
                         repository_id: RepositoryId::new(format!("test-repo-{index}")),
                         config: awaken_resource_contract::RepositoryConfigVersion {
-                            repository_id: format!("test-repo-{index}"),
+                            repository_id: format!("test-repo-{index}").into(),
                             version: awaken_resource_contract::ConfigVersion::INITIAL,
                             remote_url: resource.id,
                             credential_binding: None,
@@ -1397,7 +1397,9 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         .expect("session environment");
     let handle_before = environment_before.handle();
     assert!(
-        host.sessions.lock().await.contains_key("t-attach"),
+        host.session_slots
+            .read("t-attach", |slot| slot.runtime.is_some())
+            .unwrap_or(false),
         "the first turn caches the thread's sandbox ctx"
     );
     let before = host.sandbox_spec("t-attach").mounts.len();
@@ -1419,7 +1421,10 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
 
     // The cached sandbox was evicted (so the next turn rebuilds) ...
     assert!(
-        !host.sessions.lock().await.contains_key("t-attach"),
+        !host
+            .session_slots
+            .read("t-attach", |slot| slot.runtime.is_some())
+            .unwrap_or(false),
         "attach evicts the cached ctx so the next turn rebuilds with the mount"
     );
     assert_eq!(
@@ -1681,16 +1686,17 @@ async fn activation_applies_current_resource_state_as_a_deny_only_overlay() {
     catalog
         .create_memory_store(
             MemoryStoreDefinition {
-                id: store_id.clone(),
+                id: store_id.clone().into(),
                 workspace_id: host.local_workspace().into(),
                 name: "memory".into(),
                 description: String::new(),
                 metadata: Default::default(),
                 state: ResourceState::Active,
                 current_config_version: ConfigVersion::INITIAL,
+                timestamps: Default::default(),
             },
             MemoryStoreConfigVersion {
-                memory_store_id: store_id.clone(),
+                memory_store_id: store_id.clone().into(),
                 version: ConfigVersion::INITIAL,
                 recall_policy: Default::default(),
                 extraction_policy: Default::default(),
@@ -1736,16 +1742,17 @@ async fn memory_activation_enforces_catalog_workspace_without_iam_policy_logic()
     catalog
         .create_memory_store(
             MemoryStoreDefinition {
-                id: store_id.clone(),
+                id: store_id.clone().into(),
                 workspace_id: "workspace-a".into(),
                 name: "private-memory".into(),
                 description: String::new(),
                 metadata: Default::default(),
                 state: ResourceState::Active,
                 current_config_version: ConfigVersion::INITIAL,
+                timestamps: Default::default(),
             },
             MemoryStoreConfigVersion {
-                memory_store_id: store_id.clone(),
+                memory_store_id: store_id.clone().into(),
                 version: ConfigVersion::INITIAL,
                 recall_policy: Default::default(),
                 extraction_policy: Default::default(),
@@ -1966,11 +1973,7 @@ async fn a_github_repository_resource_injects_a_scoped_github_mcp_server() {
     )
     .await
     .unwrap();
-    let managed = managed_with_resource_source(host.clone()).with_mcp(
-        credentials,
-        secrets,
-        Arc::new(awaken_config_resolver::InMemoryMcpStore::new()),
-    );
+    let managed = managed_with_resource_source(host.clone()).with_credentials(credentials, secrets);
 
     managed
         .prepare_session(
@@ -2288,16 +2291,17 @@ async fn activation_validates_the_frozen_config_without_selecting_current_again(
     catalog
         .create_memory_store(
             MemoryStoreDefinition {
-                id: store_id.clone(),
-                workspace_id: workspace.clone(),
+                id: store_id.clone().into(),
+                workspace_id: workspace.clone().into(),
                 name: "memory".into(),
                 description: String::new(),
                 metadata: Default::default(),
                 state: ResourceState::Active,
                 current_config_version: ConfigVersion::INITIAL,
+                timestamps: Default::default(),
             },
             MemoryStoreConfigVersion {
-                memory_store_id: store_id.clone(),
+                memory_store_id: store_id.clone().into(),
                 version: ConfigVersion::INITIAL,
                 recall_policy: Default::default(),
                 extraction_policy: Default::default(),
@@ -2310,7 +2314,7 @@ async fn activation_validates_the_frozen_config_without_selecting_current_again(
             &workspace,
             ConfigVersion::INITIAL,
             MemoryStoreConfigVersion {
-                memory_store_id: store_id.clone(),
+                memory_store_id: store_id.clone().into(),
                 version: ConfigVersion(2),
                 recall_policy: Default::default(),
                 extraction_policy: Default::default(),
@@ -2395,10 +2399,11 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
         .create(
             SkillDefinition {
                 id: "governed".into(),
-                workspace_id: workspace.clone(),
+                workspace_id: workspace.clone().into(),
                 display_title: None,
                 latest_version: 1,
                 last_version: 1,
+                timestamps: Default::default(),
             },
             SkillVersion {
                 id: "skver_governed_1".into(),
@@ -2409,6 +2414,7 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
                 directory: "/skills/governed".into(),
                 bundle_sha256: hash.clone(),
                 files,
+                created_unix_nanos: 0,
             },
         )
         .await
@@ -2679,10 +2685,9 @@ async fn retained_session_accepts_only_an_adoption_of_its_exact_sandbox() {
         .expect("initial session");
     let retained_handle = original.env.handle();
     assert!(
-        host.sessions
-            .lock()
-            .await
-            .remove("t-retained-adoption")
+        host.session_slots
+            .modify("t-retained-adoption", |slot| slot.runtime.take())
+            .flatten()
             .is_some(),
         "only the runtime context is evicted"
     );
@@ -3062,13 +3067,9 @@ async fn end_session_disposes_the_threads_sandbox() {
     // Hold the live sandbox handle before teardown so we can observe its disposal
     // even after the ctx is evicted from the registry.
     let env = host
-        .sessions
-        .lock()
+        .session_environment("t-end")
         .await
-        .get("t-end")
-        .expect("the first turn caches the thread's sandbox ctx")
-        .env
-        .clone();
+        .expect("the first turn caches the thread's sandbox ctx");
     assert_eq!(
         env.status().await.expect("status"),
         SandboxStatus::Ready,
@@ -3098,7 +3099,10 @@ async fn end_session_disposes_the_threads_sandbox() {
 
     // The cached ctx is evicted ...
     assert!(
-        !host.sessions.lock().await.contains_key("t-end"),
+        !host
+            .session_slots
+            .read("t-end", |slot| slot.runtime.is_some())
+            .unwrap_or(false),
         "end_session evicts the cached ctx"
     );
     assert!(
@@ -3113,9 +3117,7 @@ async fn end_session_disposes_the_threads_sandbox() {
         "end_session disposes the sandbox (workspace reaped), unlike an evict-rebuild"
     );
     assert!(host.registered_thread_workspace("t-end").is_none());
-    assert!(!host.thread_memory.lock().unwrap().contains_key("t-end"));
-    assert!(!host.thread_resources.lock().unwrap().contains_key("t-end"));
-    assert!(!host.thread_mcp.lock().unwrap().contains_key("t-end"));
+    assert!(!host.session_slots.contains("t-end"));
     assert!(host.inference_routing.override_for("t-end").is_none());
     assert!(!host.thread_egress().denies("t-end"));
 

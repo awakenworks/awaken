@@ -38,7 +38,6 @@ RESOURCE_APPLICATION_SOURCES = (
     "crates/server/awaken-session-executor/src/resource_scope.rs",
     "crates/server/awaken-session-executor/src/skill_catalog.rs",
     "crates/server/awaken-session-executor/src/skills_api.rs",
-    "crates/server/awaken-server/src/resource_scope_fence.rs",
 )
 
 # HTTP adapters are PEP consumers, not Workspace selectors. Every handler must
