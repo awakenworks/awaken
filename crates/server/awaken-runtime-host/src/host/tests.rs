@@ -7,6 +7,13 @@ use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Mutex, atomic::AtomicUsize};
 
+fn resource_catalog() -> Arc<awaken_admin_config_api::SqliteAdminStore> {
+    Arc::new(
+        awaken_admin_config_api::SqliteAdminStore::open_in_memory()
+            .expect("open ephemeral Resource Catalog"),
+    )
+}
+
 #[derive(Default)]
 pub(super) struct TestResourceLifecycle {
     intents: Mutex<BTreeMap<String, awaken_resource_contract::ResourcePurgeIntent>>,
@@ -1572,7 +1579,7 @@ async fn activation_applies_current_resource_state_as_a_deny_only_overlay() {
 
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let store_id = test_memory_store_id();
-    let catalog = Arc::new(awaken_config_resolver::InMemoryResourceCatalog::new());
+    let catalog = resource_catalog();
     catalog
         .create_memory_store(
             MemoryStoreDefinition {
@@ -1627,7 +1634,7 @@ async fn memory_activation_enforces_catalog_workspace_without_iam_policy_logic()
 
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let store_id = test_memory_store_id();
-    let catalog = Arc::new(awaken_config_resolver::InMemoryResourceCatalog::new());
+    let catalog = resource_catalog();
     catalog
         .create_memory_store(
             MemoryStoreDefinition {
@@ -2150,9 +2157,7 @@ async fn runtime_stages_exactly_the_effective_resource_list() {
 async fn a_bound_resource_with_a_missing_backing_store_fails_the_session_closed() {
     use awaken_protocol_managed::SessionRuntime;
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
-    let managed = crate::ManagedHost::new(host.clone()).with_resource_validator(Arc::new(
-        awaken_config_resolver::InMemoryResourceCatalog::new(),
-    ));
+    let managed = crate::ManagedHost::new(host.clone()).with_resource_validator(resource_catalog());
     let mut init = bare_session("a", host.local_workspace());
     init.resources = effective_resources(vec![TestInput {
         kind: "memory_store".into(),
@@ -2181,7 +2186,7 @@ async fn activation_validates_the_frozen_config_without_selecting_current_again(
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let workspace = host.local_workspace().to_string();
     let store_id = test_memory_store_id();
-    let catalog = Arc::new(awaken_config_resolver::InMemoryResourceCatalog::new());
+    let catalog = resource_catalog();
     catalog
         .create_memory_store(
             MemoryStoreDefinition {

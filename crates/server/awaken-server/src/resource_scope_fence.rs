@@ -109,7 +109,7 @@ fn memory_store_id(path: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_config_resolver::InMemoryResourceCatalog;
+    use awaken_admin_config_api::SqliteAdminStore;
     use awaken_protocol_managed::resource_plane::{
         ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, ResourceState,
     };
@@ -158,7 +158,8 @@ mod tests {
 
     #[test]
     fn catalog_partition_fences_by_scope() {
-        let catalog = Arc::new(InMemoryResourceCatalog::new());
+        let catalog =
+            Arc::new(SqliteAdminStore::open_in_memory().expect("open ephemeral Resource Catalog"));
         catalog
             .create_memory_store(
                 MemoryStoreDefinition {

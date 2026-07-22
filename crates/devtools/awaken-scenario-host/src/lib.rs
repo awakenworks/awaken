@@ -32,7 +32,8 @@ pub use awaken_runtime_host::{
     ConfigService, ExtMcpProbe, HostResume, InferenceExecutorMaterializer, ManagedHost,
     PreparedMcpRefresh, ProtocolHost, SharedHost, SkillContext, SkillSpec, ThreadEvent,
     ThreadEventHub, VaultRefresher, advertised_tools, capabilities_router, config_router,
-    content_fingerprint, durable_ops_router, memory_stores_router, parse_skill_md, skills_router,
+    content_fingerprint, durable_ops_router, memory_stores_router_with_catalog, parse_skill_md,
+    skills_router,
 };
 
 use awaken_server::placement;
@@ -80,7 +81,10 @@ pub fn build_unscoped_resource_router() -> Router {
     let host = Arc::new(SharedHost::new(Arc::new(EchoModel), "unscoped-resource"));
     Router::new()
         .merge(files_router(host.clone()))
-        .merge(memory_stores_router(host.clone()))
+        .merge(memory_stores_router_with_catalog(
+            host.clone(),
+            scenario_resource_catalog(),
+        ))
         .merge(skills_router(host))
 }
 struct RouteProvider;
@@ -211,7 +215,10 @@ fn scenario_resource_catalog() -> Arc<dyn awaken_protocol_managed::ResourceCatal
                 .filter(|value| !value.trim().is_empty())
         });
     let Some(root) = root else {
-        return Arc::new(awaken_config_resolver::InMemoryResourceCatalog::new());
+        return Arc::new(
+            awaken_admin_config_api::SqliteAdminStore::open_in_memory()
+                .expect("open ephemeral scenario resource catalog"),
+        );
     };
     let root = std::path::PathBuf::from(root);
     std::fs::create_dir_all(&root).expect("create scenario resource registry directory");

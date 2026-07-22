@@ -742,7 +742,7 @@ mod tests {
     /// two data-plane sources the `CatalogCapabilityReader` folds in when wired.
     #[tokio::test]
     async fn host_inventory_reports_put_memory_stores_and_skills() {
-        use awaken_config_resolver::InMemoryResourceCatalog;
+        use awaken_admin_config_api::SqliteAdminStore;
         use awaken_protocol_managed::resource_plane::{
             ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, ResourceCatalog,
             ResourceState,
@@ -752,7 +752,8 @@ mod tests {
             bundle_sha256,
         };
 
-        let registry = Arc::new(InMemoryResourceCatalog::new());
+        let registry =
+            Arc::new(SqliteAdminStore::open_in_memory().expect("open ephemeral Resource Catalog"));
         for (id, state) in [
             ("mem-1", ResourceState::Active),
             ("mem-gone", ResourceState::Archived),

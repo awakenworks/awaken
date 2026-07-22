@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use awaken_protocol_managed::WorkspaceScope;
 use awaken_runtime_contract::llm::{ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult};
-use awaken_runtime_host::{SharedHost, memory_stores_router, memory_stores_router_with_catalog};
+use awaken_runtime_host::{SharedHost, memory_stores_router_with_catalog};
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -35,7 +35,14 @@ fn router() -> Router {
         SharedHost::new(Arc::new(NoLlm), "test")
             .with_resource_lifecycle(support::resource_lifecycle()),
     );
-    memory_stores_router(host)
+    memory_stores_router_with_catalog(host, resource_catalog())
+}
+
+fn resource_catalog() -> Arc<awaken_admin_config_api::SqliteAdminStore> {
+    Arc::new(
+        awaken_admin_config_api::SqliteAdminStore::open_in_memory()
+            .expect("open ephemeral Resource Catalog"),
+    )
 }
 
 async fn call(
@@ -255,7 +262,7 @@ async fn workspace_and_lifecycle_are_intrinsic_resource_guards() {
         SharedHost::new(Arc::new(NoLlm), "test")
             .with_resource_lifecycle(support::resource_lifecycle()),
     );
-    let catalog = Arc::new(awaken_config_resolver::InMemoryResourceCatalog::new());
+    let catalog = resource_catalog();
     let router = memory_stores_router_with_catalog(host, catalog);
     let (status, created) = call_scoped(
         &router,

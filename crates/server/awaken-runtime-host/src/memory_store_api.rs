@@ -117,16 +117,6 @@ struct MemoryStoreApi {
     catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
 }
 
-/// Mount the memory-store API over an ephemeral resource catalog. Product
-/// composition roots must use [`memory_stores_router_with_catalog`] so API and
-/// Session resolution share one definition/configuration/lifecycle truth.
-pub fn memory_stores_router(host: Arc<SharedHost>) -> Router {
-    memory_stores_router_with_catalog(
-        host,
-        Arc::new(awaken_config_resolver::InMemoryResourceCatalog::new()),
-    )
-}
-
 /// Mount the Memory API over the same Resource Catalog used by Session
 /// resolution. Composition roots that manage resources must use this variant so
 /// create/archive/delete and activation share one lifecycle truth.

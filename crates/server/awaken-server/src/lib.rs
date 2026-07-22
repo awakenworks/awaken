@@ -48,8 +48,8 @@ pub use awaken_runtime_host::{
     ConfigService, ExtMcpProbe, HostResume, InferenceExecutorMaterializer, ManagedHost,
     PreparedMcpRefresh, ProtocolHost, SharedHost, SkillContext, SkillSpec, ThreadEvent,
     ThreadEventHub, VaultRefresher, advertised_tools, capabilities_router, config_router,
-    content_fingerprint, durable_ops_router, memory_stores_router,
-    memory_stores_router_with_catalog, parse_skill_md, skills_router,
+    content_fingerprint, durable_ops_router, memory_stores_router_with_catalog, parse_skill_md,
+    skills_router,
 };
 pub use relay_hand::relay_hand_executor_factory;
 pub use worker_registry::{
@@ -121,7 +121,7 @@ pub fn mount(host: Arc<SharedHost>) -> Router {
     // store and their secret is sealed in the vault, so a webhook needs the config
     // plane. The plain mount has neither, so it wires no sink — a bare host emits no
     // webhooks (identical to an unconfigured plane before).
-    let catalog = Arc::new(awaken_config_resolver::InMemoryResourceCatalog::new());
+    let catalog = ephemeral_resource_catalog();
     let state = local_managed_state(host.clone(), catalog.clone());
     mount_with_managed_and_resource_catalog(host, state, catalog)
 }
@@ -261,10 +261,13 @@ mod role_tests {
 /// a vault-aware `ManagedState` over an MCP-wired `ManagedHost` (ADR-0043 Phase
 /// 3); every other mode goes through [`mount`], whose state is the plain host.
 pub fn mount_with_managed(host: Arc<SharedHost>, managed_state: Arc<ManagedState>) -> Router {
-    mount_with_managed_over(
-        host,
-        managed_state,
-        Arc::new(awaken_config_resolver::InMemoryResourceCatalog::new()),
+    mount_with_managed_over(host, managed_state, ephemeral_resource_catalog())
+}
+
+fn ephemeral_resource_catalog() -> Arc<dyn awaken_protocol_managed::ResourceCatalog> {
+    Arc::new(
+        awaken_admin_config_api::SqliteAdminStore::open_in_memory()
+            .expect("open ephemeral Resource Catalog"),
     )
 }
 

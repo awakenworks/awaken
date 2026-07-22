@@ -28,7 +28,6 @@ RESOURCE_PLANE_CRATES = {
 RESOURCE_APPLICATION_SOURCES = (
     "crates/control/awaken-admin-config-api/src/postgres_resource_catalog.rs",
     "crates/control/awaken-admin-config-api/src/sqlite_resource_catalog.rs",
-    "crates/control/awaken-config-resolver/src/resource_catalog.rs",
     "crates/server/awaken-managed-routers/src/files.rs",
     "crates/server/awaken-protocol-managed/src/state/resource.rs",
     "crates/server/awaken-protocol-managed/src/state/resources.rs",

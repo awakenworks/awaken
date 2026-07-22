@@ -3,8 +3,8 @@
 //! session, but a `memory_store` binds at session-create time only — attaching one
 //! to a running session fails closed with a 400 (`invalid_request_error`).
 
+use awaken_admin_config_api::SqliteAdminStore;
 use awaken_agent_contract::agent::content::ContentBlock;
-use awaken_config_resolver::InMemoryResourceCatalog;
 use awaken_protocol_managed::{
     AgentConfigSource, AgentConfigView, ManagedState, OutcomeReport, RunError, SessionInit,
     SessionRuntime, StepOutcome, ToolPermissionDecision, router,
@@ -39,8 +39,10 @@ fn input(
     }
 }
 
-fn resource_catalog() -> std::sync::Arc<InMemoryResourceCatalog> {
-    let catalog = std::sync::Arc::new(InMemoryResourceCatalog::new());
+fn resource_catalog() -> std::sync::Arc<SqliteAdminStore> {
+    let catalog = std::sync::Arc::new(
+        SqliteAdminStore::open_in_memory().expect("open ephemeral Resource Catalog"),
+    );
     for id in ["mem_1", "agent-memory", "session-memory"] {
         catalog
             .create_memory_store(

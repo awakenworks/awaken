@@ -199,17 +199,21 @@ fn in_memory_management_stores() -> ManagementStores {
         awaken_protocol_managed::SqliteManagedSessionRepository::open_in_memory()
             .expect("open ephemeral managed Session repository"),
     );
+    let admin = Arc::new(
+        awaken_admin_config_api::SqliteAdminStore::open_in_memory()
+            .expect("open ephemeral admin store"),
+    );
     ManagementStores {
         workspace_root: None,
         resource_plane: ResourcePlaneStores::ephemeral(),
         catalog: Arc::new(awaken_model_catalog::repo::InMemoryCatalogRepo::new()),
         credentials: Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new()),
         secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
-        profiles: Arc::new(awaken_admin_config_api::InMemoryProfileStore::new()),
-        mcp: Arc::new(awaken_admin_config_api::InMemoryMcpStore::new()),
-        resources: Arc::new(awaken_admin_config_api::InMemoryAgentInputBindingRepository::new()),
-        resource_catalog: Arc::new(awaken_config_resolver::InMemoryResourceCatalog::new()),
-        webhooks: Arc::new(awaken_admin_config_api::InMemoryWebhookStore::new()),
+        profiles: admin.clone(),
+        mcp: admin.clone(),
+        resources: admin.clone(),
+        resource_catalog: admin.clone(),
+        webhooks: admin,
         sessions: sessions.clone(),
         memory_extractions: sessions,
         config: Arc::new(

@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use awaken_managed_routers::{default_models, files_router, models_router};
 use awaken_runtime_contract::llm::{ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult};
-use awaken_runtime_host::{SharedHost, memory_stores_router, skills_router};
+use awaken_runtime_host::{SharedHost, memory_stores_router_with_catalog, skills_router};
 use awaken_tenancy::WorkspaceScope;
 use axum::Router;
 use axum::body::Body;
@@ -39,7 +39,13 @@ async fn the_resource_planes_merge_over_one_host_without_route_conflicts() {
     // Merge the same way the assembly binary does: every plane's router over the one
     // shared host, plus the static model directory.
     let app = Router::new()
-        .merge(memory_stores_router(host.clone()))
+        .merge(memory_stores_router_with_catalog(
+            host.clone(),
+            Arc::new(
+                awaken_admin_config_api::SqliteAdminStore::open_in_memory()
+                    .expect("open ephemeral Resource Catalog"),
+            ),
+        ))
         .merge(files_router(host.clone()))
         .merge(skills_router(host.clone()))
         .merge(models_router(Arc::new(default_models())));
