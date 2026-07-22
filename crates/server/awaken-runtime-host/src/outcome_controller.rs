@@ -5,6 +5,7 @@ use std::sync::atomic::Ordering;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, RunState};
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
+use awaken_ext_goal::grader::{AgentGrader, DEFAULT_JUDGE_INSTRUCTIONS, default_judge_agent};
 use awaken_ext_goal::outcome::{
     Definition, Evaluation, EvaluationResult, ExecutionFailure, Grade, Grader, GraderError,
     GradingInput, Id, KeywordGrader, Phase, State, WorkerRunKind,
@@ -16,8 +17,7 @@ use awaken_ext_goal::state::{
 use crate::host::{
     BASE_SEQ, HostError, HostOutcomeIteration, HostOutcomeReport, SessionCtx, SharedHost, now_ms,
 };
-use crate::judge::{AgentGrader, DEFAULT_JUDGE_INSTRUCTIONS, default_judge_agent};
-use crate::run_exec::SnapshotRunRequest;
+use crate::run_exec::{BoundRunExecutor, SnapshotRunRequest};
 
 struct WorkerExecution {
     state: RunState,
@@ -257,11 +257,20 @@ impl SharedHost {
     ) -> Result<Grade, GraderError> {
         match &self.judge_snapshot {
             Some(_) => {
-                AgentGrader {
-                    host: self,
-                    snapshot: &aggregate.binding.grader,
-                    worker_context: ctx,
-                }
+                let grader_thread =
+                    awaken_ext_goal::state::grader_thread_id(&input.outcome_id, input.iteration);
+                let grader_context = self
+                    .ctx_for(&grader_thread.0, None)
+                    .await
+                    .map_err(|error| GraderError::Execution(error.to_string()))?;
+                let executor = BoundRunExecutor::new(self, grader_context.clone())
+                    .with_cancellation_mirror(ctx.cancel.clone());
+                AgentGrader::new(
+                    &executor,
+                    grader_context.commit.as_ref(),
+                    &aggregate.binding.grader,
+                    awaken_runtime_contract::RuntimeRunContext::new(),
+                )
                 .grade(input)
                 .await
             }

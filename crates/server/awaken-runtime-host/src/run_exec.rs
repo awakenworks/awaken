@@ -63,6 +63,78 @@ pub(crate) struct SessionAttemptExecutor {
     a2a: Option<Arc<dyn RunAttemptExecutor>>,
 }
 
+/// Host composition adapter for the ordinary `RunExecutor` port. It binds one
+/// Thread's backend routing, durable ingress, and live-context construction;
+/// Runtime extensions still submit an ordinary `RunActivation` and remain
+/// independent of `SharedHost`.
+pub(crate) struct BoundRunExecutor<'a> {
+    host: &'a SharedHost,
+    ctx: Arc<SessionCtx>,
+    cancellation_mirror:
+        Option<Arc<std::sync::Mutex<Option<awaken_runtime_contract::CancellationToken>>>>,
+}
+
+impl<'a> BoundRunExecutor<'a> {
+    pub(crate) fn new(host: &'a SharedHost, ctx: Arc<SessionCtx>) -> Self {
+        Self {
+            host,
+            ctx,
+            cancellation_mirror: None,
+        }
+    }
+
+    pub(crate) fn with_cancellation_mirror(
+        mut self,
+        mirror: Arc<std::sync::Mutex<Option<awaken_runtime_contract::CancellationToken>>>,
+    ) -> Self {
+        self.cancellation_mirror = Some(mirror);
+        self
+    }
+}
+
+#[async_trait::async_trait]
+impl RunExecutor for BoundRunExecutor<'_> {
+    async fn execute(
+        &self,
+        activation: RunActivation,
+        _context: RuntimeRunContext,
+    ) -> ExecutionResult<RunState> {
+        if activation.thread_id != self.ctx.thread_id {
+            return Err(ExecutionError::Execution(
+                "Run activation does not match its bound Thread".to_string(),
+            ));
+        }
+        let run_id = activation.run_id.clone();
+        *self
+            .ctx
+            .active_run
+            .lock()
+            .expect("active run mutex poisoned") = Some(run_id.clone());
+        let result = self
+            .host
+            .execute_activation(
+                &self.ctx,
+                activation,
+                ActivationOptions {
+                    supersede: false,
+                    sink: None,
+                    cancellation_mirror: self.cancellation_mirror.clone(),
+                },
+            )
+            .await
+            .map_err(|error| ExecutionError::Execution(error.to_string()));
+        let mut active_run = self
+            .ctx
+            .active_run
+            .lock()
+            .expect("active run mutex poisoned");
+        if active_run.as_ref() == Some(&run_id) {
+            *active_run = None;
+        }
+        result
+    }
+}
+
 impl SessionAttemptExecutor {
     pub(crate) fn new(
         native: Arc<awaken_runtime::Runtime>,
