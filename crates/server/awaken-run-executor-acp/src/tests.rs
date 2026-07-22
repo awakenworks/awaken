@@ -546,8 +546,9 @@ async fn drives_a_turn_commits_messages_and_returns_natural_end() {
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     let commits = coord.commits.lock().unwrap();
     assert_eq!(commits.len(), 1);
-    assert_eq!(commits[0].messages.len(), 1);
-    assert_eq!(commits[0].messages[0].text_content(), "workingdone");
+    assert_eq!(commits[0].messages.len(), 2);
+    assert_eq!(commits[0].messages[0].text_content(), "do it");
+    assert_eq!(commits[0].messages[1].text_content(), "workingdone");
     assert_eq!(
         commits[0].run_state(),
         RunState::Ended(EndCause::NaturalEnd)
@@ -603,9 +604,10 @@ async fn contiguous_acp_text_chunks_commit_as_one_message_but_tools_break_the_st
 
     let commits = coord.commits.lock().unwrap();
     let messages = &commits[0].messages;
-    assert_eq!(messages.len(), 4, "text, call, result, then text");
-    assert_eq!(messages[0].text_content(), "before tool");
-    assert_eq!(messages[3].text_content(), "after tool");
+    assert_eq!(messages.len(), 5, "input, text, call, result, then text");
+    assert_eq!(messages[0].text_content(), "do it");
+    assert_eq!(messages[1].text_content(), "before tool");
+    assert_eq!(messages[4].text_content(), "after tool");
 }
 
 #[tokio::test]
@@ -1306,11 +1308,11 @@ async fn a_tool_call_and_its_result_commit_as_neutral_messages() {
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     let commits = coord.commits.lock().unwrap();
     let messages = &commits[0].messages;
-    assert_eq!(messages.len(), 2, "the call and its result both commit");
+    assert_eq!(messages.len(), 3, "the input, call, and result all commit");
 
     // The call is an assistant ToolUse carrying the correlating id.
-    assert_eq!(messages[0].role, Role::Assistant);
-    match &messages[0].content[0] {
+    assert_eq!(messages[1].role, Role::Assistant);
+    match &messages[1].content[0] {
         ContentBlock::ToolUse { id, name, input } => {
             assert_eq!(id, "c1");
             assert_eq!(name, "read");
@@ -1321,8 +1323,8 @@ async fn a_tool_call_and_its_result_commit_as_neutral_messages() {
 
     // The result is a Role::Tool ToolResult addressed to that call — proving the
     // external agent's tool output now reaches the neutral transcript.
-    assert_eq!(messages[1].role, Role::Tool);
-    match &messages[1].content[0] {
+    assert_eq!(messages[2].role, Role::Tool);
+    match &messages[2].content[0] {
         ContentBlock::ToolResult {
             tool_use_id,
             content,
@@ -1353,7 +1355,7 @@ async fn a_tool_call_without_an_id_gets_a_correlating_fallback_id() {
     .unwrap();
 
     let commits = coord.commits.lock().unwrap();
-    match &commits[0].messages[0].content[0] {
+    match &commits[0].messages[1].content[0] {
         ContentBlock::ToolUse { id, .. } => {
             assert!(id.starts_with("acp-tool-"), "fallback id, got {id}");
         }
@@ -1378,7 +1380,7 @@ async fn a_failed_tool_result_is_marked_in_the_committed_text() {
     .unwrap();
 
     let commits = coord.commits.lock().unwrap();
-    match &commits[0].messages[0].content[0] {
+    match &commits[0].messages[1].content[0] {
         ContentBlock::ToolResult { content, .. } => {
             assert_eq!(content[0], ContentBlock::text("[tool error] denied"));
         }
@@ -1423,7 +1425,7 @@ async fn a_launch_fault_classifies_at_initialize_and_commits_a_prompt() {
 
     assert!(matches!(state, RunState::Ended(EndCause::Error(_))));
     let commits = coord.commits.lock().unwrap();
-    let prompt = commits[0].messages[0].text_content();
+    let prompt = commits[0].messages.last().unwrap().text_content();
     // Credential-rejection prompt (auth error) surfaced to the run.
     assert!(prompt.contains("credential"));
 }
@@ -1564,7 +1566,11 @@ async fn an_org_subscription_disabled_launch_fault_surfaces_a_credential_prompt(
         .await
         .unwrap();
     assert!(matches!(state, RunState::Ended(EndCause::Error(_))));
-    let prompt = coord.commits.lock().unwrap()[0].messages[0].text_content();
+    let prompt = coord.commits.lock().unwrap()[0]
+        .messages
+        .last()
+        .unwrap()
+        .text_content();
     assert!(prompt.contains("credential"), "{prompt}");
 }
 
@@ -1583,7 +1589,10 @@ async fn a_login_required_launch_fault_surfaces_a_login_prompt() {
         .await
         .unwrap();
     assert!(matches!(state, RunState::Ended(EndCause::Error(_))));
-    let prompt = coord.commits.lock().unwrap()[0].messages[0]
+    let prompt = coord.commits.lock().unwrap()[0]
+        .messages
+        .last()
+        .unwrap()
         .text_content()
         .to_lowercase();
     assert!(prompt.contains("login"), "{prompt}");
@@ -1823,7 +1832,7 @@ async fn open_and_drive_inject_the_mcp_server_into_session_new_for_an_acp_sessio
 
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     let commits = coord.commits.lock().unwrap();
-    let reply = commits[0].messages[0].text_content();
+    let reply = commits[0].messages.last().unwrap().text_content();
     assert_eq!(
         reply, "mcp saw-github alpha-ref",
         "session/new carried the MCP server with the α broker reference as its bearer, got {reply:?}",
@@ -1879,7 +1888,11 @@ async fn open_and_drive_inject_a_trusted_inline_mcp_credential_into_session_new(
     e.execute(act, RuntimeRunContext::new().with_commit(coord.clone()))
         .await
         .unwrap();
-    let reply = coord.commits.lock().unwrap()[0].messages[0].text_content();
+    let reply = coord.commits.lock().unwrap()[0]
+        .messages
+        .last()
+        .unwrap()
+        .text_content();
     assert_eq!(
         reply, "mcp beta-inline",
         "β hands the trusted-local CLI the raw bearer inline on session/new, got {reply:?}",
@@ -2351,7 +2364,7 @@ async fn every_backend_row_drives_a_plain_turn_to_a_committed_reply() {
         let commits = coord.commits.lock().unwrap();
         let reply = commits
             .first()
-            .and_then(|c| c.messages.first())
+            .and_then(|c| c.messages.last())
             .map(|m| m.text_content())
             .unwrap_or_default();
         assert_eq!(reply, "pong", "{}: committed the agent's reply", row.id);
