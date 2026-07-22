@@ -8,44 +8,15 @@
 use std::sync::Arc;
 
 use crate::host::{HostError, SessionCtx, SharedHost};
-use awaken_agent_contract::agent::message::Message;
-use awaken_agent_contract::agent::run::{Id as RunId, RunState};
-use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::agent::run::RunState;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
-use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::{
     Error as ExecutionError, Result as ExecutionResult, RunAttemptExecutor, RunExecutor,
 };
-use awaken_runtime_contract::permission::ToolCapabilityNarrowing;
 use awaken_runtime_contract::resolved::Backend;
 use awaken_runtime_contract::resume::ResumeCommand;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
-use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
-
-pub(crate) struct SnapshotRunRequest {
-    pub(crate) run_id: Option<RunId>,
-    pub(crate) thread_id: ThreadId,
-    pub(crate) snapshot: ExecutableAgentSnapshot,
-    pub(crate) input: Vec<Message>,
-    pub(crate) tool_capability_narrowing: ToolCapabilityNarrowing,
-    pub(crate) model_ref_override: Option<String>,
-    pub(crate) supersede: bool,
-    pub(crate) sink: Option<Arc<dyn StreamSink>>,
-    /// Optional parent-visible cancellation slot for an auxiliary Run. The Run
-    /// keeps its own context; this only lets an interrupt addressed to the
-    /// Worker Session cancel the currently active Judge.
-    pub(crate) cancellation_mirror:
-        Option<Arc<std::sync::Mutex<Option<awaken_runtime_contract::CancellationToken>>>>,
-}
-
-#[derive(Debug)]
-pub(crate) struct SnapshotRunResult {
-    pub(crate) run_id: RunId,
-    pub(crate) state: RunState,
-    pub(crate) new_messages: Vec<Message>,
-    pub(crate) before: usize,
-}
 
 struct ActivationOptions {
     supersede: bool,
@@ -70,6 +41,8 @@ pub(crate) struct SessionAttemptExecutor {
 pub(crate) struct BoundRunExecutor<'a> {
     host: &'a SharedHost,
     ctx: Arc<SessionCtx>,
+    supersede: bool,
+    sink: Option<Arc<dyn StreamSink>>,
     cancellation_mirror:
         Option<Arc<std::sync::Mutex<Option<awaken_runtime_contract::CancellationToken>>>>,
 }
@@ -79,8 +52,20 @@ impl<'a> BoundRunExecutor<'a> {
         Self {
             host,
             ctx,
+            supersede: false,
+            sink: None,
             cancellation_mirror: None,
         }
+    }
+
+    pub(crate) fn with_supersede(mut self, supersede: bool) -> Self {
+        self.supersede = supersede;
+        self
+    }
+
+    pub(crate) fn with_stream_sink(mut self, sink: Option<Arc<dyn StreamSink>>) -> Self {
+        self.sink = sink;
+        self
     }
 
     pub(crate) fn with_cancellation_mirror(
@@ -116,8 +101,8 @@ impl RunExecutor for BoundRunExecutor<'_> {
                 &self.ctx,
                 activation,
                 ActivationOptions {
-                    supersede: false,
-                    sink: None,
+                    supersede: self.supersede,
+                    sink: self.sink.clone(),
                     cancellation_mirror: self.cancellation_mirror.clone(),
                 },
             )
@@ -209,65 +194,6 @@ impl RunAttemptExecutor for SessionAttemptExecutor {
 }
 
 impl SharedHost {
-    pub(crate) async fn execute_snapshot(
-        &self,
-        ctx: &Arc<SessionCtx>,
-        request: SnapshotRunRequest,
-    ) -> Result<SnapshotRunResult, HostError> {
-        if request.thread_id != ctx.thread_id {
-            return Err(HostError::bad_request(
-                "snapshot Run thread does not match its Session context",
-            ));
-        }
-        let before = ctx.commit.committed_messages(&ctx.thread_id).len();
-        let (generated_run_id, mut activation) = ctx.runtime.prepare(
-            &request.snapshot,
-            request.thread_id.0.clone(),
-            request.input,
-        );
-        let run_id = request.run_id.unwrap_or_else(|| {
-            if ctx.durable {
-                RunId(format!(
-                    "run-{}-{}",
-                    crate::host::now_ms(),
-                    crate::host::BASE_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-                ))
-            } else {
-                generated_run_id
-            }
-        });
-        activation.run_id = run_id.clone();
-        activation.model_ref_override = request.model_ref_override;
-        activation.tool_capability_narrowing = request.tool_capability_narrowing;
-
-        *ctx.active_run.lock().expect("active run mutex poisoned") = Some(run_id.clone());
-        let state = self
-            .execute_activation(
-                ctx,
-                activation,
-                ActivationOptions {
-                    supersede: request.supersede,
-                    sink: request.sink,
-                    cancellation_mirror: request.cancellation_mirror,
-                },
-            )
-            .await;
-        {
-            let mut active_run = ctx.active_run.lock().expect("active run mutex poisoned");
-            if active_run.as_ref() == Some(&run_id) {
-                *active_run = None;
-            }
-        }
-        let state = state?;
-        let all = ctx.commit.committed_messages(&ctx.thread_id);
-        Ok(SnapshotRunResult {
-            run_id,
-            state,
-            new_messages: all[before.min(all.len())..].to_vec(),
-            before,
-        })
-    }
-
     /// Execute `activation`: the ACP executor when the session chose
     /// an ACP runtime, else the native ingress (direct / durable / superseding).
     ///

@@ -179,29 +179,30 @@ impl SharedHost {
         st.compactions_before =
             awaken_ext_compact::compaction_count(&ctx.commit.committed_state(&ctx.thread_id));
         drop(st);
-        let executed = self
-            .execute_snapshot(
-                &ctx,
-                crate::run_exec::SnapshotRunRequest {
-                    run_id: None,
-                    thread_id: ctx.thread_id.clone(),
-                    snapshot: ctx.config.clone(),
-                    input: messages,
-                    tool_capability_narrowing: Default::default(),
-                    model_ref_override: self.inference_routing.override_for(thread),
-                    supersede,
-                    sink,
-                    cancellation_mirror: None,
-                },
-            )
-            .await?;
-        let run_id = executed.run_id;
-        let state = executed.state;
-        debug_assert_eq!(executed.before, before);
-        debug_assert_eq!(
-            executed.new_messages,
-            ctx.commit.committed_messages(&ctx.thread_id)[before..]
-        );
+        let (generated_run_id, mut activation) =
+            ctx.runtime
+                .prepare(&ctx.config, ctx.thread_id.0.clone(), messages);
+        let run_id = if ctx.durable {
+            RunId(format!(
+                "run-{}-{}",
+                now_ms(),
+                BASE_SEQ.fetch_add(1, Ordering::SeqCst)
+            ))
+        } else {
+            generated_run_id
+        };
+        activation.run_id = run_id.clone();
+        activation.model_ref_override = self.inference_routing.override_for(thread);
+        let executor = crate::run_exec::BoundRunExecutor::new(self, ctx.clone())
+            .with_supersede(supersede)
+            .with_stream_sink(sink);
+        let state = awaken_runtime_contract::execution::RunExecutor::execute(
+            &executor,
+            activation,
+            awaken_runtime_contract::RuntimeRunContext::new(),
+        )
+        .await
+        .map_err(|error| HostError::internal(error.to_string()))?;
         let mut st = ctx.state.lock().await;
         let result = self.finish_step(&ctx, &mut st, run_id, state, before, thread)?;
         Ok(result)

@@ -499,43 +499,35 @@ async fn interrupt_is_a_noop_when_nothing_runs() {
 }
 
 #[tokio::test]
-async fn snapshot_run_is_the_ordinary_run_execution_boundary() {
-    use crate::run_exec::SnapshotRunRequest;
+async fn bound_executor_is_the_ordinary_run_execution_boundary() {
+    use crate::run_exec::BoundRunExecutor;
+    use awaken_runtime_contract::execution::RunExecutor;
 
     let host = SharedHost::new(Arc::new(MemoryHostModel), "stub");
     let ctx = host.ctx_for("snapshot-run", None).await.expect("context");
-    let result = host
-        .execute_snapshot(
-            &ctx,
-            SnapshotRunRequest {
-                run_id: Some(RunId("snapshot-run-1".into())),
-                thread_id: ctx.thread_id.clone(),
-                snapshot: ctx.config.clone(),
-                input: user("hello"),
-                tool_capability_narrowing: Default::default(),
-                model_ref_override: None,
-                supersede: false,
-                sink: None,
-                cancellation_mirror: None,
-            },
-        )
+    let before = ctx.commit.committed_messages(&ctx.thread_id).len();
+    let activation = RunActivation::new(
+        RunId("snapshot-run-1".into()),
+        ctx.thread_id.clone(),
+        ctx.config.clone(),
+        user("hello"),
+    );
+    let state = BoundRunExecutor::new(&host, ctx.clone())
+        .execute(activation, RuntimeRunContext::new())
         .await
         .expect("snapshot run");
 
-    assert_eq!(result.run_id.0, "snapshot-run-1");
-    assert!(matches!(
-        result.state,
-        RunState::Ended(EndCause::NaturalEnd)
-    ));
-    assert_eq!(result.before, 0);
-    assert_eq!(result.new_messages.len(), 2, "user + assistant delta");
-    assert_eq!(result.new_messages.last().unwrap().text_content(), "ok");
+    assert!(matches!(state, RunState::Ended(EndCause::NaturalEnd)));
+    let messages = ctx.commit.committed_messages(&ctx.thread_id);
+    assert_eq!(before, 0);
+    assert_eq!(messages.len(), 2, "user + assistant delta");
+    assert_eq!(messages.last().unwrap().text_content(), "ok");
 }
 
 #[tokio::test]
 async fn tool_bearing_snapshot_can_be_restricted_at_the_run_boundary() {
-    use crate::run_exec::SnapshotRunRequest;
-    use awaken_runtime_contract::permission::ToolCapabilityNarrowing;
+    use crate::run_exec::BoundRunExecutor;
+    use awaken_runtime_contract::execution::RunExecutor;
     use awaken_runtime_contract::resolved::ToolDescriptor;
 
     let host = SharedHost::new(Arc::new(MemoryHostModel), "stub");
@@ -551,28 +543,19 @@ async fn tool_bearing_snapshot_can_be_restricted_at_the_run_boundary() {
             serde_json::json!({"type": "object"}),
         ));
 
-    let result = host
-        .execute_snapshot(
-            &ctx,
-            SnapshotRunRequest {
-                run_id: Some(RunId("unsafe-grader-1".into())),
-                thread_id: ctx.thread_id.clone(),
-                snapshot,
-                input: user("grade"),
-                tool_capability_narrowing: ToolCapabilityNarrowing::DenyAll,
-                model_ref_override: None,
-                supersede: false,
-                sink: None,
-                cancellation_mirror: None,
-            },
-        )
+    let activation = RunActivation::new(
+        RunId("unsafe-grader-1".into()),
+        ctx.thread_id.clone(),
+        snapshot,
+        user("grade"),
+    )
+    .without_tools();
+    let state = BoundRunExecutor::new(&host, ctx)
+        .execute(activation, RuntimeRunContext::new())
         .await
         .expect("declared tools do not bypass a per-Run deny-all restriction");
 
-    assert!(matches!(
-        result.state,
-        RunState::Ended(EndCause::NaturalEnd)
-    ));
+    assert!(matches!(state, RunState::Ended(EndCause::NaturalEnd)));
 }
 
 /// A model that blocks on its first inference until released, so a concurrent
