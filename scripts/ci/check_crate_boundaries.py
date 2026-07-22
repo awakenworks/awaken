@@ -725,6 +725,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # from awaken-runtime-host so the host stays lean (Step 3b).
     "awaken-session-store": {
         "awaken-session-contract",
+        # ADR-0064: Memory extraction aggregate/repository port belongs to the
+        # Memory Runtime Extension; this store is one persistence adapter.
+        "awaken-ext-memory",
         "awaken-inference-contract",
         # The opaque tenancy ScopeId the in-memory scoped-session store keys its
         # isolation fence by (durable backends bind it as an opaque column).
@@ -838,6 +841,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # adapter defines the wire DTOs + encoder over them and re-exports each moved
         # port via a shim until consumers flip to the contract directly.
         "awaken-session-contract",
+        # Compatibility re-export while the Managed adapter translates its
+        # Session-facing configuration into Memory extension inputs.
+        "awaken-ext-memory",
         # Typed resource ids/bindings plus the Resource Catalog port used by this
         # Managed ACL. Authorization policy remains outside the catalog.
         "awaken-resource-contract",

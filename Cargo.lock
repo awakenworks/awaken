@@ -977,6 +977,7 @@ dependencies = [
  "awaken-config-resolver",
  "awaken-credential-vault",
  "awaken-env-store",
+ "awaken-ext-memory",
  "awaken-managed-bridge",
  "awaken-model-catalog",
  "awaken-provisioning-contract",
@@ -1513,7 +1514,6 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
- "awaken-inference-contract",
  "awaken-resource-contract",
  "proptest",
  "serde",
@@ -1527,6 +1527,7 @@ name = "awaken-session-store"
 version = "1.0.0-dev"
 dependencies = [
  "async-trait",
+ "awaken-ext-memory",
  "awaken-inference-contract",
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",

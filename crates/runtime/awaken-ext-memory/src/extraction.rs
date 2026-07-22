@@ -1,9 +1,10 @@
-//! Durable Memory extraction intent and repository port.
+//! Durable Memory extraction aggregate and repository port.
 //!
-//! Extraction is Session application work triggered by a terminal commit. It is
-//! not part of the Memory resource aggregate and it is not an authorization
-//! decision. The intent therefore carries only the already-selected Workspace,
-//! MemoryStore identity/config version, secret-free extractor snapshot and input.
+//! Extraction is Memory extension work triggered by a committed terminal Run. It
+//! is not Session protocol state, part of the Memory resource aggregate, or an
+//! authorization decision. The intent therefore carries only the already-selected
+//! Workspace, MemoryStore identity/config version, secret-free extractor snapshot
+//! and input.
 //! No principal, role, API key, policy, Project, WorkUnit or credential material
 //! crosses this boundary.
 
@@ -18,7 +19,7 @@ pub struct MemoryExtractorSnapshot {
     pub model_ref: String,
     /// Configuration-publication output used to inject the same credential and
     /// endpoint on every retry. It contains references only, never secret bytes.
-    pub inference_access: awaken_inference_contract::InferenceAccess,
+    pub inference_access: awaken_runtime_contract::InferenceAccess,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -100,28 +101,61 @@ pub struct MemoryExtractionIntent {
     pub last_error: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MemoryExtractionError {
-    #[error("invalid Memory extraction intent: {0}")]
     Invalid(String),
-    #[error("Memory extraction intent `{0}` was not found")]
     NotFound(String),
-    #[error("Memory extraction idempotency key `{0}` has different content")]
     IdempotencyConflict(String),
-    #[error("Memory extraction intent `{0}` changed concurrently")]
     RevisionConflict(String),
-    #[error("Memory extraction intent is already claimed until {lease_expires_at_unix_ms}")]
-    LeaseHeld { lease_expires_at_unix_ms: u64 },
-    #[error("stale Memory extraction claim")]
+    LeaseHeld {
+        lease_expires_at_unix_ms: u64,
+    },
     StaleClaim,
-    #[error("invalid Memory extraction transition from {from:?} to {to:?}")]
     InvalidTransition {
         from: MemoryExtractionStatus,
         to: MemoryExtractionStatus,
     },
-    #[error("Memory extraction repository failure: {0}")]
     Storage(String),
 }
+
+impl std::fmt::Display for MemoryExtractionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Invalid(message) => {
+                write!(formatter, "invalid Memory extraction intent: {message}")
+            }
+            Self::NotFound(id) => {
+                write!(formatter, "Memory extraction intent `{id}` was not found")
+            }
+            Self::IdempotencyConflict(key) => write!(
+                formatter,
+                "Memory extraction idempotency key `{key}` has different content"
+            ),
+            Self::RevisionConflict(id) => {
+                write!(
+                    formatter,
+                    "Memory extraction intent `{id}` changed concurrently"
+                )
+            }
+            Self::LeaseHeld {
+                lease_expires_at_unix_ms,
+            } => write!(
+                formatter,
+                "Memory extraction intent is already claimed until {lease_expires_at_unix_ms}"
+            ),
+            Self::StaleClaim => formatter.write_str("stale Memory extraction claim"),
+            Self::InvalidTransition { from, to } => write!(
+                formatter,
+                "invalid Memory extraction transition from {from:?} to {to:?}"
+            ),
+            Self::Storage(message) => {
+                write!(formatter, "Memory extraction repository failure: {message}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for MemoryExtractionError {}
 
 impl MemoryExtractionIntent {
     #[allow(clippy::too_many_arguments)]
@@ -508,7 +542,7 @@ mod tests {
             MemoryExtractorSnapshot {
                 agent_id: "memory-agent".into(),
                 model_ref: "model-config-2".into(),
-                inference_access: awaken_inference_contract::InferenceAccess::host_executor(
+                inference_access: awaken_runtime_contract::InferenceAccess::host_executor(
                     "model-config-2",
                 ),
                 instructions: None,

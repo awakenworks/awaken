@@ -6,7 +6,7 @@
 //! intrinsic routing/ownership fact revalidated by the resource edge on use.
 
 use async_trait::async_trait;
-use awaken_session_contract::{
+use awaken_ext_memory::{
     MemoryExtractionError, MemoryExtractionIntent, MemoryExtractionRepository,
     MemoryExtractionStatus, PutMemoryExtractionOutcome,
 };

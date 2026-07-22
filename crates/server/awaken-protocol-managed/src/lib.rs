@@ -63,13 +63,16 @@ pub use routes::vaults::{
 pub use routes::{WorkspaceScope, enforce_managed_beta, router};
 // The session-repository port family now lives in `awaken-session-contract`;
 // re-exported so existing `awaken_protocol_managed::…` paths keep resolving.
+pub use awaken_ext_memory::{
+    MemoryExtractionError, MemoryExtractionIntent, MemoryExtractionMutation,
+    MemoryExtractionReceipt, MemoryExtractionRepository, MemoryExtractionStatus,
+    MemoryExtractorSnapshot, MemoryMutationReceipt, PutMemoryExtractionOutcome,
+};
 pub use awaken_resource_contract::ResourceCatalog;
 pub use awaken_session_contract::{
-    ManagedSessionRepository, MemoryExtractionError, MemoryExtractionIntent,
-    MemoryExtractionMutation, MemoryExtractionReceipt, MemoryExtractionRepository,
-    MemoryExtractionStatus, MemoryExtractorSnapshot, MemoryMutationReceipt, PersistedSession,
-    PersistedSessionRuntime, PutMemoryExtractionOutcome, ResolvedInput, ResolvedInputSource,
-    ResolvedSessionResources, ResolvedSkillBinding, SessionResourceManifest, resource_plane,
+    ManagedSessionRepository, PersistedSession, PersistedSessionRuntime, ResolvedInput,
+    ResolvedInputSource, ResolvedSessionResources, ResolvedSkillBinding, SessionResourceManifest,
+    resource_plane,
 };
 pub use awaken_session_store::SqliteManagedSessionRepository;
 pub use state::{

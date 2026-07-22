@@ -17,14 +17,11 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_ext_builtin_tools::{AgentRunArgs, erase, invoke_agent_tool};
 use awaken_ext_memory::{
-    DEFAULT_SELECTOR_INSTRUCTIONS, EXTRACT_PROMPT, MEMORY_AGENT_ID, MemoryStoreHandle,
-    RecallBounds, RecallSelector, SELECTOR_AGENT_ID, WriteMemoryTool, default_selector_agent,
-    parse_indices, sanitize_stem, select_input,
-};
-use awaken_protocol_managed::{
-    MemoryExtractionError, MemoryExtractionIntent, MemoryExtractionMutation,
-    MemoryExtractionReceipt, MemoryExtractionRepository, MemoryExtractionStatus,
-    MemoryExtractorSnapshot, MemoryMutationReceipt,
+    DEFAULT_SELECTOR_INSTRUCTIONS, EXTRACT_PROMPT, MEMORY_AGENT_ID, MemoryExtractionError,
+    MemoryExtractionIntent, MemoryExtractionMutation, MemoryExtractionReceipt,
+    MemoryExtractionRepository, MemoryExtractionStatus, MemoryExtractorSnapshot,
+    MemoryMutationReceipt, MemoryStoreHandle, RecallBounds, RecallSelector, SELECTOR_AGENT_ID,
+    WriteMemoryTool, default_selector_agent, parse_indices, sanitize_stem, select_input,
 };
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::tool::RawTool;

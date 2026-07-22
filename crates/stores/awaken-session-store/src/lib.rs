@@ -866,8 +866,8 @@ mod tests {
         }
     }
 
-    fn extraction(id: &str, key: &str) -> awaken_session_contract::MemoryExtractionIntent {
-        awaken_session_contract::MemoryExtractionIntent::new(
+    fn extraction(id: &str, key: &str) -> awaken_ext_memory::MemoryExtractionIntent {
+        awaken_ext_memory::MemoryExtractionIntent::new(
             id,
             key,
             "ws-a",
@@ -876,7 +876,7 @@ mod tests {
             "memory-1",
             1,
             Vec::new(),
-            awaken_session_contract::MemoryExtractorSnapshot {
+            awaken_ext_memory::MemoryExtractorSnapshot {
                 agent_id: "memory-agent".into(),
                 model_ref: "model-1".into(),
                 inference_access: awaken_inference_contract::InferenceAccess::host_executor(
@@ -891,7 +891,7 @@ mod tests {
 
     #[tokio::test]
     async fn extraction_intent_and_claim_survive_sqlite_reopen() {
-        use awaken_session_contract::{
+        use awaken_ext_memory::{
             MemoryExtractionRepository, MemoryExtractionStatus, PutMemoryExtractionOutcome,
         };
 
@@ -930,7 +930,9 @@ mod tests {
             reopened
                 .compare_and_swap_extraction(0, recovered[0].clone())
                 .await,
-            Err(awaken_session_contract::MemoryExtractionError::RevisionConflict(_))
+            Err(awaken_ext_memory::MemoryExtractionError::RevisionConflict(
+                _
+            ))
         ));
     }
 
@@ -1135,7 +1137,7 @@ mod tests {
     /// and the same behavior on the network backend.
     #[tokio::test]
     async fn postgres_round_trips_and_upserts() {
-        use awaken_session_contract::{MemoryExtractionRepository, PutMemoryExtractionOutcome};
+        use awaken_ext_memory::{MemoryExtractionRepository, PutMemoryExtractionOutcome};
         use sqlx::Executor;
         use sqlx::postgres::{PgPool, PgPoolOptions};
 
