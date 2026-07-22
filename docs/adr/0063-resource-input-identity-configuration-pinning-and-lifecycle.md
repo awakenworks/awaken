@@ -405,8 +405,8 @@ The first coherent slice is:
   CAS prevents silent lost updates; no snapshot isolation is promised.
 - Memory/Repository config version repositories and activation reconciliation
   add durable control-plane state.
-- Existing string DTOs, duplicate merge logic, and Memory blob compatibility
-  paths require migration before the design is fully active.
+- Versioned resource-plane schemas and one-time legacy imports add an explicit
+  deployment migration step, even though runtime dual writes have been removed.
 
 ### Rejected alternatives
 

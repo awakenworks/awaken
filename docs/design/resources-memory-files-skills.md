@@ -795,9 +795,11 @@ reconciler. It never silently marks the resource released.
 | Reclamation | no referenced File purge; a racing cross-node reference loses to or blocks the durable fence; crash resumes the same fence; Memory drains handles/jobs; Repository cleanup removes only local material |
 | Boundary | Runtime Core receives no product DTO, IAM policy, secret, absolute host path, Project, or WorkUnit |
 
-Formal checks should model the common state machine, live deny overlay, and the
-rule that purge requires zero active references/leases. E2E scenarios should
-cover all three resources from configuration through Session use and recovery to
+`SessionResourceActivation.tla`, `ResourceDispatch.tla`, and
+`ResourceReclamation.tla` model the common activation state machine, one-time
+configuration pin plus live deny overlay, and the rule that physical purge
+requires the current fence with zero references and leases. E2E scenarios cover
+the resource families from configuration through Session use and recovery to
 release/reclamation.
 
 ## First Vertical Slice

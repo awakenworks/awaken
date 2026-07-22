@@ -238,6 +238,13 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -config formal/tla/SessionResourceActivation.cfg \
     formal/tla/SessionResourceActivation.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/resource-dispatch" \
+    -config formal/tla/ResourceDispatch.cfg formal/tla/ResourceDispatch.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/resource-reclamation" \
+    -config formal/tla/ResourceReclamation.cfg \
+    formal/tla/ResourceReclamation.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/management-audit-intent" \
     -config formal/tla/ManagementAuditIntent.cfg formal/tla/ManagementAuditIntent.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
