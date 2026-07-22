@@ -866,8 +866,8 @@ mod tests {
         }
     }
 
-    fn extraction(id: &str, key: &str) -> awaken_session_contract::MemoryExtractionIntent {
-        awaken_session_contract::MemoryExtractionIntent::new(
+    fn extraction(id: &str, key: &str) -> awaken_ext_memory::MemoryExtractionIntent {
+        awaken_ext_memory::MemoryExtractionIntent::new_range(
             id,
             key,
             "ws-a",
@@ -875,8 +875,10 @@ mod tests {
             "terminal-1",
             "memory-1",
             1,
+            1,
+            1,
             Vec::new(),
-            awaken_session_contract::MemoryExtractorSnapshot {
+            awaken_ext_memory::MemoryExtractorSnapshot {
                 agent_id: "memory-agent".into(),
                 model_ref: "model-1".into(),
                 inference_access: awaken_inference_contract::InferenceAccess::host_executor(
@@ -891,7 +893,7 @@ mod tests {
 
     #[tokio::test]
     async fn extraction_intent_and_claim_survive_sqlite_reopen() {
-        use awaken_session_contract::{
+        use awaken_ext_memory::{
             MemoryExtractionRepository, MemoryExtractionStatus, PutMemoryExtractionOutcome,
         };
 
@@ -924,13 +926,16 @@ mod tests {
 
         let reopened = SqliteManagedSessionRepository::open(&path).unwrap();
         let recovered = reopened.recoverable_extractions(10).await.unwrap();
+        assert_eq!(reopened.extraction_cursor("sesn-1").await.unwrap(), 1);
         assert_eq!(recovered, vec![claimed]);
         assert_eq!(recovered[0].status, MemoryExtractionStatus::Claimed);
         assert!(matches!(
             reopened
                 .compare_and_swap_extraction(0, recovered[0].clone())
                 .await,
-            Err(awaken_session_contract::MemoryExtractionError::RevisionConflict(_))
+            Err(awaken_ext_memory::MemoryExtractionError::RevisionConflict(
+                _
+            ))
         ));
     }
 
@@ -1135,7 +1140,7 @@ mod tests {
     /// and the same behavior on the network backend.
     #[tokio::test]
     async fn postgres_round_trips_and_upserts() {
-        use awaken_session_contract::{MemoryExtractionRepository, PutMemoryExtractionOutcome};
+        use awaken_ext_memory::{MemoryExtractionRepository, PutMemoryExtractionOutcome};
         use sqlx::Executor;
         use sqlx::postgres::{PgPool, PgPoolOptions};
 
@@ -1225,6 +1230,7 @@ mod tests {
             repo.recoverable_extractions(10).await.unwrap(),
             vec![claimed]
         );
+        assert_eq!(repo.extraction_cursor("sesn-1").await.unwrap(), 1);
     }
 
     /// Postgres parity for the ADR-0051 owner `scope_id` — the same atomic

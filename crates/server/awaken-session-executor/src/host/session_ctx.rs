@@ -10,10 +10,6 @@ use super::*;
 pub(crate) struct SessionState {
     pub(crate) awaiting_run: Option<RunId>,
     pub(crate) pending_system: Vec<String>,
-    /// Cursor for out-of-band memory extraction: the committed-message count that
-    /// has already been handed to the extractor, so each turn extracts only the
-    /// new messages instead of re-processing (and re-billing) the whole history.
-    pub(crate) last_extracted_len: usize,
     /// The distinct compaction-fold count at the current turn's start. A fold
     /// during the turn grows it; the terminal step compares against this baseline
     /// to surface the `agent.thread_context_compacted` marker once (spanning a
@@ -40,6 +36,9 @@ pub(crate) struct SessionCtx {
     pub(crate) durable_ingress: Option<Arc<DurableRunIngress<AnyDispatchStore>>>,
     pub(crate) config: ExecutableAgentSnapshot,
     pub(crate) commit: Arc<HostCommit>,
+    /// Committed-terminal Runtime extensions installed for this Thread.
+    pub(crate) terminal_observers:
+        Vec<Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>>,
     /// This thread's interrupted-stream checkpoint store (Phase 3), wired into
     /// every run context so an inference drop flushes durably at its boundary.
     pub(crate) stream_checkpoint: Arc<dyn StreamCheckpointStore>,
@@ -137,6 +136,9 @@ impl SessionCtx {
         // is wired; otherwise the kernel's in-process LocalToolExecutor runs them.
         if let Some(hand) = self.hand_placement.session_hand() {
             ctx = ctx.with_tool_executor(hand.clone());
+        }
+        for observer in &self.terminal_observers {
+            ctx = ctx.with_terminal_observer(observer.clone());
         }
         ctx
     }
