@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+use crate::permission::{DenyAllTools, ToolCapabilityNarrowing};
+use crate::runtime_context::RuntimeRunContext;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RunActivation {
     pub run_id: awaken_agent_contract::agent::run::Id,
@@ -20,6 +23,14 @@ pub struct RunActivation {
     /// sees *how* it is reached — that is the provider's job at the resolve seam.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_ref_override: Option<String>,
+    /// Durable, backend-neutral restriction on the executor's configured tool
+    /// authority. It belongs to the activation because recovery must enforce the
+    /// same restriction on every attempt and every worker process.
+    #[serde(
+        default,
+        skip_serializing_if = "ToolCapabilityNarrowing::is_configured"
+    )]
+    pub tool_capability_narrowing: ToolCapabilityNarrowing,
 }
 
 impl RunActivation {
@@ -47,6 +58,7 @@ impl RunActivation {
             input,
             delegation_origin: None,
             model_ref_override: None,
+            tool_capability_narrowing: ToolCapabilityNarrowing::Configured,
         }
     }
 
@@ -95,6 +107,26 @@ impl RunActivation {
     ) -> Self {
         self.delegation_origin = Some(delegation_origin);
         self
+    }
+
+    /// Deny every tool for this Run without changing the pinned Agent snapshot.
+    #[must_use]
+    pub fn without_tools(mut self) -> Self {
+        self.tool_capability_narrowing = ToolCapabilityNarrowing::DenyAll;
+        self
+    }
+
+    /// Apply durable capability narrowing to one attempt's process-local
+    /// context. Deny-all is the strongest intersection, so replacing any
+    /// existing policy cannot widen authority.
+    #[must_use]
+    pub fn narrow_context(&self, context: RuntimeRunContext) -> RuntimeRunContext {
+        match self.tool_capability_narrowing {
+            ToolCapabilityNarrowing::Configured => context,
+            ToolCapabilityNarrowing::DenyAll => context.with_tool_permission_policy(
+                std::sync::Arc::new(DenyAllTools::new("tools are disabled for this Run")),
+            ),
+        }
     }
 
     /// The model ref this attempt runs on: its per-run override (R5) when set,
@@ -163,6 +195,7 @@ mod serde_contract {
         for act in [
             RunActivation::for_binding("bound"),
             RunActivation::for_binding("bound").with_model_ref_override(Some("chosen".into())),
+            RunActivation::for_binding("bound").without_tools(),
         ] {
             let json = serde_json::to_string(&act).expect("serializes");
             let back: RunActivation = serde_json::from_str(&json).expect("deserializes");
@@ -188,6 +221,24 @@ mod serde_contract {
     }
 
     #[test]
+    fn configured_tool_authority_is_compact_but_deny_all_is_durable() {
+        let configured = serde_json::to_value(RunActivation::for_binding("bound")).unwrap();
+        assert!(configured.get("tool_capability_narrowing").is_none());
+
+        let denied = serde_json::to_value(RunActivation::for_binding("bound").without_tools())
+            .expect("restricted activation serializes");
+        assert_eq!(
+            denied.get("tool_capability_narrowing"),
+            Some(&serde_json::json!("deny_all"))
+        );
+        let recovered: RunActivation = serde_json::from_value(denied).unwrap();
+        assert_eq!(
+            recovered.tool_capability_narrowing,
+            crate::permission::ToolCapabilityNarrowing::DenyAll
+        );
+    }
+
+    #[test]
     fn a_legacy_payload_without_the_override_field_loads_as_none() {
         // Simulate a writer that predates `model_ref_override`: take a full payload and
         // strip the key. It must deserialize (that is what `#[serde(default)]` buys)
@@ -199,9 +250,14 @@ mod serde_contract {
             .unwrap()
             .remove("model_ref_override")
             .expect("the key was present to remove");
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("tool_capability_narrowing");
 
         let legacy: RunActivation = serde_json::from_value(value).expect("a legacy row loads");
         assert!(legacy.model_ref_override.is_none());
+        assert!(legacy.tool_capability_narrowing.is_configured());
         assert_eq!(
             legacy.effective_model_ref(),
             "bound",

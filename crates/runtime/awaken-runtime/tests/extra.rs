@@ -93,6 +93,7 @@ async fn a_system_role_message_is_carried_into_inference() {
         ],
         delegation_origin: None,
         model_ref_override: None,
+        tool_capability_narrowing: Default::default(),
     };
 
     let outcome = runtime

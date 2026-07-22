@@ -17,7 +17,7 @@ use crate::judge::{AgentGrader, DEFAULT_JUDGE_INSTRUCTIONS, default_judge_agent}
 use crate::outcome_state::{
     Aggregate, Binding, ThreadOutcomeState, acknowledgment_run_id, grader_run_id, worker_run_id,
 };
-use crate::run_exec::{Continuity, RunPurpose, SnapshotRunRequest};
+use crate::run_exec::SnapshotRunRequest;
 
 struct WorkerExecution {
     state: RunState,
@@ -324,8 +324,7 @@ impl SharedHost {
                         Role::User,
                         prompt,
                     )],
-                    continuity: Continuity::Continue,
-                    purpose: RunPurpose::OutcomeWorker,
+                    tool_capability_narrowing: Default::default(),
                     model_ref_override: None,
                     supersede: false,
                     sink: None,
@@ -364,8 +363,7 @@ impl SharedHost {
                     Role::User,
                     "The Outcome iteration limit was reached. Briefly acknowledge the remaining Grader feedback without starting another graded revision.",
                 )],
-                continuity: Continuity::Continue,
-                purpose: RunPurpose::OutcomeWorker,
+                tool_capability_narrowing: Default::default(),
                 model_ref_override: None,
                 supersede: false,
                 sink: None,

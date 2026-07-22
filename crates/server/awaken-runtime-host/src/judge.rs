@@ -23,7 +23,7 @@ use awaken_sandbox_local::LocalProvider;
 use crate::agent_catalog::AgentCatalog;
 use crate::host::{SessionCtx, SharedHost};
 use crate::outcome_state::{grader_run_id, grader_thread_id};
-use crate::run_exec::{Continuity, RunPurpose, SnapshotRunRequest};
+use crate::run_exec::SnapshotRunRequest;
 
 /// Default judge instructions. The outcome loop supplies the goal, rubric, and
 /// deliverable in the prompt; the judge returns a JSON verdict the grader parses.
@@ -118,8 +118,8 @@ impl OutcomeGrader for AgentGrader<'_> {
                             Role::User,
                             grading_prompt(input)?,
                         )],
-                        continuity: Continuity::Fresh,
-                        purpose: RunPurpose::OutcomeGrader,
+                        tool_capability_narrowing:
+                            awaken_runtime_contract::permission::ToolCapabilityNarrowing::DenyAll,
                         model_ref_override: None,
                         supersede: false,
                         sink: None,

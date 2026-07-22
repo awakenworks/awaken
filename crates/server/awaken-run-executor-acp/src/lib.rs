@@ -358,6 +358,7 @@ impl AcpRunExecutor {
         context: RuntimeRunContext,
         permission_resume: Option<PermissionResume>,
     ) -> Result<RunState> {
+        let context = activation.narrow_context(context);
         // Restore the CLI's portable session-home before launch and harvest it after,
         // so a local-dir CLI's session recovers across directories/machines. A
         // Gateway (server-side) or stateless adapter has no local session-home → the
@@ -552,9 +553,22 @@ impl AcpRunExecutor {
         // handshake. One relaunch is safe only before `session/new` returned an id:
         // the user prompt has not been sent and no agent fact can have happened.
         let mut handshake_retry_used = false;
+        let narrowed_permission =
+            context
+                .tool_permission_policy
+                .as_deref()
+                .map(|narrowing| NarrowedPermissionResolver {
+                    base: self.permission.as_ref(),
+                    narrowing,
+                });
+        let base_permission = narrowed_permission
+            .as_ref()
+            .map_or(self.permission.as_ref(), |resolver| {
+                resolver as &dyn PermissionResolver
+            });
         let resumed_permission = permission_resume
             .as_ref()
-            .map(|decision| ResumedPermissionResolver::new(self.permission.as_ref(), decision));
+            .map(|decision| ResumedPermissionResolver::new(base_permission, decision));
 
         loop {
             let mut appender = CollectingAppender::default();
@@ -581,7 +595,7 @@ impl AcpRunExecutor {
             let process = session.process.clone();
             let permission = resumed_permission
                 .as_ref()
-                .map_or(self.permission.as_ref(), |resolver| {
+                .map_or(base_permission, |resolver| {
                     resolver as &dyn PermissionResolver
                 });
             let mut config = TurnConfig::new(permission);
@@ -994,6 +1008,31 @@ fn pause_ticket(activation: &RunActivation, run_id: &RunId, reason: AwaitReason)
 /// exact call's one-shot decision. Immediate `Allow`/`Deny` pass straight through.
 struct NeutralPermissionResolver {
     policy: Arc<dyn ToolPermissionPolicy>,
+}
+
+/// Per-Run narrowing in front of the Session's configured ACP authority. Only
+/// when the narrowing allows does the base resolver get a chance to decide.
+struct NarrowedPermissionResolver<'a> {
+    base: &'a dyn PermissionResolver,
+    narrowing: &'a dyn ToolPermissionPolicy,
+}
+
+#[async_trait]
+impl PermissionResolver for NarrowedPermissionResolver<'_> {
+    async fn resolve(&self, ask: &PermissionAsk) -> PermissionVerdict {
+        let call = ToolCall {
+            tool_id: ask.tool.clone(),
+            call_id: ask.call_id.clone(),
+            arguments: ask.arguments.clone(),
+        };
+        match self.narrowing.evaluate(&call).await {
+            ToolPermissionVerdict::Allow => self.base.resolve(ask).await,
+            ToolPermissionVerdict::Deny { .. } => PermissionVerdict::Deny,
+            ToolPermissionVerdict::RequireConfirmation { correlation_id } => {
+                PermissionVerdict::Await { correlation_id }
+            }
+        }
+    }
 }
 
 #[async_trait]

@@ -141,6 +141,7 @@ fn activation() -> RunActivation {
         }],
         delegation_origin: None,
         model_ref_override: None,
+        tool_capability_narrowing: Default::default(),
     }
 }
 
@@ -192,6 +193,22 @@ async fn deny_blocks_the_tool_and_only_permission_grants() {
         .expect("runs");
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     assert_eq!(ran.load(Ordering::SeqCst), 0, "deny did not run the tool");
+    assert_eq!(audited_decisions(&commit), vec!["deny"]);
+}
+
+#[tokio::test]
+async fn per_run_deny_all_cannot_be_widened_by_an_allowing_platform_policy() {
+    let ran = Arc::new(AtomicUsize::new(0));
+    let runtime = runtime(ran.clone(), ToolPermissionVerdict::Allow);
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+
+    let state = runtime
+        .execute(activation().without_tools(), context(&commit))
+        .await
+        .expect("the restricted Run completes without invoking the tool");
+
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
+    assert_eq!(ran.load(Ordering::SeqCst), 0);
     assert_eq!(audited_decisions(&commit), vec!["deny"]);
 }
 

@@ -143,6 +143,7 @@ async fn drive(
         }],
         delegation_origin: None,
         model_ref_override: None,
+        tool_capability_narrowing: Default::default(),
     };
     let state = runtime.execute(activation, context).await.expect("runs");
     (state, Arc::try_unwrap(commit).unwrap_or_default())

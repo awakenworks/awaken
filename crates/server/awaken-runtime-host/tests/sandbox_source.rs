@@ -63,6 +63,7 @@ fn activation(thread: &str) -> RunActivation {
         input: vec![Message::text(MessageId("u1".into()), Role::User, "go")],
         delegation_origin: None,
         model_ref_override: None,
+        tool_capability_narrowing: Default::default(),
     }
 }
 

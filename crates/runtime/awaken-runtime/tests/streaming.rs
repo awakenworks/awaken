@@ -99,6 +99,7 @@ async fn run(chunks: Vec<&'static str>) -> (MemoryCommitCoordinator, MemoryStrea
         }],
         delegation_origin: None,
         model_ref_override: None,
+        tool_capability_narrowing: Default::default(),
     };
     let outcome = runtime.execute(activation, context).await.expect("runs");
     assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));

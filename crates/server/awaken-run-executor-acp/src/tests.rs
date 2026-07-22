@@ -243,6 +243,7 @@ pub(crate) fn activation() -> RunActivation {
         input: vec![Message::text(MessageId("u1".into()), Role::User, "do it")],
         delegation_origin: None,
         model_ref_override: None,
+        tool_capability_narrowing: Default::default(),
     }
 }
 
@@ -1051,6 +1052,52 @@ async fn neutral_permission_resolver_projects_the_policy_decision() {
         };
         assert_eq!(resolver.resolve(&ask).await, want);
     }
+}
+
+#[tokio::test]
+async fn per_run_permission_is_an_intersection_with_acp_authority() {
+    use awaken_protocol_acp::{PermissionAsk, PermissionResolver, PermissionVerdict};
+    use awaken_runtime_contract::permission::{
+        DenyAllTools, ToolCall, ToolPermissionPolicy, ToolPermissionVerdict,
+    };
+
+    struct FixedPolicy(ToolPermissionVerdict);
+    #[async_trait]
+    impl ToolPermissionPolicy for FixedPolicy {
+        async fn evaluate(&self, _call: &ToolCall) -> ToolPermissionVerdict {
+            self.0.clone()
+        }
+    }
+
+    struct FixedResolver(PermissionVerdict);
+    #[async_trait]
+    impl PermissionResolver for FixedResolver {
+        async fn resolve(&self, _ask: &PermissionAsk) -> PermissionVerdict {
+            self.0.clone()
+        }
+    }
+
+    let ask = PermissionAsk {
+        tool: "bash".into(),
+        call_id: "tool-1".into(),
+        arguments: serde_json::json!({"cmd": "echo unsafe"}),
+    };
+    let narrowing_allow = FixedPolicy(ToolPermissionVerdict::Allow);
+    let base_allow = FixedResolver(PermissionVerdict::Allow);
+    let base_deny = FixedResolver(PermissionVerdict::Deny);
+    let deny_all = DenyAllTools::new("restricted Run");
+
+    let narrowed = NarrowedPermissionResolver {
+        base: &base_allow,
+        narrowing: &deny_all,
+    };
+    assert_eq!(narrowed.resolve(&ask).await, PermissionVerdict::Deny);
+
+    let cannot_widen = NarrowedPermissionResolver {
+        base: &base_deny,
+        narrowing: &narrowing_allow,
+    };
+    assert_eq!(cannot_widen.resolve(&ask).await, PermissionVerdict::Deny);
 }
 
 #[cfg(feature = "real-acp")]

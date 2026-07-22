@@ -86,6 +86,7 @@ impl RunExecutor for Runtime {
         activation: RunActivation,
         context: RuntimeRunContext,
     ) -> Result<RunState> {
+        let context = activation.narrow_context(context);
         // Execution is the single ingress for fresh activations, including durable
         // dispatch. Retain the exact immutable snapshot before the run can await so
         // an in-process resume resolves the same value by id.
@@ -110,10 +111,11 @@ impl RunExecutor for Runtime {
 impl RunAttemptExecutor for Runtime {
     async fn resume(
         &self,
-        _activation: RunActivation,
+        activation: RunActivation,
         command: ResumeCommand,
         context: RuntimeRunContext,
     ) -> Result<RunState> {
+        let context = activation.narrow_context(context);
         let reader = context.reader.clone().ok_or_else(|| {
             Error::Execution("RunAttemptExecutor::resume requires committed history".to_string())
         })?;
@@ -1587,12 +1589,27 @@ async fn gate_decision(
     call: &ToolCall,
     env: &ResolvedExecutionEnv,
     state: &Store,
+    context: &RuntimeRunContext,
 ) -> GateOutcome {
     let ctx = ToolCall {
         tool_id: call.tool_id.clone(),
         call_id: call.call_id.clone(),
         arguments: call.arguments.clone(),
     };
+    if let Some(narrowing) = &context.tool_permission_policy {
+        let outcome = match narrowing.evaluate(&ctx).await {
+            awaken_runtime_contract::permission::ToolPermissionVerdict::Allow => GateOutcome::Allow,
+            awaken_runtime_contract::permission::ToolPermissionVerdict::Deny { reason } => {
+                GateOutcome::Block { reason }
+            }
+            awaken_runtime_contract::permission::ToolPermissionVerdict::RequireConfirmation {
+                correlation_id,
+            } => GateOutcome::RequireConfirmation { correlation_id },
+        };
+        if !matches!(outcome, GateOutcome::Allow) {
+            return outcome;
+        }
+    }
     let host = match runtime.gate() {
         Some(gate) => gate.gate(&ctx, state).await,
         None => GateOutcome::Allow,

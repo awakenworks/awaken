@@ -253,6 +253,7 @@ mod tests {
             input: Vec::new(),
             delegation_origin: None,
             model_ref_override: None,
+            tool_capability_narrowing: Default::default(),
         };
         assert_eq!(r.model(&act).unwrap().model, "run-model");
         let env = r.extra_env(&act);
