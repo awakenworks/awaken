@@ -516,6 +516,7 @@ async fn terminal_session_retires_only_its_compatibility_repository_definition()
         catalog
             .repository("default", repository_id.as_str())
             .unwrap()
+            .unwrap()
             .state,
         ResourceState::Active
     );
@@ -524,6 +525,7 @@ async fn terminal_session_retires_only_its_compatibility_repository_definition()
     assert_eq!(
         catalog
             .repository("default", repository_id.as_str())
+            .unwrap()
             .unwrap()
             .state,
         ResourceState::Deleted,
@@ -565,6 +567,7 @@ async fn terminal_session_never_deletes_a_platform_repository_definition() {
     assert_eq!(
         catalog
             .repository("default", "platform-repository")
+            .unwrap()
             .unwrap()
             .state,
         ResourceState::Active

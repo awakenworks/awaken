@@ -165,6 +165,76 @@ pub enum ResourceCatalogError {
 pub struct ResourceCatalogRules;
 
 impl ResourceCatalogRules {
+    fn validate_definition_identity(
+        row_id: &str,
+        definition_id: &str,
+        workspace_id: &str,
+        current: ConfigVersion,
+    ) -> Result<(), ResourceCatalogError> {
+        if row_id.trim().is_empty()
+            || definition_id != row_id
+            || workspace_id.trim().is_empty()
+            || current.0 == 0
+        {
+            return Err(ResourceCatalogError::Storage(format!(
+                "resource catalog aggregate `{row_id}` has an invalid definition identity"
+            )));
+        }
+        Ok(())
+    }
+
+    pub fn validate_memory_aggregate<'a>(
+        row_id: &str,
+        definition: &MemoryStoreDefinition,
+        configs: impl IntoIterator<Item = (&'a ConfigVersion, &'a MemoryStoreConfigVersion)>,
+    ) -> Result<(), ResourceCatalogError> {
+        Self::validate_definition_identity(
+            row_id,
+            &definition.id,
+            &definition.workspace_id,
+            definition.current_config_version,
+        )?;
+        let mut current_exists = false;
+        let mut count = 0_usize;
+        for (version, config) in configs {
+            count += 1;
+            Self::validate_memory_config(row_id, *version, config)?;
+            current_exists |= *version == definition.current_config_version;
+        }
+        if count == 0 || !current_exists {
+            return Err(ResourceCatalogError::Storage(format!(
+                "MemoryStore `{row_id}` current config version is missing"
+            )));
+        }
+        Ok(())
+    }
+
+    pub fn validate_repository_aggregate<'a>(
+        row_id: &str,
+        definition: &RepositoryDefinition,
+        configs: impl IntoIterator<Item = (&'a ConfigVersion, &'a RepositoryConfigVersion)>,
+    ) -> Result<(), ResourceCatalogError> {
+        Self::validate_definition_identity(
+            row_id,
+            &definition.id,
+            &definition.workspace_id,
+            definition.current_config_version,
+        )?;
+        let mut current_exists = false;
+        let mut count = 0_usize;
+        for (version, config) in configs {
+            count += 1;
+            Self::validate_repository_config(row_id, *version, config)?;
+            current_exists |= *version == definition.current_config_version;
+        }
+        if count == 0 || !current_exists {
+            return Err(ResourceCatalogError::Storage(format!(
+                "Repository `{row_id}` current config version is missing"
+            )));
+        }
+        Ok(())
+    }
+
     pub fn validate_live_definition(
         id: &str,
         state: ResourceState,
@@ -305,10 +375,17 @@ pub trait ResourceCatalog: ResourceConfigSource + ResourceBindingValidator {
         definition: MemoryStoreDefinition,
         initial_config: MemoryStoreConfigVersion,
     ) -> Result<(), ResourceCatalogError>;
-    fn memory_store(&self, workspace_id: &str, id: &str) -> Option<MemoryStoreDefinition>;
+    fn memory_store(
+        &self,
+        workspace_id: &str,
+        id: &str,
+    ) -> Result<Option<MemoryStoreDefinition>, ResourceCatalogError>;
     /// Definitions owned by one Workspace, sorted by id. Archived/deleted rows
     /// remain available by id but are excluded from this ordinary inventory.
-    fn list_memory_stores(&self, workspace_id: &str) -> Vec<MemoryStoreDefinition>;
+    fn list_memory_stores(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<MemoryStoreDefinition>, ResourceCatalogError>;
     /// Update descriptive fields of an existing definition without changing its
     /// owner, lifecycle state, or current config pointer.
     fn update_memory_store(
@@ -320,7 +397,7 @@ pub trait ResourceCatalog: ResourceConfigSource + ResourceBindingValidator {
         workspace_id: &str,
         id: &str,
         version: ConfigVersion,
-    ) -> Option<MemoryStoreConfigVersion>;
+    ) -> Result<Option<MemoryStoreConfigVersion>, ResourceCatalogError>;
     fn publish_memory_config(
         &self,
         workspace_id: &str,
@@ -339,13 +416,17 @@ pub trait ResourceCatalog: ResourceConfigSource + ResourceBindingValidator {
         definition: RepositoryDefinition,
         initial_config: RepositoryConfigVersion,
     ) -> Result<(), ResourceCatalogError>;
-    fn repository(&self, workspace_id: &str, id: &str) -> Option<RepositoryDefinition>;
+    fn repository(
+        &self,
+        workspace_id: &str,
+        id: &str,
+    ) -> Result<Option<RepositoryDefinition>, ResourceCatalogError>;
     fn repository_config(
         &self,
         workspace_id: &str,
         id: &str,
         version: ConfigVersion,
-    ) -> Option<RepositoryConfigVersion>;
+    ) -> Result<Option<RepositoryConfigVersion>, ResourceCatalogError>;
     fn publish_repository_config(
         &self,
         workspace_id: &str,

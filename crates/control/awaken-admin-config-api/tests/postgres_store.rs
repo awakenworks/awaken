@@ -193,6 +193,7 @@ async fn postgres_admin_store_serves_every_port() {
     store.create_memory_store(definition, initial).unwrap();
     let mut second = store
         .memory_config("ws", "memory-1", ConfigVersion(1))
+        .unwrap()
         .unwrap();
     second.version = ConfigVersion(2);
     second.recall_policy.max_results = 20;
@@ -220,12 +221,12 @@ async fn postgres_admin_store_serves_every_port() {
         store.validate_memory_binding("ws", "memory-1", ConfigVersion(3)),
         Err(ResourceCatalogError::ConfigNotFound { .. })
     ));
-    assert!(store.memory_store("other", "memory-1").is_none());
-    let mut updated = store.memory_store("ws", "memory-1").unwrap();
+    assert!(store.memory_store("other", "memory-1").unwrap().is_none());
+    let mut updated = store.memory_store("ws", "memory-1").unwrap().unwrap();
     updated.name = "Renamed".into();
     store.update_memory_store(updated).unwrap();
-    assert_eq!(store.list_memory_stores("ws")[0].name, "Renamed");
-    assert!(store.list_memory_stores("other").is_empty());
+    assert_eq!(store.list_memory_stores("ws").unwrap()[0].name, "Renamed");
+    assert!(store.list_memory_stores("other").unwrap().is_empty());
 
     let (definition, initial) = repository();
     store.create_repository(definition, initial).unwrap();
@@ -322,8 +323,17 @@ async fn postgres_owned_legacy_memory_rows_migrate_but_unowned_rows_are_quaranti
         .await
         .unwrap();
     assert_eq!(
-        store.memory_store("ws", "legacy-owned").unwrap().name,
+        store
+            .memory_store("ws", "legacy-owned")
+            .unwrap()
+            .unwrap()
+            .name,
         "Legacy"
     );
-    assert!(store.memory_store("ws", "legacy-unowned").is_none());
+    assert!(
+        store
+            .memory_store("ws", "legacy-unowned")
+            .unwrap()
+            .is_none()
+    );
 }

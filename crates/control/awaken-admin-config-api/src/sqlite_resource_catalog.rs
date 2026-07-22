@@ -68,11 +68,7 @@ impl SqliteAdminStore {
             .collect::<Result<Vec<_>, _>>()?
         };
         for legacy in rows {
-            if legacy.workspace_id.trim().is_empty()
-                || self
-                    .catalog_record::<MemoryRecord>(MEMORY, &legacy.id)
-                    .is_some()
-            {
+            if legacy.workspace_id.trim().is_empty() || self.memory_record(&legacy.id)?.is_some() {
                 continue;
             }
             let id = legacy.id;
@@ -106,7 +102,11 @@ impl SqliteAdminStore {
         Ok(())
     }
 
-    fn catalog_record<T: serde::de::DeserializeOwned>(&self, kind: &str, id: &str) -> Option<T> {
+    fn catalog_record<T: serde::de::DeserializeOwned>(
+        &self,
+        kind: &str,
+        id: &str,
+    ) -> Result<Option<T>, ResourceCatalogError> {
         let data: Option<String> = self
             .conn
             .lock()
@@ -117,8 +117,36 @@ impl SqliteAdminStore {
                 |row| row.get(0),
             )
             .optional()
-            .expect("read resource catalog");
-        data.map(|data| serde_json::from_str(&data).expect("decode resource catalog"))
+            .map_err(storage)?;
+        data.map(|data| serde_json::from_str(&data).map_err(storage))
+            .transpose()
+    }
+
+    fn memory_record(&self, id: &str) -> Result<Option<MemoryRecord>, ResourceCatalogError> {
+        let record = self.catalog_record::<MemoryRecord>(MEMORY, id)?;
+        if let Some(record) = &record {
+            ResourceCatalogRules::validate_memory_aggregate(
+                id,
+                &record.definition,
+                &record.configs,
+            )?;
+        }
+        Ok(record)
+    }
+
+    fn repository_record(
+        &self,
+        id: &str,
+    ) -> Result<Option<RepositoryRecord>, ResourceCatalogError> {
+        let record = self.catalog_record::<RepositoryRecord>(REPOSITORY, id)?;
+        if let Some(record) = &record {
+            ResourceCatalogRules::validate_repository_aggregate(
+                id,
+                &record.definition,
+                &record.configs,
+            )?;
+        }
+        Ok(record)
     }
 
     fn insert_catalog_record<T: Serialize>(
@@ -185,7 +213,7 @@ impl ResourceConfigSource for SqliteAdminStore {
         id: &str,
     ) -> Result<MemoryStoreConfigVersion, ResourceCatalogError> {
         let record = self
-            .catalog_record::<MemoryRecord>(MEMORY, id)
+            .memory_record(id)?
             .filter(|record| record.definition.workspace_id == workspace_id)
             .ok_or_else(|| ResourceCatalogError::NotFound(id.into()))?;
         ResourceCatalogRules::validate_live_definition(id, record.definition.state)?;
@@ -205,7 +233,7 @@ impl ResourceConfigSource for SqliteAdminStore {
         id: &str,
     ) -> Result<RepositoryConfigVersion, ResourceCatalogError> {
         let record = self
-            .catalog_record::<RepositoryRecord>(REPOSITORY, id)
+            .repository_record(id)?
             .filter(|record| record.definition.workspace_id == workspace_id)
             .ok_or_else(|| ResourceCatalogError::NotFound(id.into()))?;
         ResourceCatalogRules::validate_live_definition(id, record.definition.state)?;
@@ -228,7 +256,7 @@ impl ResourceBindingValidator for SqliteAdminStore {
         version: ConfigVersion,
     ) -> Result<(), ResourceCatalogError> {
         let record = self
-            .catalog_record::<MemoryRecord>(MEMORY, id)
+            .memory_record(id)?
             .filter(|record| record.definition.workspace_id == workspace_id)
             .ok_or_else(|| ResourceCatalogError::NotFound(id.into()))?;
         ResourceCatalogRules::validate_live_definition(id, record.definition.state)?;
@@ -250,7 +278,7 @@ impl ResourceBindingValidator for SqliteAdminStore {
         version: ConfigVersion,
     ) -> Result<(), ResourceCatalogError> {
         let record = self
-            .catalog_record::<RepositoryRecord>(REPOSITORY, id)
+            .repository_record(id)?
             .filter(|record| record.definition.workspace_id == workspace_id)
             .ok_or_else(|| ResourceCatalogError::NotFound(id.into()))?;
         ResourceCatalogRules::validate_live_definition(id, record.definition.state)?;
@@ -290,26 +318,46 @@ impl ResourceCatalog for SqliteAdminStore {
         )
     }
 
-    fn memory_store(&self, workspace_id: &str, id: &str) -> Option<MemoryStoreDefinition> {
-        self.catalog_record::<MemoryRecord>(MEMORY, id)
+    fn memory_store(
+        &self,
+        workspace_id: &str,
+        id: &str,
+    ) -> Result<Option<MemoryStoreDefinition>, ResourceCatalogError> {
+        Ok(self
+            .memory_record(id)?
             .filter(|record| record.definition.workspace_id == workspace_id)
-            .map(|record| record.definition)
+            .map(|record| record.definition))
     }
 
-    fn list_memory_stores(&self, workspace_id: &str) -> Vec<MemoryStoreDefinition> {
+    fn list_memory_stores(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<MemoryStoreDefinition>, ResourceCatalogError> {
         let conn = self.conn.lock().expect("resource catalog");
         let mut statement = conn
             .prepare(&format!(
-                "SELECT data FROM {NS}_resource_catalog WHERE kind = ?1 ORDER BY id"
+                "SELECT id, data FROM {NS}_resource_catalog WHERE kind = ?1 ORDER BY id"
             ))
-            .expect("prepare resource catalog list");
-        statement
-            .query_map(params![MEMORY], |row| row.get::<_, String>(0))
-            .expect("list resource catalog")
-            .map(|data| {
-                serde_json::from_str::<MemoryRecord>(&data.expect("read resource catalog"))
-                    .expect("decode resource catalog")
+            .map_err(storage)?;
+        let rows = statement
+            .query_map(params![MEMORY], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })
+            .map_err(storage)?;
+        let records = rows
+            .map(|row| {
+                let (id, data) = row.map_err(storage)?;
+                let record: MemoryRecord = serde_json::from_str(&data).map_err(storage)?;
+                ResourceCatalogRules::validate_memory_aggregate(
+                    &id,
+                    &record.definition,
+                    &record.configs,
+                )?;
+                Ok(record)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(records
+            .into_iter()
             .filter(|record| {
                 record.definition.workspace_id == workspace_id
                     && !matches!(
@@ -318,7 +366,7 @@ impl ResourceCatalog for SqliteAdminStore {
                     )
             })
             .map(|record| record.definition)
-            .collect()
+            .collect())
     }
 
     fn update_memory_store(
@@ -349,10 +397,11 @@ impl ResourceCatalog for SqliteAdminStore {
         workspace_id: &str,
         id: &str,
         version: ConfigVersion,
-    ) -> Option<MemoryStoreConfigVersion> {
-        self.catalog_record::<MemoryRecord>(MEMORY, id)
+    ) -> Result<Option<MemoryStoreConfigVersion>, ResourceCatalogError> {
+        Ok(self
+            .memory_record(id)?
             .filter(|record| record.definition.workspace_id == workspace_id)
-            .and_then(|record| record.configs.get(&version).cloned())
+            .and_then(|record| record.configs.get(&version).cloned()))
     }
 
     fn publish_memory_config(
@@ -422,10 +471,15 @@ impl ResourceCatalog for SqliteAdminStore {
         )
     }
 
-    fn repository(&self, workspace_id: &str, id: &str) -> Option<RepositoryDefinition> {
-        self.catalog_record::<RepositoryRecord>(REPOSITORY, id)
+    fn repository(
+        &self,
+        workspace_id: &str,
+        id: &str,
+    ) -> Result<Option<RepositoryDefinition>, ResourceCatalogError> {
+        Ok(self
+            .repository_record(id)?
             .filter(|record| record.definition.workspace_id == workspace_id)
-            .map(|record| record.definition)
+            .map(|record| record.definition))
     }
 
     fn repository_config(
@@ -433,10 +487,11 @@ impl ResourceCatalog for SqliteAdminStore {
         workspace_id: &str,
         id: &str,
         version: ConfigVersion,
-    ) -> Option<RepositoryConfigVersion> {
-        self.catalog_record::<RepositoryRecord>(REPOSITORY, id)
+    ) -> Result<Option<RepositoryConfigVersion>, ResourceCatalogError> {
+        Ok(self
+            .repository_record(id)?
             .filter(|record| record.definition.workspace_id == workspace_id)
-            .and_then(|record| record.configs.get(&version).cloned())
+            .and_then(|record| record.configs.get(&version).cloned()))
     }
 
     fn publish_repository_config(
@@ -542,6 +597,7 @@ mod tests {
             store.create_memory_store(definition, initial).unwrap();
             let mut second = store
                 .memory_config("workspace-a", "memory-1", ConfigVersion(1))
+                .unwrap()
                 .unwrap();
             second.version = ConfigVersion(2);
             second.recall_policy.max_results = 25;
@@ -576,11 +632,13 @@ mod tests {
         assert!(
             reopened
                 .memory_config("workspace-a", "memory-1", ConfigVersion(1))
+                .unwrap()
                 .is_some()
         );
         assert!(
             reopened
                 .memory_config("workspace-a", "memory-1", ConfigVersion(3))
+                .unwrap()
                 .is_none()
         );
         reopened
@@ -601,7 +659,12 @@ mod tests {
             reopened.validate_repository_binding("workspace-a", "repo-1", ConfigVersion::INITIAL),
             Err(ResourceCatalogError::NotActive { .. })
         ));
-        assert!(reopened.repository("workspace-b", "repo-1").is_none());
+        assert!(
+            reopened
+                .repository("workspace-b", "repo-1")
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -642,15 +705,17 @@ mod tests {
         let store = SqliteAdminStore::open(path.to_str().unwrap()).unwrap();
         let mut migrated = store
             .memory_store("workspace-a", "legacy-owned")
+            .unwrap()
             .expect("owned legacy row migrated");
         assert_eq!(migrated.current_config_version, ConfigVersion::INITIAL);
         assert!(
             store
                 .memory_store("workspace-a", "legacy-unowned")
+                .unwrap()
                 .is_none()
         );
         assert_eq!(
-            store.list_memory_stores("workspace-a")[0].id,
+            store.list_memory_stores("workspace-a").unwrap()[0].id,
             "legacy-owned"
         );
 
@@ -662,9 +727,15 @@ mod tests {
             reopened
                 .memory_store("workspace-a", "legacy-owned")
                 .unwrap()
+                .unwrap()
                 .name,
             "Renamed"
         );
-        assert!(reopened.list_memory_stores("workspace-b").is_empty());
+        assert!(
+            reopened
+                .list_memory_stores("workspace-b")
+                .unwrap()
+                .is_empty()
+        );
     }
 }

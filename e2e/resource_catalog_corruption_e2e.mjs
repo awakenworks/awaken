@@ -108,9 +108,13 @@ function catalogRecord(database, kind, id) {
 }
 
 function writeCatalogRecord(database, kind, id, record) {
+  writeCatalogRaw(database, kind, id, JSON.stringify(record));
+}
+
+function writeCatalogRaw(database, kind, id, data) {
   execFileSync('sqlite3', [
     database,
-    `UPDATE admin_resource_catalog SET data=${sqlQuote(JSON.stringify(record))} WHERE kind=${
+    `UPDATE admin_resource_catalog SET data=${sqlQuote(data)} WHERE kind=${
       sqlQuote(kind)
     } AND id=${sqlQuote(id)}`,
   ]);
@@ -199,19 +203,19 @@ async function main() {
     server = start(bin, directory);
     await ready(server);
 
-    assert.equal((await json('GET', `memory_stores/${memory.body.id}/config`)).status, 409);
+    assert.equal((await json('GET', `memory_stores/${memory.body.id}/config`)).status, 500);
     assert.equal(
       (await json('GET', `memory_stores/${memory.body.id}/config_versions/1`)).status,
-      404,
+      500,
     );
     assert.equal(
       (await json('POST', `memory_stores/${memory.body.id}/config`, {
         expected_config_version: 1,
         recall_policy: { enabled: true },
       })).status,
-      409,
+      500,
     );
-    assert.equal((await json('DELETE', `memory_stores/${memory.body.id}`)).status, 409);
+    assert.equal((await json('DELETE', `memory_stores/${memory.body.id}`)).status, 500);
     const deniedMemoryBinding = await json('POST', 'sessions', {
       agent: 'assistant',
       resources: [{
@@ -229,7 +233,7 @@ async function main() {
     assert.equal(deniedRepository.activations.at(-1).attempts, 1);
     assert.match(
       deniedRepository.activations.at(-1).last_error,
-      /config version ConfigVersion\(1\) was not found/u,
+      /current config version is missing/u,
     );
 
     // Repair only the missing immutable histories. The already-persisted Session
@@ -246,6 +250,51 @@ async function main() {
     assert.equal(recovered.activations.at(-1).attempts, 2);
     assert.equal(recovered.activations.at(-1).last_error, undefined);
     assert.equal((await json('GET', `memory_stores/${memory.body.id}/config`)).status, 200);
+
+    // Every catalog read validates the complete aggregate. Corrupt durable JSON
+    // must fail closed on a cold process without panicking or serving a partial
+    // definition/config history. This drives the production collection API so
+    // the storage failure remains distinguishable from an ordinary 404.
+    await stop(server, 'SIGKILL');
+    const memoryConfig = memoryRecord.configs['1'];
+    const memoryCorruptions = [
+      ['malformed-json', '{not-json'],
+      ['forged-definition-id', JSON.stringify({
+        ...memoryRecord,
+        definition: { ...memoryRecord.definition, id: 'forged-memory-id' },
+      })],
+      ['empty-workspace', JSON.stringify({
+        ...memoryRecord,
+        definition: { ...memoryRecord.definition, workspace_id: ' ' },
+      })],
+      ['zero-current-version', JSON.stringify({
+        ...memoryRecord,
+        definition: { ...memoryRecord.definition, current_config_version: 0 },
+      })],
+      ['missing-current-version', JSON.stringify({ ...memoryRecord, configs: {} })],
+      ['forged-config-id', JSON.stringify({
+        ...memoryRecord,
+        configs: { 1: { ...memoryConfig, memory_store_id: 'forged-memory-id' } },
+      })],
+      ['forged-config-version', JSON.stringify({
+        ...memoryRecord,
+        configs: { 1: { ...memoryConfig, version: 2 } },
+      })],
+    ];
+    for (const [name, data] of memoryCorruptions) {
+      writeCatalogRaw(adminDatabase, 'memory_store', memory.body.id, data);
+      server = start(bin, directory);
+      await ready(server);
+      const denied = await json('GET', 'memory_stores');
+      assert.equal(denied.status, 500, `${name}: ${JSON.stringify(denied.body)}`);
+      assert.match(JSON.stringify(denied.body), /resource catalog storage failure/u);
+      assert.equal(server.exitCode, null, `${name}: catalog corruption crashed the process`);
+      await stop(server, 'SIGKILL');
+    }
+    writeCatalogRecord(adminDatabase, 'memory_store', memory.body.id, memoryRecord);
+    server = start(bin, directory);
+    await ready(server);
+    assert.equal((await json('GET', 'memory_stores')).status, 200);
 
     console.log('E2E PASS: missing resource configs fail closed and the same snapshot later recovers.');
   } finally {

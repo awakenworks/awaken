@@ -209,6 +209,7 @@ impl ResourceInventory for HostResourceInventory {
         // Active/suspended store ids from the durable catalog (sorted by id).
         self.memory
             .list_memory_stores(&self.skill_workspace)
+            .unwrap_or_default()
             .into_iter()
             .map(|d| d.id)
             .collect()

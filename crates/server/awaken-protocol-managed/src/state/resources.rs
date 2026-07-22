@@ -328,6 +328,7 @@ impl ManagedState {
             })?;
             let definition = catalog
                 .repository(&owner_scope, repository_id.as_str())
+                .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?
                 .ok_or(StateError::NotFound)?;
             let mut next_config = pinned.clone();
             next_config.version = definition

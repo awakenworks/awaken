@@ -10,6 +10,7 @@
 
 use std::sync::Arc;
 
+use awaken_protocol_managed::resource_plane::ResourceCatalogError;
 use awaken_protocol_managed::{ResourceCatalog, WorkspaceScope};
 use axum::Json;
 use axum::extract::{Request, State};
@@ -29,8 +30,10 @@ impl MemoryStoreScopeFence {
         Self(catalog)
     }
 
-    fn contains(&self, scope: &str, id: &str) -> bool {
-        self.0.memory_store(scope, id).is_some()
+    fn contains(&self, scope: &str, id: &str) -> Result<bool, ResourceCatalogError> {
+        self.0
+            .memory_store(scope, id)
+            .map(|definition| definition.is_some())
     }
 }
 
@@ -40,6 +43,20 @@ fn not_found() -> Response {
         Json(serde_json::json!({
             "type": "error",
             "error": { "type": "not_found_error", "message": "resource not found" }
+        })),
+    )
+        .into_response()
+}
+
+fn storage_failure() -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(serde_json::json!({
+            "type": "error",
+            "error": {
+                "type": "api_error",
+                "message": "resource catalog storage failure"
+            }
         })),
     )
         .into_response()
@@ -57,8 +74,10 @@ pub async fn memory_store_scope_fence(
     };
     let path = request.uri().path().to_string();
     if let Some(id) = memory_store_id(&path) {
-        if !fence.contains(scope, &id) {
-            return not_found();
+        match fence.contains(scope, &id) {
+            Ok(true) => {}
+            Ok(false) => return not_found(),
+            Err(_) => return storage_failure(),
         }
         return next.run(request).await;
     }
@@ -161,8 +180,8 @@ mod tests {
             )
             .unwrap();
         let fence = MemoryStoreScopeFence::over(catalog);
-        assert!(fence.contains("tenant-a", "memstore_1"));
-        assert!(!fence.contains("tenant-b", "memstore_1"));
-        assert!(!fence.contains("tenant-a", "unknown"));
+        assert!(fence.contains("tenant-a", "memstore_1").unwrap());
+        assert!(!fence.contains("tenant-b", "memstore_1").unwrap());
+        assert!(!fence.contains("tenant-a", "unknown").unwrap());
     }
 }

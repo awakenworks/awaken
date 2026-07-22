@@ -193,11 +193,25 @@ fn catalog_error(error: ResourceCatalogError) -> axum::response::Response {
     err(status, error.to_string())
 }
 
-fn active_store_exists(state: &MemoryStoreApi, workspace: &str, id: &str) -> bool {
-    state
-        .catalog
-        .memory_store(workspace, id)
-        .is_some_and(|definition| definition.state == ResourceState::Active)
+fn catalog_entry<T>(
+    result: Result<Option<T>, ResourceCatalogError>,
+    what: &str,
+) -> Result<T, ResourceCatalogError> {
+    match result {
+        Ok(Some(value)) => Ok(value),
+        Ok(None) => Err(ResourceCatalogError::NotFound(what.to_string())),
+        Err(error) => Err(error),
+    }
+}
+
+fn active_store_exists(
+    state: &MemoryStoreApi,
+    workspace: &str,
+    id: &str,
+) -> Result<bool, ResourceCatalogError> {
+    state.catalog.memory_store(workspace, id).map(|definition| {
+        definition.is_some_and(|definition| definition.state == ResourceState::Active)
+    })
 }
 
 fn mint_memory_store_id() -> String {
@@ -277,8 +291,9 @@ async fn get_store(
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
 ) -> axum::response::Response {
-    let Some(def) = state.catalog.memory_store(&workspace, &id) else {
-        return not_found("memory_store");
+    let def = match catalog_entry(state.catalog.memory_store(&workspace, &id), "memory_store") {
+        Ok(definition) => definition,
+        Err(error) => return catalog_error(error),
     };
     (StatusCode::OK, Json(project_def(&def))).into_response()
 }
@@ -286,17 +301,17 @@ async fn get_store(
 async fn list_stores(
     State(state): State<Arc<MemoryStoreApi>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
-) -> impl IntoResponse {
-    let data: Vec<Value> = state
-        .catalog
-        .list_memory_stores(&workspace)
-        .iter()
-        .map(project_def)
-        .collect();
+) -> axum::response::Response {
+    let definitions = match state.catalog.list_memory_stores(&workspace) {
+        Ok(definitions) => definitions,
+        Err(error) => return catalog_error(error),
+    };
+    let data: Vec<Value> = definitions.iter().map(project_def).collect();
     (
         StatusCode::OK,
         Json(json!({ "data": data, "has_more": false, "next_page": null })),
     )
+        .into_response()
 }
 
 async fn update_store(
@@ -305,8 +320,9 @@ async fn update_store(
     Path(id): Path<String>,
     Json(body): Json<Value>,
 ) -> axum::response::Response {
-    let Some(mut def) = state.catalog.memory_store(&workspace, &id) else {
-        return not_found("memory_store");
+    let mut def = match catalog_entry(state.catalog.memory_store(&workspace, &id), "memory_store") {
+        Ok(definition) => definition,
+        Err(error) => return catalog_error(error),
     };
     // `description`: empty string clears it (SDK convention).
     if let Some(desc) = body.get("description") {
@@ -341,19 +357,25 @@ async fn get_store_config(
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
 ) -> axum::response::Response {
-    let Some(definition) = state.catalog.memory_store(&workspace, &id) else {
-        return not_found("memory_store");
-    };
-    let Some(config) =
-        state
+    let definition =
+        match catalog_entry(state.catalog.memory_store(&workspace, &id), "memory_store") {
+            Ok(definition) => definition,
+            Err(error) => return catalog_error(error),
+        };
+    let config =
+        match state
             .catalog
             .memory_config(&workspace, &id, definition.current_config_version)
-    else {
-        return err(
-            StatusCode::CONFLICT,
-            "current MemoryStore config is missing",
-        );
-    };
+        {
+            Ok(Some(config)) => config,
+            Ok(None) => {
+                return err(
+                    StatusCode::CONFLICT,
+                    "current MemoryStore config is missing",
+                );
+            }
+            Err(error) => return catalog_error(error),
+        };
     (StatusCode::OK, Json(project_config(&config))).into_response()
 }
 
@@ -367,11 +389,13 @@ async fn get_store_config_version(
     let Ok(version) = version.parse::<u64>() else {
         return err(StatusCode::BAD_REQUEST, "config version must be an integer");
     };
-    let Some(config) = state
+    let config = match state
         .catalog
         .memory_config(&workspace, &id, ConfigVersion(version))
-    else {
-        return not_found("memory_store config");
+    {
+        Ok(Some(config)) => config,
+        Ok(None) => return not_found("memory_store config"),
+        Err(error) => return catalog_error(error),
     };
     (StatusCode::OK, Json(project_config(&config))).into_response()
 }
@@ -384,9 +408,11 @@ async fn publish_store_config(
     Path(id): Path<String>,
     Json(body): Json<Value>,
 ) -> axum::response::Response {
-    let Some(definition) = state.catalog.memory_store(&workspace, &id) else {
-        return not_found("memory_store");
-    };
+    let definition =
+        match catalog_entry(state.catalog.memory_store(&workspace, &id), "memory_store") {
+            Ok(definition) => definition,
+            Err(error) => return catalog_error(error),
+        };
     let Some(expected) = body
         .get("expected_config_version")
         .and_then(Value::as_u64)
@@ -397,16 +423,20 @@ async fn publish_store_config(
             "expected_config_version must be an integer",
         );
     };
-    let Some(mut config) =
-        state
+    let mut config =
+        match state
             .catalog
             .memory_config(&workspace, &id, definition.current_config_version)
-    else {
-        return err(
-            StatusCode::CONFLICT,
-            "current MemoryStore config is missing",
-        );
-    };
+        {
+            Ok(Some(config)) => config,
+            Ok(None) => {
+                return err(
+                    StatusCode::CONFLICT,
+                    "current MemoryStore config is missing",
+                );
+            }
+            Err(error) => return catalog_error(error),
+        };
     if !["recall_policy", "extraction_policy", "retention_policy"]
         .iter()
         .any(|key| body.get(key).is_some())
@@ -452,19 +482,25 @@ async fn delete_store(
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
 ) -> axum::response::Response {
-    let Some(definition) = state.catalog.memory_store(&workspace, &id) else {
-        return not_found("memory_store");
-    };
-    let Some(config) =
-        state
+    let definition =
+        match catalog_entry(state.catalog.memory_store(&workspace, &id), "memory_store") {
+            Ok(definition) => definition,
+            Err(error) => return catalog_error(error),
+        };
+    let config =
+        match state
             .catalog
             .memory_config(&workspace, &id, definition.current_config_version)
-    else {
-        return err(
-            StatusCode::CONFLICT,
-            "current MemoryStore config is missing",
-        );
-    };
+        {
+            Ok(Some(config)) => config,
+            Ok(None) => {
+                return err(
+                    StatusCode::CONFLICT,
+                    "current MemoryStore config is missing",
+                );
+            }
+            Err(error) => return catalog_error(error),
+        };
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
@@ -503,8 +539,9 @@ async fn archive_store(
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
 ) -> axum::response::Response {
-    let Some(mut def) = state.catalog.memory_store(&workspace, &id) else {
-        return not_found("memory_store");
+    let mut def = match catalog_entry(state.catalog.memory_store(&workspace, &id), "memory_store") {
+        Ok(definition) => definition,
+        Err(error) => return catalog_error(error),
     };
     if let Err(error) = state
         .catalog
@@ -561,8 +598,10 @@ async fn create_memory(
         .get("content")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    if !active_store_exists(&state, &workspace, &id) {
-        return not_found("memory_store");
+    match active_store_exists(&state, &workspace, &id) {
+        Ok(true) => {}
+        Ok(false) => return not_found("memory_store"),
+        Err(error) => return catalog_error(error),
     }
     // The durable path-addressed store is the source of truth for the head.
     match state
@@ -586,8 +625,10 @@ async fn list_memories(
     Path(id): Path<String>,
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> axum::response::Response {
-    if !active_store_exists(&state, &workspace, &id) {
-        return not_found("memory_store");
+    match active_store_exists(&state, &workspace, &id) {
+        Ok(true) => {}
+        Ok(false) => return not_found("memory_store"),
+        Err(error) => return catalog_error(error),
     }
     let prefix = q.get("path_prefix").map(String::as_str).unwrap_or("/");
     let basic = q.get("view").map(String::as_str) == Some("basic");
@@ -636,8 +677,10 @@ async fn get_memory(
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path((id, mid)): Path<(String, String)>,
 ) -> axum::response::Response {
-    if !active_store_exists(&state, &workspace, &id) {
-        return not_found("memory_store");
+    match active_store_exists(&state, &workspace, &id) {
+        Ok(true) => {}
+        Ok(false) => return not_found("memory_store"),
+        Err(error) => return catalog_error(error),
     }
     let Some(path) = path_of(&state, &id, &mid).await else {
         return not_found("memory");
@@ -659,8 +702,10 @@ async fn update_memory(
     Path((id, mid)): Path<(String, String)>,
     Json(body): Json<Value>,
 ) -> axum::response::Response {
-    if !active_store_exists(&state, &workspace, &id) {
-        return not_found("memory_store");
+    match active_store_exists(&state, &workspace, &id) {
+        Ok(true) => {}
+        Ok(false) => return not_found("memory_store"),
+        Err(error) => return catalog_error(error),
     }
     let Some(path) = path_of(&state, &id, &mid).await else {
         return not_found("memory");
@@ -703,8 +748,10 @@ async fn delete_memory(
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path((id, mid)): Path<(String, String)>,
 ) -> axum::response::Response {
-    if !active_store_exists(&state, &workspace, &id) {
-        return not_found("memory_store");
+    match active_store_exists(&state, &workspace, &id) {
+        Ok(true) => {}
+        Ok(false) => return not_found("memory_store"),
+        Err(error) => return catalog_error(error),
     }
     let Some(path) = path_of(&state, &id, &mid).await else {
         return not_found("memory");
@@ -741,8 +788,10 @@ async fn list_versions(
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
 ) -> axum::response::Response {
-    if !active_store_exists(&state, &workspace, &id) {
-        return not_found("memory_store");
+    match active_store_exists(&state, &workspace, &id) {
+        Ok(true) => {}
+        Ok(false) => return not_found("memory_store"),
+        Err(error) => return catalog_error(error),
     }
     let log = match state.host.memory_stores.fs().list_versions(&id).await {
         Ok(log) => log,
@@ -764,8 +813,10 @@ async fn get_version(
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path((id, vid)): Path<(String, String)>,
 ) -> axum::response::Response {
-    if !active_store_exists(&state, &workspace, &id) {
-        return not_found("memory_store");
+    match active_store_exists(&state, &workspace, &id) {
+        Ok(true) => {}
+        Ok(false) => return not_found("memory_store"),
+        Err(error) => return catalog_error(error),
     }
     let log = match state.host.memory_stores.fs().list_versions(&id).await {
         Ok(log) => log,
@@ -785,8 +836,10 @@ async fn redact_version(
     Path((id, vid)): Path<(String, String)>,
     _query: Query<std::collections::HashMap<String, String>>,
 ) -> axum::response::Response {
-    if !active_store_exists(&state, &workspace, &id) {
-        return not_found("memory_store");
+    match active_store_exists(&state, &workspace, &id) {
+        Ok(true) => {}
+        Ok(false) => return not_found("memory_store"),
+        Err(error) => return catalog_error(error),
     }
     match state
         .host
