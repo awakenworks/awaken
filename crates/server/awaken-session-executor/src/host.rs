@@ -58,9 +58,9 @@ use crate::compact::compact_runner as build_compact_runner;
 use crate::config::{build_runtime, config_permission_ruleset, server_config, server_gate_with};
 use crate::delegate::HostRunDelegationService;
 use crate::hub::{ThreadEvent, ThreadEventHub};
-use crate::judge::{DEFAULT_JUDGE_INSTRUCTIONS, default_judge_agent};
 use crate::memory::{DEFAULT_MEMORY_INSTRUCTIONS, default_memory_agent};
 use crate::store::HostCommit;
+use awaken_ext_goal::grader::{DEFAULT_JUDGE_INSTRUCTIONS, default_judge_agent};
 
 pub(crate) static BASE_SEQ: AtomicU64 = AtomicU64::new(0);
 
