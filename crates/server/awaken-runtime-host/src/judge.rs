@@ -4,11 +4,49 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use awaken_ext_builtin_tools::{AGENT_RUN, AgentRunArgs};
+use awaken_ext_goal::grader::AgentGrader;
+use awaken_ext_goal::outcome::{Grade, Grader, GraderError, GradingInput};
+use awaken_ext_goal::state::grader_thread_id;
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
+use awaken_runtime_contract::{ExecutableAgentSnapshot, RuntimeRunContext};
 use awaken_sandbox_local::LocalProvider;
 
 use crate::agent_catalog::AgentCatalog;
+use crate::host::SharedHost;
+use crate::run_exec::BoundRunExecutor;
+
+/// Host composition of the extension-owned Agent Grader. It resolves the fresh
+/// Grader Thread and supplies Host backend/durable context; prompt, identity,
+/// recovery, restrictions, and parsing remain in `awaken-ext-goal`.
+pub(crate) struct HostAgentGrader<'a> {
+    pub(crate) host: &'a SharedHost,
+    pub(crate) snapshot: &'a ExecutableAgentSnapshot,
+    pub(crate) worker_cancel:
+        Arc<std::sync::Mutex<Option<awaken_runtime_contract::CancellationToken>>>,
+}
+
+#[async_trait::async_trait]
+impl Grader for HostAgentGrader<'_> {
+    async fn grade(&self, input: &GradingInput) -> Result<Grade, GraderError> {
+        let thread = grader_thread_id(&input.outcome_id, input.iteration);
+        let context = self
+            .host
+            .ctx_for(&thread.0, None)
+            .await
+            .map_err(|error| GraderError::Execution(error.to_string()))?;
+        let executor = BoundRunExecutor::new(self.host, context.clone())
+            .with_cancellation_mirror(self.worker_cancel.clone());
+        AgentGrader::new(
+            &executor,
+            context.commit.as_ref(),
+            self.snapshot,
+            RuntimeRunContext::new(),
+        )
+        .grade(input)
+        .await
+    }
+}
 
 /// Ordinary Agent-backed tool used by the compactor and memory selector.
 /// A developer can provide another `RawTool` with the same `AgentRunArgs` shape;
