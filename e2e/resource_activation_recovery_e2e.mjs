@@ -103,6 +103,13 @@ function sqlQuote(value) {
   return `'${String(value).replaceAll("'", "''")}'`;
 }
 
+function sqlite(database, sql) {
+  return execFileSync('sqlite3', ['-cmd', '.timeout 10000', database], {
+    input: sql,
+    encoding: 'utf8',
+  });
+}
+
 function sessionRow(database, sessionId) {
   const output = execFileSync('sqlite3', [
     '-json',
@@ -177,6 +184,31 @@ function persistLegacyManifest(database, sessionId) {
   updateSessionRow(database, sessionId, 'idle', null, row.resources.active);
 }
 
+function persistInconsistentRelease(database, sessionId) {
+  const row = sessionRow(database, sessionId);
+  const resources = {
+    ...row.resources,
+    pending: undefined,
+    activations: row.resources.activations.map((activation) => ({
+      ...activation,
+      state: activation.state === 'active' ? 'releasing' : activation.state,
+    })),
+  };
+  assert.ok(resources.activations.some((activation) => activation.state === 'releasing'));
+  updateSessionRow(database, sessionId, 'idle', null, resources);
+}
+
+function repositoryRecord(database, id) {
+  const output = execFileSync('sqlite3', [
+    '-json',
+    database,
+    `SELECT data FROM admin_resource_catalog WHERE kind='repository' AND id=${sqlQuote(id)}`,
+  ]).toString().trim();
+  const rows = output ? JSON.parse(output) : [];
+  assert.equal(rows.length, 1, `missing Repository aggregate ${id}`);
+  return rows[0].data;
+}
+
 function receipts(directory) {
   const database = path.join(directory, 'resource-lifecycle.db');
   if (!fs.existsSync(database)) return [];
@@ -204,6 +236,8 @@ async function waitRepositoryReceipt(directory, resourceId) {
 async function main() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-activation-recovery-'));
   const sessionsDatabase = path.join(directory, 'sessions.db');
+  const adminDatabase = path.join(directory, 'admin.db');
+  const lifecycleDatabase = path.join(directory, 'resource-lifecycle.db');
   const bin = binary();
   let server = start(bin, directory);
   try {
@@ -242,6 +276,32 @@ async function main() {
     });
     assert.equal(terminating.status, 200, JSON.stringify(terminating.body));
 
+    const inconsistent = await json('POST', scoped('sessions'), {
+      agent: 'assistant',
+      environment_id: 'env_local',
+      resources: [{ type: 'file', file_id: fileId, mount_path: '/workspace/inconsistent.txt' }],
+    });
+    assert.equal(inconsistent.status, 200, JSON.stringify(inconsistent.body));
+
+    const cleanupCases = [];
+    for (const name of ['catalog-read', 'purge-schedule', 'catalog-write', 'already-gone']) {
+      const created = await json('POST', scoped('sessions'), {
+        agent: 'assistant',
+        environment_id: 'env_local',
+        resources: [{
+          type: 'github_repository',
+          url: repository,
+          mount_path: `/workspace/${name}`,
+        }],
+      });
+      assert.equal(created.status, 200, `${name}: ${JSON.stringify(created.body)}`);
+      cleanupCases.push({
+        name,
+        sessionId: created.body.id,
+        repositoryId: `managed:${created.body.id}:repository:0`,
+      });
+    }
+
     // Model process death after each first durable edge: Prepared for a live
     // replacement, and Releasing for a terminal Session. These are precisely
     // the states the coordinator persists before external sandbox/catalog IO.
@@ -249,6 +309,42 @@ async function main() {
     persistPreparedGeneration(sessionsDatabase, recovering.body.id);
     persistLegacyManifest(sessionsDatabase, legacy.body.id);
     persistTerminalRelease(sessionsDatabase, terminating.body.id);
+    persistInconsistentRelease(sessionsDatabase, inconsistent.body.id);
+    for (const cleanup of cleanupCases) {
+      persistTerminalRelease(sessionsDatabase, cleanup.sessionId);
+    }
+
+    const catalogRead = cleanupCases.find((entry) => entry.name === 'catalog-read');
+    const purgeSchedule = cleanupCases.find((entry) => entry.name === 'purge-schedule');
+    const catalogWrite = cleanupCases.find((entry) => entry.name === 'catalog-write');
+    const alreadyGone = cleanupCases.find((entry) => entry.name === 'already-gone');
+    const catalogReadRecord = repositoryRecord(adminDatabase, catalogRead.repositoryId);
+    sqlite(
+      adminDatabase,
+      `
+        UPDATE admin_resource_catalog SET data='{broken-repository-aggregate'
+          WHERE kind='repository' AND id=${sqlQuote(catalogRead.repositoryId)};
+        CREATE TRIGGER reject_repository_state_update
+          BEFORE UPDATE ON admin_resource_catalog
+          WHEN OLD.kind='repository' AND OLD.id=${sqlQuote(catalogWrite.repositoryId)}
+        BEGIN
+          SELECT RAISE(ABORT, 'injected Repository lifecycle write failure');
+        END;
+        DELETE FROM admin_resource_catalog
+          WHERE kind='repository' AND id=${sqlQuote(alreadyGone.repositoryId)};
+      `,
+    );
+    sqlite(
+      lifecycleDatabase,
+      `
+        CREATE TRIGGER reject_repository_purge_schedule
+          BEFORE INSERT ON resource_purge_intents
+          WHEN NEW.data LIKE ${sqlQuote(`%${purgeSchedule.repositoryId}%`)}
+        BEGIN
+          SELECT RAISE(ABORT, 'injected Repository purge scheduling failure');
+        END;
+      `,
+    );
 
     server = start(bin, directory);
     await ready();
@@ -286,7 +382,70 @@ async function main() {
     const receipt = await waitRepositoryReceipt(directory, repositoryId);
     assert.equal(receipt.receipt.evidence.local_realizations_deleted, 0);
 
-    console.log('E2E PASS: prepared, legacy, and terminal activation states recover after process death.');
+    // Each terminal cleanup error is durable and fail-closed. A missing catalog
+    // row is the idempotent "already physically gone" case and can complete;
+    // malformed catalog state and failed writes/scheduling must remain Releasing.
+    const inconsistentState = sessionRow(sessionsDatabase, inconsistent.body.id);
+    assert.equal(inconsistentState.status, 'idle');
+    assert.ok(inconsistentState.resources.activations.some(
+      (activation) => activation.state === 'releasing',
+    ));
+    for (const cleanup of cleanupCases.filter((entry) => entry.name !== 'already-gone')) {
+      const pending = sessionRow(sessionsDatabase, cleanup.sessionId);
+      assert.equal(pending.status, 'terminated', cleanup.name);
+      assert.ok(
+        pending.resources.activations.some((activation) => activation.state === 'releasing'),
+        cleanup.name,
+      );
+    }
+    assert.ok(
+      sessionRow(sessionsDatabase, alreadyGone.sessionId).resources.activations.every(
+        (activation) => activation.state === 'released',
+      ),
+    );
+
+    // Repair only the failed durable dependencies. The next process must finish
+    // every original cleanup intent without another API transition.
+    await stop(server, 'SIGKILL');
+    const repairedInconsistent = sessionRow(sessionsDatabase, inconsistent.body.id);
+    repairedInconsistent.resources.activations = repairedInconsistent.resources.activations.map(
+      (activation) => ({
+        ...activation,
+        state: activation.state === 'releasing' ? 'active' : activation.state,
+      }),
+    );
+    updateSessionRow(
+      sessionsDatabase,
+      inconsistent.body.id,
+      repairedInconsistent.status,
+      repairedInconsistent.archivedAt,
+      repairedInconsistent.resources,
+    );
+    sqlite(
+      adminDatabase,
+      `
+        UPDATE admin_resource_catalog SET data=${sqlQuote(catalogReadRecord)}
+          WHERE kind='repository' AND id=${sqlQuote(catalogRead.repositoryId)};
+        DROP TRIGGER reject_repository_state_update;
+      `,
+    );
+    sqlite(lifecycleDatabase, 'DROP TRIGGER reject_repository_purge_schedule;');
+    server = start(bin, directory);
+    await ready();
+    for (const cleanup of cleanupCases.filter((entry) => entry.name !== 'already-gone')) {
+      const settled = sessionRow(sessionsDatabase, cleanup.sessionId);
+      assert.ok(
+        settled.resources.activations.every((activation) => activation.state === 'released'),
+        cleanup.name,
+      );
+      assert.equal(
+        (await waitRepositoryReceipt(directory, cleanup.repositoryId))
+          .receipt.evidence.local_realizations_deleted,
+        0,
+      );
+    }
+
+    console.log('E2E PASS: prepared, legacy, inconsistent, and faulted terminal resource states recover after process death.');
   } finally {
     await stop(server).catch(() => {});
     fs.rmSync(directory, { recursive: true, force: true });
