@@ -577,27 +577,21 @@ const FAKE_ACP_CLI: awaken_run_executor_acp::AcpCli = awaken_run_executor_acp::A
         model: "ANTHROPIC_MODEL",
         model_config_key: None,
         model_config_env: None,
-        provider_config: None,
         key: "ANTHROPIC_API_KEY",
         aliases: &[],
     },
-    auth_method_id: None,
     mcp_interface: awaken_run_executor_acp::McpInterface::AcpSession,
     config_home_env: "CLAUDE_CONFIG_DIR",
-    config_home_aliases: &[],
-    credential_file: None,
     memory_entrypoint: "CLAUDE.md",
     retained_paths: &[],
     // The fake gateway CLI keeps no local session (it is a scripted stand-in).
     session_persistence: awaken_run_executor_acp::SessionPersistence::None,
     context_window_env: None,
     env: &[],
-    passthrough_env: &[],
 };
 
-/// [`build_acp_router`]'s twin that drives the fake CLI through the REAL projecting
-/// launch path ([`SharedHost::with_projected_acp`] → `EnvLaunchResolver` →
-/// `ProjectingChannelSource`), so the host's model resolution is exercised end to
+/// [`build_acp_router`]'s twin that drives the fake CLI through the projecting
+/// launch path with an explicit scenario-only resolver, so projection is exercised end to
 /// end. With `AWAKEN_ACP_GATEWAY_URL` + `AWAKEN_ACP_LEASE_TOKEN` in the environment,
 /// the resolver takes the cloud-managed gateway path (D-R2): the CLI is pointed at
 /// the gateway with a lease token, never a raw provider key. `AWAKEN_MODEL_MODE=acp-gateway`.
@@ -608,8 +602,38 @@ pub fn build_acp_gateway_router() -> Router {
         .map(std::path::PathBuf::from);
     let (model, model_ref) = scenario_model(Arc::new(EchoModel), "awaken");
     mount(Arc::new(
-        SharedHost::new(model, model_ref).with_projected_acp(FAKE_ACP_CLI, store_dir),
+        SharedHost::new(model, model_ref).with_projected_acp(
+            FAKE_ACP_CLI,
+            Arc::new(ScenarioEnvAcpModel),
+            store_dir,
+        ),
     ))
+}
+
+/// Explicit environment fixture for dev-only live scenarios. Product composition
+/// never installs this resolver; it uses publication-pinned database access.
+struct ScenarioEnvAcpModel;
+impl awaken_run_executor_acp::LaunchResolver for ScenarioEnvAcpModel {
+    fn model(
+        &self,
+        activation: &awaken_runtime_contract::activation::RunActivation,
+    ) -> Result<awaken_run_executor_acp::ResolvedModel, awaken_run_executor_acp::OpenError> {
+        Ok(awaken_run_executor_acp::ResolvedModel {
+            base_url: std::env::var("AWAKEN_ACP_GATEWAY_URL")
+                .ok()
+                .or_else(|| std::env::var("ANTHROPIC_BASE_URL").ok())
+                .ok_or_else(|| {
+                    awaken_run_executor_acp::OpenError("dev scenario has no endpoint".into())
+                })?,
+            model: activation.effective_model_ref().to_string(),
+            api_key: std::env::var("AWAKEN_ACP_LEASE_TOKEN")
+                .ok()
+                .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok())
+                .ok_or_else(|| {
+                    awaken_run_executor_acp::OpenError("dev scenario has no credential".into())
+                })?,
+        })
+    }
 }
 
 /// A fake ACP agent (JSON-RPC, shell builtins only) that reports whether the
@@ -648,21 +672,16 @@ const FAKE_ACP_MCP_CLI: awaken_run_executor_acp::AcpCli = awaken_run_executor_ac
         model: "ANTHROPIC_MODEL",
         model_config_key: None,
         model_config_env: None,
-        provider_config: None,
         key: "ANTHROPIC_API_KEY",
         aliases: &[],
     },
-    auth_method_id: None,
     mcp_interface: awaken_run_executor_acp::McpInterface::AcpSession,
     config_home_env: "CLAUDE_CONFIG_DIR",
-    config_home_aliases: &[],
-    credential_file: None,
     memory_entrypoint: "CLAUDE.md",
     retained_paths: &[],
     session_persistence: awaken_run_executor_acp::SessionPersistence::None,
     context_window_env: None,
     env: &[],
-    passthrough_env: &[],
 };
 
 /// A launch resolver with a fixed (dummy) model: the fake CLI ignores the model env, so
@@ -705,55 +724,32 @@ pub async fn build_acp_managed_mcp_router() -> Router {
 }
 
 /// The REAL-CLI, REAL-LLM twin of [`build_acp_managed_mcp_router`]: the managed plane
-/// with the actual catalog CLI selected by `AWAKEN_ACP_CLI` (`claude` by default),
-/// its model resolved from that row's typed environment projection, and α
-/// loopback-relay MCP delivery so the sandboxed CLI receives no vault secret while
-/// the host relay authenticates upstream. Each thread's config home is isolated
-/// under `AWAKEN_STORAGE_DIR/threads/<t>/config_home`. Drives a real dynamic MCP
-/// tool call end to end. `AWAKEN_MODEL_MODE=acp-real-mcp`.
+/// with the **actual** `claude --acp` adapter (the catalog `claude` row, launched via
+/// `npx`) wired as the ACP backend, its model resolved from the operator env (KIMI:
+/// `ANTHROPIC_BASE_URL`/`ANTHROPIC_MODEL`/`ANTHROPIC_API_KEY`), and α loopback-relay MCP
+/// delivery so the sandboxed CLI receives no vault secret while the host relay authenticates
+/// upstream. Each thread's config home is isolated under
+/// `AWAKEN_STORAGE_DIR/threads/<t>/config_home` — the CLI never touches the host's real
+/// `~/.claude`. Drives a real dynamic MCP tool call end to end. `AWAKEN_MODEL_MODE=acp-real-mcp`.
 pub async fn build_acp_real_mcp_router() -> Router {
     let store_dir = std::env::var("AWAKEN_STORAGE_DIR")
         .ok()
         .filter(|v| !v.is_empty())
         .map(std::path::PathBuf::from);
-    let cli_id = std::env::var("AWAKEN_ACP_CLI")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "claude".to_string());
-    let cli = *awaken_run_executor_acp::acp_cli(&cli_id)
-        .unwrap_or_else(|| panic!("AWAKEN_ACP_CLI={cli_id} is not a catalog row"));
-    // AWAKEN_MODEL is protocol-neutral. Preserve the Claude-specific environment
-    // fallback for the original real-Kimi scenario.
-    let model_ref = std::env::var("AWAKEN_MODEL")
+    let cli = *awaken_run_executor_acp::acp_cli("claude").expect("claude is a catalog row");
+    // The host default model_ref mirrors the operator's `ANTHROPIC_MODEL` — the same env
+    // the ACP model-delivery reads — so a session that names no model still hands the CLI
+    // the real model name (not the scenario label). A session may still override it.
+    let model_ref = std::env::var("ANTHROPIC_MODEL")
         .ok()
         .filter(|v| !v.is_empty())
-        .or_else(|| std::env::var(cli.model_delivery.model).ok())
         .unwrap_or_else(|| "acp-real-mcp".to_string());
-    match store_dir.clone() {
-        Some(dir) => {
-            // The scenario deliberately restarts between ACP runtimes. Keep the
-            // management/resource plane under one root so the same MemoryStore id
-            // and content survive Kimi → OpenCode → Claude → Hermes.
-            const SCENARIO_SEAL_KEY: [u8; 32] = [0xA5; 32];
-            let projection_dir = dir.clone();
-            awaken_cli::build_durable_management_router_with_host_customizer(
-                &dir,
-                &SCENARIO_SEAL_KEY,
-                Arc::new(McpToolModel),
-                model_ref,
-                move |host| host.with_projected_acp(cli, Some(projection_dir)),
-            )
-            .await
-        }
-        None => {
-            awaken_cli::build_management_router_with_host_customizer(
-                Arc::new(McpToolModel),
-                model_ref,
-                move |host| host.with_projected_acp(cli, None),
-            )
-            .await
-        }
-    }
+    awaken_cli::build_management_router_with_host_customizer(
+        Arc::new(McpToolModel),
+        model_ref,
+        move |host| host.with_projected_acp(cli, Arc::new(ScenarioEnvAcpModel), store_dir),
+    )
+    .await
 }
 
 /// [`FAKE_ACP_SCRIPT`]'s sandboxed twin (bash, for `/dev/tcp`), with an OS-egress
@@ -815,9 +811,8 @@ pub fn build_acp_sandboxed_router() -> Router {
 /// The container-tier sibling of [`build_acp_sandboxed_router`]: the deterministic ACP
 /// agent and the Native tool hand run in one Session-owned Docker environment, driven
 /// through the full external SDK → managed → container-agent path. Configuration goes
-/// through the same `AWAKEN_ACP_ARGV` / `AWAKEN_SANDBOX_TIER=docker` composition seam
-/// as `awaken serve` and `awaken-worker`; the scenario deliberately has no second,
-/// per-attempt container source. Needs `--features container-docker`, a production
+/// through an explicit fixed test launch plus `AWAKEN_SANDBOX_TIER=docker`; product
+/// composition has no fixed-argv environment override. Needs `--features container-docker`, a production
 /// sandbox image, and a reachable Docker daemon. Misconfiguration fails closed while
 /// building the host rather than falling back to a local process.
 pub async fn build_acp_container_router() -> Router {
@@ -831,10 +826,20 @@ pub async fn build_acp_container_router() -> Router {
     let resources = awaken_server::embedded_resource_plane(&storage_dir);
     let host = SharedHost::new_with_resource_plane(Arc::new(EchoModel), "awaken", resources);
     awaken_server::install_platform_memory_data_plane(&host);
-    let host = host
-        .with_store_dir(storage_dir)
-        .with_acp_from_env(awaken_server::relay_hand_executor_factory())
-        .await;
+    let argv = std::env::var("AWAKEN_ACP_ARGV")
+        .expect("container scenario requires AWAKEN_ACP_ARGV")
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    let host =
+        host.with_store_dir(storage_dir)
+            .with_acp_launch_source(
+                awaken_server::relay_hand_executor_factory(),
+                awaken_runtime_host::LaunchSource::Fixed(
+                    awaken_run_executor_acp::AcpLaunch::custom(argv, vec![]),
+                ),
+            )
+            .await;
     // Use the same shared Resource Catalog + Managed ACL assembly as every other
     // scenario, with the exact EnvironmentState mounted by the environment API.
     mount_with_environments(Arc::new(host))
@@ -856,16 +861,6 @@ pub fn build_resolved_router(
 /// Build the server router backed by the kernel with the given model.
 pub fn build_router(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> Router {
     mount(Arc::new(resource_host(llm, model_ref)))
-}
-
-/// A plain host over the real wire for the model-pool failover e2e (#1). The
-/// primary model is `ANTHROPIC_MODEL`; when the upstream fails exactly that model,
-/// the run fails over to the ordered `AWAKEN_MODEL_FALLBACKS`. No memory/tools/skills,
-/// so a single message is one clean main turn. `AWAKEN_MODEL_MODE=pool-failover`
-/// with `AWAKEN_MODEL_SOURCE=http`.
-pub fn build_pool_failover_router() -> Router {
-    let (model, model_ref) = scenario_model(Arc::new(EchoModel), "pool-primary");
-    mount(Arc::new(SharedHost::new(model, model_ref)))
 }
 
 /// The model backing a scenario router, and its advertised ref. Normally the

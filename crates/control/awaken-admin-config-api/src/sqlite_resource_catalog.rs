@@ -82,7 +82,7 @@ impl SqliteAdminStore {
             let result = self.create_memory_store(
                 MemoryStoreDefinition {
                     id: id.clone().into(),
-                    workspace_id: legacy.workspace_id.into(),
+                    workspace_id: legacy.workspace_id,
                     name: legacy.name,
                     description: legacy.description,
                     metadata: legacy.metadata,

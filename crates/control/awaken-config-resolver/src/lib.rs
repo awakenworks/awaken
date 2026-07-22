@@ -67,8 +67,8 @@ pub struct InferenceTriple {
 }
 
 /// What the resolver hands the run loop: the concrete target + wire + an
-/// already-resolved secret (or `None` for host-native). The runtime sees only
-/// this — never a binding, a ref, or the stores (D6/D9).
+/// already-resolved secret for management preview/probe. Production publication
+/// emits secret-free `InferenceAccess`; runtime never consumes this preview type.
 #[derive(Debug)]
 pub struct ResolvedInference {
     pub triple: InferenceTriple,
@@ -76,8 +76,8 @@ pub struct ResolvedInference {
     pub adapter_kind: &'static str,
     /// Endpoint base URL override, if any.
     pub base_url: Option<String>,
-    /// The already-materialized provider credential; `None` when the binding is
-    /// `None` or the source is host-native with no value.
+    /// The already-materialized provider credential; `None` only when the authored
+    /// binding explicitly requires no credential.
     pub credential: Option<RedactedString>,
 }
 
@@ -375,7 +375,7 @@ pub async fn resolve_profile_candidates(
 /// The validity join (ADR-0118 `can_consume`): may this credential authenticate
 /// this provider? A source scoped to a provider (`provider_id = Some("anthropic")`)
 /// may only consume that provider's offerings; an unscoped source
-/// (`provider_id = None`, host-native / env) may consume any. This is what stops an
+/// (`provider_id = None`, explicitly unscoped persisted source) may consume any. This is what stops an
 /// otherwise-materializable key being paired with a model it cannot authenticate —
 /// the invalid `(model × credential)` combination the ADR calls out.
 #[must_use]
@@ -1025,7 +1025,7 @@ mod tests {
         let unscoped = create_source(
             CredentialCreateParams {
                 workspace_id: "ws".into(),
-                kind: CredentialKind::Env,
+                kind: CredentialKind::Vault,
                 provider_id: None,
                 env_key: Some("KEY".into()),
                 secret: Some(RedactedString::new("sk-any")),
@@ -1035,7 +1035,7 @@ mod tests {
         )
         .await
         .unwrap();
-        // Host-native / unscoped consumes any provider.
+        // An explicitly unscoped persisted source consumes any provider.
         assert!(can_consume("anthropic", &unscoped));
         assert!(can_consume("openai", &unscoped));
     }

@@ -163,7 +163,7 @@ impl SkillCatalog {
                 .create(
                     SkillDefinition {
                         id: id.into(),
-                        workspace_id: workspace.to_string().into(),
+                        workspace_id: workspace.to_string(),
                         display_title: None,
                         latest_version: 1,
                         last_version: 1,

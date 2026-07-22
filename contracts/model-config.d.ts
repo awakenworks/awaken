@@ -266,7 +266,9 @@ export interface CredentialSourceView {
  *
  * Secret material sealed in the vault (a [`SecretRef`] into [`SecretStore`]).
  *
- * A host environment variable named by `env_key`; nothing is stored here.
+ * Legacy persisted value. New sources of this kind are rejected and existing
+ * rows cannot materialize: environment discovery may propose configuration,
+ * but an operator must persist it as `Vault` before publication/execution.
  *
  * An OAuth-backed provider credential (#5): the secret is a short-lived
  * Bearer token minted on demand by running `oauth_command`, never stored. The
@@ -320,13 +322,45 @@ export interface EnterCredentialRequest {
     oauth_helper?: CredentialSource | null;
     provider_id?:  null | string;
     /**
-     * The secret to seal — required for `vault`, unused for `env` (which reads a
-     * host variable at materialization), so it defaults to empty.
+     * The secret to seal — required for `vault`. Environment-backed credentials
+     * are not accepted; environment discovery is exposed only as proposals.
      */
     secret?:      string;
     workspace_id: string;
     [property: string]: unknown;
 }
+
+/**
+ * A read-only, non-executable hint derived from process environment. It is not a
+ * catalog row, credential source, profile or publication and carries no secret.
+ * The UI may use it to prefill existing authoring forms; only their explicit writes
+ * create execution truth.
+ */
+export interface EnvironmentProviderProposal {
+    base_url?:          null | string;
+    credential_env:     string;
+    credential_present: boolean;
+    dialect:            APIDialect;
+    endpoint_id:        string;
+    model_id?:          null | string;
+    provider_id:        string;
+    [property: string]: unknown;
+}
+
+/**
+ * The wire/model-API dialect a surface speaks. Replaces oversight's `WireFormat`;
+ * the credential/model bindings are resolved against this dialect (ADR-0043).
+ *
+ * The `claude` adapter's wire.
+ *
+ * The `codex`/OpenAI chat wire.
+ *
+ * The Gemini wire.
+ *
+ * Gemini on Vertex AI: native Gemini payloads with OAuth Bearer auth and
+ * a project/location endpoint.
+ */
+export type APIDialect = "anthropic_messages" | "open_ai_chat" | "gemini" | "vertex_gemini";
 
 /**
  * An authored "how to run this model" unit (ADR-0043 `InferenceProfile` /
@@ -466,21 +500,6 @@ export interface Offering {
     upstream_model?: null | string;
     [property: string]: unknown;
 }
-
-/**
- * The wire/model-API dialect a surface speaks. Replaces oversight's `WireFormat`;
- * the credential/model bindings are resolved against this dialect (ADR-0043).
- *
- * The `claude` adapter's wire.
- *
- * The `codex`/OpenAI chat wire.
- *
- * The Gemini wire.
- *
- * Gemini on Vertex AI: native Gemini payloads with OAuth Bearer auth and
- * a project/location endpoint.
- */
-export type APIDialect = "anthropic_messages" | "open_ai_chat" | "gemini" | "vertex_gemini";
 
 /**
  * Which members of a pool are selectable right now — `selection_order` with cooled

@@ -10,6 +10,7 @@ from pathlib import Path
 
 import _arch_fitness
 import _crate_dependency_fitness
+import _provider_env_fitness
 import _resource_plane_fitness
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 CRATES = REPO_ROOT / "crates"
@@ -1977,6 +1978,7 @@ def main() -> int:
         + check_bucket_direction()
         + _resource_plane_fitness.check_all(REPO_ROOT, CRATES)
         + check_runtime_is_secret_resolution_free()
+        + _provider_env_fitness.check_all(REPO_ROOT, CRATES)
         + _arch_fitness.check_all(_arch_fitness_specs())
     )
     if errors:

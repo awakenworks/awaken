@@ -7,8 +7,9 @@
 //!
 //! Two orthogonal axes (oversight-next / awaken-management-contract):
 //! *materialization* ([`CredentialKind`]: where the secret lives) and *selection*
-//! ([`CredentialBinding`]: which source a run uses). P0 wires `Vault`/`Env` kinds
-//! and the `Exact` binding; pools/identities land in P1.
+//! ([`CredentialBinding`]: which source a run uses). Executable credentials are
+//! persisted (`Vault`) or minted by an explicitly persisted helper (`Oauth`);
+//! ambient process environment is never execution configuration.
 
 #![forbid(unsafe_code)]
 
@@ -58,7 +59,9 @@ pub struct CredentialSourceId(pub String);
 pub enum CredentialKind {
     /// Secret material sealed in the vault (a [`SecretRef`] into [`SecretStore`]).
     Vault,
-    /// A host environment variable named by `env_key`; nothing is stored here.
+    /// Legacy persisted value. New sources of this kind are rejected and existing
+    /// rows cannot materialize: environment discovery may propose configuration,
+    /// but an operator must persist it as `Vault` before publication/execution.
     Env,
     /// An OAuth-backed provider credential (#5): the secret is a short-lived
     /// Bearer token minted on demand by running `oauth_command`, never stored. The
@@ -358,8 +361,10 @@ pub enum CredentialError {
     NotActive(String),
     #[error("vault source `{0}` has no material_ref")]
     MissingMaterialRef(String),
-    #[error("env source `{0}` has no env_key / value")]
-    MissingEnv(String),
+    #[error(
+        "environment credential source `{0}` is not executable; persist the secret in the vault"
+    )]
+    EnvironmentSourceUnsupported(String),
     #[error("secret seal/open failed (wrong key or corrupt ciphertext)")]
     Seal,
     #[error("oauth token refresh failed: {0}")]
@@ -494,11 +499,29 @@ pub async fn create_source(
     params: CredentialCreateParams,
     store: &dyn SecretStore,
 ) -> Result<CredentialSource, CredentialError> {
+    reject_environment_source(&params)?;
     let (source, secret) = prepare_source(params);
     if let (Some(material_ref), Some(secret)) = (&source.material_ref, secret) {
         store.put(material_ref, secret).await?;
     }
     Ok(source)
+}
+
+/// Environment variables are discovery inputs, never durable or executable
+/// credential sources. Kept at the domain entry seam so every HTTP/repository
+/// composition receives the same fail-closed decision.
+pub(crate) fn reject_environment_source(
+    params: &CredentialCreateParams,
+) -> Result<(), CredentialError> {
+    if params.kind == CredentialKind::Env {
+        return Err(CredentialError::EnvironmentSourceUnsupported(
+            params
+                .env_key
+                .clone()
+                .unwrap_or_else(|| "<unnamed>".to_string()),
+        ));
+    }
+    Ok(())
 }
 
 /// Mint the secret-free source and retain material separately so the repository
@@ -511,7 +534,8 @@ pub(crate) fn prepare_source(
         (CredentialKind::Vault, Some(secret)) => {
             (Some(SecretRef(format!("sec:{}", id.0))), Some(secret))
         }
-        // `Env` never stores material; a stray secret is dropped with the params.
+        // OAuth mints short-lived material through its persisted helper. The legacy
+        // Env variant is rejected before this internal constructor is reached.
         _ => (None, None),
     };
     (
@@ -531,8 +555,8 @@ pub(crate) fn prepare_source(
 }
 
 /// Materialize a source into an already-resolved [`RedactedString`] at the
-/// injection seam. `Vault` reads the [`SecretStore`]; `Env` reads the host
-/// environment via `env_key`. Fail-closed on any gap.
+/// injection seam. `Vault` reads the [`SecretStore`]; `Oauth` invokes its persisted,
+/// allowlisted helper. Legacy `Env` rows fail closed and never read process state.
 pub async fn materialize(
     source: &CredentialSource,
     store: &dyn SecretStore,
@@ -548,15 +572,9 @@ pub async fn materialize(
                 .ok_or_else(|| CredentialError::MissingMaterialRef(source.id.0.clone()))?;
             store.get(r).await
         }
-        CredentialKind::Env => {
-            let key = source
-                .env_key
-                .as_deref()
-                .ok_or_else(|| CredentialError::MissingEnv(source.id.0.clone()))?;
-            std::env::var(key)
-                .map(RedactedString::new)
-                .map_err(|_| CredentialError::MissingEnv(source.id.0.clone()))
-        }
+        CredentialKind::Env => Err(CredentialError::EnvironmentSourceUnsupported(
+            source.id.0.clone(),
+        )),
         CredentialKind::Oauth => {
             // The secret is minted on demand by the helper; the store is not
             // consulted (nothing is sealed for an OAuth source). A per-source
@@ -724,24 +742,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_env_source_without_env_key_fails_closed() {
+    async fn a_legacy_env_source_fails_closed_without_reading_process_state() {
         let store = InMemorySecretStore::new();
         let source = bare_source(CredentialKind::Env);
         assert!(matches!(
             materialize(&source, &store).await,
-            Err(CredentialError::MissingEnv(id)) if id == source.id.0
+            Err(CredentialError::EnvironmentSourceUnsupported(id)) if id == source.id.0
         ));
     }
 
     #[tokio::test]
-    async fn an_unset_env_var_is_missing_env() {
+    async fn a_legacy_env_source_is_rejected_even_when_it_names_a_variable() {
         let store = InMemorySecretStore::new();
         let mut source = bare_source(CredentialKind::Env);
-        // A name no test or host would ever set; reading it is side-effect free.
-        source.env_key = Some("AWAKEN_CREDENTIAL_VAULT_TEST_UNSET_VAR_7F3A".into());
+        source.env_key = Some("PATH".into());
         assert!(matches!(
             materialize(&source, &store).await,
-            Err(CredentialError::MissingEnv(id)) if id == source.id.0
+            Err(CredentialError::EnvironmentSourceUnsupported(id)) if id == source.id.0
         ));
     }
 
@@ -913,20 +930,17 @@ mod tests {
         ));
     }
 
-    /// M5: an `Env` source whose `env_key` names a variable that *is* set reads the
-    /// host value at the seam. `PATH` is reliably present in the test process, so no
-    /// env mutation (forbidden here — `unsafe_code = "forbid"`) is needed.
+    /// M5: process environment is not an execution credential source. Even a set,
+    /// commonplace variable is never read by materialization.
     #[tokio::test]
-    async fn an_env_source_reads_a_set_host_variable() {
-        let Ok(expected) = std::env::var("PATH") else {
-            // No PATH in this environment — the read path is exercised elsewhere.
-            return;
-        };
+    async fn materialization_never_reads_a_set_host_variable() {
         let store = InMemorySecretStore::new();
         let mut source = bare_source(CredentialKind::Env);
         source.env_key = Some("PATH".into());
-        let value = materialize(&source, &store).await.unwrap();
-        assert_eq!(value.expose_secret(), expected);
+        assert!(matches!(
+            materialize(&source, &store).await,
+            Err(CredentialError::EnvironmentSourceUnsupported(_))
+        ));
     }
 
     /// M9: with the `oauth-command` feature *off*, an OAuth source cannot mint a
@@ -1012,25 +1026,28 @@ mod tests {
         assert!(matches!(err, CredentialError::Storage(_)));
     }
 
-    /// create_source(c): every kind that stores nothing (`Env`, and `Vault` with no
-    /// secret) yields a row with `material_ref = None` — the store is never touched.
+    /// `Env` is rejected at the only create seam; a `Vault` with no supplied secret
+    /// remains a secret-free row and the store is untouched.
     #[tokio::test]
     async fn create_without_sealed_material_has_no_ref() {
         let store = InMemorySecretStore::new();
-        let env = create_source(
+        let error = create_source(
             CredentialCreateParams {
                 workspace_id: "ws".into(),
                 kind: CredentialKind::Env,
                 provider_id: None,
                 env_key: Some("ANTHROPIC_API_KEY".into()),
-                secret: Some(RedactedString::new("dropped")), // Env drops any stray secret.
+                secret: Some(RedactedString::new("not-imported")),
                 oauth_command: None,
             },
             &store,
         )
         .await
-        .unwrap();
-        assert_eq!(env.material_ref, None);
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            CredentialError::EnvironmentSourceUnsupported(_)
+        ));
 
         let vault_no_secret = create_source(
             CredentialCreateParams {

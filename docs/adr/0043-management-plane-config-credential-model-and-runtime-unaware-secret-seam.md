@@ -113,22 +113,22 @@ request; the kernel's `ModelProvider`/`LlmExecutor` port stays secret-free and t
 adapter is wired at the composition root. So no functionality is lost — the seam
 simply lives above the kernel contract, not inside it.
 
-### 3. "Normal config" and "vault config" — resolved before the runtime
+### 3. One persisted credential path — selected before, materialized after snapshot
 
-Both reach the runtime as a fully-resolved snapshot; the runtime never resolves:
+Configuration publication resolves a persisted `CredentialBinding` into a
+secret-free, revisioned `CredentialAccess` pin in the snapshot. Worker/host
+provisioning opens that exact persisted source immediately before constructing the
+provider/ACP adapter. The runtime kernel never selects or resolves a credential.
 
-- **Normal config** → the credential is already a `RedactedString` (or a resolved
-  env value); the runtime runs standalone (goal's shape today; the P0 path).
-- **Vault config** → the **host** resolves the `CredentialBinding` / handle via
-  `awaken-credential-vault` first, then hands the runtime the resolved snapshot.
-
-"接收 vault" means the host accepts a vault-backed config and resolves it upstream —
-the runtime sees only the resolved value, identical to the normal-config case.
+There is no parallel "normal/env config" execution path. A secret-free environment
+proposal must first be accepted through the ordinary Catalog/Credential authoring
+commands; until then it cannot be published or executed.
 
 ### 4. Hard constraints
 
-- **No inline-secret-in-config** — a secret always lives in a `CredentialSource`
-  (vault or host-native), never embedded in a spec (oversight-consistent); the
+- **No inline/ambient-secret-in-config** — a secret always lives in a persisted
+  `CredentialSource` (vault or persisted OAuth helper), never embedded in a spec or
+  read from provider environment at execution time; the
   secret-free invariant holds on every profile.
 - **A missing handle fails closed** — no ambient env fallback.
 - **`credential.*` authz is required** (ADR-0042); the draft credential domain has
@@ -136,6 +136,9 @@ the runtime sees only the resolved value, identical to the normal-config case.
 - Encryption-at-rest and secretless egress-proxy delivery are `SecretStore`/
   `SecretResolver` **adapters** in the host/credential layer, never runtime or
   domain concerns (see the design docs).
+
+Environment values may be inspected only by the admin proposal adapter; they must be
+explicitly entered into the vault/catalog and published before any run can consume them.
 
 ## Management-plane decomposition, layering, and naming (amended 2026-07-04)
 

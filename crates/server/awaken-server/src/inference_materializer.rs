@@ -14,17 +14,13 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_config_resolver::{InferenceAccessPublisher, can_consume};
 use awaken_credential_vault::repo::CredentialRepo;
-use awaken_credential_vault::{
-    CredentialSource, CredentialSourceId, CredentialStatus, SecretStore,
-};
+use awaken_credential_vault::{CredentialSource, CredentialStatus, SecretStore};
 use awaken_model_catalog::ProviderCatalog;
 use awaken_model_catalog::repo::CatalogRepo;
 use awaken_runtime_contract::llm::{
     ChatRequest, ChatResponse, DeltaSink, Error as LlmError, LlmExecutor,
 };
-use awaken_runtime_contract::{
-    CredentialInjectionKind, CredentialUsage, InferenceAccess, InferenceEndpoint, ModelBinding,
-};
+use awaken_runtime_contract::{InferenceAccess, InferenceEndpoint, ModelBinding};
 use awaken_runtime_host::InferenceExecutorMaterializer;
 
 use crate::executor_from_materialized_access;
@@ -44,8 +40,7 @@ pub struct CatalogInferenceAccessPublisher {
 /// different credential.
 #[derive(Clone)]
 pub struct CredentialInferenceMaterializer {
-    credentials: Arc<dyn CredentialRepo>,
-    secrets: Arc<dyn SecretStore>,
+    credentials: awaken_runtime_host::PinnedCredentialMaterializer,
     fallback: Option<HostFallback>,
 }
 
@@ -225,8 +220,10 @@ impl CatalogInferenceAccessPublisher {
 impl CredentialInferenceMaterializer {
     pub fn new(credentials: Arc<dyn CredentialRepo>, secrets: Arc<dyn SecretStore>) -> Self {
         Self {
-            credentials,
-            secrets,
+            credentials: awaken_runtime_host::PinnedCredentialMaterializer::new(
+                credentials,
+                secrets,
+            ),
             fallback: None,
         }
     }
@@ -267,31 +264,7 @@ impl CredentialInferenceMaterializer {
         if access.scheme != "credential-source/v1" {
             return None;
         }
-        let provider = access.provider_ref.as_deref()?.split_once('@')?.0;
-        let scope = access.scope_id.as_deref()?;
-        let credential = access.credential_access.as_ref()?;
-        if credential.injection != CredentialInjectionKind::Reference
-            || credential.usage != CredentialUsage::ProviderAdapter
-            || credential.credential.id != access.reference
-        {
-            return None;
-        }
-        let expected_version = credential.credential.revision;
-        let source = self
-            .credentials
-            .get(&CredentialSourceId(access.reference.clone()))
-            .await
-            .ok()?;
-        if source.workspace_id != scope
-            || source.status != CredentialStatus::Active
-            || u64::try_from(source.version).ok()? != expected_version
-            || !can_consume(provider, &source)
-        {
-            return None;
-        }
-        let secret = awaken_credential_vault::materialize(&source, self.secrets.as_ref())
-            .await
-            .ok()?;
+        let secret = self.credentials.materialize_provider(access).await.ok()?;
         let endpoint = access.endpoint.as_ref()?;
         if endpoint.upstream_model.is_empty() {
             return None;
@@ -736,7 +709,8 @@ mod tests {
             .resolve_for_scope("ws", &[ModelBinding::new("anthropic", "claude-x", "genai")])
             .await
             .unwrap();
-        access.credential_access.as_mut().unwrap().injection = CredentialInjectionKind::Direct;
+        access.credential_access.as_mut().unwrap().injection =
+            awaken_runtime_contract::CredentialInjectionKind::Direct;
 
         assert!(
             p.materializer

@@ -1070,11 +1070,17 @@ async fn management_router_over(
         .with_inference_materializer(inference_materializer);
     host_builder.install_memory_extraction_repository(memory_extractions);
     awaken_server::install_platform_memory_data_plane(&host_builder);
-    // Production ACP wiring (`acp:*` threads): `AWAKEN_ACP_CLI` / `AWAKEN_ACP_ARGV`
-    // realized in `AWAKEN_SANDBOX_TIER`. The one shared helper both the server and
-    // worker roots call, so they never drift (ADR-0057).
+    // Production ACP wiring (`acp:*` threads): the environment advertises only the
+    // installed CLI/sandbox capability. Provider coordinates and credentials are
+    // realized from the same publication-pinned DB facts as native inference.
     let host_builder = host_builder
-        .with_acp_from_env(awaken_server::relay_hand_executor_factory())
+        .with_acp_from_deployment(
+            awaken_server::relay_hand_executor_factory(),
+            Some(awaken_runtime_host::PinnedCredentialMaterializer::new(
+                credentials.clone(),
+                secrets.clone(),
+            )),
+        )
         .await;
     // Last-mile backend wiring the management plane does not assemble itself, injected
     // by the composition root (a scenario that serves external-CLI sessions).

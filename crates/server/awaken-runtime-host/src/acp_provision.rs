@@ -1,85 +1,66 @@
 //! Host-side provisioning for a launched ACP CLI: the [`LaunchResolver`] that turns
-//! a run into concrete launch inputs. It resolves the model from the run's resolved
-//! spec + the process environment (the `ANTHROPIC_*` / `OPENAI_*` the operator
-//! exports — e.g. a MiniMax or Kimi endpoint), materializes the key from that env
-//! (never stored in config), and opens the thread's [`ConfigHome`], handing its path
-//! back as the CLI's `config_home_env`. The neutral projection ([`AcpCli::project`])
-//! then assembles the launch — this module supplies only the host's per-run inputs.
-
-use std::path::PathBuf;
-use std::sync::Arc;
+//! publication-pinned inference access into concrete launch inputs. Endpoint/model
+//! coordinates come only from the immutable snapshot and the exact credential is
+//! materialized from the persisted vault. Process environment may advertise which
+//! CLI a worker can host, but never supplies provider execution facts.
 
 use awaken_run_executor_acp::{AcpCli, ConfigHome, LaunchResolver, OpenError, ResolvedModel};
 use awaken_runtime_contract::activation::RunActivation;
+use std::path::PathBuf;
 
-/// Explicit operator-selected native auth file. The composition root projects its
-/// bytes through a Secret mount; its presence also means model API-key env is not
-/// required because the CLI authenticates from its own OAuth credential file.
-pub const ACP_CREDENTIAL_FILE_ENV: &str = "AWAKEN_ACP_CREDENTIAL_FILE";
-
-/// Reads a var from the environment source; injectable so tests need no global env.
-type EnvSource = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
-
-/// Resolves an ACP run's launch inputs from the process environment + the run's
-/// resolved model, and the thread's config home.
-pub struct EnvLaunchResolver {
+/// Resolves an ACP run from its published access and a worker-side exact credential
+/// materializer. This adapter cannot query the model catalog or select a credential.
+pub struct PublishedAcpLaunchResolver {
     cli: AcpCli,
     store_dir: Option<PathBuf>,
-    env: EnvSource,
+    credentials: crate::PinnedCredentialMaterializer,
 }
 
-impl EnvLaunchResolver {
-    /// Read the model endpoint/key from the process environment (the operator's
-    /// exported `*_BASE_URL` / `*_API_KEY`). `store_dir` is the durable root for the
-    /// config home (`AWAKEN_STORAGE_DIR`).
+impl PublishedAcpLaunchResolver {
     #[must_use]
-    pub fn from_process_env(cli: AcpCli, store_dir: Option<PathBuf>) -> Self {
+    pub fn new(
+        cli: AcpCli,
+        store_dir: Option<PathBuf>,
+        credentials: crate::PinnedCredentialMaterializer,
+    ) -> Self {
         Self {
             cli,
             store_dir,
-            env: Arc::new(|key| std::env::var(key).ok()),
+            credentials,
         }
     }
 
-    /// Resolve the model coordinates (base URL, model, key) for `model_ref`.
-    ///
-    /// This resolver owns how the CLI reaches its model — the runtime never sees it.
-    /// A cloud-managed ACP gateway (both `AWAKEN_ACP_GATEWAY_URL` and
-    /// `AWAKEN_ACP_LEASE_TOKEN` exported) supplies the base URL + lease bearer;
-    /// otherwise the operator's local model-delivery env does. A run with neither a
-    /// gateway nor a local base URL / key is a fail-closed launch error.
-    fn resolve_model(&self, model_ref: &str) -> Result<ResolvedModel, OpenError> {
-        let d = &self.cli.model_delivery;
-        let model = if model_ref.is_empty() {
-            (self.env)(d.model).unwrap_or_default()
-        } else {
-            model_ref.to_string()
-        };
-        // A gateway run dials the gateway with a short-lived lease (never a raw
-        // provider key); a local run reads the operator's model-delivery env. Both
-        // env vars must be present to select the gateway path.
-        let (base_url, api_key) = match (
-            (self.env)("AWAKEN_ACP_GATEWAY_URL"),
-            (self.env)("AWAKEN_ACP_LEASE_TOKEN"),
-        ) {
-            (Some(gateway), Some(lease)) => (gateway, lease),
-            _ if (self.env)(ACP_CREDENTIAL_FILE_ENV).is_some() => (
-                (self.env)(d.base_url).unwrap_or_default(),
-                (self.env)(d.key).unwrap_or_default(),
-            ),
-            _ => {
-                let base_url = (self.env)(d.base_url).ok_or_else(|| {
-                    OpenError(format!("{} not set in the environment", d.base_url))
-                })?;
-                let api_key = (self.env)(d.key)
-                    .ok_or_else(|| OpenError(format!("{} not set in the environment", d.key)))?;
-                (base_url, api_key)
-            }
-        };
+    fn resolve_model(&self, activation: &RunActivation) -> Result<ResolvedModel, OpenError> {
+        let model_ref = activation.effective_model_ref();
+        let published = activation
+            .snapshot
+            .metadata
+            .inference_access
+            .as_ref()
+            .ok_or_else(|| OpenError("run has no published inference access".to_string()))?;
+        let access = published.for_model(model_ref).ok_or_else(|| {
+            OpenError(format!(
+                "model {model_ref} is outside the publication-pinned candidate set"
+            ))
+        })?;
+        let endpoint = access
+            .endpoint
+            .clone()
+            .ok_or_else(|| OpenError(format!("published model {model_ref} has no endpoint pin")))?;
+        if endpoint.base_url.trim().is_empty() || endpoint.upstream_model.trim().is_empty() {
+            return Err(OpenError(format!(
+                "published model {model_ref} has incomplete endpoint coordinates"
+            )));
+        }
+        let secret = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current()
+                .block_on(self.credentials.materialize_provider(&access))
+        })
+        .map_err(OpenError)?;
         Ok(ResolvedModel {
-            base_url,
-            model,
-            api_key,
+            base_url: endpoint.base_url,
+            model: endpoint.upstream_model,
+            api_key: secret.expose_secret().to_string(),
         })
     }
 
@@ -88,240 +69,54 @@ impl EnvLaunchResolver {
     /// to its own default home (degraded, not broken).
     fn config_home_env(&self, thread_id: &str) -> Vec<(String, String)> {
         match ConfigHome::open(self.store_dir.as_deref(), thread_id) {
-            Ok(home) => {
-                let root = home.root().display().to_string();
-                std::iter::once((self.cli.config_home_env.to_string(), root.clone()))
-                    .chain(
-                        self.cli
-                            .config_home_aliases
-                            .iter()
-                            .map(|key| ((*key).to_string(), root.clone())),
-                    )
-                    .collect()
-            }
+            Ok(home) => vec![(
+                self.cli.config_home_env.to_string(),
+                home.root().display().to_string(),
+            )],
             Err(_) => Vec::new(),
         }
     }
-
-    /// Put the selected CLI's resolved installation directory first in PATH.
-    ///
-    /// Operator-managed launchers are often symlinks from `~/.local/bin` into a
-    /// private runtime (Hermes uses a Python virtualenv). A namespace can mount
-    /// the PATH directory itself while the symlink target remains invisible.
-    /// Resolving only this catalog-selected executable gives the sandbox renderer
-    /// the precise runtime root it must project, without exposing the rest of the
-    /// operator's home.
-    fn runtime_path(&self) -> Option<String> {
-        let path = (self.env)("PATH")?;
-        let command = std::path::Path::new(self.cli.command);
-        let executable = if command.components().count() > 1 {
-            command.to_path_buf()
-        } else {
-            std::env::split_paths(&path)
-                .map(|dir| dir.join(command))
-                .find(|candidate| candidate.is_file())?
-        };
-        let resolved = std::fs::canonicalize(executable).ok()?;
-        let first_line = std::fs::File::open(&resolved).ok().and_then(|file| {
-            use std::io::BufRead as _;
-            let mut line = String::new();
-            std::io::BufReader::new(file)
-                .read_line(&mut line)
-                .ok()
-                .map(|_| line)
-        });
-        // `npx` is a JS script reached through the operator's NVM symlink and uses
-        // `#!/usr/bin/env node`. Its original PATH already selects the matching
-        // Node. Prefixing either the canonical npm script directory or `/usr/bin`
-        // would instead pair NVM's npm with the host's older system Node.
-        if first_line
-            .as_deref()
-            .and_then(|line| line.strip_prefix("#!"))
-            .and_then(|line| line.split_whitespace().next())
-            .and_then(|program| std::path::Path::new(program).file_name())
-            .is_some_and(|program| program == "env")
-        {
-            return Some(path);
-        }
-        let runtime_bin = resolved.parent()?;
-        let mut entries = vec![runtime_bin.to_path_buf()];
-        // A Python console script may live in a virtualenv whose interpreter is
-        // itself a symlink into an operator-managed uv Python installation. Put
-        // that resolved interpreter directory on PATH as a projection hint too.
-        if let Some(first_line) = first_line
-            && let Some(interpreter) = first_line.strip_prefix("#!")
-            && let Some(program) = interpreter.split_whitespace().next()
-            && std::path::Path::new(program).is_absolute()
-            && let Ok(program) = std::fs::canonicalize(program)
-            && let Some(bin) = program.parent()
-        {
-            entries.push(bin.to_path_buf());
-        }
-        entries.extend(std::env::split_paths(&path));
-        std::env::join_paths(entries)
-            .ok()
-            .map(|value| value.to_string_lossy().into_owned())
-    }
 }
 
-impl LaunchResolver for EnvLaunchResolver {
+impl LaunchResolver for PublishedAcpLaunchResolver {
     fn model(&self, activation: &RunActivation) -> Result<ResolvedModel, OpenError> {
-        self.resolve_model(&activation.snapshot.resolved_spec.model_binding.model_ref)
+        self.resolve_model(activation)
     }
 
     fn extra_env(&self, activation: &RunActivation) -> Vec<(String, String)> {
-        let mut projected = self.config_home_env(&activation.thread_id.0);
-        // Bound Workdir/Namespace launches clear the ambient environment. Carry
-        // only the process-discovery inputs an external CLI needs; the bound
-        // sandbox replaces HOME with its isolated config home before launch.
-        if let Some(path) = self.runtime_path().or_else(|| (self.env)("PATH")) {
-            projected.push(("PATH".to_string(), path));
-        }
-        if let Some(home) = (self.env)("HOME") {
-            projected.push(("HOME".to_string(), home));
-        }
-        projected.extend(
-            self.cli
-                .passthrough_env
-                .iter()
-                .filter_map(|key| (self.env)(key).map(|value| ((*key).to_string(), value))),
-        );
-        projected
+        self.config_home_env(&activation.thread_id.0)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_agent_contract::RedactedString;
+    use awaken_agent_contract::agent::run::Id as RunId;
+    use awaken_agent_contract::agent::thread::Id as ThreadId;
+    use awaken_credential_vault::repo::{InMemoryCredentialRepo, enter_credential};
+    use awaken_credential_vault::{CredentialCreateParams, CredentialKind, InMemorySecretStore};
+    use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
+    use awaken_runtime_contract::snapshot::{
+        AgentId, AgentSnapshotMetadata, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
+    };
+    use awaken_runtime_contract::{InferenceAccess, InferenceEndpoint};
+    use std::sync::Arc;
 
     fn claude() -> AcpCli {
         *awaken_run_executor_acp::acp_cli("claude").unwrap()
     }
 
-    fn resolver_with(pairs: &[(&str, &str)], store: Option<PathBuf>) -> EnvLaunchResolver {
-        let map: std::collections::HashMap<String, String> = pairs
-            .iter()
-            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
-            .collect();
-        EnvLaunchResolver {
-            cli: claude(),
-            store_dir: store,
-            env: Arc::new(move |k| map.get(k).cloned()),
-        }
-    }
-
-    #[test]
-    fn resolves_model_from_env_and_run_model_ref() {
-        let r = resolver_with(
-            &[
-                ("ANTHROPIC_BASE_URL", "https://api.minimaxi.com/anthropic"),
-                ("ANTHROPIC_API_KEY", "exported-key"), // awaken-allow: secret
-            ],
-            None,
-        );
-        let model = r.resolve_model("MiniMax-M3[1m]").unwrap();
-        assert_eq!(model.base_url, "https://api.minimaxi.com/anthropic");
-        assert_eq!(model.model, "MiniMax-M3[1m]");
-        assert_eq!(model.api_key, "exported-key");
-    }
-
-    #[test]
-    fn missing_key_or_base_url_fails_closed() {
-        let r = resolver_with(&[("ANTHROPIC_BASE_URL", "u")], None);
-        assert!(r.resolve_model("m").is_err()); // no ANTHROPIC_API_KEY
-    }
-
-    #[test]
-    fn cloud_managed_gateway_env_yields_a_lease_token_not_a_raw_key() {
-        // D-R2: with the gateway env injected, the launched CLI points at the gateway
-        // and its "key" is the short-lived lease token — the raw provider key is never
-        // read, even when present in the env.
-        let r = resolver_with(
-            &[
-                ("AWAKEN_ACP_GATEWAY_URL", "https://gw.internal/anthropic"),
-                ("AWAKEN_ACP_LEASE_TOKEN", "lease-abc"), // awaken-allow: secret
-                ("ANTHROPIC_API_KEY", "raw-provider-key"), // awaken-allow: secret
-            ],
-            None,
-        );
-        let model = r.resolve_model("claude-opus").unwrap();
-        assert_eq!(model.base_url, "https://gw.internal/anthropic");
-        assert_eq!(model.model, "claude-opus");
-        assert_eq!(model.api_key, "lease-abc"); // the lease, not the raw key
-        assert_ne!(model.api_key, "raw-provider-key");
-    }
-
-    #[test]
-    fn cloud_managed_gateway_needs_no_raw_key_in_the_env() {
-        // The gateway path is self-sufficient: no ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL
-        // required, since the sandbox is credential-free by design.
-        let r = resolver_with(
-            &[
-                ("AWAKEN_ACP_GATEWAY_URL", "https://gw.internal"),
-                ("AWAKEN_ACP_LEASE_TOKEN", "lease-xyz"), // awaken-allow: secret
-            ],
-            None,
-        );
-        let model = r.resolve_model("m").unwrap();
-        assert_eq!(model.base_url, "https://gw.internal");
-        assert_eq!(model.api_key, "lease-xyz");
-    }
-
-    #[test]
-    fn native_cli_credential_file_needs_no_api_key_env() {
-        let r = resolver_with(&[(ACP_CREDENTIAL_FILE_ENV, "/credentials/auth.json")], None);
-        let model = r.resolve_model("gpt-5-codex").unwrap();
-        assert_eq!(model.model, "gpt-5-codex");
-        assert!(model.base_url.is_empty());
-        assert!(model.api_key.is_empty());
-    }
-
-    #[test]
-    fn from_process_env_builds_a_usable_resolver() {
-        let base = std::env::temp_dir().join(format!("awaken-fpe-{}", std::process::id()));
-        let r = EnvLaunchResolver::from_process_env(claude(), Some(base.clone()));
-        let env = r.config_home_env("thr");
-        assert_eq!(env[0].0, "CLAUDE_CONFIG_DIR");
-        let _ = std::fs::remove_dir_all(&base);
-    }
-
-    #[test]
-    fn empty_run_model_falls_back_to_the_env_model_key() {
-        let r = resolver_with(
-            &[
-                ("ANTHROPIC_BASE_URL", "u"),
-                ("ANTHROPIC_API_KEY", "k"), // awaken-allow: secret
-                ("ANTHROPIC_MODEL", "env-model"),
-            ],
-            None,
-        );
-        assert_eq!(r.resolve_model("").unwrap().model, "env-model");
-    }
-
-    #[test]
-    fn launch_resolver_trait_reads_the_run_model_and_thread() {
-        use awaken_agent_contract::agent::run::Id as RunId;
-        use awaken_agent_contract::agent::thread::Id as ThreadId;
-        use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
-        use awaken_runtime_contract::snapshot::{
-            AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
-        };
-        let base = std::env::temp_dir().join(format!("awaken-lrt-{}", std::process::id()));
-        let r = resolver_with(
-            &[
-                ("ANTHROPIC_BASE_URL", "u"),
-                ("ANTHROPIC_API_KEY", "k"), // awaken-allow: secret
-                ("PATH", "/managed/node/bin:/usr/bin"),
-                ("HOME", "/operator/home"),
-            ],
-            Some(base.clone()),
-        );
-        let act = RunActivation {
+    fn activation(inference_access: Option<InferenceAccess>) -> RunActivation {
+        RunActivation {
             run_id: RunId("r".into()),
             thread_id: ThreadId("th".into()),
             snapshot: ExecutableAgentSnapshot {
                 id: ExecutableAgentSnapshotId("s".into()),
-                metadata: Default::default(),
+                metadata: AgentSnapshotMetadata {
+                    inference_access,
+                    ..Default::default()
+                },
                 root_agent_id: AgentId("a".into()),
                 resolved_spec: ResolvedSpec {
                     model_candidates: Vec::new(),
@@ -329,7 +124,7 @@ mod tests {
                     instructions: String::new(),
                     max_steps: 4,
                     delegation_limits: Default::default(),
-                    model_binding: ModelBinding::new("p", "run-model", "acp:claude"),
+                    model_binding: ModelBinding::new("p", "published-model", "acp:claude"),
                     tool_descriptors: Vec::new(),
                     plugin_ids: Vec::new(),
                     plugin_config: Default::default(),
@@ -342,66 +137,74 @@ mod tests {
             delegation_origin: None,
             model_ref_override: None,
             tool_capability_narrowing: Default::default(),
-        };
-        assert_eq!(r.model(&act).unwrap().model, "run-model");
-        let env = r.extra_env(&act);
-        assert_eq!(env[0].0, "CLAUDE_CONFIG_DIR");
-        assert!(env[0].1.contains("th"));
-        assert!(
-            env.iter()
-                .any(|(key, value)| key == "PATH" && value.ends_with("/managed/node/bin:/usr/bin"))
-        );
-        assert!(
-            env.iter()
-                .any(|(key, value)| key == "HOME" && value == "/operator/home")
-        );
-        let _ = std::fs::remove_dir_all(&base);
-    }
-
-    #[test]
-    fn the_config_home_is_rooted_under_the_store_dir_never_the_host_home() {
-        // The launch's config-home env must point INSIDE the provided store dir (the
-        // per-thread isolated home), never at the operator's real `$HOME` — so a launched
-        // CLI reads/writes its own config there and cannot touch the host default.
-        let base = std::env::temp_dir().join(format!("awaken-chroot-{}", std::process::id()));
-        let r = EnvLaunchResolver::from_process_env(claude(), Some(base.clone()));
-        let env = r.config_home_env("thread-xyz");
-        assert_eq!(env[0].0, "CLAUDE_CONFIG_DIR");
-        let dir = &env[0].1;
-        assert!(
-            dir.starts_with(&base.to_string_lossy().to_string()),
-            "config home {dir} must live under the store dir {base:?}"
-        );
-        assert!(dir.contains("thread-xyz"), "keyed by the thread id");
-        if let Ok(home) = std::env::var("HOME") {
-            assert!(
-                !dir.starts_with(&format!("{home}/.claude")),
-                "config home must never be the host's ~/.claude"
-            );
         }
-        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn resolves_only_snapshot_endpoint_and_persisted_credential() {
+        let repo = Arc::new(InMemoryCredentialRepo::new());
+        let secrets = Arc::new(InMemorySecretStore::new());
+        let source = enter_credential(
+            CredentialCreateParams {
+                workspace_id: "ws".into(),
+                kind: CredentialKind::Vault,
+                provider_id: Some("anthropic".into()),
+                env_key: None,
+                secret: Some(RedactedString::new("persisted-key")),
+                oauth_command: None,
+            },
+            secrets.as_ref(),
+            repo.as_ref(),
+        );
+        let source = source.await.unwrap();
+        let access = InferenceAccess::resolved_credential(
+            source.id.0,
+            1,
+            "ws",
+            "anthropic@1",
+            "anthropic-messages@1",
+            InferenceEndpoint {
+                adapter_kind: "anthropic".into(),
+                base_url: "https://db.example/v1".into(),
+                upstream_model: "upstream-model".into(),
+            },
+        );
+        let resolver = PublishedAcpLaunchResolver::new(
+            claude(),
+            None,
+            crate::PinnedCredentialMaterializer::new(repo, secrets),
+        );
+        let model = resolver.model(&activation(Some(access))).unwrap();
+        assert_eq!(model.base_url, "https://db.example/v1");
+        assert_eq!(model.model, "upstream-model");
+        assert_eq!(model.api_key, "persisted-key");
     }
 
     #[test]
-    fn config_home_open_failure_yields_no_env_not_a_panic() {
-        // The store dir is a regular FILE, so `ConfigHome::open`'s `create_dir_all`
-        // fails. The resolver must degrade to no env (the CLI falls back to its own
-        // default home) rather than abort the launch.
-        let file = std::env::temp_dir().join(format!("awaken-ch-notdir-{}", std::process::id()));
-        std::fs::write(&file, b"x").unwrap();
-        let r = resolver_with(&[], Some(file.clone()));
-        assert!(
-            r.config_home_env("thr").is_empty(),
-            "an unopenable config home must degrade to no env"
+    fn missing_published_access_fails_closed() {
+        let resolver = PublishedAcpLaunchResolver::new(
+            claude(),
+            None,
+            crate::PinnedCredentialMaterializer::new(
+                Arc::new(InMemoryCredentialRepo::new()),
+                Arc::new(InMemorySecretStore::new()),
+            ),
         );
-        let _ = std::fs::remove_file(&file);
+        assert!(resolver.model(&activation(None)).is_err());
     }
 
     #[test]
     fn extra_env_points_the_cli_at_the_threads_config_home() {
         let base = std::env::temp_dir().join(format!("awaken-aclr-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
-        let r = resolver_with(&[], Some(base.clone()));
+        let r = PublishedAcpLaunchResolver::new(
+            claude(),
+            Some(base.clone()),
+            crate::PinnedCredentialMaterializer::new(
+                Arc::new(InMemoryCredentialRepo::new()),
+                Arc::new(InMemorySecretStore::new()),
+            ),
+        );
         let env = r.config_home_env("thr_x");
         assert_eq!(env.len(), 1);
         assert_eq!(env[0].0, "CLAUDE_CONFIG_DIR");

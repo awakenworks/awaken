@@ -79,14 +79,13 @@ export default function CredentialsSurface() {
     queryFn: () => api.get<CredentialSource[]>(`/v1/config/credentials?workspace_id=${WORKSPACE}`),
   });
   const [entering, setEntering] = useState(false);
-  const [form, setForm] = useState({ kind: "vault", provider: "anthropic", envKey: "", secret: "", oauthHelper: "gcloud" });
+  const [form, setForm] = useState({ kind: "vault", provider: "anthropic", secret: "", oauthHelper: "gcloud" });
   const enter = useMutation({
     mutationFn: () =>
       api.post<CredentialSource>("/v1/config/credentials", {
         workspace_id: WORKSPACE,
         kind: form.kind,
         provider_id: form.provider || undefined,
-        env_key: form.envKey || undefined,
         secret: form.secret,
         oauth_helper: form.kind === "oauth" ? form.oauthHelper : undefined,
       }),
@@ -158,16 +157,14 @@ export default function CredentialsSurface() {
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h3>{app.t("Enter credential", "录入凭证")}</h3>
             <div className="row">
-              {["vault", "env", "oauth"].map((k) => (
+              {["vault", "oauth"].map((k) => (
                 <Button key={k} variant={form.kind === k ? "primary" : "ghost"} onClick={() => setForm({ ...form, kind: k })}>
                   {k}
                 </Button>
               ))}
             </div>
             <TextField label="provider_id" mono value={form.provider} onChange={(e) => setForm({ ...form, provider: e.target.value })} />
-            {form.kind === "env" ? (
-              <TextField label="env_key" mono placeholder="ANTHROPIC_API_KEY" value={form.envKey} onChange={(e) => setForm({ ...form, envKey: e.target.value })} />
-            ) : form.kind === "oauth" ? (
+            {form.kind === "oauth" ? (
               <label className="field">
                 <span>{app.t("OAuth helper", "OAuth 辅助程序")}</span>
                 <select className="input mono" value={form.oauthHelper} onChange={(e) => setForm({ ...form, oauthHelper: e.target.value })}>

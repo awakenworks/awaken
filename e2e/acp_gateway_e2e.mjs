@@ -2,9 +2,10 @@
 //
 // An ACP CLI runs inside an untrusted sandbox, so it must NEVER hold a raw provider
 // key: when the placement injects AWAKEN_ACP_GATEWAY_URL + AWAKEN_ACP_LEASE_TOKEN,
-// the host's EnvLaunchResolver points the launched CLI at the GATEWAY with a
+// the dev-only scenario resolver points the launched CLI at the GATEWAY with a
 // short-lived LEASE TOKEN in the key slot (never the raw ANTHROPIC_API_KEY, even
-// though the scenario harness exports one). Here the fake `claude --acp` stand-in
+// though the scenario harness exports one). Product composition instead consumes
+// a published gateway endpoint/credential pin. Here the fake `claude --acp` stand-in
 // echoes the env it was launched with (base URL + key prefix — not the full secret),
 // so the managed-API client can assert: base == the gateway, key prefix == `lease-`.
 //

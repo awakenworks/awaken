@@ -89,6 +89,7 @@ pub trait CredentialProbe: Send + Sync {
 /// catalog snapshot (`GET /v1/config/catalog`) to bind a run.
 pub fn admin_router(state: AdminState) -> Router {
     Router::new()
+        .route("/v1/config/provider-proposals", get(get_provider_proposals))
         .route(
             "/v1/config/providers/{id}",
             put(put_provider).get(get_provider),
@@ -163,6 +164,107 @@ pub fn admin_router(state: AdminState) -> Router {
             post(resolve_agent_mcp),
         )
         .with_state(state)
+}
+
+/// A read-only, non-executable hint derived from process environment. It is not a
+/// catalog row, credential source, profile or publication and carries no secret.
+/// The UI may use it to prefill existing authoring forms; only their explicit writes
+/// create execution truth.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct EnvironmentProviderProposal {
+    pub provider_id: String,
+    pub endpoint_id: String,
+    pub dialect: awaken_model_catalog::ApiDialect,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
+    pub credential_env: String,
+    pub credential_present: bool,
+}
+
+struct ProposalKeys {
+    provider_id: &'static str,
+    endpoint_id: &'static str,
+    dialect: awaken_model_catalog::ApiDialect,
+    base_url: &'static str,
+    model: &'static str,
+    credential: &'static str,
+}
+
+fn provider_proposals_from(
+    read: impl Fn(&str) -> Option<String>,
+) -> Vec<EnvironmentProviderProposal> {
+    use awaken_model_catalog::ApiDialect;
+
+    let known = [
+        ProposalKeys {
+            provider_id: "anthropic",
+            endpoint_id: "anthropic-messages",
+            dialect: ApiDialect::AnthropicMessages,
+            base_url: "ANTHROPIC_BASE_URL",
+            model: "ANTHROPIC_MODEL",
+            credential: "ANTHROPIC_API_KEY",
+        },
+        ProposalKeys {
+            provider_id: "openai",
+            endpoint_id: "openai-chat",
+            dialect: ApiDialect::OpenAiChat,
+            base_url: "OPENAI_BASE_URL",
+            model: "OPENAI_MODEL",
+            credential: "OPENAI_API_KEY",
+        },
+        ProposalKeys {
+            provider_id: "gemini",
+            endpoint_id: "gemini",
+            dialect: ApiDialect::Gemini,
+            base_url: "GEMINI_BASE_URL",
+            model: "GEMINI_MODEL",
+            credential: "GEMINI_API_KEY",
+        },
+        ProposalKeys {
+            provider_id: "kimi",
+            endpoint_id: "kimi-anthropic",
+            dialect: ApiDialect::AnthropicMessages,
+            base_url: "KIMI_BASE_URL",
+            model: "KIMI_MODEL",
+            credential: "KIMI_API_KEY",
+        },
+        ProposalKeys {
+            provider_id: "minimax",
+            endpoint_id: "minimax-anthropic",
+            dialect: ApiDialect::AnthropicMessages,
+            base_url: "MINIMAX_BASE_URL",
+            model: "MINIMAX_MODEL",
+            credential: "MINIMAX_API_KEY",
+        },
+    ];
+
+    known
+        .into_iter()
+        .filter_map(|keys| {
+            let base_url = read(keys.base_url).filter(|value| !value.trim().is_empty());
+            let model_id = read(keys.model).filter(|value| !value.trim().is_empty());
+            let credential_present =
+                read(keys.credential).is_some_and(|value| !value.trim().is_empty());
+            (base_url.is_some() || model_id.is_some() || credential_present).then(|| {
+                EnvironmentProviderProposal {
+                    provider_id: keys.provider_id.to_string(),
+                    endpoint_id: keys.endpoint_id.to_string(),
+                    dialect: keys.dialect,
+                    base_url,
+                    model_id,
+                    credential_env: keys.credential.to_string(),
+                    credential_present,
+                }
+            })
+        })
+        .collect()
+}
+
+async fn get_provider_proposals() -> Json<Vec<EnvironmentProviderProposal>> {
+    Json(provider_proposals_from(|key| std::env::var(key).ok()))
 }
 
 /// An [`ApiError`] rendered as an RFC-9457 `application/problem+json` response.
@@ -1193,8 +1295,8 @@ pub struct EnterCredentialRequest {
     provider_id: Option<String>,
     #[serde(default)]
     env_key: Option<String>,
-    /// The secret to seal — required for `vault`, unused for `env` (which reads a
-    /// host variable at materialization), so it defaults to empty.
+    /// The secret to seal — required for `vault`. Environment-backed credentials
+    /// are not accepted; environment discovery is exposed only as proposals.
     #[serde(default)]
     secret: String,
     /// A server-owned OAuth refresh helper. This is an allowlisted identifier,
@@ -1246,6 +1348,16 @@ async fn post_credential(
     headers: HeaderMap,
     Json(body): Json<EnterCredentialRequest>,
 ) -> Result<(StatusCode, Json<CredentialSourceView>), Problem> {
+    if body.kind == CredentialKind::Env {
+        return Err(cred_problem(
+            &CredentialError::EnvironmentSourceUnsupported(
+                body.env_key
+                    .clone()
+                    .unwrap_or_else(|| "<unnamed>".to_string()),
+            ),
+            &req_id(&headers),
+        ));
+    }
     let oauth_command = match (body.kind, body.oauth_helper) {
         (CredentialKind::Oauth, Some(helper)) => Some(helper.command()),
         (CredentialKind::Oauth, None) => {
@@ -1383,7 +1495,7 @@ mod tests {
         // The `_` arm must fail closed to 422 for every non-enumerated variant.
         for e in [
             CredentialError::MissingMaterialRef("s".into()),
-            CredentialError::MissingEnv("s".into()),
+            CredentialError::EnvironmentSourceUnsupported("s".into()),
             CredentialError::Seal,
             CredentialError::OAuth("boom".into()),
             CredentialError::Storage("io".into()),
@@ -1392,6 +1504,24 @@ mod tests {
             assert_eq!(p.0.status, 422, "{e:?}");
             assert_eq!(p.0.code, "credential_invalid", "{e:?}");
         }
+    }
+
+    #[test]
+    fn environment_discovery_is_secret_free_and_non_persistent() {
+        let values = std::collections::HashMap::from([
+            ("ANTHROPIC_BASE_URL", "https://proposal.example/v1"),
+            ("ANTHROPIC_MODEL", "proposal-model"),
+            ("ANTHROPIC_API_KEY", "must-not-leave-process"),
+        ]);
+        let proposals = provider_proposals_from(|key| values.get(key).map(ToString::to_string));
+        assert_eq!(proposals.len(), 1);
+        let proposal = &proposals[0];
+        assert_eq!(proposal.provider_id, "anthropic");
+        assert_eq!(proposal.model_id.as_deref(), Some("proposal-model"));
+        assert!(proposal.credential_present);
+        let json = serde_json::to_string(proposal).unwrap();
+        assert!(!json.contains("must-not-leave-process"));
+        assert!(json.contains("ANTHROPIC_API_KEY"));
     }
 
     // --- resolve_problem: (a) ModelUnresolved→404; (b) EndpointMissing→422;

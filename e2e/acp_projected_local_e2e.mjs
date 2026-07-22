@@ -80,7 +80,6 @@ done
 
 function start(binary, cli) {
   const environment = { ...process.env };
-  for (const key of ['AWAKEN_ACP_ARGV', 'AWAKEN_ACP_CREDENTIAL_FILE']) delete environment[key];
   return spawn(binary, {
     env: {
       ...environment,

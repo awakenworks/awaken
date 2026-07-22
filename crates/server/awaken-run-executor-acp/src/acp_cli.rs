@@ -23,21 +23,11 @@ pub struct ModelDelivery {
     /// with `model_config_key`, the projection merges the resolved model into the
     /// row's static JSON config. `None` retains the legacy `-c key=value` delivery.
     pub model_config_env: Option<&'static str>,
-    /// Optional Codex-style provider object merged into `model_config_env`.
-    /// This is needed when a CLI ignores the generic base-url environment and
-    /// requires an explicitly named OpenAI-compatible provider.
-    pub provider_config: Option<ProviderConfigDelivery>,
     /// Env key for the API key (a secret — the host materializes it; never stored).
     pub key: &'static str,
     /// Extra model-name env keys the CLI reads as tier aliases, all set to the same
     /// resolved model (e.g. `ANTHROPIC_SONNET_MODEL`/`OPUS`/`HAIKU`).
     pub aliases: &'static [&'static str],
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ProviderConfigDelivery {
-    pub id: &'static str,
-    pub wire_api: &'static str,
 }
 
 /// How a CLI keys its persisted sessions — decides whether cross-directory
@@ -96,19 +86,9 @@ pub struct AcpCli {
     /// branches in the container mechanism.
     pub container_argv: &'static [&'static str],
     pub model_delivery: ModelDelivery,
-    /// ACP authentication method to select after initialize. Credentials remain
-    /// in the typed model-delivery environment and never cross the protocol wire.
-    pub auth_method_id: Option<&'static str>,
     pub mcp_interface: McpInterface,
     /// Env key naming the CLI's isolated config directory (e.g. `CLAUDE_CONFIG_DIR`).
     pub config_home_env: &'static str,
-    /// Additional standard/vendor home variables that point at the same isolated
-    /// root. Some CLIs split extensions from global config/data/cache state.
-    pub config_home_aliases: &'static [&'static str],
-    /// Native credential file relative to the config home. The host may project an
-    /// opaque credential-broker reference to this path as a durable writable Secret;
-    /// the CLI owns its JSON format and token refresh behavior.
-    pub credential_file: Option<&'static str>,
     /// The memory file the CLI reads from its config home (e.g. `CLAUDE.md`).
     pub memory_entrypoint: &'static str,
     /// Paths under the config home that survive across sessions (auth, config).
@@ -122,10 +102,6 @@ pub struct AcpCli {
     pub context_window_env: Option<&'static str>,
     /// Static non-secret env defaults for this CLI (lowest precedence).
     pub env: &'static [(&'static str, &'static str)],
-    /// Explicitly allowlisted operator configuration env copied into the
-    /// otherwise env-clear launch. Never list credential variables here: typed
-    /// model delivery above owns those and writes the resolved secret last.
-    pub passthrough_env: &'static [&'static str],
 }
 
 /// The host-resolved model coordinates handed to the projection: base URL and model
@@ -217,25 +193,6 @@ impl AcpCli {
                     key.to_string(),
                     serde_json::Value::String(model.model.clone()),
                 );
-                if let Some(provider) = d.provider_config
-                    && !model.base_url.is_empty()
-                {
-                    config.insert(
-                        "model_provider".to_string(),
-                        serde_json::Value::String(provider.id.to_string()),
-                    );
-                    config.insert(
-                        "model_providers".to_string(),
-                        serde_json::json!({
-                            (provider.id): {
-                                "name": provider.id,
-                                "base_url": model.base_url,
-                                "env_key": d.key,
-                                "wire_api": provider.wire_api,
-                            }
-                        }),
-                    );
-                }
                 env.insert(
                     config_env.to_string(),
                     serde_json::Value::Object(config).to_string(),
@@ -388,7 +345,6 @@ const CLAUDE: AcpCli = AcpCli {
         model: "ANTHROPIC_MODEL",
         model_config_key: None,
         model_config_env: None,
-        provider_config: None,
         key: "ANTHROPIC_API_KEY",
         aliases: &[
             "ANTHROPIC_SONNET_MODEL",
@@ -396,11 +352,8 @@ const CLAUDE: AcpCli = AcpCli {
             "ANTHROPIC_HAIKU_MODEL",
         ],
     },
-    auth_method_id: None,
     mcp_interface: McpInterface::AcpSession,
     config_home_env: "CLAUDE_CONFIG_DIR",
-    config_home_aliases: &[],
-    credential_file: Some(".credentials.json"),
     memory_entrypoint: "CLAUDE.md",
     retained_paths: &[".credentials.json", "settings.json"],
     // Claude Code stores conversations under `projects/<cwd-slug>/`, keyed by cwd.
@@ -410,42 +363,6 @@ const CLAUDE: AcpCli = AcpCli {
     },
     context_window_env: Some("CLAUDE_CODE_AUTO_COMPACT_WINDOW"),
     env: &[],
-    passthrough_env: &[],
-};
-
-// Kimi Code speaks ACP natively through `kimi acp`. Use the published npm
-// package as the reproducible launcher: it supports the same command while
-// avoiding a dependency on a machine-global installation. The KIMI_MODEL_*
-// variables are Kimi Code's ephemeral model projection; they are applied in
-// memory and are never persisted into config.toml.
-const KIMI: AcpCli = AcpCli {
-    id: "kimi",
-    command: "npx",
-    args: &["-y", "@moonshot-ai/kimi-code@0.29", "acp"],
-    container_argv: &["kimi", "acp"],
-    model_delivery: ModelDelivery {
-        base_url: "KIMI_MODEL_BASE_URL",
-        model: "KIMI_MODEL_NAME",
-        model_config_key: None,
-        model_config_env: None,
-        provider_config: None,
-        key: "KIMI_MODEL_API_KEY",
-        aliases: &[],
-    },
-    auth_method_id: None,
-    mcp_interface: McpInterface::AcpSession,
-    config_home_env: "KIMI_CODE_HOME",
-    config_home_aliases: &[],
-    credential_file: None,
-    memory_entrypoint: "AGENTS.md",
-    retained_paths: &["config.toml"],
-    session_persistence: SessionPersistence::LocalDir {
-        session_subpath: "sessions",
-        keyed_by: SessionKey::InternalId,
-    },
-    context_window_env: Some("KIMI_MODEL_MAX_CONTEXT_SIZE"),
-    env: &[("KIMI_MODEL_PROVIDER_TYPE", "kimi")],
-    passthrough_env: &[],
 };
 
 // Codex is likewise fronted by the official adapter package
@@ -463,20 +380,13 @@ const CODEX: AcpCli = AcpCli {
         model: "OPENAI_MODEL",
         model_config_key: Some("model"),
         model_config_env: Some("CODEX_CONFIG"),
-        provider_config: Some(ProviderConfigDelivery {
-            id: "awaken-openai-compatible",
-            wire_api: "responses",
-        }),
         key: "OPENAI_API_KEY",
         aliases: &[],
     },
-    auth_method_id: Some("api-key"),
     mcp_interface: McpInterface::ConfigFileToml {
         path: "config.toml",
     },
     config_home_env: "CODEX_HOME",
-    config_home_aliases: &[],
-    credential_file: Some("auth.json"),
     memory_entrypoint: "AGENTS.md",
     retained_paths: &["auth.json", "config.toml"],
     // Codex writes rollout files under `sessions/`, keyed by an internal id.
@@ -489,7 +399,6 @@ const CODEX: AcpCli = AcpCli {
         "CODEX_CONFIG",
         r#"{"approval_policy":"never","sandbox_mode":"workspace-write"}"#,
     )],
-    passthrough_env: &[],
 };
 
 // Gemini CLI speaks ACP natively via `--experimental-acp` (no npm wrapper), so it
@@ -504,15 +413,11 @@ const GEMINI: AcpCli = AcpCli {
         model: "GEMINI_MODEL",
         model_config_key: None,
         model_config_env: None,
-        provider_config: None,
         key: "GEMINI_API_KEY",
         aliases: &[],
     },
-    auth_method_id: None,
     mcp_interface: McpInterface::AcpSession,
     config_home_env: "GEMINI_DIR",
-    config_home_aliases: &[],
-    credential_file: None,
     memory_entrypoint: "GEMINI.md",
     retained_paths: &[],
     // Gemini keeps chat state under `tmp/<hash>/`, keyed by an internal id
@@ -523,7 +428,6 @@ const GEMINI: AcpCli = AcpCli {
     },
     context_window_env: None,
     env: &[],
-    passthrough_env: &[],
 };
 
 // opencode (sst/opencode) is a native, provider-agnostic coding agent that exposes an
@@ -541,20 +445,11 @@ const OPENCODE: AcpCli = AcpCli {
         model: "OPENAI_MODEL",
         model_config_key: None,
         model_config_env: None,
-        provider_config: None,
         key: "OPENAI_API_KEY",
         aliases: &[],
     },
-    auth_method_id: None,
     mcp_interface: McpInterface::AcpSession,
     config_home_env: "OPENCODE_CONFIG_DIR",
-    config_home_aliases: &[
-        "XDG_CONFIG_HOME",
-        "XDG_DATA_HOME",
-        "XDG_CACHE_HOME",
-        "XDG_STATE_HOME",
-    ],
-    credential_file: Some("auth.json"),
     memory_entrypoint: "AGENTS.md",
     retained_paths: &["auth.json"],
     // opencode keeps conversation state in a local store, keyed by an internal id
@@ -565,42 +460,6 @@ const OPENCODE: AcpCli = AcpCli {
     },
     context_window_env: None,
     env: &[],
-    passthrough_env: &["OPENCODE_CONFIG_CONTENT"],
-};
-
-// Hermes exposes a native ACP stdio server. Its provider resolver consumes the
-// Kimi Code API coordinates below, while HERMES_HOME keeps Hermes' own
-// MEMORY.md/USER.md/session database isolated from the operator's home. Awaken's
-// mounted MemoryStore remains the cross-runtime truth; Hermes-local memory is
-// adapter-private state and is never projected as the shared store.
-const HERMES: AcpCli = AcpCli {
-    id: "hermes",
-    command: "hermes",
-    args: &["acp"],
-    container_argv: &["hermes", "acp"],
-    model_delivery: ModelDelivery {
-        base_url: "KIMI_BASE_URL",
-        model: "HERMES_MODEL",
-        model_config_key: None,
-        model_config_env: None,
-        provider_config: None,
-        key: "KIMI_API_KEY",
-        aliases: &[],
-    },
-    auth_method_id: None,
-    mcp_interface: McpInterface::AcpSession,
-    config_home_env: "HERMES_HOME",
-    config_home_aliases: &[],
-    credential_file: None,
-    memory_entrypoint: "MEMORY.md",
-    retained_paths: &["config.yaml", "state.db"],
-    session_persistence: SessionPersistence::LocalDir {
-        session_subpath: "sessions",
-        keyed_by: SessionKey::InternalId,
-    },
-    context_window_env: None,
-    env: &[],
-    passthrough_env: &[],
 };
 
 /// Whether a launch command dynamically installs its agent on first run (an `npx`
@@ -614,7 +473,7 @@ pub fn is_dynamic_install(cli: &AcpCli) -> bool {
 /// The known ACP CLIs. Adding one is a row here — never a branch elsewhere.
 #[must_use]
 pub fn known_acp_clis() -> &'static [AcpCli] {
-    &[CLAUDE, KIMI, CODEX, GEMINI, OPENCODE, HERMES]
+    &[CLAUDE, CODEX, GEMINI, OPENCODE]
 }
 
 /// Resolve an ACP CLI by id (`Backend::Acp { cli }`); `None` is a fail-closed
@@ -647,11 +506,9 @@ mod tests {
     #[test]
     fn registry_holds_the_known_clis_and_unknown_fails_closed() {
         assert!(acp_cli("claude").is_some());
-        assert!(acp_cli("kimi").is_some());
         assert!(acp_cli("codex").is_some());
         assert!(acp_cli("gemini").is_some());
         assert!(acp_cli("opencode").is_some());
-        assert!(acp_cli("hermes").is_some());
         assert!(acp_cli("no_such_cli").is_none());
     }
 
@@ -1080,7 +937,6 @@ mod tests {
         let cli = acp_cli("codex").unwrap();
         assert_eq!(cli.command, "npx");
         assert!(cli.args.contains(&"@agentclientprotocol/codex-acp@1.1"));
-        assert_eq!(cli.auth_method_id, Some("api-key"));
         assert!(is_dynamic_install(cli));
     }
 
@@ -1092,19 +948,6 @@ mod tests {
         let config: serde_json::Value =
             serde_json::from_str(&env_of(&launch, "CODEX_CONFIG").unwrap()).unwrap();
         assert_eq!(config["model"], model.model);
-        assert_eq!(config["model_provider"], "awaken-openai-compatible");
-        assert_eq!(
-            config["model_providers"]["awaken-openai-compatible"]["base_url"],
-            model.base_url
-        );
-        assert_eq!(
-            config["model_providers"]["awaken-openai-compatible"]["wire_api"],
-            "responses"
-        );
-        assert_eq!(
-            config["model_providers"]["awaken-openai-compatible"]["env_key"],
-            "OPENAI_API_KEY"
-        );
         assert_eq!(config["approval_policy"], "never");
         assert_eq!(config["sandbox_mode"], "workspace-write");
         assert!(!launch.argv.iter().any(|arg| arg == "-c"));

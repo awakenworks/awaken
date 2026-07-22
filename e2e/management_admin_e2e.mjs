@@ -45,13 +45,26 @@ async function req(base, method, uri, body) {
 }
 
 async function main() {
-  // An `env` credential materializes from a host env var; set one the spawned
-  // server inherits so the resolver can read it back (covers the Env branch).
-  process.env.AWAKEN_E2E_ENVKEY = 'sk-env-e2e-value'; // awaken-allow: secret
+  // Provider environment is discovery input only. The spawned server may report
+  // these coordinates as a secret-free proposal, but cannot execute them.
+  process.env.ANTHROPIC_API_KEY = 'sk-proposal-only'; // awaken-allow: secret
+  process.env.ANTHROPIC_BASE_URL = 'https://proposal.invalid/v1';
+  process.env.ANTHROPIC_MODEL = 'proposal-only-model';
   try {
     await withScenarioServer('management', 'mcp', 38150, async (base) => {
+      let r = await req(base, 'GET', '/v1/config/provider-proposals');
+      assert.equal(r.status, 200);
+      const proposal = r.json.find((item) => item.provider_id === 'anthropic');
+      assert.ok(proposal);
+      assert.ok(proposal.model_id, 'the inherited model coordinate is proposed');
+      assert.equal(proposal.credential_present, true);
+      assert.ok(!JSON.stringify(r.json).includes('sk-proposal-only'));
+      let catalogBefore = await req(base, 'GET', '/v1/config/catalog');
+      assert.equal(catalogBefore.json.offerings.length, 0, 'proposal is not persisted catalog truth');
+      pass('environment discovery is a secret-free, non-persistent proposal');
+
       // --- author provider / endpoint / offering (path id is authoritative) ---
-      let r = await req(base, 'PUT', '/v1/config/providers/anthropic', {
+      r = await req(base, 'PUT', '/v1/config/providers/anthropic', {
         id: 'anthropic',
         slug: 'anthropic',
         display_name: 'Anthropic',
@@ -169,31 +182,23 @@ async function main() {
       assert.equal(r.status, 404, JSON.stringify(r.json));
       pass('resolve with a missing credential binding -> 404');
 
-      // --- an `env` credential materializes from the host environment ---
+      // --- an `env` credential is rejected: proposal must be explicitly persisted ---
       r = await req(base, 'POST', '/v1/config/credentials', {
-        workspace_id: 'ws', kind: 'env', provider_id: 'anthropic', env_key: 'AWAKEN_E2E_ENVKEY',
+        workspace_id: 'ws', kind: 'env', provider_id: 'anthropic', env_key: 'ANTHROPIC_API_KEY',
       });
-      assert.equal(r.status, 201);
-      checkContract('CredentialSource', r.json);
-      assert.equal(r.json.kind, 'env');
-      const envCredId = r.json.id;
-      r = await req(base, 'POST', '/v1/config/inference/resolve', {
-        workspace_id: 'ws',
-        model_id: 'claude-opus-4-8',
-        binding: { type: 'exact', credential_source_id: envCredId },
-      });
-      assert.equal(r.status, 200, JSON.stringify(r.json));
-      checkContract('ResolvedInferenceView', r.json);
-      assert.equal(r.json.credential_present, true, 'env credential materialized from the host var');
-      pass('env-kind credential resolves by reading the host environment variable');
+      assert.equal(r.status, 422);
+      assert.equal(r.json.code, 'credential_invalid');
+      pass('env-kind credential is never admitted as execution truth');
 
       // --- credential pool + failover resolve ---------------------------------
-      // Member A is an env credential bound to an UNSET var -> materialize fails.
+      // Member A is a persisted credential that is archived before resolution.
       r = await req(base, 'POST', '/v1/config/credentials', {
-        workspace_id: 'ws', kind: 'env', provider_id: 'anthropic', env_key: 'AWAKEN_E2E_UNSET_VAR',
+        workspace_id: 'ws', kind: 'vault', provider_id: 'anthropic', secret: 'sk-disabled', // awaken-allow: secret
       });
       assert.equal(r.status, 201);
       const badCredId = r.json.id;
+      r = await req(base, 'POST', `/v1/config/credentials/${badCredId}/archive`);
+      assert.equal(r.status, 200);
 
       // Author a pool: A (ordinal 0, will fail) then the good vault credential B.
       r = await req(base, 'PUT', '/v1/config/credential-pools/pool1', {

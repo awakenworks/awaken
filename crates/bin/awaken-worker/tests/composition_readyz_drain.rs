@@ -90,7 +90,6 @@ fn run_brings_readyz_up_then_drain_flips_it_down() {
             .env("AWAKEN_WORKER_ADMIN_LISTEN", &admin_addr)
             .env_remove("AWAKEN_MGMT_DIR") // in-memory config plane, no durable path
             .env_remove("AWAKEN_ACP_CLI") // native only, no ACP backend
-            .env_remove("AWAKEN_ACP_ARGV")
             .spawn()
             .expect("spawn the awaken-worker binary"),
     );

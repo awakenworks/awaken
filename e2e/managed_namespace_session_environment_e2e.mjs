@@ -1,7 +1,7 @@
 // Managed API -> one Session-owned local/namespace environment.
 //
 // This is the namespace sibling of managed_container_agent_e2e.mjs. It drives the
-// production `with_acp_from_env` composition and mutates resources only after the
+// explicit dev/test ACP launch composition and mutates resources only after the
 // first turn has made the Session environment live. The fixture observes the same
 // workspace across turns, proving that attach/update/detach changes one governed
 // projection instead of creating an attempt-local sandbox.

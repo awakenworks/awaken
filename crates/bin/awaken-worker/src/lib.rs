@@ -122,6 +122,10 @@ pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error>> {
     run_configured(
         WorkerUpstream::new(upstream),
         Some(Arc::new(materializer)),
+        Some(awaken_runtime_host::PinnedCredentialMaterializer::new(
+            stores.credentials,
+            stores.secrets,
+        )),
         resources,
     )
     .await
@@ -136,12 +140,19 @@ pub async fn run_with_inference_materializer(
     materializer: Arc<dyn InferenceExecutorMaterializer>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let resources = shared_resource_wiring(None).await?;
-    run_configured(WorkerUpstream::new(upstream), Some(materializer), resources).await
+    run_configured(
+        WorkerUpstream::new(upstream),
+        Some(materializer),
+        None,
+        resources,
+    )
+    .await
 }
 
 async fn run_configured(
     upstream: WorkerUpstream,
     materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,
+    acp_credentials: Option<awaken_runtime_host::PinnedCredentialMaterializer>,
     resources: Option<WorkerResourceWiring>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let upstream_url = upstream.base_url().to_string();
@@ -192,11 +203,13 @@ async fn run_configured(
     }
     awaken_server::install_platform_memory_data_plane(&host);
 
-    // Serve `acp:*` runs this worker claims on the config-selected CLI, realized in the
-    // worker's configured sandbox tier — the SAME env wiring the server root uses, so
-    // the two never drift (ADR-0057). No selector set → no ACP backend, native only.
+    // Serve only the ACP CLI capability this worker advertises. The run's snapshot
+    // selects the matching backend and supplies its published provider access.
     host = host
-        .with_acp_from_env(awaken_server::relay_hand_executor_factory())
+        .with_acp_from_deployment(
+            awaken_server::relay_hand_executor_factory(),
+            acp_credentials,
+        )
         .await;
 
     let host = Arc::new(host);

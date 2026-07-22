@@ -22,7 +22,7 @@ use awaken_runtime_contract::activation::RunActivation;
 use awaken_sandbox_local::NamespaceProvider;
 
 /// How a sandboxed/containerized ACP source obtains a run's CLI launch: a **fixed**
-/// argv (one CLI for every `acp:*` thread, from `AWAKEN_ACP_ARGV`), or a **per-run
+/// test argv, or a **per-run
 /// projection** of the run's `acp:<cli>` backend_ref through its [`AcpCli`] row — so
 /// the CLI the config plane selected *for that agent* runs inside the isolation, with
 /// its model/env projected, rather than a single fixed command.
@@ -32,7 +32,7 @@ use awaken_sandbox_local::NamespaceProvider;
 /// config-plane-selected CLI, or `Fixed` for a trusted/test single argv.
 #[derive(Clone)]
 pub enum LaunchSource {
-    /// One CLI for every `acp:*` thread (trusted/test; `AWAKEN_ACP_ARGV`).
+    /// One CLI for every `acp:*` thread (explicit trusted/test composition only).
     Fixed(AcpLaunch),
     /// The run's config-plane-selected CLI, projected per run through its [`AcpCli`]
     /// row + `resolver` (production; `AWAKEN_ACP_CLI`).
@@ -151,162 +151,6 @@ const SANDBOX_WORKSPACE: &str = "/workspace";
 /// from: the projected `config.toml` is mounted here (`MountSource::Inline`) and the
 /// CLI's config-home env (e.g. `CODEX_HOME`) points at it.
 pub(crate) const SANDBOX_CONFIG_HOME: &str = "/acp-config";
-
-#[cfg(any(
-    test,
-    feature = "container-docker",
-    feature = "container-podman",
-    feature = "container-k8s"
-))]
-const ACP_NATIVE_CREDENTIAL_REF_PREFIX: &str = "credential://acp/native/";
-#[cfg(any(
-    feature = "container-docker",
-    feature = "container-podman",
-    feature = "container-k8s"
-))]
-const MAX_ACP_CREDENTIAL_FILE_BYTES: usize = 1024 * 1024;
-#[cfg(any(
-    feature = "container-docker",
-    feature = "container-podman",
-    feature = "container-k8s"
-))]
-static ACP_CREDENTIAL_WRITE_SEQ: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(1);
-
-#[cfg(any(
-    test,
-    feature = "container-docker",
-    feature = "container-podman",
-    feature = "container-k8s"
-))]
-#[derive(Debug, Clone)]
-pub(crate) struct AcpCredentialBinding {
-    reference: String,
-}
-
-/// Local deployment adapter for the generic SecretBroker port. The sandbox sees only
-/// `credential://...`; this host-only adapter reads/writes the operator-selected native
-/// credential file atomically, so a CLI token refresh survives the container.
-#[cfg(any(
-    feature = "container-docker",
-    feature = "container-podman",
-    feature = "container-k8s"
-))]
-struct LocalCredentialFileBroker {
-    reference: String,
-    path: std::path::PathBuf,
-}
-
-#[cfg(any(
-    feature = "container-docker",
-    feature = "container-podman",
-    feature = "container-k8s"
-))]
-#[async_trait]
-impl pc::SecretBroker for LocalCredentialFileBroker {
-    async fn materialize(&self, reference: &str) -> Result<Vec<u8>, pc::SandboxError> {
-        if reference != self.reference {
-            return Err(pc::SandboxError::new("unknown ACP credential reference"));
-        }
-        let bytes = std::fs::read(&self.path)
-            .map_err(|e| pc::SandboxError::new(format!("read ACP credential file: {e}")))?;
-        if bytes.is_empty() || bytes.len() > MAX_ACP_CREDENTIAL_FILE_BYTES {
-            return Err(pc::SandboxError::new(
-                "ACP credential file must be between 1 byte and 1 MiB",
-            ));
-        }
-        Ok(bytes)
-    }
-
-    async fn write_back(&self, reference: &str, bytes: Vec<u8>) -> Result<(), pc::SandboxError> {
-        if reference != self.reference {
-            return Err(pc::SandboxError::new("unknown ACP credential reference"));
-        }
-        if bytes.is_empty() || bytes.len() > MAX_ACP_CREDENTIAL_FILE_BYTES {
-            return Err(pc::SandboxError::new(
-                "refreshed ACP credential file must be between 1 byte and 1 MiB",
-            ));
-        }
-        if std::fs::read(&self.path).is_ok_and(|current| current == bytes) {
-            return Ok(());
-        }
-        let parent = self
-            .path
-            .parent()
-            .ok_or_else(|| pc::SandboxError::new("ACP credential path has no parent"))?;
-        let tmp = parent.join(format!(
-            ".awaken-credential-{}-{}.tmp",
-            std::process::id(),
-            ACP_CREDENTIAL_WRITE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-        std::fs::write(&tmp, bytes)
-            .map_err(|e| pc::SandboxError::new(format!("stage refreshed credential: {e}")))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))
-                .map_err(|e| pc::SandboxError::new(format!("secure refreshed credential: {e}")))?;
-        }
-        std::fs::rename(&tmp, &self.path)
-            .map_err(|e| pc::SandboxError::new(format!("commit refreshed credential: {e}")))
-    }
-}
-
-#[cfg(any(
-    feature = "container-docker",
-    feature = "container-podman",
-    feature = "container-k8s"
-))]
-type CredentialProjection = (AcpCredentialBinding, Arc<dyn pc::SecretBroker>);
-
-#[cfg(any(
-    feature = "container-docker",
-    feature = "container-podman",
-    feature = "container-k8s"
-))]
-pub(crate) fn credential_projection(
-    source: &LaunchSource,
-) -> Result<Option<CredentialProjection>, String> {
-    let Some(raw_path) = std::env::var(crate::acp_provision::ACP_CREDENTIAL_FILE_ENV)
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-    else {
-        return Ok(None);
-    };
-    let cli = source.cli().ok_or_else(|| {
-        format!(
-            "{} requires a projected AWAKEN_ACP_CLI",
-            crate::acp_provision::ACP_CREDENTIAL_FILE_ENV
-        )
-    })?;
-    if cli.credential_file.is_none() {
-        return Err(format!(
-            "ACP CLI `{}` has no native credential file",
-            cli.id
-        ));
-    }
-    let path = std::path::PathBuf::from(raw_path)
-        .canonicalize()
-        .map_err(|e| format!("ACP credential file is not readable: {e}"))?;
-    let metadata =
-        std::fs::metadata(&path).map_err(|e| format!("ACP credential file metadata: {e}"))?;
-    if !metadata.is_file() {
-        return Err("ACP credential path must name a regular file".to_string());
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if metadata.permissions().mode() & 0o077 != 0 {
-            return Err("ACP credential file must be owner-only (mode 0600)".to_string());
-        }
-    }
-    let reference = format!("{ACP_NATIVE_CREDENTIAL_REF_PREFIX}{}", cli.id);
-    let broker: Arc<dyn pc::SecretBroker> = Arc::new(LocalCredentialFileBroker {
-        reference: reference.clone(),
-        path,
-    });
-    Ok(Some((AcpCredentialBinding { reference }, broker)))
-}
 
 /// The workdir-relative config-home for the unsandboxed Workdir tier: the CLI runs on
 /// the host in its workdir, so its config mount + config-home env are relative to that
@@ -790,34 +634,6 @@ fn acp_config_mount(
                 pc::MountAccess::ReadWrite
             },
             lifetime: pc::MountLifetime::PerRun,
-            required: true,
-        },
-        (cli.config_home_env.to_string(), config_home.to_string()),
-    ))
-}
-
-#[cfg(any(
-    test,
-    feature = "container-docker",
-    feature = "container-podman",
-    feature = "container-k8s"
-))]
-pub(crate) fn acp_credential_mount(
-    cli: &AcpCli,
-    binding: &AcpCredentialBinding,
-    config_home: &str,
-) -> Option<(pc::MountRequirement, (String, String))> {
-    let rel_path = cli.credential_file?;
-    Some((
-        pc::MountRequirement {
-            mount_id: "acp-native-credential".to_string(),
-            source: pc::MountSource::Secret {
-                reference: binding.reference.clone(),
-                content_hash: None,
-            },
-            mount_path: format!("{config_home}/{rel_path}"),
-            access: pc::MountAccess::ReadWrite,
-            lifetime: pc::MountLifetime::Durable,
             required: true,
         },
         (cli.config_home_env.to_string(), config_home.to_string()),
@@ -1343,36 +1159,6 @@ mod tests {
         // A session-server CLI (claude, no config file) → no config mount.
         let claude = awaken_run_executor_acp::acp_cli("claude").unwrap();
         assert!(acp_config_mount(claude, None, SANDBOX_CONFIG_HOME, true).is_none());
-    }
-
-    #[test]
-    fn codex_and_claude_credentials_use_their_native_writable_paths() {
-        for (id, path, env_key) in [
-            ("codex", "/acp-config/auth.json", "CODEX_HOME"),
-            (
-                "claude",
-                "/acp-config/.credentials.json",
-                "CLAUDE_CONFIG_DIR",
-            ),
-        ] {
-            let cli = awaken_run_executor_acp::acp_cli(id).unwrap();
-            let binding = AcpCredentialBinding {
-                reference: format!("{ACP_NATIVE_CREDENTIAL_REF_PREFIX}{id}"),
-            };
-            let (mount, (key, home)) =
-                acp_credential_mount(cli, &binding, SANDBOX_CONFIG_HOME).unwrap();
-            assert_eq!(mount.mount_path, path);
-            assert_eq!(mount.access, pc::MountAccess::ReadWrite);
-            assert_eq!(mount.lifetime, pc::MountLifetime::Durable);
-            assert!(mount.is_secret_writeback());
-            assert_eq!(key, env_key);
-            assert_eq!(home, SANDBOX_CONFIG_HOME);
-            assert!(matches!(
-                mount.source,
-                pc::MountSource::Secret { reference, .. }
-                    if reference == format!("{ACP_NATIVE_CREDENTIAL_REF_PREFIX}{id}")
-            ));
-        }
     }
 
     #[tokio::test]

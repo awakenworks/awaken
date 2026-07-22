@@ -33,6 +33,10 @@ pub fn contract_schemas() -> Map<String, Value> {
     add!("Offering", awaken_model_catalog::Offering);
     add!("ApiDialect", awaken_model_catalog::ApiDialect);
     add!("ProviderCatalog", awaken_model_catalog::ProviderCatalog);
+    add!(
+        "EnvironmentProviderProposal",
+        crate::EnvironmentProviderProposal
+    );
 
     // Credential domain (secret-free projections only).
     add!("CredentialSource", crate::CredentialSourceView);
@@ -213,6 +217,10 @@ fn op(
 fn paths() -> Value {
     let id = |desc: &str| vec![path_param("id", desc)];
     json!({
+        "/v1/config/provider-proposals": {
+            "get": op("get_provider_proposals", "catalog", "Discover secret-free environment hints; proposals are not persisted or executable",
+                &[], None, 200, array_of("EnvironmentProviderProposal"))
+        },
         "/v1/config/providers/{id}": {
             "put": op("put_provider", "catalog", "Author (upsert) a provider; the path id is authoritative",
                 &id("Provider id"), Some(schema_ref("Provider")), 200, schema_ref("Provider")),

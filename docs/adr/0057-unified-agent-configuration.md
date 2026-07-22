@@ -660,7 +660,7 @@ right column; introducing a parallel type is a defect, not a phase.
 | Remote-endpoint auth | `CredentialSource.provider_id` generalized to *counterparty* (vendor slug or endpoint origin) + the SAME default pool derivation; injection shape from discovered `SecurityScheme`; serves BOTH A2A paths (peer executor + `with_remote_a2a` delegation registry) | `awaken-credential-vault` + host seam | ~~`RemoteAuthBinding`~~, ~~`RemoteAgentDef`~~, ~~`RemoteAuthRule`~~ (each was a second counterparty→credential table), hand-built delegation transports |
 | Hand/channel auth resolution | implement `connection_plan::CredentialResolver` as an adapter over `resolve_credential` (binding → materialize → `AppliedAuth`) | host over `awaken-connection-plan` | a second credential-resolution source of truth |
 | ACP launch-source selection | publicize the existing `LaunchSource{Fixed,Projected}` | `awaken-runtime-host::sandbox_source` | ~~`AcpLaunchSpec`~~ mirror enum |
-| Model materialization for ACP | `LaunchResolver` as adapter over `resolve_inference` (`ResolvedModel` = its env projection); `EnvLaunchResolver` = db-less fallback | host over `awaken-config-resolver` | a second model-materialization truth |
+| Model materialization for ACP | existing `LaunchResolver` backed by snapshot `InferenceAccess` + shared `PinnedCredentialMaterializer`; environment only advertises worker CLI capability | host/provisioning seam | a second model-materialization truth or ambient provider fallback |
 | ACP settings codec | ONE `AcpSpec` serde type (= the `plugin_config["acp"]` codec) shared by authoring + executor | shared contract crate | a separate `AcpSettings` duplicating it |
 | CLI install strategy | a `bootstrap: Vec<BootstrapStep>` field on the `AcpCli` row (dialect mapping is resolver-side, NOT on AcpCli — D4) (OnDemand/Prebaked are the command itself) | `awaken-run-executor-acp` | an `AcpProvisioning` enum re-encoding the command; per-agent provisioning |
 | Hand transport | `ConnectionPlan` / `DialAddr` | `awaken-connection-plan` | ~~`HandTransport`~~ (alias `DialAddr`) |
@@ -762,8 +762,8 @@ Adds: `AWAKEN_ACP_CLI` wiring in `awaken serve` and `awaken_worker::run`;
 `SandboxTier::Local`; `LaunchSource{Fixed,Projected}` publicized as the factory
 input for all tiers.
 Retires: the dead-code status of `with_projected_acp`/`projecting` (scenario-only
-today) — they become the production path; `AWAKEN_ACP_ARGV` demoted to
-trusted/test-only (documented as such).
+today) — they become the production path; production `AWAKEN_ACP_ARGV` is removed
+and fixed argv remains an explicit dev/test `LaunchSource` only.
 Guard: `LaunchSource::resolve` cli-match fail-closed (exists); tier-matrix unit
 tests.
 Done when: an `acp:codex` run on a codex-serving worker launches codex in e2e;
@@ -773,9 +773,9 @@ on a claude-serving worker it fails closed with the mismatch error.
 checked; vendor keys auto-pool.*
 Adds: a resolver CLI-id→`ApiDialect` table + check A (`DialectIncompatible`); `AcpCli` fields → `Cow`; `derive_vendor_pool`
 default + check B; `LaunchResolver` as adapter over `resolve_inference`.
-Retires: the inline `.find(first Active)` at `config_executor.rs:69`;
-`EnvLaunchResolver` as production default (demoted to db-less fallback, its only
-remaining caller).
+Retires: the inline `.find(first Active)` at `config_executor.rs:69` and
+`EnvLaunchResolver` entirely; database-less workers fail closed instead of acquiring
+ambient provider configuration.
 Guard: single-key behavior-identity test (`FirstHealthy` ≡ today); dialect
 mismatch → `ResolveError::DialectIncompatible`.
 Done when: two same-vendor keys rotate under `RotateSpread` in an integration

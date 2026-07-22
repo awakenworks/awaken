@@ -180,7 +180,8 @@ function cleanupTestContainers() {
 }
 
 // Build the canonical production image, but omit network-fetched ACP packages: this
-// hermetic scenario supplies a tiny Node newline fixture through AWAKEN_ACP_ARGV.
+// hermetic dev scenario supplies a tiny Node newline fixture through its explicit
+// fixed launch input (read from AWAKEN_ACP_ARGV only by the scenario host).
 // The image still contains the real `awaken-sandbox hand --stdio` binary.
 function ensureSessionImage() {
   if (spawnSync(ENGINE, ['image', 'inspect', IMAGE], { stdio: 'ignore' }).status === 0) return;

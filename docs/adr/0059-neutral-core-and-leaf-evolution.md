@@ -143,9 +143,10 @@ per-cut state (2026-07-18):
   holds, and uses host-internal modules; `provisioning` reads the run's resolved spec
   (host-plane knowledge). Requires a narrow `SandboxSource` port; provisioning stays.
 - **ACP (`acp_backend`, `acp_serve`)** — add `impl SharedHost` methods and are held as the
-  `acp` field. `acp_provision` (`EnvLaunchResolver`) reads process-env keys and is
-  correctly host-placed: moving it into `run-executor-acp` would violate that crate's
-  documented *config-free* invariant.
+  `acp` field. `acp_provision` (`PublishedAcpLaunchResolver`) is correctly host-placed:
+  it realizes snapshot-pinned access through the shared credential materializer;
+  moving it into `run-executor-acp` would violate that crate's documented
+  *config-free* invariant.
 - **Per-plane routers** — already resolved. `files_router` / `models_router` (public,
   self-contained) moved to `awaken-managed-routers`; `memory_stores_router` /
   `skills_router` deliberately **stay** in the host, because they are the HTTP face of the

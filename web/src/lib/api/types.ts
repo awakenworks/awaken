@@ -41,6 +41,16 @@ export interface ProviderCatalog {
 
 export type ApiDialect = "anthropic_messages" | "open_ai_chat" | "gemini" | "vertex_gemini";
 
+export interface EnvironmentProviderProposal {
+  provider_id: string;
+  endpoint_id: string;
+  dialect: ApiDialect;
+  base_url?: string;
+  model_id?: string;
+  credential_env: string;
+  credential_present: boolean;
+}
+
 export type CredentialBinding =
   | { type: "none" }
   | { type: "exact"; credential_source_id: string }
