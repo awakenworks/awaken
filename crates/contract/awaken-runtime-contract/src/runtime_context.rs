@@ -35,7 +35,7 @@ use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
 #[derive(Clone, Default)]
 pub struct CaptureContext {
     /// The resolved capture decision (level + redactor). Default is `Structured`
-    /// (no content); the host resolves the real decision per run/turn.
+    /// (no content); the host resolves the real decision per Run.
     pub decision: CaptureDecision,
     /// The data subject captured content is attributed to (opaque). Content is
     /// written only when this, `sink`, and a content-permitting level all hold.
@@ -61,7 +61,7 @@ pub struct RuntimeRunContext {
     /// interrupted step is recovered in-process only and lost on a crash.
     pub stream_checkpoint: Option<Arc<dyn StreamCheckpointStore>>,
     /// Committed-history read port. When set, a fresh run seeds its transcript
-    /// with the thread's committed messages, so a new turn continues the
+    /// with the Thread's committed messages, so a new Run continues the
     /// conversation; absent means the run starts from its input alone.
     pub reader: Option<Arc<dyn ThreadReader>>,
     /// Cooperative cancellation observed at step boundaries.

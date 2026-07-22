@@ -1,6 +1,6 @@
 //! The safe loop boundary as a shared kernel policy (ADR-0054).
 //!
-//! A *safe boundary* is the point in an execution loop where the current turn
+//! A *safe boundary* is the point in an execution loop where the current Step
 //! produced no tool calls and the run may continue, await, or end without
 //! breaking the commit-at-boundary invariant. Historically only the native
 //! engine reached it (and only there did live-inbox steer take effect). This
@@ -22,9 +22,9 @@ use crate::runtime_context::RuntimeRunContext;
 /// mechanism (in-process for the native engine, a fresh CLI launch for ACP).
 #[derive(Debug)]
 pub enum BoundaryOutcome {
-    /// Fold these (already re-identified) messages into the next turn and continue.
+    /// Fold these (already re-identified) messages into the next Step and continue.
     Continue { fold: Vec<Message> },
-    /// Commit these messages, then await durably for this reason (no next turn).
+    /// Commit these messages, then await durably for this reason (no next Step).
     Await {
         fold: Vec<Message>,
         reason: AwaitReason,

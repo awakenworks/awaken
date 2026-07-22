@@ -1,6 +1,6 @@
 //! A permanent inference failure commits a terminal Failed reason carrying the
 //! error's classification code; a retryable one is retried with backoff and can
-//! still succeed (G26). A `MaxTokens`-truncated text turn is continued in place
+//! still succeed (G26). A `MaxTokens`-truncated text response is continued in place
 //! up to a per-step budget.
 
 use std::sync::Arc;
@@ -111,7 +111,7 @@ impl LlmExecutor for FlakyLlm {
     }
 }
 
-/// Emits `truncated_turns` text turns stopped by `MaxTokens`, then a final turn.
+/// Emits `truncated_turns` text responses stopped by `MaxTokens`, then a final response.
 struct TruncatingLlm {
     truncated_turns: usize,
     calls: Arc<AtomicUsize>,
@@ -140,7 +140,7 @@ impl LlmExecutor for TruncatingLlm {
     }
 }
 
-/// First turn: a complete tool call cut off by `MaxTokens`; then a text end.
+/// First response: a complete tool call cut off by `MaxTokens`; then a text end.
 struct TruncatedToolCallLlm {
     calls: Arc<AtomicUsize>,
 }
@@ -313,11 +313,11 @@ async fn max_tokens_truncation_continues_in_place_and_recovers() {
     let outcome = runtime.execute(activation(), context).await.expect("runs");
 
     assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
-    // The truncated turn plus one continuation round.
+    // The truncated response plus one continuation Step.
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 
     // The committed transcript explains the recovery: the partial assistant
-    // text, the continuation prompt, then the completed turn.
+    // text, the continuation prompt, then the completed response.
     let committed = commit.committed();
     let texts: Vec<String> = committed
         .messages
@@ -342,14 +342,14 @@ async fn max_tokens_truncation_continues_in_place_and_recovers() {
     );
     assert!(
         texts.iter().any(|t| t == "Assistant:the end"),
-        "final turn is committed: {texts:?}"
+        "final response is committed: {texts:?}"
     );
 }
 
 #[tokio::test]
 async fn max_tokens_budget_exhausted_lets_the_partial_turn_stand() {
     let calls = Arc::new(AtomicUsize::new(0));
-    // Every turn truncates; the per-step budget (2) bounds the continuations.
+    // Every response truncates; the per-Step budget (2) bounds the continuations.
     let runtime = Runtime::new()
         .with_llm(Arc::new(TruncatingLlm {
             truncated_turns: usize::MAX,
@@ -360,9 +360,9 @@ async fn max_tokens_budget_exhausted_lets_the_partial_turn_stand() {
     let context = RuntimeRunContext::new();
     let outcome = runtime.execute(activation(), context).await.expect("runs");
 
-    // The still-truncated turn stands as a text-only natural end.
+    // The still-truncated response stands as a text-only natural end.
     assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
-    // 1 initial turn + 2 continuation rounds.
+    // 1 initial response + 2 continuation Steps.
     assert_eq!(calls.load(Ordering::SeqCst), 3);
 }
 

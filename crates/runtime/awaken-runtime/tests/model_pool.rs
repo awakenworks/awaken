@@ -56,7 +56,7 @@ impl LlmExecutor for RouteLlm {
     }
 }
 
-/// The primary streams a `MaxTokens`-truncated text turn on its first call (which
+/// The primary streams a `MaxTokens`-truncated text response on its first call (which
 /// commits a continuation partial), then fails on its continuation call. Any other
 /// model answers cleanly — so a fail-over, if it wrongly happened, would be visible.
 struct TruncateThenFailPrimary {
@@ -76,7 +76,7 @@ impl LlmExecutor for TruncateThenFailPrimary {
             seen.iter().filter(|m| m.as_str() == "primary").count()
         };
         match model.as_str() {
-            // First primary call: a truncated text turn → an in-place continuation
+            // First primary call: a truncated text response → an in-place continuation
             // partial is committed and `truncation_retries` advances past 0.
             "primary" if primary_calls == 1 => Ok(ChatResponse {
                 output: AssistantOutput::text("partial ".to_string()),
@@ -202,7 +202,7 @@ async fn explicit_override_is_the_only_model_executed_for_the_run() {
 async fn a_committed_truncation_partial_does_not_fail_over_to_a_pool_model() {
     // I6: once a step commits a truncation partial (truncation_retries > 0), a later
     // inference failure is terminal in place — switching to another pool model would
-    // double-generate the turn. Failover (I5) fires only on a CLEAN pre-commit
+    // double-generate the response. Failover (I5) fires only on a CLEAN pre-commit
     // failure. So the fallback candidate is never tried after a partial is committed.
     let seen = Arc::new(Mutex::new(Vec::new()));
     let runtime = Runtime::new()

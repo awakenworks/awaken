@@ -95,7 +95,7 @@ async fn one_model_step_commits_facts_and_streams_progress() {
 
     // Committed truth: the input commits at the first step boundary (under a
     // Running fact), the assistant reply with the terminal fact. The user
-    // input is committed so the next turn sees it.
+    // input is committed so the next Step sees it.
     assert_eq!(commit.commit_count(), 2);
     let committed = commit.committed();
     assert_eq!(committed.messages.len(), 2);
