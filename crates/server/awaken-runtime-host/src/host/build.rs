@@ -15,6 +15,15 @@ pub struct ResourcePlanePorts {
     lifecycle: Arc<dyn awaken_protocol_managed::resource_plane::ResourceLifecycleRepository>,
 }
 
+/// The four backend-neutral ports exposed when a composition root needs to
+/// mount the resource APIs beside the runtime host.
+pub type ResourcePlanePortSet = (
+    Arc<dyn awaken_file_store::FileStore>,
+    Arc<dyn awaken_memory_store::MemoryRepository>,
+    Arc<dyn awaken_skill_store::SkillStore>,
+    Arc<dyn awaken_protocol_managed::resource_plane::ResourceLifecycleRepository>,
+);
+
 impl ResourcePlanePorts {
     pub fn new(
         file_store: Arc<dyn awaken_file_store::FileStore>,
@@ -32,14 +41,7 @@ impl ResourcePlanePorts {
 
     /// Decompose the wiring value at an outer composition root that also mounts
     /// the resource APIs. All returned ports still refer to the same opened family.
-    pub fn into_parts(
-        self,
-    ) -> (
-        Arc<dyn awaken_file_store::FileStore>,
-        Arc<dyn awaken_memory_store::MemoryRepository>,
-        Arc<dyn awaken_skill_store::SkillStore>,
-        Arc<dyn awaken_protocol_managed::resource_plane::ResourceLifecycleRepository>,
-    ) {
+    pub fn into_parts(self) -> ResourcePlanePortSet {
         (
             self.file_store,
             self.memory_repository,
