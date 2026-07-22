@@ -1,6 +1,26 @@
 //! The single awaiting/terminal commit boundary for a Runtime step.
 
 use super::*;
+use awaken_runtime_contract::terminal::{CommittedTerminalRun, deliver_committed_terminal};
+
+/// Deliver one committed terminal fact to every configured observer.
+///
+/// Error and panic isolation are intentional: observation happens after the
+/// authoritative commit and therefore cannot rewrite or fail the Run result.
+/// Stable-id recovery may call this again, so observers must be idempotent.
+pub(crate) async fn observe_committed_terminal(
+    context: &RuntimeRunContext,
+    terminal: &CommittedTerminalRun,
+) {
+    for failure in deliver_committed_terminal(&context.terminal_observers, terminal).await {
+        tracing::warn!(
+            observer.id = %failure.observer_id,
+            awaken.run.id = %terminal.run_id.0,
+            error = %failure.error,
+            "committed-terminal observer failed; recovery may redeliver"
+        );
+    }
+}
 
 /// Seal unfinished child/tool state, commit the final disposition, and publish
 /// best-effort terminal events. Durable facts always precede live notification.
@@ -69,7 +89,7 @@ pub(super) async fn finish(
         }
     }
 
-    if let Some(coordinator) = &context.commit {
+    let committed = if let Some(coordinator) = &context.commit {
         coordinator
             .commit(ThreadCommit::assemble(
                 thread_id.clone(),
@@ -81,6 +101,21 @@ pub(super) async fn finish(
             ))
             .await
             .map_err(|error| Error::Commit(error.to_string()))?;
+        true
+    } else {
+        false
+    };
+
+    if committed && let RunState::Ended(cause) = &run_state {
+        observe_committed_terminal(
+            context,
+            &CommittedTerminalRun {
+                run_id: run_id.clone(),
+                thread_id: thread_id.clone(),
+                cause: cause.clone(),
+            },
+        )
+        .await;
     }
 
     // The terminal commit is the outbox boundary: delivery happens only after

@@ -16,6 +16,7 @@ use awaken_runtime_contract::execution::{Error, RunExecutor};
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
+use awaken_runtime_contract::terminal::redeliver_committed_terminal;
 
 use crate::Runtime;
 
@@ -105,7 +106,20 @@ impl Runtime {
             .as_deref()
             .and_then(|reader| reader.run_state(&run_id))
         {
-            Some(state @ RunState::Ended(_)) => return Ok(state),
+            Some(state @ RunState::Ended(_)) => {
+                let reader = context
+                    .reader
+                    .as_deref()
+                    .expect("the terminal state was read from this reader");
+                let _ = redeliver_committed_terminal(
+                    reader,
+                    &context.terminal_observers,
+                    &run_id,
+                    &activation.thread_id,
+                )
+                .await;
+                return Ok(state);
+            }
             Some(RunState::Awaiting) => RunState::Awaiting,
             Some(RunState::Running) | None => self.execute(activation, context.clone()).await?,
         };

@@ -29,6 +29,9 @@ The corpus is organized into five bounded contexts:
 
 - **Runtime Core** — the domain center: agent execution, run lifecycle, commit
   boundary, typed state/effects, tool abstractions, and extension hooks.
+- **Runtime Extensions** — in-Run Plugins, cross-Run workflows such as Outcome,
+  and committed-terminal observers such as Memory Extraction; they use neutral
+  Runtime ports and remain independently usable without a product adapter.
 - **Dispatch / Server** — run ingress, durable delivery, protocol replay, and
   config-publication coordination above the runtime.
 - **Neutral Platform** — reusable connection and control mechanisms, free of

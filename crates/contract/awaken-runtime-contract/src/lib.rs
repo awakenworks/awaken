@@ -25,6 +25,7 @@ pub mod resume;
 pub mod runtime_context;
 pub mod snapshot;
 mod snapshot_builder;
+pub mod terminal;
 pub mod tool;
 pub mod tool_batch;
 

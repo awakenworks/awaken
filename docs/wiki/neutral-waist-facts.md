@@ -34,10 +34,10 @@ Owner: [neutral-waist.md](../design/neutral-waist.md).
 - Links: [tool facts](tool-and-capability-facts.md)
 - Verification: backend profile negotiation tests.
 
-## FACT-WAIST-004: Goal continuation is an extension
+## FACT-WAIST-004: Extension lifecycle roles retain distinct authority
 
 - Status: active
-- Owner: [Neutral waist goal continuation](../design/neutral-waist.md#goal-continuation)
-- Fact: runtime stores opaque continuation verdicts and terminal conclusions; grading semantics and public outcome names live outside runtime.
-- Links: guardrail G11; [product protocol facts](anthropic-alignment-and-sessions-facts.md)
-- Verification: extension boundary tests and replay tests using recorded verdicts.
+- Owner: [Neutral waist Runtime extension lifecycles](../design/neutral-waist.md#runtime-extension-lifecycles)
+- Fact: Phase hooks act within a Step, continuation guards decide before terminal commit, and terminal observers react at least once after an Ended fact commits; Outcome and public protocol semantics remain outside Runtime Core.
+- Links: guardrails G11 and G12; [product protocol facts](anthropic-alignment-and-sessions-facts.md)
+- Verification: phase/continuation boundary tests, Outcome extension tests, and terminal-observer redelivery/idempotency tests.

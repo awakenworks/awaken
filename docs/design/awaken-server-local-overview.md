@@ -63,7 +63,7 @@ placement-, and scheduling-agnostic ([ADR-0034](../adr/0034-runtime-axis-model-a
 | `awaken-ext-builtin-tools` | `bash`/`read`/`write`/`edit`/`glob`/`grep` as in-process `RawTool`s | ✅ |
 | relay `RawTool` | a `RawTool` whose `invoke` speaks MCP to this environment's relay; the kernel sees an ordinary tool | 🔨 |
 | `awaken-ext-permission` | Claude-Code-style rules; a **client-executed tool is a suspending gate** | ✅ (client-tool gate 🔨) |
-| `awaken-ext-goal` | Pure Outcome definition, lifecycle, grading input, and decisions; Runtime Host drives the **above-kernel** Run loop | 🔨 |
+| `awaken-ext-goal` | Outcome bounded context: definition, controller, grading, stable Run identities, and Thread-state codec; Host supplies neutral adapters | 🔨 |
 
 ### E — Sandbox / tool relay (host composition; `awaken-sandbox-*`, `awaken-mcp-relay`) 🔨
 
