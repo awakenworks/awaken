@@ -50,6 +50,11 @@ fn mount(host: Arc<SharedHost>) -> Router {
     awaken_server::mount_with_managed_and_resource_catalog(host, managed, catalog)
 }
 
+fn resource_host(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> SharedHost {
+    SharedHost::new(llm, model_ref)
+        .with_resource_lifecycle(Arc::new(awaken_resource_store::InMemoryResourceStore::new()))
+}
+
 /// Resource HTTP adapters without the product composition root's local Workspace
 /// injector. This intentionally incomplete test composition proves that File,
 /// MemoryStore, and Skill routes fail closed instead of deriving a Workspace from
@@ -118,7 +123,7 @@ const FAKE_ACP_SCRIPT: &str = "read _p; \
 /// MemoryStore resource to each participating Session.
 pub fn build_memory_router() -> Router {
     let (model, model_ref) = scenario_model(Arc::new(MemoryProbeModel), "memory");
-    let host = SharedHost::new(model, model_ref);
+    let host = resource_host(model, model_ref);
     mount(Arc::new(host))
 }
 
@@ -133,7 +138,7 @@ pub fn build_memory_resource_router() -> Router {
         Arc::new(crate::models::MemoryResourceModel),
         "memory-resource",
     );
-    let host = SharedHost::new(model, model_ref);
+    let host = resource_host(model, model_ref);
     mount(Arc::new(host))
 }
 
@@ -142,7 +147,7 @@ pub fn build_memory_resource_router() -> Router {
 /// to the remote on harvest. `AWAKEN_MODEL_MODE=git-repo`.
 pub fn build_git_repo_router() -> Router {
     let (model, model_ref) = scenario_model(Arc::new(crate::models::GitRepoModel), "git-repo");
-    let host = SharedHost::new(model, model_ref);
+    let host = resource_host(model, model_ref);
     mount(Arc::new(host))
 }
 
@@ -156,7 +161,7 @@ pub fn build_git_repo_router() -> Router {
 pub fn build_full_chain_router() -> Router {
     let greet = SkillSpec::new("greet", "Greet", "say hello", "GREETING-FROM-SKILL");
     let (model, model_ref) = scenario_model(Arc::new(EchoModel), "full-chain");
-    let host = SharedHost::new(model, model_ref)
+    let host = resource_host(model, model_ref)
         .with_skills(vec![greet])
         .with_skill_store(scenario_skill_store_dir());
     mount(Arc::new(host))
@@ -680,7 +685,7 @@ pub fn build_resolved_router(
 
 /// Build the server router backed by the kernel with the given model.
 pub fn build_router(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> Router {
-    mount(Arc::new(SharedHost::new(llm, model_ref)))
+    mount(Arc::new(resource_host(llm, model_ref)))
 }
 
 /// A plain host over the real wire for the model-pool failover e2e (#1). The

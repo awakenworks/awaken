@@ -1345,6 +1345,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-iam-preset",
         "awaken-iam-server",
         "awaken-memory-store",
+        "awaken-resource-store",
         "awaken-model-catalog",
         # Worker-fleet E2E reuses the production registration/heartbeat/drain
         # lifecycle and injects only a deterministic executor provider.
