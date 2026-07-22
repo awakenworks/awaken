@@ -225,7 +225,7 @@ pub struct SharedHost {
     /// Durable resource-plane lifecycle/reference state. It contains intrinsic
     /// Workspace/resource edges only and is independent of the IAM deployment.
     pub(crate) resource_lifecycle:
-        Arc<dyn awaken_protocol_managed::resource_plane::ResourceLifecycleRepository>,
+        Option<Arc<dyn awaken_protocol_managed::resource_plane::ResourceLifecycleRepository>>,
     /// The memory resource plane's path-addressed content backend shared by API,
     /// mounts, recall, and extraction. See [`crate::memory_stores`].
     pub(crate) memory_stores: crate::memory_stores::MemoryStores,

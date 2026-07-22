@@ -40,7 +40,6 @@ mod memory_store_api;
 mod memory_stores;
 mod provisioning;
 mod redact;
-mod resource_lifecycle;
 mod resource_reclamation;
 mod resource_scope;
 pub use resource_reclamation::HostResourceReclamation;

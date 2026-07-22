@@ -214,19 +214,32 @@ impl SharedHost {
         self.file_store.clone()
     }
 
+    pub(crate) fn required_resource_lifecycle(
+        &self,
+    ) -> Result<
+        &Arc<dyn awaken_protocol_managed::resource_plane::ResourceLifecycleRepository>,
+        ResourcePurgeError,
+    > {
+        self.resource_lifecycle.as_ref().ok_or_else(|| {
+            ResourcePurgeError::Storage(
+                "resource lifecycle repository is not configured by the composition root".into(),
+            )
+        })
+    }
+
     pub async fn register_file_ownership(
         &self,
         workspace: &str,
         id: &str,
     ) -> Result<bool, ResourcePurgeError> {
-        self.resource_lifecycle
+        self.required_resource_lifecycle()?
             .add_reference(file_ownership(workspace, id))
             .await
     }
 
     pub async fn owns_file(&self, workspace: &str, id: &str) -> Result<bool, ResourcePurgeError> {
         Ok(self
-            .resource_lifecycle
+            .required_resource_lifecycle()?
             .references(&ResourceTarget::new(workspace, ResourceKind::File, id))
             .await?
             .iter()
@@ -238,14 +251,14 @@ impl SharedHost {
         workspace: &str,
         id: &str,
     ) -> Result<bool, ResourcePurgeError> {
-        self.resource_lifecycle
+        self.required_resource_lifecycle()?
             .remove_reference(&file_ownership(workspace, id))
             .await
     }
 
     pub async fn file_has_any_reference(&self, id: &str) -> Result<bool, ResourcePurgeError> {
         Ok(!self
-            .resource_lifecycle
+            .required_resource_lifecycle()?
             .references_for_resource(ResourceKind::File, id)
             .await?
             .is_empty())
@@ -271,7 +284,7 @@ impl SharedHost {
             requested_at_unix_ms,
             not_before_unix_ms,
         )?;
-        self.resource_lifecycle.put(intent).await
+        self.required_resource_lifecycle()?.put(intent).await
     }
 
     pub async fn request_file_purge(
@@ -334,7 +347,10 @@ impl SharedHost {
                 ))
             }));
         }
-        self.resource_lifecycle
+        if records.is_empty() && self.resource_lifecycle.is_none() {
+            return Ok(());
+        }
+        self.required_resource_lifecycle()?
             .replace_references(ResourceReferenceKind::SessionBinding, thread, records)
             .await
     }
@@ -343,9 +359,14 @@ impl SharedHost {
         &self,
         thread: &str,
     ) -> Result<(), ResourcePurgeError> {
-        self.resource_lifecycle
-            .replace_references(ResourceReferenceKind::SessionBinding, thread, Vec::new())
-            .await
+        match &self.resource_lifecycle {
+            Some(repository) => {
+                repository
+                    .replace_references(ResourceReferenceKind::SessionBinding, thread, Vec::new())
+                    .await
+            }
+            None => Ok(()),
+        }
     }
 
     /// Realize a thread's resolved Repository inputs into its freshly-created

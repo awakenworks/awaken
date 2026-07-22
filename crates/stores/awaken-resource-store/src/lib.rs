@@ -6,7 +6,6 @@
 //! replaceable durable adapter.
 
 use parking_lot::Mutex;
-use std::collections::{BTreeMap, BTreeSet};
 
 use async_trait::async_trait;
 use awaken_resource_contract::{
@@ -25,207 +24,6 @@ mod schema;
 #[cfg(feature = "postgres")]
 pub use postgres::PostgresResourceStore;
 
-#[derive(Default)]
-struct ResourceConsistencyState {
-    references: BTreeSet<ResourceReferenceRecord>,
-    reclamation_fences: BTreeMap<(ResourceKind, String), String>,
-}
-
-/// Ephemeral reference adapter used by embedded tests and no-storage mode.
-#[derive(Default)]
-pub struct InMemoryResourceStore {
-    intents: Mutex<BTreeMap<String, ResourcePurgeIntent>>,
-    consistency: Mutex<ResourceConsistencyState>,
-}
-
-#[async_trait]
-impl ResourceReclamationFence for InMemoryResourceStore {
-    async fn acquire_reclamation(
-        &self,
-        intent_id: &str,
-        target: &ResourceTarget,
-    ) -> Result<AcquireResourceReclamationOutcome, ResourcePurgeError> {
-        validate_fence_request(intent_id, target)?;
-        let mut state = self.consistency.lock();
-        let key = physical_key(target);
-        if let Some(owner) = state.reclamation_fences.get(&key) {
-            return Ok(if owner == intent_id {
-                AcquireResourceReclamationOutcome::AlreadyOwned
-            } else {
-                AcquireResourceReclamationOutcome::Contended
-            });
-        }
-        let blockers = references_for_identity(&state.references, target.kind, &target.resource_id);
-        if !blockers.is_empty() {
-            return Ok(AcquireResourceReclamationOutcome::Blocked(blockers));
-        }
-        state.reclamation_fences.insert(key, intent_id.into());
-        Ok(AcquireResourceReclamationOutcome::Acquired)
-    }
-
-    async fn release_reclamation(
-        &self,
-        intent_id: &str,
-        target: &ResourceTarget,
-    ) -> Result<bool, ResourcePurgeError> {
-        validate_fence_request(intent_id, target)?;
-        let mut state = self.consistency.lock();
-        let key = physical_key(target);
-        match state.reclamation_fences.get(&key) {
-            Some(owner) if owner == intent_id => {
-                state.reclamation_fences.remove(&key);
-                Ok(true)
-            }
-            Some(_) => Err(ResourcePurgeError::StaleReclamationFence),
-            None => Ok(false),
-        }
-    }
-}
-
-impl InMemoryResourceStore {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-#[async_trait]
-impl ResourcePurgeRepository for InMemoryResourceStore {
-    async fn put(
-        &self,
-        intent: ResourcePurgeIntent,
-    ) -> Result<PutResourcePurgeOutcome, ResourcePurgeError> {
-        intent.validate()?;
-        let mut rows = self.intents.lock();
-        if let Some(existing) = rows.get(&intent.intent_id).or_else(|| {
-            rows.values()
-                .find(|row| row.idempotency_key == intent.idempotency_key)
-        }) {
-            return if existing.same_request(&intent) {
-                Ok(PutResourcePurgeOutcome::Existing)
-            } else {
-                Err(ResourcePurgeError::IdempotencyConflict(
-                    intent.idempotency_key,
-                ))
-            };
-        }
-        rows.insert(intent.intent_id.clone(), intent);
-        Ok(PutResourcePurgeOutcome::Inserted)
-    }
-
-    async fn get(
-        &self,
-        intent_id: &str,
-    ) -> Result<Option<ResourcePurgeIntent>, ResourcePurgeError> {
-        Ok(self.intents.lock().get(intent_id).cloned())
-    }
-
-    async fn recoverable(
-        &self,
-        now_unix_ms: u64,
-        limit: usize,
-    ) -> Result<Vec<ResourcePurgeIntent>, ResourcePurgeError> {
-        let mut rows: Vec<_> = self
-            .intents
-            .lock()
-            .values()
-            .filter(|intent| recoverable(intent, now_unix_ms))
-            .cloned()
-            .collect();
-        rows.sort_by(|a, b| {
-            a.requested_at_unix_ms
-                .cmp(&b.requested_at_unix_ms)
-                .then_with(|| a.intent_id.cmp(&b.intent_id))
-        });
-        rows.truncate(limit);
-        Ok(rows)
-    }
-
-    async fn save(
-        &self,
-        expected_revision: u64,
-        intent: ResourcePurgeIntent,
-    ) -> Result<(), ResourcePurgeError> {
-        intent.validate()?;
-        let mut rows = self.intents.lock();
-        let current = rows
-            .get(&intent.intent_id)
-            .ok_or_else(|| ResourcePurgeError::NotFound(intent.intent_id.clone()))?;
-        if current.revision != expected_revision {
-            return Err(ResourcePurgeError::RevisionConflict(intent.intent_id));
-        }
-        rows.insert(intent.intent_id.clone(), intent);
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl ResourceReferenceIndex for InMemoryResourceStore {
-    async fn add_reference(
-        &self,
-        record: ResourceReferenceRecord,
-    ) -> Result<bool, ResourcePurgeError> {
-        validate_reference(&record)?;
-        let mut state = self.consistency.lock();
-        ensure_unfenced(&state.reclamation_fences, &record.target)?;
-        Ok(state.references.insert(record))
-    }
-
-    async fn remove_reference(
-        &self,
-        record: &ResourceReferenceRecord,
-    ) -> Result<bool, ResourcePurgeError> {
-        validate_reference(record)?;
-        Ok(self.consistency.lock().references.remove(record))
-    }
-
-    async fn replace_references(
-        &self,
-        kind: ResourceReferenceKind,
-        reference_id: &str,
-        records: Vec<ResourceReferenceRecord>,
-    ) -> Result<(), ResourcePurgeError> {
-        validate_replacement(kind, reference_id, &records)?;
-        let mut state = self.consistency.lock();
-        for record in &records {
-            ensure_unfenced(&state.reclamation_fences, &record.target)?;
-        }
-        state.references.retain(|record| {
-            record.reference.kind != kind || record.reference.reference_id != reference_id
-        });
-        state.references.extend(records);
-        Ok(())
-    }
-
-    async fn references(
-        &self,
-        target: &ResourceTarget,
-    ) -> Result<Vec<ResourceReference>, ResourcePurgeError> {
-        let rows = self.consistency.lock();
-        Ok(rows
-            .references
-            .iter()
-            .filter(|record| &record.target == target)
-            .map(|record| record.reference.clone())
-            .collect())
-    }
-
-    async fn references_for_resource(
-        &self,
-        kind: ResourceKind,
-        resource_id: &str,
-    ) -> Result<Vec<ResourceReferenceRecord>, ResourcePurgeError> {
-        Ok(self
-            .consistency
-            .lock()
-            .references
-            .iter()
-            .filter(|record| record.target.kind == kind && record.target.resource_id == resource_id)
-            .cloned()
-            .collect())
-    }
-}
-
 /// SQLite adapter used by the durable single-machine composition.
 #[cfg(feature = "sqlite")]
 pub struct SqliteResourceStore {
@@ -234,6 +32,14 @@ pub struct SqliteResourceStore {
 
 #[cfg(feature = "sqlite")]
 impl SqliteResourceStore {
+    /// Open the same SQLite adapter against a private in-memory database.
+    ///
+    /// Ephemeral mode intentionally reuses the durable adapter so lifecycle,
+    /// reference and fencing semantics have one implementation on a node.
+    pub fn in_memory() -> Result<Self, ResourcePurgeError> {
+        Self::open(":memory:")
+    }
+
     pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self, ResourcePurgeError> {
         let connection = Connection::open(path).map_err(|error| storage(error.to_string()))?;
         connection
@@ -648,36 +454,6 @@ impl ResourceReferenceIndex for SqliteResourceStore {
     }
 }
 
-fn physical_key(target: &ResourceTarget) -> (ResourceKind, String) {
-    (target.kind, target.resource_id.clone())
-}
-
-fn references_for_identity(
-    references: &BTreeSet<ResourceReferenceRecord>,
-    kind: ResourceKind,
-    resource_id: &str,
-) -> Vec<ResourceReferenceRecord> {
-    references
-        .iter()
-        .filter(|record| record.target.kind == kind && record.target.resource_id == resource_id)
-        .cloned()
-        .collect()
-}
-
-fn ensure_unfenced(
-    fences: &BTreeMap<(ResourceKind, String), String>,
-    target: &ResourceTarget,
-) -> Result<(), ResourcePurgeError> {
-    if fences.contains_key(&physical_key(target)) {
-        Err(ResourcePurgeError::ReclamationFenced {
-            kind: target.kind,
-            resource_id: target.resource_id.clone(),
-        })
-    } else {
-        Ok(())
-    }
-}
-
 fn validate_fence_request(
     intent_id: &str,
     target: &ResourceTarget,
@@ -753,14 +529,6 @@ fn sqlite_references_for_identity(
         })
     })
     .collect()
-}
-
-fn recoverable(intent: &ResourcePurgeIntent, now_unix_ms: u64) -> bool {
-    !intent.status.is_terminal()
-        && intent.not_before_unix_ms <= now_unix_ms
-        && intent
-            .lease_expires_at_unix_ms
-            .is_none_or(|expires| expires <= now_unix_ms)
 }
 
 pub(crate) fn validate_reference(
@@ -1050,13 +818,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn in_memory_conforms() {
-        repository_spec(&InMemoryResourceStore::new()).await;
+    async fn sqlite_in_memory_conforms() {
+        repository_spec(&SqliteResourceStore::in_memory().unwrap()).await;
     }
 
     proptest! {
         #[test]
-        fn in_memory_reference_and_fence_protocol_matches_the_small_model(
+        fn sqlite_in_memory_reference_and_fence_protocol_matches_the_small_model(
             actions in proptest::collection::vec(0u8..6, 0..128)
         ) {
             let runtime = tokio::runtime::Builder::new_current_thread()
@@ -1064,7 +832,7 @@ mod tests {
                 .build()
                 .unwrap();
             runtime.block_on(async move {
-                let store = InMemoryResourceStore::new();
+                let store = SqliteResourceStore::in_memory().unwrap();
                 let row = reference("workspace-a", "ownership-a");
                 let mut referenced = false;
                 let mut fence: Option<&str> = None;

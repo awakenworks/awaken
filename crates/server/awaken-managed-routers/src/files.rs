@@ -81,6 +81,15 @@ async fn upload_file(
         )
             .into_response();
     };
+    if host.resource_lifecycle().is_none() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "error": "resource lifecycle repository is not configured by the composition root"
+            })),
+        )
+            .into_response();
+    }
     let size = bytes.len();
     match host.file_store().put(&bytes).await {
         Ok(id) => {

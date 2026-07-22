@@ -4,7 +4,185 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Role;
 use awaken_protocol_managed::resource_plane as awaken_resource_contract;
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse};
-use std::sync::atomic::AtomicUsize;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Mutex, atomic::AtomicUsize};
+
+#[derive(Default)]
+pub(super) struct TestResourceLifecycle {
+    intents: Mutex<BTreeMap<String, awaken_resource_contract::ResourcePurgeIntent>>,
+    references: Mutex<BTreeSet<awaken_resource_contract::ResourceReferenceRecord>>,
+    fences: Mutex<BTreeMap<(awaken_resource_contract::ResourceKind, String), String>>,
+}
+
+#[async_trait::async_trait]
+impl awaken_resource_contract::ResourcePurgeRepository for TestResourceLifecycle {
+    async fn put(
+        &self,
+        intent: awaken_resource_contract::ResourcePurgeIntent,
+    ) -> Result<
+        awaken_resource_contract::PutResourcePurgeOutcome,
+        awaken_resource_contract::ResourcePurgeError,
+    > {
+        intent.validate()?;
+        let mut intents = self.intents.lock().unwrap();
+        if let Some(existing) = intents.get(&intent.intent_id) {
+            return if existing.same_request(&intent) {
+                Ok(awaken_resource_contract::PutResourcePurgeOutcome::Existing)
+            } else {
+                Err(
+                    awaken_resource_contract::ResourcePurgeError::IdempotencyConflict(
+                        intent.idempotency_key,
+                    ),
+                )
+            };
+        }
+        intents.insert(intent.intent_id.clone(), intent);
+        Ok(awaken_resource_contract::PutResourcePurgeOutcome::Inserted)
+    }
+
+    async fn get(
+        &self,
+        intent_id: &str,
+    ) -> Result<
+        Option<awaken_resource_contract::ResourcePurgeIntent>,
+        awaken_resource_contract::ResourcePurgeError,
+    > {
+        Ok(self.intents.lock().unwrap().get(intent_id).cloned())
+    }
+
+    async fn recoverable(
+        &self,
+        _now_unix_ms: u64,
+        _limit: usize,
+    ) -> Result<
+        Vec<awaken_resource_contract::ResourcePurgeIntent>,
+        awaken_resource_contract::ResourcePurgeError,
+    > {
+        Ok(Vec::new())
+    }
+
+    async fn save(
+        &self,
+        _expected_revision: u64,
+        intent: awaken_resource_contract::ResourcePurgeIntent,
+    ) -> Result<(), awaken_resource_contract::ResourcePurgeError> {
+        self.intents
+            .lock()
+            .unwrap()
+            .insert(intent.intent_id.clone(), intent);
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_resource_contract::ResourceReferenceIndex for TestResourceLifecycle {
+    async fn add_reference(
+        &self,
+        record: awaken_resource_contract::ResourceReferenceRecord,
+    ) -> Result<bool, awaken_resource_contract::ResourcePurgeError> {
+        Ok(self.references.lock().unwrap().insert(record))
+    }
+
+    async fn remove_reference(
+        &self,
+        record: &awaken_resource_contract::ResourceReferenceRecord,
+    ) -> Result<bool, awaken_resource_contract::ResourcePurgeError> {
+        Ok(self.references.lock().unwrap().remove(record))
+    }
+
+    async fn replace_references(
+        &self,
+        kind: awaken_resource_contract::ResourceReferenceKind,
+        reference_id: &str,
+        records: Vec<awaken_resource_contract::ResourceReferenceRecord>,
+    ) -> Result<(), awaken_resource_contract::ResourcePurgeError> {
+        let mut references = self.references.lock().unwrap();
+        references.retain(|record| {
+            record.reference.kind != kind || record.reference.reference_id != reference_id
+        });
+        references.extend(records);
+        Ok(())
+    }
+
+    async fn references(
+        &self,
+        target: &awaken_resource_contract::ResourceTarget,
+    ) -> Result<
+        Vec<awaken_resource_contract::ResourceReference>,
+        awaken_resource_contract::ResourcePurgeError,
+    > {
+        Ok(self
+            .references
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|record| &record.target == target)
+            .map(|record| record.reference.clone())
+            .collect())
+    }
+
+    async fn references_for_resource(
+        &self,
+        kind: awaken_resource_contract::ResourceKind,
+        resource_id: &str,
+    ) -> Result<
+        Vec<awaken_resource_contract::ResourceReferenceRecord>,
+        awaken_resource_contract::ResourcePurgeError,
+    > {
+        Ok(self
+            .references
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|record| record.target.kind == kind && record.target.resource_id == resource_id)
+            .cloned()
+            .collect())
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_resource_contract::ResourceReclamationFence for TestResourceLifecycle {
+    async fn acquire_reclamation(
+        &self,
+        intent_id: &str,
+        target: &awaken_resource_contract::ResourceTarget,
+    ) -> Result<
+        awaken_resource_contract::AcquireResourceReclamationOutcome,
+        awaken_resource_contract::ResourcePurgeError,
+    > {
+        let key = (target.kind, target.resource_id.clone());
+        let mut fences = self.fences.lock().unwrap();
+        if let Some(owner) = fences.get(&key) {
+            return Ok(if owner == intent_id {
+                awaken_resource_contract::AcquireResourceReclamationOutcome::AlreadyOwned
+            } else {
+                awaken_resource_contract::AcquireResourceReclamationOutcome::Contended
+            });
+        }
+        fences.insert(key, intent_id.into());
+        Ok(awaken_resource_contract::AcquireResourceReclamationOutcome::Acquired)
+    }
+
+    async fn release_reclamation(
+        &self,
+        intent_id: &str,
+        target: &awaken_resource_contract::ResourceTarget,
+    ) -> Result<bool, awaken_resource_contract::ResourcePurgeError> {
+        let key = (target.kind, target.resource_id.clone());
+        let mut fences = self.fences.lock().unwrap();
+        if fences.get(&key).is_some_and(|owner| owner == intent_id) {
+            fences.remove(&key);
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+}
+
+pub(super) fn test_resource_lifecycle()
+-> Arc<dyn awaken_resource_contract::ResourceLifecycleRepository> {
+    Arc::new(TestResourceLifecycle::default())
+}
 
 /// Authoring shorthand used only by tests. Production crosses the runtime port
 /// exclusively as `ResolvedSessionResources`.

@@ -44,6 +44,9 @@ futures = "0.3"
 # Canonical Memory data plane used by API, mount, recall, extraction, history, and
 # redaction. The composition root selects its durable or ephemeral adapter once.
 awaken-memory-store = { workspace = true }
+# Scenario resource modes are composition roots too: install the canonical
+# in-memory lifecycle adapter explicitly instead of relying on Host-local truth.
+awaken-resource-store = { workspace = true }
 # ACP runtime (R3/R4): drive an external ACP CLI as a peer RunExecutor when a
 # session selects `runtime: "acp:*"`.
 awaken-run-executor-acp = { workspace = true }

@@ -136,13 +136,10 @@ impl SharedHost {
             },
             |ports| ports.file_store.clone(),
         );
-        let resource_lifecycle = resources.as_ref().map_or_else(
-            || {
-                Arc::new(crate::resource_lifecycle::EphemeralResourceLifecycle::default())
-                    as Arc<dyn awaken_protocol_managed::resource_plane::ResourceLifecycleRepository>
-            },
-            |ports| ports.lifecycle.clone(),
-        );
+        let resource_lifecycle = resources.as_ref().map(|ports| ports.lifecycle.clone());
+        #[cfg(test)]
+        let resource_lifecycle =
+            resource_lifecycle.or_else(|| Some(super::tests::test_resource_lifecycle()));
         Self {
             llm,
             model_ref,
@@ -225,21 +222,22 @@ impl SharedHost {
         self.store_dir.as_deref()
     }
 
-    /// Replace the ephemeral resource-lifecycle adapter. Composition roots use
-    /// this for SQLite/Postgres/cloud implementations; the runtime sees only the
-    /// resource contract and remains independent of IAM and storage technology.
+    /// Install the resource-lifecycle adapter selected by the composition root.
+    /// The runtime sees only the resource contract and remains independent of IAM
+    /// and storage technology; without this port, managed resource operations fail
+    /// closed instead of creating a second Host-local resource truth.
     #[must_use]
     pub fn with_resource_lifecycle(
         mut self,
         repository: Arc<dyn awaken_protocol_managed::resource_plane::ResourceLifecycleRepository>,
     ) -> Self {
-        self.resource_lifecycle = repository;
+        self.resource_lifecycle = Some(repository);
         self
     }
 
     pub fn resource_lifecycle(
         &self,
-    ) -> Arc<dyn awaken_protocol_managed::resource_plane::ResourceLifecycleRepository> {
+    ) -> Option<Arc<dyn awaken_protocol_managed::resource_plane::ResourceLifecycleRepository>> {
         self.resource_lifecycle.clone()
     }
 
