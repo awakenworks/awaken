@@ -140,6 +140,10 @@ impl SharedHost {
         // The recovered dispatch a crash left mid-flight is re-executed by this
         // worker; giving it the same checkpoint store lets that re-execution resume
         // the interrupted step from its flushed partial (Phase 3 cross-process).
+        let run_context = terminal_observers.iter().cloned().fold(
+            awaken_runtime_contract::RuntimeRunContext::new(),
+            awaken_runtime_contract::RuntimeRunContext::with_terminal_observer,
+        );
         let mut ingress = DurableRunIngress::with_owner_and_resolver(
             runtime,
             store,
@@ -147,10 +151,8 @@ impl SharedHost {
             crate::dispatch_backend::dispatch_owner(),
             Some(stream_checkpoint),
             inference_materializer,
-        );
-        for observer in terminal_observers {
-            ingress = ingress.with_terminal_observer(observer.clone());
-        }
+        )
+        .with_context(run_context);
         ingress.install_attempt_executor(attempt_executor);
         if let Some(upstream) = &self.upstream {
             let mut commit = crate::commit_ingest::RemoteClaimedRunCommit::new(upstream.base_url())
