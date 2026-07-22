@@ -109,6 +109,7 @@ impl SharedHost {
         attempt_executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>,
         commit: Arc<HostCommit>,
         stream_checkpoint: Arc<dyn StreamCheckpointStore>,
+        terminal_observers: &[Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>],
     ) -> Result<
         (
             Arc<dyn RunIngress>,
@@ -147,6 +148,9 @@ impl SharedHost {
             Some(stream_checkpoint),
             inference_materializer,
         );
+        for observer in terminal_observers {
+            ingress = ingress.with_terminal_observer(observer.clone());
+        }
         ingress.install_attempt_executor(attempt_executor);
         if let Some(upstream) = &self.upstream {
             let mut commit = crate::commit_ingest::RemoteClaimedRunCommit::new(upstream.base_url())
@@ -587,12 +591,17 @@ impl SharedHost {
         // `RunIngress` rather than calling `runtime.start_run` directly. Direct
         // ingress runs inline on the same `runtime`; durable ingress queues the run
         // through a dispatch store first. Both share this thread's `runtime`/`commit`.
+        let terminal_observers: Vec<_> = self
+            .memory_terminal_observer(thread, &config, commit.clone())
+            .into_iter()
+            .collect();
         let (ingress, durable_ingress) = self
             .build_ingress(
                 runtime.clone(),
                 attempt_executor,
                 commit.clone(),
                 stream_checkpoint.clone(),
+                &terminal_observers,
             )
             .await?;
         let durable = durable_ingress.is_some();
@@ -610,6 +619,7 @@ impl SharedHost {
             durable_ingress,
             config,
             commit,
+            terminal_observers,
             stream_checkpoint,
             hand_placement,
             capture_sink: self.capture_sink.clone(),
@@ -642,15 +652,17 @@ impl SharedHost {
                 st.pending_system.push(prompt);
             }
         }
-        // Recover the after-commit extraction outbox gap. A process can die after
-        // the terminal run fact is durable but before its extraction intent is
-        // inserted. Reopening the thread reads that terminal fact and idempotently
-        // recreates (or resumes) the intent before any later turn can advance the
-        // in-memory extraction cursor.
+        // Recover the generic after-commit observer gap from committed Run truth.
         if let Some(run) = ctx.commit.latest_run(&ctx.thread_id)
             && run.state.is_terminal()
         {
-            Box::pin(self.maybe_extract_memory(&ctx, thread, &run.id.0, &run.state)).await;
+            let _ = awaken_runtime_contract::terminal::redeliver_committed_terminal(
+                ctx.commit.as_ref(),
+                &ctx.terminal_observers,
+                &run.id,
+                &ctx.thread_id,
+            )
+            .await;
         }
         Ok(ctx)
     }

@@ -203,12 +203,8 @@ impl SharedHost {
             executed.new_messages,
             ctx.commit.committed_messages(&ctx.thread_id)[before..]
         );
-        let terminal_commit_id = run_id.0.clone();
         let mut st = ctx.state.lock().await;
         let result = self.finish_step(&ctx, &mut st, run_id, state, before, thread)?;
-        drop(st);
-        self.run_aux_after_step(&ctx, thread, &terminal_commit_id, &result.state)
-            .await;
         Ok(result)
     }
 
@@ -231,111 +227,6 @@ impl SharedHost {
             }
         }
         result.map_err(|error| HostError::internal(error.to_string()))
-    }
-
-    /// Fire the out-of-band auxiliary agents (memory extraction) after a step reaches
-    /// a terminal state. Shared by `run` and `resume`, so a turn that ended via a
-    /// tool/delegation resume gets the same treatment as one that ended directly.
-    /// No-op while the run is still awaiting. (Compaction is not out-of-band: it runs
-    /// inline as the `compact` plugin's `BeforeInference` hook.)
-    async fn run_aux_after_step(
-        &self,
-        ctx: &Arc<SessionCtx>,
-        thread: &str,
-        terminal_commit_id: &str,
-        state: &RunState,
-    ) {
-        self.maybe_extract_memory(ctx, thread, terminal_commit_id, state)
-            .await;
-    }
-
-    /// Fire out-of-band memory extraction when a turn reaches a terminal state
-    /// (not awaiting) and memory is enabled. Seeds the extractor with only the
-    /// messages committed since the last extraction (a per-thread cursor), so a
-    /// long conversation is not re-processed every turn. Fire-and-forget (drained
-    /// at shutdown). The cursor advances optimistically on trigger.
-    pub(crate) async fn maybe_extract_memory(
-        &self,
-        ctx: &SessionCtx,
-        thread: &str,
-        terminal_commit_id: &str,
-        state: &RunState,
-    ) {
-        if matches!(state, RunState::Awaiting) {
-            return;
-        }
-        let Some(mem) = self
-            .memory_for_thread(thread)
-            .filter(|memory| memory.extraction_enabled())
-        else {
-            return;
-        };
-        let snapshot = &ctx.config;
-        if !snapshot
-            .resolved_spec
-            .plugin_ids
-            .iter()
-            .any(|id| id == awaken_ext_memory::MEMORY_PLUGIN_ID)
-        {
-            return;
-        }
-        let memory_config = awaken_ext_memory::MemoryConfig::from_value(
-            snapshot
-                .resolved_spec
-                .plugin_config
-                .get(awaken_ext_memory::MEMORY_PLUGIN_ID),
-        )
-        .unwrap_or_default();
-        let model_ref = self
-            .inference_routing
-            .model_ref(thread, &snapshot.resolved_spec.model_binding.model_ref);
-        let inference_access = snapshot
-            .metadata
-            .inference_access
-            .as_ref()
-            .and_then(|access| access.for_model(&model_ref));
-        let Some(inference_access) = inference_access else {
-            tracing::error!(
-                thread,
-                model_ref,
-                snapshot_id = %snapshot.id.0,
-                "memory extraction rejected: snapshot has no pinned inference access for model"
-            );
-            return;
-        };
-        let extractor = awaken_protocol_managed::MemoryExtractorSnapshot {
-            agent_id: awaken_ext_memory::MEMORY_AGENT_ID.to_string(),
-            model_ref,
-            inference_access,
-            instructions: memory_config.instructions.clone(),
-            extraction_prompt: memory_config.extraction_prompt.clone(),
-        };
-        let committed = ctx.commit.committed_messages(&ctx.thread_id);
-        let st = ctx.state.lock().await;
-        let cursor = st.last_extracted_len.min(committed.len());
-        if committed.len() <= cursor {
-            return; // no new messages since the last extraction
-        }
-        let delta = committed[cursor..].to_vec();
-        let next_cursor = committed.len();
-        drop(st);
-        match mem
-            .trigger(thread, terminal_commit_id, delta, extractor)
-            .await
-        {
-            Ok(()) => {
-                let mut st = ctx.state.lock().await;
-                st.last_extracted_len = st.last_extracted_len.max(next_cursor);
-            }
-            Err(error) => {
-                tracing::error!(
-                    session = thread,
-                    terminal_commit_id,
-                    error = ?error,
-                    "could not persist Memory extraction intent"
-                );
-            }
-        }
     }
 
     /// The durable ingress for `thread`, building the session if needed. Errors
@@ -540,12 +431,8 @@ impl SharedHost {
             let activation = ctx.resume_activation(&ticket);
             let command = ResumeCommand::from_ticket(&ticket, ResumeResult::Input(content), 0);
             let state = self.drive_resume(&ctx, activation, command).await?;
-            let terminal_commit_id = run_id.0.clone();
             let mut st = ctx.state.lock().await;
             let result = self.finish_step(&ctx, &mut st, run_id, state, before, thread)?;
-            drop(st);
-            self.run_aux_after_step(&ctx, thread, &terminal_commit_id, &result.state)
-                .await;
             return Ok(result);
         }
 
@@ -601,12 +488,8 @@ impl SharedHost {
             let activation = ctx.resume_activation(&ticket);
             let command = ResumeCommand::from_ticket(&ticket, result, 0);
             let state = self.drive_resume(&ctx, activation, command).await?;
-            let terminal_commit_id = run_id.0.clone();
             let mut st = ctx.state.lock().await;
             let result = self.finish_step(&ctx, &mut st, run_id, state, before, thread)?;
-            drop(st);
-            self.run_aux_after_step(&ctx, thread, &terminal_commit_id, &result.state)
-                .await;
             return Ok(result);
         }
 
@@ -633,12 +516,8 @@ impl SharedHost {
         let activation = ctx.resume_activation(&ticket);
         let command = ResumeCommand::from_ticket(&ticket, result, 0);
         let state = self.drive_resume(&ctx, activation, command).await?;
-        let terminal_commit_id = run_id.0.clone();
         let mut st = ctx.state.lock().await;
         let result = self.finish_step(&ctx, &mut st, run_id, state, before, thread)?;
-        drop(st);
-        self.run_aux_after_step(&ctx, thread, &terminal_commit_id, &result.state)
-            .await;
         Ok(result)
     }
 

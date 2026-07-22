@@ -114,6 +114,17 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         self
     }
 
+    /// Install one committed-terminal Runtime extension without replacing the
+    /// worker's checkpoint, reader, live-inbox, or materialization wiring.
+    #[must_use]
+    pub fn with_terminal_observer(
+        mut self,
+        observer: Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>,
+    ) -> Self {
+        self.exec = self.exec.with_terminal_observer(observer);
+        self
+    }
+
     /// Install the session's selected executor before its first claim. The lock
     /// is read only long enough to clone the `Arc`; no executor call holds it.
     pub fn install_attempt_executor(&self, executor: Arc<dyn RunAttemptExecutor>) {

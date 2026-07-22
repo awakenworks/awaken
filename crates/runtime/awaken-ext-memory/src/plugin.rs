@@ -225,7 +225,7 @@ struct RecallHook {
 impl RecallHook {
     fn message(block: String) -> Vec<Message> {
         vec![Message::text(
-            MessageId("mem-recall".into()),
+            MessageId(crate::RECALL_MESSAGE_ID_PREFIX.into()),
             Role::System,
             block,
         )]
