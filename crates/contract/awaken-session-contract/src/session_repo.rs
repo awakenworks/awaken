@@ -12,12 +12,9 @@
 //! `{name, type, url}` values, never a credential — those are re-materialized from
 //! the vault at prepare time (G3).
 
-use std::collections::BTreeMap;
-use std::sync::Arc;
-
 use async_trait::async_trait;
-use awaken_tenancy::ScopeId;
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 use crate::SessionLifecycleFact;
 
@@ -121,147 +118,7 @@ pub trait ManagedSessionRepository: Send + Sync {
     }
 }
 
-// The in-memory reference backends (plain + scoped) live outward in
-// `awaken-session-store`, beside the durable sqlite/postgres siblings.
-
-// --- Tenant isolation: the ScopedRepo decorator (ADR-0051 D3) ---------------
-
-/// The scope-aware backing store — the infrastructure-facing half of the port.
-/// Every method carries the [`ScopeId`], so a concrete store persists it as one
-/// opaque `scope_id` column beside the serialized session and filters reads by it.
-/// The core never sees this trait; it holds the scope-free
-/// [`ManagedSessionRepository`], which [`ScopedSessionRepo`] implements by binding
-/// a scope.
-#[async_trait]
-pub trait ScopedSessionStore: Send + Sync {
-    /// Upsert `session` under `scope` (idempotent by `(scope, session_id)`).
-    async fn save_scoped(&self, scope: &ScopeId, session: PersistedSession);
-
-    async fn save_scoped_with_lifecycle(
-        &self,
-        scope: &ScopeId,
-        session: PersistedSession,
-        fact: SessionLifecycleFact,
-    );
-
-    async fn append_lifecycle_scoped(&self, scope: &ScopeId, fact: SessionLifecycleFact);
-
-    async fn archive_scoped_with_lifecycle(
-        &self,
-        scope: &ScopeId,
-        session_id: &str,
-        archived_at: &str,
-        fact: SessionLifecycleFact,
-    );
-
-    async fn delete_scoped_with_lifecycle(
-        &self,
-        scope: &ScopeId,
-        session_id: &str,
-        fact: SessionLifecycleFact,
-    );
-
-    async fn pending_lifecycle_scoped(&self, scope: &ScopeId) -> Vec<SessionLifecycleFact>;
-
-    async fn complete_lifecycle_scoped(&self, scope: &ScopeId, fact_id: &str);
-
-    /// The session for `session_id` **within `scope`** — a row owned by another
-    /// scope is invisible (the isolation fence), so this returns `None` for it.
-    async fn get_scoped(&self, scope: &ScopeId, session_id: &str) -> Option<PersistedSession>;
-
-    async fn pending_resource_sessions_scoped(&self, _scope: &ScopeId) -> Vec<PersistedSession> {
-        Vec::new()
-    }
-}
-
-/// The decorator that makes tenancy an edge aspect: it implements the scope-free
-/// [`ManagedSessionRepository`] the core holds by binding one [`ScopeId`] and
-/// delegating to a [`ScopedSessionStore`]. Constructed at the edge from the
-/// request's resolved scope, so the runtime cannot pass or read a scope — every
-/// write auto-stamps the bound scope and every read auto-filters by it, and there
-/// is no scope argument for a call site to forget.
-pub struct ScopedSessionRepo<S: ScopedSessionStore> {
-    inner: Arc<S>,
-    scope: ScopeId,
-}
-
-impl<S: ScopedSessionStore> ScopedSessionRepo<S> {
-    /// Bind `store` to `scope` for one tenant's requests.
-    pub fn new(store: Arc<S>, scope: ScopeId) -> Self {
-        Self {
-            inner: store,
-            scope,
-        }
-    }
-
-    /// The scope this repository is bound to.
-    #[must_use]
-    pub fn scope(&self) -> &ScopeId {
-        &self.scope
-    }
-}
-
-#[async_trait]
-impl<S: ScopedSessionStore> ManagedSessionRepository for ScopedSessionRepo<S> {
-    async fn save_owned(&self, _owner_scope: &str, session: PersistedSession) {
-        self.inner.save_scoped(&self.scope, session).await;
-    }
-
-    async fn save_owned_with_lifecycle(
-        &self,
-        _owner_scope: &str,
-        session: PersistedSession,
-        fact: SessionLifecycleFact,
-    ) {
-        self.inner
-            .save_scoped_with_lifecycle(&self.scope, session, fact)
-            .await;
-    }
-
-    async fn append_lifecycle(&self, fact: SessionLifecycleFact) {
-        self.inner.append_lifecycle_scoped(&self.scope, fact).await;
-    }
-
-    async fn archive_with_lifecycle(
-        &self,
-        session_id: &str,
-        archived_at: &str,
-        fact: SessionLifecycleFact,
-    ) {
-        self.inner
-            .archive_scoped_with_lifecycle(&self.scope, session_id, archived_at, fact)
-            .await;
-    }
-
-    async fn delete_with_lifecycle(&self, session_id: &str, fact: SessionLifecycleFact) {
-        self.inner
-            .delete_scoped_with_lifecycle(&self.scope, session_id, fact)
-            .await;
-    }
-
-    async fn pending_lifecycle(&self) -> Vec<SessionLifecycleFact> {
-        self.inner.pending_lifecycle_scoped(&self.scope).await
-    }
-
-    async fn complete_lifecycle(&self, fact_id: &str) {
-        self.inner
-            .complete_lifecycle_scoped(&self.scope, fact_id)
-            .await;
-    }
-
-    async fn get(&self, session_id: &str) -> Option<PersistedSession> {
-        self.inner.get_scoped(&self.scope, session_id).await
-    }
-
-    async fn pending_resource_sessions(&self) -> Vec<ScopedPersistedSession> {
-        self.inner
-            .pending_resource_sessions_scoped(&self.scope)
-            .await
-            .into_iter()
-            .map(|session| ScopedPersistedSession {
-                workspace_id: self.scope.to_string(),
-                session,
-            })
-            .collect()
-    }
-}
+// In-memory and durable adapters live outward in `awaken-session-store`.
+// Workspace ownership is persisted atomically beside each row through
+// `save_owned*`; authorization scope decorators do not belong in this resource
+// persistence port.

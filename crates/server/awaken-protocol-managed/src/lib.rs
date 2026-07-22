@@ -68,9 +68,9 @@ pub use awaken_session_contract::{
     MemoryExtractionMutation, MemoryExtractionReceipt, MemoryExtractionRepository,
     MemoryExtractionStatus, MemoryExtractorSnapshot, MemoryMutationReceipt, PersistedSession,
     PutMemoryExtractionOutcome, ResolvedInput, ResolvedInputSource, ResolvedSessionResources,
-    ResolvedSkillBinding, ScopedSessionRepo, ScopedSessionStore, resource_plane,
+    ResolvedSkillBinding, resource_plane,
 };
-pub use awaken_session_store::{InMemoryScopedSessionStore, InMemorySessionRepository};
+pub use awaken_session_store::InMemorySessionRepository;
 pub use state::{
     AgentCapabilities, BuiltinTool, CustomTool, DelegatedRun, LiveInboxEntry, LiveInboxError,
     LiveInboxSnapshot, ManagedState, McpServerBinding, OutcomeIteration, OutcomeReport, Pending,

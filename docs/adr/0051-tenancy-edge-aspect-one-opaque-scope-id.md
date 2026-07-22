@@ -1,7 +1,17 @@
 # ADR-0051: Tenancy is an Edge Aspect — Core Persistence Carries One Opaque `scope_id`, Resolved at Ingress, Enforced by a Scoped Repository
 
-- Status: Proposed
+- Status: Superseded
+- Superseded by:
+  [ADR-0063](0063-resource-input-identity-configuration-pinning-and-lifecycle.md)
 - Date: 2026-07-10
+
+> Supersession note (2026-07-22): the proposed generic `ScopedSessionStore` /
+> `ScopedRepo` implementation was never selected by a production composition and
+> created a second Session persistence model. Production persists the trusted
+> Workspace coordinate atomically beside the Session row through
+> `ManagedSessionRepository::save_owned*`; the ingress PEP performs authorization,
+> while resource persistence enforces ownership and routing only. ADR-0063 D6 and
+> G39 are authoritative for the resource/authorization-plane boundary.
 - Refines / partially supersedes:
   [ADR-0048](0048-iam-host-adoption-org-workspace-path-alignment-and-a2a-carve-out.md)'s
   **2026-07-10 amendment** (D6 "the core session record is tenancy-agnostic"). This
