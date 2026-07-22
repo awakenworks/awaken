@@ -26,8 +26,8 @@
 //! **Bootstrap scope.** The platform registers exactly `Org -> Workspace` in
 //! the scope graph and binds the bootstrap principal at that Org. The Org is a
 //! hidden default in single-machine mode (or an explicit platform coordinate),
-//! while Workspace remains the finest Runtime authorization scope. A project
-//! id may appear in resource routes but never becomes an IAM scope.
+//! while Workspace remains the finest Runtime authorization scope. Awaken has
+//! no Project tenancy tier or project-scoped resource routes.
 //!
 //! **Token management surface.** `POST /v1/config/iam/tokens` mints a
 //! workspace token (the cleartext is returned EXACTLY once, alongside the
@@ -1409,18 +1409,6 @@ fn action_for(method: &Method, path: &str) -> Option<RouteAuthz> {
         } else {
             WORKSPACE_WRITE
         }),
-        // -- projects (consumption-side addressing + per-project agent bindings) --
-        ["v1", "config", "projects"] if read => scoped(WORKSPACE_READ),
-        ["v1", "config", "projects", _] => scoped(if read {
-            WORKSPACE_READ
-        } else {
-            WORKSPACE_WRITE
-        }),
-        ["v1", "config", "projects", _, "agents", _, "mcp"] => scoped(if read {
-            WORKSPACE_READ
-        } else {
-            WORKSPACE_WRITE
-        }),
         // -- the Managed vault front door --
         ["v1", "vaults"] => scoped(if read { APIKEY_READ } else { APIKEY_WRITE }),
         ["v1", "vaults", _] => scoped(if read { APIKEY_READ } else { APIKEY_WRITE }),
@@ -1532,8 +1520,7 @@ fn resource_action_for(method: &Method, path: &str) -> Option<&'static str> {
 }
 
 /// Resolve the concrete IAM target from one centrally classified resource
-/// family. Runtime authorization intentionally stops at Workspace; project ids
-/// remain resource data and never become an IAM scope.
+/// family. Runtime authorization intentionally stops at Workspace.
 fn target_scope(class: ScopeClass, workspace: &str, _path: &str) -> Option<ScopeRef> {
     match class {
         ScopeClass::Workspace => Some(ScopeRef::Workspace {
