@@ -164,34 +164,6 @@ impl std::error::Error for MemoryExtractionError {}
 
 impl MemoryExtractionIntent {
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        intent_id: impl Into<String>,
-        idempotency_key: impl Into<String>,
-        workspace_id: impl Into<String>,
-        session_id: impl Into<String>,
-        terminal_commit_id: impl Into<String>,
-        memory_store_id: impl Into<String>,
-        memory_config_version: u64,
-        transcript: Vec<Message>,
-        extractor: MemoryExtractorSnapshot,
-    ) -> Result<Self, MemoryExtractionError> {
-        let transcript_end = transcript.len();
-        Self::new_range(
-            intent_id,
-            idempotency_key,
-            workspace_id,
-            session_id,
-            terminal_commit_id,
-            memory_store_id,
-            memory_config_version,
-            0,
-            transcript_end,
-            transcript,
-            extractor,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
     pub fn new_range(
         intent_id: impl Into<String>,
         idempotency_key: impl Into<String>,
@@ -973,7 +945,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     fn intent() -> MemoryExtractionIntent {
-        MemoryExtractionIntent::new(
+        MemoryExtractionIntent::new_range(
             "extract-1",
             "run-7:terminal-3",
             "ws-a",
@@ -981,6 +953,8 @@ mod tests {
             "terminal-3",
             "memory-1",
             2,
+            0,
+            1,
             vec![Message::text(Id("m1".into()), Role::User, "remember me")],
             MemoryExtractorSnapshot {
                 agent_id: "memory-agent".into(),
