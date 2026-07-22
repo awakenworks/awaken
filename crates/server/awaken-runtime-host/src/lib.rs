@@ -158,7 +158,10 @@ pub fn local_managed_session_repository(
     storage_dir: Option<&std::path::Path>,
 ) -> Arc<dyn awaken_protocol_managed::ManagedSessionRepository> {
     let Some(dir) = storage_dir else {
-        return Arc::new(awaken_session_store::InMemorySessionRepository::default());
+        return Arc::new(
+            SqliteManagedSessionRepository::open_in_memory()
+                .expect("open ephemeral Managed Session repository"),
+        );
     };
     std::fs::create_dir_all(dir).expect("create runtime storage directory");
     let path = dir.join("sessions.db");
