@@ -93,6 +93,37 @@ async function verifyBudgetOneAcknowledgment(baseUrl) {
   pass('max_iterations=1 -> one Grade and one ungraded acknowledgment');
 }
 
+async function verifyDefinitionBoundaries(baseUrl) {
+  const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
+  const invalid = [
+    { description: '', rubric: 'FINAL', max_iterations: 1 },
+    { description: 'produce the final deliverable', rubric: '', max_iterations: 1 },
+    { description: 'produce the final deliverable', rubric: 'FINAL', max_iterations: 0 },
+    { description: 'produce the final deliverable', rubric: 'FINAL', max_iterations: 21 },
+  ];
+  for (const candidate of invalid) {
+    const session = await client.beta.sessions.create({
+      agent: 'assistant',
+      environment_id: 'env_local',
+      betas: BETAS,
+    });
+    await assert.rejects(
+      client.beta.sessions.events.send(session.id, {
+        events: [{
+          type: 'user.define_outcome',
+          description: candidate.description,
+          rubric: { type: 'text', content: candidate.rubric },
+          max_iterations: candidate.max_iterations,
+        }],
+        betas: BETAS,
+      }),
+      (error) => error?.status === 400,
+      `invalid Outcome definition must fail at the API boundary: ${JSON.stringify(candidate)}`,
+    );
+  }
+  pass('definition partitions reject blank description/rubric and budgets outside 1..=20');
+}
+
 async function runJudge(judge, port) {
   await withScenarioServer(
     'outcome-matrix',
@@ -101,7 +132,10 @@ async function runJudge(judge, port) {
     async (baseUrl) => {
       await verifyPair(baseUrl, 'native', judge);
       await verifyPair(baseUrl, 'acp', judge);
-      if (judge === 'acp') await verifyBudgetOneAcknowledgment(baseUrl);
+      if (judge === 'acp') {
+        await verifyBudgetOneAcknowledgment(baseUrl);
+        await verifyDefinitionBoundaries(baseUrl);
+      }
     },
     { AWAKEN_OUTCOME_JUDGE_RUNTIME: judge },
   );

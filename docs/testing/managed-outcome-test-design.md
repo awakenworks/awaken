@@ -17,6 +17,7 @@ the oracle; model intent is not inferred from conversational prose.
 | decision table | needs revision then satisfied | `needs_revision`, then `satisfied` | `managed_outcome_e2e.mjs` |
 | decision table | every Grade remains unmet | last result `max_iterations_reached` | `managed_outcome_e2e.mjs` |
 | boundary value | `max_iterations = 1` | exactly one Grade, then one ungraded acknowledgment | `managed_outcome_runtime_matrix_e2e.ts` |
+| equivalence partition + boundary value | blank description/rubric; `max_iterations` at `0` and `21` | request rejected with 400 before any Worker/Judge Run | `managed_outcome_runtime_matrix_e2e.ts` |
 | compatibility matrix | Worker `{Native, ACP}` × Judge `{Native, ACP}` | all four pairs have identical lifecycle semantics | `managed_outcome_runtime_matrix_e2e.ts` |
 | error guessing | Judge tools configured | rejected by neutral capability narrowing before Judge execution | Runtime/ACP isolation tests |
 | syntax/negative partition | prose-wrapped, missing, empty, unknown-field Grade JSON | strict parser rejects | `awaken-ext-goal` and Host tests |
