@@ -1,7 +1,16 @@
 # ADR-0056: Sandbox Reuse as Two Orthogonal Volumes — Cache-Volume Warmth Is Product-Plane-Owned, Isolation-Instance Reuse Is Worker-Plane-Owned; Keep Decisions Pure, Orchestration Separate
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-15
+- Implemented: 2026-07-22 — `CacheVolume` remains the product-owned opaque
+  storage seam; `SessionEnvironmentProvider` is the production worker-plane
+  owner for Workdir, namespace, Docker, Podman, and Kubernetes environments;
+  `WarmContainerPool` supplies unused, shape-fenced container capacity; durable
+  environment bindings support restart adoption and competing-adopter fencing;
+  Docker/Podman crash GC and Kubernetes owner references close substrate-specific
+  reclamation. Native, ACP, and delegated child attempts use the same
+  Session-owned environment. The generic `SandboxManager` remains the reusable
+  port-level lease/reconciliation component; it is not a second Session owner.
 - Builds on: the `pc::Sandbox`/`SandboxProvider`/`SandboxHandle` port and the
   never-downgrade `select_provider` / fail-closed `prepare_environment` gates
   (`awaken-provisioning-contract::sandbox`); the already-written-but-uncalled
