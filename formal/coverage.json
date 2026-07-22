@@ -156,7 +156,7 @@
     {"id":"remote_attempt.terminal_commit_retires_task_reference","formalizable":true,"status":"machine_linked","evidence":["formal/tla/RemoteAttempt.tla","crates/server/awaken-run-executor-a2a/src/lib.rs"]},
     {"id":"outcome.grade_transition_obeys_budget","formalizable":true,"status":"machine_linked","evidence":["formal/tla/OutcomeLifecycle.tla","crates/runtime/awaken-ext-goal/src/outcome.rs"],"proof_harnesses":["applying_a_grade_obeys_decision_and_budget"]},
     {"id":"outcome.terminal_absorption","formalizable":true,"status":"machine_linked","evidence":["formal/tla/OutcomeLifecycle.tla","crates/runtime/awaken-ext-goal/src/outcome.rs"],"proof_harnesses":["terminal_outcomes_are_absorbing"]},
-    {"id":"outcome.stable_run_identity_and_exactly_once_ack","formalizable":true,"status":"machine_linked","evidence":["formal/tla/OutcomeLifecycle.tla","formal/tla/OutcomeLifecycle.cfg","crates/server/awaken-runtime-host/src/outcome_state.rs","crates/server/awaken-runtime-host/src/outcome_controller.rs"]},
+    {"id":"outcome.stable_run_identity_and_exactly_once_ack","formalizable":true,"status":"machine_linked","evidence":["formal/tla/OutcomeLifecycle.tla","formal/tla/OutcomeLifecycle.cfg","crates/runtime/awaken-ext-goal/src/state.rs","crates/runtime/awaken-ext-goal/src/controller.rs","crates/server/awaken-runtime-host/tests/outcome_state.rs"]},
     {"id":"external.eventual_network_delivery","formalizable":false,"status":"external","evidence":["formal/README.md"]},
     {"id":"external.exactly_once_side_effects","formalizable":false,"status":"external","evidence":["formal/README.md"]},
     {"id":"external.database_engine_correctness","formalizable":false,"status":"external","evidence":["formal/README.md"]},

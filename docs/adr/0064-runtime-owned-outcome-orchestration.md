@@ -178,16 +178,20 @@ transaction between Worker and Grader Threads is required.
 
 ### D7: Grading is direct ordinary Run execution
 
-The `Grader` application port accepts `GradingInput` and returns:
+The `Grader` application port accepts the immutable Judge
+`ExecutableAgentSnapshot` stored in the Outcome binding plus `GradingInput`, and
+returns:
 
 ```text
 GradeDecision = Satisfied | NeedsRevision | Failed
 Grade = decision + explanation
 ```
 
-The Agent-backed implementation executes its pinned Judge snapshot on the
-stable fresh Grader Thread through the ordinary Run boundary. There are no
-Native/ACP-specific Graders and no Judge `RawTool` bridge.
+The controller always supplies the persisted snapshot rather than current
+configuration. The Agent-backed implementation executes that Judge snapshot on
+the stable fresh Grader Thread through the ordinary Run boundary. There are no
+Native/ACP-specific Graders, configuration fallback Graders, or Judge `RawTool`
+bridge.
 
 `GradingInput` contains description, rubric, committed transcript, evaluated
 message range, Worker state, and prepared `DeliverableEvidence`. The Judge has no
