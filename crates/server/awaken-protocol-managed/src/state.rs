@@ -24,7 +24,7 @@ use crate::types::{
     SessionCreateParams, SessionError, SessionStats, StopReason, StreamFrame, Usage,
 };
 use awaken_session_contract::{ManagedSessionRepository, PersistedSession, SessionLifecycleFact};
-use awaken_session_store::InMemorySessionRepository;
+use awaken_session_store::SqliteManagedSessionRepository;
 
 /// The seeded owner scope a bare/self-hosted session is created under when the
 /// edge resolved no workspace (ADR-0051 / ADR-0048 D2 "seeded, not absent"). It
@@ -200,7 +200,10 @@ impl ManagedState {
             sessions: Mutex::new(HashMap::new()),
             resource_mutations: tokio::sync::Mutex::new(()),
             owners: Mutex::new(HashMap::new()),
-            sessions_repo: Arc::new(InMemorySessionRepository::default()),
+            sessions_repo: Arc::new(
+                SqliteManagedSessionRepository::open_in_memory()
+                    .expect("open ephemeral managed Session repository"),
+            ),
             lifecycle_sink: None,
             session_seq: AtomicU64::new(0),
             event_seq: Arc::new(AtomicU64::new(0)),
@@ -333,6 +336,11 @@ mod tests {
     use async_trait::async_trait;
     use awaken_agent_contract::agent::message::Message;
     use std::collections::BTreeMap;
+
+    fn ephemeral_session_repo() -> SqliteManagedSessionRepository {
+        SqliteManagedSessionRepository::open_in_memory()
+            .expect("open ephemeral managed Session repository")
+    }
 
     /// A runtime that reports a non-empty committed transcript, so a session can
     /// rehydrate. Every operational method is unused by these tests.
@@ -521,7 +529,7 @@ mod tests {
 
     #[tokio::test]
     async fn archive_persists_release_before_and_after_sandbox_teardown() {
-        let repo = Arc::new(InMemorySessionRepository::default());
+        let repo = Arc::new(ephemeral_session_repo());
         let state =
             ManagedState::new(EndSessionRecorder::default()).with_session_repo(repo.clone());
         let request = serde_json::from_value(serde_json::json!({
@@ -606,7 +614,7 @@ mod tests {
     /// error must never leave a "deleted" session alive.
     #[tokio::test]
     async fn delete_is_best_effort_when_sandbox_teardown_fails() {
-        let repo = Arc::new(InMemorySessionRepository::default());
+        let repo = Arc::new(ephemeral_session_repo());
         let state = ManagedState::new(EndSessionFailer).with_session_repo(repo.clone());
         let request = serde_json::from_value(serde_json::json!({
             "agent": "assistant",
@@ -714,8 +722,7 @@ mod tests {
     async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
         // A session created in one process is gone from a fresh process's cache,
         // but the shared repo + committed transcript restore it faithfully.
-        let repo: Arc<dyn ManagedSessionRepository> =
-            Arc::new(InMemorySessionRepository::default());
+        let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
         repo.save(sample_persisted("sesn_1")).await;
 
         // Fresh state (empty cache) sharing the durable repo — simulates a restart.
@@ -758,8 +765,7 @@ mod tests {
 
     #[tokio::test]
     async fn ensure_session_retries_and_commits_a_crash_interrupted_activation() {
-        let repo: Arc<dyn ManagedSessionRepository> =
-            Arc::new(InMemorySessionRepository::default());
+        let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
         let mut pending = sample_persisted("sesn_pending");
         let desired = pending.resources.active.clone();
         pending.resources = Default::default();
@@ -792,8 +798,7 @@ mod tests {
 
     #[tokio::test]
     async fn resource_reclaimer_finishes_terminal_release_after_restart() {
-        let repo: Arc<dyn ManagedSessionRepository> =
-            Arc::new(InMemorySessionRepository::default());
+        let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
         let mut deleted = sample_persisted("sesn_deleted");
         deleted.status = "deleted".into();
         deleted.resources.adopt_legacy_active("sesn_deleted");
@@ -813,8 +818,7 @@ mod tests {
 
     #[tokio::test]
     async fn live_input_mutations_survive_restart_without_changing_resource_identity() {
-        let repo: Arc<dyn ManagedSessionRepository> =
-            Arc::new(InMemorySessionRepository::default());
+        let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
         let catalog = Arc::new(awaken_config_resolver::InMemoryResourceCatalog::new());
         let state = ManagedState::new(RehydrateFake::default())
             .with_session_repo(repo.clone())
