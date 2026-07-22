@@ -1269,6 +1269,76 @@ pub fn build_statemachine_rich_router() -> Router {
                     "emit": { "target": "system", "content": "second glob advanced", "cooldown_turns": 0 }
                 }
             ]
+        }, {
+            "name": "lifecycle",
+            "scope": "run",
+            "key": "",
+            "initial": "tracking",
+            "transitions": [{
+                "on": { "event": "step.started" },
+                "from": "tracking",
+                "to": "tracking",
+                "update": {
+                    "capture": { "last_event": "{event.name}" },
+                    "increment": ["started"]
+                }
+            }, {
+                "on": { "event": "step.before_inference" },
+                "from": "tracking",
+                "to": "tracking",
+                "counters": { "started": { "gte": 1 } },
+                "emit": {
+                    "target": "context",
+                    "content": "lifecycle reminder {instance.counters.started}",
+                    "cooldown_turns": 0
+                },
+                "update": { "reset": ["started"] }
+            }, {
+                "on": { "event": "step.after_inference" },
+                "from": "tracking",
+                "to": "tracking",
+                "update": { "increment": ["inferences"] }
+            }, {
+                "on": { "event": "step.ended" },
+                "from": "tracking",
+                "to": "tracking",
+                "update": { "capture": { "last_event": "{event.name}" } }
+            }]
+        }, {
+            "name": "warning",
+            "key": "${pattern}",
+            "initial": "locked",
+            "transitions": [{
+                "on": "glob(pattern ~ \"*\")",
+                "from": "unlocked",
+                "to": "done",
+                "on_violation": {
+                    "action": "warn",
+                    "reason": "glob warning for {pattern}"
+                }
+            }]
+        }, {
+            "name": "result_fallback",
+            "initial": "start",
+            "on_unmatched": "fallback",
+            "transitions": [{
+                "on": "glob(pattern ~ \"*\")",
+                "from": ["start", "fallback"],
+                "to": "error",
+                "when": "error"
+            }]
+        }, {
+            "name": "audit",
+            "initial": "tracking",
+            "transitions": [{
+                "on": "glob(pattern ~ \"*\")",
+                "from": "tracking",
+                "to": "tracking",
+                "update": {
+                    "capture": { "last_pattern": "{pattern}" },
+                    "increment": ["calls"]
+                }
+            }]
         }]
     });
     let (model, model_ref) = scenario_model(Arc::new(StateMachineModel), "statemachine-rich");
