@@ -19,7 +19,7 @@ fn managed_tool_id(value: &Value) -> Option<String> {
 }
 
 /// Parse a managed-shaped Agent object into the domain compile input.
-pub(crate) fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig, String> {
+pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig, String> {
     let string = |key: &str| body.get(key).and_then(Value::as_str).map(str::to_string);
     let model_ref = match body.get("model") {
         Some(Value::String(id)) => id.clone(),
@@ -86,6 +86,7 @@ pub(crate) fn agent_config_from_managed(id: String, body: &Value) -> Result<Agen
         mcp_servers: array("mcp_servers"),
         skills: array("skills"),
         multiagent: body.get("multiagent").filter(|v| !v.is_null()).cloned(),
+        archived_at: string("archived_at"),
         tool_overrides,
         recovery_policies: body
             .get("recovery_policies")
@@ -102,7 +103,7 @@ pub(crate) fn agent_config_from_managed(id: String, body: &Value) -> Result<Agen
 }
 
 /// Project a stored config into the managed-shaped object and its live state.
-pub(crate) fn managed_from_agent_config(config: &AgentConfig, published: bool) -> Value {
+pub fn managed_from_agent_config(config: &AgentConfig, published: bool) -> Value {
     json!({
         "id": config.id,
         "type": "agent",
@@ -116,6 +117,7 @@ pub(crate) fn managed_from_agent_config(config: &AgentConfig, published: bool) -
         "mcp_servers": config.mcp_servers,
         "skills": config.skills,
         "multiagent": config.multiagent,
+        "archived_at": config.archived_at,
         "max_steps": config.max_steps,
         "plugins": config.plugin_ids,
         "plugin_config": config.plugin_config,

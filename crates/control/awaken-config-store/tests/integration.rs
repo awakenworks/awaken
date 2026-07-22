@@ -249,6 +249,7 @@ async fn config_and_runtime_tables_coexist_in_one_database() {
 
     for expected in [
         "config_agent",
+        "config_agent_revision",
         "config_publication",
         "config_schema_migrations",
         "runtime_commit",
@@ -402,6 +403,37 @@ async fn a_same_scope_re_put_updates_the_config_data() {
         .expect("get")
         .expect("row");
     assert_eq!(got.instructions, "v2");
+}
+
+#[tokio::test]
+async fn scoped_migration_captures_immutable_agent_revisions() {
+    let store = SqliteConfigStore::open_in_memory().expect("store");
+    let workspace = ScopeId::from("ws_a");
+    store
+        .put_config_scoped(&workspace, &agent_with("x", "v1"))
+        .await
+        .expect("put v1");
+    store
+        .put_config_scoped(&workspace, &agent_with("x", "v2"))
+        .await
+        .expect("put v2");
+
+    let revisions = store
+        .list_config_revisions_scoped(&workspace, "x")
+        .await
+        .expect("history");
+    assert_eq!(revisions.len(), 2);
+    assert_eq!(revisions[0].revision, 1);
+    assert_eq!(revisions[0].config.instructions, "v1");
+    assert_eq!(revisions[1].revision, 2);
+    assert_eq!(revisions[1].config.instructions, "v2");
+    assert!(
+        store
+            .list_config_revisions_scoped(&ScopeId::from("ws_b"), "x")
+            .await
+            .expect("foreign history")
+            .is_empty()
+    );
 }
 
 #[tokio::test]

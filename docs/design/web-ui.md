@@ -211,7 +211,7 @@ Token 工程:`design-tokens/*.tokens.json`(W3C)→ build 脚本 → 三层 CSS �
 9. MCP status/restart、A2A servers CRUD、agent-preview 端点(对草稿沙箱)、admin assistant 面。
 
 **managed 资源全面 project 化(新架构决定 — 对齐 Anthropic wire)**:
-9b. ~~Agent/Environment/Memory store/Deployment/Skill 上 Managed Agents wire~~ **SDK 面已由 p2 落地**(见上 rebase 实况);剩:①每种资源加 durable `project_id` 并经 `/projects/{pid}/v1/…` 寻址(仿 session graft,现只有 session 做了);②统一挂 `/projects` ingress(见 10);③agent config 从 admin plane 收敛到 managed agent 注册表(目前二者并存——`/v1/config/agents` 的 publish/版本化 vs p2 的 `/v1/agents` 注册表);④agent 内联 `mcp_servers:[{type,name,url}]` 已是 wire 形状(方案 B),前端已用内联模板。前端各资源页(Environments/Memory/Deployments/Skills)可从门控占位切到真实 SDK 面(P4)。
+9b. ~~Agent/Environment/Memory store/Deployment/Skill 上 Managed Agents wire~~ **SDK 面已由 p2 落地**(见上 rebase 实况);Agent config 已收敛: `/v1/agents` 与 `/v1/config/agents` 均为同一 Workspace-scoped ConfigPlane aggregate 的适配器，版本历史由 Scoped Migration 持久化，不再存在生产内存 registry/owner 索引/投影回退。剩:①每种资源加 durable `project_id` 并经 `/projects/{pid}/v1/…` 寻址(仿 session graft,现只有 session 做了);②统一挂 `/projects` ingress(见 10);③agent 内联 `mcp_servers:[{type,name,url}]` 已是 wire 形状(方案 B),前端已用内联模板。前端各资源页(Environments/Memory/Deployments/Skills)可从门控占位切到真实 SDK 面(P4)。
 9c. **凭证双轴收敛(方案 B,兼容优先)**:managed **wire 不变**(`mcp_servers:{type,name,url}` 已与 Anthropic 一致);默认运行凭证走 Vault(按 url,`VaultState` 已就位)。`McpServerDef.credential_binding` **保留、标弃用、默认 `none`——不移除**(向后兼容 + 兜可选目录集中治理);`CredentialSource/Pool` 主服务推理、兼顾该可选 MCP 路径。改动面因此收窄为:resolver 默认优先 Vault + UI/文档弃用标注,不动 wire、不破 config schema。
 
 **project 容器统一权限(已定的架构决定)**:

@@ -984,6 +984,7 @@ async fn management_router_over(
     let resource_iam = iam.clone();
     let resource_remote_iam = remote_iam.clone();
     let (mgmt, webhook_sink) = awaken_control::control_router(awaken_control::ControlRouterInput {
+        platform_workspace: platform_workspace.clone(),
         catalog,
         credentials: credentials.clone(),
         secrets: secrets.clone(),
@@ -997,7 +998,6 @@ async fn management_router_over(
         env_state: env_state.clone(),
         deployment_state: deployment_state.clone(),
         plane,
-        config_service: config_service.clone(),
         global_tools: global,
         org_id: Some(local_org_id()),
         iam,

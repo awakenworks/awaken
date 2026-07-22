@@ -1,14 +1,9 @@
-//! The Managed **agent registry** (`/v1/agents`), the official `@anthropic-ai/sdk`
-//! `beta.agents.*` client's surface: create / retrieve / update / list / archive
-//! plus the version history (`/v1/agents/:id/versions`). An agent is a reusable,
-//! versioned configuration (model + system + tools + mcp_servers + skills +
-//! multiagent topology) a session instantiates by id.
+//! Managed Agent HTTP adapter (`/v1/agents`).
 //!
-//! Distinct from the workspace **config plane** (`/v1/config/agents/*`), which is
-//! the admin authoring surface; this is the public account-level registry the SDK
-//! addresses. State is a neutral in-memory store (one process): a stable
-//! `agent_…` id, monotonic `version` with optimistic-concurrency updates, and a
-//! full snapshot appended to history on every mutation.
+//! The router is deliberately storage-neutral. Production injects the durable
+//! configuration-plane adapter; the in-memory implementation below is only a
+//! reference adapter for protocol tests. Workspace partitioning is part of the
+//! repository key, so no process-local owner side index can bypass it.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -17,20 +12,82 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
-use serde_json::{Value, json};
+use serde_json::Value;
 
-use crate::routes::ManagedJson;
-use crate::routes::WorkspaceScope;
+use crate::routes::{ManagedJson, WorkspaceScope};
 use crate::state::DEFAULT_SCOPE;
 use crate::types::agent::{Agent, AgentCreateParams, AgentUpdateParams};
 use crate::types::{ErrorResponse, ModelConfig, Page, PageQuery, paginate};
 
 const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
 
-/// A stored agent configuration and its version history.
+// Compatibility re-exports for session consumers. Agent registry persistence no
+// longer uses this read-only projection port.
+pub use awaken_session_contract::{AgentConfigSource, AgentConfigView, AgentMcpServerView};
+
+/// Storage-neutral failures exposed by the Managed Agent repository port.
+#[derive(Debug, thiserror::Error)]
+pub enum ManagedAgentError {
+    #[error("agent not found")]
+    NotFound,
+    #[error("{0}")]
+    Conflict(String),
+    #[error("{0}")]
+    Invalid(String),
+    #[error("{0}")]
+    Storage(String),
+}
+
+/// Durable authoring port for the SDK-facing Agent aggregate.
+///
+/// `workspace_id` is trusted routing context supplied by the edge. It is an
+/// intrinsic repository partition, not an authorization policy or principal.
+#[async_trait::async_trait]
+pub trait ManagedAgentRepository: Send + Sync {
+    async fn create(
+        &self,
+        workspace_id: &str,
+        params: AgentCreateParams,
+    ) -> Result<Agent, ManagedAgentError>;
+    async fn retrieve(&self, workspace_id: &str, id: &str) -> Result<Agent, ManagedAgentError>;
+    async fn list(&self, workspace_id: &str) -> Result<Vec<Agent>, ManagedAgentError>;
+    async fn update(
+        &self,
+        workspace_id: &str,
+        id: &str,
+        params: AgentUpdateParams,
+    ) -> Result<Agent, ManagedAgentError>;
+    async fn archive(&self, workspace_id: &str, id: &str) -> Result<Agent, ManagedAgentError>;
+    async fn versions(&self, workspace_id: &str, id: &str)
+    -> Result<Vec<Agent>, ManagedAgentError>;
+}
+
+/// Router state containing exactly one Agent repository implementation.
+pub struct AgentRegistryState {
+    repository: Arc<dyn ManagedAgentRepository>,
+}
+
+impl AgentRegistryState {
+    /// Reference in-memory adapter for protocol-only embeddings and tests.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::from_repository(Arc::new(InMemoryManagedAgentRepository::default()))
+    }
+
+    #[must_use]
+    pub fn from_repository(repository: Arc<dyn ManagedAgentRepository>) -> Self {
+        Self { repository }
+    }
+}
+
+impl Default for AgentRegistryState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Clone)]
 struct Record {
     name: String,
@@ -44,7 +101,6 @@ struct Record {
     multiagent: Option<Value>,
     version: u64,
     archived_at: Option<String>,
-    /// The projected agent at each past version (index 0 == v1), for `versions.list`.
     history: Vec<Agent>,
 }
 
@@ -70,153 +126,178 @@ impl Record {
     }
 }
 
-// The agent-config port + its neutral view now live in `awaken-session-contract`
-// (a contract/ leaf), re-exported here so existing `awaken_protocol_managed::…` paths
-// keep resolving until consumers flip to the contract directly.
-pub use awaken_session_contract::{AgentConfigSource, AgentConfigView, AgentMcpServerView};
-
-/// The agent-registry state.
+/// Minimal reference adapter. The workspace is embedded in the aggregate key;
+/// there is no separate owner map whose loss could widen access.
 #[derive(Default)]
-pub struct AgentRegistryState {
-    inner: Mutex<BTreeMap<String, Record>>,
-    /// The aspect-layer agent→owner index (ADR-0051): the scope that created each
-    /// registry agent, so the edge ownership guard fences a cross-tenant request
-    /// and `list` shows only the caller's agents. Registry-created agents only;
-    /// config-plane projections carry their own (scoped) config-store truth.
-    owners: Mutex<HashMap<String, String>>,
-    seq: AtomicU64,
-    /// When wired, `/v1/agents` reads projections from the config plane: an agent
-    /// published there is retrievable here even if it was never created via this
-    /// registry, and the config is authoritative for model/system/tools.
-    config_source: Option<Arc<dyn AgentConfigSource>>,
+pub struct InMemoryManagedAgentRepository {
+    records: Mutex<HashMap<(String, String), Record>>,
+    sequence: AtomicU64,
 }
 
-impl AgentRegistryState {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+#[async_trait::async_trait]
+impl ManagedAgentRepository for InMemoryManagedAgentRepository {
+    async fn create(
+        &self,
+        workspace_id: &str,
+        params: AgentCreateParams,
+    ) -> Result<Agent, ManagedAgentError> {
+        let n = self.sequence.fetch_add(1, Ordering::SeqCst);
+        let id = format!("agent_{n:016}");
+        let mut record = Record {
+            name: params.name,
+            description: params.description,
+            model: params.model.into_config(),
+            system: params.system,
+            metadata: params.metadata,
+            mcp_servers: params.mcp_servers,
+            skills: params.skills,
+            tools: params.tools,
+            multiagent: params.multiagent.filter(|value| !value.is_null()),
+            version: 1,
+            archived_at: None,
+            history: Vec::new(),
+        };
+        let agent = record.project(&id);
+        record.history.push(agent.clone());
+        self.records
+            .lock()
+            .expect("managed Agent repository")
+            .insert((workspace_id.to_string(), id), record);
+        Ok(agent)
     }
 
-    /// Wire the config-plane projection source (see [`AgentConfigSource`]).
-    #[must_use]
-    pub fn with_config_source(mut self, source: Arc<dyn AgentConfigSource>) -> Self {
-        self.config_source = Some(source);
-        self
+    async fn retrieve(&self, workspace_id: &str, id: &str) -> Result<Agent, ManagedAgentError> {
+        self.records
+            .lock()
+            .expect("managed Agent repository")
+            .get(&(workspace_id.to_string(), id.to_string()))
+            .map(|record| record.project(id))
+            .ok_or(ManagedAgentError::NotFound)
     }
 
-    /// The owner scope of registry agent `id`, if this registry created it — the
-    /// aspect-layer lookup the edge ownership guard consults (ADR-0051).
-    #[must_use]
-    pub fn owner_scope(&self, id: &str) -> Option<String> {
-        self.owners.lock().unwrap().get(id).cloned()
+    async fn list(&self, workspace_id: &str) -> Result<Vec<Agent>, ManagedAgentError> {
+        let records = self.records.lock().expect("managed Agent repository");
+        let mut agents: Vec<_> = records
+            .iter()
+            .filter(|((workspace, _), _)| workspace == workspace_id)
+            .map(|((_, id), record)| record.project(id))
+            .collect();
+        agents.sort_by(|left, right| left.id.cmp(&right.id));
+        Ok(agents)
     }
-}
 
-/// The request's resolved scope from the edge-stamped [`WorkspaceScope`], or the
-/// seeded default when the deployment resolved none (ADR-0051).
-fn request_scope(scope: &Option<Extension<WorkspaceScope>>) -> String {
-    scope
-        .as_ref()
-        .map_or_else(|| DEFAULT_SCOPE.to_string(), |w| w.0.0.clone())
-}
-
-/// The tenant ownership guard for `/v1/agents/{id}` (ADR-0051): a request whose
-/// resolved scope does not own the addressed registry agent is answered 404 (never
-/// 403 — no existence disclosure). The collection routes (`/v1/agents`) and ids
-/// unknown to the registry (config-plane projections) pass through.
-pub async fn agent_scope_guard(
-    State(state): State<Arc<AgentRegistryState>>,
-    request: axum::extract::Request,
-    next: axum::middleware::Next,
-) -> axum::response::Response {
-    if let Some(id) = agent_id_from_path(request.uri().path()) {
-        let request_scope = request
-            .extensions()
-            .get::<WorkspaceScope>()
-            .map(|w| w.0.clone())
-            .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
-        if let Some(owner) = state.owner_scope(&id)
-            && owner != request_scope
-        {
-            return not_found().into_response();
+    async fn update(
+        &self,
+        workspace_id: &str,
+        id: &str,
+        params: AgentUpdateParams,
+    ) -> Result<Agent, ManagedAgentError> {
+        let mut records = self.records.lock().expect("managed Agent repository");
+        let record = records
+            .get_mut(&(workspace_id.to_string(), id.to_string()))
+            .ok_or(ManagedAgentError::NotFound)?;
+        if params.version != record.version {
+            return Err(ManagedAgentError::Conflict(format!(
+                "version mismatch: expected {}, got {}",
+                record.version, params.version
+            )));
         }
+        if let Some(name) = params.name {
+            record.name = name;
+        }
+        if let Some(model) = params.model {
+            record.model = model.into_config();
+        }
+        if let Some(description) = params.description {
+            record.description = Some(description);
+        }
+        if let Some(system) = params.system {
+            record.system = Some(system);
+        }
+        if let Some(metadata) = params.metadata {
+            record.metadata = metadata;
+        }
+        if let Some(mcp_servers) = params.mcp_servers {
+            record.mcp_servers = mcp_servers;
+        }
+        if let Some(skills) = params.skills {
+            record.skills = skills;
+        }
+        if let Some(tools) = params.tools {
+            record.tools = tools;
+        }
+        if let Some(multiagent) = params.multiagent {
+            record.multiagent = Some(multiagent).filter(|value| !value.is_null());
+        }
+        record.version += 1;
+        let agent = record.project(id);
+        record.history.push(agent.clone());
+        Ok(agent)
     }
-    next.run(request).await
+
+    async fn archive(&self, workspace_id: &str, id: &str) -> Result<Agent, ManagedAgentError> {
+        let mut records = self.records.lock().expect("managed Agent repository");
+        let record = records
+            .get_mut(&(workspace_id.to_string(), id.to_string()))
+            .ok_or(ManagedAgentError::NotFound)?;
+        record.archived_at = Some(OBJECT_AT.to_string());
+        record.version += 1;
+        let agent = record.project(id);
+        record.history.push(agent.clone());
+        Ok(agent)
+    }
+
+    async fn versions(
+        &self,
+        workspace_id: &str,
+        id: &str,
+    ) -> Result<Vec<Agent>, ManagedAgentError> {
+        self.records
+            .lock()
+            .expect("managed Agent repository")
+            .get(&(workspace_id.to_string(), id.to_string()))
+            .map(|record| record.history.clone())
+            .ok_or(ManagedAgentError::NotFound)
+    }
 }
 
-/// The `{id}` from a `/v1/agents/{id}[/...]` path, or `None` for the collection
-/// route and any non-agent path.
-fn agent_id_from_path(path: &str) -> Option<String> {
-    let mut segments = path.trim_start_matches('/').split('/');
-    if segments.next()? != "v1" || segments.next()? != "agents" {
-        return None;
-    }
-    match segments.next() {
-        Some(id) if !id.is_empty() => Some(id.to_string()),
-        _ => None,
-    }
+fn request_scope(scope: &Option<Extension<WorkspaceScope>>) -> String {
+    scope.as_ref().map_or_else(
+        || DEFAULT_SCOPE.to_string(),
+        |workspace| workspace.0.0.clone(),
+    )
 }
 
-/// Present tool ids in the managed wire's tool shape.
-fn tools_wire(ids: &[String]) -> Vec<Value> {
-    ids.iter()
-        .map(|id| json!({ "type": "custom", "name": id }))
-        .collect()
-}
-
-/// Project a config-plane view to the `BetaManagedAgent` wire shape. The agent has
-/// no registry record, so presentation fields default (name = id, version = 1).
-fn project_config_view(id: &str, view: &AgentConfigView) -> Agent {
-    Agent {
-        id: id.to_string(),
-        object_type: "agent",
-        archived_at: None,
-        created_at: OBJECT_AT.to_string(),
-        updated_at: OBJECT_AT.to_string(),
-        name: id.to_string(),
-        description: None,
-        model: ModelConfig::new(view.model.clone().unwrap_or_default()),
-        system: view.system.clone(),
-        metadata: BTreeMap::new(),
-        mcp_servers: view
-            .mcp_servers
-            .iter()
-            .map(|server| json!({ "type": "url", "name": server.name, "url": server.url }))
-            .collect(),
-        skills: view
-            .skill_ids
-            .iter()
-            .map(|id| json!({ "id": id }))
-            .collect(),
-        tools: tools_wire(&view.tool_ids),
-        multiagent: None,
-        version: 1,
-    }
-}
-
-/// Mount the agent-registry routes.
 pub fn agents_router(state: Arc<AgentRegistryState>) -> Router {
-    let guard_state = state.clone();
     Router::new()
         .route("/v1/agents", post(create_agent).get(list_agents))
         .route("/v1/agents/{id}", get(retrieve_agent).post(update_agent))
         .route("/v1/agents/{id}/archive", post(archive_agent))
         .route("/v1/agents/{id}/versions", get(list_versions))
         .with_state(state)
-        // The tenant ownership guard (ADR-0051) fences `/v1/agents/{id}` by owner.
-        .layer(axum::middleware::from_fn_with_state(
-            guard_state,
-            agent_scope_guard,
-        ))
 }
 
 type WireError = (StatusCode, Json<ErrorResponse>);
 
-fn not_found() -> WireError {
-    (
-        StatusCode::NOT_FOUND,
-        Json(ErrorResponse::new("not_found_error", "agent not found")),
-    )
+fn wire_error(error: ManagedAgentError) -> WireError {
+    match error {
+        ManagedAgentError::NotFound => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse::new("not_found_error", "agent not found")),
+        ),
+        ManagedAgentError::Conflict(message) => (
+            StatusCode::CONFLICT,
+            Json(ErrorResponse::new("invalid_request_error", message)),
+        ),
+        ManagedAgentError::Invalid(message) => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new("invalid_request_error", message)),
+        ),
+        ManagedAgentError::Storage(message) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new("api_error", message)),
+        ),
+    }
 }
 
 async fn create_agent(
@@ -224,28 +305,12 @@ async fn create_agent(
     scope: Option<Extension<WorkspaceScope>>,
     ManagedJson(params): ManagedJson<AgentCreateParams>,
 ) -> Result<Json<Agent>, WireError> {
-    let owner = request_scope(&scope);
-    let n = state.seq.fetch_add(1, Ordering::SeqCst);
-    let id = format!("agent_{n:016}");
-    let mut record = Record {
-        name: params.name,
-        description: params.description,
-        model: params.model.into_config(),
-        system: params.system,
-        metadata: params.metadata,
-        mcp_servers: params.mcp_servers,
-        skills: params.skills,
-        tools: params.tools,
-        multiagent: params.multiagent.filter(|v| !v.is_null()),
-        version: 1,
-        archived_at: None,
-        history: Vec::new(),
-    };
-    let projected = record.project(&id);
-    record.history.push(projected.clone());
-    state.owners.lock().unwrap().insert(id.clone(), owner);
-    state.inner.lock().unwrap().insert(id, record);
-    Ok(Json(projected))
+    state
+        .repository
+        .create(&request_scope(&scope), params)
+        .await
+        .map(Json)
+        .map_err(wire_error)
 }
 
 async fn retrieve_agent(
@@ -253,200 +318,79 @@ async fn retrieve_agent(
     Path(id): Path<String>,
     scope: Option<Extension<WorkspaceScope>>,
 ) -> Result<Json<Agent>, WireError> {
-    // A registry record (an agent created via this API) wins.
-    {
-        let store = state.inner.lock().unwrap();
-        if let Some(record) = store.get(&id) {
-            return Ok(Json(record.project(&id)));
-        }
-    }
-    // Otherwise an agent published on the config plane is retrievable here as a pure
-    // projection of that single truth (never created via this registry).
-    let workspace = request_scope(&scope);
-    if let Some(view) = state
-        .config_source
-        .as_ref()
-        .and_then(|source| source.agent_view_in(&workspace, &id))
-    {
-        return Ok(Json(project_config_view(&id, &view)));
-    }
-    Err(not_found())
+    state
+        .repository
+        .retrieve(&request_scope(&scope), &id)
+        .await
+        .map(Json)
+        .map_err(wire_error)
 }
 
-/// `GET /v1/agents` — one full page, ascending id order, restricted to the
-/// caller's own agents (ADR-0051): a workspace never sees another's registry
-/// agents in its listing.
 async fn list_agents(
     State(state): State<Arc<AgentRegistryState>>,
     scope: Option<Extension<WorkspaceScope>>,
     Query(page): Query<PageQuery>,
-) -> Json<Page<Agent>> {
-    let scope = request_scope(&scope);
-    let owners = state.owners.lock().unwrap();
-    let store = state.inner.lock().unwrap();
-    let data: Vec<Agent> = store
-        .iter()
-        .filter(|(id, _)| owners.get(id.as_str()).map(String::as_str) == Some(scope.as_str()))
-        .map(|(id, r)| r.project(id))
-        .collect();
-    Json(paginate(data, &page, |a| a.id.as_str()))
+) -> Result<Json<Page<Agent>>, WireError> {
+    state
+        .repository
+        .list(&request_scope(&scope))
+        .await
+        .map(|agents| Json(paginate(agents, &page, |agent| agent.id.as_str())))
+        .map_err(wire_error)
 }
 
-/// `POST /v1/agents/:id` — update with optimistic concurrency. The body's
-/// `version` must match the agent's current version (else `409`); on success the
-/// provided fields replace, `version` increments, and a snapshot is appended to
-/// history.
 async fn update_agent(
     State(state): State<Arc<AgentRegistryState>>,
     Path(id): Path<String>,
+    scope: Option<Extension<WorkspaceScope>>,
     ManagedJson(params): ManagedJson<AgentUpdateParams>,
 ) -> Result<Json<Agent>, WireError> {
-    let mut store = state.inner.lock().unwrap();
-    let record = store.get_mut(&id).ok_or_else(not_found)?;
-    if params.version != record.version {
-        return Err((
-            StatusCode::CONFLICT,
-            Json(ErrorResponse::new(
-                // The SDK has no `conflict_error`; a 409 carries `invalid_request_error`.
-                "invalid_request_error",
-                format!(
-                    "version mismatch: expected {}, got {}",
-                    record.version, params.version
-                ),
-            )),
-        ));
-    }
-    // Each field replaces only when present in the body.
-    if let Some(name) = params.name {
-        record.name = name;
-    }
-    if let Some(model) = params.model {
-        record.model = model.into_config();
-    }
-    if let Some(description) = params.description {
-        record.description = Some(description);
-    }
-    if let Some(system) = params.system {
-        record.system = Some(system);
-    }
-    if let Some(metadata) = params.metadata {
-        record.metadata = metadata;
-    }
-    if let Some(mcp_servers) = params.mcp_servers {
-        record.mcp_servers = mcp_servers;
-    }
-    if let Some(skills) = params.skills {
-        record.skills = skills;
-    }
-    if let Some(tools) = params.tools {
-        record.tools = tools;
-    }
-    if let Some(multiagent) = params.multiagent {
-        record.multiagent = Some(multiagent).filter(|v| !v.is_null());
-    }
-    record.version += 1;
-    let projected = record.project(&id);
-    record.history.push(projected.clone());
-    Ok(Json(projected))
+    state
+        .repository
+        .update(&request_scope(&scope), &id, params)
+        .await
+        .map(Json)
+        .map_err(wire_error)
 }
 
-/// `POST /v1/agents/:id/archive` — soft-delete (sets `archived_at`, bumps version).
 async fn archive_agent(
     State(state): State<Arc<AgentRegistryState>>,
     Path(id): Path<String>,
+    scope: Option<Extension<WorkspaceScope>>,
 ) -> Result<Json<Agent>, WireError> {
-    let mut store = state.inner.lock().unwrap();
-    let record = store.get_mut(&id).ok_or_else(not_found)?;
-    record.archived_at = Some(OBJECT_AT.to_string());
-    record.version += 1;
-    let projected = record.project(&id);
-    record.history.push(projected.clone());
-    Ok(Json(projected))
+    state
+        .repository
+        .archive(&request_scope(&scope), &id)
+        .await
+        .map(Json)
+        .map_err(wire_error)
 }
 
-/// `GET /v1/agents/:id/versions` — the agent's version history as a cursor page
-/// (newest last), each entry a full `BetaManagedAgentsAgent` snapshot.
 async fn list_versions(
     State(state): State<Arc<AgentRegistryState>>,
     Path(id): Path<String>,
+    scope: Option<Extension<WorkspaceScope>>,
     Query(page): Query<PageQuery>,
 ) -> Result<Json<Page<Agent>>, WireError> {
-    let store = state.inner.lock().unwrap();
-    let record = store.get(&id).ok_or_else(not_found)?;
-    Ok(Json(paginate(record.history.clone(), &page, |a| {
-        a.id.as_str()
-    })))
+    state
+        .repository
+        .versions(&request_scope(&scope), &id)
+        .await
+        .map(|versions| Json(paginate(versions, &page, |agent| agent.id.as_str())))
+        .map_err(wire_error)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use axum::body::Body;
-    use axum::http::{Request, StatusCode};
+    use axum::http::Request;
     use http_body_util::BodyExt;
+    use serde_json::json;
     use tower::ServiceExt;
 
-    /// A config plane that has published exactly one agent, `assistant`.
-    struct OneAgent;
-    impl AgentConfigSource for OneAgent {
-        fn agent_view_in(&self, workspace_id: &str, agent_id: &str) -> Option<AgentConfigView> {
-            (workspace_id == DEFAULT_SCOPE && agent_id == "assistant").then(|| AgentConfigView {
-                model: Some("kimi-k2".to_string()),
-                system: Some("be helpful".to_string()),
-                tool_ids: vec!["fs_read".to_string()],
-                mcp_servers: vec![awaken_session_contract::AgentMcpServerView {
-                    name: "docs".to_string(),
-                    url: "https://mcp.example.test".to_string(),
-                }],
-                skill_ids: vec!["skill_docs".to_string()],
-                resources: Vec::new(),
-            })
-        }
-    }
-
-    async fn get(app: &Router, uri: &str) -> (StatusCode, Value) {
-        let res = app
-            .clone()
-            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
-            .await
-            .unwrap();
-        let status = res.status();
-        let bytes = res.into_body().collect().await.unwrap().to_bytes();
-        let body = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-        (status, body)
-    }
-
-    #[tokio::test]
-    async fn config_plane_agent_is_retrievable_as_a_projection() {
-        let state = Arc::new(AgentRegistryState::new().with_config_source(Arc::new(OneAgent)));
-        let app = agents_router(state);
-
-        // `assistant` was never created via /v1/agents — it is projected from the
-        // config plane (the "retreat to projection" direction).
-        let (status, body) = get(&app, "/v1/agents/assistant").await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["id"], "assistant");
-        assert_eq!(body["model"]["id"], "kimi-k2");
-        assert_eq!(body["system"], "be helpful");
-        assert_eq!(body["tools"][0]["name"], "fs_read");
-        assert_eq!(body["mcp_servers"][0]["name"], "docs");
-        assert_eq!(body["skills"][0]["id"], "skill_docs");
-
-        // An id in neither the registry nor the config plane is still 404.
-        let (status, _) = get(&app, "/v1/agents/ghost").await;
-        assert_eq!(status, StatusCode::NOT_FOUND);
-
-        assert_eq!(
-            call_scoped(&app, "GET", "/v1/agents/assistant", Some("workspace-b")).await,
-            StatusCode::NOT_FOUND,
-            "a projected Agent must not fall back to another Workspace"
-        );
-    }
-
-    // --- Tenant isolation (ADR-0051) -----------------------------------------
-
     async fn create_owned(app: &Router, scope: &str) -> String {
-        let mut req = Request::builder()
+        let mut request = Request::builder()
             .method("POST")
             .uri("/v1/agents")
             .header("content-type", "application/json")
@@ -454,196 +398,81 @@ mod tests {
                 serde_json::to_vec(&json!({ "name": "a", "model": "kimi" })).unwrap(),
             ))
             .unwrap();
-        req.extensions_mut()
+        request
+            .extensions_mut()
             .insert(WorkspaceScope(scope.to_string()));
-        let res = app.clone().oneshot(req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::OK);
-        let bytes = res.into_body().collect().await.unwrap().to_bytes();
-        let v: Value = serde_json::from_slice(&bytes).unwrap();
-        v["id"].as_str().unwrap().to_string()
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        serde_json::from_slice::<Value>(&bytes).unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string()
     }
 
-    async fn call_scoped(app: &Router, method: &str, uri: &str, scope: Option<&str>) -> StatusCode {
-        let mut req = Request::builder()
+    async fn call(app: &Router, method: &str, path: &str, scope: Option<&str>) -> StatusCode {
+        let mut request = Request::builder()
             .method(method)
-            .uri(uri)
+            .uri(path)
             .body(Body::empty())
             .unwrap();
         if let Some(scope) = scope {
-            req.extensions_mut()
+            request
+                .extensions_mut()
                 .insert(WorkspaceScope(scope.to_string()));
         }
-        app.clone().oneshot(req).await.unwrap().status()
-    }
-
-    async fn list_ids(app: &Router, scope: &str) -> Vec<String> {
-        let mut req = Request::builder()
-            .method("GET")
-            .uri("/v1/agents")
-            .body(Body::empty())
-            .unwrap();
-        req.extensions_mut()
-            .insert(WorkspaceScope(scope.to_string()));
-        let res = app.clone().oneshot(req).await.unwrap();
-        let bytes = res.into_body().collect().await.unwrap().to_bytes();
-        let v: Value = serde_json::from_slice(&bytes).unwrap();
-        v["data"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|a| a["id"].as_str().unwrap().to_string())
-            .collect()
+        app.clone().oneshot(request).await.unwrap().status()
     }
 
     #[tokio::test]
-    async fn a_registry_agent_is_fenced_to_its_owner() {
+    async fn workspace_is_part_of_the_repository_key() {
         let app = agents_router(Arc::new(AgentRegistryState::new()));
-        let id = create_owned(&app, "ws_a").await;
+        let id = create_owned(&app, "workspace-a").await;
         let path = format!("/v1/agents/{id}");
         assert_eq!(
-            call_scoped(&app, "GET", &path, Some("ws_a")).await,
-            StatusCode::OK
-        );
-        // Another workspace gets 404 (never 403 — no existence disclosure), for reads…
-        assert_eq!(
-            call_scoped(&app, "GET", &path, Some("ws_b")).await,
-            StatusCode::NOT_FOUND
-        );
-        // …and writes (archive).
-        assert_eq!(
-            call_scoped(&app, "POST", &format!("{path}/archive"), Some("ws_b")).await,
-            StatusCode::NOT_FOUND
-        );
-    }
-
-    #[tokio::test]
-    async fn list_shows_only_the_callers_agents() {
-        let app = agents_router(Arc::new(AgentRegistryState::new()));
-        let a = create_owned(&app, "ws_a").await;
-        let b = create_owned(&app, "ws_b").await;
-        assert_eq!(list_ids(&app, "ws_a").await, vec![a]);
-        assert_eq!(list_ids(&app, "ws_b").await, vec![b]);
-    }
-
-    /// A cross-tenant `update` (POST `/v1/agents/{id}`) and `versions`
-    /// (GET `/v1/agents/{id}/versions`) are fenced by the same guard: a foreign
-    /// workspace is 404'd before the handler runs (never 403), while the owner's
-    /// own update and version listing are admitted. The existing tests only cover
-    /// GET/archive; these pin the remaining two `{id}` verbs.
-    #[tokio::test]
-    async fn cross_tenant_update_and_versions_are_fenced() {
-        let app = agents_router(Arc::new(AgentRegistryState::new()));
-        let id = create_owned(&app, "ws_a").await;
-
-        // A foreign-tenant update is 404'd at the guard (body never reaches the
-        // optimistic-concurrency check).
-        assert_eq!(
-            call_scoped(&app, "POST", &format!("/v1/agents/{id}"), Some("ws_b")).await,
-            StatusCode::NOT_FOUND
-        );
-        // A foreign-tenant version listing is likewise fenced.
-        assert_eq!(
-            call_scoped(
-                &app,
-                "GET",
-                &format!("/v1/agents/{id}/versions"),
-                Some("ws_b")
-            )
-            .await,
-            StatusCode::NOT_FOUND
-        );
-
-        // The owner updates with the correct version, then reads two snapshots back.
-        let mut req = Request::builder()
-            .method("POST")
-            .uri(format!("/v1/agents/{id}"))
-            .header("content-type", "application/json")
-            .body(Body::from(
-                serde_json::to_vec(&json!({ "version": 1, "name": "renamed" })).unwrap(),
-            ))
-            .unwrap();
-        req.extensions_mut().insert(WorkspaceScope("ws_a".into()));
-        assert_eq!(
-            app.clone().oneshot(req).await.unwrap().status(),
+            call(&app, "GET", &path, Some("workspace-a")).await,
             StatusCode::OK
         );
         assert_eq!(
-            call_scoped(
-                &app,
-                "GET",
-                &format!("/v1/agents/{id}/versions"),
-                Some("ws_a")
-            )
-            .await,
-            StatusCode::OK
-        );
-    }
-
-    /// An empty `WorkspaceScope("")` is its own tenant — not silently coerced to the
-    /// seeded default. An agent it owns is readable by an equally-empty scope, but
-    /// invisible to a named workspace and to a bare (default-resolved) request.
-    #[tokio::test]
-    async fn an_empty_scope_is_a_distinct_tenant() {
-        let app = agents_router(Arc::new(AgentRegistryState::new()));
-        let id = create_owned(&app, "").await;
-        let path = format!("/v1/agents/{id}");
-        assert_eq!(
-            call_scoped(&app, "GET", &path, Some("")).await,
-            StatusCode::OK
-        );
-        assert_eq!(
-            call_scoped(&app, "GET", &path, Some("ws_a")).await,
+            call(&app, "GET", &path, Some("workspace-b")).await,
             StatusCode::NOT_FOUND
         );
-        // A bare request resolves to DEFAULT_SCOPE, which is not "".
-        assert_eq!(
-            call_scoped(&app, "GET", &path, None).await,
-            StatusCode::NOT_FOUND
-        );
+        assert_eq!(call(&app, "GET", &path, None).await, StatusCode::NOT_FOUND);
     }
 
-    /// The seeded default scope is a real tenant an explicit credential can name:
-    /// a bare-created (default-owned) agent is reachable by a request that stamps
-    /// the literal `DEFAULT_SCOPE`, and unreachable by any other workspace. This
-    /// pins the default↔explicit collision so a future change to `request_scope`
-    /// can't silently split or merge the two.
     #[tokio::test]
-    async fn the_default_scope_is_addressable_as_a_tenant() {
+    async fn update_archive_and_history_share_one_aggregate() {
         let app = agents_router(Arc::new(AgentRegistryState::new()));
-        // Bare create → owner is DEFAULT_SCOPE.
         let id = create_owned(&app, DEFAULT_SCOPE).await;
-        let path = format!("/v1/agents/{id}");
-        // A bare request (resolves to DEFAULT_SCOPE) and an explicit DEFAULT_SCOPE
-        // request both own it.
-        assert_eq!(call_scoped(&app, "GET", &path, None).await, StatusCode::OK);
+        let update = json!({ "version": 1, "name": "renamed" });
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/agents/{id}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&update).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
-            call_scoped(&app, "GET", &path, Some(DEFAULT_SCOPE)).await,
+            call(&app, "POST", &format!("/v1/agents/{id}/archive"), None).await,
             StatusCode::OK
         );
-        assert_eq!(
-            call_scoped(&app, "GET", &path, Some("ws_a")).await,
-            StatusCode::NOT_FOUND
-        );
-    }
-
-    /// A config-plane projection (an Agent published on the config plane, never
-    /// created via this registry) has no registry owner, so the ownership guard
-    /// passes it through to the scoped projection source. The source remains the
-    /// ownership truth and must fail closed outside the installed Workspace.
-    #[tokio::test]
-    async fn a_config_plane_projection_is_fenced_by_its_scoped_source() {
-        let state = Arc::new(AgentRegistryState::new().with_config_source(Arc::new(OneAgent)));
-        let app = agents_router(state);
-        for scope in [Some("ws_a"), Some("ws_b")] {
-            assert_eq!(
-                call_scoped(&app, "GET", "/v1/agents/assistant", scope).await,
-                StatusCode::NOT_FOUND,
-                "the scoped source denies a foreign projection for {scope:?}"
-            );
-        }
-        assert_eq!(
-            call_scoped(&app, "GET", "/v1/agents/assistant", None).await,
-            StatusCode::OK
-        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/v1/agents/{id}/versions"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["data"].as_array().unwrap().len(), 3);
     }
 }
