@@ -10,6 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, execSync, spawn, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38436);
@@ -89,6 +90,10 @@ function start(bin: string, directory: string, databaseUrl: string): ChildProces
       AWAKEN_DEPLOYMENT_DATA_DIR: directory,
       AWAKEN_CONTROL_SEAL_KEY: '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff',
       AWAKEN_RESOURCE_DATABASE_URL: databaseUrl,
+      // Session application work (including durable extraction intents) is an
+      // independent persistence axis; select it explicitly instead of deriving
+      // it from the resource backend.
+      AWAKEN_SESSIONS_DB: databaseUrl,
       // MemoryStore definitions and Agent resource bindings are configuration
       // plane facts. They are shared separately from resource content and IAM.
       AWAKEN_ADMIN_DB: databaseUrl,
@@ -222,6 +227,35 @@ function resourceIntent(container: string, resourceId: string): Record<string, a
   return output ? JSON.parse(output) : undefined;
 }
 
+function extractionIntent(
+  container: string,
+  sessionId: string,
+): Record<string, any> | undefined {
+  const output = psql(
+    container,
+    `SELECT data FROM managed_memory_extraction ` +
+      `WHERE data::jsonb->>'session_id'=${sqlLiteral(sessionId)} ` +
+      `ORDER BY created_at DESC LIMIT 1`,
+  );
+  return output ? JSON.parse(output) : undefined;
+}
+
+async function waitForCompletedExtraction(
+  container: string,
+  sessionId: string,
+  timeoutMs = 30_000,
+): Promise<Record<string, any>> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const intent = extractionIntent(container, sessionId);
+    if (intent?.status === 'completed' && intent.receipt !== null) return intent;
+    await sleep(250);
+  }
+  throw new Error(
+    `Postgres extraction intent did not complete: ${JSON.stringify(extractionIntent(container, sessionId))}`,
+  );
+}
+
 async function waitForResourceIntents(
   container: string,
   ids: string[],
@@ -315,13 +349,13 @@ function seedRepository(root: string): string {
   return remote;
 }
 
-async function publishAgent(): Promise<void> {
+async function publishAgent(endpoint: string): Promise<void> {
   assert.equal((await json('PUT', scoped(WORKSPACE, 'config/providers/resource-e2e'), {
     id: 'resource-e2e', slug: 'resource-e2e', display_name: 'Resource E2E', version: 1,
   })).status, 200);
   assert.equal((await json('PUT', scoped(WORKSPACE, 'config/endpoints/resource-e2e'), {
     id: 'resource-e2e', provider_id: 'resource-e2e', dialect: 'anthropic_messages',
-    base_url: 'http://127.0.0.1:1/v1/', timeout_secs: 10, display_name: 'unused', version: 1,
+    base_url: `${endpoint}/v1/`, timeout_secs: 10, display_name: 'memory extraction', version: 1,
   })).status, 200);
   assert.equal((await json('POST', scoped(WORKSPACE, 'config/offerings'), {
     model_id: MODEL, provider_id: 'resource-e2e', protocol_endpoint_id: 'resource-e2e',
@@ -336,17 +370,37 @@ async function publishAgent(): Promise<void> {
   })).status, 201);
   assert.equal((await json('PUT', scoped(WORKSPACE, `config/agents/${AGENT}`), {
     name: AGENT, model: { id: MODEL }, system: 'Resource lifecycle test.',
-    max_steps: 2, plugins: [], plugin_config: {},
+    max_steps: 2, plugins: ['memory'], plugin_config: { memory: {} },
   })).status, 200);
   assert.equal((await json('PUT', scoped(WORKSPACE, `config/agents/${AGENT}/resources`), {
     agent_id: AGENT, revision: 1, inputs: [],
   })).status, 200);
   const published = await json('POST', scoped(WORKSPACE, `config/agents/${AGENT}/publish`));
   assert.equal(published.status, 200, JSON.stringify(published.body));
+  const extractor = 'memory-extractor';
+  assert.equal((await json('PUT', scoped(WORKSPACE, `config/agents/${extractor}`), {
+    name: extractor,
+    model: { id: MODEL },
+    system: 'You are the memory extraction Agent. Save durable facts.',
+    max_steps: 2,
+    plugins: [],
+    plugin_config: {},
+  })).status, 200);
+  assert.equal((await json('PUT', scoped(WORKSPACE, `config/agents/${extractor}/resources`), {
+    agent_id: extractor,
+    revision: 1,
+    inputs: [],
+  })).status, 200);
+  const publishedExtractor = await json(
+    'POST',
+    scoped(WORKSPACE, `config/agents/${extractor}/publish`),
+  );
+  assert.equal(publishedExtractor.status, 200, JSON.stringify(publishedExtractor.body));
 }
 
 async function main(): Promise<void> {
   const pg = await postgres();
+  const upstream = await startFakeAnthropic('resource-e2e-model-key', { behavior: 'memory' });
   const firstDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-resource-pg-a-'));
   const secondDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-resource-pg-b-'));
   const bin = binary();
@@ -382,7 +436,7 @@ async function main(): Promise<void> {
       {
         expected_config_version: 1,
         recall_policy: { enabled: true, max_results: 19 },
-        extraction_policy: { enabled: false },
+        extraction_policy: { enabled: true },
         retention_policy: { retention_days: 2 },
       },
     );
@@ -561,7 +615,7 @@ async function main(): Promise<void> {
 
     // Drive the production Managed Session edge so Repository configuration uses
     // this same PostgreSQL Resource Catalog rather than a scenario-host registry.
-    await publishAgent();
+    await publishAgent(upstream.url);
     const repository = seedRepository(secondDirectory);
     const session = await json('POST', scoped(WORKSPACE, 'sessions'), {
       agent: AGENT, environment_id: 'env_local',
@@ -590,7 +644,10 @@ async function main(): Promise<void> {
       {
         events: [{
           type: 'user.message',
-          content: [{ type: 'text', text: 'resolve the governed resource bindings' }],
+          content: [{
+            type: 'text',
+            text: `resolve the governed resource bindings fact-postgres-${process.pid}`,
+          }],
         }],
       },
     );
@@ -600,6 +657,21 @@ async function main(): Promise<void> {
       `SELECT count(*) FROM resource_lifecycle_references WHERE reference_id=${sqlLiteral(session.body.id)}`,
     );
     assert.ok(Number(realized) >= 2, 'the Session activated both frozen resource bindings');
+    const extraction = await waitForCompletedExtraction(pg.container, session.body.id);
+    assert.equal(extraction.workspace_id, WORKSPACE);
+    assert.equal(extraction.memory_store_id, memoryId);
+    assert.equal(extraction.memory_config_version, 2);
+    assert.equal(extraction.receipt.mutations.length, 1);
+    const extractedMemories = await json(
+      'GET',
+      scoped(WORKSPACE, `memory_stores/${memoryId}/memories`),
+    );
+    assert.ok(
+      extractedMemories.body.data.some(
+        (entry: { content: string }) => entry.content.includes(`fact-postgres-${process.pid}`),
+      ),
+      'the completed Postgres receipt corresponds to content in the bound MemoryStore',
+    );
     const repositoryResource = await json(
       'POST',
       scoped(WORKSPACE, `sessions/${session.body.id}/resources`),
@@ -714,6 +786,7 @@ async function main(): Promise<void> {
     console.log('E2E PASS: complete Postgres resource plane is shared, scoped, and IAM-independent.');
   } finally {
     await stop(server).catch(() => {});
+    upstream.close();
     fs.rmSync(firstDirectory, { recursive: true, force: true });
     fs.rmSync(secondDirectory, { recursive: true, force: true });
     if (OWN_BUILD_TARGET) fs.rmSync(BUILD_TARGET, { recursive: true, force: true });
