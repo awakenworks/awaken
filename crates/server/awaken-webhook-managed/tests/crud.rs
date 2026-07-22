@@ -79,7 +79,7 @@ impl ManagedSessionRepository for SessionOutbox {
     }
 }
 
-impl WebhookStore for MemStore {
+impl MemStore {
     fn put(&self, def: WebhookEndpointDef) {
         self.0.lock().unwrap().insert(def.id.clone(), def);
     }
@@ -111,6 +111,48 @@ impl WebhookStore for MemStore {
     }
     fn complete_outbox(&self, event_id: &str) -> bool {
         self.1.lock().unwrap().remove(event_id).is_some()
+    }
+}
+
+impl WebhookStore for MemStore {
+    fn put(
+        &self,
+        def: WebhookEndpointDef,
+    ) -> Result<(), awaken_config_resolver::ConfigRepositoryError> {
+        MemStore::put(self, def);
+        Ok(())
+    }
+    fn get(
+        &self,
+        id: &str,
+    ) -> Result<Option<WebhookEndpointDef>, awaken_config_resolver::ConfigRepositoryError> {
+        Ok(MemStore::get(self, id))
+    }
+    fn list(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<WebhookEndpointDef>, awaken_config_resolver::ConfigRepositoryError> {
+        Ok(MemStore::list(self, workspace_id))
+    }
+    fn delete(&self, id: &str) -> Result<bool, awaken_config_resolver::ConfigRepositoryError> {
+        Ok(MemStore::delete(self, id))
+    }
+    fn enqueue_outbox(
+        &self,
+        event: WebhookOutboxEvent,
+    ) -> Result<bool, awaken_config_resolver::ConfigRepositoryError> {
+        Ok(MemStore::enqueue_outbox(self, event))
+    }
+    fn pending_outbox(
+        &self,
+    ) -> Result<Vec<WebhookOutboxEvent>, awaken_config_resolver::ConfigRepositoryError> {
+        Ok(MemStore::pending_outbox(self))
+    }
+    fn complete_outbox(
+        &self,
+        event_id: &str,
+    ) -> Result<bool, awaken_config_resolver::ConfigRepositoryError> {
+        Ok(MemStore::complete_outbox(self, event_id))
     }
 }
 

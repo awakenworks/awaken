@@ -14,11 +14,18 @@ use serde::{Deserialize, Serialize};
 
 use crate::{AgentInputConfig, AgentMcpConfig, InferenceProfile, McpServerDef, WebhookEndpointDef};
 
+/// Infrastructure failure from a synchronous authored-config repository.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ConfigRepositoryError {
+    #[error("config repository storage failure: {0}")]
+    Storage(String),
+}
+
 /// A store for authored [`InferenceProfile`]s (an admin-plane aggregate). Sync +
 /// in-memory by default; a durable backend can implement the same port.
 pub trait InferenceProfileStore: Send + Sync {
-    fn put(&self, id: String, profile: InferenceProfile);
-    fn get(&self, id: &str) -> Option<InferenceProfile>;
+    fn put(&self, id: String, profile: InferenceProfile) -> Result<(), ConfigRepositoryError>;
+    fn get(&self, id: &str) -> Result<Option<InferenceProfile>, ConfigRepositoryError>;
 }
 
 /// The default in-memory [`InferenceProfileStore`].
@@ -33,11 +40,20 @@ impl InMemoryProfileStore {
 }
 
 impl InferenceProfileStore for InMemoryProfileStore {
-    fn put(&self, id: String, profile: InferenceProfile) {
-        self.0.lock().expect("profiles").insert(id, profile);
+    fn put(&self, id: String, profile: InferenceProfile) -> Result<(), ConfigRepositoryError> {
+        self.0
+            .lock()
+            .map_err(|_| ConfigRepositoryError::Storage("profile store mutex poisoned".into()))?
+            .insert(id, profile);
+        Ok(())
     }
-    fn get(&self, id: &str) -> Option<InferenceProfile> {
-        self.0.lock().expect("profiles").get(id).cloned()
+    fn get(&self, id: &str) -> Result<Option<InferenceProfile>, ConfigRepositoryError> {
+        Ok(self
+            .0
+            .lock()
+            .map_err(|_| ConfigRepositoryError::Storage("profile store mutex poisoned".into()))?
+            .get(id)
+            .cloned())
     }
 }
 
@@ -45,11 +61,14 @@ impl InferenceProfileStore for InMemoryProfileStore {
 /// [`AgentMcpConfig`] bindings (by agent id) — the admin-plane MCP aggregates.
 /// Sync + in-memory by default; a durable backend can implement the same port.
 pub trait McpStore: Send + Sync {
-    fn put_server(&self, def: McpServerDef);
-    fn get_server(&self, id: &str) -> Option<McpServerDef>;
-    fn list_servers(&self) -> Vec<McpServerDef>;
-    fn put_agent_config(&self, config: AgentMcpConfig);
-    fn get_agent_config(&self, agent_id: &str) -> Option<AgentMcpConfig>;
+    fn put_server(&self, def: McpServerDef) -> Result<(), ConfigRepositoryError>;
+    fn get_server(&self, id: &str) -> Result<Option<McpServerDef>, ConfigRepositoryError>;
+    fn list_servers(&self) -> Result<Vec<McpServerDef>, ConfigRepositoryError>;
+    fn put_agent_config(&self, config: AgentMcpConfig) -> Result<(), ConfigRepositoryError>;
+    fn get_agent_config(
+        &self,
+        agent_id: &str,
+    ) -> Result<Option<AgentMcpConfig>, ConfigRepositoryError>;
 }
 
 /// The default in-memory [`McpStore`].
@@ -67,38 +86,49 @@ impl InMemoryMcpStore {
 }
 
 impl McpStore for InMemoryMcpStore {
-    fn put_server(&self, def: McpServerDef) {
+    fn put_server(&self, def: McpServerDef) -> Result<(), ConfigRepositoryError> {
         self.servers
             .lock()
-            .expect("mcp servers")
+            .map_err(|_| ConfigRepositoryError::Storage("MCP store mutex poisoned".into()))?
             .insert(def.id.0.clone(), def);
+        Ok(())
     }
-    fn get_server(&self, id: &str) -> Option<McpServerDef> {
-        self.servers.lock().expect("mcp servers").get(id).cloned()
+    fn get_server(&self, id: &str) -> Result<Option<McpServerDef>, ConfigRepositoryError> {
+        Ok(self
+            .servers
+            .lock()
+            .map_err(|_| ConfigRepositoryError::Storage("MCP store mutex poisoned".into()))?
+            .get(id)
+            .cloned())
     }
-    fn list_servers(&self) -> Vec<McpServerDef> {
+    fn list_servers(&self) -> Result<Vec<McpServerDef>, ConfigRepositoryError> {
         let mut servers: Vec<McpServerDef> = self
             .servers
             .lock()
-            .expect("mcp servers")
+            .map_err(|_| ConfigRepositoryError::Storage("MCP store mutex poisoned".into()))?
             .values()
             .cloned()
             .collect();
         servers.sort_by(|a, b| a.id.0.cmp(&b.id.0));
-        servers
+        Ok(servers)
     }
-    fn put_agent_config(&self, config: AgentMcpConfig) {
+    fn put_agent_config(&self, config: AgentMcpConfig) -> Result<(), ConfigRepositoryError> {
         self.agents
             .lock()
-            .expect("agent mcp configs")
+            .map_err(|_| ConfigRepositoryError::Storage("MCP store mutex poisoned".into()))?
             .insert(config.agent_id.clone(), config);
+        Ok(())
     }
-    fn get_agent_config(&self, agent_id: &str) -> Option<AgentMcpConfig> {
-        self.agents
+    fn get_agent_config(
+        &self,
+        agent_id: &str,
+    ) -> Result<Option<AgentMcpConfig>, ConfigRepositoryError> {
+        Ok(self
+            .agents
             .lock()
-            .expect("agent mcp configs")
+            .map_err(|_| ConfigRepositoryError::Storage("MCP store mutex poisoned".into()))?
             .get(agent_id)
-            .cloned()
+            .cloned())
     }
 }
 
@@ -107,18 +137,18 @@ impl McpStore for InMemoryMcpStore {
 /// the same port. Unlike [`McpStore`]/[`InferenceProfileStore`] it enumerates by
 /// workspace (dispatch fan-out) and supports delete (unsubscribe).
 pub trait WebhookStore: Send + Sync {
-    fn put(&self, def: WebhookEndpointDef);
-    fn get(&self, id: &str) -> Option<WebhookEndpointDef>;
+    fn put(&self, def: WebhookEndpointDef) -> Result<(), ConfigRepositoryError>;
+    fn get(&self, id: &str) -> Result<Option<WebhookEndpointDef>, ConfigRepositoryError>;
     /// Every endpoint owned by `workspace_id` (including disabled), for CRUD list
     /// and dispatch matching.
-    fn list(&self, workspace_id: &str) -> Vec<WebhookEndpointDef>;
+    fn list(&self, workspace_id: &str) -> Result<Vec<WebhookEndpointDef>, ConfigRepositoryError>;
     /// Remove by id; `true` if a row was removed (idempotent unsubscribe).
-    fn delete(&self, id: &str) -> bool;
+    fn delete(&self, id: &str) -> Result<bool, ConfigRepositoryError>;
     /// Insert one logical lifecycle event if absent. The stable event id is the
     /// idempotency key across dispatcher retries and process restarts.
-    fn enqueue_outbox(&self, event: WebhookOutboxEvent) -> bool;
-    fn pending_outbox(&self) -> Vec<WebhookOutboxEvent>;
-    fn complete_outbox(&self, event_id: &str) -> bool;
+    fn enqueue_outbox(&self, event: WebhookOutboxEvent) -> Result<bool, ConfigRepositoryError>;
+    fn pending_outbox(&self) -> Result<Vec<WebhookOutboxEvent>, ConfigRepositoryError>;
+    fn complete_outbox(&self, event_id: &str) -> Result<bool, ConfigRepositoryError>;
 }
 
 /// Secret-free durable webhook outbox row. Subscription secrets are resolved
@@ -149,59 +179,70 @@ impl InMemoryWebhookStore {
 }
 
 impl WebhookStore for InMemoryWebhookStore {
-    fn put(&self, def: WebhookEndpointDef) {
+    fn put(&self, def: WebhookEndpointDef) -> Result<(), ConfigRepositoryError> {
         self.endpoints
             .lock()
-            .expect("webhooks")
+            .map_err(|_| ConfigRepositoryError::Storage("webhook store mutex poisoned".into()))?
             .insert(def.id.clone(), def);
+        Ok(())
     }
-    fn get(&self, id: &str) -> Option<WebhookEndpointDef> {
-        self.endpoints.lock().expect("webhooks").get(id).cloned()
+    fn get(&self, id: &str) -> Result<Option<WebhookEndpointDef>, ConfigRepositoryError> {
+        Ok(self
+            .endpoints
+            .lock()
+            .map_err(|_| ConfigRepositoryError::Storage("webhook store mutex poisoned".into()))?
+            .get(id)
+            .cloned())
     }
-    fn list(&self, workspace_id: &str) -> Vec<WebhookEndpointDef> {
+    fn list(&self, workspace_id: &str) -> Result<Vec<WebhookEndpointDef>, ConfigRepositoryError> {
         let mut rows: Vec<WebhookEndpointDef> = self
             .endpoints
             .lock()
-            .expect("webhooks")
+            .map_err(|_| ConfigRepositoryError::Storage("webhook store mutex poisoned".into()))?
             .values()
             .filter(|d| d.workspace_id == workspace_id)
             .cloned()
             .collect();
         rows.sort_by(|a, b| a.id.cmp(&b.id));
-        rows
+        Ok(rows)
     }
-    fn delete(&self, id: &str) -> bool {
-        self.endpoints
+    fn delete(&self, id: &str) -> Result<bool, ConfigRepositoryError> {
+        Ok(self
+            .endpoints
             .lock()
-            .expect("webhooks")
+            .map_err(|_| ConfigRepositoryError::Storage("webhook store mutex poisoned".into()))?
             .remove(id)
-            .is_some()
+            .is_some())
     }
-    fn enqueue_outbox(&self, event: WebhookOutboxEvent) -> bool {
-        let mut rows = self.outbox.lock().expect("webhook outbox");
+    fn enqueue_outbox(&self, event: WebhookOutboxEvent) -> Result<bool, ConfigRepositoryError> {
+        let mut rows = self
+            .outbox
+            .lock()
+            .map_err(|_| ConfigRepositoryError::Storage("webhook outbox mutex poisoned".into()))?;
         if rows.contains_key(&event.id) {
-            return false;
+            return Ok(false);
         }
         rows.insert(event.id.clone(), event);
-        true
+        Ok(true)
     }
-    fn pending_outbox(&self) -> Vec<WebhookOutboxEvent> {
+    fn pending_outbox(&self) -> Result<Vec<WebhookOutboxEvent>, ConfigRepositoryError> {
         let mut rows: Vec<_> = self
             .outbox
             .lock()
-            .expect("webhook outbox")
+            .map_err(|_| ConfigRepositoryError::Storage("webhook outbox mutex poisoned".into()))?
             .values()
             .cloned()
             .collect();
         rows.sort_by(|a, b| a.id.cmp(&b.id));
-        rows
+        Ok(rows)
     }
-    fn complete_outbox(&self, event_id: &str) -> bool {
-        self.outbox
+    fn complete_outbox(&self, event_id: &str) -> Result<bool, ConfigRepositoryError> {
+        Ok(self
+            .outbox
             .lock()
-            .expect("webhook outbox")
+            .map_err(|_| ConfigRepositoryError::Storage("webhook outbox mutex poisoned".into()))?
             .remove(event_id)
-            .is_some()
+            .is_some())
     }
 }
 
@@ -251,8 +292,15 @@ pub trait AgentInputBindingRepository: Send + Sync {
         workspace_id: &str,
         config: AgentInputConfig,
     ) -> Result<(), AgentInputRepositoryError>;
-    fn get_agent_inputs(&self, workspace_id: &str, agent_id: &str) -> Option<AgentInputConfig>;
-    fn list_agent_inputs(&self, workspace_id: &str) -> Vec<AgentInputConfig>;
+    fn get_agent_inputs(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+    ) -> Result<Option<AgentInputConfig>, AgentInputRepositoryError>;
+    fn list_agent_inputs(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<AgentInputConfig>, AgentInputRepositoryError>;
 }
 
 /// Default in-memory Agent-input repository, keyed by `(Workspace, Agent)`.
@@ -275,31 +323,45 @@ impl AgentInputBindingRepository for InMemoryAgentInputBindingRepository {
         config: AgentInputConfig,
     ) -> Result<(), AgentInputRepositoryError> {
         let key = (workspace_id.to_string(), config.agent_id.clone());
-        let mut rows = self.0.lock().expect("agent input configs");
+        let mut rows = self.0.lock().map_err(|_| {
+            AgentInputRepositoryError::Storage("agent input repository mutex poisoned".into())
+        })?;
         if !validate_agent_input_revision(rows.get(&key), &config)? {
             return Ok(());
         }
         rows.insert(key, config);
         Ok(())
     }
-    fn get_agent_inputs(&self, workspace_id: &str, agent_id: &str) -> Option<AgentInputConfig> {
-        self.0
+    fn get_agent_inputs(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+    ) -> Result<Option<AgentInputConfig>, AgentInputRepositoryError> {
+        Ok(self
+            .0
             .lock()
-            .expect("agent resource configs")
+            .map_err(|_| {
+                AgentInputRepositoryError::Storage("agent input repository mutex poisoned".into())
+            })?
             .get(&(workspace_id.to_string(), agent_id.to_string()))
-            .cloned()
+            .cloned())
     }
-    fn list_agent_inputs(&self, workspace_id: &str) -> Vec<AgentInputConfig> {
+    fn list_agent_inputs(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<AgentInputConfig>, AgentInputRepositoryError> {
         let mut configs: Vec<_> = self
             .0
             .lock()
-            .expect("agent resource configs")
+            .map_err(|_| {
+                AgentInputRepositoryError::Storage("agent input repository mutex poisoned".into())
+            })?
             .iter()
             .filter(|((workspace, _), _)| workspace == workspace_id)
             .map(|(_, config)| config.clone())
             .collect();
         configs.sort_by(|a, b| a.agent_id.cmp(&b.agent_id));
-        configs
+        Ok(configs)
     }
 }
 
@@ -334,6 +396,7 @@ mod tests {
             store
                 .get_agent_inputs("workspace-a", "shared-agent")
                 .unwrap()
+                .unwrap()
                 .inputs[0]
                 .target
                 .id(),
@@ -343,6 +406,7 @@ mod tests {
             store
                 .get_agent_inputs("workspace-b", "shared-agent")
                 .unwrap()
+                .unwrap()
                 .inputs[0]
                 .target
                 .id(),
@@ -351,16 +415,17 @@ mod tests {
         assert!(
             store
                 .get_agent_inputs("workspace-c", "shared-agent")
+                .unwrap()
                 .is_none()
         );
-        assert_eq!(store.list_agent_inputs("workspace-a").len(), 1);
+        assert_eq!(store.list_agent_inputs("workspace-a").unwrap().len(), 1);
         assert_eq!(
-            store.list_agent_inputs("workspace-a")[0].inputs[0]
+            store.list_agent_inputs("workspace-a").unwrap()[0].inputs[0]
                 .target
                 .id(),
             "file-a"
         );
-        assert!(store.list_agent_inputs("workspace-c").is_empty());
+        assert!(store.list_agent_inputs("workspace-c").unwrap().is_empty());
     }
 
     #[test]
@@ -411,13 +476,18 @@ mod tests {
     #[test]
     fn webhook_store_lists_by_workspace_including_disabled_and_deletes_idempotently() {
         let store = InMemoryWebhookStore::new();
-        store.put(webhook("wh-a1", "wrkspc_a", false));
-        store.put(webhook("wh-a2", "wrkspc_a", true)); // disabled, still enumerated
-        store.put(webhook("wh-b1", "wrkspc_b", false));
+        store.put(webhook("wh-a1", "wrkspc_a", false)).unwrap();
+        store.put(webhook("wh-a2", "wrkspc_a", true)).unwrap(); // disabled, still enumerated
+        store.put(webhook("wh-b1", "wrkspc_b", false)).unwrap();
 
         // `list` is workspace-filtered (dispatch fan-out is per workspace), sorted
         // by id, and INCLUDES disabled rows (CRUD list surfaces suspended ones).
-        let ids_a: Vec<String> = store.list("wrkspc_a").into_iter().map(|d| d.id).collect();
+        let ids_a: Vec<String> = store
+            .list("wrkspc_a")
+            .unwrap()
+            .into_iter()
+            .map(|d| d.id)
+            .collect();
         assert_eq!(ids_a, vec!["wh-a1".to_string(), "wh-a2".to_string()]);
         // Workspace B's endpoint is never disclosed to A (the tenant fence).
         assert!(
@@ -428,6 +498,7 @@ mod tests {
         assert!(
             store
                 .list("wrkspc_a")
+                .unwrap()
                 .iter()
                 .find(|d| d.id == "wh-a2")
                 .unwrap()
@@ -435,15 +506,29 @@ mod tests {
         );
 
         // `delete` is an idempotent unsubscribe: true once, false thereafter.
-        assert!(store.delete("wh-a1"), "first delete removes a row");
-        assert!(!store.delete("wh-a1"), "second delete is a no-op → false");
-        assert!(store.get("wh-a1").is_none());
+        assert!(store.delete("wh-a1").unwrap(), "first delete removes a row");
+        assert!(
+            !store.delete("wh-a1").unwrap(),
+            "second delete is a no-op → false"
+        );
+        assert!(store.get("wh-a1").unwrap().is_none());
         // Deleting an unknown id is also false (never panics, never fabricates).
-        assert!(!store.delete("ghost"));
+        assert!(!store.delete("ghost").unwrap());
 
         // The surviving (disabled) row is still listed and reachable.
-        let remaining: Vec<String> = store.list("wrkspc_a").into_iter().map(|d| d.id).collect();
+        let remaining: Vec<String> = store
+            .list("wrkspc_a")
+            .unwrap()
+            .into_iter()
+            .map(|d| d.id)
+            .collect();
         assert_eq!(remaining, vec!["wh-a2".to_string()]);
-        assert!(store.list("wrkspc_b").iter().any(|d| d.id == "wh-b1"));
+        assert!(
+            store
+                .list("wrkspc_b")
+                .unwrap()
+                .iter()
+                .any(|d| d.id == "wh-b1")
+        );
     }
 }

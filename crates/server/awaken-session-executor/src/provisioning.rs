@@ -134,11 +134,8 @@ impl SharedHost {
     /// staged resource mounts (ADR-0038), each realized read-only under `.mnt/`.
     pub(crate) fn sandbox_spec(&self, thread: &str) -> pc::SandboxSpec {
         let mounts = self
-            .thread_resources
-            .lock()
-            .unwrap()
-            .get(thread)
-            .map(|staged| staged.mounts.clone())
+            .session_slots
+            .read(thread, |slot| slot.resources.mounts.clone())
             .unwrap_or_default();
         // Egress denial is a Workdir-tier bwrap convenience (not admission-gated
         // network isolation, which this tier cannot enforce), so it rides `extra`.
@@ -169,17 +166,15 @@ impl SharedHost {
     /// composition root (e.g. a scenario host wiring a container-tier ACP source) can
     /// pass it to [`crate::build_acp_channel_source`], symmetric with `thread_egress`.
     pub fn thread_resources_handle(&self) -> crate::sandbox_source::ThreadResources {
-        crate::sandbox_source::ThreadResources::new(self.thread_resources.clone())
+        crate::sandbox_source::ThreadResources::new(self.session_slots.clone())
     }
 
     /// Stage a thread's resources (mounts + prompt fragments); consumed by
     /// `sandbox_spec` and injected into the run's system prompt. From `prepare_session`.
     /// REPLACES the thread's set (correct at create time, before any first turn).
     pub(crate) fn register_thread_resources(&self, thread: &str, staged: StagedResources) {
-        self.thread_resources
-            .lock()
-            .unwrap()
-            .insert(thread.to_string(), staged);
+        self.session_slots
+            .update(thread, |slot| slot.resources = staged);
     }
 
     pub(crate) fn register_thread_resource_manifest(
@@ -187,29 +182,22 @@ impl SharedHost {
         thread: &str,
         manifest: awaken_protocol_managed::SessionResourceManifest,
     ) {
-        self.thread_resource_manifests
-            .lock()
-            .expect("thread resource manifests mutex poisoned")
-            .insert(thread.to_string(), manifest);
+        self.session_slots
+            .update(thread, |slot| slot.manifest = Some(manifest));
     }
 
     pub(crate) fn thread_resource_manifest(
         &self,
         thread: &str,
     ) -> Option<awaken_protocol_managed::SessionResourceManifest> {
-        self.thread_resource_manifests
-            .lock()
-            .expect("thread resource manifests mutex poisoned")
-            .get(thread)
-            .cloned()
+        self.session_slots
+            .read(thread, |slot| slot.manifest.clone())
+            .flatten()
     }
 
     pub(crate) fn thread_resources_snapshot(&self, thread: &str) -> StagedResources {
-        self.thread_resources
-            .lock()
-            .expect("thread resources mutex poisoned")
-            .get(thread)
-            .cloned()
+        self.session_slots
+            .read(thread, |slot| slot.resources.clone())
             .unwrap_or_default()
     }
 
@@ -220,10 +208,11 @@ impl SharedHost {
         thread: &str,
         repository_mcp: Vec<crate::host::PreparedMcpServer>,
     ) {
-        let mut all = self.thread_mcp.lock().unwrap();
-        let servers = all.entry(thread.to_string()).or_default();
-        servers.retain(|server| !server.name.starts_with("github:"));
-        servers.extend(repository_mcp);
+        self.session_slots.update(thread, |slot| {
+            slot.mcp
+                .retain(|server| !server.name.starts_with("github:"));
+            slot.mcp.extend(repository_mcp);
+        });
     }
 
     /// The Repository activations queued for `thread` (test-only observability: a
@@ -231,11 +220,8 @@ impl SharedHost {
     /// from `sandbox_spec`).
     #[cfg(test)]
     pub(crate) fn thread_repository_activations(&self, thread: &str) -> Vec<RepositoryActivation> {
-        self.thread_resources
-            .lock()
-            .unwrap()
-            .get(thread)
-            .map(|s| s.repositories.clone())
+        self.session_slots
+            .read(thread, |slot| slot.resources.repositories.clone())
             .unwrap_or_default()
     }
 
@@ -245,21 +231,15 @@ impl SharedHost {
     /// `github:<logical>` server bridged from a github_repository resource.
     #[cfg(test)]
     pub(crate) fn thread_mcp(&self, thread: &str) -> Vec<crate::host::PreparedMcpServer> {
-        self.thread_mcp
-            .lock()
-            .unwrap()
-            .get(thread)
-            .cloned()
+        self.session_slots
+            .read(thread, |slot| slot.mcp.clone())
             .unwrap_or_default()
     }
 
     /// The prompt fragments staged for `thread`'s bound resources (ADR-0038 A3a).
     pub(crate) fn thread_resource_prompts(&self, thread: &str) -> Vec<String> {
-        self.thread_resources
-            .lock()
-            .unwrap()
-            .get(thread)
-            .map(|s| s.prompts.clone())
+        self.session_slots
+            .read(thread, |slot| slot.resources.prompts.clone())
             .unwrap_or_default()
     }
 
@@ -433,11 +413,8 @@ impl SharedHost {
         realizer: &dyn pc::RepositoryRealizer,
     ) -> Result<(), crate::host::HostError> {
         let repositories = self
-            .thread_resources
-            .lock()
-            .unwrap()
-            .get(thread)
-            .map(|s| s.repositories.clone())
+            .session_slots
+            .read(thread, |slot| slot.resources.repositories.clone())
             .unwrap_or_default();
         for repository in repositories {
             realizer
@@ -466,23 +443,18 @@ impl SharedHost {
     pub async fn publish_thread_repositories(&self, thread: &str) {
         let env = self.session_environment(thread).await;
         let repositories = self
-            .thread_resources
-            .lock()
-            .unwrap()
-            .get(thread)
-            .map(|s| s.repositories.clone())
+            .session_slots
+            .read(thread, |slot| slot.resources.repositories.clone())
             .unwrap_or_default();
         let Some(env) = env else {
             return;
         };
         // Repos the agent pushes itself via an injected `github:<logical>` MCP server.
         let mcp_owned: std::collections::HashSet<String> = self
-            .thread_mcp
-            .lock()
-            .unwrap()
-            .get(thread)
-            .into_iter()
-            .flatten()
+            .session_slots
+            .read(thread, |slot| slot.mcp.clone())
+            .unwrap_or_default()
+            .iter()
             .filter_map(|s| s.name.strip_prefix("github:").map(String::from))
             .collect();
         for repository in repositories {
@@ -809,7 +781,7 @@ mod provisioning_registry_tests {
             .map(|definition| definition.id)
             .collect::<Vec<_>>();
         assert!(
-            ids.iter().any(|id| id.contains("notes")),
+            ids.iter().any(|id| id.as_str().contains("notes")),
             "the authored skill must be persisted to the durable catalog: {ids:?}"
         );
 
@@ -843,14 +815,14 @@ mod provisioning_registry_tests {
             .skills
             .cache_snapshot_in(host.local_workspace())
             .into_iter()
-            .find(|version| version.skill_id == cid)
+            .find(|version| version.skill_id.as_str() == cid)
             .expect("the advertised resource id must resolve to the Skill version");
         assert!(version.skill_md().unwrap().ends_with(b"say hi"));
         assert!(
             host.skills
                 .cache_snapshot_in(host.local_workspace())
                 .into_iter()
-                .find(|version| version.skill_id == "skill_deadbeefdeadbeef")
+                .find(|version| version.skill_id.as_str() == "skill_deadbeefdeadbeef")
                 .is_none()
         );
 

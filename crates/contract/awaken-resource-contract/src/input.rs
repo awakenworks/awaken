@@ -58,6 +58,8 @@ resource_id!(BindingId);
 resource_id!(FileId);
 resource_id!(MemoryStoreId);
 resource_id!(RepositoryId);
+resource_id!(SkillId);
+resource_id!(SkillVersionId);
 
 /// The stable resource identity named by an Agent default or Session attachment.
 /// Mutable Memory and Repository content is intentionally not represented here.

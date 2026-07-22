@@ -1,6 +1,6 @@
 //! Compilation: a pure config → executable-snapshot function.
 
-use awaken_runtime_contract::agent_bindings::{AgentBindings, AgentMcpServerBinding};
+use awaken_runtime_contract::agent_bindings::AgentBindings;
 use awaken_runtime_contract::resolved::{ToolDescriptor, ToolFacet, ToolPresentation};
 use awaken_runtime_contract::snapshot::AgentSnapshotMetadata;
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
@@ -212,7 +212,7 @@ pub fn compile_resolved(
     if let awaken_runtime_contract::resolved::Backend::Remote { .. } =
         awaken_runtime_contract::resolved::Backend::from_ref(&model.backend_ref)
     {
-        if !config.skills.is_empty() {
+        if !config.skill_ids.is_empty() {
             return Err(CompileError::UnsupportedCapability {
                 agent: config.id.clone(),
                 axis: "skills",
@@ -257,23 +257,13 @@ fn normalize_agent_bindings(config: &AgentConfig) -> Result<AgentBindings, Compi
         axis,
         reason,
     };
-    let mut mcp_servers = Vec::with_capacity(config.mcp_servers.len());
     let mut mcp_names = std::collections::BTreeSet::new();
-    for (index, value) in config.mcp_servers.iter().enumerate() {
-        let object = value
-            .as_object()
-            .ok_or_else(|| invalid("mcp_servers", format!("entry {index} must be an object")))?;
-        let name = object
-            .get("name")
-            .and_then(serde_json::Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
+    for (index, server) in config.mcp_servers.iter().enumerate() {
+        let name = (!server.name.trim().is_empty())
+            .then_some(server.name.trim())
             .ok_or_else(|| invalid("mcp_servers", format!("entry {index} requires `name`")))?;
-        let url = object
-            .get("url")
-            .and_then(serde_json::Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
+        let url = (!server.url.trim().is_empty())
+            .then_some(server.url.trim())
             .ok_or_else(|| invalid("mcp_servers", format!("entry {index} requires `url`")))?;
         if !url.starts_with("http://") && !url.starts_with("https://") {
             return Err(invalid(
@@ -287,23 +277,11 @@ fn normalize_agent_bindings(config: &AgentConfig) -> Result<AgentBindings, Compi
                 format!("server name {name:?} is duplicated"),
             ));
         }
-        mcp_servers.push(AgentMcpServerBinding {
-            name: name.to_string(),
-            url: url.to_string(),
-        });
     }
 
-    let mut skill_ids = Vec::with_capacity(config.skills.len());
     let mut seen_skills = std::collections::BTreeSet::new();
-    for (index, value) in config.skills.iter().enumerate() {
-        let id = value.as_str().or_else(|| {
-            value
-                .as_object()
-                .and_then(|object| object.get("id"))
-                .and_then(serde_json::Value::as_str)
-        });
-        let id = id
-            .map(str::trim)
+    for (index, id) in config.skill_ids.iter().enumerate() {
+        let id = Some(id.trim())
             .filter(|value| !value.is_empty())
             .ok_or_else(|| {
                 invalid(
@@ -311,13 +289,13 @@ fn normalize_agent_bindings(config: &AgentConfig) -> Result<AgentBindings, Compi
                     format!("entry {index} must be a non-empty id or {{\"id\": ...}}"),
                 )
             })?;
-        if seen_skills.insert(id.to_string()) {
-            skill_ids.push(id.to_string());
+        if !seen_skills.insert(id.to_string()) {
+            return Err(invalid("skills", format!("skill id {id:?} is duplicated")));
         }
     }
     Ok(AgentBindings {
-        mcp_servers,
-        skill_ids,
+        mcp_servers: config.mcp_servers.clone(),
+        skill_ids: config.skill_ids.clone(),
     })
 }
 
@@ -404,6 +382,16 @@ mod tests {
 
     fn tool(id: &str) -> ToolDescriptor {
         ToolDescriptor::pinned("test", id, "a tool", serde_json::json!({"type": "object"}))
+    }
+
+    fn mcp(
+        name: &str,
+        url: &str,
+    ) -> awaken_runtime_contract::agent_bindings::AgentMcpServerBinding {
+        awaken_runtime_contract::agent_bindings::AgentMcpServerBinding {
+            name: name.to_string(),
+            url: url.to_string(),
+        }
     }
 
     #[test]
@@ -641,7 +629,7 @@ mod tests {
         // silent runtime no-op, so publish rejects it. Skills reported first.
         let mut with_skills = config(&[]);
         with_skills.model_binding = ModelSelection::pinned("p", "m", "a2a:https://remote/agent");
-        with_skills.skills = vec![serde_json::json!({"id": "review"})];
+        with_skills.skill_ids = vec!["review".into()];
         assert_eq!(
             compile(&with_skills, &[]).unwrap_err(),
             CompileError::UnsupportedCapability {
@@ -652,7 +640,7 @@ mod tests {
 
         let mut with_mcp = config(&[]);
         with_mcp.model_binding = ModelSelection::pinned("p", "m", "a2a:https://remote/agent");
-        with_mcp.mcp_servers = vec![serde_json::json!({"name": "gh"})];
+        with_mcp.mcp_servers = vec![mcp("gh", "")];
         assert_eq!(
             compile(&with_mcp, &[]).unwrap_err(),
             CompileError::UnsupportedCapability {
@@ -669,11 +657,8 @@ mod tests {
         for backend in ["genai", "acp:claude"] {
             let mut cfg = config(&[]);
             cfg.model_binding = ModelSelection::pinned("p", "m", backend);
-            cfg.skills = vec![serde_json::json!({"id": "review"})];
-            cfg.mcp_servers = vec![serde_json::json!({
-                "name": "gh",
-                "url": "https://mcp.example.test"
-            })];
+            cfg.skill_ids = vec!["review".into()];
+            cfg.mcp_servers = vec![mcp("gh", "https://mcp.example.test")];
             assert!(
                 compile(&cfg, &[]).is_ok(),
                 "backend `{backend}` must honor skills/mcp"
@@ -899,15 +884,8 @@ mod tests {
     #[test]
     fn published_config_carries_normalized_agent_integrations() {
         let mut cfg = config(&[]);
-        cfg.mcp_servers = vec![serde_json::json!({
-            "type": "url",
-            "name": "docs",
-            "url": "https://mcp.example.test"
-        })];
-        cfg.skills = vec![
-            serde_json::json!({ "id": "skill_docs" }),
-            serde_json::json!("skill_release"),
-        ];
+        cfg.mcp_servers = vec![mcp("docs", "https://mcp.example.test")];
+        cfg.skill_ids = vec!["skill_docs".into(), "skill_release".into()];
         let snapshot = compile(&cfg, &[]).expect("valid integrations compile");
         let bindings = AgentBindings::from_config(&snapshot.resolved_spec.plugin_config)
             .expect("new publications always carry the binding section");
@@ -918,7 +896,7 @@ mod tests {
     #[test]
     fn invalid_agent_integrations_fail_at_publish_boundary() {
         let mut cfg = config(&[]);
-        cfg.mcp_servers = vec![serde_json::json!({ "name": "docs", "url": "file:///tmp/x" })];
+        cfg.mcp_servers = vec![mcp("docs", "file:///tmp/x")];
         let error = compile(&cfg, &[]).unwrap_err();
         assert!(matches!(
             error,
@@ -930,7 +908,7 @@ mod tests {
         assert_eq!(error.field_path(), "mcp_servers");
 
         cfg.mcp_servers.clear();
-        cfg.skills = vec![serde_json::json!({ "id": "" })];
+        cfg.skill_ids = vec![String::new()];
         let error = compile(&cfg, &[]).unwrap_err();
         assert!(matches!(
             error,

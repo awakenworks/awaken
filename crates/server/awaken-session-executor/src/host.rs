@@ -10,7 +10,7 @@
 //! It names no protocol vocabulary: outcomes are the neutral [`RunState`] plus an
 //! optional [`PendingTool`]; each adapter maps those onto its own wire shape.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -92,8 +92,6 @@ pub(crate) fn now_ms() -> u64 {
 
 pub use crate::mcp::PreparedMcpServer;
 
-use crate::provisioning::StagedResources;
-
 mod build;
 pub use build::ResourcePlanePorts;
 mod completion;
@@ -119,8 +117,9 @@ pub struct SharedHost {
     /// Platform-managed workspace for flat, no-login local requests. It is
     /// generated (and persisted with durable storage), never compiled in.
     pub(crate) local_workspace: String,
-    /// Trusted workspace recorded for each prepared thread/session.
-    pub(crate) thread_workspaces: std::sync::Mutex<HashMap<String, String>>,
+    /// Process-local projections materialized for prepared Sessions. The private
+    /// slot makes their lifecycle atomic while the durable manifest stays authoritative.
+    pub(crate) session_slots: crate::session_slot::SessionRuntimeSlots,
     /// The host DEFAULT executor: used by auxiliary sub-agents (judge, compactor,
     /// memory) and by an explicitly local composition with no
     /// [`InferenceExecutorMaterializer`]. Once a materializer is installed, a rejected
@@ -157,12 +156,6 @@ pub struct SharedHost {
     /// sections (e.g. the tool state machine). Empty by default.
     pub(crate) plugin_ids: Vec<String>,
     pub(crate) plugin_config: std::collections::BTreeMap<String, serde_json::Value>,
-    pub(crate) sessions: tokio::sync::Mutex<HashMap<String, Arc<SessionCtx>>>,
-    /// Session-owned execution environments live independently from the rebuildable
-    /// runtime context. Model/resource/token changes evict `SessionCtx` but retain this
-    /// one environment, so Native, ACP and Hand keep the same workspace and handle.
-    pub(crate) session_environments:
-        tokio::sync::Mutex<HashMap<String, Arc<crate::session_environment::SessionEnvironment>>>,
     pub(crate) hub: Arc<ThreadEventHub>,
     /// When set, each thread commits to a durable SQLite database at
     /// `store_dir/<thread>.db`, so an awaiting run survives a process restart. When
@@ -185,10 +178,6 @@ pub struct SharedHost {
     /// Host-level memory auxiliary-agent capability. It owns no store: every
     /// recall/extraction operation requires a Session-scoped governed binding.
     pub(crate) memory: Arc<crate::memory::MemoryRuntime>,
-    /// Per-thread governed MemoryStore selection. `None` means the Session has no
-    /// memory binding; there is deliberately no Host-global fallback.
-    pub(crate) thread_memory:
-        std::sync::Mutex<HashMap<String, Option<Arc<crate::memory::BoundMemory>>>>,
     /// The relevance selector for recall (a `memory-selector` sub-agent), wired
     /// into the memory recall plugin when memory is enabled.
     memory_selector: Option<Arc<dyn awaken_ext_memory::RecallSelector>>,
@@ -202,31 +191,11 @@ pub struct SharedHost {
     /// runtime config is the installed (published) config for its agent, if any,
     /// else the built-in default (slice A).
     pub(crate) config_service: Option<Arc<crate::config_plane::ConfigService>>,
-    /// Per-thread MCP servers staged by a session's `prepare_session` (ADR-0043
-    /// Phase 3), consumed when the thread's context is first built. Keyed by
-    /// thread id; a thread with no entry connects to no MCP server.
-    pub(crate) thread_mcp: std::sync::Mutex<HashMap<String, Vec<PreparedMcpServer>>>,
-    /// Exact Skill versions frozen by the Session resource manifest. Presence of an
-    /// empty vector explicitly disables delivered Skills for that Session.
-    pub(crate) thread_skills:
-        std::sync::Mutex<HashMap<String, Vec<awaken_skill_store::SkillVersion>>>,
     /// The host's loopback MCP relay (α-reference resolver), started lazily on the first
     /// sandboxed ACP session that stages an authenticated MCP server. It holds the real
     /// bearers host-side and injects them when forwarding the sandbox's MCP calls, so the
     /// raw token never enters the sandbox. See [`crate::mcp_relay`].
     pub(crate) mcp_relay: tokio::sync::OnceCell<crate::mcp_relay::McpRelay>,
-    /// Per-thread staged resource mounts + prompt fragments (ADR-0038), set by a
-    /// session's `prepare_session` and consumed by `sandbox_spec` (mounts) and the
-    /// run's system prompt (fragments). A thread with no entry mounts nothing. A shared
-    /// handle (like [`Self::thread_egress`]) so a sandboxed ACP channel source can carry
-    /// the same resource mounts into the bwrap/container sandbox it launches the CLI in.
-    pub(crate) thread_resources: std::sync::Arc<std::sync::Mutex<HashMap<String, StagedResources>>>,
-    /// Secret-free, frozen Session resource inputs retained for durable dispatch.
-    /// `StagedResources` is a process-local realization cache (and may contain
-    /// ephemeral credentials); this manifest is the serializable authority a cold
-    /// worker installs before creating the Session environment.
-    pub(crate) thread_resource_manifests:
-        std::sync::Mutex<HashMap<String, awaken_protocol_managed::SessionResourceManifest>>,
     /// Cold-worker installer for the frozen dispatch manifest. It owns only weak
     /// host wiring plus resource/credential ports, so installing it cannot create
     /// an `Arc<SharedHost>` cycle.

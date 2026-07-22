@@ -8,8 +8,7 @@
 //! executor; a configured materialization failure is rejected rather than
 //! silently selecting another route.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use awaken_runtime_contract::InferenceAccess;
 use awaken_runtime_contract::activation::RunActivation;
@@ -53,16 +52,14 @@ pub trait InferenceExecutorMaterializer: Send + Sync {
 /// a ref becomes an executor.
 pub(crate) struct InferenceRouting {
     materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,
-    /// Per-thread bound model ref, staged at session prepare (mirrors `thread_mcp`).
-    /// Absent → the host default model ref.
-    thread_model: Mutex<HashMap<String, String>>,
+    slots: crate::session_slot::SessionRuntimeSlots,
 }
 
 impl InferenceRouting {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(slots: crate::session_slot::SessionRuntimeSlots) -> Self {
         Self {
             materializer: None,
-            thread_model: Mutex::new(HashMap::new()),
+            slots,
         }
     }
 
@@ -80,26 +77,15 @@ impl InferenceRouting {
     /// Bind `model_ref` to `thread` (R2/R5), staged before its first turn.
     /// Re-registering replaces the binding (the per-turn override re-stages).
     pub(crate) fn register(&self, thread: &str, model_ref: impl Into<String>) {
-        self.thread_model
-            .lock()
-            .expect("thread model mutex poisoned")
-            .insert(thread.to_string(), model_ref.into());
-    }
-
-    pub(crate) fn remove(&self, thread: &str) {
-        self.thread_model
-            .lock()
-            .expect("thread model mutex poisoned")
-            .remove(thread);
+        self.slots
+            .update(thread, |slot| slot.model_ref = Some(model_ref.into()));
     }
 
     /// The model ref bound to `thread`, or `default_ref`.
     pub(crate) fn model_ref(&self, thread: &str, default_ref: &str) -> String {
-        self.thread_model
-            .lock()
-            .expect("thread model mutex poisoned")
-            .get(thread)
-            .cloned()
+        self.slots
+            .read(thread, |slot| slot.model_ref.clone())
+            .flatten()
             .unwrap_or_else(|| default_ref.to_string())
     }
 
@@ -107,11 +93,9 @@ impl InferenceRouting {
     /// uses its agent's published binding. Stamped onto the run's activation at
     /// delivery so the resolve seam sees it without consulting this map.
     pub(crate) fn override_for(&self, thread: &str) -> Option<String> {
-        self.thread_model
-            .lock()
-            .expect("thread model mutex poisoned")
-            .get(thread)
-            .cloned()
+        self.slots
+            .read(thread, |slot| slot.model_ref.clone())
+            .flatten()
     }
 
     pub(crate) fn executor_for_activation(
@@ -155,6 +139,12 @@ mod tests {
     use awaken_runtime_contract::snapshot::{
         AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
     };
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    fn routing() -> InferenceRouting {
+        InferenceRouting::new(Default::default())
+    }
 
     fn opaque_access(scheme: &str, reference: &str) -> InferenceAccess {
         InferenceAccess {
@@ -234,7 +224,7 @@ mod tests {
         let fast: Arc<dyn LlmExecutor> = Arc::new(LabeledModel("fast"));
         let mut map: HashMap<String, Arc<dyn LlmExecutor>> = HashMap::new();
         map.insert("fast-model".into(), fast.clone());
-        let mut binding = InferenceRouting::new();
+        let mut binding = routing();
         let provider = Arc::new(MapProvider(map));
         binding.set_materializer(provider);
 
@@ -261,7 +251,7 @@ mod tests {
         let mut map: HashMap<String, Arc<dyn LlmExecutor>> = HashMap::new();
         map.insert("fast-model".into(), fast.clone());
         map.insert("slow-model".into(), slow);
-        let mut routing = InferenceRouting::new();
+        let mut routing = routing();
         routing.set_materializer(Arc::new(MapProvider(map)));
 
         let mut activation = activation("fast-model");
@@ -294,7 +284,7 @@ mod tests {
         // a turn cannot keep running a stale prior model ref. `model_ref` reflects the
         // latest registration (the executor itself is resolved separately via
         // `executor_for` at run time).
-        let mut binding = InferenceRouting::new();
+        let mut binding = routing();
         let mut map: HashMap<String, Arc<dyn LlmExecutor>> = HashMap::new();
         map.insert(
             "model-a".into(),
@@ -317,7 +307,7 @@ mod tests {
 
     #[test]
     fn no_provider_means_executor_for_is_always_none() {
-        let binding = InferenceRouting::new();
+        let binding = routing();
         assert!(
             binding
                 .executor_for_activation(&activation("whatever"))
@@ -328,7 +318,7 @@ mod tests {
 
     #[test]
     fn installed_materializer_rejects_a_snapshot_without_pinned_access() {
-        let mut binding = InferenceRouting::new();
+        let mut binding = routing();
         binding.set_materializer(Arc::new(MapProvider(HashMap::new())));
         let mut activation = activation("model-a");
         activation.snapshot.metadata.inference_access = None;
@@ -363,7 +353,7 @@ mod tests {
         let seen = Arc::new(Mutex::new(None));
         let executor: Arc<dyn LlmExecutor> = Arc::new(LabeledModel("gateway"));
         let grant = opaque_access("credential-reference/v1", "grant-42");
-        let mut binding = InferenceRouting::new();
+        let mut binding = routing();
         let materializer = Arc::new(ReferenceMaterializer {
             seen: seen.clone(),
             executor: executor.clone(),
@@ -382,7 +372,7 @@ mod tests {
 
     #[test]
     fn override_for_returns_the_staged_override_else_none() {
-        let binding = InferenceRouting::new();
+        let binding = routing();
         assert!(binding.override_for("t").is_none());
         binding.register("t", "fast-model");
         assert_eq!(binding.override_for("t").as_deref(), Some("fast-model"));

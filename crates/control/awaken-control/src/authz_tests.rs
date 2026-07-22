@@ -175,6 +175,7 @@ fn the_route_table_maps_reads_to_read_actions_and_mutations_to_writes() {
     fn action_for(method: &Method, path: &str) -> Option<&'static str> {
         match super::action_for(method, path) {
             Some(RouteAuthz::Scoped { action, .. }) => Some(action),
+            Some(RouteAuthz::Resource { .. }) => None,
             Some(RouteAuthz::TokenAdmin) => panic!("{path} is not a Scoped route"),
             None => None,
         }
@@ -276,9 +277,15 @@ fn the_route_table_maps_reads_to_read_actions_and_mutations_to_writes() {
         action_for(&post, "/v1/user_profiles/uprof_1/enrollment_url"),
         Some(WORKSPACE_WRITE)
     );
-    // An unmapped route fails closed (the guard turns None into 403).
+    // Concrete route membership belongs to axum; registered aggregate families
+    // receive a total read/write policy while unknown families fail closed.
     assert_eq!(action_for(&get, "/v1/config/unknown"), None);
-    assert_eq!(action_for(&post, "/v1/config/catalog"), None);
+    assert_eq!(
+        action_for(&post, "/v1/config/catalog"),
+        Some(WORKSPACE_WRITE)
+    );
+    // An unknown bounded family still fails closed.
+    assert_eq!(action_for(&get, "/v1/unknown"), None);
 }
 
 #[test]
@@ -294,6 +301,12 @@ fn the_token_management_family_delegates_authorization_to_its_handlers() {
 
 #[test]
 fn resource_pep_maps_only_resource_routes_and_is_total_by_method() {
+    fn resource_action_for(method: &Method, path: &str) -> Option<&'static str> {
+        match super::action_for(method, path) {
+            Some(RouteAuthz::Resource { action, .. }) => Some(action),
+            _ => None,
+        }
+    }
     for (path, read, write) in [
         ("/v1/files", FILE_READ, FILE_WRITE),
         ("/v1/files/file_1/content", FILE_READ, FILE_WRITE),
@@ -782,7 +795,13 @@ fn af2_credential_id_routes_map_read_and_write_sub_actions() {
             scope: ScopeClass::Workspace,
         })
     );
-    assert_eq!(action_for(&Method::PUT, "/v1/config/credentials/c1"), None);
+    assert_eq!(
+        action_for(&Method::PUT, "/v1/config/credentials/c1"),
+        Some(RouteAuthz::Scoped {
+            action: APIKEY_WRITE,
+            scope: ScopeClass::Workspace,
+        })
+    );
 }
 
 #[test]
@@ -794,6 +813,7 @@ fn af_covers_the_deployment_environment_and_agent_families() {
     fn scoped(method: Method, path: &str) -> Option<&'static str> {
         match super::action_for(&method, path) {
             Some(RouteAuthz::Scoped { action, .. }) => Some(action),
+            Some(RouteAuthz::Resource { .. }) => None,
             Some(RouteAuthz::TokenAdmin) => panic!("{path} is TokenAdmin, not Scoped"),
             None => None,
         }
@@ -907,8 +927,12 @@ fn af_covers_the_deployment_environment_and_agent_families() {
         scoped(get.clone(), "/v1/deployment_runs/r1"),
         Some(WORKSPACE_READ)
     );
-    // deployment_runs is read-only: a POST has no write mapping and fails closed.
-    assert_eq!(scoped(post.clone(), "/v1/deployment_runs"), None);
+    // Axum owns the fact that deployment_runs currently exposes no POST; if one is
+    // mounted later, the family policy already classifies it as a write.
+    assert_eq!(
+        scoped(post.clone(), "/v1/deployment_runs"),
+        Some(WORKSPACE_WRITE)
+    );
 
     // -- environments + the self-hosted work queue --
     assert_eq!(

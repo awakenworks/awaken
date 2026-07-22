@@ -4,9 +4,9 @@
 //! backend does — [`InferenceProfileStore`], [`McpStore`] and
 //! [`AgentInputBindingRepository`] — from a single connection pool.
 //!
-//! The store ports are **sync and infallible** (a broken store is a
-//! panic-worthy invariant violation, not a recoverable condition — same contract
-//! as the in-memory and sqlite impls). `sqlx` is async-only, so this backend
+//! The profile and MCP ports are synchronous but fallible: SQL and JSON failures
+//! cross the repository boundary as `ConfigRepositoryError`. `sqlx` is async-only,
+//! so this backend
 //! owns a dedicated single-worker Tokio runtime and drives each short query to
 //! completion on it via [`block`], which runs the future on a fresh OS thread so
 //! it is safe to call from *inside* the server's request-handler runtime (a
@@ -24,8 +24,8 @@ use tokio::runtime::{Builder, Handle, Runtime};
 
 use awaken_config_resolver::{
     AgentInputBindingRepository, AgentInputConfig, AgentInputRepositoryError, AgentMcpConfig,
-    InferenceProfile, InferenceProfileStore, McpServerDef, McpStore, WebhookEndpointDef,
-    WebhookStore, validate_agent_input_revision,
+    ConfigRepositoryError, InferenceProfile, InferenceProfileStore, McpServerDef, McpStore,
+    WebhookEndpointDef, WebhookStore, validate_agent_input_revision,
 };
 
 use crate::schema::admin_bundle;
@@ -91,33 +91,37 @@ impl PostgresAdminStore {
             migrate(&pool).await?;
             Ok::<_, StoreError>(pool)
         })?;
-        let store = Self {
+        Ok(Self {
             pool,
             handle,
             rt: Some(rt),
-        };
-        store
-            .migrate_legacy_memory_stores()
-            .map_err(|error| StoreError::Migrate(error.to_string()))?;
-        Ok(store)
+        })
     }
 
-    fn put_json<T: serde::Serialize>(&self, table: &str, key_col: &str, key: &str, value: &T) {
+    fn put_json<T: serde::Serialize>(
+        &self,
+        table: &str,
+        key_col: &str,
+        key: &str,
+        value: &T,
+    ) -> Result<(), ConfigRepositoryError> {
         let sql = format!(
             "INSERT INTO {NS}_{table} ({key_col}, data) VALUES ($1, $2) \
              ON CONFLICT ({key_col}) DO UPDATE SET data = excluded.data"
         );
         let pool = self.pool.clone();
         let key = key.to_string();
-        let data = serde_json::to_value(value).expect("serialize admin row");
+        let data = serde_json::to_value(value)
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
         block(&self.handle, move || async move {
             sqlx::query(&sql)
                 .bind(key)
                 .bind(Json(data))
                 .execute(&pool)
                 .await
-                .expect("write admin row");
-        });
+                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+            Ok(())
+        })
     }
 
     fn get_json<T: serde::de::DeserializeOwned + Send + 'static>(
@@ -125,7 +129,7 @@ impl PostgresAdminStore {
         table: &str,
         key_col: &str,
         key: &str,
-    ) -> Option<T> {
+    ) -> Result<Option<T>, ConfigRepositoryError> {
         let sql = format!("SELECT data FROM {NS}_{table} WHERE {key_col} = $1");
         let pool = self.pool.clone();
         let key = key.to_string();
@@ -134,9 +138,13 @@ impl PostgresAdminStore {
                 .bind(key)
                 .fetch_optional(&pool)
                 .await
-                .expect("read admin row")?;
-            let Json(value): Json<T> = row.try_get("data").expect("decode admin row");
-            Some(value)
+                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+            row.map(|row| {
+                row.try_get::<Json<T>, _>("data")
+                    .map(|Json(value)| value)
+                    .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))
+            })
+            .transpose()
         })
     }
 
@@ -146,18 +154,19 @@ impl PostgresAdminStore {
         &self,
         table: &str,
         key_col: &str,
-    ) -> Vec<T> {
+    ) -> Result<Vec<T>, ConfigRepositoryError> {
         let sql = format!("SELECT data FROM {NS}_{table} ORDER BY {key_col}");
         let pool = self.pool.clone();
         block(&self.handle, move || async move {
             let rows = sqlx::query(&sql)
                 .fetch_all(&pool)
                 .await
-                .expect("list admin rows");
+                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
             rows.into_iter()
                 .map(|row| {
-                    let Json(value): Json<T> = row.try_get("data").expect("decode admin row");
-                    value
+                    row.try_get::<Json<T>, _>("data")
+                        .map(|Json(value)| value)
+                        .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))
                 })
                 .collect()
         })
@@ -235,134 +244,156 @@ impl AgentInputBindingRepository for PostgresAdminStore {
                 .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))
         })
     }
-    fn get_agent_inputs(&self, workspace_id: &str, agent_id: &str) -> Option<AgentInputConfig> {
+    fn get_agent_inputs(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+    ) -> Result<Option<AgentInputConfig>, AgentInputRepositoryError> {
         let key = format!("{workspace_id}\u{1f}{agent_id}");
         self.get_json("agent_resource", "agent_id", &key)
+            .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))
     }
-    fn list_agent_inputs(&self, workspace_id: &str) -> Vec<AgentInputConfig> {
+    fn list_agent_inputs(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<AgentInputConfig>, AgentInputRepositoryError> {
         let prefix = format!("{workspace_id}\u{1f}");
         let pool = self.pool.clone();
         block(&self.handle, move || async move {
-            sqlx::query(&format!(
+            let rows = sqlx::query(&format!(
                 "SELECT agent_id, data FROM {NS}_agent_resource ORDER BY agent_id COLLATE \"C\""
             ))
             .fetch_all(&pool)
             .await
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|row| {
-                let key = row.try_get::<String, _>("agent_id").ok()?;
-                let Json(config): Json<AgentInputConfig> = row.try_get("data").ok()?;
-                key.starts_with(&prefix).then_some(config)
-            })
-            .collect()
+            .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
+            rows.into_iter()
+                .filter_map(|row| {
+                    let key = row.try_get::<String, _>("agent_id").ok()?;
+                    key.starts_with(&prefix).then_some(row)
+                })
+                .map(|row| {
+                    let Json(config): Json<AgentInputConfig> = row
+                        .try_get("data")
+                        .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
+                    Ok(config)
+                })
+                .collect()
         })
     }
 }
 
 impl WebhookStore for PostgresAdminStore {
-    fn put(&self, def: WebhookEndpointDef) {
-        self.put_json("webhook", "id", &def.id.clone(), &def);
+    fn put(&self, def: WebhookEndpointDef) -> Result<(), ConfigRepositoryError> {
+        self.put_json("webhook", "id", &def.id.clone(), &def)
     }
-    fn get(&self, id: &str) -> Option<WebhookEndpointDef> {
+    fn get(&self, id: &str) -> Result<Option<WebhookEndpointDef>, ConfigRepositoryError> {
         self.get_json("webhook", "id", id)
     }
-    fn list(&self, workspace_id: &str) -> Vec<WebhookEndpointDef> {
+    fn list(&self, workspace_id: &str) -> Result<Vec<WebhookEndpointDef>, ConfigRepositoryError> {
         // Reuse the sorted list bridge, then fence by owner in Rust (webhook rows are
         // low-cardinality; workspace lives inside the JSON, not a column).
-        self.list_json::<WebhookEndpointDef>("webhook", "id")
+        Ok(self
+            .list_json::<WebhookEndpointDef>("webhook", "id")?
             .into_iter()
             .filter(|d| d.workspace_id == workspace_id)
-            .collect()
+            .collect())
     }
-    fn delete(&self, id: &str) -> bool {
+    fn delete(&self, id: &str) -> Result<bool, ConfigRepositoryError> {
         let sql = format!("DELETE FROM {NS}_webhook WHERE id = $1");
         let pool = self.pool.clone();
         let id = id.to_string();
         block(&self.handle, move || async move {
-            sqlx::query(&sql)
+            Ok(sqlx::query(&sql)
                 .bind(id)
                 .execute(&pool)
                 .await
-                .expect("delete admin row")
+                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?
                 .rows_affected()
-                > 0
+                > 0)
         })
     }
-    fn enqueue_outbox(&self, event: awaken_config_resolver::WebhookOutboxEvent) -> bool {
+    fn enqueue_outbox(
+        &self,
+        event: awaken_config_resolver::WebhookOutboxEvent,
+    ) -> Result<bool, ConfigRepositoryError> {
         let sql = format!(
             "INSERT INTO {NS}_webhook_outbox (event_id, data) VALUES ($1, $2) \
              ON CONFLICT (event_id) DO NOTHING"
         );
         let pool = self.pool.clone();
         block(&self.handle, move || async move {
-            sqlx::query(&sql)
+            Ok(sqlx::query(&sql)
                 .bind(&event.id)
                 .bind(sqlx::types::Json(&event))
                 .execute(&pool)
                 .await
-                .expect("enqueue webhook outbox event")
+                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?
                 .rows_affected()
-                > 0
+                > 0)
         })
     }
-    fn pending_outbox(&self) -> Vec<awaken_config_resolver::WebhookOutboxEvent> {
+    fn pending_outbox(
+        &self,
+    ) -> Result<Vec<awaken_config_resolver::WebhookOutboxEvent>, ConfigRepositoryError> {
         let sql = format!("SELECT data FROM {NS}_webhook_outbox ORDER BY created_at, event_id");
         let pool = self.pool.clone();
         block(&self.handle, move || async move {
             sqlx::query(&sql)
                 .fetch_all(&pool)
                 .await
-                .expect("list webhook outbox")
+                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?
                 .into_iter()
                 .map(|row| {
                     let sqlx::types::Json(event) = row
                         .try_get::<sqlx::types::Json<awaken_config_resolver::WebhookOutboxEvent>, _>("data")
-                        .expect("decode webhook outbox row");
-                    event
+                        .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+                    Ok(event)
                 })
                 .collect()
         })
     }
-    fn complete_outbox(&self, event_id: &str) -> bool {
+    fn complete_outbox(&self, event_id: &str) -> Result<bool, ConfigRepositoryError> {
         let sql = format!("DELETE FROM {NS}_webhook_outbox WHERE event_id = $1");
         let pool = self.pool.clone();
         let event_id = event_id.to_string();
         block(&self.handle, move || async move {
-            sqlx::query(&sql)
+            Ok(sqlx::query(&sql)
                 .bind(event_id)
                 .execute(&pool)
                 .await
-                .expect("complete webhook outbox event")
+                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?
                 .rows_affected()
-                > 0
+                > 0)
         })
     }
 }
 
 impl InferenceProfileStore for PostgresAdminStore {
-    fn put(&self, id: String, profile: InferenceProfile) {
-        self.put_json("inference_profile", "id", &id, &profile);
+    fn put(&self, id: String, profile: InferenceProfile) -> Result<(), ConfigRepositoryError> {
+        self.put_json("inference_profile", "id", &id, &profile)
     }
-    fn get(&self, id: &str) -> Option<InferenceProfile> {
+    fn get(&self, id: &str) -> Result<Option<InferenceProfile>, ConfigRepositoryError> {
         self.get_json("inference_profile", "id", id)
     }
 }
 
 impl McpStore for PostgresAdminStore {
-    fn put_server(&self, def: McpServerDef) {
-        self.put_json("mcp_server", "id", &def.id.0.clone(), &def);
+    fn put_server(&self, def: McpServerDef) -> Result<(), ConfigRepositoryError> {
+        self.put_json("mcp_server", "id", &def.id.0.clone(), &def)
     }
-    fn get_server(&self, id: &str) -> Option<McpServerDef> {
+    fn get_server(&self, id: &str) -> Result<Option<McpServerDef>, ConfigRepositoryError> {
         self.get_json("mcp_server", "id", id)
     }
-    fn list_servers(&self) -> Vec<McpServerDef> {
+    fn list_servers(&self) -> Result<Vec<McpServerDef>, ConfigRepositoryError> {
         self.list_json("mcp_server", "id")
     }
-    fn put_agent_config(&self, config: AgentMcpConfig) {
-        self.put_json("agent_mcp", "agent_id", &config.agent_id.clone(), &config);
+    fn put_agent_config(&self, config: AgentMcpConfig) -> Result<(), ConfigRepositoryError> {
+        self.put_json("agent_mcp", "agent_id", &config.agent_id.clone(), &config)
     }
-    fn get_agent_config(&self, agent_id: &str) -> Option<AgentMcpConfig> {
+    fn get_agent_config(
+        &self,
+        agent_id: &str,
+    ) -> Result<Option<AgentMcpConfig>, ConfigRepositoryError> {
         self.get_json("agent_mcp", "agent_id", agent_id)
     }
 }

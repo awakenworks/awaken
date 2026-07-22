@@ -42,7 +42,12 @@ impl ConfigServiceAgentSource {
             .0
             .resources
             .as_ref()
-            .and_then(|store| store.get_agent_inputs(workspace_id, agent_id))
+            .and_then(|store| {
+                store
+                    .get_agent_inputs(workspace_id, agent_id)
+                    .ok()
+                    .flatten()
+            })
             .map(|config| config.inputs)
             .unwrap_or_default();
         Some(awaken_session_contract::AgentConfigView {

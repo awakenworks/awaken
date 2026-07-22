@@ -208,7 +208,10 @@ impl WebhookLifecycleSink {
             return;
         }
         let outbox = legacy_outbox.expect("webhook lifecycle sink has an outbox");
-        for row in outbox.pending_outbox() {
+        let Ok(pending) = outbox.pending_outbox() else {
+            return;
+        };
+        for row in pending {
             let event = WebhookEvent::new(
                 row.id.clone(),
                 row.created_at.clone(),
@@ -219,7 +222,7 @@ impl WebhookLifecycleSink {
             );
             let report = dispatcher.dispatch(&event, row.timestamp).await;
             if report.failed.is_empty() {
-                outbox.complete_outbox(&row.id);
+                let _ = outbox.complete_outbox(&row.id);
             }
         }
     }
@@ -271,7 +274,8 @@ impl SessionLifecycleSink for WebhookLifecycleSink {
             organization_id: self.org_id.clone(),
             timestamp: now,
         };
-        self.legacy_outbox
+        let _ = self
+            .legacy_outbox
             .as_ref()
             .expect("legacy webhook outbox")
             .enqueue_outbox(row);
@@ -323,7 +327,7 @@ impl ConfigPlaneSubscriptionSource {
 impl SubscriptionSource for ConfigPlaneSubscriptionSource {
     async fn matching(&self, workspace_id: &str, event_type: &str) -> Vec<ResolvedSubscription> {
         let mut out = Vec::new();
-        for def in self.store.list(workspace_id) {
+        for def in self.store.list(workspace_id).unwrap_or_default() {
             if def.disabled || !def.wants(event_type) {
                 continue;
             }
@@ -341,9 +345,9 @@ impl SubscriptionSource for ConfigPlaneSubscriptionSource {
     }
 
     async fn disable(&self, id: &str) {
-        if let Some(mut def) = self.store.get(id) {
+        if let Ok(Some(mut def)) = self.store.get(id) {
             def.disabled = true;
-            self.store.put(def);
+            let _ = self.store.put(def);
         }
     }
 }
@@ -471,7 +475,18 @@ async fn put_subscription(
     // so a caller cannot hijack another tenant's id (belt-and-suspenders with the
     // management-plane resource-ownership guard). 404, never 403 — no existence
     // disclosure.
-    if let Some(existing) = state.store.get(&id) {
+    let existing = match state.store.get(&id) {
+        Ok(value) => value,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(
+                    json!({"error":{"type":"api_error","message":"webhook repository unavailable"}}),
+                ),
+            );
+        }
+    };
+    if let Some(existing) = existing {
         if existing.workspace_id != workspace_id {
             return (StatusCode::NOT_FOUND, Json(not_found()));
         }
@@ -483,7 +498,14 @@ async fn put_subscription(
             disabled: existing.disabled,
             secret_ref: existing.secret_ref,
         };
-        state.store.put(updated.clone());
+        if state.store.put(updated.clone()).is_err() {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(
+                    json!({"error":{"type":"api_error","message":"webhook repository unavailable"}}),
+                ),
+            );
+        }
         return (StatusCode::OK, Json(view(&updated)));
     }
 
@@ -512,7 +534,12 @@ async fn put_subscription(
         disabled: false,
         secret_ref,
     };
-    state.store.put(def);
+    if state.store.put(def).is_err() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error":{"type":"api_error","message":"webhook repository unavailable"}})),
+        );
+    }
     (
         StatusCode::CREATED,
         Json(json!({
@@ -534,7 +561,8 @@ async fn get_subscription(
     let workspace_id = scope_of(scope);
     match state.store.get(&id) {
         // Self-fence: another tenant's id is a 404, not a disclosure.
-        Some(def) if def.workspace_id == workspace_id => Ok(Json(view(&def))),
+        Ok(Some(def)) if def.workspace_id == workspace_id => Ok(Json(view(&def))),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
         _ => Err(StatusCode::NOT_FOUND),
     }
 }
@@ -542,14 +570,13 @@ async fn get_subscription(
 async fn list_subscriptions(
     State(state): State<WebhookCrudState>,
     scope: Option<Extension<WorkspaceScope>>,
-) -> Json<Value> {
-    let data: Vec<Value> = state
+) -> Result<Json<Value>, StatusCode> {
+    let rows = state
         .store
         .list(&scope_of(scope))
-        .iter()
-        .map(view)
-        .collect();
-    Json(json!({ "data": data, "has_more": false }))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let data: Vec<Value> = rows.iter().map(view).collect();
+    Ok(Json(json!({ "data": data, "has_more": false })))
 }
 
 async fn delete_subscription(
@@ -559,10 +586,10 @@ async fn delete_subscription(
 ) -> StatusCode {
     // Only unsubscribe an endpoint this tenant owns; a cross-tenant or absent id is a
     // silent no-op (idempotent, and no ownership disclosure).
-    if let Some(def) = state.store.get(&id)
+    if let Ok(Some(def)) = state.store.get(&id)
         && def.workspace_id == scope_of(scope)
     {
-        state.store.delete(&id);
+        let _ = state.store.delete(&id);
     }
     StatusCode::NO_CONTENT
 }

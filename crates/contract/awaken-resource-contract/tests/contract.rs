@@ -54,7 +54,7 @@ fn resource_catalog_rules_define_one_backend_neutral_decision_table() {
             "memory-1",
             "workspace-a",
             ConfigVersion::INITIAL,
-            &config.memory_store_id,
+            config.memory_store_id.as_str(),
             config.version,
         )
         .is_ok()
@@ -64,7 +64,7 @@ fn resource_catalog_rules_define_one_backend_neutral_decision_table() {
             "memory-1",
             "",
             ConfigVersion::INITIAL,
-            &config.memory_store_id,
+            config.memory_store_id.as_str(),
             config.version,
         ),
         Err(ResourceCatalogError::Invalid(_))
@@ -74,7 +74,7 @@ fn resource_catalog_rules_define_one_backend_neutral_decision_table() {
             "memory-1",
             "workspace-a",
             ConfigVersion(2),
-            &config.memory_store_id,
+            config.memory_store_id.as_str(),
             config.version,
         ),
         Err(ResourceCatalogError::Invalid(_))

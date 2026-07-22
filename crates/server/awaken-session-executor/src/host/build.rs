@@ -164,10 +164,13 @@ impl SharedHost {
         #[cfg(test)]
         let resource_lifecycle =
             resource_lifecycle.or_else(|| Some(super::tests::test_resource_lifecycle()));
+        let session_slots = crate::session_slot::SessionRuntimeSlots::default();
         Self {
             llm,
             model_ref,
-            inference_routing: crate::inference_routing::InferenceRouting::new(),
+            inference_routing: crate::inference_routing::InferenceRouting::new(
+                session_slots.clone(),
+            ),
             acp: None,
             remote_attempt_executor: None,
             provider: LocalProvider::new(sandbox_root.clone()),
@@ -177,15 +180,13 @@ impl SharedHost {
             judge_snapshot: None,
             client_tools: HashSet::new(),
             local_workspace: local_workspace.clone(),
-            thread_workspaces: std::sync::Mutex::new(HashMap::new()),
+            session_slots: session_slots.clone(),
             skills,
             delegates: crate::delegate::Delegates::new(),
             // Subagents share the parent's sandbox by default (`默认共用`).
             agent_run_reuse_sandbox: true,
             plugin_ids: Vec::new(),
             plugin_config: std::collections::BTreeMap::new(),
-            sessions: tokio::sync::Mutex::new(HashMap::new()),
-            session_environments: tokio::sync::Mutex::new(HashMap::new()),
             hub: Arc::new(ThreadEventHub::new()),
             // `with_store_dir` still overrides this environment-derived default.
             store_dir: store_dir.clone(),
@@ -198,18 +199,13 @@ impl SharedHost {
             upstream: None,
             deployment,
             memory,
-            thread_memory: std::sync::Mutex::new(HashMap::new()),
             memory_selector,
             compaction: None,
             config_service: None,
-            thread_mcp: std::sync::Mutex::new(HashMap::new()),
-            thread_skills: std::sync::Mutex::new(HashMap::new()),
             mcp_relay: tokio::sync::OnceCell::new(),
-            thread_resources: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
-            thread_resource_manifests: std::sync::Mutex::new(HashMap::new()),
             dispatch_resource_preparer: std::sync::RwLock::new(None),
-            thread_egress: crate::sandbox_source::ThreadEgress::new(),
-            thread_sandbox: crate::sandbox_source::ThreadSandbox::new(),
+            thread_egress: crate::sandbox_source::ThreadEgress::from_slots(session_slots.clone()),
+            thread_sandbox: crate::sandbox_source::ThreadSandbox::from_slots(session_slots),
             file_store,
             resource_lifecycle,
             memory_stores,
@@ -284,29 +280,23 @@ impl SharedHost {
     }
 
     pub(crate) fn register_thread_workspace(&self, thread: &str, workspace: &str) {
-        self.thread_workspaces
-            .lock()
-            .expect("thread workspaces")
-            .insert(thread.to_string(), workspace.to_string());
+        self.session_slots
+            .update(thread, |slot| slot.workspace = Some(workspace.to_string()));
     }
 
     pub(crate) fn thread_workspace(&self, thread: &str) -> String {
-        self.thread_workspaces
-            .lock()
-            .expect("thread workspaces")
-            .get(thread)
-            .cloned()
+        self.session_slots
+            .read(thread, |slot| slot.workspace.clone())
+            .flatten()
             .unwrap_or_else(|| self.local_workspace.clone())
     }
 
     /// Workspace for a prepared thread; unlike `thread_workspace`, unknown ids
     /// do not inherit local ownership and therefore cannot enumerate artifacts.
     pub fn registered_thread_workspace(&self, thread: &str) -> Option<String> {
-        self.thread_workspaces
-            .lock()
-            .expect("thread workspaces")
-            .get(thread)
-            .cloned()
+        self.session_slots
+            .read(thread, |slot| slot.workspace.clone())
+            .flatten()
     }
 
     /// Whether this process owns a co-located dispatch pool. Composition roots use
@@ -628,10 +618,7 @@ impl SharedHost {
     /// session exists but the network connect happens lazily (ADR-0043 Phase 3).
     /// Re-registering replaces the thread's staged set.
     pub fn register_thread_mcp(&self, thread: &str, servers: Vec<PreparedMcpServer>) {
-        self.thread_mcp
-            .lock()
-            .expect("thread mcp mutex poisoned")
-            .insert(thread.to_string(), servers);
+        self.session_slots.update(thread, |slot| slot.mcp = servers);
     }
 
     /// The model id echoed by adapters in their session/agent objects.

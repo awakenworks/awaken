@@ -9,6 +9,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::{MemoryStoreId, RepositoryId};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ConfigVersion(pub u64);
@@ -30,6 +32,40 @@ pub enum ResourceState {
     Suspended,
     Archived,
     Deleted,
+}
+
+/// Durable lifecycle metadata owned by the resource aggregate. Nanoseconds keep
+/// storage/backend representations neutral; wire adapters choose their timestamp format.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourceTimestamps {
+    #[serde(default)]
+    pub created_unix_nanos: u64,
+    #[serde(default)]
+    pub updated_unix_nanos: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_unix_nanos: Option<u64>,
+}
+
+impl ResourceTimestamps {
+    #[must_use]
+    pub const fn created(at_unix_nanos: u64) -> Self {
+        Self {
+            created_unix_nanos: at_unix_nanos,
+            updated_unix_nanos: at_unix_nanos,
+            archived_unix_nanos: None,
+        }
+    }
+
+    pub fn touch(&mut self, at_unix_nanos: u64) {
+        self.updated_unix_nanos = at_unix_nanos;
+    }
+
+    pub fn transition_to(&mut self, state: ResourceState, at_unix_nanos: u64) {
+        self.touch(at_unix_nanos);
+        self.archived_unix_nanos =
+            matches!(state, ResourceState::Archived | ResourceState::Deleted)
+                .then_some(at_unix_nanos);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -77,7 +113,7 @@ const fn default_recall_results() -> u32 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryStoreDefinition {
-    pub id: String,
+    pub id: MemoryStoreId,
     pub workspace_id: String,
     pub name: String,
     #[serde(default)]
@@ -87,11 +123,13 @@ pub struct MemoryStoreDefinition {
     #[serde(default)]
     pub state: ResourceState,
     pub current_config_version: ConfigVersion,
+    #[serde(default)]
+    pub timestamps: ResourceTimestamps,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryStoreConfigVersion {
-    pub memory_store_id: String,
+    pub memory_store_id: MemoryStoreId,
     pub version: ConfigVersion,
     #[serde(default)]
     pub recall_policy: RecallPolicy,
@@ -103,7 +141,7 @@ pub struct MemoryStoreConfigVersion {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RepositoryDefinition {
-    pub id: String,
+    pub id: RepositoryId,
     pub workspace_id: String,
     pub name: String,
     #[serde(default)]
@@ -113,6 +151,8 @@ pub struct RepositoryDefinition {
     #[serde(default)]
     pub state: ResourceState,
     pub current_config_version: ConfigVersion,
+    #[serde(default)]
+    pub timestamps: ResourceTimestamps,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -123,7 +163,7 @@ pub struct ClonePolicy {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RepositoryConfigVersion {
-    pub repository_id: String,
+    pub repository_id: RepositoryId,
     pub version: ConfigVersion,
     pub remote_url: String,
     /// A Vault binding/reference, never credential material.
@@ -190,8 +230,8 @@ impl ResourceCatalogRules {
     ) -> Result<(), ResourceCatalogError> {
         Self::validate_definition_identity(
             row_id,
-            &definition.id,
-            &definition.workspace_id,
+            definition.id.as_str(),
+            definition.workspace_id.as_str(),
             definition.current_config_version,
         )?;
         let mut current_exists = false;
@@ -216,8 +256,8 @@ impl ResourceCatalogRules {
     ) -> Result<(), ResourceCatalogError> {
         Self::validate_definition_identity(
             row_id,
-            &definition.id,
-            &definition.workspace_id,
+            definition.id.as_str(),
+            definition.workspace_id.as_str(),
             definition.current_config_version,
         )?;
         let mut current_exists = false;
@@ -254,7 +294,7 @@ impl ResourceCatalogRules {
         version: ConfigVersion,
         config: &MemoryStoreConfigVersion,
     ) -> Result<(), ResourceCatalogError> {
-        if config.memory_store_id == id && config.version == version {
+        if config.memory_store_id.as_str() == id && config.version == version {
             Ok(())
         } else {
             Err(ResourceCatalogError::Storage(format!(
@@ -269,7 +309,7 @@ impl ResourceCatalogRules {
         version: ConfigVersion,
         config: &RepositoryConfigVersion,
     ) -> Result<(), ResourceCatalogError> {
-        if config.repository_id == id && config.version == version {
+        if config.repository_id.as_str() == id && config.version == version {
             Ok(())
         } else {
             Err(ResourceCatalogError::Storage(format!(

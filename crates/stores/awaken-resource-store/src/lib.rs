@@ -49,7 +49,6 @@ impl SqliteResourceStore {
             connection: Mutex::new(connection),
         };
         store.ensure_schema()?;
-        store.import_legacy_unscoped_schema()?;
         Ok(store)
     }
 
@@ -68,7 +67,7 @@ impl SqliteResourceStore {
     /// One-time compatibility import from the pre-migration unscoped SQLite
     /// tables. The canonical scoped rows win on every conflict, so reopening is
     /// idempotent and stale legacy rows can never overwrite newer state.
-    fn import_legacy_unscoped_schema(&self) -> Result<(), ResourcePurgeError> {
+    pub fn migrate_legacy_unscoped_schema(&self) -> Result<(), ResourcePurgeError> {
         let mut connection = self.connection();
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -895,6 +894,7 @@ mod tests {
         drop(legacy);
 
         let store = SqliteResourceStore::open(&path).unwrap();
+        store.migrate_legacy_unscoped_schema().unwrap();
         let target = ResourceTarget::new("workspace-a", ResourceKind::File, "hash-1");
         assert_eq!(
             store.references(&target).await.unwrap(),
@@ -906,6 +906,7 @@ mod tests {
         drop(store);
 
         let reopened = SqliteResourceStore::open(&path).unwrap();
+        reopened.migrate_legacy_unscoped_schema().unwrap();
         assert_eq!(reopened.references(&target).await.unwrap().len(), 1);
     }
 

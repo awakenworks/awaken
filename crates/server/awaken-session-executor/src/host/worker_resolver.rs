@@ -207,14 +207,11 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
         // process dies after this write, the next owner sees the handle and adopts
         // the same environment; a failed write leaves the run unexecuted/retryable.
         if claimed.sandbox.is_none() || rebuild_binding {
-            let ctx = host
-                .sessions
-                .lock()
+            let environment = host
+                .session_environment(&thread_id.0)
                 .await
-                .get(&thread_id.0)
-                .cloned()
                 .ok_or_else(|| Self::execution_error("resolved session disappeared"))?;
-            let encoded = serde_json::to_string(&ctx.env.handle())
+            let encoded = serde_json::to_string(&environment.handle())
                 .map_err(|e| Self::execution_error(e.to_string()))?;
             let outcome = crate::dispatch_backend::shared_durable_store(host.store_dir.as_deref())
                 .map_err(|e| Self::execution_error(e.to_string()))?
@@ -591,7 +588,12 @@ mod tests {
         assert!(adopted.is_none());
         assert!(rebuild);
         assert!(host.session_environment(thread).await.is_none());
-        assert!(host.sessions.lock().await.get(thread).is_none());
+        assert!(
+            !host
+                .session_slots
+                .read(thread, |slot| slot.runtime.is_some())
+                .unwrap_or(false)
+        );
     }
 
     #[tokio::test]
@@ -621,7 +623,11 @@ mod tests {
             host.session_environment_handle(thread).await,
             Some(resident)
         );
-        assert!(host.sessions.lock().await.contains_key(thread));
+        assert!(
+            host.session_slots
+                .read(thread, |slot| slot.runtime.is_some())
+                .unwrap_or(false)
+        );
     }
 
     #[tokio::test]
@@ -643,11 +649,10 @@ mod tests {
         assert_eq!(observed.handle(), replacement.handle());
         assert!(!Arc::ptr_eq(&observed, &replacement));
 
-        host.sessions.lock().await.remove(thread);
-        host.session_environments
-            .lock()
-            .await
-            .insert(thread.into(), replacement.clone());
+        host.session_slots.update(thread, |slot| {
+            slot.runtime = None;
+            slot.environment = Some(replacement.clone());
+        });
 
         assert!(
             !host.discard_session_environment(thread, &observed).await,
@@ -716,6 +721,11 @@ mod tests {
             .await
             .expect("terminal control bypasses sandbox decoding/adoption");
         assert!(host.session_environment(&thread.0).await.is_none());
-        assert!(host.sessions.lock().await.get(&thread.0).is_none());
+        assert!(
+            !host
+                .session_slots
+                .read(&thread.0, |slot| slot.runtime.is_some())
+                .unwrap_or(false)
+        );
     }
 }
