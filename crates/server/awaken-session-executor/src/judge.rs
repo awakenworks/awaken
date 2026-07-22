@@ -32,12 +32,13 @@ You are a strict evaluator. You are given a goal, its rubric, and a deliverable.
 Judge whether the deliverable satisfies the rubric. Reply with ONLY a JSON object \
 of the form {\"result\": \"satisfied\" | \"needs_revision\" | \"failed\", \
 \"explanation\": \"...\"} and nothing else. Use satisfied only when the rubric is \
-fully met. Use needs_revision when another Worker revision could improve an incomplete \
-deliverable. Use failed only for an explicit unrecoverable business failure or policy \
-prohibition, never for ordinary incompleteness. Judge whether the requested Outcome was \
-actually achieved, not whether the Worker accurately reported its status: an accurate report \
-of a permanent blocker is failed, not satisfied. When evidence is present, cite its decisive \
-stable token or locator in the explanation.";
+fully met. Classify in this order: (1) if decisive evidence establishes an explicit permanent, \
+unrecoverable, or prohibited blocker, return failed; (2) otherwise, if the requested Outcome \
+itself is fully achieved, return satisfied; (3) otherwise return needs_revision when another \
+Worker revision could improve it. Labels describe the requested Outcome's state, not the \
+accuracy of the deliverable's report: correctly reporting a permanent blocker is still failed, \
+never satisfied. When evidence is present, cite its decisive stable token or locator in the \
+explanation.";
 
 /// A default judge agent config registered under `agent_id`: no tools, a fresh
 /// grading window. A host may override by registering its own config for the id.
@@ -255,6 +256,9 @@ mod tests {
             "failed",
             "rubric",
             "evidence",
+            "classify in this order",
+            "outcome's state",
+            "correctly reporting a permanent blocker is still failed",
         ] {
             assert!(instructions.contains(required), "missing `{required}`");
         }
