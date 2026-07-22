@@ -285,14 +285,16 @@ impl RunExecutor for A2aRunExecutor {
         ensure_supported_narrowing(&activation, &context)?;
         let Ok(endpoint) = endpoint_of(&activation) else {
             // Reached without a remote backend — a wiring fault; fail closed.
+            let mut messages = activation.input.clone();
+            messages.push(Message::text(
+                MessageId("a2a-err-1".to_string()),
+                Role::Assistant,
+                "backend is not an A2A endpoint".to_string(),
+            ));
             return finish_terminal(
                 &context,
                 &activation,
-                vec![Message::text(
-                    MessageId("a2a-err-1".to_string()),
-                    Role::Assistant,
-                    "backend is not an A2A endpoint".to_string(),
-                )],
+                messages,
                 EndCause::Error(Failure::Inference {
                     code: "a2a_config".to_string(),
                     message: "backend is not a2a".to_string(),
@@ -323,14 +325,16 @@ impl RunExecutor for A2aRunExecutor {
                 {
                     Ok(task) => task,
                     Err(err) => {
+                        let mut messages = activation.input.clone();
+                        messages.push(Message::text(
+                            MessageId("a2a-err-1".to_string()),
+                            Role::Assistant,
+                            format!("remote agent error: {err}"),
+                        ));
                         return finish_terminal(
                             &context,
                             &activation,
-                            vec![Message::text(
-                                MessageId("a2a-err-1".to_string()),
-                                Role::Assistant,
-                                format!("remote agent error: {err}"),
-                            )],
+                            messages,
                             EndCause::Error(Failure::Inference {
                                 code: "a2a_error".to_string(),
                                 message: err.to_string(),
@@ -343,7 +347,7 @@ impl RunExecutor for A2aRunExecutor {
                     &context,
                     &activation,
                     RunDisposition::running(activation.run_id.clone()),
-                    Vec::new(),
+                    activation.input.clone(),
                     vec![task_reference_state(&TaskReference::from_task(
                         &endpoint, &task,
                     ))],
@@ -946,7 +950,15 @@ mod tests {
             RunState::Ended(EndCause::Error(Failure::Inference { ref code, .. })) if code == "a2a_config"
         ));
         assert_eq!(
-            rec.0.lock().unwrap().last().unwrap().messages[0].text_content(),
+            rec.0
+                .lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .messages
+                .last()
+                .unwrap()
+                .text_content(),
             "backend is not an A2A endpoint"
         );
     }
@@ -1028,7 +1040,14 @@ mod tests {
             RunState::Ended(EndCause::Error(Failure::Inference { ref code, .. })) if code == "a2a_error"
         ));
         assert!(
-            rec.0.lock().unwrap().last().unwrap().messages[0]
+            rec.0
+                .lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .messages
+                .last()
+                .unwrap()
                 .text_content()
                 .contains("remote agent error")
         );

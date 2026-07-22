@@ -540,7 +540,10 @@ impl AcpRunExecutor {
             .backend_ref
             .clone();
         let mut prompt = initial_prompt(&activation);
-        let mut committed: Vec<Message> = Vec::new();
+        // `RunActivation::input` is a durable Run fact, not merely transport
+        // prompt material. Commit it with the external Agent's facts so ACP and
+        // Native expose the same Thread transcript and message-range semantics.
+        let mut committed = activation.input.clone();
         // The ACP session id, carried across the per-turn relaunches so a resumed
         // turn reloads the CLI's own session (`session/load`) instead of starting
         // fresh — context survives the relaunch (the newline stand-in leaves it
@@ -847,7 +850,8 @@ fn classify_from_acp_error(err: &AcpError) -> AcpFailure {
 }
 
 /// Commit a terminal failure that occurred before/instead of a turn (open fault):
-/// one assistant message with the prompt, plus the terminal state.
+/// the activation input and one assistant message with the failure prompt, plus
+/// the terminal state.
 async fn finish_failure(
     context: &RuntimeRunContext,
     activation: &RunActivation,
@@ -855,11 +859,12 @@ async fn finish_failure(
 ) -> Result<RunState> {
     let disposition = RunDisposition::ended(activation.run_id.clone(), failure_cause(failure));
     let state = disposition.state();
-    let messages = vec![Message::text(
+    let mut messages = activation.input.clone();
+    messages.push(Message::text(
         MessageId("acp-err-1".to_string()),
         Role::Assistant,
         failure.prompt(),
-    )];
+    ));
     commit(
         context,
         &activation.thread_id,
