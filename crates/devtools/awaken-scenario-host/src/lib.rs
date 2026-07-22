@@ -51,8 +51,10 @@ fn mount(host: Arc<SharedHost>) -> Router {
 }
 
 fn resource_host(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> SharedHost {
-    SharedHost::new(llm, model_ref)
-        .with_resource_lifecycle(Arc::new(awaken_resource_store::InMemoryResourceStore::new()))
+    SharedHost::new(llm, model_ref).with_resource_lifecycle(Arc::new(
+        awaken_resource_store::SqliteResourceStore::in_memory()
+            .expect("open scenario resource lifecycle sqlite"),
+    ))
 }
 
 /// Resource HTTP adapters without the product composition root's local Workspace

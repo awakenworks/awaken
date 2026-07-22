@@ -103,7 +103,10 @@ struct ResourcePlaneStores {
 impl ResourcePlaneStores {
     fn ephemeral() -> Self {
         Self {
-            lifecycle: Arc::new(awaken_resource_store::InMemoryResourceStore::new()),
+            lifecycle: Arc::new(
+                awaken_resource_store::SqliteResourceStore::in_memory()
+                    .expect("open ephemeral resource lifecycle sqlite"),
+            ),
             files: Arc::new(awaken_file_store::InMemoryFileStore::new()),
             memory: Arc::new(awaken_memory_store::VolatileMemoryRepository::new()),
             skills: Arc::new(awaken_skill_store::InMemorySkillStore::new()),
