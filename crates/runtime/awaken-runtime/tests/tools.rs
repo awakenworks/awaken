@@ -640,7 +640,7 @@ async fn the_configured_step_ceiling_is_honored() {
     );
 }
 
-/// First turn interleaves a text block and a tool-call block; the second ends.
+/// First response interleaves a text block and a tool-call block; the second ends.
 struct InterleavedThenText {
     calls: AtomicUsize,
 }
@@ -689,27 +689,27 @@ async fn an_assistant_turn_interleaves_text_and_a_tool_call() {
         "the interleaved tool call runs"
     );
 
-    // The first assistant turn committed BOTH a text block and a tool-use block,
+    // The first assistant response committed BOTH a text block and a tool-use block,
     // in one message — text and a tool request interleaved.
     let committed = commit.committed();
     let first = committed
         .messages
         .iter()
         .find(|m| m.role == Role::Assistant)
-        .expect("an assistant turn is committed");
+        .expect("an assistant response is committed");
     assert!(
         first
             .content
             .iter()
             .any(|b| matches!(b, ContentBlock::Text { .. })),
-        "the turn keeps its text block"
+        "the response keeps its text block"
     );
     assert!(
         first
             .content
             .iter()
             .any(|b| matches!(b, ContentBlock::ToolUse { .. })),
-        "the turn keeps its tool-use block"
+        "the response keeps its tool-use block"
     );
     assert_eq!(first.text_content(), "let me check that");
 }

@@ -75,7 +75,7 @@ fn chat_response_stop_reason_round_trips_and_defaults_when_absent() {
 
 #[test]
 fn assistant_output_projects_interleaved_tool_calls_in_order_and_joins_text() {
-    // A turn may interleave text and tool requests (`[Text, ToolUse, Text, ToolUse]`).
+    // A response may interleave text and tool requests (`[Text, ToolUse, Text, ToolUse]`).
     // `tool_calls()` projects only the ToolUse blocks, in document order, mapping
     // id/name/input onto the execution-side ToolCall; `text_content()` joins the text
     // blocks and ignores the tool blocks.
@@ -97,7 +97,7 @@ fn assistant_output_projects_interleaved_tool_calls_in_order_and_joins_text() {
 
     assert_eq!(output.text_content(), "first second");
 
-    // A text-only turn requests no tools.
+    // A text-only response requests no tools.
     assert!(AssistantOutput::text("done").tool_calls().is_empty());
 }
 

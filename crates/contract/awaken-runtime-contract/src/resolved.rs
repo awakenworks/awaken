@@ -167,12 +167,12 @@ impl Backend {
 ///
 /// The policy trims a *view* of the transcript that goes to the model; the
 /// committed history stays whole (G13). A separate summarizing compactor may
-/// later replace old turns with a summary — this is the cheap, lossy alternative
+/// later replace old Steps with a summary — this is the cheap, lossy alternative
 /// that just drops them from the request.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum ContextPolicy {
-    /// Send the whole transcript every turn (no bound).
+    /// Send the whole transcript on every inference Step (no bound).
     #[default]
     KeepAll,
     /// Rolling window: keep every leading system message, then only the last

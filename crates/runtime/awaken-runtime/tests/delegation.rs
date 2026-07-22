@@ -61,7 +61,7 @@ impl ToolGateHook for SuspendGate {
 }
 
 /// The parent agent: delegates once (a call to `agent_run`), then ends with text —
-/// so the delegate's folded result is observable in the next committed turn.
+/// so the delegate's folded result is observable in the next committed Step.
 struct DelegateThenText {
     calls: AtomicUsize,
 }

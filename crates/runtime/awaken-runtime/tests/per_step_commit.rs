@@ -32,7 +32,7 @@ use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
 /// (step, committed message count, committed state) captured inside a step.
 type Observations = Arc<std::sync::Mutex<Vec<(usize, usize, Option<RunState>)>>>;
 
-/// Emits `tool_steps` tool-call turns, then a final text turn.
+/// Emits `tool_steps` tool-call Steps, then a final text Step.
 struct ToolStepsThenEnd {
     tool_steps: usize,
     calls: AtomicUsize,
@@ -211,7 +211,7 @@ async fn committed_progress_is_visible_mid_run() {
         "the input and requested tool call are durable before executor entry"
     );
     assert_eq!(*state_at_0, Some(RunState::Running));
-    // By the time step 1's tool runs, step 0 (assistant turn + tool result)
+    // By the time Step 1's tool runs, Step 0 (assistant message + tool result)
     // is durable too.
     let (_, visible_at_1, ref state_at_1) = observations[1];
     assert!(
@@ -270,6 +270,6 @@ async fn text_only_run_commits_input_then_terminal() {
     let outcome = runtime.execute(activation(), context).await.expect("runs");
     assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
     // A text-only run: the input commits at the first step boundary (durable
-    // Running before inference), then the terminal turn commits via finish.
+    // Running before inference), then the terminal Step commits via finish.
     assert_eq!(commit.commit_count(), 2);
 }

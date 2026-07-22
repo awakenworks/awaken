@@ -1,6 +1,6 @@
 //! The run-end continuation guard mechanism (ADR: run-end guard). At a
 //! natural-end boundary the runtime consults registered guards: a `Steer` injects
-//! a feedback user turn and continues the loop; a `Complete` ends it carrying the
+//! a feedback user message and continues the loop; a `Complete` ends it carrying the
 //! guard's opaque `detail`; with no guard the run just ends. The runtime's
 //! `max_steps` remains the runaway backstop for a guard that always steers.
 
@@ -30,7 +30,7 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 
-/// A model that echoes the last user turn's text, so an injected feedback turn is
+/// A model that echoes the last user message's text, so injected feedback is
 /// observable in the next committed assistant message.
 struct EchoLlm;
 
@@ -237,7 +237,7 @@ async fn guard_steers_then_completes_and_surfaces_each_round() {
     // The opaque detail is forwarded verbatim (the kernel never reads it).
     assert_eq!(events[0].1, serde_json::json!({ "round": 0 }));
     assert_eq!(events[2].1, serde_json::json!({ "done": true }));
-    // Each steer injected the feedback as a committed user turn.
+    // Each steer injected the feedback as a committed user message.
     assert_eq!(count_user_text(&commit, "revise"), 2);
 
     // Durable truth (not just the best-effort stream): every round was committed

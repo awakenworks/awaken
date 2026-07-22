@@ -1,4 +1,4 @@
-//! `Runtime::run`: one call registers the immutable snapshot and executes a turn.
+//! `Runtime::run`: one call registers the immutable snapshot and executes a Run.
 //! No duplicate catalog object and no hand-built activation.
 
 use std::sync::Arc;
@@ -41,7 +41,7 @@ async fn run_registers_and_executes_one_snapshot_in_one_call() {
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ctx = RuntimeRunContext::new().with_commit(commit.clone());
 
-    // One call: registers the snapshot and runs a fresh turn.
+    // One call: registers the snapshot and executes a fresh Run.
     let state = runtime.run(&config, "Say hi.", ctx).await.expect("run");
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
 
