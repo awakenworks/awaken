@@ -93,10 +93,9 @@ pub fn local_managed_state(
         secrets.clone(),
         credentials.clone(),
     ));
-    // Session identity, its intrinsic Workspace ownership, and its frozen resource
-    // manifest must survive with runtime truth. This is a resource repository at
-    // the composition root, not an authorization cache: PEP/PDP remain outside and
-    // only stamp/check the Workspace coordinate carried by the aggregate.
+    // Keep the Session aggregate and its extraction intents in the same concrete
+    // repository. The two application ports remain separate, while their local
+    // durability boundary is shared at this composition root.
     let session_repo = host.storage_dir().map(|root| {
         std::fs::create_dir_all(root).expect("create durable session repository directory");
         Arc::new(

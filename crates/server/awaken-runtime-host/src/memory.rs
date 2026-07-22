@@ -941,13 +941,16 @@ mod tests {
         Arc<MemoryRuntime>,
         BoundMemory,
         Arc<awaken_memory_store::VolatileMemoryRepository>,
-        Arc<awaken_session_store::InMemorySessionRepository>,
+        Arc<awaken_session_store::SqliteManagedSessionRepository>,
     ) {
         let catalog = Arc::new(
             AgentCatalog::new()
                 .with_agent(default_memory_agent("stub", DEFAULT_MEMORY_INSTRUCTIONS)),
         );
-        let extractions = Arc::new(awaken_session_store::InMemorySessionRepository::default());
+        let extractions = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .expect("open ephemeral Memory extraction repository"),
+        );
         let runtime = Arc::new(MemoryRuntime::new(
             llm,
             Arc::new(LocalProvider::new(sandbox_base)),

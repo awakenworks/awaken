@@ -218,7 +218,10 @@ fn spawn_credential_creation_reconciliation(
 
 /// Ephemeral management stores: everything in process memory (dev / e2e default).
 fn in_memory_management_stores() -> ManagementStores {
-    let sessions = Arc::new(awaken_protocol_managed::InMemorySessionRepository::default());
+    let sessions = Arc::new(
+        awaken_protocol_managed::SqliteManagedSessionRepository::open_in_memory()
+            .expect("open ephemeral managed Session repository"),
+    );
     ManagementStores {
         workspace_root: None,
         resource_plane: ResourcePlaneStores::ephemeral(),
