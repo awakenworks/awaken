@@ -1,4 +1,4 @@
-//! Integration tests for the Outcome extension's Thread-state codec.
+//! Store-adapter integration tests for the Outcome extension's Thread codec.
 
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_ext_goal::outcome::{Definition, Grade, GradeDecision, Id, State};
