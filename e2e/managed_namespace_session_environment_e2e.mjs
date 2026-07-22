@@ -53,6 +53,13 @@ function seedAgentFixtureRepository() {
 const read = (path) => { try { return fs.readFileSync(path, 'utf8'); } catch { return 'ABSENT'; } };
 const readAny = (...paths) => paths.map(read).find((value) => value !== 'ABSENT') ?? 'ABSENT';
 const writable = (path) => { try { fs.accessSync(path, fs.constants.W_OK); return true; } catch { return false; } };
+const mutateExisting = (path) => {
+  try {
+    if (!fs.existsSync(path)) return false;
+    fs.writeFileSync(path, 'SESSION-COPY-MODIFIED');
+    return true;
+  } catch { return false; }
+};
 process.stdin.once('data', () => {
   fs.mkdirSync('outputs', { recursive: true });
   fs.writeFileSync('outputs/result.txt', 'NAMESPACE-ARTIFACT-OK');
@@ -61,7 +68,9 @@ process.stdin.once('data', () => {
     ['memory', read('.mnt/notes/seed.txt')],
     ['memory_writable', writable('.mnt/notes/seed.txt')],
     ['live_file', read('.mnt/workspace/live.txt')],
+    ['live_file_mutated', mutateExisting('.mnt/workspace/live.txt')],
     ['renamed_file', read('.mnt/workspace/renamed.txt')],
+    ['renamed_file_mutated', mutateExisting('.mnt/workspace/renamed.txt')],
     ['live_repo', readAny('live-repo/README.md', 'workspace/live-repo/README.md')],
     ['renamed_repo', readAny('renamed-repo/README.md', 'workspace/renamed-repo/README.md')],
   ];
@@ -178,6 +187,12 @@ async function main() {
     });
     reply = await lastReply(client, session.id, 'observe live attachments');
     assert.match(reply, /NAMESPACE-FILE-OK/, 'a live file attach changed the resident workspace');
+    assert.match(reply, /live_file_mutated",true/, 'the Agent may edit its disposable File copy');
+    assert.equal(
+      await (await client.beta.files.download(uploaded.id, { betas: BETAS })).text(),
+      'NAMESPACE-FILE-OK',
+      'editing the Session copy cannot mutate the immutable FileStore object',
+    );
     assert.match(reply, /NAMESPACE-REPOSITORY-OK/, 'a live repository attach changed the resident workspace');
 
     await client.beta.sessions.resources.update(fileResource.id, {
@@ -193,6 +208,12 @@ async function main() {
     reply = await lastReply(client, session.id, 'observe renamed attachments');
     assert.match(reply, /live_file","ABSENT/, 'the old live-file path was revoked');
     assert.match(reply, /renamed_file","NAMESPACE-FILE-OK/, 'the file appeared only at its replacement path');
+    assert.match(reply, /renamed_file_mutated",true/, 'the replacement is another disposable copy');
+    assert.equal(
+      await (await client.beta.files.download(uploaded.id, { betas: BETAS })).text(),
+      'NAMESPACE-FILE-OK',
+      'repeated copy mutation still leaves the content-addressed File unchanged',
+    );
     assert.match(reply, /live_repo","ABSENT/, 'the old repository path was revoked');
     assert.match(reply, /renamed_repo","NAMESPACE-REPOSITORY-OK/, 'the repository was reprovisioned at its replacement path');
 

@@ -274,7 +274,7 @@ resource-specific repositories enforce their own intrinsic invariants.
 | Bind Agent default | Agent Configuration service | `AgentInputBindingRepository`, PEP/PDP | identity-only `InputBinding`, authoring revision increments |
 | Attach to Session | Managed Session adapter | PEP/PDP | temporary `SessionInputAttachment` |
 | Resolve | `SessionInputResolver` | Agent binding repo, Resource Catalog, PEP result | `ResolvedSessionResources`; Memory/Repo config versions selected once |
-| Activate File | `SessionResourceCoordinator` | `FileStore`, `SandboxProvider` | read-only mount + activation `Active` |
+| Activate File | `SessionResourceCoordinator` | `FileStore`, `SandboxProvider` | immutable-source working copy with no write-back + activation `Active` |
 | Activate Memory | `SessionResourceCoordinator` | `MemoryRepository`, Memory realizer | `ScopedMemoryStore`/mount + activation `Active` |
 | Activate Repo | `SessionResourceCoordinator` | Repository realizer, Vault, Sandbox | current clone + working tree; credential lease not persisted |
 | Use | sandbox/tool adapters | File/Memory/Git domain ports | domain writes and receipts; no second config resolve |
@@ -360,9 +360,10 @@ File config or version lookup exists.
 ### Activate and use
 
 The coordinator asks `FileStore` for binary bytes and the Sandbox provider
-materializes them read-only. The actual bytes must hash back to `FileId`.
-Text conversion is forbidden. An Agent may edit a working copy, but the result
-is a new File or Artifact; the original blob is never overwritten.
+verifies them against `FileId`. It materializes a disposable Session working copy;
+the copy may be edited, but it has no write-back path to the immutable FileStore
+object. Text conversion is forbidden. Edited bytes become a new File or Artifact
+only through an explicit publish; the original blob is never overwritten.
 
 ### Release and reclaim
 
@@ -751,7 +752,7 @@ reconciler. It never silently marks the resource released.
 | Area | Required proof |
 |---|---|
 | Binding | Agent defaults and Session attachments merge once; explicit replacement only; mount collision fails |
-| File | binary round-trip; content-id validation; read-only mount; shared-blob ownership isolation; safe GC |
+| File | binary round-trip; content-id validation; edited Session copy cannot mutate original FileId; shared-blob ownership isolation; safe GC |
 | Memory | config update affects only later Sessions; current content remains shared; read-only extraction denied; CAS conflict loses no update |
 | Repository | config update affects later Sessions; no commit pin in manifest; credentials absent from logs/prompt/disk; remote is never deleted by GC |
 | Skill | binary bundle round-trip; traversal rejected; restart preserves history; v1 Session keeps v1 after v2 publication; hash mismatch fails closed |
@@ -771,7 +772,8 @@ release/reclamation.
    storage backends.
 2. Preserve access, reject mount collisions, generate prompts from the effective
    manifest, and remove the second Host merge.
-3. Make File materialization binary-safe and read-only.
+3. Make File materialization binary-safe and keep Session working copies outside
+   FileStore mutation.
 4. Add Memory/Repository config versions and platform-managed Repository ids.
 5. Route Memory mount/API/recall/extraction/history/redaction through one
    `MemoryRepository`; remove blob/harvest.

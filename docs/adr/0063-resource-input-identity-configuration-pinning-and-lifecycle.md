@@ -197,7 +197,10 @@ PDP decision, or policy document into this state machine.
 
 ### D6: Each resource reclaims according to its own invariant
 
-- File deletion removes a Workspace ownership edge first. Physical blob GC requires no
+- File activation verifies immutable bytes and creates a Session-local copy with
+  no write-back authority. An Agent may edit that working copy, but publishing it
+  creates a new File or Artifact; it can never mutate the original `FileId`. File
+  deletion removes a Workspace ownership edge first. Physical blob GC requires no
   remaining ownership edges, Agent bindings, active/effective Session references,
   Artifacts, or retention hold.
 - Memory Session release closes the scoped handle but never deletes long-term
@@ -350,7 +353,8 @@ The first coherent slice is:
 2. resolve Agent defaults and Session attachments once at Session creation;
 3. preserve `ResourceAccess` through activation and generate prompts from the
    effective result;
-4. make File mounts binary-safe and read-only;
+4. make File projections binary-safe and disconnect their writable working copies
+   from FileStore mutation;
 5. add versioned Memory/Repository definitions and resolve their current config
    version into the Session manifest;
 6. route all Memory use through `MemoryRepository`, then remove blob/harvest;
