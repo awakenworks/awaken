@@ -54,7 +54,7 @@ evidence = "cargo test -p awaken-runtime-host; e2e/session_environment_recovery_
 
 [[waiver]]
 path = "crates/server/awaken-runtime-host/src/host/worker_resolver.rs"
-ranges = ["95-120"]
+ranges = ["96"]
 reason = "Cancellation-worker reconstruction rejects impossible snapshot/backend combinations before any served worker action exists."
 evidence = "cargo test -p awaken-runtime-host"
 

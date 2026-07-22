@@ -30,6 +30,8 @@ cd "$(dirname "$0")/../.."
 #     (verified with `cargo tree -p awaken-server -i <crate>`):
 #       store-conformance — the trait test harness, not production code.
 #       runtime-examples — examples, not production composition.
+#       awaken-eval — the offline benchmark/replay CLI; it is intentionally not
+#                     linked into either served production composition.
 # (2) Alternate-backend / reference / real-provider modules inside LINKED crates,
 #     unreachable from a deterministic e2e by design:
 #       run-ingress/memory.rs   in-memory reference impl (the server uses SQLite).
@@ -60,7 +62,7 @@ cd "$(dirname "$0")/../.."
 # reviewed in e2e_unreachable.toml. The checker validates every range/reason,
 # rejects stale entries, still counts hits inside those ranges, and caps the
 # audited share at 12% so the manifest cannot become an unbounded escape hatch.
-IGNORE='(awaken-store-conformance|awaken-runtime-examples)/|awaken-run-ingress/src/memory\.rs|awaken-ext-mcp/src/(stdio|plugin|sensitive)\.rs|awaken-mcp-wire/src/jsonrpc\.rs|awaken-protocol-acp/src/(error|real_acp)\.rs|awaken-server/src/models\.rs'
+IGNORE='(awaken-store-conformance|awaken-runtime-examples|awaken-eval)/|awaken-run-ingress/src/memory\.rs|awaken-ext-mcp/src/(stdio|plugin|sensitive)\.rs|awaken-mcp-wire/src/jsonrpc\.rs|awaken-protocol-acp/src/(error|real_acp)\.rs|awaken-server/src/models\.rs'
 
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/tmp/awaken-e2e-coverage}"
 export CARGO_LLVM_COV_TARGET_DIR="${CARGO_LLVM_COV_TARGET_DIR:-$CARGO_TARGET_DIR}"
