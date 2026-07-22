@@ -12,9 +12,14 @@
   `managed_remote_hand_e2e.mjs` exercises the placement seam end to end.
 - Amended: 2026-07-09 — `provide` made **async** (G2) so a dynamic scheduling
   driver can await a fleet/lease/dial behind the port; `context_for` awaits it.
-  Placement release is by drop (G3), no separate port call. Deferred follow-on:
-  the durable/superseding ingress paths build their context inside
-  `awaken-run-ingress`, so per-run placement there is wired separately.
+  Placement release is by drop (G3), no separate port call.
+- Amended: 2026-07-22 — the durable follow-on is implemented. `RunDispatch`
+  carries immutable `PlacementRequirements`; the worker directory filters
+  eligibility before an injected `PlacementPolicy` ranks candidates; SQLite,
+  Postgres, and memory ingress persist the selected assignment; the server
+  composition root installs one `ReplaceablePlacementPolicy`. An extension may
+  replace ranking, but cannot widen eligibility, and an already dispatched Run
+  retains its pinned binding across policy, route, and worker replacement.
 - Depends on: [ADR-0044](0044-remote-hand-tool-executor-over-a-channel.md) (the
   `ToolExecutor` port and `LocalToolExecutor`/`RemoteToolExecutor` this ADR
   selects between), [ADR-0045](0045-connection-plan-and-network-topology.md) (the

@@ -192,8 +192,8 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | Hosted product adapters | Downstream product package or repository | Implement public DTOs/events behind anti-corruption adapters; product hosting vocabulary does not enter neutral runtime/protocol/config code |
 | Credentials/vaults | Credential domain / Product | Opaque refs into runtime; no grant from selection/probe |
 | Observability/eval | Analytics/DX package or repository | Consume committed facts or normal runtime ports; never become runtime truth |
-| E2E coverage | `scripts/ci/e2e-coverage.sh` + `e2e/` | Deterministic served-binary line coverage. Raised 65.6% → **76.1%** by wiring 19 existing-but-unmeasured e2e into a new `test:extended` chain (management config APIs: environments/deployments/agents/user-profiles/memory-stores/skills/vaults/files/egress; managed lifecycle; ACP) and extending the principled IGNORE (live-Postgres backends, OAuth, web-network tools, real-ACP codec, unit-tested value-objects/DSL, and the served binary's e2e model-zoo fixtures). Remaining gap to 80% is error/edge paths in product code (engine loop, durable-sqlite recovery, IAM authz, MCP-http) that need new fault-injection e2e — a scoped follow-up. |
-| Brain–hand execution | `awaken-tool-relay` (hand) + `awaken-connection-plan` (topology) | Tool execution runs behind the `ToolExecutor` port ([ADR-0044](adr/0044-remote-hand-tool-executor-over-a-channel.md)); `LocalToolExecutor` is the in-process default, `RemoteToolExecutor`/`serve_hand` split the hand out over a `ConnectionPlan` channel ([ADR-0045](adr/0045-connection-plan-and-network-topology.md)); the hand links no model/commit/store (G33), plans carry a `CredentialRef` not material (G34). Shipped: InProcess + Unix + **TCP** channels + **NATS**; kernel + host seams; served `AWAKEN_MODEL_MODE=remote-hand` mode; and all three ADR-0045 network topologies — **Direct** (brain dials hand), **Reverse** (hand dials brain, NAT), **Relay** (both meet at a NATS broker) — verified on real **k3d/k3s** (`e2e/k3d/topology_e2e.sh all`) plus the in-process served e2e. Placement ([ADR-0046](adr/0046-hand-placement-tool-executor-provider.md)): the `ToolExecutorProvider` seam selects a run's executor per run; `ConfigToolExecutorProvider` (config-driven brain–hand split) is the open default, and the served `remote-hand` mode routes through it. Deferred: durable/superseding-ingress placement; foundation-transport adoption |
+| E2E coverage | `scripts/ci/e2e-coverage.sh` + `e2e/` | Deterministic served-process API coverage. `stage_change_coverage_e2e.ts` maps **126/126** functional obligations to real HTTP/process scenarios. The 2026-07-22 changed-line audit against `t` measured **2752/2856 = 96.36%**, above the enforced strict threshold of **>95%**; non-API-reachable production lines are separately bounded and audited rather than hidden by broad exclusions. |
+| Brain–hand execution | `awaken-tool-relay` (hand) + `awaken-connection-plan` (topology) | Tool execution runs behind the `ToolExecutor` port ([ADR-0044](adr/0044-remote-hand-tool-executor-over-a-channel.md)); `LocalToolExecutor` is the in-process default, `RemoteToolExecutor`/`serve_hand` split the hand out over a `ConnectionPlan` channel ([ADR-0045](adr/0045-connection-plan-and-network-topology.md)); the hand links no model/commit/store (G33), plans carry a `CredentialRef` not material (G34). Shipped: InProcess + Unix + **TCP** channels + **NATS**; all three network topologies; durable `PlacementRequirements`; worker eligibility/identity/incarnation fencing; persisted assignment; and replaceable ranking policy that cannot widen eligibility ([ADR-0046](adr/0046-hand-placement-tool-executor-provider.md)). Foundation-transport adoption remains optional, not a second execution path. |
 
 ## Not Ready Without More Detail
 
@@ -207,10 +207,12 @@ The following should not be implemented as broad subsystems from these docs alon
   accepted run, a worker claims and runs it under a single-owner lease, an expired
   lease is recovered, and an aawaiting run resumes through delivered input — all over
   the durable `CommitCoordinator` backend ([ADR-0008](adr/0008-durable-postgres-commit-backend.md)).
-  That slice is intentionally minimal: scheduled wake, lease renewal, cross-thread
-  outbox, dispatch query/maintenance, supersession, and dead-letter are named as
-  deferred in ADR-0009, not built. The commit contract any backend must satisfy is
-  fixed by [ADR-0006](adr/0006-fact-authority-run-record-is-cache.md);
+  The originally minimal ADR-0009 slice has since gained scheduled wake, lease
+  renewal, cross-thread outbox, query/maintenance, supersession, dead-letter, and
+  durable completion tombstones through ADR-0011–0027 and ADR-0060. Extend those
+  existing ports and backend-conformance suites; do not create a parallel delivery
+  subsystem. The commit contract any backend must satisfy remains fixed by
+  [ADR-0006](adr/0006-fact-authority-run-record-is-cache.md);
 - product-specific vaults, sessions, and outcome fields inside runtime crates.
 - a manager/controller that owns config loading, registry compilation, catalog
   install, live control, and execution as one runtime object;

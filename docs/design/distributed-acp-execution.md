@@ -6,8 +6,14 @@ is self-contained; scale by replicating cells keyed on `thread_id`. Everything
 lands on awaken's existing seams (`RunExecutor`, `RunIngress`/`DispatchQueue`,
 `AgentEvent`, `SharedHost`, `awaken-run-executor-acp`).
 
-- Status: Proposed
+- Status: Accepted for Phase 1; Phase 2 remains deliberately deferred
 - Date: 2026-07-13
+- Implemented: 2026-07-22 — a database-less worker claims and settles through
+  authenticated HTTP, commits neutral `ThreadCommit` facts through the server's
+  claim-fenced ingest, and materializes ACP locally in its Session sandbox. The
+  server remains the sole store writer. Worker identity, capability placement,
+  replacement, recovery, and stale-epoch rejection are wired through the same
+  durable dispatch path. Multi-cell sharding is still gated on measured need.
 - Builds on: [run-ingress-message-delivery](run-ingress-message-delivery.md)
   (the Dispatch/Server boundary; `thread_id` is the shard and consistency key;
   only one owner may freeze/snapshot/execute a thread); the ACP `RunExecutor`
@@ -246,11 +252,11 @@ Order: scale workers first (cheapest) → swap store (single-cell write bottlene
 | have | co-located pool + HTTP ops surface | `SharedHost::ensure_dispatch_pool`, `durable_ops_router` |
 | have | single-writer commit, ACP subprocess launch | commit coordinator, `subprocess.rs` (env_clear + passthrough) |
 | **done · read side** | **server→client live streaming across all three frontends** — managed live previews (`event_start`/`event_delta`), ai-sdk/ag-ui already streaming. The in-process per-session broadcast is the **read-side prototype** of the cross-node event sink (same multiplex/fan-out shape) | `awaken-protocol-managed` (`preview.rs`, live SSE), the `run_streaming` seam |
-| **design-first · step 1** | **the Fact contract** — a neutral published-language type carrying identity `(thread_id, run_id, seq)` + `AgentEvent` + its delivery contract (per-thread monotonic `seq`, at-least-once with idempotent commit keyed on `(thread_id, seq)`), defined *before* any transport | a kernel type beside `AgentEvent` |
-| **build · slice 1** | **ONE thin end-to-end path**: one worker → **HTTP dispatch transport** (claim/settle over HTTP) → run → push Facts → server ingest + commit + fan-out. **Workers are db-less** — they never open sqlite; the server stays the single writer. Everything else (capability, egress policy, HA) stubbed | `DispatchQueue` HTTP impl + facts ingest on `durable_ops_router`, carrying the Fact type into the read-side broadcast |
-| **build · worker-only mode** | a process that runs the execution pool **off the HTTP dispatch transport** (not the co-located in-process pool), pushing facts back — the stateless worker of the cell | reuse `SharedHost`'s pool over the transport from slice 1 |
-| **build · later** | **capability as a dispatch-context attribute** — "can run ACP" is a `DispatchQueue`/node property claim/selection reads, **not** a floating service; **egress local direct-out** with in-place policy | |
-| **harden** | at-least-once idempotency / fencing-token (a known gap), settle-with-facts atomicity, server single-writer HA | |
+| **done · published language** | **the Fact contract** — the existing neutral `ThreadCommit` carries thread/run identity, ordered commands and events, and deterministic commit identity; transport does not introduce a second fact vocabulary | `awaken-agent-contract::thread::commit::staged::ThreadCommit` |
+| **done · thin slice** | **ONE end-to-end path**: one worker → authenticated **HTTP dispatch transport** (claim/settle) → run → push `ThreadCommit` → server ingest + commit. **Workers are db-less** — they never open SQLite; the server stays the single writer | `HttpDispatchQueue`, `registered_worker_transport_router`, `commit_ingest_router`, `RemoteCoordinator` |
+| **done · worker-only mode** | a process runs the ordinary execution pool over HTTP dispatch and remote commit ingest, without opening the server store | deployment config worker mode, `worker_dispatch_store_with_upstream`, `SharedHost::with_upstream` |
+| **done · placement and egress** | capability is a worker-manifest/dispatch requirement, filtered before replaceable policy ranking; ACP/tool egress occurs inside the selected Session sandbox under its network policy | `PlacementRequirements`, worker registry, `SessionEnvironmentProvider` |
+| **done · recovery protocol** | claim epochs fence every remote commit and settle; committed truth makes post-commit/pre-settle recovery idempotent; terminal dispatch completion is an atomic tombstone. There is intentionally no cross-bounded-context distributed transaction | claimed commit ingest, stale-epoch tests, ADR-0060 completion tombstone |
 | **optional · not on the path** | **`journal_mode=WAL` + `busy_timeout`, set once on the shared db** — a within-process read/write-concurrency + robustness tweak, *not* a correctness requirement: no target opens the sqlite file from multiple processes (merged = one process/one shared db; split = db-less workers over HTTP) | at the shared connection open, benefits every `with_prefix(NS)` schema |
 | **Phase 2** | shard-router + cell membership + migration/failover — build only when a cell tops out | |
 

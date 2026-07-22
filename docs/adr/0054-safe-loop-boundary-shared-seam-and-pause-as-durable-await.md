@@ -1,7 +1,13 @@
 # ADR-0054: The Safe Loop Boundary is a Shared Kernel Seam — Live-Inbox Drain and Operator Pause Reach Every Executor, and Pause is a Durable Await
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-13
+- Implemented: 2026-07-22 — the neutral boundary and `PauseSignal` live in
+  `awaken-runtime-contract`; native and ACP attempts both evaluate it; durable
+  worker contexts carry the live inbox and pause signal; manual pause and ACP
+  tool permission commit ordinary resume tickets and re-enter through durable
+  ingress. Unit, worker-recovery, and served-process E2E scenarios cover the
+  fresh, pause, permission, resume, replacement, and stale-ticket paths.
 - Builds on: [ADR-0040](0040-server-durable-ingress-integration.md) (durable
   dispatch / lease-recovery: await = persisted, resumable); the live-inbox
   "drain-at-boundary → commit" discipline (`awaken-runtime-contract::live_inbox`);
