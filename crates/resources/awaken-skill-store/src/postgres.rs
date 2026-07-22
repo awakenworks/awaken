@@ -7,7 +7,7 @@ use sqlx::postgres::PgPool;
 use crate::schema::skill_store_bundle;
 use crate::{
     SkillAggregate, SkillDefinition, SkillStore, SkillStoreError, SkillVersion, append_to,
-    legacy_aggregate, remove_version_from, validate_create,
+    decode_aggregate, legacy_aggregate, remove_version_from, validate_create,
 };
 
 const NS: &str = "skill_store";
@@ -153,7 +153,7 @@ impl SkillStore for PgSkillStore {
         .map_err(storage)?
         .ok_or_else(|| SkillStoreError::NotFound(skill_id.into()))?;
         let data = row.try_get::<String, _>("data").map_err(storage)?;
-        let mut aggregate: SkillAggregate = serde_json::from_str(&data).map_err(storage)?;
+        let mut aggregate = decode_aggregate(data.as_bytes(), workspace_id, skill_id)?;
         append_to(&mut aggregate, version)?;
         let data = serde_json::to_string(&aggregate).map_err(storage)?;
         sqlx::query(&format!(
@@ -185,7 +185,7 @@ impl SkillStore for PgSkillStore {
         workspace_id: &str,
     ) -> Result<Vec<SkillDefinition>, SkillStoreError> {
         let rows = sqlx::query(&format!(
-            "SELECT data FROM {NS}_aggregate WHERE workspace_id = $1 ORDER BY id COLLATE \"C\""
+            "SELECT id, data FROM {NS}_aggregate WHERE workspace_id = $1 ORDER BY id COLLATE \"C\""
         ))
         .bind(workspace_id)
         .fetch_all(&self.pool)
@@ -193,8 +193,9 @@ impl SkillStore for PgSkillStore {
         .map_err(storage)?;
         let mut definitions = Vec::new();
         for row in rows {
+            let id = row.try_get::<String, _>("id").map_err(storage)?;
             let data = row.try_get::<String, _>("data").map_err(storage)?;
-            let aggregate = serde_json::from_str::<SkillAggregate>(&data).map_err(storage)?;
+            let aggregate = decode_aggregate(data.as_bytes(), workspace_id, &id)?;
             if !aggregate.deleted {
                 definitions.push(aggregate.definition);
             }
@@ -253,7 +254,7 @@ impl SkillStore for PgSkillStore {
             return Ok(false);
         };
         let data = row.try_get::<String, _>("data").map_err(storage)?;
-        let mut aggregate: SkillAggregate = serde_json::from_str(&data).map_err(storage)?;
+        let mut aggregate = decode_aggregate(data.as_bytes(), workspace_id, skill_id)?;
         let removed = remove_version_from(&mut aggregate, version)?;
         if removed {
             let data = serde_json::to_string(&aggregate).map_err(storage)?;
@@ -337,7 +338,7 @@ impl PgSkillStore {
         .map_err(storage)?;
         row.map(|row| {
             let data = row.try_get::<String, _>("data").map_err(storage)?;
-            serde_json::from_str(&data).map_err(storage)
+            decode_aggregate(data.as_bytes(), workspace_id, skill_id)
         })
         .transpose()
     }

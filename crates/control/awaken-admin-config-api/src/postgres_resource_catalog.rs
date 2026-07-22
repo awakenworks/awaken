@@ -71,11 +71,7 @@ impl PostgresAdminStore {
                 .collect::<Result<Vec<_>, ResourceCatalogError>>()
         })?;
         for legacy in rows {
-            if legacy.workspace_id.trim().is_empty()
-                || self
-                    .catalog_record::<MemoryRecord>(MEMORY, &legacy.id)
-                    .is_some()
-            {
+            if legacy.workspace_id.trim().is_empty() || self.memory_record(&legacy.id)?.is_some() {
                 continue;
             }
             let id = legacy.id;
@@ -108,7 +104,7 @@ impl PostgresAdminStore {
         Ok(())
     }
 
-    fn catalog_record<T>(&self, kind: &str, id: &str) -> Option<T>
+    fn catalog_record<T>(&self, kind: &str, id: &str) -> Result<Option<T>, ResourceCatalogError>
     where
         T: serde::de::DeserializeOwned + Send + 'static,
     {
@@ -122,10 +118,40 @@ impl PostgresAdminStore {
                 .bind(id)
                 .fetch_optional(&pool)
                 .await
-                .expect("read resource catalog")?;
-            let Json(value): Json<T> = row.try_get("data").expect("decode resource catalog");
-            Some(value)
+                .map_err(storage)?;
+            row.map(|row| {
+                let Json(value): Json<T> = row.try_get("data").map_err(storage)?;
+                Ok(value)
+            })
+            .transpose()
         })
+    }
+
+    fn memory_record(&self, id: &str) -> Result<Option<MemoryRecord>, ResourceCatalogError> {
+        let record = self.catalog_record::<MemoryRecord>(MEMORY, id)?;
+        if let Some(record) = &record {
+            ResourceCatalogRules::validate_memory_aggregate(
+                id,
+                &record.definition,
+                &record.configs,
+            )?;
+        }
+        Ok(record)
+    }
+
+    fn repository_record(
+        &self,
+        id: &str,
+    ) -> Result<Option<RepositoryRecord>, ResourceCatalogError> {
+        let record = self.catalog_record::<RepositoryRecord>(REPOSITORY, id)?;
+        if let Some(record) = &record {
+            ResourceCatalogRules::validate_repository_aggregate(
+                id,
+                &record.definition,
+                &record.configs,
+            )?;
+        }
+        Ok(record)
     }
 
     fn insert_catalog_record<T: Serialize>(
@@ -206,7 +232,7 @@ impl ResourceConfigSource for PostgresAdminStore {
         id: &str,
     ) -> Result<MemoryStoreConfigVersion, ResourceCatalogError> {
         let record = self
-            .catalog_record::<MemoryRecord>(MEMORY, id)
+            .memory_record(id)?
             .filter(|record| record.definition.workspace_id == workspace_id)
             .ok_or_else(|| ResourceCatalogError::NotFound(id.into()))?;
         ResourceCatalogRules::validate_live_definition(id, record.definition.state)?;
@@ -226,7 +252,7 @@ impl ResourceConfigSource for PostgresAdminStore {
         id: &str,
     ) -> Result<RepositoryConfigVersion, ResourceCatalogError> {
         let record = self
-            .catalog_record::<RepositoryRecord>(REPOSITORY, id)
+            .repository_record(id)?
             .filter(|record| record.definition.workspace_id == workspace_id)
             .ok_or_else(|| ResourceCatalogError::NotFound(id.into()))?;
         ResourceCatalogRules::validate_live_definition(id, record.definition.state)?;
@@ -249,7 +275,7 @@ impl ResourceBindingValidator for PostgresAdminStore {
         version: ConfigVersion,
     ) -> Result<(), ResourceCatalogError> {
         let record = self
-            .catalog_record::<MemoryRecord>(MEMORY, id)
+            .memory_record(id)?
             .filter(|record| record.definition.workspace_id == workspace_id)
             .ok_or_else(|| ResourceCatalogError::NotFound(id.into()))?;
         ResourceCatalogRules::validate_live_definition(id, record.definition.state)?;
@@ -271,7 +297,7 @@ impl ResourceBindingValidator for PostgresAdminStore {
         version: ConfigVersion,
     ) -> Result<(), ResourceCatalogError> {
         let record = self
-            .catalog_record::<RepositoryRecord>(REPOSITORY, id)
+            .repository_record(id)?
             .filter(|record| record.definition.workspace_id == workspace_id)
             .ok_or_else(|| ResourceCatalogError::NotFound(id.into()))?;
         ResourceCatalogRules::validate_live_definition(id, record.definition.state)?;
@@ -311,37 +337,55 @@ impl ResourceCatalog for PostgresAdminStore {
         )
     }
 
-    fn memory_store(&self, workspace_id: &str, id: &str) -> Option<MemoryStoreDefinition> {
-        self.catalog_record::<MemoryRecord>(MEMORY, id)
+    fn memory_store(
+        &self,
+        workspace_id: &str,
+        id: &str,
+    ) -> Result<Option<MemoryStoreDefinition>, ResourceCatalogError> {
+        Ok(self
+            .memory_record(id)?
             .filter(|record| record.definition.workspace_id == workspace_id)
-            .map(|record| record.definition)
+            .map(|record| record.definition))
     }
 
-    fn list_memory_stores(&self, workspace_id: &str) -> Vec<MemoryStoreDefinition> {
-        let sql = format!("SELECT data FROM {NS}_resource_catalog WHERE kind = $1 ORDER BY id");
+    fn list_memory_stores(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<MemoryStoreDefinition>, ResourceCatalogError> {
+        let sql = format!("SELECT id, data FROM {NS}_resource_catalog WHERE kind = $1 ORDER BY id");
         let pool = self.pool.clone();
         let workspace_id = workspace_id.to_string();
         block(&self.handle, move || async move {
-            sqlx::query(&sql)
+            let rows = sqlx::query(&sql)
                 .bind(MEMORY)
                 .fetch_all(&pool)
                 .await
-                .expect("list resource catalog")
-                .into_iter()
+                .map_err(storage)?;
+            rows.into_iter()
                 .map(|row| {
-                    let Json(record): Json<MemoryRecord> =
-                        row.try_get("data").expect("decode resource catalog");
-                    record
+                    let id: String = row.try_get("id").map_err(storage)?;
+                    let Json(record): Json<MemoryRecord> = row.try_get("data").map_err(storage)?;
+                    ResourceCatalogRules::validate_memory_aggregate(
+                        &id,
+                        &record.definition,
+                        &record.configs,
+                    )?;
+                    Ok(record)
                 })
-                .filter(|record| {
-                    record.definition.workspace_id == workspace_id
-                        && !matches!(
-                            record.definition.state,
-                            ResourceState::Archived | ResourceState::Deleted
-                        )
+                .collect::<Result<Vec<_>, ResourceCatalogError>>()
+                .map(|records| {
+                    records
+                        .into_iter()
+                        .filter(|record| {
+                            record.definition.workspace_id == workspace_id
+                                && !matches!(
+                                    record.definition.state,
+                                    ResourceState::Archived | ResourceState::Deleted
+                                )
+                        })
+                        .map(|record| record.definition)
+                        .collect()
                 })
-                .map(|record| record.definition)
-                .collect()
         })
     }
 
@@ -374,10 +418,11 @@ impl ResourceCatalog for PostgresAdminStore {
         workspace_id: &str,
         id: &str,
         version: ConfigVersion,
-    ) -> Option<MemoryStoreConfigVersion> {
-        self.catalog_record::<MemoryRecord>(MEMORY, id)
+    ) -> Result<Option<MemoryStoreConfigVersion>, ResourceCatalogError> {
+        Ok(self
+            .memory_record(id)?
             .filter(|record| record.definition.workspace_id == workspace_id)
-            .and_then(|record| record.configs.get(&version).cloned())
+            .and_then(|record| record.configs.get(&version).cloned()))
     }
 
     fn publish_memory_config(
@@ -451,10 +496,15 @@ impl ResourceCatalog for PostgresAdminStore {
         )
     }
 
-    fn repository(&self, workspace_id: &str, id: &str) -> Option<RepositoryDefinition> {
-        self.catalog_record::<RepositoryRecord>(REPOSITORY, id)
+    fn repository(
+        &self,
+        workspace_id: &str,
+        id: &str,
+    ) -> Result<Option<RepositoryDefinition>, ResourceCatalogError> {
+        Ok(self
+            .repository_record(id)?
             .filter(|record| record.definition.workspace_id == workspace_id)
-            .map(|record| record.definition)
+            .map(|record| record.definition))
     }
 
     fn repository_config(
@@ -462,10 +512,11 @@ impl ResourceCatalog for PostgresAdminStore {
         workspace_id: &str,
         id: &str,
         version: ConfigVersion,
-    ) -> Option<RepositoryConfigVersion> {
-        self.catalog_record::<RepositoryRecord>(REPOSITORY, id)
+    ) -> Result<Option<RepositoryConfigVersion>, ResourceCatalogError> {
+        Ok(self
+            .repository_record(id)?
             .filter(|record| record.definition.workspace_id == workspace_id)
-            .and_then(|record| record.configs.get(&version).cloned())
+            .and_then(|record| record.configs.get(&version).cloned()))
     }
 
     fn publish_repository_config(

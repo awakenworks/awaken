@@ -162,18 +162,27 @@ impl ResourceCatalog for InMemoryResourceCatalog {
         Ok(())
     }
 
-    fn memory_store(&self, workspace_id: &str, id: &str) -> Option<MemoryStoreDefinition> {
-        self.0
+    fn memory_store(
+        &self,
+        workspace_id: &str,
+        id: &str,
+    ) -> Result<Option<MemoryStoreDefinition>, ResourceCatalogError> {
+        Ok(self
+            .0
             .lock()
             .expect("resource catalog")
             .memories
             .get(id)
             .filter(|definition| definition.workspace_id == workspace_id)
-            .cloned()
+            .cloned())
     }
 
-    fn list_memory_stores(&self, workspace_id: &str) -> Vec<MemoryStoreDefinition> {
-        self.0
+    fn list_memory_stores(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<MemoryStoreDefinition>, ResourceCatalogError> {
+        Ok(self
+            .0
             .lock()
             .expect("resource catalog")
             .memories
@@ -186,7 +195,7 @@ impl ResourceCatalog for InMemoryResourceCatalog {
                     )
             })
             .cloned()
-            .collect()
+            .collect())
     }
 
     fn update_memory_store(
@@ -217,13 +226,15 @@ impl ResourceCatalog for InMemoryResourceCatalog {
         workspace_id: &str,
         id: &str,
         version: ConfigVersion,
-    ) -> Option<MemoryStoreConfigVersion> {
+    ) -> Result<Option<MemoryStoreConfigVersion>, ResourceCatalogError> {
         let state = self.0.lock().expect("resource catalog");
         state
             .memories
             .get(id)
-            .filter(|definition| definition.workspace_id == workspace_id)?;
-        state.memory_configs.get(&(id.into(), version)).cloned()
+            .filter(|definition| definition.workspace_id == workspace_id)
+            .map_or(Ok(None), |_| {
+                Ok(state.memory_configs.get(&(id.into(), version)).cloned())
+            })
     }
 
     fn publish_memory_config(
@@ -297,14 +308,19 @@ impl ResourceCatalog for InMemoryResourceCatalog {
         Ok(())
     }
 
-    fn repository(&self, workspace_id: &str, id: &str) -> Option<RepositoryDefinition> {
-        self.0
+    fn repository(
+        &self,
+        workspace_id: &str,
+        id: &str,
+    ) -> Result<Option<RepositoryDefinition>, ResourceCatalogError> {
+        Ok(self
+            .0
             .lock()
             .expect("resource catalog")
             .repositories
             .get(id)
             .filter(|definition| definition.workspace_id == workspace_id)
-            .cloned()
+            .cloned())
     }
 
     fn repository_config(
@@ -312,13 +328,15 @@ impl ResourceCatalog for InMemoryResourceCatalog {
         workspace_id: &str,
         id: &str,
         version: ConfigVersion,
-    ) -> Option<RepositoryConfigVersion> {
+    ) -> Result<Option<RepositoryConfigVersion>, ResourceCatalogError> {
         let state = self.0.lock().expect("resource catalog");
         state
             .repositories
             .get(id)
-            .filter(|definition| definition.workspace_id == workspace_id)?;
-        state.repository_configs.get(&(id.into(), version)).cloned()
+            .filter(|definition| definition.workspace_id == workspace_id)
+            .map_or(Ok(None), |_| {
+                Ok(state.repository_configs.get(&(id.into(), version)).cloned())
+            })
     }
 
     fn publish_repository_config(
@@ -441,6 +459,7 @@ mod tests {
             catalog
                 .memory_config("workspace-a", "memory-1", ConfigVersion(1))
                 .unwrap()
+                .unwrap()
                 .version,
             ConfigVersion(1)
         );
@@ -487,14 +506,23 @@ mod tests {
         other_config.memory_store_id = other.id.clone();
         catalog.create_memory_store(other, other_config).unwrap();
 
-        let mut updated = catalog.memory_store("workspace-a", "memory-1").unwrap();
+        let mut updated = catalog
+            .memory_store("workspace-a", "memory-1")
+            .unwrap()
+            .unwrap();
         updated.name = "Renamed".into();
         updated.metadata.insert("purpose".into(), "recall".into());
         catalog.update_memory_store(updated.clone()).unwrap();
-        assert_eq!(catalog.list_memory_stores("workspace-a"), vec![updated]);
-        assert_eq!(catalog.list_memory_stores("workspace-b").len(), 1);
+        assert_eq!(
+            catalog.list_memory_stores("workspace-a").unwrap(),
+            vec![updated]
+        );
+        assert_eq!(catalog.list_memory_stores("workspace-b").unwrap().len(), 1);
 
-        let mut illegal = catalog.memory_store("workspace-a", "memory-1").unwrap();
+        let mut illegal = catalog
+            .memory_store("workspace-a", "memory-1")
+            .unwrap()
+            .unwrap();
         illegal.workspace_id = "workspace-b".into();
         assert!(matches!(
             catalog.update_memory_store(illegal),
@@ -503,8 +531,18 @@ mod tests {
         catalog
             .set_memory_state("workspace-a", "memory-1", ResourceState::Archived)
             .unwrap();
-        assert!(catalog.list_memory_stores("workspace-a").is_empty());
-        assert!(catalog.memory_store("workspace-a", "memory-1").is_some());
+        assert!(
+            catalog
+                .list_memory_stores("workspace-a")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            catalog
+                .memory_store("workspace-a", "memory-1")
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]

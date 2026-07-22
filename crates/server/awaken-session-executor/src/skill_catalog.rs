@@ -72,8 +72,10 @@ impl SkillCatalog {
         let store = self.store.as_ref()?;
         let workspace = definition.workspace_id.clone();
         let result = store.create(definition, initial_version).await;
-        if result.is_ok() {
-            self.reload_cache_in(&workspace).await;
+        if result.is_ok()
+            && let Err(error) = self.reload_cache_in(&workspace).await
+        {
+            return Some(Err(error));
         }
         Some(result)
     }
@@ -86,8 +88,10 @@ impl SkillCatalog {
     ) -> Option<Result<(), SkillStoreError>> {
         let store = self.store.as_ref()?;
         let result = store.append_version(workspace, id, version).await;
-        if result.is_ok() {
-            self.reload_cache_in(workspace).await;
+        if result.is_ok()
+            && let Err(error) = self.reload_cache_in(workspace).await
+        {
+            return Some(Err(error));
         }
         Some(result)
     }
@@ -157,8 +161,10 @@ impl SkillCatalog {
                 )
                 .await
         };
-        if result.is_ok() {
-            self.reload_cache_in(workspace).await;
+        if result.is_ok()
+            && let Err(error) = self.reload_cache_in(workspace).await
+        {
+            return Some(Err(error));
         }
         Some(result)
     }
@@ -171,10 +177,13 @@ impl SkillCatalog {
         Some(self.store.as_ref()?.definition(workspace, id).await)
     }
 
-    pub(crate) async fn definitions(&self, workspace: &str) -> Vec<SkillDefinition> {
+    pub(crate) async fn definitions(
+        &self,
+        workspace: &str,
+    ) -> Result<Vec<SkillDefinition>, SkillStoreError> {
         match self.store.as_ref() {
-            Some(store) => store.list_definitions(workspace).await.unwrap_or_default(),
-            None => Vec::new(),
+            Some(store) => store.list_definitions(workspace).await,
+            None => Ok(Vec::new()),
         }
     }
 
@@ -254,8 +263,10 @@ impl SkillCatalog {
     ) -> Option<Result<bool, SkillStoreError>> {
         let store = self.store.as_ref()?;
         let result = store.delete_version(workspace, id, version).await;
-        if result.as_ref().is_ok_and(|removed| *removed) {
-            self.reload_cache_in(workspace).await;
+        if result.as_ref().is_ok_and(|removed| *removed)
+            && let Err(error) = self.reload_cache_in(workspace).await
+        {
+            return Some(Err(error));
         }
         Some(result)
     }
@@ -267,8 +278,10 @@ impl SkillCatalog {
     ) -> Option<Result<bool, SkillStoreError>> {
         let store = self.store.as_ref()?;
         let result = store.delete_skill(workspace, id).await;
-        if result.as_ref().is_ok_and(|removed| *removed) {
-            self.reload_cache_in(workspace).await;
+        if result.as_ref().is_ok_and(|removed| *removed)
+            && let Err(error) = self.reload_cache_in(workspace).await
+        {
+            return Some(Err(error));
         }
         Some(result)
     }
@@ -284,22 +297,43 @@ impl SkillCatalog {
     /// Refresh the in-memory delivered-catalog snapshot from the async store. Called
     /// on a write and at each session's setup so the sync read paths (advertisement,
     /// run-loop scan) see the current catalog.
-    pub(crate) async fn reload_cache_in(&self, workspace: &str) {
-        if let Some(store) = self.store.as_ref() {
-            let definitions = store.list_definitions(workspace).await.unwrap_or_default();
+    pub(crate) async fn reload_cache_in(&self, workspace: &str) -> Result<(), SkillStoreError> {
+        let Some(store) = self.store.as_ref() else {
+            return Ok(());
+        };
+        let loaded = async {
+            let definitions = store.list_definitions(workspace).await?;
             let mut snapshot = Vec::with_capacity(definitions.len());
             for definition in definitions {
-                if let Ok(Some(version)) = store
+                let version = store
                     .version(workspace, &definition.id, definition.latest_version)
-                    .await
-                {
-                    snapshot.push(version);
-                }
+                    .await?
+                    .ok_or_else(|| {
+                        SkillStoreError::Storage(format!(
+                            "Skill {} latest version {} is missing",
+                            definition.id, definition.latest_version
+                        ))
+                    })?;
+                snapshot.push(version);
             }
-            self.cache
-                .lock()
-                .expect("skill cache poisoned")
-                .insert(workspace.to_string(), snapshot);
+            Ok::<_, SkillStoreError>(snapshot)
+        }
+        .await;
+        match loaded {
+            Ok(snapshot) => {
+                self.cache
+                    .lock()
+                    .expect("skill cache poisoned")
+                    .insert(workspace.to_string(), snapshot);
+                Ok(())
+            }
+            Err(error) => {
+                self.cache
+                    .lock()
+                    .expect("skill cache poisoned")
+                    .remove(workspace);
+                Err(error)
+            }
         }
     }
 

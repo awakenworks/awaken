@@ -7,7 +7,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::schema::skill_store_bundle;
 use crate::{
     SkillAggregate, SkillDefinition, SkillStore, SkillStoreError, SkillVersion, append_to,
-    legacy_aggregate, remove_version_from, validate_create,
+    decode_aggregate, legacy_aggregate, remove_version_from, validate_create,
 };
 
 const NS: &str = "skill_store";
@@ -177,7 +177,7 @@ impl SkillStore for SqliteSkillStore {
                 .optional()
                 .map_err(storage)?
                 .ok_or_else(|| SkillStoreError::NotFound(id.clone()))?;
-            let mut aggregate: SkillAggregate = serde_json::from_str(&data).map_err(storage)?;
+            let mut aggregate = decode_aggregate(data.as_bytes(), &ws, &id)?;
             append_to(&mut aggregate, version)?;
             let data = serde_json::to_string(&aggregate).map_err(storage)?;
             transaction
@@ -209,9 +209,8 @@ impl SkillStore for SqliteSkillStore {
             .optional()
             .map_err(storage)?
             .map(|data| {
-                serde_json::from_str::<SkillAggregate>(&data)
+                decode_aggregate(data.as_bytes(), &ws, &id)
                     .map(|value| (!value.deleted).then_some(value.definition))
-                    .map_err(storage)
             })
             .transpose()
             .map(Option::flatten)
@@ -227,16 +226,18 @@ impl SkillStore for SqliteSkillStore {
         with_conn(&self.conn, move |conn| {
             let mut statement = conn
                 .prepare(&format!(
-                    "SELECT data FROM {NS}_aggregate WHERE workspace_id = ?1 ORDER BY id"
+                    "SELECT id, data FROM {NS}_aggregate WHERE workspace_id = ?1 ORDER BY id"
                 ))
                 .map_err(storage)?;
             let rows = statement
-                .query_map(params![ws], |row| row.get::<_, String>(0))
+                .query_map(params![ws], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
                 .map_err(storage)?;
             let mut definitions = Vec::new();
             for row in rows {
-                let data = row.map_err(storage)?;
-                let aggregate = serde_json::from_str::<SkillAggregate>(&data).map_err(storage)?;
+                let (id, data) = row.map_err(storage)?;
+                let aggregate = decode_aggregate(data.as_bytes(), &ws, &id)?;
                 if !aggregate.deleted {
                     definitions.push(aggregate.definition);
                 }
@@ -299,7 +300,7 @@ impl SkillStore for SqliteSkillStore {
             else {
                 return Ok(false);
             };
-            let mut aggregate: SkillAggregate = serde_json::from_str(&data).map_err(storage)?;
+            let mut aggregate = decode_aggregate(data.as_bytes(), &ws, &id)?;
             let removed = remove_version_from(&mut aggregate, version)?;
             if removed {
                 let data = serde_json::to_string(&aggregate).map_err(storage)?;
@@ -335,7 +336,7 @@ impl SkillStore for SqliteSkillStore {
             else {
                 return Ok(false);
             };
-            let mut aggregate: SkillAggregate = serde_json::from_str(&data).map_err(storage)?;
+            let mut aggregate = decode_aggregate(data.as_bytes(), &ws, &id)?;
             if aggregate.deleted {
                 return Ok(false);
             }
@@ -370,7 +371,7 @@ impl SkillStore for SqliteSkillStore {
             else {
                 return Ok(0);
             };
-            let aggregate: SkillAggregate = serde_json::from_str(&data).map_err(storage)?;
+            let aggregate = decode_aggregate(data.as_bytes(), &ws, &id)?;
             if !aggregate.deleted {
                 return Err(SkillStoreError::Invalid(
                     "an active Skill cannot be physically reclaimed".into(),
@@ -403,7 +404,7 @@ impl SqliteSkillStore {
             )
             .optional()
             .map_err(storage)?
-            .map(|data| serde_json::from_str(&data).map_err(storage))
+            .map(|data| decode_aggregate(data.as_bytes(), &ws, &id))
             .transpose()
         })
         .await

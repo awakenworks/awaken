@@ -39,6 +39,7 @@ impl ResourcePurgeGuard for HostResourceReclamation {
             ResourceKind::MemoryStore => match self
                 .catalog
                 .memory_store(&target.workspace_id, &target.resource_id)
+                .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?
             {
                 Some(definition)
                     if definition.state == ResourceState::Deleted
@@ -55,6 +56,7 @@ impl ResourcePurgeGuard for HostResourceReclamation {
             ResourceKind::Repository => self
                 .catalog
                 .repository(&target.workspace_id, &target.resource_id)
+                .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?
                 .filter(|definition| definition.state != ResourceState::Deleted)
                 .map(|definition| format!("repository:{:?}", definition.state)),
             ResourceKind::Skill => match self

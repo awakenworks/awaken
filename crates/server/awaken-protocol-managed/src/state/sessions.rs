@@ -599,8 +599,13 @@ impl ManagedState {
         let Some(catalog) = &self.resource_catalog else {
             return true;
         };
-        let Some(definition) = catalog.repository(owner_scope, repository_id) else {
-            return true;
+        let definition = match catalog.repository(owner_scope, repository_id) {
+            Ok(Some(definition)) => definition,
+            Ok(None) => return true,
+            Err(error) => {
+                tracing::warn!(repository = repository_id, error = ?error, "Repository catalog read failed");
+                return false;
+            }
         };
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
