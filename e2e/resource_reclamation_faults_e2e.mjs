@@ -196,7 +196,6 @@ async function main() {
       `${encoded(skillId)}.json`,
     );
     const tombstone = fs.readFileSync(skillAggregate);
-    fs.writeFileSync(skillAggregate, '{broken-skill-aggregate');
     const alreadyOwnedIntent = intentFor(directory, alreadyOwned);
     assert.ok(alreadyOwnedIntent, 'the logical delete durably scheduled reclamation');
 
@@ -208,6 +207,8 @@ async function main() {
       `
         INSERT INTO resource_reclamation_fences(resource_kind, resource_id, intent_id)
           VALUES ('file', ${sqlQuote(contended)}, 'external-reclaimer');
+        INSERT INTO resource_reclamation_fences(resource_kind, resource_id, intent_id)
+          VALUES ('skill', ${sqlQuote(skillId)}, 'external-skill-reclaimer');
         INSERT INTO resource_reclamation_fences(resource_kind, resource_id, intent_id)
           VALUES ('file', ${sqlQuote(alreadyOwned)}, ${sqlQuote(alreadyOwnedIntent.intent_id)});
         INSERT INTO resource_references(
@@ -322,10 +323,24 @@ async function main() {
           AND intent_id = 'external-repository-fence';`,
     );
 
+    // Keep the tombstoned Skill valid while unrelated File/Repository Sessions
+    // are created, then inject the storage fault and release its foreign fence so
+    // the recurring reclaimer—not Session setup—observes the corruption.
+    fs.writeFileSync(skillAggregate, '{broken-skill-aggregate');
+    sqlite(
+      lifecycle,
+      `DELETE FROM resource_reclamation_fences
+        WHERE resource_kind = 'skill' AND resource_id = ${sqlQuote(skillId)}
+          AND intent_id = 'external-skill-reclaimer';`,
+    );
+
     const failed = await waitFor(
       directory,
       [releaseFailure, contended, lateReference, durableBlockers, corruptReference, skillId],
-      (intent) => intent.status === 'pending' && intent.attempts >= 1,
+      (intent) => intent.status === 'pending'
+        && intent.attempts >= 1
+        && (intent.target.resource_id !== skillId
+          || /expected value|key must be a string/u.test(intent.last_error)),
     );
     const byResource = new Map(failed.map((intent) => [intent.target.resource_id, intent]));
     assert.match(byResource.get(releaseFailure).last_error, /injected release failure/u);

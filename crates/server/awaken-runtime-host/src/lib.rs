@@ -1010,11 +1010,6 @@ impl SessionRuntime for ManagedHost {
     ) -> Result<(), RunError> {
         self.host
             .register_thread_workspace(thread, &init.workspace_id);
-        self.host
-            .skills
-            .reload_cache_in(&init.workspace_id)
-            .await
-            .map_err(|error| RunError::bad_request(error.to_string()))?;
         match &init.resources.skills {
             Some(bindings) => {
                 let versions = self
@@ -1030,6 +1025,15 @@ impl SessionRuntime for ManagedHost {
                     .insert(thread.to_string(), versions);
             }
             None => {
+                // Legacy records without a frozen Skill selection retain the old
+                // global-catalog behavior. Modern `Some(bindings)` sessions load
+                // only their exact pins above, so an unrelated damaged Skill cannot
+                // couple otherwise independent resource inputs.
+                self.host
+                    .skills
+                    .reload_cache_in(&init.workspace_id)
+                    .await
+                    .map_err(|error| RunError::bad_request(error.to_string()))?;
                 self.host
                     .thread_skills
                     .lock()
