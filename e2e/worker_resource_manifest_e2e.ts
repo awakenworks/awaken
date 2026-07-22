@@ -24,6 +24,8 @@ const FILE_BYTES = Buffer.from('immutable input selected by the frozen Session m
 const MOUNT_PATH = 'uploads/input.txt';
 const SKILL_NAME = `remote-worker-skill-${process.pid}`;
 const SKILL_BINARY = Buffer.from([0, 159, 146, 150, 255, 13, 0, 10]);
+const MEMORY_THREAD = `resource-memory-session-${process.pid}`;
+const MEMORY_BYTES = Buffer.from('mutable memory content from shared resource truth');
 
 const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -121,6 +123,17 @@ async function post(pathname: string, body: unknown, worker?: string): Promise<a
   return text ? JSON.parse(text) : {};
 }
 
+async function resourceRequest(method: string, pathname: string, body?: unknown): Promise<any> {
+  const response = await fetch(`${CONFIG_BASE}/v1/workspaces/${WORKSPACE}/${pathname}`, {
+    method,
+    headers: body === undefined ? undefined : { 'content-type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const text = await response.text();
+  assert.equal(response.status, 200, `${method} ${pathname} accepted: ${text}`);
+  return text ? JSON.parse(text) : {};
+}
+
 async function uploadFile(): Promise<string> {
   const form = new FormData();
   form.append('purpose', 'agent');
@@ -168,6 +181,24 @@ async function uploadSkill(): Promise<{ skill_id: string; version: number; bundl
   };
 }
 
+async function createMemory(): Promise<{ memory_store_id: string; config: any }> {
+  const created = await resourceRequest('POST', 'memory_stores', {
+    name: `remote-worker-memory-${process.pid}`,
+    description: 'shared mutable Memory input',
+  });
+  const config = await resourceRequest('POST', `memory_stores/${created.id}/config`, {
+    expected_config_version: 1,
+    recall_policy: { enabled: true, max_results: 4 },
+    extraction_policy: { enabled: false },
+    retention_policy: {},
+  });
+  await resourceRequest('POST', `memory_stores/${created.id}/memories`, {
+    path: '/fact.md',
+    content: MEMORY_BYTES.toString(),
+  });
+  return { memory_store_id: created.id, config };
+}
+
 async function registerSeedWorker(): Promise<{ id: string; identity: any }> {
   const id = `resource-seed-${process.pid}`;
   const registration = await post(
@@ -213,7 +244,12 @@ async function registerSeedWorker(): Promise<{ id: string; identity: any }> {
   return { id, identity };
 }
 
-function resourceEnvelope(fileId?: string, workspace = WORKSPACE, skill?: any): any {
+function resourceEnvelope(
+  fileId?: string,
+  workspace = WORKSPACE,
+  skill?: any,
+  memory?: { memory_store_id: string; config: any },
+): any {
   const inputs = fileId === undefined
     ? []
     : [{
@@ -222,17 +258,29 @@ function resourceEnvelope(fileId?: string, workspace = WORKSPACE, skill?: any): 
         mount_path: MOUNT_PATH,
         access: 'read_only',
       }];
+  if (memory !== undefined) {
+    inputs.push({
+      binding_id: 'session-memory',
+      source: {
+        kind: 'memory_store',
+        memory_store_id: memory.memory_store_id,
+        config: memory.config,
+      },
+      mount_path: 'memory',
+      access: 'read_write',
+    });
+  }
   return {
     workspace_id: workspace,
     resolved_resources_json: JSON.stringify({ inputs, skills: skill === undefined ? [] : [skill] }),
   };
 }
 
-function runRequest(seed: any, suffix: string, envelope: any): any {
+function runRequest(seed: any, suffix: string, envelope: any, thread = THREAD): any {
   const request = structuredClone(seed);
   request.activation.run_id = `${seed.activation.run_id}-${suffix}`;
-  request.activation.thread_id = THREAD;
-  request.session_thread_id = THREAD;
+  request.activation.thread_id = thread;
+  request.session_thread_id = thread;
   request.activation.snapshot.metadata = {
     source: { agent_id: '', revision: 0 },
     publication_version: '',
@@ -297,7 +345,7 @@ async function waitForFile(file: string, expected: Buffer | undefined, timeoutMs
 
 async function enqueueAndAwait(request: any, seedWorkerId: string): Promise<void> {
   await post('/v1/worker/dispatch/enqueue', { request }, seedWorkerId);
-  await waitUntilSettled(THREAD);
+  await waitUntilSettled(request.session_thread_id);
 }
 
 async function main(): Promise<void> {
@@ -342,6 +390,7 @@ async function main(): Promise<void> {
     await waitForPort(PORT, 180_000, cell);
     const fileId = await uploadFile();
     const skill = await uploadSkill();
+    const memory = await createMemory();
     const seedWorker = await registerSeedWorker();
 
     await post(`/v1/durable/threads/${THREAD}-seed/submit_background`, { text: 'seed activation' });
@@ -428,6 +477,49 @@ async function main(): Promise<void> {
       );
     }
 
+    // Mutable Memory content is not copied into the dispatch or pinned by entry
+    // revision. The worker opens the pinned store configuration, then realizes the
+    // current shared content through the injected MemoryRepository/Mounter ports.
+    const memoryRequest = runRequest(
+      seedClaim.request,
+      'memory',
+      resourceEnvelope(undefined, WORKSPACE, undefined, memory),
+      MEMORY_THREAD,
+    );
+    await enqueueAndAwait(memoryRequest, seedWorker.id);
+    const projectedMemory = path.join(
+      workerStorage,
+      'sandboxes',
+      MEMORY_THREAD,
+      '.mnt',
+      'memory',
+      'fact.md',
+    );
+    await waitForFile(projectedMemory, MEMORY_BYTES);
+
+    // The immutable config pin cannot revive a resource after a live lifecycle
+    // transition. The retry is genuinely claimed, then denied before model use.
+    await resourceRequest('POST', `memory_stores/${memory.memory_store_id}/archive`);
+    const deniedMemory = runRequest(
+      seedClaim.request,
+      'memory-archived',
+      resourceEnvelope(undefined, WORKSPACE, undefined, memory),
+      MEMORY_THREAD,
+    );
+    await post('/v1/worker/dispatch/enqueue', { request: deniedMemory }, seedWorker.id);
+    await waitForDispatchStatus(MEMORY_THREAD, 'Leased');
+    const denialDeadline = Date.now() + 10_000;
+    while (
+      Date.now() <= denialDeadline &&
+      !(workerOutput.includes(memory.memory_store_id) && workerOutput.includes('not active'))
+    ) {
+      await sleep(50);
+    }
+    assert.ok(
+      workerOutput.includes(memory.memory_store_id) && workerOutput.includes('not active'),
+      `archived Memory pin was not denied by live state:\n${workerOutput}`,
+    );
+
     // Workspace equality is checked before opening a sandbox. Give the bad run a
     // fresh thread so absence of its sandbox is externally observable.
     const foreignThread = `${THREAD}-foreign`;
@@ -448,7 +540,7 @@ async function main(): Promise<void> {
 
     assert.ok(!workerOutput.includes(FILE_BYTES.toString()), 'worker logs do not expose File bytes');
     console.log(
-      'WORKER RESOURCE MANIFEST TS E2E PASS: capability placement, frozen File/Skill attach, exact-tree detach, reattach, and cross-Workspace fail-closed behavior crossed real cell/worker processes.',
+      'WORKER RESOURCE MANIFEST TS E2E PASS: frozen File/Skill/Memory realization, exact-tree detach, live Memory deny, capability placement, and cross-Workspace failure crossed real cell/worker processes.',
     );
   } finally {
     if (worker) await stopServer(worker).catch(() => {});

@@ -177,6 +177,8 @@ const obligations: Obligation[] = [
   { id: 'D7-23', stage: '7 resource persistence', behavior: 'an explicit empty manifest revokes a prior live projection and remains resource-capability constrained', scenario: 'worker_resource_manifest' },
   { id: 'D7-24', stage: '7 resource persistence', behavior: 'a mismatched dispatch and resource Workspace fails before sandbox creation', scenario: 'worker_resource_manifest' },
   { id: 'D7-25', stage: '7 resource persistence', behavior: 'a remote worker hash-verifies and materializes one frozen binary Skill bundle, then removes the exact tree on detach', scenario: 'worker_resource_manifest' },
+  { id: 'D7-26', stage: '7 resource persistence', behavior: 'a remote worker uses the pinned Memory configuration to mount current mutable content from the shared data plane', scenario: 'worker_resource_manifest' },
+  { id: 'D7-27', stage: '7 resource persistence', behavior: 'archiving a MemoryStore live denies a later claim even though its immutable configuration remains pinned', scenario: 'worker_resource_manifest' },
   { id: 'D7-A01', stage: '7 remote A2A attempt', behavior: 'managed config preserves and publishes the complete A2A backend binding', scenario: 'remote_attempt' },
   { id: 'D7-A02', stage: '7 remote A2A attempt', behavior: 'root remote attempt commits its opaque task reference before polling', scenario: 'remote_attempt' },
   { id: 'D7-A03', stage: '7 remote A2A attempt', behavior: 'replacement reattaches after hard crash without a second message send', scenario: 'remote_attempt' },
