@@ -1212,13 +1212,15 @@ mod tests {
         );
         let content = "customer maintenance is Sunday";
         let target = awaken_memory_store::sha256_hex(content);
-        let mut intent = MemoryExtractionIntent::new(
+        let mut intent = MemoryExtractionIntent::new_range(
             "memory-extraction:thread-crash:terminal-8",
             "thread-crash:terminal-8",
             "ws-test",
             "thread-crash",
             "terminal-8",
             "test-store",
+            1,
+            0,
             1,
             vec![user("remember the maintenance window")],
             MemoryExtractorSnapshot {
