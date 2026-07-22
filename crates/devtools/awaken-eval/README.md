@@ -245,6 +245,9 @@ map used to re-score the numbers below is:
 - J4: `awaken-outcome-gold-v1-acp-final.json`
 - C0-C4: `awaken-compact-gold-v1-acp.json`, then `-v2` through `-v5`
 - M0-M2: `awaken-memory-gold-v1-acp.json`, then `-v2` and `-v3`
+- J5/C5/M3-M4: `/tmp/outcome-codex-opt-single-15.json`,
+  `/tmp/compact-codex-opt-8.json`, `/tmp/memory-codex-opt-11.json`, and
+  `/tmp/memory-codex-opt2-11.json`
 
 ### Judge
 
@@ -258,8 +261,15 @@ each out of 15 except the explicit five-case retry.
 | J2 | One independent production-shaped Judge turn per case. | `15 / 14 / 14 / 15 / 1` | Grounding reached 15/15; `gold-failed-service-retired` remained unsafe. This replaced repaired batch accuracy as the request-shape floor. |
 | J3 | Unified ACP `RunExecutor` projects frozen snapshot instructions before untrusted first input. | `15 / 13 / 14 / 14 / 1` | Proved arbitrary ACP Agents receive the Judge contract. Exact moved -1 while binary safety stayed 14/15, consistent with single-sample variation. Kept for runtime correctness and stable prefixing. |
 | J4 | Longer meta-explanation for rubrics phrased as “report/conclude failure”. | `15 / 10 / 12 / 15 / 3` | Exact regressed by 3 and unsafe accepts increased by 2 versus J3. Rejected and reverted. |
+| J5 | Added a short ordered decision rule: permanent blocker first, then achieved Outcome, then recoverable revision; labels describe Outcome state rather than report accuracy. | `15 / 15 / 15 / 14 / 0` | Removed all three unsafe accepts seen in the immediately preceding single-case replay while preserving the strict wire. Kept. |
 
-The retained Judge prompt is the short, domain-neutral J3 version. A regression
+The J5 cross-provider replay through Claude Agent ACP was attempted with KIMI,
+but all three five-case batches were rejected before inference with the provider's
+HTTP 403 billing-cycle usage limit. That artifact is an invalid provider run,
+not a 0/15 model score; J5 therefore has Codex ACP validation but no fresh KIMI
+comparison until quota refresh.
+
+The retained Judge prompt is the short, domain-neutral J5 version. A regression
 test prevents test, coverage, compiler, commit, or Git policy from leaking into
 it; domain requirements belong in each Outcome rubric and evidence.
 
@@ -284,9 +294,10 @@ The fixture has 8 cases, 19 required facts, and 6 stale facts. Metrics are
 | C2 | Fixed ACP snapshot-instruction projection. | `3/8 / 19/19 / 1/6` | Current-state structure appeared, but stale facts remained in parentheses or completed-status prose. Transport fix kept. |
 | C3 | Repeated the minimal DROP protocol in the final `SUMMARIZE_PROMPT`. | `5/8 / 18/19 / 4/6` | Exact +2 and stale deletion +3/6; one durable fact adjacent to injection was over-dropped. |
 | C4 | Added two domain-neutral rewrite examples and a mixed-material preservation rule. | `6/8 / 19/19 / 4/6` | Restored required recall to 100% and added one exact case; stale deletion unchanged. Kept. |
+| C5 | Added one final deletion pass for names/details belonging only to dropped material while preserving adjacent durable facts. | `8/8 / 19/19 / 6/6` | Removed the residual completed-item leak without losing adjacent current state. Kept. |
 
-The two residual stress-floor failures restate a completed item or old choice as
-historical. They remain failures; the scorer was not relaxed to hide pollution.
+The retained prompt passes the current eight-case stress floor. The scorer was
+not relaxed: completed-item or superseded-choice narration still fails a case.
 
 ### Memory
 
@@ -301,6 +312,15 @@ the target contract rather than what the old loose integer extractor admitted.
 | M0 | Original taxonomy and loose integer parser. | `2/5 / 5/5 / 4/6 / 3/5` | `1/6 / 1/6 / 1/6 / 1` | Saved one completed implementation note, lost safe facts mixed with secrets/injection, and emitted selector prose. |
 | M1 | Added mixed-fact handling, secret/completed-work exclusions, untrusted-data handling, strict `NONE`/`[n]`, and a final `select_input` protocol reminder. | `1/5 / 5/5 / 2/6 / 3/5` | `6/6 / 6/6 / 6/6 / 6` | Selector gained +5 exact and schema-valid cases. Extraction moved -1 because its system instructions still were not delivered over ACP; no false prompt credit. |
 | M2 | Applied shared ACP instruction projection with the M1 prompts/protocol. | `5/5 / 5/5 / 6/6 / 5/5` | `6/6 / 6/6 / 6/6 / 6` | Extraction gained +4 exact, recovered all four missing expected facts, and dropped both remaining forbidden terms. Kept. |
+| M3 | Asked the extractor to evaluate facts independently and save every supported durable fact after removing forbidden material. | `4/5 / 5/5 / 6/6 / 3/5` | `6/6 / 6/6 / 6/6 / 6` | Recovered mixed safe facts but also saved a completed-work identifier and locator. Safety regression; rejected. |
+| M4 | Applied the NOT-save gate independently first, then allowed only passing facts; prohibited mentioning rejected facts or their exclusive identifiers. | `5/5 / 5/5 / 6/6 / 5/5` | `6/6 / 6/6 / 6/6 / 6` | Preserved M3's mixed-fact recall and restored complete forbidden-term deletion. Kept. |
+
+The selector's complementary/temporal/causal-evidence reminder was also checked
+on the frozen 30-case LoCoMo slice. Exact set match moved from 18/30 to 19/30,
+true positives from 39/55 to 41/55, and returned memories from 47 to 50. Precision
+moved from 0.830 to 0.820 while recall moved from 0.709 to 0.745 (F1 approximately
+0.765 to 0.781). The recall-oriented variant is retained; this is one paired
+stress-floor sample, not an estimate of population mean quality.
 
 Extraction evaluation uses strict JSON proposals to isolate `write_memory`
 save/skip reasoning. Production tests separately cover real tool calls, the
