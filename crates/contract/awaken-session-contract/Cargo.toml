@@ -16,7 +16,6 @@ awaken-resource-contract.workspace = true
 # credentials remain behind the runtime materializer.
 awaken-inference-contract.workspace = true
 # The opaque tenancy `ScopeId` bound on the scoped session-repository decorator.
-awaken-tenancy.workspace = true
 async-trait.workspace = true
 serde.workspace = true
 # `serde_json::Value` types the free-form tool input/schema on the neutral vocab
