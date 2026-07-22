@@ -85,6 +85,57 @@ async function main() {
     assert.ok(Array.isArray(bad.body.issues) && bad.body.issues.length > 0, 'a structured issue is reported');
     pass('invalid config reported invalid (unknown tool)');
 
+    // MCP and Skill references are authoring metadata compiled into one normalized,
+    // secret-free binding section. Validate them on a separate Agent so this test
+    // covers the configuration boundary without making the executable greeter dial
+    // an external MCP endpoint.
+    const bindingsAgent = 'binding-normalization';
+    const bindingConfig = {
+      name: bindingsAgent,
+      system: 'Validate resource-like Agent bindings.',
+      model: { id: 'config-model' },
+      tools: [],
+      mcp_servers: [
+        { name: 'docs', url: 'https://mcp.example.invalid/v1' },
+        { name: 'local', url: 'http://127.0.0.1:9/mcp' },
+      ],
+      skills: ['skill-a', { id: 'skill-b' }, 'skill-a'],
+    };
+    const bindingsValid = await json(
+      'POST',
+      `/v1/config/agents/${bindingsAgent}/validate`,
+      bindingConfig,
+    );
+    assert.equal(bindingsValid.status, 200);
+    assert.equal(bindingsValid.body.valid, true, JSON.stringify(bindingsValid.body));
+
+    const invalidBindingCases = [
+      { mcp_servers: ['not-an-object'], skills: [] },
+      { mcp_servers: [{ url: 'https://mcp.example.invalid' }], skills: [] },
+      { mcp_servers: [{ name: 'docs' }], skills: [] },
+      { mcp_servers: [{ name: 'docs', url: 'file:///tmp/mcp' }], skills: [] },
+      {
+        mcp_servers: [
+          { name: 'duplicate', url: 'https://one.example.invalid' },
+          { name: 'duplicate', url: 'https://two.example.invalid' },
+        ],
+        skills: [],
+      },
+      { mcp_servers: [], skills: [7] },
+      { mcp_servers: [], skills: [{ id: '' }] },
+    ];
+    for (const invalidBindings of invalidBindingCases) {
+      const verdict = await json(
+        'POST',
+        `/v1/config/agents/${bindingsAgent}/validate`,
+        { ...bindingConfig, ...invalidBindings },
+      );
+      assert.equal(verdict.status, 200);
+      assert.equal(verdict.body.valid, false, JSON.stringify(verdict.body));
+      assert.ok(verdict.body.issues[0].path === 'mcp_servers' || verdict.body.issues[0].path === 'skills');
+    }
+    pass('Agent MCP/Skill bindings normalize once and malformed bindings fail closed');
+
     // Publish (compile → store publication → install).
     const published = await json('POST', `/v1/config/agents/${AGENT}/publish`, undefined);
     assert.equal(published.status, 200, 'published');
