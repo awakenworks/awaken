@@ -150,6 +150,14 @@ pub trait ConfigRegistry: Send + Sync {
             }))
     }
 
+    /// Immutable authoring revisions, oldest first.
+    async fn list_config_revisions(
+        &self,
+        id: &str,
+    ) -> Result<Vec<AgentConfigRevision>, ConfigStoreError> {
+        Ok(self.get_config_revision(id).await?.into_iter().collect())
+    }
+
     /// List every stored agent config (the authoring aggregate), ascending by id.
     /// Backs the management console's agent list, which authors against this
     /// config plane directly rather than the SDK-facing `/v1/agents` registry.
@@ -324,6 +332,19 @@ pub trait ScopedConfigRegistry: Send + Sync {
             }))
     }
 
+    /// Immutable authoring revisions for `id` within `scope`, oldest first.
+    async fn list_config_revisions_scoped(
+        &self,
+        scope: &ScopeId,
+        id: &str,
+    ) -> Result<Vec<AgentConfigRevision>, ConfigStoreError> {
+        Ok(self
+            .get_config_revision_scoped(scope, id)
+            .await?
+            .into_iter()
+            .collect())
+    }
+
     /// List every agent config owned by `scope`, ascending by id — a row owned by
     /// another scope is invisible.
     async fn list_configs_scoped(
@@ -434,6 +455,15 @@ impl<S: ScopedConfigRegistry + ?Sized> ConfigRegistry for ScopedConfig<S> {
         id: &str,
     ) -> Result<Option<AgentConfigRevision>, ConfigStoreError> {
         self.inner.get_config_revision_scoped(&self.scope, id).await
+    }
+
+    async fn list_config_revisions(
+        &self,
+        id: &str,
+    ) -> Result<Vec<AgentConfigRevision>, ConfigStoreError> {
+        self.inner
+            .list_config_revisions_scoped(&self.scope, id)
+            .await
     }
 
     async fn list_configs(&self) -> Result<Vec<AgentConfig>, ConfigStoreError> {

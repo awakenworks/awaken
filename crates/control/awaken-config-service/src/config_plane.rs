@@ -49,7 +49,7 @@ use crate::tool_catalog::ToolCatalogSource;
 pub struct ConfigService {
     /// Workspace-keyed hot catalog; a runtime lookup must never observe another
     /// Workspace's same-id Agent publication.
-    installed: InstalledAgentCatalog,
+    pub(crate) installed: InstalledAgentCatalog,
     /// Per-agent resource bindings (ADR-0038). When wired, the agent's bound-resource
     /// prompt fragments are appended to its effective system prompt at compile (A3a).
     /// `None` → compilation is byte-identical to an unbound agent.
@@ -169,6 +169,7 @@ impl ConfigService {
         registry: &dyn ConfigRegistry,
         config: &AgentConfig,
     ) -> Result<(), String> {
+        self.reject_archived_rewrite(registry, config).await?;
         registry.put_config(config).await.map_err(|e| e.to_string())
     }
 
@@ -178,10 +179,29 @@ impl ConfigService {
         config: &AgentConfig,
         expected_generation: u64,
     ) -> Result<ConfigWrite, String> {
+        self.reject_archived_rewrite(registry, config).await?;
         registry
             .put_config_if_revision(config, expected_generation)
             .await
             .map_err(|e| e.to_string())
+    }
+
+    async fn reject_archived_rewrite(
+        &self,
+        registry: &dyn ConfigRegistry,
+        config: &AgentConfig,
+    ) -> Result<(), String> {
+        let current = registry
+            .get_config(&config.id)
+            .await
+            .map_err(|error| error.to_string())?;
+        if current
+            .as_ref()
+            .is_some_and(|stored| stored.archived_at.is_some() && stored != config)
+        {
+            return Err(format!("agent `{}` is archived", config.id));
+        }
+        Ok(())
     }
 
     /// Load a stored config draft by id from the scope-bound `registry`.
@@ -202,6 +222,17 @@ impl ConfigService {
             .get_config_revision(id)
             .await
             .map_err(|e| e.to_string())
+    }
+
+    pub async fn list_revisions(
+        &self,
+        registry: &dyn ConfigRegistry,
+        id: &str,
+    ) -> Result<Vec<AgentConfigRevision>, String> {
+        registry
+            .list_config_revisions(id)
+            .await
+            .map_err(|error| error.to_string())
     }
 
     /// Every stored config draft in the scope-bound `registry` (the console's list).
@@ -226,6 +257,9 @@ impl ConfigService {
             .await
             .map_err(|e| PublishError::Store(e.to_string()))?
             .ok_or_else(|| PublishError::NotStored(id.to_string()))?;
+        if versioned.config.archived_at.is_some() {
+            return Err(PublishError::Archived(id.to_string()));
+        }
         let source_revision = versioned.revision;
         let mut resolved = prepare_agent_publication(self.model_resolver.as_deref(), versioned)?;
         resolved.inference_access = Some(
@@ -287,44 +321,9 @@ impl ConfigService {
         self.installed.snapshot_in(workspace, agent)
     }
 
-    /// Warm-load the installed catalog from a durable registry's published configs
-    /// (scope-bound). `installed` is otherwise populated only at publish time and
-    /// held in-memory, so a fresh process — after a restart, or a server that did
-    /// not author the publish itself — would resolve a published agent to the seed
-    /// model. This rehydrates it from the store; the latest publication per agent
-    /// wins (rows arrive oldest-first). Returns how many agents were installed.
-    pub async fn warm_install(
-        &self,
-        registry: &dyn ScopedConfigRegistry,
-        scope: &ScopeId,
-    ) -> usize {
-        self.warm_install_for_execution_workspace(registry, scope, scope.as_str())
-            .await
-    }
-
-    /// Warm-install publications authored in `configuration_scope` for one
-    /// execution Workspace. These coordinates differ only for platform-owned
-    /// reserved agents; ordinary Workspace agents use [`Self::warm_install`].
-    pub async fn warm_install_for_execution_workspace(
-        &self,
-        registry: &dyn ScopedConfigRegistry,
-        configuration_scope: &ScopeId,
-        execution_workspace: &str,
-    ) -> usize {
-        let pubs = match registry.list_published_scoped(configuration_scope).await {
-            Ok(pubs) => pubs,
-            Err(_) => return 0,
-        };
-        let n = pubs.len();
-        for p in pubs {
-            self.installed.install(
-                execution_workspace,
-                &p.agent_id,
-                p.source_revision,
-                p.snapshot,
-            );
-        }
-        n
+    #[must_use]
+    pub fn agent_unavailable_in(&self, workspace: &str, agent: &str) -> bool {
+        self.installed.is_unavailable(workspace, agent)
     }
 }
 
@@ -483,6 +482,16 @@ impl ConfigPlane {
             .await
     }
 
+    pub async fn list_revisions(
+        &self,
+        scope: &ScopeId,
+        id: &str,
+    ) -> Result<Vec<AgentConfigRevision>, String> {
+        self.service
+            .list_revisions(&self.registry_for(scope), id)
+            .await
+    }
+
     /// Every stored config draft owned by `scope`.
     pub async fn list(&self, scope: &ScopeId) -> Result<Vec<AgentConfig>, String> {
         self.service.list(&self.registry_for(scope)).await
@@ -518,6 +527,12 @@ impl ConfigPlane {
                 &self.catalog_for(configuration_scope),
             )
             .await
+    }
+
+    /// Remove an archived Agent from the process-local execution projection.
+    /// Durable authoring data and revision history remain in the scoped store.
+    pub fn uninstall(&self, execution_workspace: &str, id: &str) {
+        self.service.installed.uninstall(execution_workspace, id);
     }
 
     /// Re-resolve and re-publish an `Auto`-bound agent in `scope` (ADR-0052 D5).

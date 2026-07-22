@@ -161,6 +161,12 @@ pub struct AgentConfig {
     pub skills: Vec<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multiagent: Option<serde_json::Value>,
+    /// Soft-deletion lifecycle of the authoring aggregate. Archived Agents remain
+    /// readable (including revision history) but cannot be published or selected
+    /// for new execution. Kept on the aggregate rather than hidden in metadata so
+    /// every adapter enforces the same invariant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<String>,
     /// How this agent's tools are presented to the model (ADR-0053): per-tool alias /
     /// description override / defer. Appended last with `skip_serializing_if`-empty so a
     /// config with no overrides serializes to nothing and keeps its prior fingerprint

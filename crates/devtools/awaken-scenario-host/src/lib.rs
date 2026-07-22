@@ -1585,12 +1585,13 @@ pub async fn build_config_router() -> Router {
     awaken_control::seed_admin_assistant(&plane, &platform_workspace)
         .await
         .expect("seed admin assistant");
-    // `/v1/agents` over this server projects the config plane it hosts: an agent
-    // published via `/v1/config/agents` is retrievable as a managed-wire projection
-    // of that single truth (no second store).
+    // `/v1/agents` authors and reads through the same durable ConfigPlane.
     let agents = awaken_protocol_managed::agents_router(std::sync::Arc::new(
-        awaken_protocol_managed::AgentRegistryState::new().with_config_source(std::sync::Arc::new(
-            awaken_session_executor::ConfigServiceAgentSource(service.clone()),
+        awaken_protocol_managed::AgentRegistryState::from_repository(std::sync::Arc::new(
+            awaken_control::ConfigPlaneManagedAgentRepository::new(
+                plane.clone(),
+                platform_workspace.clone(),
+            ),
         )),
     ));
     // Workspace-path addressing (ADR-0048/0052 D2): `/v1/workspaces/{ws}/config/...`

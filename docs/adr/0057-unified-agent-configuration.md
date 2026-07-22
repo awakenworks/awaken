@@ -2,6 +2,12 @@
 
 - Status: Proposed
 - Date: 2026-07-16
+- Implemented foundation (2026-07-22): `/v1/agents` and
+  `/v1/config/agents` now adapt the same Workspace-scoped `AgentConfig`
+  aggregate in ConfigPlane. Managed writes use revision CAS, immutable history is
+  persisted by `awaken.config` Scoped Migration v9, archive is an aggregate
+  lifecycle state, and archived Agents are removed from/rejected by the execution
+  projection. The broader kind/dialect/vendor model in this ADR remains proposed.
 - Builds on: the config/credential/secret seam and the runtime-unaware secret rule
   (ADR-0043); the resolved-spec-is-the-only-runtime-surface boundary (ADR-0031,
   `ResolvedSpec`/`ExecutableAgentSnapshot`); the typed `Backend::from_ref`
@@ -534,6 +540,13 @@ the collision, and the containment.
    *internal* aggregates; the SDK boundary keeps projecting them to/from `Value`
    (a lossless `TryFrom<Value>`/`Into<Value>` pair). The frozen wire is unchanged;
    only the in-crate representation gains types.
+
+   **Implemented source-of-truth rule:** the frozen route is an HTTP adapter over
+   ConfigPlane through `ManagedAgentRepository`; it has no production registry,
+   owner side index, or projection fallback. The protocol crate's in-memory
+   repository is a test/reference adapter keyed intrinsically by
+   `(workspace_id, agent_id)`. Authentication and policy enforcement remain at
+   the management edge and are not persisted with the Agent resource.
 
 4. **Default credential selection is "first Active", not a pool.**
    `config_executor.rs` derives `CredentialBinding::Exact` from the workspace's

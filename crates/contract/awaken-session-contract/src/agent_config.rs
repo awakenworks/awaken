@@ -32,4 +32,11 @@ pub trait AgentConfigSource: Send + Sync {
     /// scope-free fallback: a projection missing its trusted Workspace must fail
     /// closed instead of searching another tenant's installed catalog.
     fn agent_view_in(&self, workspace_id: &str, agent_id: &str) -> Option<AgentConfigView>;
+
+    /// Whether this is a known aggregate that must not start new execution
+    /// (currently: archived). A missing view alone may still denote an unmanaged
+    /// compatibility id, so lifecycle denial needs a distinct signal.
+    fn agent_unavailable_in(&self, _workspace_id: &str, _agent_id: &str) -> bool {
+        false
+    }
 }
