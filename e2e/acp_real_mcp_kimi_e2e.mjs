@@ -20,6 +20,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import Anthropic from '@anthropic-ai/sdk';
 import { withServer, pass } from './harness.mjs';
 import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
@@ -74,7 +75,11 @@ async function main() {
     ANTHROPIC_MODEL: kimi.model,
   });
 
-  const fixture = await startCalcFixture(CALC_TOKEN);
+  // The expected value exists only inside the MCP fixture. Unlike arithmetic,
+  // the model cannot manufacture it from the prompt and must really call the
+  // dynamically injected tool for the assertion to pass.
+  const attestation = `awaken-${crypto.randomBytes(12).toString('hex')}`;
+  const fixture = await startCalcFixture(CALC_TOKEN, { opaqueResult: attestation });
   try {
     await withServer('acp-real-mcp', 38198, async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl, timeout: 600_000 });
@@ -101,7 +106,10 @@ async function main() {
       await client.beta.sessions.events.send(session.id, {
         events: [{
           type: 'user.message',
-          content: [{ type: 'text', text: 'Use the calc MCP tool to add 2 and 3. Reply with only the number.' }],
+          content: [{
+            type: 'text',
+            text: 'Use the available tool named mcp__calc__attest, then reply with only its opaque audit token. The token is not present in this prompt and must not be guessed.',
+          }],
         }],
         betas: BETAS,
       });
@@ -128,8 +136,8 @@ async function main() {
         fixture.calls.every((c) => c.authorization === `Bearer ${CALC_TOKEN}`),
         `the host relay authenticated every upstream MCP request, got ${JSON.stringify(fixture.calls.map((c) => c.authorization))}`,
       );
-      const calledAdd = fixture.calls.some((c) => c.method === 'tools/call');
-      pass(`dynamic MCP injection reached the real claude adapter + KIMI (host + α-relayed CLI both connected: ${initializes} initialize, tools/call=${calledAdd})`);
+      const calledAttest = fixture.calls.some((c) => c.method === 'tools/call');
+      pass(`dynamic MCP injection reached the real claude adapter + KIMI (host + α-relayed CLI both connected: ${initializes} initialize, tools/call=${calledAttest})`);
 
       // (2) Config-home isolation: the adapter used an isolated per-thread home under the
       // storage dir, and the (throwaway) HOME's ~/.claude was never created.
@@ -147,12 +155,12 @@ async function main() {
       // Keep transport/config assertions independent from provider semantics so a
       // remote quota failure still diagnoses the completed portions of the chain.
       // The overall gate succeeds only when the real model actually uses the tool.
-      assert.ok(calledAdd, `KIMI must call mcp__calc__add, got ${JSON.stringify(fixture.calls.map((c) => c.method))}`);
+      assert.ok(calledAttest, `KIMI must call mcp__calc__attest, got ${JSON.stringify(fixture.calls.map((c) => c.method))}`);
       assert.ok(
-        texts.some((t) => t.includes('5')),
-        `KIMI used the MCP tool and answered 5, got ${JSON.stringify(texts)}`,
+        texts.some((t) => t.includes(attestation)),
+        `KIMI must return the fixture-only attestation token, got ${JSON.stringify(texts)}`,
       );
-      pass('KIMI dynamically called mcp__calc__add and reported the result (5)');
+      pass('KIMI dynamically called mcp__calc__attest and reported its fixture-only token');
     });
 
     console.log('E2E PASS: real claude --acp + KIMI + dynamic vault-bound MCP, config-home isolated.');

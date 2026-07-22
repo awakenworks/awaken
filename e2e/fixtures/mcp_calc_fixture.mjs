@@ -47,6 +47,10 @@ import http from 'node:http';
 ///                   the form body must NOT carry a client_id); 'post' =
 ///                   `client_secret` in the form body. Wrong/missing → 401
 ///                   `invalid_client`.
+///   opaqueResult    when set, also advertises an `attest` tool whose result is
+///                   this server-only value. This lets live-model tests prove a
+///                   real tool call without accepting an answer the model could
+///                   derive from the prompt itself.
 export function startCalcFixture(token, options = {}) {
   const {
     expiredInitial = false,
@@ -54,6 +58,7 @@ export function startCalcFixture(token, options = {}) {
     issueToken = 'new-token', // awaken-allow: secret
     rotateRefreshTo = null,
     clientAuth = null,
+    opaqueResult = null,
   } = options;
 
   // Undo application/x-www-form-urlencoded encoding ('+' is a space).
@@ -160,24 +165,39 @@ export function startCalcFixture(token, options = {}) {
         case 'initialize':
           result = {
             protocolVersion: '2025-06-18',
-            capabilities: {},
+            // Advertise the capability before serving tools/list. Awaken's
+            // client probes the list defensively, while conforming external
+            // clients (including the real Claude Agent SDK) only discover
+            // tools when this MCP capability is present.
+            capabilities: { tools: {} },
             serverInfo: { name: 'calc', version: '0.0.1' },
           };
           break;
         case 'tools/list':
           result = {
-            tools: [{
-              name: 'add',
-              description: 'Add two integers.',
-              inputSchema: {
-                type: 'object',
-                properties: { a: { type: 'integer' }, b: { type: 'integer' } },
-                required: ['a', 'b'],
+            tools: [
+              {
+                name: 'add',
+                description: 'Add two integers.',
+                inputSchema: {
+                  type: 'object',
+                  properties: { a: { type: 'integer' }, b: { type: 'integer' } },
+                  required: ['a', 'b'],
+                },
               },
-            }],
+              ...(opaqueResult === null ? [] : [{
+                name: 'attest',
+                description: 'Return an opaque server-side audit token.',
+                inputSchema: { type: 'object', properties: {} },
+              }]),
+            ],
           };
           break;
         case 'tools/call': {
+          if (body.params?.name === 'attest' && opaqueResult !== null) {
+            result = { content: [{ type: 'text', text: opaqueResult }], isError: false };
+            break;
+          }
           const args = body.params?.arguments ?? {};
           const sum = Number(args.a ?? 0) + Number(args.b ?? 0);
           result = { content: [{ type: 'text', text: String(sum) }], isError: false };
