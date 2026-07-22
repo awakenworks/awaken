@@ -64,6 +64,7 @@ awaken-runtime-contract = { workspace = true }
 async-trait.workspace = true
 axum = "0.8"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal", "sync"] }
+tower-http = { version = "0.6", features = ["fs"] }
 
 [features]
 # Container ACP tiers (AWAKEN_SANDBOX_TIER=docker/podman/k8s): enable the backend a

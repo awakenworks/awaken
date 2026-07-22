@@ -22,8 +22,17 @@
 //! reuses its role helper. This subsumes the separate `awaken-server`
 //! binary, which remains only as the e2e-scenario host.
 
+mod console;
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mode = match console::parse_args(std::env::args().skip(1))? {
+        console::Mode::Help => {
+            console::print_help();
+            return Ok(());
+        }
+        mode => mode,
+    };
     // Install tracing + optional OTLP / trace-file export before anything is served.
     awaken_observability::init();
 
@@ -91,6 +100,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // session's model from the DB-configured catalog + credential vault. Configure a
     // provider/model/credential through /v1/config/* + /v1/vaults/* and sessions run
     // that real model.
+    let console_dist = match mode {
+        console::Mode::Console => Some(console::prepare_dist()?),
+        console::Mode::Server => None,
+        console::Mode::Help => unreachable!(),
+    };
     let app = awaken_cli::build_management_router().await;
     if let Some(lock) = migration_lock {
         lock.release().await?;
@@ -116,6 +130,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Root every request span in the ingress middleware (extracts the inbound
     // traceparent); the whole request→inference path nests under it.
     let app = app.layer(axum::middleware::from_fn(awaken_observability::trace_http));
+    let app = match console_dist {
+        Some(dist) => console::mount(app, &dist),
+        None => app,
+    };
 
     // Serve the split admin surface on its own port, if configured.
     if let Some(admin_addr) = admin_addr {
