@@ -1397,6 +1397,7 @@ dependencies = [
  "awaken-protocol-managed",
  "awaken-protocol-transport",
  "awaken-provider-genai",
+ "awaken-resource-store",
  "awaken-run-executor-a2a",
  "awaken-run-executor-acp",
  "awaken-runtime",

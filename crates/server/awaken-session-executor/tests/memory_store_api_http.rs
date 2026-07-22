@@ -19,6 +19,8 @@ use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
+mod support;
+
 /// The memory-store map never calls the model.
 struct NoLlm;
 #[async_trait::async_trait]
@@ -29,7 +31,10 @@ impl LlmExecutor for NoLlm {
 }
 
 fn router() -> Router {
-    let host = Arc::new(SharedHost::new(Arc::new(NoLlm), "test"));
+    let host = Arc::new(
+        SharedHost::new(Arc::new(NoLlm), "test")
+            .with_resource_lifecycle(support::resource_lifecycle()),
+    );
     memory_stores_router(host)
 }
 
@@ -246,7 +251,10 @@ async fn unknown_store_is_fail_closed_on_every_verb() {
 
 #[tokio::test]
 async fn workspace_and_lifecycle_are_intrinsic_resource_guards() {
-    let host = Arc::new(SharedHost::new(Arc::new(NoLlm), "test"));
+    let host = Arc::new(
+        SharedHost::new(Arc::new(NoLlm), "test")
+            .with_resource_lifecycle(support::resource_lifecycle()),
+    );
     let catalog = Arc::new(awaken_config_resolver::InMemoryResourceCatalog::new());
     let router = memory_stores_router_with_catalog(host, catalog);
     let (status, created) = call_scoped(

@@ -35,7 +35,6 @@ RESOURCE_APPLICATION_SOURCES = (
     "crates/server/awaken-session-executor/src/memory_store_api.rs",
     "crates/server/awaken-session-executor/src/memory_stores.rs",
     "crates/server/awaken-session-executor/src/provisioning.rs",
-    "crates/server/awaken-session-executor/src/resource_lifecycle.rs",
     "crates/server/awaken-session-executor/src/resource_reclamation.rs",
     "crates/server/awaken-session-executor/src/resource_scope.rs",
     "crates/server/awaken-session-executor/src/skill_catalog.rs",
