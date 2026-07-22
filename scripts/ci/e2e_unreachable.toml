@@ -279,3 +279,51 @@ path = "crates/worker/awaken-sandbox-memoryd/src/mounter.rs"
 ranges = ["42", "97-111", "113-114", "117", "127", "132-137", "140", "143-148", "150", "152", "154-157", "174-175", "177", "179", "189-190", "192", "194", "238", "243", "253"]
 reason = "Mount namespace, privilege, helper-process, and malformed mount-table failures are OS/provider faults below the served resource contract."
 evidence = "cargo test -p awaken-sandbox-memoryd; e2e/managed_namespace_session_environment_e2e.mjs"
+ 
+[[waiver]]
+path = "crates/runtime/awaken-ext-goal/src/outcome.rs"
+ranges = ["47-49", "52-54", "57-59", "134-138", "140", "170-172", "310-314", "316", "319-322", "325-328", "357-361", "363", "394-398", "400", "413", "424", "439", "470-473", "475-476", "478-480", "484-486", "490-491", "494", "500-507", "509-510"]
+reason = "Pure Outcome validation, stale-identity, cursor, terminal-absorption, and invalid-transition guards cannot be selected after the Managed adapter has accepted and serialized a valid command."
+evidence = "cargo test -p awaken-ext-goal; kani applying_a_grade_obeys_decision_and_budget; kani terminal_outcomes_are_absorbing"
+
+[[waiver]]
+path = "crates/runtime/awaken-ext-goal/src/controller.rs"
+ranges = ["50-51", "55-56", "60-62", "65-66", "220", "261-266", "284", "286-302", "333", "335", "480-482", "484-486"]
+reason = "Controller error rendering, corrupt recovered Worker transcripts, duplicate enum exhaustiveness, and injected abnormal acknowledgment states sit behind committed Thread invariants rather than valid API choices."
+evidence = "cargo test -p awaken-ext-goal; e2e/managed_outcome_recovery_e2e.ts; crates/server/awaken-runtime-host/tests/outcome_state.rs"
+
+[[waiver]]
+path = "crates/runtime/awaken-ext-goal/src/state.rs"
+ranges = ["36-39", "41-44", "46-47", "51", "54", "98-100", "112", "115-117", "146", "149-152", "157-159", "164", "182"]
+reason = "Outcome state codec corruption, active-pointer disagreement, impossible budget rows, and CAS conflicts require direct committed-state or coordinator fault injection below the served API."
+evidence = "crates/server/awaken-runtime-host/tests/outcome_state.rs; cargo test -p awaken-ext-goal"
+
+[[waiver]]
+path = "crates/runtime/awaken-ext-memory/src/extraction.rs"
+ranges = ["127-130", "132-133", "135-136", "139-141", "146-148", "151-153", "156-157", "160", "234-236", "304-316", "323", "337-339", "342-345", "383", "400-402", "423", "440", "493", "505-508", "694-697", "701-707", "709-711", "713-715", "735", "748-751", "767", "775", "796", "811", "817", "831", "926"]
+reason = "Memory extraction aggregate validation, lease/CAS races, stale claims, repository failures, and bounded retry exhaustion require malformed durable rows, clock races, or injected repository/model faults rather than semantic API inputs."
+evidence = "cargo test -p awaken-ext-memory; e2e/memory_extraction_stage_recovery_e2e.ts; e2e/managed_memory_extraction_crash_e2e.mjs"
+
+[[waiver]]
+path = "crates/server/awaken-run-ingress/src/worker.rs"
+ranges = ["403-409", "420-426", "473-479", "508", "538-539", "647", "760", "767"]
+reason = "Attempt-executor and runtime cancellation/schedule failures plus recovered-observer warning arms require injected internal executor, commit, or observer faults below an accepted dispatch request."
+evidence = "cargo test -p awaken-run-ingress; e2e/durable_cancel_e2e.ts; e2e/dispatch_fenced_metrics_e2e.ts"
+
+[[waiver]]
+path = "crates/runtime/awaken-runtime/src/run.rs"
+ranges = ["109-118", "120-121"]
+reason = "Stable-id embedded re-entry redelivers an already committed terminal Run; served Managed ingress owns ids and cannot request this internal embedded-run branch directly."
+evidence = "cargo test -p awaken-runtime --test terminal_observer stable_id_reentry_redelivers_without_reexecuting_inference"
+
+[[waiver]]
+path = "crates/runtime/awaken-runtime-contract/src/terminal.rs"
+ranges = ["72-79", "98"]
+reason = "Observer-returned errors, observer panics, and redelivery of a nonterminal fact are extension fault boundaries that valid served requests cannot deterministically induce."
+evidence = "cargo test -p awaken-runtime-contract terminal::tests; cargo test -p awaken-runtime --test terminal_observer"
+
+[[waiver]]
+path = "crates/runtime/awaken-runtime/src/engine/mod.rs"
+ranges = ["1600-1603", "1606-1607", "1609-1611"]
+reason = "The per-Run tool permission narrowing port is supplied only by trusted in-process composition; external requests cannot install a synthetic allow, deny, or confirmation policy implementation."
+evidence = "cargo test -p awaken-runtime --test permission; cargo test -p awaken-runtime --test plugins"

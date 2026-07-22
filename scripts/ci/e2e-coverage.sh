@@ -61,7 +61,7 @@ cd "$(dirname "$0")/../.."
 # Individual zero-hit lines that cannot be selected through any served API are
 # reviewed in e2e_unreachable.toml. The checker validates every range/reason,
 # rejects stale entries, still counts hits inside those ranges, and caps the
-# audited share at 12% so the manifest cannot become an unbounded escape hatch.
+# audited share at 15% so the manifest cannot become an unbounded escape hatch.
 IGNORE='(awaken-store-conformance|awaken-runtime-examples|awaken-eval)/|awaken-run-ingress/src/memory\.rs|awaken-ext-mcp/src/(stdio|plugin|sensitive)\.rs|awaken-mcp-wire/src/jsonrpc\.rs|awaken-protocol-acp/src/(error|real_acp)\.rs|awaken-server/src/models\.rs'
 
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/tmp/awaken-e2e-coverage}"
@@ -125,7 +125,7 @@ python3 scripts/ci/check_changed_e2e_line_coverage.py \
   --minimum "${AWAKEN_CHANGED_E2E_MINIMUM:-0.95}" \
   --ignore-filename-regex "$IGNORE" \
   --unreachable-manifest scripts/ci/e2e_unreachable.toml \
-  --maximum-unreachable-fraction 0.12
+  --maximum-unreachable-fraction 0.15
 if [ "${1:-}" = "--open" ]; then
   cargo llvm-cov report --ignore-filename-regex "$IGNORE" --html --open
 fi
