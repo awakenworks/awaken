@@ -29,7 +29,8 @@ pub use agent::{
     SELECTOR_AGENT_ID, default_memory_agent, default_selector_agent,
 };
 pub use extraction::{
-    MemoryExtractionError, MemoryExtractionIntent, MemoryExtractionMutation,
+    MemoryExtractionController, MemoryExtractionDriver, MemoryExtractionError,
+    MemoryExtractionIntent, MemoryExtractionMutation, MemoryExtractionPolicy,
     MemoryExtractionReceipt, MemoryExtractionRepository, MemoryExtractionStatus,
     MemoryExtractorSnapshot, MemoryMutationReceipt, PutMemoryExtractionOutcome,
 };

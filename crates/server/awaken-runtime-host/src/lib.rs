@@ -626,6 +626,7 @@ impl ManagedHost {
                     )
                 })?;
                 bound_memory = Some(Arc::new(self.host.memory.bind(
+                    thread,
                     workspace,
                     handle,
                     resource_validator.clone(),

@@ -524,10 +524,275 @@ pub trait MemoryExtractionRepository: Send + Sync {
     ) -> Result<(), MemoryExtractionError>;
 }
 
+/// Runtime environment used by the Memory extension to perform side effects.
+///
+/// The extension owns ordering, leases, retries, and durable transitions. An
+/// embedding Runtime supplies only the concrete extractor and governed content
+/// store operations; it cannot alter the extraction state machine.
+#[async_trait]
+pub trait MemoryExtractionDriver: Send + Sync {
+    /// Whether this driver owns the frozen binding carried by `intent`.
+    fn accepts(&self, intent: &MemoryExtractionIntent) -> bool;
+
+    /// Revalidate the resource binding immediately before external IO.
+    async fn validate_binding(&self, intent: &MemoryExtractionIntent) -> Result<(), String>;
+
+    /// Execute the pinned Extractor Agent and return deterministic proposed writes.
+    async fn extract(
+        &self,
+        intent: &MemoryExtractionIntent,
+    ) -> Result<Vec<MemoryExtractionMutation>, String>;
+
+    /// Apply one proposed write using the mutation's optimistic hashes.
+    async fn apply(
+        &self,
+        intent: &MemoryExtractionIntent,
+        mutation: &MemoryExtractionMutation,
+    ) -> Result<MemoryMutationReceipt, String>;
+}
+
+/// Operational policy for the at-least-once extraction worker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MemoryExtractionPolicy {
+    pub lease_ms: u64,
+    pub heartbeat_ms: u64,
+    pub max_attempts: u32,
+    pub retry_base_ms: u64,
+}
+
+impl Default for MemoryExtractionPolicy {
+    fn default() -> Self {
+        Self {
+            lease_ms: 3_000,
+            heartbeat_ms: 1_000,
+            max_attempts: 5,
+            retry_base_ms: 25,
+        }
+    }
+}
+
+/// Memory-owned application service that advances durable extraction intents.
+///
+/// A controller is cheap to construct. Correctness lives in the repository CAS
+/// and frozen intent, so multiple processes may drive the same binding safely.
+pub struct MemoryExtractionController {
+    repository: std::sync::Arc<dyn MemoryExtractionRepository>,
+    owner: String,
+    policy: MemoryExtractionPolicy,
+}
+
+impl MemoryExtractionController {
+    #[must_use]
+    pub fn new(
+        repository: std::sync::Arc<dyn MemoryExtractionRepository>,
+        owner: impl Into<String>,
+    ) -> Self {
+        Self {
+            repository,
+            owner: owner.into(),
+            policy: MemoryExtractionPolicy::default(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_policy(mut self, policy: MemoryExtractionPolicy) -> Self {
+        self.policy = policy;
+        self
+    }
+
+    /// CAS-create an intent. Redelivery is accepted only for the same immutable
+    /// request; a reused stable identity with different content fails closed.
+    pub async fn enqueue(
+        &self,
+        intent: MemoryExtractionIntent,
+    ) -> Result<PutMemoryExtractionOutcome, MemoryExtractionError> {
+        if let Some(existing) = self.repository.get_extraction(&intent.intent_id).await? {
+            return if existing.same_request(&intent) {
+                Ok(PutMemoryExtractionOutcome::Existing)
+            } else {
+                Err(MemoryExtractionError::IdempotencyConflict(
+                    intent.idempotency_key,
+                ))
+            };
+        }
+        self.repository.put_extraction_if_absent(intent).await
+    }
+
+    /// Drive every recoverable intent accepted by one frozen binding.
+    pub async fn drive_recoverable(&self, driver: &dyn MemoryExtractionDriver) {
+        loop {
+            let Ok(candidates) = self.repository.recoverable_extractions(64).await else {
+                return;
+            };
+            let Some(mut intent) = candidates.into_iter().find(|intent| driver.accepts(intent))
+            else {
+                return;
+            };
+            let now = unix_ms();
+            let expected_revision = intent.revision;
+            let generation = match intent.claim(&self.owner, now, self.policy.lease_ms) {
+                Ok(generation) => generation,
+                Err(MemoryExtractionError::LeaseHeld {
+                    lease_expires_at_unix_ms,
+                }) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        lease_expires_at_unix_ms
+                            .saturating_sub(now)
+                            .saturating_add(1),
+                    ))
+                    .await;
+                    continue;
+                }
+                Err(_) => return,
+            };
+            if self
+                .repository
+                .compare_and_swap_extraction(expected_revision, intent.clone())
+                .await
+                .is_err()
+            {
+                continue;
+            }
+
+            let result = self.advance_claimed(driver, &mut intent, generation).await;
+            if let Err((error, terminal)) = result {
+                let Ok(Some(current)) = self.repository.get_extraction(&intent.intent_id).await
+                else {
+                    return;
+                };
+                if current.revision != intent.revision
+                    || current.claim_owner.as_deref() != Some(self.owner.as_str())
+                    || current.claim_generation != generation
+                {
+                    continue;
+                }
+                let now = unix_ms();
+                let expected_revision = intent.revision;
+                let transition = if terminal || intent.attempts >= self.policy.max_attempts {
+                    intent.terminal_fail(&self.owner, generation, now, error)
+                } else {
+                    intent.retry(&self.owner, generation, now, error)
+                };
+                if transition.is_ok() {
+                    let _ = self
+                        .repository
+                        .compare_and_swap_extraction(expected_revision, intent.clone())
+                        .await;
+                }
+                if !terminal && intent.attempts < self.policy.max_attempts {
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        self.policy.retry_base_ms * u64::from(intent.attempts.max(1)),
+                    ))
+                    .await;
+                    continue;
+                }
+            }
+        }
+    }
+
+    async fn advance_claimed(
+        &self,
+        driver: &dyn MemoryExtractionDriver,
+        intent: &mut MemoryExtractionIntent,
+        generation: u64,
+    ) -> Result<(), (String, bool)> {
+        driver
+            .validate_binding(intent)
+            .await
+            .map_err(|error| (error, true))?;
+        if intent.status == MemoryExtractionStatus::Claimed {
+            let extraction_input = intent.clone();
+            let extraction = driver.extract(&extraction_input);
+            tokio::pin!(extraction);
+            let mutations = loop {
+                tokio::select! {
+                    result = &mut extraction => break result.map_err(|error| (error, false))?,
+                    () = tokio::time::sleep(std::time::Duration::from_millis(self.policy.heartbeat_ms)) => {
+                        let expected_revision = intent.revision;
+                        intent
+                            .renew_claim(
+                                &self.owner,
+                                generation,
+                                unix_ms(),
+                                self.policy.lease_ms,
+                            )
+                            .map_err(|error| (error.to_string(), false))?;
+                        self.repository
+                            .compare_and_swap_extraction(expected_revision, intent.clone())
+                            .await
+                            .map_err(|error| (error.to_string(), false))?;
+                    }
+                }
+            };
+            let expected_revision = intent.revision;
+            intent
+                .mark_extracted(&self.owner, generation, unix_ms(), mutations)
+                .map_err(|error| (error.to_string(), false))?;
+            self.repository
+                .compare_and_swap_extraction(expected_revision, intent.clone())
+                .await
+                .map_err(|error| (error.to_string(), false))?;
+        }
+        if intent.status == MemoryExtractionStatus::Extracted {
+            driver
+                .validate_binding(intent)
+                .await
+                .map_err(|error| (error, true))?;
+            let mut receipts = Vec::with_capacity(intent.mutations.len());
+            for mutation in &intent.mutations {
+                receipts.push(
+                    driver
+                        .apply(intent, mutation)
+                        .await
+                        .map_err(|error| (error, false))?,
+                );
+            }
+            let expected_revision = intent.revision;
+            intent
+                .mark_stored(
+                    &self.owner,
+                    generation,
+                    unix_ms(),
+                    MemoryExtractionReceipt {
+                        stored_at_unix_ms: unix_ms(),
+                        mutations: receipts,
+                    },
+                )
+                .map_err(|error| (error.to_string(), false))?;
+            self.repository
+                .compare_and_swap_extraction(expected_revision, intent.clone())
+                .await
+                .map_err(|error| (error.to_string(), false))?;
+        }
+        if intent.status == MemoryExtractionStatus::Stored {
+            let expected_revision = intent.revision;
+            intent
+                .complete(&self.owner, generation, unix_ms())
+                .map_err(|error| (error.to_string(), false))?;
+            self.repository
+                .compare_and_swap_extraction(expected_revision, intent.clone())
+                .await
+                .map_err(|error| (error.to_string(), false))?;
+        }
+        Ok(())
+    }
+}
+
+fn unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use awaken_agent_contract::agent::message::{Id, Role};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
 
     fn intent() -> MemoryExtractionIntent {
         MemoryExtractionIntent::new(
@@ -698,5 +963,181 @@ mod tests {
         }
         assert_eq!(value["workspace_id"], "ws-a");
         assert_eq!(value["memory_config_version"], 2);
+    }
+
+    #[derive(Default)]
+    struct TestRepository(Mutex<Option<MemoryExtractionIntent>>);
+
+    #[async_trait]
+    impl MemoryExtractionRepository for TestRepository {
+        async fn put_extraction_if_absent(
+            &self,
+            intent: MemoryExtractionIntent,
+        ) -> Result<PutMemoryExtractionOutcome, MemoryExtractionError> {
+            let mut stored = self.0.lock().unwrap();
+            match stored.as_ref() {
+                Some(existing) if existing.same_request(&intent) => {
+                    Ok(PutMemoryExtractionOutcome::Existing)
+                }
+                Some(_) => Err(MemoryExtractionError::IdempotencyConflict(
+                    intent.idempotency_key,
+                )),
+                None => {
+                    *stored = Some(intent);
+                    Ok(PutMemoryExtractionOutcome::Inserted)
+                }
+            }
+        }
+
+        async fn get_extraction(
+            &self,
+            intent_id: &str,
+        ) -> Result<Option<MemoryExtractionIntent>, MemoryExtractionError> {
+            Ok(self
+                .0
+                .lock()
+                .unwrap()
+                .as_ref()
+                .filter(|intent| intent.intent_id == intent_id)
+                .cloned())
+        }
+
+        async fn recoverable_extractions(
+            &self,
+            limit: usize,
+        ) -> Result<Vec<MemoryExtractionIntent>, MemoryExtractionError> {
+            Ok(self
+                .0
+                .lock()
+                .unwrap()
+                .as_ref()
+                .filter(|intent| !intent.status.is_terminal() && limit > 0)
+                .cloned()
+                .into_iter()
+                .collect())
+        }
+
+        async fn compare_and_swap_extraction(
+            &self,
+            expected_revision: u64,
+            intent: MemoryExtractionIntent,
+        ) -> Result<(), MemoryExtractionError> {
+            let mut stored = self.0.lock().unwrap();
+            let Some(current) = stored.as_ref() else {
+                return Err(MemoryExtractionError::NotFound(intent.intent_id));
+            };
+            if current.revision != expected_revision {
+                return Err(MemoryExtractionError::RevisionConflict(intent.intent_id));
+            }
+            *stored = Some(intent);
+            Ok(())
+        }
+    }
+
+    struct TestDriver {
+        extraction_calls: AtomicUsize,
+        fail_first_extraction: bool,
+        binding_valid: bool,
+    }
+
+    #[async_trait]
+    impl MemoryExtractionDriver for TestDriver {
+        fn accepts(&self, intent: &MemoryExtractionIntent) -> bool {
+            intent.session_id == "session-1"
+        }
+
+        async fn validate_binding(&self, _intent: &MemoryExtractionIntent) -> Result<(), String> {
+            self.binding_valid
+                .then_some(())
+                .ok_or_else(|| "binding revoked".to_string())
+        }
+
+        async fn extract(
+            &self,
+            _intent: &MemoryExtractionIntent,
+        ) -> Result<Vec<MemoryExtractionMutation>, String> {
+            let call = self.extraction_calls.fetch_add(1, Ordering::SeqCst);
+            if self.fail_first_extraction && call == 0 {
+                return Err("temporary model failure".into());
+            }
+            Ok(vec![MemoryExtractionMutation {
+                path: "/customer.md".into(),
+                content: "remember".into(),
+                observed_sha256: None,
+                target_sha256: "target".into(),
+            }])
+        }
+
+        async fn apply(
+            &self,
+            _intent: &MemoryExtractionIntent,
+            mutation: &MemoryExtractionMutation,
+        ) -> Result<MemoryMutationReceipt, String> {
+            Ok(MemoryMutationReceipt {
+                path: mutation.path.clone(),
+                target_sha256: mutation.target_sha256.clone(),
+                already_applied: false,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn controller_owns_retry_receipt_and_completion_ordering() {
+        let repository = Arc::new(TestRepository::default());
+        let controller = MemoryExtractionController::new(repository.clone(), "worker-a")
+            .with_policy(MemoryExtractionPolicy {
+                lease_ms: 1_000,
+                heartbeat_ms: 100,
+                max_attempts: 3,
+                retry_base_ms: 0,
+            });
+        assert_eq!(
+            controller.enqueue(intent()).await.unwrap(),
+            PutMemoryExtractionOutcome::Inserted
+        );
+        assert_eq!(
+            controller.enqueue(intent()).await.unwrap(),
+            PutMemoryExtractionOutcome::Existing
+        );
+        let driver = TestDriver {
+            extraction_calls: AtomicUsize::new(0),
+            fail_first_extraction: true,
+            binding_valid: true,
+        };
+
+        controller.drive_recoverable(&driver).await;
+
+        let completed = repository
+            .get_extraction("extract-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(completed.status, MemoryExtractionStatus::Completed);
+        assert_eq!(completed.attempts, 2);
+        assert_eq!(completed.receipt.unwrap().mutations.len(), 1);
+        assert_eq!(driver.extraction_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn revoked_binding_fails_terminally_without_running_extractor() {
+        let repository = Arc::new(TestRepository::default());
+        let controller = MemoryExtractionController::new(repository.clone(), "worker-a");
+        controller.enqueue(intent()).await.unwrap();
+        let driver = TestDriver {
+            extraction_calls: AtomicUsize::new(0),
+            fail_first_extraction: false,
+            binding_valid: false,
+        };
+
+        controller.drive_recoverable(&driver).await;
+
+        let failed = repository
+            .get_extraction("extract-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(failed.status, MemoryExtractionStatus::TerminalFailed);
+        assert_eq!(failed.last_error.as_deref(), Some("binding revoked"));
+        assert_eq!(driver.extraction_calls.load(Ordering::SeqCst), 0);
     }
 }

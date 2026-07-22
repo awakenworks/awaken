@@ -17,9 +17,9 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_ext_builtin_tools::{AgentRunArgs, erase, invoke_agent_tool};
 use awaken_ext_memory::{
-    DEFAULT_SELECTOR_INSTRUCTIONS, EXTRACT_PROMPT, MEMORY_AGENT_ID, MemoryExtractionError,
-    MemoryExtractionIntent, MemoryExtractionMutation, MemoryExtractionReceipt,
-    MemoryExtractionRepository, MemoryExtractionStatus, MemoryExtractorSnapshot,
+    DEFAULT_SELECTOR_INSTRUCTIONS, EXTRACT_PROMPT, MEMORY_AGENT_ID, MemoryExtractionController,
+    MemoryExtractionDriver, MemoryExtractionError, MemoryExtractionIntent,
+    MemoryExtractionMutation, MemoryExtractionRepository, MemoryExtractorSnapshot,
     MemoryMutationReceipt, MemoryStoreHandle, RecallBounds, RecallSelector, SELECTOR_AGENT_ID,
     WriteMemoryTool, default_selector_agent, parse_indices, sanitize_stem, select_input,
 };
@@ -35,8 +35,6 @@ use crate::judge::AuxAgentTool;
 // The config pieces the host wires (registering the default extractor agent).
 pub use awaken_ext_memory::{DEFAULT_MEMORY_INSTRUCTIONS, default_memory_agent};
 
-const EXTRACTION_LEASE_MS: u64 = 3_000;
-const EXTRACTION_HEARTBEAT_MS: u64 = 1_000;
 static EXTRACTION_OWNER_SEQ: AtomicU64 = AtomicU64::new(1);
 
 /// A [`RecallSelector`] backed by the `memory-selector` sub-agent: a single-step,
@@ -308,6 +306,7 @@ pub struct MemoryRuntime {
 #[derive(Clone)]
 pub struct BoundMemory {
     runtime: Arc<MemoryRuntime>,
+    session_id: String,
     store: Arc<dyn MemoryStoreHandle>,
     platform: Arc<PlatformMemoryHandle>,
     resource_validator: Arc<dyn awaken_protocol_managed::resource_plane::ResourceBindingValidator>,
@@ -344,6 +343,7 @@ impl MemoryRuntime {
 
     pub(crate) fn bind(
         self: &Arc<Self>,
+        session_id: impl Into<String>,
         workspace_id: impl Into<String>,
         platform: Arc<PlatformMemoryHandle>,
         resource_validator: Arc<
@@ -360,6 +360,7 @@ impl MemoryRuntime {
         };
         BoundMemory {
             runtime: self.clone(),
+            session_id: session_id.into(),
             store: platform.clone(),
             platform,
             resource_validator,
@@ -428,6 +429,10 @@ impl MemoryRuntime {
             .expect("Memory extraction repository lock poisoned")
             .clone()
     }
+
+    fn extraction_controller(&self) -> MemoryExtractionController {
+        MemoryExtractionController::new(self.extraction_repository(), self.claim_owner.clone())
+    }
 }
 
 impl BoundMemory {
@@ -440,7 +445,8 @@ impl BoundMemory {
     }
 
     fn matches_intent(&self, intent: &MemoryExtractionIntent) -> bool {
-        intent.workspace_id == self.workspace_id
+        intent.session_id == self.session_id
+            && intent.workspace_id == self.workspace_id
             && intent.memory_store_id == self.memory_store_id
             && intent.memory_config_version == self.memory_config_version
     }
@@ -477,19 +483,6 @@ impl BoundMemory {
             .collect();
         let idempotency_key = format!("{thread}:{terminal_commit_id}");
         let intent_id = format!("memory-extraction:{idempotency_key}");
-        let repository = self.runtime.extraction_repository();
-        if let Some(existing) = repository.get_extraction(&intent_id).await? {
-            if existing.workspace_id != self.workspace_id
-                || existing.session_id != thread
-                || existing.terminal_commit_id != terminal_commit_id
-                || existing.memory_store_id != self.memory_store_id
-                || existing.memory_config_version != self.memory_config_version
-            {
-                return Err(MemoryExtractionError::IdempotencyConflict(idempotency_key));
-            }
-            self.reconcile(thread).await;
-            return Ok(());
-        }
         let intent = MemoryExtractionIntent::new(
             intent_id,
             idempotency_key,
@@ -501,7 +494,7 @@ impl BoundMemory {
             seed,
             extractor,
         )?;
-        repository.put_extraction_if_absent(intent).await?;
+        self.runtime.extraction_controller().enqueue(intent).await?;
         self.reconcile(thread).await;
         Ok(())
     }
@@ -525,176 +518,20 @@ impl BoundMemory {
             return false;
         }
         let bound = self.clone();
-        let thread = thread.to_string();
         self.runtime
             .background
             .spawn(async move {
-                bound.drive_recoverable(&thread).await;
+                bound.drive_recoverable().await;
             })
             .await;
         true
     }
 
-    async fn drive_recoverable(&self, thread: &str) {
-        const MAX_ATTEMPTS: u32 = 5;
-        let repository = self.runtime.extraction_repository();
-        let owner = self.runtime.claim_owner.as_str();
-        loop {
-            let Ok(candidates) = repository.recoverable_extractions(64).await else {
-                return;
-            };
-            let Some(mut intent) = candidates
-                .into_iter()
-                .find(|intent| intent.session_id == thread && self.matches_intent(intent))
-            else {
-                return;
-            };
-            let now = unix_ms();
-            let expected_revision = intent.revision;
-            let generation = match intent.claim(owner, now, EXTRACTION_LEASE_MS) {
-                Ok(generation) => generation,
-                Err(MemoryExtractionError::LeaseHeld {
-                    lease_expires_at_unix_ms,
-                }) => {
-                    tokio::time::sleep(Duration::from_millis(
-                        lease_expires_at_unix_ms
-                            .saturating_sub(now)
-                            .saturating_add(1),
-                    ))
-                    .await;
-                    continue;
-                }
-                Err(_) => return,
-            };
-            if repository
-                .compare_and_swap_extraction(expected_revision, intent.clone())
-                .await
-                .is_err()
-            {
-                continue;
-            }
-
-            let result = self
-                .advance_claimed(&repository, &mut intent, generation)
-                .await;
-            if let Err((error, terminal)) = result {
-                let Ok(Some(current)) = repository.get_extraction(&intent.intent_id).await else {
-                    return;
-                };
-                if current.revision != intent.revision
-                    || current.claim_owner.as_deref() != Some(owner)
-                    || current.claim_generation != generation
-                {
-                    continue;
-                }
-                let now = unix_ms();
-                let expected_revision = intent.revision;
-                let transition = if terminal || intent.attempts >= MAX_ATTEMPTS {
-                    intent.terminal_fail(owner, generation, now, error)
-                } else {
-                    intent.retry(owner, generation, now, error)
-                };
-                if transition.is_ok() {
-                    let _ = repository
-                        .compare_and_swap_extraction(expected_revision, intent.clone())
-                        .await;
-                }
-                if !terminal && intent.attempts < MAX_ATTEMPTS {
-                    tokio::time::sleep(Duration::from_millis(
-                        25 * u64::from(intent.attempts.max(1)),
-                    ))
-                    .await;
-                    continue;
-                }
-            }
-        }
-    }
-
-    async fn advance_claimed(
-        &self,
-        repository: &Arc<dyn MemoryExtractionRepository>,
-        intent: &mut MemoryExtractionIntent,
-        generation: u64,
-    ) -> Result<(), (String, bool)> {
-        if self.validate_live_resource().is_err() {
-            return Err((
-                "MemoryStore is missing, suspended, archived, or deleted".into(),
-                true,
-            ));
-        }
-        if intent.status == MemoryExtractionStatus::Claimed {
-            let extraction_input = intent.clone();
-            let extraction = self.extract_mutations(&extraction_input);
-            tokio::pin!(extraction);
-            let mutations = loop {
-                tokio::select! {
-                    result = &mut extraction => break result.map_err(|error| (error, false))?,
-                    () = tokio::time::sleep(Duration::from_millis(EXTRACTION_HEARTBEAT_MS)) => {
-                        let expected_revision = intent.revision;
-                        intent
-                            .renew_claim(
-                                &self.runtime.claim_owner,
-                                generation,
-                                unix_ms(),
-                                EXTRACTION_LEASE_MS,
-                            )
-                            .map_err(|error| (error.to_string(), false))?;
-                        repository
-                            .compare_and_swap_extraction(expected_revision, intent.clone())
-                            .await
-                            .map_err(|error| (error.to_string(), false))?;
-                    }
-                }
-            };
-            let expected_revision = intent.revision;
-            intent
-                .mark_extracted(&self.runtime.claim_owner, generation, unix_ms(), mutations)
-                .map_err(|error| (error.to_string(), false))?;
-            repository
-                .compare_and_swap_extraction(expected_revision, intent.clone())
-                .await
-                .map_err(|error| (error.to_string(), false))?;
-        }
-        if intent.status == MemoryExtractionStatus::Extracted {
-            self.validate_live_resource()
-                .map_err(|error| (error, true))?;
-            let mut receipts = Vec::with_capacity(intent.mutations.len());
-            for mutation in &intent.mutations {
-                receipts.push(
-                    self.platform
-                        .apply_mutation(mutation)
-                        .await
-                        .map_err(|error| (error, false))?,
-                );
-            }
-            let expected_revision = intent.revision;
-            intent
-                .mark_stored(
-                    &self.runtime.claim_owner,
-                    generation,
-                    unix_ms(),
-                    MemoryExtractionReceipt {
-                        stored_at_unix_ms: unix_ms(),
-                        mutations: receipts,
-                    },
-                )
-                .map_err(|error| (error.to_string(), false))?;
-            repository
-                .compare_and_swap_extraction(expected_revision, intent.clone())
-                .await
-                .map_err(|error| (error.to_string(), false))?;
-        }
-        if intent.status == MemoryExtractionStatus::Stored {
-            let expected_revision = intent.revision;
-            intent
-                .complete(&self.runtime.claim_owner, generation, unix_ms())
-                .map_err(|error| (error.to_string(), false))?;
-            repository
-                .compare_and_swap_extraction(expected_revision, intent.clone())
-                .await
-                .map_err(|error| (error.to_string(), false))?;
-        }
-        Ok(())
+    async fn drive_recoverable(&self) {
+        self.runtime
+            .extraction_controller()
+            .drive_recoverable(self)
+            .await;
     }
 
     async fn extract_mutations(
@@ -758,6 +595,33 @@ impl BoundMemory {
 }
 
 #[async_trait]
+impl MemoryExtractionDriver for BoundMemory {
+    fn accepts(&self, intent: &MemoryExtractionIntent) -> bool {
+        self.matches_intent(intent)
+    }
+
+    async fn validate_binding(&self, _intent: &MemoryExtractionIntent) -> Result<(), String> {
+        self.validate_live_resource()
+            .map_err(|_| "MemoryStore is missing, suspended, archived, or deleted".to_string())
+    }
+
+    async fn extract(
+        &self,
+        intent: &MemoryExtractionIntent,
+    ) -> Result<Vec<MemoryExtractionMutation>, String> {
+        self.extract_mutations(intent).await
+    }
+
+    async fn apply(
+        &self,
+        _intent: &MemoryExtractionIntent,
+        mutation: &MemoryExtractionMutation,
+    ) -> Result<MemoryMutationReceipt, String> {
+        self.platform.apply_mutation(mutation).await
+    }
+}
+
+#[async_trait]
 impl MemoryStoreHandle for BoundMemory {
     async fn write(&self, name: &str, content: &str) -> Result<String, String> {
         self.validate_live_resource()?;
@@ -768,15 +632,6 @@ impl MemoryStoreHandle for BoundMemory {
         self.validate_live_resource()?;
         self.store.entries().await
     }
-}
-
-fn unix_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .try_into()
-        .unwrap_or(u64::MAX)
 }
 
 impl crate::host::SharedHost {
@@ -855,9 +710,14 @@ impl crate::host::SharedHost {
     ) {
         let writable = access == awaken_protocol_managed::resource_plane::ResourceAccess::ReadWrite;
         let handle = self.platform_memory_handle(config.memory_store_id.clone(), writable);
-        let bound = self
-            .memory
-            .bind(workspace_id, handle, resource_validator, config, writable);
+        let bound = self.memory.bind(
+            thread,
+            workspace_id,
+            handle,
+            resource_validator,
+            config,
+            writable,
+        );
         self.register_thread_memory(thread, Some(Arc::new(bound)));
     }
 
@@ -876,6 +736,7 @@ impl crate::host::SharedHost {
 mod tests {
     use super::*;
     use async_trait::async_trait;
+    use awaken_ext_memory::MemoryExtractionStatus;
     use awaken_memory_store::MemoryRepository as _;
     use awaken_runtime_contract::llm::{
         AssistantOutput, ChatRequest, ChatResponse, Result as LlmResult, ToolCall,
@@ -932,6 +793,7 @@ mod tests {
 
     fn bound_test_memory(
         llm: Arc<dyn LlmExecutor>,
+        session_id: &str,
         sandbox_base: &std::path::Path,
         _memory_root: &std::path::Path,
     ) -> (
@@ -969,6 +831,7 @@ mod tests {
             true,
         ));
         let bound = runtime.bind(
+            session_id,
             "ws-test",
             platform,
             Arc::new(TestResourceBindingValidator),
@@ -1038,8 +901,12 @@ mod tests {
         let sandbox_base = std::env::temp_dir().join(format!("awaken-mem-sbx-{stamp}"));
         let mem_root = std::env::temp_dir().join(format!("awaken-mem-root-{stamp}"));
 
-        let (runtime, extraction, repository, _extractions) =
-            bound_test_memory(Arc::new(ExtractorModel), &sandbox_base, &mem_root);
+        let (runtime, extraction, repository, _extractions) = bound_test_memory(
+            Arc::new(ExtractorModel),
+            "thread-1",
+            &sandbox_base,
+            &mem_root,
+        );
 
         assert!(
             !extraction.reconcile("thread-1").await,
@@ -1145,7 +1012,7 @@ mod tests {
         let sandbox_base = std::env::temp_dir().join(format!("awaken-mem2-sbx-{stamp}"));
         let mem_root = std::env::temp_dir().join(format!("awaken-mem2-root-{stamp}"));
         let (runtime, extraction, repository, _extractions) =
-            bound_test_memory(Arc::new(SeedEchoModel), &sandbox_base, &mem_root);
+            bound_test_memory(Arc::new(SeedEchoModel), "t", &sandbox_base, &mem_root);
 
         // A committed history with a recalled-memory system message + a real turn.
         let recall = Message::text(
@@ -1186,8 +1053,12 @@ mod tests {
             .as_nanos();
         let sandbox_base = std::env::temp_dir().join(format!("awaken-mem3-sbx-{stamp}"));
         let mem_root = std::env::temp_dir().join(format!("awaken-mem3-root-{stamp}"));
-        let (runtime, extraction, repository, _extractions) =
-            bound_test_memory(Arc::new(SeedEchoModel), &sandbox_base, &mem_root);
+        let (runtime, extraction, repository, _extractions) = bound_test_memory(
+            Arc::new(SeedEchoModel),
+            "t-custom",
+            &sandbox_base,
+            &mem_root,
+        );
 
         extraction
             .trigger(
@@ -1225,8 +1096,12 @@ mod tests {
             .as_nanos();
         let sandbox_base = std::env::temp_dir().join(format!("awaken-mem4-sbx-{stamp}"));
         let mem_root = std::env::temp_dir().join(format!("awaken-mem4-root-{stamp}"));
-        let (runtime, extraction, repository, extractions) =
-            bound_test_memory(Arc::new(ExtractorModel), &sandbox_base, &mem_root);
+        let (runtime, extraction, repository, extractions) = bound_test_memory(
+            Arc::new(ExtractorModel),
+            "thread-redelivery",
+            &sandbox_base,
+            &mem_root,
+        );
 
         for _ in 0..2 {
             extraction
@@ -1262,8 +1137,12 @@ mod tests {
             .as_nanos();
         let sandbox_base = std::env::temp_dir().join(format!("awaken-mem5-sbx-{stamp}"));
         let mem_root = std::env::temp_dir().join(format!("awaken-mem5-root-{stamp}"));
-        let (runtime, extraction, repository, extractions) =
-            bound_test_memory(Arc::new(ExtractorModel), &sandbox_base, &mem_root);
+        let (runtime, extraction, repository, extractions) = bound_test_memory(
+            Arc::new(ExtractorModel),
+            "thread-crash",
+            &sandbox_base,
+            &mem_root,
+        );
         let content = "customer maintenance is Sunday";
         let target = awaken_memory_store::sha256_hex(content);
         let mut intent = MemoryExtractionIntent::new(
