@@ -444,8 +444,9 @@ impl LlmExecutor for InstructionEchoModel {
     }
 }
 
-/// A deterministic model for the outcome e2e: replies with a draft, and revises to
-/// include "FINAL" once it sees the goal loop's feedback. Stateless.
+/// A deterministic model for the Outcome E2E. It acts as both the Worker and
+/// the default tool-free Judge, making the production Agent-Grader path
+/// observable without provider credentials.
 pub struct ReviseModel;
 
 #[async_trait::async_trait]
@@ -461,8 +462,16 @@ impl LlmExecutor for ReviseModel {
             .find(|m| m.role == Role::User)
             .map(|m| block_text(&m.content))
             .unwrap_or_default();
-        let reply = if last_user.contains("did not meet the goal") {
+        let reply = if last_user.contains("Evaluate this Outcome input") {
+            if last_user.contains("\"rubric\":\"FINAL\"") && last_user.contains("FINAL answer") {
+                r#"{"result":"satisfied","explanation":"native judge accepted FINAL"}"#
+            } else {
+                r#"{"result":"needs_revision","explanation":"native judge requests the rubric deliverable"}"#
+            }
+        } else if last_user.contains("Revise the deliverable") {
             "FINAL answer"
+        } else if last_user.contains("iteration limit was reached") {
+            "acknowledged remaining feedback"
         } else {
             "a rough draft"
         };

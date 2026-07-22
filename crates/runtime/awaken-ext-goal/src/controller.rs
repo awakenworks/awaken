@@ -202,7 +202,7 @@ impl<'a> Controller<'a> {
                 } => {
                     let expected = aggregate.state.version;
                     let input = self.grading_input(&aggregate, iteration, message_start)?;
-                    let grade = match self.grader.grade(&input).await {
+                    let grade = match self.grader.grade(&aggregate.binding.grader, &input).await {
                         Ok(grade) => grade,
                         Err(GraderError::Interrupted) => {
                             aggregate.state.interrupt();
@@ -497,7 +497,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::outcome::{KeywordGrader, Rubric};
+    use crate::outcome::Rubric;
 
     struct World {
         commits: Mutex<Vec<ThreadCommit>>,
@@ -623,15 +623,68 @@ mod tests {
     }
 
     fn binding() -> Binding {
+        binding_named("worker", "grader")
+    }
+
+    fn binding_named(worker: &str, grader: &str) -> Binding {
         Binding {
-            worker: awaken_runtime_contract::ExecutableAgentSnapshot::builder("worker").build(),
-            grader: awaken_runtime_contract::ExecutableAgentSnapshot::builder("grader").build(),
+            worker: awaken_runtime_contract::ExecutableAgentSnapshot::builder(worker).build(),
+            grader: awaken_runtime_contract::ExecutableAgentSnapshot::builder(grader).build(),
+        }
+    }
+
+    struct SnapshotGrader {
+        seen: Mutex<Vec<String>>,
+    }
+
+    struct RangeGrader;
+
+    #[async_trait]
+    impl Grader for RangeGrader {
+        async fn grade(
+            &self,
+            _snapshot: &awaken_runtime_contract::ExecutableAgentSnapshot,
+            input: &GradingInput,
+        ) -> Result<Grade, GraderError> {
+            let end = input.message_end.min(input.transcript.len());
+            let start = input.message_start.min(end);
+            let deliverable = input.transcript[start..end]
+                .iter()
+                .map(Message::text_content)
+                .collect::<Vec<_>>()
+                .join("\n");
+            Ok(Grade {
+                decision: if deliverable.contains(&input.rubric.0) {
+                    GradeDecision::Satisfied
+                } else {
+                    GradeDecision::NeedsRevision
+                },
+                explanation: "deterministic test grade".into(),
+            })
+        }
+    }
+
+    #[async_trait]
+    impl Grader for SnapshotGrader {
+        async fn grade(
+            &self,
+            snapshot: &awaken_runtime_contract::ExecutableAgentSnapshot,
+            _input: &GradingInput,
+        ) -> Result<Grade, GraderError> {
+            self.seen
+                .lock()
+                .unwrap()
+                .push(snapshot.root_agent_id.0.clone());
+            Ok(Grade {
+                decision: GradeDecision::Satisfied,
+                explanation: "pinned snapshot used".into(),
+            })
         }
     }
 
     async fn drive(world: &World, max_iterations: u32) -> Result<Report, Error> {
         let thread = ThreadId("worker-thread".into());
-        let grader = KeywordGrader;
+        let grader = RangeGrader;
         Controller::new(
             &thread,
             world,
@@ -730,7 +783,7 @@ mod tests {
             .unwrap();
         assert_eq!(world.executions.load(Ordering::SeqCst), 1);
 
-        let grader = KeywordGrader;
+        let grader = RangeGrader;
         let report = Controller::new(
             &thread,
             &world,
@@ -748,5 +801,43 @@ mod tests {
             1,
             "the committed Worker Run must be observed, not inferred twice"
         );
+    }
+
+    #[tokio::test]
+    async fn recovery_grades_with_the_persisted_snapshot_not_current_configuration() {
+        let world = World::new(&["deliverable"]);
+        let thread = ThreadId("worker-thread".into());
+        let definition = Definition::new("ship", "rubric", 2).unwrap();
+        let persisted = binding_named("worker-v1", "grader-v1");
+        ThreadOutcomeState::new(&thread, &world, &world)
+            .create(
+                &definition,
+                &persisted,
+                &State::new(Id("outcome-1".into()), 0),
+            )
+            .await
+            .unwrap();
+        let grader = SnapshotGrader {
+            seen: Mutex::new(Vec::new()),
+        };
+
+        let report = Controller::new(
+            &thread,
+            &world,
+            &world,
+            &world,
+            RuntimeRunContext::new(),
+            &grader,
+        )
+        .define_or_resume(
+            Id("ignored-new-id".into()),
+            definition,
+            binding_named("worker-v2", "grader-v2"),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(report.iterations[0].result, EvaluationResult::Satisfied);
+        assert_eq!(&*grader.seen.lock().unwrap(), &["grader-v1"]);
     }
 }

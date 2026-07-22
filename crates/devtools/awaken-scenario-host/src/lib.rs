@@ -1158,8 +1158,8 @@ pub fn build_router_with_skills(
     ))
 }
 
-/// A router whose outcomes are graded by a judge sub-agent (`judge_agent_id`) run
-/// through the kernel, rather than the deterministic keyword grader.
+/// A router whose Outcomes are graded by the named Judge Agent through the
+/// ordinary Run boundary.
 pub fn build_graded_router(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
