@@ -322,6 +322,41 @@ moved from 0.830 to 0.820 while recall moved from 0.709 to 0.745 (F1 approximate
 0.765 to 0.781). The recall-oriented variant is retained; this is one paired
 stress-floor sample, not an estimate of population mean quality.
 
+### Adversarial follow-up
+
+The original gold fixtures remain immutable for historical comparison. Three
+separate validation fixtures add failure combinations discovered after M4/C5:
+
+- `outcome-judge-adversarial-v1.json`: temporary versus permanent blockers,
+  conflicting claims, evidence injection, missing proof, and an allowed fallback;
+- `compact-adversarial-v1.json`: multiple reversals, adjacent completed/open
+  facts, a durable consequence of completed work, and a distant injected override;
+- `memory-adversarial-v1.json`: safe facts beside secrets/injection, revoked
+  preferences, completed-work adjacency, sufficient evidence, temporal choice,
+  and a capped causal chain.
+
+The retained J5 Judge scored 6/6 with zero unsafe accepts on its new fixture.
+The retained C5 Compact scored 3/4, preserving 6/8 required terms and dropping
+6/6 forbidden terms. A candidate that additionally emphasized ambient-context
+exclusion and durable consequences recovered all 8 required terms, but regressed
+the original gold from 8/8 to 7/8 and dropped only 4/6 forbidden adversarial terms;
+it was rejected and reverted.
+
+The retained M4 extractor found all 4 expected adversarial facts but passed only
+2/4 cases because it negatively repeated a revoked value and saved a completed
+task (3/5 forbidden terms dropped). A stronger ordered-gate reminder did not
+improve that validation sample and regressed the original gold's forbidden-term
+deletion from 5/5 to 3/5; it was rejected and reverted. A selector candidate that
+requested the “smallest sufficient set” kept the original selection gold at 6/6,
+but a repeat of the adversarial causal-chain case fell from 4/4 to 3/4. On LoCoMo,
+exact match fell from 19/30 to 17/30 and true positives from 41/55 to 34/55 while
+returned memories fell from 50 to 43. The precision-oriented candidate therefore
+failed the recall gate and was reverted.
+
+These are single stress-floor samples. Their purpose is fail-fast candidate
+rejection and corpus expansion, not a claim that prompt wording has a stable
+population-level effect.
+
 Extraction evaluation uses strict JSON proposals to isolate `write_memory`
 save/skip reasoning. Production tests separately cover real tool calls, the
 implementation-note backstop, persistence, recovery, and recall.
