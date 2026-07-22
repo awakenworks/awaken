@@ -66,6 +66,7 @@ pub struct PairwiseReport {
     pub dataset: String,
     pub total: usize,
     pub observed: usize,
+    pub provider_errors: usize,
     pub schema_valid: BinomialMetrics,
     pub accuracy: BinomialMetrics,
     pub accuracy_when_a_is_better: BinomialMetrics,
@@ -171,30 +172,14 @@ pub fn import_rewardbench2_rows(
         }
     }
     if limit != 0 && cases.len() > limit {
-        let mut groups: BTreeMap<String, std::collections::VecDeque<PairwiseCase>> =
-            BTreeMap::new();
+        let mut groups: BTreeMap<_, std::collections::VecDeque<PairwiseCase>> = BTreeMap::new();
         for case in cases {
             groups
                 .entry(case.subset.clone())
                 .or_default()
                 .push_back(case);
         }
-        cases = Vec::with_capacity(limit);
-        while cases.len() < limit {
-            let mut progressed = false;
-            for group in groups.values_mut() {
-                if let Some(case) = group.pop_front() {
-                    cases.push(case);
-                    progressed = true;
-                    if cases.len() == limit {
-                        break;
-                    }
-                }
-            }
-            if !progressed {
-                break;
-            }
-        }
+        cases = round_robin_limit(groups, limit);
     }
     for (index, case) in cases.iter_mut().enumerate() {
         let desired = if index % 2 == 0 { Choice::A } else { Choice::B };
@@ -254,6 +239,7 @@ pub fn score_pairwise(
     let mut by_position: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
     let mut latency = 0_u128;
     let mut observed = 0;
+    let mut provider_errors = 0;
     for case in &dataset.cases {
         by_subset.entry(case.subset.clone()).or_default().0 += 1;
         by_position
@@ -264,6 +250,7 @@ pub fn score_pairwise(
             .or_default()
             .0 += 1;
         let entries = by_id.get(case.id.as_str()).cloned().unwrap_or_default();
+        provider_errors += usize::from(entries.len() == 1 && entries[0].error.is_some());
         if entries.len() != 1 || entries[0].error.is_some() {
             continue;
         }
@@ -291,6 +278,7 @@ pub fn score_pairwise(
         dataset: dataset.name.clone(),
         total: dataset.cases.len(),
         observed,
+        provider_errors,
         schema_valid: binomial(valid, dataset.cases.len()),
         accuracy: binomial(correct, dataset.cases.len()),
         accuracy_when_a_is_better: metric_tuple(by_position.get("a").copied().unwrap_or_default()),
@@ -423,6 +411,7 @@ pub struct ReferenceCompactReport {
     pub dataset: String,
     pub total: usize,
     pub observed: usize,
+    pub provider_errors: usize,
     pub mean_token_precision: f64,
     pub mean_token_recall: f64,
     pub mean_token_f1: f64,
@@ -481,9 +470,6 @@ pub fn import_qmsum_documents(
                     .flatten()
             });
         for (query_index, query) in queries.enumerate() {
-            if limit != 0 && cases.len() >= limit {
-                break;
-            }
             cases.push(ReferenceCompactCase {
                 id: format!("qmsum-{document_index}-{query_index}"),
                 query: string(query, "query")?,
@@ -491,9 +477,18 @@ pub fn import_qmsum_documents(
                 reference: string(query, "answer")?,
             });
         }
-        if limit != 0 && cases.len() >= limit {
-            break;
+    }
+    if limit != 0 && cases.len() > limit {
+        let mut groups: BTreeMap<_, std::collections::VecDeque<ReferenceCompactCase>> =
+            BTreeMap::new();
+        for case in cases {
+            let document = case
+                .id
+                .rsplit_once('-')
+                .map_or_else(|| case.id.clone(), |(document, _)| document.to_string());
+            groups.entry(document).or_default().push_back(case);
         }
+        cases = round_robin_limit(groups, limit);
     }
     let dataset = ReferenceCompactDataset {
         version: VERSION,
@@ -542,10 +537,17 @@ pub fn score_reference_compact(
     let mut ratio = 0.0;
     let mut latency = 0_u128;
     let mut observed = 0;
+    let mut provider_errors = 0;
     for case in &dataset.cases {
-        let matches = observations
+        let case_observations = observations
             .iter()
-            .filter(|item| item.case_id == case.id && item.error.is_none())
+            .filter(|item| item.case_id == case.id)
+            .collect::<Vec<_>>();
+        provider_errors +=
+            usize::from(case_observations.len() == 1 && case_observations[0].error.is_some());
+        let matches = case_observations
+            .into_iter()
+            .filter(|item| item.error.is_none())
             .collect::<Vec<_>>();
         if matches.len() != 1 || matches[0].output.trim().is_empty() {
             continue;
@@ -564,6 +566,7 @@ pub fn score_reference_compact(
         dataset: dataset.name.clone(),
         total: dataset.cases.len(),
         observed,
+        provider_errors,
         mean_token_precision: precision / divisor,
         mean_token_recall: recall / divisor,
         mean_token_f1: f1 / divisor,
@@ -581,8 +584,8 @@ pub fn import_locomo_selection(
     distractors: usize,
 ) -> Result<MemoryDataset, String> {
     let conversations = value.as_array().ok_or("LoCoMo root must be an array")?;
-    let mut cases = Vec::new();
-    'outer: for conversation in conversations {
+    let mut groups: BTreeMap<String, std::collections::VecDeque<SelectionCase>> = BTreeMap::new();
+    for conversation in conversations {
         let sample_id = string(conversation, "sample_id")?;
         let sessions = conversation
             .get("conversation")
@@ -612,6 +615,10 @@ pub fn import_locomo_selection(
             .enumerate()
         {
             let question = string(qa, "question")?;
+            let category = qa
+                .get("category")
+                .map(serde_json::Value::to_string)
+                .unwrap_or_else(|| "unknown".into());
             let evidence = qa
                 .get("evidence")
                 .and_then(serde_json::Value::as_array)
@@ -655,21 +662,22 @@ pub fn import_locomo_selection(
                 .enumerate()
                 .filter_map(|(index, (_, _, expected))| expected.then_some(index))
                 .collect::<Vec<_>>();
-            cases.push(SelectionCase {
-                id: format!("locomo-{sample_id}-{qa_index}"),
-                query: question,
-                memories: candidates
-                    .into_iter()
-                    .map(|(id, text, _)| format!("{id}: {text}"))
-                    .collect(),
-                max: expected_indices.len(),
-                expected_indices,
-            });
-            if limit != 0 && cases.len() >= limit {
-                break 'outer;
-            }
+            groups
+                .entry(format!("{sample_id}/category-{category}"))
+                .or_default()
+                .push_back(SelectionCase {
+                    id: format!("locomo-{sample_id}-category-{category}-{qa_index}"),
+                    query: question,
+                    memories: candidates
+                        .into_iter()
+                        .map(|(id, text, _)| format!("{id}: {text}"))
+                        .collect(),
+                    max: expected_indices.len(),
+                    expected_indices,
+                });
         }
     }
+    let cases = round_robin_limit(groups, limit);
     let dataset = MemoryDataset {
         version: VERSION,
         name: "locomo-memory-selection".into(),
@@ -678,6 +686,35 @@ pub fn import_locomo_selection(
     };
     dataset.validate()?;
     Ok(dataset)
+}
+
+fn round_robin_limit<T>(
+    mut groups: BTreeMap<String, std::collections::VecDeque<T>>,
+    limit: usize,
+) -> Vec<T> {
+    let available = groups.values().map(std::collections::VecDeque::len).sum();
+    let target = if limit == 0 {
+        available
+    } else {
+        limit.min(available)
+    };
+    let mut selected = Vec::with_capacity(target);
+    while selected.len() < target {
+        let mut progressed = false;
+        for group in groups.values_mut() {
+            if let Some(case) = group.pop_front() {
+                selected.push(case);
+                progressed = true;
+                if selected.len() == target {
+                    break;
+                }
+            }
+        }
+        if !progressed {
+            break;
+        }
+    }
+    selected
 }
 
 async fn run_one(
@@ -985,11 +1022,50 @@ mod tests {
     }
 
     #[test]
+    fn qmsum_limit_samples_across_meetings_not_one_ordered_prefix() {
+        let document = |speaker: &str| {
+            serde_json::json!({
+                "meeting_transcripts":[{"speaker":speaker,"content":"alpha beta gamma"}],
+                "general_query_list":[{"query":"q1","answer":"alpha"},{"query":"q2","answer":"beta"}],
+                "specific_query_list":[]
+            })
+        };
+        let dataset = import_qmsum_documents(&[document("A"), document("B")], 2).unwrap();
+        assert!(dataset.cases[0].transcript.starts_with("A:"));
+        assert!(dataset.cases[1].transcript.starts_with("B:"));
+    }
+
+    #[test]
     fn locomo_adapter_keeps_gold_evidence_and_adds_distractors() {
         let input = serde_json::json!([{"sample_id":"c1","conversation":{"session_1":[{"dia_id":"D1:1","speaker":"A","text":"likes blue"},{"dia_id":"D1:2","speaker":"B","text":"likes red"},{"dia_id":"D1:3","speaker":"A","text":"works remote"}]},"qa":[{"question":"What color does A like?","answer":"blue","evidence":["D1:1"],"category":1}]}]);
         let dataset = import_locomo_selection(&input, 1, 2).unwrap();
         assert_eq!(dataset.selection_cases.len(), 1);
         assert_eq!(dataset.selection_cases[0].memories.len(), 3);
         assert_eq!(dataset.selection_cases[0].expected_indices.len(), 1);
+    }
+
+    #[test]
+    fn locomo_limit_round_robins_conversations_and_categories() {
+        let conversation = |sample: &str, category: usize| {
+            serde_json::json!({
+                "sample_id":sample,
+                "conversation":{"session_1":[
+                    {"dia_id":"D1:1","speaker":"A","text":"gold"},
+                    {"dia_id":"D1:2","speaker":"B","text":"distractor"}
+                ]},
+                "qa":[
+                    {"question":"q1","answer":"gold","evidence":["D1:1"],"category":category},
+                    {"question":"q2","answer":"gold","evidence":["D1:1"],"category":category}
+                ]
+            })
+        };
+        let dataset = import_locomo_selection(
+            &serde_json::json!([conversation("c1", 1), conversation("c2", 2)]),
+            2,
+            1,
+        )
+        .unwrap();
+        assert!(dataset.selection_cases[0].id.contains("c1"));
+        assert!(dataset.selection_cases[1].id.contains("c2"));
     }
 }

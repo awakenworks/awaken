@@ -28,11 +28,14 @@ gate:
   compliance, and latency.
 - QMSum becomes query-focused reference compaction. Reports include token
   precision/recall/F1, compression ratio, and latency. Lexical F1 is a
-  reproducible diagnostic and is not a semantic-fidelity release gate.
+  reproducible diagnostic and is not a semantic-fidelity release gate. Limited
+  runs round-robin across meetings rather than consuming one meeting's ordered
+  query prefix.
 - LoCoMo QA evidence becomes production Memory-selector cases. Annotated
   evidence turns are mixed with deterministic lexical hard negatives. This
   evaluates selector reranking; it deliberately does not claim to evaluate the
-  upstream vector retriever or answer generator.
+  upstream vector retriever or answer generator. Limited runs round-robin across
+  conversation × QA-category strata.
 
 Downloaded corpora and model outputs stay outside the repository. The commands
 below pin dataset identities but callers should additionally record the source
@@ -74,6 +77,34 @@ cargo run -p awaken-eval -- benchmark-compare-pairwise DATASET LEFT RIGHT
 cargo run -p awaken-eval -- benchmark-score-compact-reference DATASET OBSERVATIONS
 cargo run -p awaken-eval -- memory-score DATASET OBSERVATIONS
 ```
+
+### Cross-provider run (2026-07-22)
+
+The same frozen inputs were evaluated with KIMI `kimi-k3` through Claude Code
+ACP and with the stress-floor Codex `gpt-5.3-codex-spark` / low reasoning. These
+are single-run diagnostics, not model leaderboards:
+
+| Suite | KIMI | Codex stress floor | Interpretation |
+|---|---:|---:|---|
+| RewardBench 2 stratified pairwise, 24 cases / 6 subsets | 23/24, schema 24/24 | 20/24, schema 24/24 | Agreement 21/24, Cohen's κ 0.753; three disagreements favored KIMI against gold, one case both wrong. |
+| Outcome gold, 15 cases, batch 5 | 15/15, unsafe 0 | 10/15, unsafe 5 | Codex accepted all five permanent-failure cases. |
+| Outcome gold, production-shaped batch 1 | not rerun before quota exhaustion | 12/15, unsafe 3 | Batch shape amplified but did not cause the permanent-failure weakness. |
+| Compact gold, 8 cases | invalid run: 1 completed then 7 provider quota errors | 7/8; required 19/19; stale dropped 5/6 | Provider errors are now counted separately and never presented as model failures. |
+| Memory gold | not run before quota exhaustion | extraction 3/5; selection 6/6 | Extraction dropped every forbidden term but over-filtered safe facts in two mixed/adversarial cases. |
+| QMSum, 6 meetings | not run before quota exhaustion | token P/R/F1 0.109/0.543/0.178; compression ratio 0.065 | Transfer diagnostic only; the production current-state compactor is not a meeting summarizer. |
+| LoCoMo selector, 30 cases, 9 hard negatives | not run before quota exhaustion | exact set 18/30; schema 30/30; P/R 0.830/0.709 | Covers 7 conversations and all 5 QA categories; evaluates reranking only. Exact-set Wilson 95% CI is 42.3–75.4%. |
+
+RewardBench position slices were balanced 12/12. KIMI scored 11/12 when A was
+gold and 12/12 when B was gold; Codex scored 11/12 and 9/12 respectively. The
+24-case confidence intervals overlap (KIMI 95.8%, Wilson 95% CI 79.8–99.3%;
+Codex 83.3%, CI 64.1–93.3%), so the observed difference is not claimed as a
+statistically significant model ranking.
+
+KIMI's later Compact run returned HTTP 403 billing-cycle quota errors. The raw
+artifact contains eight observations and seven explicit errors; its apparent
+`1/8` content score is invalid and must not be compared with Codex. Re-run the
+same frozen files after quota recovery rather than replacing or relabeling the
+failed observations.
 
 ## Evaluation boundaries
 

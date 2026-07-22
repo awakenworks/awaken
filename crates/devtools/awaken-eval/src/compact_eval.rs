@@ -78,6 +78,8 @@ pub struct CompactCaseScore {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompactReport {
     pub total_cases: usize,
+    pub observed_cases: usize,
+    pub errored_cases: usize,
     pub exact_cases: usize,
     pub required_found: usize,
     pub required_total: usize,
@@ -110,6 +112,8 @@ pub fn score(dataset: &CompactDataset, observations: &[CompactObservation]) -> C
     }
     let mut report = CompactReport {
         total_cases: dataset.cases.len(),
+        observed_cases: 0,
+        errored_cases: 0,
         exact_cases: 0,
         required_found: 0,
         required_total: 0,
@@ -120,9 +124,16 @@ pub fn score(dataset: &CompactDataset, observations: &[CompactObservation]) -> C
         cases: Vec::with_capacity(dataset.cases.len()),
     };
     for case in &dataset.cases {
+        if let Some(observation) = by_id.get(case.id.as_str())
+            && !duplicates.contains(&case.id)
+        {
+            report.observed_cases += 1;
+            report.errored_cases += usize::from(observation.error.is_some());
+        }
         let output = by_id
             .get(case.id.as_str())
             .filter(|_| !duplicates.contains(&case.id))
+            .filter(|observation| observation.error.is_none())
             .map(|observation| observation.output.to_ascii_lowercase())
             .unwrap_or_default();
         let required_found = case
@@ -227,8 +238,27 @@ mod tests {
             }],
         );
         assert_eq!(report.exact_cases, 1);
+        assert_eq!(report.observed_cases, 1);
+        assert_eq!(report.errored_cases, 0);
         assert_eq!(report.required_found, 1);
         assert_eq!(report.forbidden_dropped, 1);
+    }
+
+    #[test]
+    fn provider_error_is_observed_but_never_scored_as_content() {
+        let report = score(
+            &dataset(),
+            &[CompactObservation {
+                case_id: "one".into(),
+                output: "ALPHA".into(),
+                latency_ms: 1,
+                error: Some("quota".into()),
+            }],
+        );
+        assert_eq!(report.observed_cases, 1);
+        assert_eq!(report.errored_cases, 1);
+        assert_eq!(report.required_found, 0);
+        assert_eq!(report.exact_cases, 0);
     }
 
     #[test]

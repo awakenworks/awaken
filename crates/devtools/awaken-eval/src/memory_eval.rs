@@ -137,6 +137,8 @@ pub struct SelectionScore {
 pub struct MemoryReport {
     pub extraction_exact: usize,
     pub extraction_total: usize,
+    pub extraction_observed: usize,
+    pub extraction_errors: usize,
     pub extraction_schema_valid: usize,
     pub expected_memories_found: usize,
     pub expected_memories_total: usize,
@@ -144,6 +146,8 @@ pub struct MemoryReport {
     pub forbidden_terms_total: usize,
     pub selection_exact: usize,
     pub selection_total: usize,
+    pub selection_observed: usize,
+    pub selection_errors: usize,
     pub selection_schema_valid: usize,
     pub selection_true_positive: usize,
     pub selection_expected: usize,
@@ -157,6 +161,8 @@ pub fn score(dataset: &MemoryDataset, observations: &[MemoryObservation]) -> Mem
     let mut report = MemoryReport {
         extraction_exact: 0,
         extraction_total: dataset.extraction_cases.len(),
+        extraction_observed: 0,
+        extraction_errors: 0,
         extraction_schema_valid: 0,
         expected_memories_found: 0,
         expected_memories_total: 0,
@@ -164,6 +170,8 @@ pub fn score(dataset: &MemoryDataset, observations: &[MemoryObservation]) -> Mem
         forbidden_terms_total: 0,
         selection_exact: 0,
         selection_total: dataset.selection_cases.len(),
+        selection_observed: 0,
+        selection_errors: 0,
         selection_schema_valid: 0,
         selection_true_positive: 0,
         selection_expected: 0,
@@ -176,6 +184,8 @@ pub fn score(dataset: &MemoryDataset, observations: &[MemoryObservation]) -> Mem
             .iter()
             .filter(|observation| observation.case_id == case.id)
             .collect::<Vec<_>>();
+        report.extraction_observed += usize::from(outputs.len() == 1);
+        report.extraction_errors += usize::from(outputs.len() == 1 && outputs[0].error.is_some());
         let parsed = if outputs.len() == 1 && outputs[0].error.is_none() {
             serde_json::from_str::<Vec<ProposedMemory>>(&outputs[0].output)
                 .ok()
@@ -233,6 +243,8 @@ pub fn score(dataset: &MemoryDataset, observations: &[MemoryObservation]) -> Mem
             .iter()
             .filter(|observation| observation.case_id == case.id)
             .collect::<Vec<_>>();
+        report.selection_observed += usize::from(outputs.len() == 1);
+        report.selection_errors += usize::from(outputs.len() == 1 && outputs[0].error.is_some());
         let (schema_valid, actual) = if outputs.len() == 1 && outputs[0].error.is_none() {
             parse_selection(&outputs[0].output, case.memories.len(), case.max)
         } else {
@@ -247,7 +259,8 @@ pub fn score(dataset: &MemoryDataset, observations: &[MemoryObservation]) -> Mem
             .iter()
             .filter(|index| expected.contains(index))
             .count();
-        let passed = schema_valid && actual == case.expected_indices;
+        let actual_set = actual.iter().copied().collect::<BTreeSet<_>>();
+        let passed = schema_valid && actual_set == expected;
         report.selection_schema_valid += usize::from(schema_valid);
         report.selection_exact += usize::from(passed);
         report.selection_true_positive += true_positive;
@@ -388,6 +401,39 @@ mod tests {
         );
         assert_eq!(report.extraction_exact, 1);
         assert_eq!(report.selection_exact, 1);
+        assert_eq!(report.extraction_observed, 1);
+        assert_eq!(report.selection_observed, 1);
+        assert_eq!(report.extraction_errors, 0);
+        assert_eq!(report.selection_errors, 0);
+    }
+
+    #[test]
+    fn provider_errors_are_counted_separately_and_fail_closed() {
+        let dataset = MemoryDataset {
+            version: 1,
+            name: "memory".into(),
+            extraction_cases: Vec::new(),
+            selection_cases: vec![SelectionCase {
+                id: "select".into(),
+                query: "alpha".into(),
+                memories: vec!["ALPHA".into()],
+                max: 1,
+                expected_indices: vec![0],
+            }],
+        };
+        let report = score(
+            &dataset,
+            &[MemoryObservation {
+                case_id: "select".into(),
+                output: "[0]".into(),
+                latency_ms: 1,
+                error: Some("quota".into()),
+            }],
+        );
+        assert_eq!(report.selection_observed, 1);
+        assert_eq!(report.selection_errors, 1);
+        assert_eq!(report.selection_schema_valid, 0);
+        assert_eq!(report.selection_exact, 0);
     }
 
     #[test]
@@ -399,6 +445,32 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn selection_exactness_is_set_based_not_output_order_based() {
+        let dataset = MemoryDataset {
+            version: 1,
+            name: "memory".into(),
+            extraction_cases: Vec::new(),
+            selection_cases: vec![SelectionCase {
+                id: "select".into(),
+                query: "both".into(),
+                memories: vec!["A".into(), "B".into()],
+                max: 2,
+                expected_indices: vec![0, 1],
+            }],
+        };
+        let report = score(
+            &dataset,
+            &[MemoryObservation {
+                case_id: "select".into(),
+                output: "[1], [0]".into(),
+                latency_ms: 1,
+                error: None,
+            }],
+        );
+        assert_eq!(report.selection_exact, 1);
     }
 
     #[test]
