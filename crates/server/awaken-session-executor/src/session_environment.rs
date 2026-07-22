@@ -882,10 +882,11 @@ mod tests {
                 .contains("container repository import exited Some(23)")
         );
 
-        let mut state = shared.lock().unwrap();
-        state.remove("__fail_repository_import");
-        state.insert("__fail_repository_export".into(), Vec::new());
-        drop(state);
+        {
+            let mut state = shared.lock().unwrap();
+            state.remove("__fail_repository_import");
+            state.insert("__fail_repository_export".into(), Vec::new());
+        }
         let export_error =
             container_repositories::push(&container, "repo", source.to_str().unwrap(), None)
                 .await
