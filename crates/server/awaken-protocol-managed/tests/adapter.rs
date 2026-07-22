@@ -11,7 +11,7 @@ use awaken_protocol_managed::{
     OutcomeIteration, OutcomeReport, Pending, RunError, RunErrorKind, SessionRuntime, StepOutcome,
     ToolPermissionDecision, router,
 };
-use awaken_session_store::InMemorySessionRepository;
+use awaken_session_store::SqliteManagedSessionRepository;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -172,7 +172,10 @@ impl SessionRuntime for FailingFake {
 
 #[tokio::test]
 async fn failed_first_turn_still_persists_the_materialized_environment() {
-    let repo = Arc::new(InMemorySessionRepository::default());
+    let repo = Arc::new(
+        SqliteManagedSessionRepository::open_in_memory()
+            .expect("open ephemeral Managed Session repository"),
+    );
     let app = router(Arc::new(
         ManagedState::new(FailingFake(RunErrorKind::Internal)).with_session_repo(repo.clone()),
     ));
