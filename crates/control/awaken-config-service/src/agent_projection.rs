@@ -20,6 +20,10 @@ impl awaken_session_contract::AgentConfigSource for ConfigServiceAgentSource {
     ) -> Option<awaken_session_contract::AgentConfigView> {
         self.agent_view_with_resources(workspace_id, agent_id)
     }
+
+    fn agent_unavailable_in(&self, workspace_id: &str, agent_id: &str) -> bool {
+        self.0.agent_unavailable_in(workspace_id, agent_id)
+    }
 }
 
 impl ConfigServiceAgentSource {

@@ -19,6 +19,7 @@ mod installed_catalog;
 mod managed_agent;
 mod publication;
 mod tool_catalog;
+mod warm_install;
 
 pub use agent_projection::ConfigServiceAgentSource;
 pub use binding_resolver::{

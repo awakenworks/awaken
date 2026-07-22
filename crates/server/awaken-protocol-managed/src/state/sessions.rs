@@ -80,6 +80,16 @@ impl ManagedState {
             .config_source
             .as_ref()
             .and_then(|source| source.agent_view_in(&owner_scope, &agent_id));
+        if config_view.is_none()
+            && self
+                .config_source
+                .as_ref()
+                .is_some_and(|source| source.agent_unavailable_in(&owner_scope, &agent_id))
+        {
+            return Err(StateError::Run(RunError::bad_request(format!(
+                "agent_archived: agent `{agent_id}` cannot start a new session"
+            ))));
+        }
         // Resolve the session's effective model. Precedence: the official
         // `agent_with_overrides.model` (a per-session replace) wins; then the legacy
         // `metadata.awaken.model` selection; then the referenced agent's authoritative
@@ -364,7 +374,7 @@ impl ManagedState {
                 model: resolved_model,
                 name: agent_id.clone(),
                 description: None,
-                system: None,
+                system: config_view.as_ref().and_then(|view| view.system.clone()),
                 tools: project::agent_tools(&caps),
                 // Echo the accepted servers in the SDK's `{name, type:"url", url}` shape.
                 mcp_servers: effective_mcp_servers

@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use awaken_config_service::ConfigPlane;
+use awaken_config_service::{ConfigPlane, RESERVED_ADMIN_SCOPE};
 use awaken_config_store::{AgentConfig, AgentConfigRevision, ConfigWrite, ModelSelection};
 use awaken_protocol_managed::types::ModelConfig;
 use awaken_protocol_managed::types::agent::{Agent, AgentCreateParams, AgentUpdateParams};
@@ -36,15 +36,41 @@ fn new_agent_id(workspace_id: &str) -> String {
 
 pub struct ConfigPlaneManagedAgentRepository {
     plane: ConfigPlane,
+    platform_workspace: String,
 }
 
 impl ConfigPlaneManagedAgentRepository {
-    pub fn new(plane: ConfigPlane) -> Self {
-        Self { plane }
+    pub fn new(plane: ConfigPlane, platform_workspace: impl Into<String>) -> Self {
+        Self {
+            plane,
+            platform_workspace: platform_workspace.into(),
+        }
     }
 
     fn scope(workspace_id: &str) -> ScopeId {
         ScopeId::from(workspace_id)
+    }
+
+    async fn versioned_for_read(
+        &self,
+        workspace_id: &str,
+        id: &str,
+    ) -> Result<Option<AgentConfigRevision>, ManagedAgentError> {
+        let current = self
+            .plane
+            .get_versioned(&Self::scope(workspace_id), id)
+            .await
+            .map_err(ManagedAgentError::Storage)?;
+        if current.is_some()
+            || workspace_id != self.platform_workspace
+            || id != awaken_admin_assistant::ADMIN_ASSISTANT_AGENT_ID
+        {
+            return Ok(current);
+        }
+        self.plane
+            .get_versioned(&ScopeId::from(RESERVED_ADMIN_SCOPE), id)
+            .await
+            .map_err(ManagedAgentError::Storage)
     }
 
     async fn publish_if_resolvable(
@@ -165,10 +191,8 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
     }
 
     async fn retrieve(&self, workspace_id: &str, id: &str) -> Result<Agent, ManagedAgentError> {
-        self.plane
-            .get_versioned(&Self::scope(workspace_id), id)
-            .await
-            .map_err(ManagedAgentError::Storage)?
+        self.versioned_for_read(workspace_id, id)
+            .await?
             .map(project)
             .ok_or(ManagedAgentError::NotFound)
     }
@@ -299,11 +323,21 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
         workspace_id: &str,
         id: &str,
     ) -> Result<Vec<Agent>, ManagedAgentError> {
-        let revisions = self
+        let mut revisions = self
             .plane
             .list_revisions(&Self::scope(workspace_id), id)
             .await
             .map_err(ManagedAgentError::Storage)?;
+        if revisions.is_empty()
+            && workspace_id == self.platform_workspace
+            && id == awaken_admin_assistant::ADMIN_ASSISTANT_AGENT_ID
+        {
+            revisions = self
+                .plane
+                .list_revisions(&ScopeId::from(RESERVED_ADMIN_SCOPE), id)
+                .await
+                .map_err(ManagedAgentError::Storage)?;
+        }
         if revisions.is_empty() {
             return Err(ManagedAgentError::NotFound);
         }
@@ -367,7 +401,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("config.sqlite");
         let plane = plane(path.to_str().unwrap());
-        let repository = ConfigPlaneManagedAgentRepository::new(plane.clone());
+        let repository = ConfigPlaneManagedAgentRepository::new(plane.clone(), "workspace-a");
 
         let created = repository
             .create("workspace-a", create_params("assistant"))
@@ -402,7 +436,10 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("config.sqlite");
         let id = {
-            let repository = ConfigPlaneManagedAgentRepository::new(plane(path.to_str().unwrap()));
+            let repository = ConfigPlaneManagedAgentRepository::new(
+                plane(path.to_str().unwrap()),
+                "workspace-a",
+            );
             let created = repository
                 .create("workspace-a", create_params("assistant"))
                 .await
@@ -414,7 +451,8 @@ mod tests {
             created.id
         };
 
-        let repository = ConfigPlaneManagedAgentRepository::new(plane(path.to_str().unwrap()));
+        let repository =
+            ConfigPlaneManagedAgentRepository::new(plane(path.to_str().unwrap()), "workspace-a");
         let current = repository.retrieve("workspace-a", &id).await.unwrap();
         assert_eq!(current.name, "renamed");
         assert_eq!(current.version, 2);
@@ -428,6 +466,42 @@ mod tests {
         ));
         assert!(matches!(
             repository.versions("workspace-b", &id).await,
+            Err(ManagedAgentError::NotFound)
+        ));
+    }
+
+    #[tokio::test]
+    async fn reserved_assistant_projects_only_into_the_platform_workspace() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.sqlite");
+        let plane = plane(path.to_str().unwrap());
+        plane
+            .put(
+                &ScopeId::from(RESERVED_ADMIN_SCOPE),
+                &awaken_admin_assistant::admin_assistant_config(),
+            )
+            .await
+            .unwrap();
+        let repository = ConfigPlaneManagedAgentRepository::new(plane, "workspace-a");
+
+        let projected = repository
+            .retrieve(
+                "workspace-a",
+                awaken_admin_assistant::ADMIN_ASSISTANT_AGENT_ID,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            projected.id,
+            awaken_admin_assistant::ADMIN_ASSISTANT_AGENT_ID
+        );
+        assert!(matches!(
+            repository
+                .retrieve(
+                    "workspace-b",
+                    awaken_admin_assistant::ADMIN_ASSISTANT_AGENT_ID
+                )
+                .await,
             Err(ManagedAgentError::NotFound)
         ));
     }

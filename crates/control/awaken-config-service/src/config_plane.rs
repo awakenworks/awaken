@@ -49,7 +49,7 @@ use crate::tool_catalog::ToolCatalogSource;
 pub struct ConfigService {
     /// Workspace-keyed hot catalog; a runtime lookup must never observe another
     /// Workspace's same-id Agent publication.
-    installed: InstalledAgentCatalog,
+    pub(crate) installed: InstalledAgentCatalog,
     /// Per-agent resource bindings (ADR-0038). When wired, the agent's bound-resource
     /// prompt fragments are appended to its effective system prompt at compile (A3a).
     /// `None` → compilation is byte-identical to an unbound agent.
@@ -321,54 +321,9 @@ impl ConfigService {
         self.installed.snapshot_in(workspace, agent)
     }
 
-    /// Warm-load the installed catalog from a durable registry's published configs
-    /// (scope-bound). `installed` is otherwise populated only at publish time and
-    /// held in-memory, so a fresh process — after a restart, or a server that did
-    /// not author the publish itself — would resolve a published agent to the seed
-    /// model. This rehydrates it from the store; the latest publication per agent
-    /// wins (rows arrive oldest-first). Returns how many agents were installed.
-    pub async fn warm_install(
-        &self,
-        registry: &dyn ScopedConfigRegistry,
-        scope: &ScopeId,
-    ) -> usize {
-        self.warm_install_for_execution_workspace(registry, scope, scope.as_str())
-            .await
-    }
-
-    /// Warm-install publications authored in `configuration_scope` for one
-    /// execution Workspace. These coordinates differ only for platform-owned
-    /// reserved agents; ordinary Workspace agents use [`Self::warm_install`].
-    pub async fn warm_install_for_execution_workspace(
-        &self,
-        registry: &dyn ScopedConfigRegistry,
-        configuration_scope: &ScopeId,
-        execution_workspace: &str,
-    ) -> usize {
-        let pubs = match registry.list_published_scoped(configuration_scope).await {
-            Ok(pubs) => pubs,
-            Err(_) => return 0,
-        };
-        let mut installed = 0;
-        for p in pubs {
-            let active = registry
-                .get_config_scoped(configuration_scope, &p.agent_id)
-                .await
-                .ok()
-                .flatten()
-                .is_some_and(|config| config.archived_at.is_none());
-            if !active {
-                continue;
-            }
-            self.installed.install(
-                execution_workspace,
-                &p.agent_id,
-                p.source_revision,
-                p.snapshot,
-            );
-            installed += 1;
-        }
-        installed
+    #[must_use]
+    pub fn agent_unavailable_in(&self, workspace: &str, agent: &str) -> bool {
+        self.installed.is_unavailable(workspace, agent)
     }
 }
 

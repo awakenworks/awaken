@@ -4,7 +4,7 @@
 //! component owns only the process-local hot index used by execution and keeps its
 //! Workspace partition intrinsic and authorization-free.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
 use awaken_config_store::ExecutableAgentSnapshot;
@@ -18,6 +18,7 @@ struct InstalledEntry {
 #[derive(Default)]
 pub(crate) struct InstalledAgentCatalog {
     entries: Mutex<HashMap<(String, String), InstalledEntry>>,
+    unavailable: Mutex<HashSet<(String, String)>>,
 }
 
 impl InstalledAgentCatalog {
@@ -29,6 +30,10 @@ impl InstalledAgentCatalog {
         snapshot: ExecutableAgentSnapshot,
     ) {
         let key = (workspace.to_string(), agent_id.to_string());
+        self.unavailable
+            .lock()
+            .expect("unavailable Agent catalog")
+            .remove(&key);
         let mut entries = self.entries.lock().expect("installed Agent catalog");
         if entries
             .get(&key)
@@ -57,10 +62,22 @@ impl InstalledAgentCatalog {
     }
 
     pub(crate) fn uninstall(&self, workspace: &str, agent_id: &str) {
+        let key = (workspace.to_string(), agent_id.to_string());
         self.entries
             .lock()
             .expect("installed Agent catalog")
-            .remove(&(workspace.to_string(), agent_id.to_string()));
+            .remove(&key);
+        self.unavailable
+            .lock()
+            .expect("unavailable Agent catalog")
+            .insert(key);
+    }
+
+    pub(crate) fn is_unavailable(&self, workspace: &str, agent_id: &str) -> bool {
+        self.unavailable
+            .lock()
+            .expect("unavailable Agent catalog")
+            .contains(&(workspace.to_string(), agent_id.to_string()))
     }
 
     pub(crate) fn agents_referencing_skill(

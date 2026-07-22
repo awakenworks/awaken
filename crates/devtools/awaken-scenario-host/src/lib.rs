@@ -1588,7 +1588,10 @@ pub async fn build_config_router() -> Router {
     // `/v1/agents` authors and reads through the same durable ConfigPlane.
     let agents = awaken_protocol_managed::agents_router(std::sync::Arc::new(
         awaken_protocol_managed::AgentRegistryState::from_repository(std::sync::Arc::new(
-            awaken_control::ConfigPlaneManagedAgentRepository::new(plane.clone()),
+            awaken_control::ConfigPlaneManagedAgentRepository::new(
+                plane.clone(),
+                platform_workspace.clone(),
+            ),
         )),
     ));
     // Workspace-path addressing (ADR-0048/0052 D2): `/v1/workspaces/{ws}/config/...`

@@ -258,6 +258,29 @@ async function main() {
     assert.equal(r.json.installed, true, 'published agent installed into the live catalog');
     console.log(`ok: published agent bound to the DB-configured model '${MODEL}'`);
 
+    // The official Managed Agent API is an adapter over that same ConfigPlane,
+    // not a process-local registry. Create + update through the SDK before the
+    // restart; after restart its current revision, complete history and executable
+    // snapshot must all come back from config.db.
+    let client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
+    const managedAgent = await client.beta.agents.create({
+      name: 'sdk-authored-agent',
+      model: MODEL,
+      system: 'You are authored through the SDK.',
+      metadata: { source: 'managed-api' },
+      betas: BETAS,
+    });
+    const managedUpdated = await client.beta.agents.update(managedAgent.id, {
+      version: managedAgent.version,
+      name: 'sdk-authored-agent-v2',
+      system: 'You survived a process restart.',
+      betas: BETAS,
+    });
+    assert.equal(managedUpdated.version, 2);
+    r = await req(base, 'GET', `/v1/workspaces/foreign-workspace/agents/${managedAgent.id}`);
+    assert.equal(r.status, 404, 'a foreign Workspace cannot retrieve the Agent');
+    console.log('ok: Managed Agent SDK writes use ConfigPlane CAS and Workspace routing');
+
     r = await req(base, 'PUT', '/v1/config/agents/unpublished-model-agent', {
       name: 'unpublished-model-agent',
       model: { id: 'model-with-no-offering' },
@@ -276,7 +299,6 @@ async function main() {
     assert.equal(r.status, 200, `post-publication endpoint mutation: ${JSON.stringify(r.json)}`);
 
     // ---- run a session on the DB-configured model ----------------------------
-    let client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
     const session = await client.beta.sessions.create({
       agent: AGENT, environment_id: 'env_local', betas: BETAS,
     });
@@ -305,6 +327,45 @@ async function main() {
     base = h.baseUrl;
     await ready(base);
     client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
+    const durableManaged = await client.beta.agents.retrieve(managedAgent.id, { betas: BETAS });
+    assert.equal(durableManaged.name, 'sdk-authored-agent-v2');
+    assert.equal(durableManaged.version, 2);
+    const durableVersions = [];
+    for await (const version of client.beta.agents.versions.list(managedAgent.id, { betas: BETAS })) {
+      durableVersions.push(version);
+    }
+    assert.deepEqual(durableVersions.map((version) => version.version), [1, 2]);
+    const managedSession = await client.beta.sessions.create({
+      agent: managedAgent.id, environment_id: 'env_local', betas: BETAS,
+    });
+    assert.equal(managedSession.agent.model.id, MODEL);
+    assert.equal(managedSession.agent.system, 'You survived a process restart.');
+    console.log('ok: SDK Agent revisions and execution projection survived process restart');
+
+    const archivedManaged = await client.beta.agents.archive(managedAgent.id, { betas: BETAS });
+    assert.ok(archivedManaged.archived_at);
+    await assert.rejects(
+      () => client.beta.sessions.create({
+        agent: managedAgent.id, environment_id: 'env_local', betas: BETAS,
+      }),
+      (error) => error.status === 400 && String(error.message).includes('agent_archived'),
+    );
+    await h.stop();
+    h = startAwaken(bin, PORT, serverEnv);
+    await waitForPort(PORT);
+    base = h.baseUrl;
+    await ready(base);
+    client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
+    const archivedAfterRestart = await client.beta.agents.retrieve(managedAgent.id, { betas: BETAS });
+    assert.ok(archivedAfterRestart.archived_at, 'archive lifecycle survives restart');
+    await assert.rejects(
+      () => client.beta.sessions.create({
+        agent: managedAgent.id, environment_id: 'env_local', betas: BETAS,
+      }),
+      (error) => error.status === 400 && String(error.message).includes('agent_archived'),
+    );
+    console.log('ok: archived Agent history and execution denial survive process restart');
+
     const warm = await client.beta.sessions.create({
       agent: AGENT, environment_id: 'env_local', betas: BETAS,
     });

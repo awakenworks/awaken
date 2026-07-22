@@ -159,6 +159,8 @@ async fn durable_management_audit(
 /// the authoring routers, and keeps its own for the data-plane host — one instance
 /// of each port is shared across both planes, exactly as before the split.
 pub struct ControlRouterInput {
+    /// Execution Workspace that may read the reserved platform Assistant config.
+    pub platform_workspace: String,
     /// The model catalog (providers / endpoints / offerings) the admin CRUD authors.
     pub catalog: Arc<dyn CatalogRepo>,
     /// The credential repo (secret-free source/pool rows) the admin + vault surfaces read.
@@ -204,6 +206,7 @@ pub struct ControlRouterInput {
 /// pre-split `management_router_over` authoring half.
 pub fn control_router(input: ControlRouterInput) -> (Router, Arc<WebhookLifecycleSink>) {
     let ControlRouterInput {
+        platform_workspace,
         catalog,
         credentials,
         secrets,
@@ -267,7 +270,10 @@ pub fn control_router(input: ControlRouterInput) -> (Router, Arc<WebhookLifecycl
     // `/v1/config/agents` is retrievable as a managed-wire projection of that single
     // truth (no second store), which is how the console probes the assistant.
     let agents = agents_router(Arc::new(AgentRegistryState::from_repository(Arc::new(
-        managed_agents::ConfigPlaneManagedAgentRepository::new(audit_plane.clone()),
+        managed_agents::ConfigPlaneManagedAgentRepository::new(
+            audit_plane.clone(),
+            platform_workspace,
+        ),
     ))));
     // Capability snapshot (`GET /v1/capabilities`): the host's tool descriptors +
     // installable plugins (with config schema) so the console authors data-driven.
