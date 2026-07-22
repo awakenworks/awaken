@@ -497,7 +497,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::outcome::{KeywordGrader, Rubric};
+    use crate::outcome::Rubric;
 
     struct World {
         commits: Mutex<Vec<ThreadCommit>>,
@@ -637,6 +637,33 @@ mod tests {
         seen: Mutex<Vec<String>>,
     }
 
+    struct RangeGrader;
+
+    #[async_trait]
+    impl Grader for RangeGrader {
+        async fn grade(
+            &self,
+            _snapshot: &awaken_runtime_contract::ExecutableAgentSnapshot,
+            input: &GradingInput,
+        ) -> Result<Grade, GraderError> {
+            let end = input.message_end.min(input.transcript.len());
+            let start = input.message_start.min(end);
+            let deliverable = input.transcript[start..end]
+                .iter()
+                .map(Message::text_content)
+                .collect::<Vec<_>>()
+                .join("\n");
+            Ok(Grade {
+                decision: if deliverable.contains(&input.rubric.0) {
+                    GradeDecision::Satisfied
+                } else {
+                    GradeDecision::NeedsRevision
+                },
+                explanation: "deterministic test grade".into(),
+            })
+        }
+    }
+
     #[async_trait]
     impl Grader for SnapshotGrader {
         async fn grade(
@@ -657,7 +684,7 @@ mod tests {
 
     async fn drive(world: &World, max_iterations: u32) -> Result<Report, Error> {
         let thread = ThreadId("worker-thread".into());
-        let grader = KeywordGrader;
+        let grader = RangeGrader;
         Controller::new(
             &thread,
             world,
@@ -756,7 +783,7 @@ mod tests {
             .unwrap();
         assert_eq!(world.executions.load(Ordering::SeqCst), 1);
 
-        let grader = KeywordGrader;
+        let grader = RangeGrader;
         let report = Controller::new(
             &thread,
             &world,
