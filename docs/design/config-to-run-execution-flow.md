@@ -740,11 +740,11 @@ implementation-ready.
 
 ## Credential Resolution: routing graph → resolved secret
 
-The management/host layer resolves the full routing graph (oversight-next model)
-and materializes the secret **before** building the snapshot; the runtime sees only
-an already-resolved `RedactedString` (or nothing, for host-native / proxy).
-Resolution happens at compile/dispatch time, so the runtime is unaware of pool vs
-single source, endpoint intersection, or env vs vault vs proxy (see
+The configuration layer selects the full routing graph once and fingerprints a
+secret-free `InferenceAccess` into the snapshot. At execution, the worker/host
+validates that exact Workspace/provider/revision pin and only then materializes the
+persisted secret. The runtime kernel sees only the resulting executor/value and is
+unaware of pool selection, endpoint intersection, vaults, or environment discovery (see
 [ADR-0043](../adr/0043-management-plane-config-credential-model-and-runtime-unaware-secret-seam.md),
 [credentials-and-vaults](credentials-and-vaults.md),
 [model-provider-backend-binding](model-provider-backend-binding.md)).
@@ -757,21 +757,23 @@ host / integration layer (owns the seam; NOT awaken-runtime-contract)
         |    CredentialBinding::Exact         -> one credential
         |    (pool member)                    -> policy picks a candidate
         |    Offering(model) ∩ flavor         -> the ProtocolEndpoint
-        v  selected credential -> MaterializedCredential
-  SecretInput{ Literal(RedactedString) | Handle }  -> SecretResolver.resolve -> RedactedString
-        |  materialized HERE, before the snapshot
-        v  compiled into the ExecutableAgentSnapshot / RunnableConfig
-runtime (already resolved; no resolver, no handle)
-  provider config carries a RedactedString (or nothing: host-native / proxy)
+        v  selected endpoint + credential id/revision/Workspace
+  InferenceAccess (secret-free) -> ExecutableAgentSnapshot fingerprint
+        |
+        v  dispatch copies the snapshot unchanged
+worker/host provisioning (no selection/catalog enumeration)
+  PinnedCredentialMaterializer -> exact CredentialSource + SecretStore -> RedactedString
         |
         v  at the injection seam only (never persisted; zeroized on drop)
 LlmExecutor / subprocess env / egress proxy
 ```
 
-The `SecretResolver` lives in the **host**, wired at the composition root; the
-runtime never resolves. Pool selection, tier failover, the endpoint intersection,
-and handle resolution are all upstream of the snapshot. An unresolvable credential
-fails closed. Lazy/rotating resolution (re-fetch mid-run) is a **provider-adapter**
+The exact materializer lives in worker/host provisioning and is wired at the
+composition root; the runtime kernel never resolves. Pool selection, candidate-set
+publication and endpoint intersection are upstream of the snapshot. An unavailable,
+revoked or changed pin fails closed. Process environment can only generate a
+non-persistent admin proposal; it is never a materialization fallback. Lazy/rotating
+resolution (re-fetch mid-run) is a **provider-adapter**
 concern with its own injected credential source — not a runtime-contract type
 (D6/D9). See [ADR-0043](../adr/0043-management-plane-config-credential-model-and-runtime-unaware-secret-seam.md).
 

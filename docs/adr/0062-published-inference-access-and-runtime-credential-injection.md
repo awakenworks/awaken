@@ -60,6 +60,18 @@ The concrete adapters are intentionally separate:
 - `CredentialInferenceMaterializer` belongs to execution composition and depends
   only on exact credential lookup, `SecretStore`, and an optional explicitly
   installed host executor. It cannot enumerate or select configuration.
+- `PinnedCredentialMaterializer` is the shared worker/host adapter used by both
+  native provider execution and ACP provisioning. It verifies the exact published
+  Workspace/revision/provider/usage pin before opening persisted material. ACP CLI
+  capability discovery does not grant a provider route.
+
+Process environment is not an inference configuration source. Provider endpoints,
+models, fallback candidates and credential material must be authored through the
+management UI/API and persisted before publication. An admin-only discovery query
+may return a secret-free proposal (variable name/presence and non-secret coordinates),
+but a proposal is neither a catalog row nor executable access and is never auto-applied.
+Legacy `CredentialKind::Env` rows remain decodable for migration visibility but reject
+creation and materialization.
 
 An externally hosted or secretless Worker may supply another implementation of
 the materialization port. That is an adapter choice, not an inference-executor
@@ -92,7 +104,7 @@ dispatcher       Worker/Host       CredentialMaterializer      provider
   |                      |---------------------------------------->|
 ```
 
-Catalog edits after publication cannot change an already dispatched run.
+Catalog edits or process-environment changes after publication cannot change an already dispatched run.
 Revocation, owner mismatch, revision mismatch, unsupported injection kind, or a
 model outside the pinned candidate set fails closed. Runtime never falls back to
 a new global default or a weaker injection mechanism.
@@ -113,6 +125,8 @@ own bounded context without changing this contract.
 
 - Configuration has one resolution point and execution has one materialization
   point.
+- Database-backed Catalog/Credential publication is the only provider execution
+  truth; environment discovery cannot skip authoring or publication.
 - Dispatch carries the snapshot; it has no independent model-access/admission
   truth.
 - Local endpoints and gateways use the same data model and call path.
@@ -134,6 +148,12 @@ replaced by composition of one `InferenceAccess` value. The unused
 `CredentialInjectionPolicy`, `CredentialPolicyError`, and `InjectedCredential`
 types are deleted: execution receives one selected `CredentialInjectionKind`,
 not a fallback list it could reinterpret.
+
+The later single-truth-source cleanup also removes runtime
+`AWAKEN_MODEL_FALLBACKS`, production `AWAKEN_ACP_ARGV`, ambient ACP provider/gateway
+resolution and host native-credential-file projection. Candidate failover remains a
+published `InferenceAccess` candidate set; fixed launch sources remain explicit
+dev/test composition only.
 
 The same cleanup also removes the two resource-layer `ResourceWorkspace`
 projection structs and their conversion middleware; resource adapters consume

@@ -318,7 +318,7 @@ async fn create_skill(
         let version = build_version(&id, &content, 1, bundle);
         let definition = SkillDefinition {
             id: id.clone().into(),
-            workspace_id: workspace.clone().into(),
+            workspace_id: workspace.clone(),
             display_title,
             latest_version: 1,
             last_version: 1,
@@ -363,7 +363,7 @@ async fn create_skill(
     );
     let definition = SkillDefinition {
         id: id.clone().into(),
-        workspace_id: workspace.into(),
+        workspace_id: workspace,
         display_title: None,
         latest_version: 1,
         last_version: 1,

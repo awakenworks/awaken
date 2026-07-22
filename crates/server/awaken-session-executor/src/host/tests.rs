@@ -2292,7 +2292,7 @@ async fn activation_validates_the_frozen_config_without_selecting_current_again(
         .create_memory_store(
             MemoryStoreDefinition {
                 id: store_id.clone().into(),
-                workspace_id: workspace.clone().into(),
+                workspace_id: workspace.clone(),
                 name: "memory".into(),
                 description: String::new(),
                 metadata: Default::default(),
@@ -2399,7 +2399,7 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
         .create(
             SkillDefinition {
                 id: "governed".into(),
-                workspace_id: workspace.clone().into(),
+                workspace_id: workspace.clone(),
                 display_title: None,
                 latest_version: 1,
                 last_version: 1,

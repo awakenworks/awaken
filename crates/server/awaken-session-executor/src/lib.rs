@@ -22,6 +22,7 @@ mod commit_ingest;
 mod compact;
 mod config;
 mod container_environment;
+mod credential_materializer;
 mod data_subject_api;
 mod delegate;
 mod deployment_config;
@@ -91,6 +92,7 @@ mod worker_control_client;
 
 // The neutral session substrate and its resume vocabulary.
 pub use crate::commit_backend::init_shared_postgres_commit;
+pub use crate::credential_materializer::PinnedCredentialMaterializer;
 pub use crate::dispatch_backend::{
     ensure_durable_backend, init_shared_dispatch_store, init_shared_postgres_dispatch,
 };
@@ -110,7 +112,7 @@ pub use crate::sandbox_source::{
 pub use crate::skills_api::skills_router;
 // The config data plane (ADR-0036/slice A): the service + its router + the
 // advertised-tools helper the composition root builds a config host from.
-pub use crate::acp_provision::EnvLaunchResolver;
+pub use crate::acp_provision::PublishedAcpLaunchResolver;
 pub use crate::acp_serve::{AcpServeHost, AcpStop, AcpTurn};
 pub use crate::binding_resolver::{
     AssistantBindingReconciler, ConfigServiceReconciler, ModelResolver, ResolvedModel,

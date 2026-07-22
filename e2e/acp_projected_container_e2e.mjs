@@ -141,7 +141,6 @@ async function main() {
   const environment = { ...process.env };
   for (const key of [
     'AWAKEN_ACP_ARGV',
-    'AWAKEN_ACP_CREDENTIAL_FILE',
     'AWAKEN_ACP_GATEWAY_URL',
     'AWAKEN_ACP_LEASE_TOKEN',
   ]) delete environment[key];

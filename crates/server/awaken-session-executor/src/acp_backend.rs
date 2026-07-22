@@ -201,39 +201,54 @@ impl crate::host::SharedHost {
         self
     }
 
-    /// Wire the ACP backend from the standard environment — the ONE place both the
-    /// server (`awaken serve`) and worker (`awaken_worker::run`) composition roots
-    /// configure ACP, so they never drift (ADR-0057 `serve-selected-cli`).
+    /// Wire the ACP backend from deployment capability discovery plus persisted,
+    /// publication-pinned provider access. This is the ONE place both the server and
+    /// worker roots configure ACP, so they never drift.
     ///
-    /// `AWAKEN_ACP_CLI=<id>` selects the production projecting path (each run's
-    /// config-plane `acp:<cli>` launched through its catalog row); `AWAKEN_ACP_ARGV`
-    /// a fixed trusted/test CLI; neither set → no ACP backend served. The source is
-    /// realized in `AWAKEN_SANDBOX_TIER` (`local`/`namespace`/container) — the
-    /// executor is unaware of which (worker + provisioning own the environment).
-    /// Panics on a misconfigured tier, never a silent fallback.
-    pub async fn with_acp_from_env(
+    /// `AWAKEN_ACP_CLI=<id>` advertises the CLI installed on this worker; the run's
+    /// published `acp:<cli>` binding remains authoritative and must match. Provider
+    /// endpoint/model/credential data come only from `credentials` and the snapshot.
+    /// Neither capability set → no ACP backend served. Panics on an advertised ACP
+    /// capability without a credential materializer or on a misconfigured tier.
+    pub async fn with_acp_from_deployment(
         self,
         hand_factory: Arc<dyn crate::HandExecutorFactory>,
+        credentials: Option<crate::PinnedCredentialMaterializer>,
     ) -> Self {
         let base = acp_sandbox_base();
-        let source = match (acp_serve_cli(), acp_launch_argv()) {
-            (Some(id), _) => {
+        let source = match acp_serve_cli() {
+            Some(id) => {
                 let cli = *awaken_run_executor_acp::acp_cli(&id)
                     .unwrap_or_else(|| panic!("AWAKEN_ACP_CLI={id} is not a known ACP CLI"));
-                let resolver = Arc::new(crate::EnvLaunchResolver::from_process_env(
+                let credentials = credentials.unwrap_or_else(|| {
+                    panic!(
+                        "AWAKEN_ACP_CLI={id} requires persisted credential materialization stores"
+                    )
+                });
+                let resolver = Arc::new(crate::PublishedAcpLaunchResolver::new(
                     cli,
                     Some(base.clone()),
+                    credentials,
                 ));
                 crate::LaunchSource::Projected {
                     cli: Box::new(cli),
                     resolver,
                 }
             }
-            (None, Some(argv)) => {
-                crate::LaunchSource::Fixed(awaken_run_executor_acp::AcpLaunch::custom(argv, vec![]))
-            }
-            (None, None) => return self,
+            None => return self,
         };
+        self.with_acp_launch_source(hand_factory, source).await
+    }
+
+    /// Realize an explicitly supplied ACP launch source in the deployment's sandbox
+    /// tier. Product code supplies a projected source backed by published access;
+    /// deterministic dev fixtures may supply [`LaunchSource::Fixed`] directly.
+    pub async fn with_acp_launch_source(
+        self,
+        hand_factory: Arc<dyn crate::HandExecutorFactory>,
+        source: crate::LaunchSource,
+    ) -> Self {
+        let base = acp_sandbox_base();
         let dep = crate::DeploymentConfig::from_env();
         // Probe the OS-native sandbox once. A bwrap-less host degrades to unsandboxed local
         // ACP when the tier was left at its default (dev/single-machine ergonomics — the
@@ -265,7 +280,7 @@ impl crate::host::SharedHost {
             _ => {}
         }
         let (provider, extra_mounts) =
-            crate::container_environment::build(tier, dep.container_image.as_deref(), &source)
+            crate::container_environment::build(tier, dep.container_image.as_deref())
                 .await
                 .unwrap_or_else(|e| panic!("configure the ACP sandbox tier: {e}"));
         host.session_provider = crate::session_environment::SessionEnvironmentProvider::container(
@@ -288,21 +303,16 @@ impl crate::host::SharedHost {
         Arc::new(HubLaunchObserver::new(self.hub.clone()))
     }
 
-    /// Serve `acp:*` sessions on a projecting executor for `cli` (R3/R4): each run's
-    /// model is resolved from the environment + the thread's [`ConfigHome`], and the
-    /// [`AcpCli`] row projects it onto the launch. `store_dir` is the durable root for
-    /// the config home. This is the composition-root path for a real ACP CLI — it
-    /// assembles the catalog projection, the host resolver, and the executor into one.
+    /// Serve `acp:*` sessions on an explicitly supplied projecting resolver. This is
+    /// the test/dev composition seam; production uses
+    /// [`with_acp_from_deployment`](Self::with_acp_from_deployment).
     #[must_use]
     pub fn with_projected_acp(
         self,
         cli: awaken_run_executor_acp::AcpCli,
+        resolver: Arc<dyn awaken_run_executor_acp::LaunchResolver>,
         store_dir: Option<std::path::PathBuf>,
     ) -> Self {
-        let resolver = Arc::new(crate::acp_provision::EnvLaunchResolver::from_process_env(
-            cli,
-            store_dir.clone(),
-        ));
         let source = crate::LaunchSource::Projected {
             cli: Box::new(cli),
             resolver,
@@ -331,21 +341,12 @@ impl crate::host::SharedHost {
     }
 }
 
-/// The ACP CLI id this worker serves (`AWAKEN_ACP_CLI`), selecting the production
-/// projecting path. Takes precedence over the fixed `AWAKEN_ACP_ARGV`.
+/// The ACP CLI capability this worker advertises. It does not select the run's
+/// backend: the published snapshot must independently name the same `acp:<cli>`.
 fn acp_serve_cli() -> Option<String> {
     std::env::var("AWAKEN_ACP_CLI")
         .ok()
         .filter(|v| !v.trim().is_empty())
-}
-
-/// The fixed agent-CLI argv for `acp:*` sessions (`AWAKEN_ACP_ARGV`, whitespace-split,
-/// e.g. `claude --acp`). `None` when unset/blank.
-fn acp_launch_argv() -> Option<Vec<String>> {
-    std::env::var("AWAKEN_ACP_ARGV")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .map(|v| v.split_whitespace().map(String::from).collect())
 }
 
 /// The base dir the ACP sandbox roots and per-thread config homes live under
@@ -377,10 +378,29 @@ mod tests {
         }
     }
 
+    struct FixedModel;
+    impl awaken_run_executor_acp::LaunchResolver for FixedModel {
+        fn model(
+            &self,
+            _activation: &awaken_runtime_contract::RunActivation,
+        ) -> Result<awaken_run_executor_acp::ResolvedModel, awaken_run_executor_acp::OpenError>
+        {
+            Ok(awaken_run_executor_acp::ResolvedModel {
+                base_url: "http://example.invalid".into(),
+                model: "test".into(),
+                api_key: "test".into(),
+            })
+        }
+    }
+
     #[test]
     fn with_projected_acp_wires_an_acp_backend_that_routes_acp_threads() {
         let cli = *awaken_run_executor_acp::acp_cli("claude").unwrap();
-        let host = SharedHost::new(Arc::new(NoLlm), "test").with_projected_acp(cli, None);
+        let host = SharedHost::new(Arc::new(NoLlm), "test").with_projected_acp(
+            cli,
+            Arc::new(FixedModel),
+            None,
+        );
         host.register_thread_runtime("t", "acp:claude");
         let acp = host.acp.as_ref().expect("acp backend wired");
         assert!(acp.is_acp("t"));
@@ -421,7 +441,7 @@ mod tests {
         let blobs = std::env::temp_dir().join(format!("acp-blobs-{}", std::process::id()));
         let host = SharedHost::new(Arc::new(NoLlm), "test")
             .with_session_blob_root(blobs)
-            .with_projected_acp(cli, None);
+            .with_projected_acp(cli, Arc::new(FixedModel), None);
         host.register_thread_runtime("t", "acp:claude");
         assert!(host.acp.as_ref().expect("acp backend wired").is_acp("t"));
     }

@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import Transcript from "../components/session/Transcript";
 import { Button, Card, Modal, Pill, SelectField, Skeleton, TextField, UsageBadges } from "../components/ui";
 import { api, ws } from "../lib/api/client";
-import type { ProviderCatalog, ResolvedInferenceView, Session } from "../lib/api/types";
+import type { EnvironmentProviderProposal, ProviderCatalog, ResolvedInferenceView, Session } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
 
 const WORKSPACE = "wrkspc_default";
@@ -88,6 +88,10 @@ export default function ModelsSurface() {
   const catalog = useQuery({
     queryKey: ["catalog"],
     queryFn: () => api.get<ProviderCatalog>("/v1/config/catalog"),
+  });
+  const proposals = useQuery({
+    queryKey: ["provider-proposals"],
+    queryFn: () => api.get<EnvironmentProviderProposal[]>("/v1/config/provider-proposals"),
   });
   const [draft, setDraft] = useState({
     provider: "anthropic",
@@ -201,6 +205,38 @@ export default function ModelsSurface() {
 
       <Card>
         <h2>{app.t("Author provider / endpoint / offering", "作者化 provider / endpoint / offering")}</h2>
+        {(proposals.data ?? []).length > 0 && (
+          <div className="banner info" style={{ marginBottom: 12 }}>
+            <span>ⓘ</span>
+            <span>
+              {app.t(
+                "Environment discoveries are suggestions only. Choose one to prefill this form; nothing is executable until you explicitly save catalog and vault records.",
+                "环境发现仅是建议。选择后只会预填表单；只有显式保存 Catalog 与 Vault 记录后才可执行。",
+              )}
+              <span className="row" style={{ marginTop: 8 }}>
+                {(proposals.data ?? []).map((proposal) => (
+                  <Button
+                    key={proposal.provider_id}
+                    variant="ghost"
+                    onClick={() =>
+                      setDraft({
+                        ...draft,
+                        provider: proposal.provider_id,
+                        endpoint: proposal.endpoint_id,
+                        baseUrl: proposal.base_url ?? "",
+                        model: proposal.model_id ?? "",
+                        dialect: proposal.dialect,
+                      })
+                    }
+                  >
+                    {proposal.provider_id} · {proposal.credential_env}
+                    {proposal.credential_present ? " ✓" : ""}
+                  </Button>
+                ))}
+              </span>
+            </span>
+          </div>
+        )}
         <div className="row">
           <TextField label="Provider" mono value={draft.provider} onChange={(e) => setDraft({ ...draft, provider: e.target.value })} />
           <TextField label="Endpoint id" mono value={draft.endpoint} onChange={(e) => setDraft({ ...draft, endpoint: e.target.value })} />
