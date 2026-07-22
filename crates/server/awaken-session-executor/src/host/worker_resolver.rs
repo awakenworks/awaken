@@ -93,7 +93,9 @@ impl HostWorkerResolver {
             &claimed.request.activation.snapshot,
             commit,
         ) {
-            worker = worker.with_terminal_observer(observer);
+            worker = worker.with_context(
+                awaken_runtime_contract::RuntimeRunContext::new().with_terminal_observer(observer),
+            );
         }
         if matches!(
             awaken_runtime_contract::resolved::Backend::from_ref(

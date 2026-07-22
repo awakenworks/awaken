@@ -144,15 +144,12 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
         self.worker.clone()
     }
 
-    /// Install a committed-terminal observer before the worker is shared.
+    /// Install the Run-scoped extension context before the worker is shared.
     #[must_use]
-    pub fn with_terminal_observer(
-        mut self,
-        observer: Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>,
-    ) -> Self {
+    pub fn with_context(mut self, context: awaken_runtime_contract::RuntimeRunContext) -> Self {
         let worker = Arc::into_inner(self.worker)
-            .expect("terminal observers must be configured before sharing the worker")
-            .with_terminal_observer(observer);
+            .expect("Run context must be configured before sharing the worker")
+            .with_context(context);
         self.worker = Arc::new(worker);
         self
     }
