@@ -2354,6 +2354,54 @@ async fn claimed_snapshot_is_the_worker_session_authority() {
     );
 }
 
+#[test]
+fn durable_dispatch_carries_the_frozen_session_resource_manifest_and_scope() {
+    let host = SharedHost::new(Arc::new(OkModel), "host-default");
+    let thread = "t-dispatch-resources";
+    let manifest = awaken_protocol_managed::SessionResourceManifest::new(
+        "workspace-a",
+        awaken_protocol_managed::ResolvedSessionResources {
+            inputs: Vec::new(),
+            skills: Some(Vec::new()),
+        },
+    );
+    host.register_thread_resource_manifest(thread, manifest.clone());
+    let snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("agent-a")
+        .fingerprint("sha256:dispatch-resources")
+        .build();
+    let activation = awaken_runtime_contract::RunActivation::new(
+        awaken_agent_contract::agent::run::Id("run-dispatch-resources".into()),
+        awaken_agent_contract::agent::thread::Id(thread.into()),
+        snapshot,
+        Vec::new(),
+    );
+
+    let dispatch = host
+        .resolved_dispatch(activation)
+        .expect("decorate durable dispatch");
+    let carried = crate::provisioning::decode_session_resource_envelope(
+        dispatch
+            .session_resources
+            .as_ref()
+            .expect("resource envelope"),
+    )
+    .expect("decode resource envelope");
+    assert_eq!(carried, manifest);
+    assert_eq!(
+        dispatch.execution_scope,
+        Some(awaken_tenancy::ExecutionScopeRef(
+            awaken_tenancy::ScopeId::from("workspace-a")
+        ))
+    );
+    assert!(
+        dispatch
+            .placement
+            .required_capabilities
+            .contains(awaken_run_ingress::SESSION_RESOURCES_CAPABILITY),
+        "mixed local/remote deployments must not expose the manifest to an ineligible worker"
+    );
+}
+
 #[tokio::test]
 async fn replacement_host_adopts_the_dispatch_sandbox_from_a_stable_root() {
     let storage = tempfile::tempdir().expect("storage dir");

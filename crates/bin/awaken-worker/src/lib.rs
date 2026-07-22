@@ -1,9 +1,11 @@
 //! `awaken-worker` — the PRODUCTION database-less worker (Stage C).
 //!
 //! A peer of the control plane (`awaken-control`) and the data plane
-//! (`awaken-server`). It holds no store and serves no HTTP: it drains runs from a
-//! cell server over the dispatch transport (claim / settle) and pushes committed
-//! facts back over the commit ingest (`with_upstream`).
+//! (`awaken-server`). It owns no Run, Session, or authoring store: it drains runs
+//! from a cell server over the dispatch transport (claim / settle) and pushes
+//! committed facts back over the commit ingest (`with_upstream`). A resource-capable
+//! worker may open shared data-plane and Resource Catalog validation ports; those
+//! remain platform truth, not worker-owned state.
 //!
 //! **Real per-run model resolution, no mocks.** A drained run arrives as a
 //! `RunActivation` carrying its own `ExecutableAgentSnapshot`, whose
@@ -27,8 +29,49 @@ use awaken_server::inference_materializer::CredentialInferenceMaterializer;
 use awaken_server::no_model::NoModelConfiguredExecutor;
 use awaken_server::{InferenceExecutorMaterializer, SharedHost};
 use awaken_worker_contract::{
-    RegistryMutation, VersionRange, WorkerCapacity, WorkerHeartbeat, WorkerIdentity, WorkerManifest,
+    REPOSITORY_CREDENTIALS_CAPABILITY, RegistryMutation, SESSION_RESOURCES_CAPABILITY,
+    VersionRange, WorkerCapacity, WorkerHeartbeat, WorkerIdentity, WorkerManifest,
 };
+
+struct WorkerResourceWiring {
+    ports: awaken_runtime_host::ResourcePlanePorts,
+    validator: awaken_server::ResourceBindingValidatorPort,
+    credentials: Option<awaken_control::InferenceMaterializationStores>,
+}
+
+impl WorkerResourceWiring {
+    fn supports_repository_credentials(&self) -> bool {
+        self.credentials.is_some()
+    }
+}
+
+async fn shared_resource_wiring(
+    credentials: Option<awaken_control::InferenceMaterializationStores>,
+) -> Result<Option<WorkerResourceWiring>, Box<dyn std::error::Error>> {
+    let ports = awaken_server::shared_worker_resource_plane_from_env().await?;
+    let validator = awaken_control::open_shared_resource_validator_from_env().await?;
+    match (ports, validator) {
+        (None, None) => Ok(None),
+        (Some(ports), Some(validator)) => Ok(Some(WorkerResourceWiring {
+            ports,
+            validator,
+            credentials,
+        })),
+        (Some(_), None) => Err(std::io::Error::other(
+            "AWAKEN_RESOURCE_DATABASE_URL requires shared AWAKEN_ADMIN_DB on a remote worker",
+        )
+        .into()),
+        (None, Some(_)) => Err(std::io::Error::other(
+            "shared AWAKEN_ADMIN_DB requires AWAKEN_RESOURCE_DATABASE_URL on a resource worker",
+        )
+        .into()),
+    }
+}
+
+fn shared_credential_backend(value: Option<&str>) -> bool {
+    value
+        .is_some_and(|value| value.starts_with("postgres://") || value.starts_with("postgresql://"))
+}
 
 #[derive(Clone)]
 struct WorkerLifecycle {
@@ -58,17 +101,30 @@ impl WorkerLifecycle {
 ///    (Option A shared-DB) or in-memory.
 /// 3. Build a [`CredentialInferenceMaterializer`] over those stores, so each drained
 ///    run consumes only its snapshot-pinned inference access.
-/// 4. Assemble a [`SharedHost`] whose default executor is the production
+/// 4. When shared resource backends are explicitly configured, inject the same
+///    File/Memory/Skill/lifecycle ports and Resource Catalog validator used by the
+///    server. Otherwise advertise no resource capability.
+/// 5. Assemble a [`SharedHost`] whose default executor is the production
 ///    `NoModelConfiguredExecutor` fallback and whose per-run access is realized
 ///    by the materializer, pushing committed facts to `upstream`.
-/// 5. Start the dispatch pool and drain in the background until SIGINT / SIGTERM.
+/// 6. Start the dispatch pool and drain in the background until SIGINT / SIGTERM.
 ///
 /// Requires `AWAKEN_INGRESS=durable` (the pool's enable gate); the injected remote
 /// store routes the drain over HTTP instead of a local queue.
 pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error>> {
     let stores = awaken_control::open_inference_materialization_stores_from_env().await;
-    let materializer = CredentialInferenceMaterializer::new(stores.credentials, stores.secrets);
-    run_configured(WorkerUpstream::new(upstream), Some(Arc::new(materializer))).await
+    let resource_credentials =
+        shared_credential_backend(std::env::var("AWAKEN_CREDENTIAL_DB").ok().as_deref())
+            .then(|| stores.clone());
+    let resources = shared_resource_wiring(resource_credentials).await?;
+    let materializer =
+        CredentialInferenceMaterializer::new(stores.credentials.clone(), stores.secrets.clone());
+    run_configured(
+        WorkerUpstream::new(upstream),
+        Some(Arc::new(materializer)),
+        resources,
+    )
+    .await
 }
 
 /// Run a genuinely secretless worker with a deployment-provided materializer.
@@ -79,19 +135,29 @@ pub async fn run_with_inference_materializer(
     upstream: &str,
     materializer: Arc<dyn InferenceExecutorMaterializer>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    run_configured(WorkerUpstream::new(upstream), Some(materializer)).await
+    let resources = shared_resource_wiring(None).await?;
+    run_configured(WorkerUpstream::new(upstream), Some(materializer), resources).await
 }
 
 async fn run_configured(
     upstream: WorkerUpstream,
     materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,
+    resources: Option<WorkerResourceWiring>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let upstream_url = upstream.base_url().to_string();
     let control = WorkerControlClient::new(upstream.clone());
+    let resource_support = resources.is_some();
+    let repository_credential_support = resources
+        .as_ref()
+        .is_some_and(WorkerResourceWiring::supports_repository_credentials);
     let registration = control
         .register(
             new_incarnation_id()?,
-            worker_manifest(materializer.as_deref()),
+            worker_manifest(
+                materializer.as_deref(),
+                resource_support,
+                repository_credential_support,
+            ),
         )
         .await
         .map_err(std::io::Error::other)?;
@@ -104,7 +170,21 @@ async fn run_configured(
         ),
     );
 
-    let mut host = SharedHost::new(Arc::new(NoModelConfiguredExecutor), "worker")
+    let resource_validator = resources
+        .as_ref()
+        .map(|resources| resources.validator.clone());
+    let resource_credentials = resources
+        .as_ref()
+        .and_then(|resources| resources.credentials.clone());
+    let host = match resources {
+        Some(resources) => SharedHost::new_with_resource_plane(
+            Arc::new(NoModelConfiguredExecutor),
+            "worker",
+            resources.ports,
+        ),
+        None => SharedHost::new(Arc::new(NoModelConfiguredExecutor), "worker"),
+    };
+    let mut host = host
         .with_worker_upstream(upstream)
         .with_remote_attempt_executor(awaken_server::a2a_attempt_executor());
     if let Some(materializer) = materializer {
@@ -120,6 +200,15 @@ async fn run_configured(
         .await;
 
     let host = Arc::new(host);
+    if let Some(validator) = resource_validator {
+        let managed =
+            awaken_server::ManagedHost::new(host.clone()).with_resource_validator(validator);
+        if let Some(credentials) = resource_credentials {
+            let _managed = managed.with_credentials(credentials.credentials, credentials.secrets);
+        } else {
+            let _managed = managed;
+        }
+    }
     let lifecycle = Arc::new(WorkerLifecycle {
         host: host.clone(),
         control: control.clone(),
@@ -226,7 +315,11 @@ fn new_incarnation_id() -> Result<String, getrandom::Error> {
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
-fn worker_manifest(materializer: Option<&dyn InferenceExecutorMaterializer>) -> WorkerManifest {
+fn worker_manifest(
+    materializer: Option<&dyn InferenceExecutorMaterializer>,
+    resource_support: bool,
+    repository_credential_support: bool,
+) -> WorkerManifest {
     use awaken_provisioning_contract::{IsolationClass, SandboxCapabilities};
     let tier = std::env::var("AWAKEN_SANDBOX_TIER").unwrap_or_else(|_| "namespace".to_string());
     let (sandbox, backend) = match tier.as_str() {
@@ -265,6 +358,12 @@ fn worker_manifest(materializer: Option<&dyn InferenceExecutorMaterializer>) -> 
             .flat_map(InferenceExecutorMaterializer::supported_access_schemes)
             .map(|capability| (*capability).to_string()),
     );
+    if resource_support {
+        capabilities.insert(SESSION_RESOURCES_CAPABILITY.to_string());
+        if repository_credential_support {
+            capabilities.insert(REPOSITORY_CREDENTIALS_CAPABILITY.to_string());
+        }
+    }
     capabilities.extend(
         std::env::var("AWAKEN_WORKER_CAPABILITIES")
             .unwrap_or_default()
@@ -362,7 +461,9 @@ mod grace_tests {
 
     use awaken_runtime_contract::{InferenceAccess, llm::LlmExecutor};
 
-    use super::{InferenceExecutorMaterializer, grace_window, worker_manifest};
+    use super::{
+        InferenceExecutorMaterializer, grace_window, shared_credential_backend, worker_manifest,
+    };
 
     struct SchemeMaterializer;
 
@@ -383,10 +484,56 @@ mod grace_tests {
     #[test]
     fn worker_manifest_derives_materialization_capabilities_from_the_adapter() {
         let materializer = SchemeMaterializer;
-        let manifest = worker_manifest(Some(&materializer));
+        let manifest = worker_manifest(Some(&materializer), false, false);
 
         assert!(manifest.capabilities.contains("native-runtime"));
         assert!(manifest.capabilities.contains("test-access/v1"));
+    }
+
+    #[test]
+    fn worker_manifest_advertises_only_installed_resource_seams() {
+        let without = worker_manifest(None, false, false);
+        assert!(
+            !without
+                .capabilities
+                .contains(super::SESSION_RESOURCES_CAPABILITY)
+        );
+        assert!(
+            !without
+                .capabilities
+                .contains(super::REPOSITORY_CREDENTIALS_CAPABILITY)
+        );
+
+        let secretless = worker_manifest(None, true, false);
+        assert!(
+            secretless
+                .capabilities
+                .contains(super::SESSION_RESOURCES_CAPABILITY)
+        );
+        assert!(
+            !secretless
+                .capabilities
+                .contains(super::REPOSITORY_CREDENTIALS_CAPABILITY)
+        );
+
+        let credentialed = worker_manifest(None, true, true);
+        assert!(
+            credentialed
+                .capabilities
+                .contains(super::REPOSITORY_CREDENTIALS_CAPABILITY)
+        );
+    }
+
+    #[test]
+    fn repository_credentials_require_an_explicit_shared_backend() {
+        assert!(!shared_credential_backend(None));
+        assert!(!shared_credential_backend(Some(
+            "/var/lib/awaken/credential.db"
+        )));
+        assert!(shared_credential_backend(Some("postgres://db/credentials")));
+        assert!(shared_credential_backend(Some(
+            "postgresql://db/credentials"
+        )));
     }
 
     #[test]

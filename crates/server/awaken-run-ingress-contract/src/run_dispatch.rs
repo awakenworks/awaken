@@ -11,6 +11,32 @@ pub use awaken_tenancy::ExecutionScopeRef;
 pub use awaken_worker_contract::PlacementRequirements;
 use serde::{Deserialize, Serialize};
 
+/// Dispatch-neutral envelope for a frozen Session resource manifest.
+///
+/// The dispatch bounded context owns delivery, not Session resource vocabulary,
+/// so the already-resolved manifest crosses as canonical serialized data. The
+/// Runtime Host decodes it through the Session contract before any sandbox is
+/// opened. `workspace_id` remains explicit so claim-time scope equality can be
+/// checked without interpreting the payload.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionResourceEnvelope {
+    pub workspace_id: String,
+    pub resolved_resources_json: String,
+}
+
+impl SessionResourceEnvelope {
+    #[must_use]
+    pub fn new(
+        workspace_id: impl Into<String>,
+        resolved_resources_json: impl Into<String>,
+    ) -> Self {
+        Self {
+            workspace_id: workspace_id.into(),
+            resolved_resources_json: resolved_resources_json.into(),
+        }
+    }
+}
+
 /// The durable, serializable record of an accepted run. It holds no `Arc<dyn ...>`,
 /// registry, or live handle (G3); the runtime builds live execution objects from
 /// the activation's pinned snapshot on each attempt (G4).
@@ -34,6 +60,12 @@ pub struct RunDispatch {
     /// thread id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_scope: Option<ExecutionScopeRef>,
+    /// Frozen Session resource input for cold-worker activation. The value is
+    /// secret-free and carries only the intrinsic Workspace partition plus the
+    /// already-resolved resource configuration. A worker installs it before opening
+    /// the Session environment; it must never re-read current Agent bindings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_resources: Option<SessionResourceEnvelope>,
     /// Hard worker requirements pinned at admission. Older durable rows omit this
     /// field and deserialize through the contract's explicit legacy posture;
     /// strict remote callers attach `PlacementRequirements::remote_required()`.
@@ -51,6 +83,7 @@ impl RunDispatch {
             session_thread_id: None,
             traceparent: None,
             execution_scope: None,
+            session_resources: None,
             placement: PlacementRequirements::default(),
         }
     }
@@ -72,6 +105,13 @@ impl RunDispatch {
     #[must_use]
     pub fn with_execution_scope(mut self, scope: ExecutionScopeRef) -> Self {
         self.execution_scope = Some(scope);
+        self
+    }
+
+    /// Attach the exact resource manifest selected by Session creation.
+    #[must_use]
+    pub fn with_session_resources(mut self, resources: SessionResourceEnvelope) -> Self {
+        self.session_resources = Some(resources);
         self
     }
 
@@ -185,6 +225,26 @@ mod tests {
         assert_eq!(back.traceparent.as_deref(), Some("00-abc-01"));
     }
 
+    #[test]
+    fn frozen_session_resources_round_trip_with_their_matching_scope() {
+        let resources = SessionResourceEnvelope::new("workspace-a", r#"{"inputs":[],"skills":[]}"#);
+        let request = RunDispatch::new(activation())
+            .with_execution_scope(ExecutionScopeRef(awaken_tenancy::ScopeId::from(
+                "workspace-a",
+            )))
+            .with_session_resources(resources.clone());
+
+        let json = serde_json::to_string(&request).expect("serializes");
+        let recovered: RunDispatch = serde_json::from_str(&json).expect("deserializes");
+        assert_eq!(recovered.session_resources, Some(resources));
+        assert_eq!(
+            recovered.execution_scope,
+            Some(ExecutionScopeRef(awaken_tenancy::ScopeId::from(
+                "workspace-a"
+            )))
+        );
+    }
+
     /// A `None` traceparent is omitted on the wire (`skip_serializing_if`), so a row
     /// written by an older writer (no trace) is byte-identical and deserializes back
     /// to `None` rather than dead-lettering — the documented forward/back-compat
@@ -203,6 +263,7 @@ mod tests {
         let back: RunDispatch = serde_json::from_str(&json).expect("legacy row loads");
         assert!(back.traceparent.is_none());
         assert!(back.execution_scope.is_none());
+        assert!(back.session_resources.is_none());
         assert!(back.placement.is_legacy_default());
     }
 

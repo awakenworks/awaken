@@ -13,13 +13,16 @@ pub mod run_dispatch;
 pub use awaken_runtime_contract::{InferenceAccess, InferenceAccessCandidate};
 pub use awaken_worker_contract::{
     AssignmentRejection, LeastLoadedPolicy, PlacementContext, PlacementError, PlacementPolicy,
-    RankedWorker, RegisteredWorker, RegistryError, RegistryMutation, WorkerAssignment,
-    WorkerDirectory, WorkerHeartbeat, WorkerIdentity, WorkerManifest, WorkerRecoveryMode,
-    WorkerRegistration, WorkerSnapshot, WorkerState, can_assign, can_claim, place_assignment,
+    REPOSITORY_CREDENTIALS_CAPABILITY, RankedWorker, RegisteredWorker, RegistryError,
+    RegistryMutation, SESSION_RESOURCES_CAPABILITY, WorkerAssignment, WorkerDirectory,
+    WorkerHeartbeat, WorkerIdentity, WorkerManifest, WorkerRecoveryMode, WorkerRegistration,
+    WorkerSnapshot, WorkerState, can_assign, can_claim, place_assignment,
 };
 pub use dispatch::{
     CasOutcome, Claimed, CommitEpochGuard, Dispatch, DispatchCompletion, DispatchError,
     DispatchOutcome, DispatchQueue, DispatchState, DispatchSummary, Inbox, Lease, Outbox,
     PendingInput, PendingRecord, RunClaim, SettleOutcome, SubmitOptions,
 };
-pub use run_dispatch::{ExecutionScopeRef, PlacementRequirements, RunDispatch};
+pub use run_dispatch::{
+    ExecutionScopeRef, PlacementRequirements, RunDispatch, SessionResourceEnvelope,
+};

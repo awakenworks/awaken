@@ -195,6 +195,15 @@ Active/Released commits follow it. Startup reconciliation reads the separately
 persisted trusted owner envelope and never imports a principal, role, API key,
 PDP decision, or policy document into this state machine.
 
+Durable dispatch carries `SessionResourceManifest { workspace_id, resources }`
+beside the executable Agent snapshot. This envelope is secret-free and is not a
+second Session model: `resources` is the exact persisted
+`ResolvedSessionResources`, while `workspace_id` is the trusted intrinsic
+partition already recorded by the Session. A cold worker verifies that it equals
+the dispatch `execution_scope`, installs it before sandbox creation, and never
+re-reads current Agent bindings. Delegated child Runs inherit the same envelope
+because they execute in the parent's Session environment.
+
 ### D6: Each resource reclaims according to its own invariant
 
 - File activation verifies immutable bytes and creates a Session-local copy with
@@ -271,6 +280,15 @@ File/Memory/Skill/lifecycle store before replacing it. A shared Runtime also
 requires the Resource Catalog/Agent-binding store (`AWAKEN_ADMIN_DB`) to be
 shared; startup fails closed when shared execution is combined with a local
 resource configuration catalog.
+
+Remote worker placement requires `session-resources/v1` whenever a frozen
+manifest is present, including an explicit empty selection: the capability also
+owns revocation of material from an earlier manifest. A credentialed Repository additionally
+requires `repository-credentials/v1`. A worker advertises the former only when
+both the shared resource backend family and shared Resource Catalog validator are
+installed, and the latter only with an explicit shared credential backend. Missing
+or mismatched wiring is therefore an admission incompatibility, not a late
+node-local fallback.
 
 ### D7: Memory has one data truth
 

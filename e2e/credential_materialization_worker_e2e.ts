@@ -224,17 +224,25 @@ async function main() {
     }, seed.id);
     assert.equal(settled.json.settled, true, settled.text);
 
+    const workerEnv = { ...process.env } as Record<string, string>;
+    delete workerEnv.AWAKEN_MGMT_DIR;
+    delete workerEnv.AWAKEN_MGMT_SEAL_KEY;
+    delete workerEnv.AWAKEN_MGMT_SEAL_KEY_FILE;
+    delete workerEnv.AWAKEN_CONTROL_SEAL_KEY;
+    delete workerEnv.AWAKEN_CONTROL_SEAL_KEY_FILE;
+    Object.assign(workerEnv, {
+      AWAKEN_UPSTREAM_URL: BASE,
+      AWAKEN_INGRESS: 'durable',
+      // A remote worker can open the one explicit credential component without
+      // pretending to own a management bundle or any authoring/Session stores.
+      AWAKEN_CREDENTIAL_DB: path.join(storage, 'credential.db'),
+      AWAKEN_CONTROL_SEAL_KEY: SEAL_KEY,
+      AWAKEN_WORKER_ID: 'materialization-worker',
+      AWAKEN_WORKER_ADMIN_LISTEN: `127.0.0.1:${ADMIN_PORT}`,
+    });
     worker = spawn(workerBinary(), [], {
       cwd: ROOT,
-      env: {
-        ...process.env,
-        AWAKEN_UPSTREAM_URL: BASE,
-        AWAKEN_INGRESS: 'durable',
-        AWAKEN_MGMT_DIR: storage,
-        AWAKEN_MGMT_SEAL_KEY: SEAL_KEY,
-        AWAKEN_WORKER_ID: 'materialization-worker',
-        AWAKEN_WORKER_ADMIN_LISTEN: `127.0.0.1:${ADMIN_PORT}`,
-      },
+      env: workerEnv,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     worker.stdout.on('data', (chunk) => (output += chunk.toString()));

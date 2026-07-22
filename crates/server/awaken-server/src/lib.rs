@@ -56,6 +56,12 @@ pub use worker_registry::{
     init_postgres as init_postgres_worker_registry, inject as init_worker_registry,
 };
 
+/// Neutral Resource Catalog validation port used by outer composition roots.
+/// The alias lets binaries depend on this data-plane facade instead of reaching
+/// through it into the resource bounded context.
+pub type ResourceBindingValidatorPort =
+    Arc<dyn awaken_protocol_managed::resource_plane::ResourceBindingValidator>;
+
 /// Assemble the governed MemoryRepository data plane with its worker-side mount adapter.
 /// Authorization has already selected workspace/store/access before this adapter
 /// sees an opaque store id; no IAM vocabulary crosses this seam.
@@ -103,6 +109,49 @@ pub fn embedded_resource_plane(root: &std::path::Path) -> awaken_runtime_host::R
                 .expect("open resource lifecycle sqlite"),
         ),
     )
+}
+
+/// Open the shared resource data plane used by a database-less execution worker.
+///
+/// A remote worker may not infer a node-local SQLite/filesystem root: that would
+/// create a second File/Memory/Skill/lifecycle truth. Absence means the worker is
+/// resource-ineligible; an explicitly configured non-Postgres value is rejected.
+pub async fn shared_worker_resource_plane_from_env()
+-> Result<Option<awaken_runtime_host::ResourcePlanePorts>, String> {
+    let Some(url) = std::env::var("AWAKEN_RESOURCE_DATABASE_URL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return Ok(None);
+    };
+    if !(url.starts_with("postgres://") || url.starts_with("postgresql://")) {
+        return Err(
+            "a remote worker requires AWAKEN_RESOURCE_DATABASE_URL to be a shared postgres URL"
+                .to_string(),
+        );
+    }
+    Ok(Some(awaken_runtime_host::ResourcePlanePorts::new(
+        Arc::new(
+            awaken_file_store::postgres::PgFileStore::connect(&url)
+                .await
+                .map_err(|error| format!("connect shared FileStore: {error}"))?,
+        ),
+        Arc::new(
+            awaken_memory_store::PostgresMemoryRepository::connect(&url)
+                .await
+                .map_err(|error| format!("connect shared MemoryRepository: {error}"))?,
+        ),
+        Arc::new(
+            awaken_skill_store::PgSkillStore::connect(&url)
+                .await
+                .map_err(|error| format!("connect shared SkillStore: {error}"))?,
+        ),
+        Arc::new(
+            awaken_resource_store::PostgresResourceStore::connect(&url)
+                .await
+                .map_err(|error| format!("connect shared resource lifecycle store: {error}"))?,
+        ),
+    )))
 }
 
 /// Build the production A2A attempt adapter behind the runtime's neutral port.

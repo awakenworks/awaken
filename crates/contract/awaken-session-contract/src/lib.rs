@@ -41,7 +41,7 @@ pub use memory_extraction::{
 };
 pub use resource::{
     ResolvedInput, ResolvedInputSource, ResolvedSessionResources, ResolvedSkillBinding,
-    SessionInputAttachment, SessionInputError, SessionInputResolver,
+    SessionInputAttachment, SessionInputError, SessionInputResolver, SessionResourceManifest,
 };
 pub use resource_activation::{
     ActivationState, ResourceActivationError, SessionResourceActivation, SessionResourceState,

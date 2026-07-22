@@ -275,6 +275,76 @@ struct ManagedMcp {
     mcp_store: Arc<dyn awaken_config_resolver::McpStore>,
 }
 
+/// Weak, cloneable worker-side projection of the Managed Session resource
+/// preparer. Durable dispatch carries only a secret-free manifest; this object
+/// injects the already-configured Resource Catalog validator and credential ports
+/// when a cold worker realizes that manifest.
+#[derive(Clone)]
+pub(crate) struct DispatchResourcePreparer {
+    host: std::sync::Weak<SharedHost>,
+    credentials: Option<CredentialInjector>,
+    resource_validator: Option<Arc<dyn awaken_resource_contract::ResourceBindingValidator>>,
+}
+
+impl DispatchResourcePreparer {
+    async fn install(
+        &self,
+        thread: &str,
+        manifest: &awaken_protocol_managed::SessionResourceManifest,
+    ) -> Result<(), RunError> {
+        let host = self
+            .host
+            .upgrade()
+            .ok_or_else(|| RunError::internal("resource preparer host was dropped"))?;
+        let managed = ManagedHost {
+            host,
+            credentials: self.credentials.clone(),
+            mcp: None,
+            resource_validator: self.resource_validator.clone(),
+        };
+        let previous = managed.host.thread_resource_manifest(thread);
+        if previous
+            .as_ref()
+            .is_some_and(|previous| previous != manifest)
+        {
+            awaken_protocol_managed::SessionRuntime::apply_session_inputs(
+                &managed,
+                thread,
+                &manifest.workspace_id,
+                &manifest.resources,
+            )
+            .await?;
+        } else {
+            // Re-stage even when the manifest is unchanged: ownership/lifecycle,
+            // immutable File bytes, config-version integrity, and credential
+            // revocation are live-deny checks at every claimed operation.
+            let repository_mcp = managed
+                .stage_resource_manifest(thread, &manifest.workspace_id, &manifest.resources)
+                .await?;
+            managed.host.register_thread_mcp(thread, repository_mcp);
+        }
+        Ok(())
+    }
+}
+
+impl SharedHost {
+    pub(crate) async fn install_dispatched_resources(
+        &self,
+        thread: &str,
+        manifest: &awaken_protocol_managed::SessionResourceManifest,
+    ) -> Result<(), RunError> {
+        let preparer = self
+            .dispatch_resource_preparer
+            .read()
+            .expect("dispatch resource preparer lock poisoned")
+            .clone()
+            .ok_or_else(|| {
+                RunError::internal("durable resource dispatch has no resource preparer")
+            })?;
+        preparer.install(thread, manifest).await
+    }
+}
+
 fn resolved_resource_prompt(input: &awaken_protocol_managed::ResolvedInput) -> String {
     use awaken_protocol_managed::ResolvedInputSource;
     use awaken_resource_contract::ResourceAccess;
@@ -304,12 +374,26 @@ fn resolved_resource_prompt(input: &awaken_protocol_managed::ResolvedInput) -> S
 
 impl ManagedHost {
     pub fn new(host: Arc<SharedHost>) -> Self {
-        Self {
+        let managed = Self {
             host,
             credentials: None,
             mcp: None,
             resource_validator: None,
-        }
+        };
+        managed.refresh_dispatch_resource_preparer();
+        managed
+    }
+
+    fn refresh_dispatch_resource_preparer(&self) {
+        *self
+            .host
+            .dispatch_resource_preparer
+            .write()
+            .expect("dispatch resource preparer lock poisoned") = Some(DispatchResourcePreparer {
+            host: Arc::downgrade(&self.host),
+            credentials: self.credentials.clone(),
+            resource_validator: self.resource_validator.clone(),
+        });
     }
 
     /// Wire the live resource-invariant port used at activation and Memory use.
@@ -322,6 +406,7 @@ impl ManagedHost {
         validator: Arc<dyn awaken_resource_contract::ResourceBindingValidator>,
     ) -> Self {
         self.resource_validator = Some(validator);
+        self.refresh_dispatch_resource_preparer();
         self
     }
 
@@ -567,6 +652,10 @@ impl ManagedHost {
             .await
             .map_err(|error| RunError::internal(error.to_string()))?;
         self.host.register_thread_resources(thread, all);
+        self.host.register_thread_resource_manifest(
+            thread,
+            awaken_protocol_managed::SessionResourceManifest::new(workspace, inputs.clone()),
+        );
         // Every Session records an explicit selection (including none). There is
         // no Host-global or directory fallback.
         self.host.register_thread_memory(thread, bound_memory);
@@ -574,6 +663,49 @@ impl ManagedHost {
             memory.reconcile(thread).await;
         }
         Ok(repository_mcp)
+    }
+
+    /// Install one already-resolved Session resource manifest. This is shared by
+    /// managed Session creation and cold durable workers; neither path reads Agent
+    /// defaults or selects a newer mutable-resource configuration.
+    async fn stage_resource_manifest(
+        &self,
+        thread: &str,
+        workspace: &str,
+        resources: &awaken_protocol_managed::ResolvedSessionResources,
+    ) -> Result<Vec<crate::host::PreparedMcpServer>, RunError> {
+        self.host.register_thread_workspace(thread, workspace);
+        match &resources.skills {
+            Some(bindings) => {
+                let versions = self
+                    .host
+                    .skills
+                    .load_pinned(workspace, bindings)
+                    .await
+                    .map_err(|error| RunError::bad_request(error.to_string()))?;
+                self.host
+                    .thread_skills
+                    .lock()
+                    .expect("thread skills mutex poisoned")
+                    .insert(thread.to_string(), versions);
+            }
+            None => {
+                // Legacy records retain the historical global-catalog behavior;
+                // modern `Some` manifests always install only their exact pins.
+                self.host
+                    .skills
+                    .reload_cache_in(workspace)
+                    .await
+                    .map_err(|error| RunError::bad_request(error.to_string()))?;
+                self.host
+                    .thread_skills
+                    .lock()
+                    .expect("thread skills mutex poisoned")
+                    .remove(thread);
+            }
+        }
+        self.stage_effective_inputs(thread, workspace, resources)
+            .await
     }
 
     async fn validate_thread_resource_bindings(&self, thread: &str) -> Result<(), RunError> {
@@ -652,6 +784,7 @@ impl ManagedHost {
             secrets,
         });
         self.mcp = Some(ManagedMcp { mcp_store });
+        self.refresh_dispatch_resource_preparer();
         self
     }
 
@@ -667,6 +800,7 @@ impl ManagedHost {
             credentials,
             secrets,
         });
+        self.refresh_dispatch_resource_preparer();
         self
     }
 }
@@ -1127,39 +1261,6 @@ impl SessionRuntime for ManagedHost {
         thread: &str,
         init: awaken_protocol_managed::SessionInit,
     ) -> Result<(), RunError> {
-        self.host
-            .register_thread_workspace(thread, &init.workspace_id);
-        match &init.resources.skills {
-            Some(bindings) => {
-                let versions = self
-                    .host
-                    .skills
-                    .load_pinned(&init.workspace_id, bindings)
-                    .await
-                    .map_err(|error| RunError::bad_request(error.to_string()))?;
-                self.host
-                    .thread_skills
-                    .lock()
-                    .expect("thread skills mutex poisoned")
-                    .insert(thread.to_string(), versions);
-            }
-            None => {
-                // Legacy records without a frozen Skill selection retain the old
-                // global-catalog behavior. Modern `Some(bindings)` sessions load
-                // only their exact pins above, so an unrelated damaged Skill cannot
-                // couple otherwise independent resource inputs.
-                self.host
-                    .skills
-                    .reload_cache_in(&init.workspace_id)
-                    .await
-                    .map_err(|error| RunError::bad_request(error.to_string()))?;
-                self.host
-                    .thread_skills
-                    .lock()
-                    .expect("thread skills mutex poisoned")
-                    .remove(thread);
-            }
-        }
         // R2: bind the session's requested model to the thread (independent of MCP),
         // consumed at the thread's first turn to resolve its executor + model name.
         if let Some(model) = &init.model {
@@ -1189,7 +1290,7 @@ impl SessionRuntime for ManagedHost {
         // Stage only the already-resolved manifest. Runtime never reads the Agent
         // binding repository or composes defaults again.
         let repo_mcp = self
-            .stage_effective_inputs(thread, &init.workspace_id, &init.resources)
+            .stage_resource_manifest(thread, &init.workspace_id, &init.resources)
             .await?;
         let Some(credentials) = &self.credentials else {
             return Ok(());

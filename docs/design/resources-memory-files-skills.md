@@ -184,6 +184,26 @@ struct ResolvedRepositoryInput {
 The manifest is serializable and secret-free. It contains no host path, live
 handle, credential value, Memory entry version, or Git commit.
 
+At the durable execution boundary it is wrapped, not copied into another model:
+
+```rust
+struct SessionResourceManifest {
+    workspace_id: String,
+    resources: ResolvedSessionResources,
+}
+```
+
+`RunDispatch` persists this envelope beside `execution_scope`. A claiming worker
+must prove the two Workspace coordinates are equal, install the manifest through
+its injected resource ports, and only then create or adopt the Session sandbox.
+The envelope never carries a principal, policy decision, credential value, local
+path, Memory entry revision, or Repository commit.
+
+The dispatch bounded context treats `resources` as an opaque serialized payload;
+one Runtime Host ACL performs the lossless encode/decode against
+`ResolvedSessionResources`. This preserves the typed Session model without adding
+a Dispatch-to-Session dependency edge or duplicating resource resolution.
+
 `skills = None` identifies a legacy Session; `Some([])` is an explicit empty
 selection. Skill bundle bytes remain in the Skill repository and are loaded by
 the frozen id/version/hash only.
@@ -621,6 +641,14 @@ effective resource identities, authorization decision, and activation leases
 bound for the Session constrain the offloaded operation; an external worker does
 not re-resolve Agent defaults or widen resource access.
 
+For durable Run execution, capability placement makes that constraint executable:
+`session-resources/v1` requires a shared File/Memory/Skill/lifecycle family plus
+the Resource Catalog validator; `repository-credentials/v1` additionally requires
+a shared credential injection seam. A resource-ineligible worker cannot claim the
+dispatch. On every retry the eligible worker repeats live ownership, lifecycle,
+frozen-config-integrity, and credential-revocation checks before using the retained
+or rebuilt environment.
+
 ## Anthropic Compatibility
 
 The Managed adapter owns Anthropic DTOs and projects the effective resource list.
@@ -647,6 +675,9 @@ internal config version remains an awaken governance detail.
 - Vault credential references and host-side secret materialization.
 - the unified Workspace-scoped Skill aggregate repository and version-pinned
   Session Skill bindings.
+- durable root and delegated dispatches carry the same Workspace-scoped frozen
+  resource manifest; cold workers install it before sandbox creation and placement
+  excludes workers without the required shared resource/credential seams.
 
 ### Completed consolidation
 

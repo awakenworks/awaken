@@ -5,8 +5,16 @@ use super::*;
 use awaken_run_ingress::PlacementRequirements;
 use awaken_runtime_contract::InferenceAccess;
 
-fn remote_worker_placement(access: Option<&InferenceAccess>) -> PlacementRequirements {
-    let mut placement = PlacementRequirements::remote_required();
+pub(crate) fn remote_worker_placement(
+    access: Option<&InferenceAccess>,
+    resources: Option<&awaken_protocol_managed::SessionResourceManifest>,
+    remote_required: bool,
+) -> PlacementRequirements {
+    let mut placement = if remote_required {
+        PlacementRequirements::remote_required()
+    } else {
+        PlacementRequirements::default()
+    };
     placement
         .required_capabilities
         .insert("native-runtime".to_string());
@@ -24,6 +32,23 @@ fn remote_worker_placement(access: Option<&InferenceAccess>) -> PlacementRequire
             );
         }
     }
+    if let Some(resources) = resources {
+        placement
+            .required_capabilities
+            .insert(awaken_run_ingress::SESSION_RESOURCES_CAPABILITY.to_string());
+        let credentialed_repository = resources.resources.inputs.iter().any(|input| {
+            matches!(
+                &input.source,
+                awaken_protocol_managed::ResolvedInputSource::Repository { config, .. }
+                    if config.credential_binding.is_some()
+            )
+        });
+        if credentialed_repository {
+            placement
+                .required_capabilities
+                .insert(awaken_run_ingress::REPOSITORY_CREDENTIALS_CAPABILITY.to_string());
+        }
+    }
     placement
 }
 
@@ -32,11 +57,31 @@ impl SharedHost {
         &self,
         activation: RunActivation,
     ) -> Result<RunDispatch, HostError> {
-        let placement = self.deployment.disable_local_pool.then(|| {
-            remote_worker_placement(activation.snapshot.metadata.inference_access.as_ref())
+        let thread = activation.thread_id.0.clone();
+        let resources = self.thread_resource_manifest(&thread);
+        // A mixed deployment may have both the local pool and remote workers.
+        // Any carried manifest still needs capability admission: an explicit empty
+        // successor can be the operation that removes a prior projection.
+        let placement = (self.deployment.disable_local_pool || resources.is_some()).then(|| {
+            remote_worker_placement(
+                activation.snapshot.metadata.inference_access.as_ref(),
+                resources.as_ref(),
+                self.deployment.disable_local_pool,
+            )
         });
         let mut request = RunDispatch::new(activation)
             .with_traceparent(awaken_observability::current_traceparent());
+        if let Some(resources) = resources {
+            let envelope = crate::provisioning::encode_session_resource_envelope(&resources)
+                .map_err(|error| {
+                    HostError::internal(format!("serialize Session resource manifest: {error}"))
+                })?;
+            request = request
+                .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
+                    awaken_tenancy::ScopeId::from(resources.workspace_id.clone()),
+                ))
+                .with_session_resources(envelope);
+        }
         if let Some(placement) = placement {
             request = request.with_placement(placement);
         }
@@ -268,7 +313,7 @@ mod completion_tests {
             ),
         ])
         .unwrap();
-        let placement = remote_worker_placement(Some(&access));
+        let placement = remote_worker_placement(Some(&access), None, true);
         assert_eq!(placement.contract_version, 1);
         assert_eq!(placement.dispatch_contract_version, 1);
         assert_eq!(placement.runtime_protocol_version, 1);
@@ -282,6 +327,75 @@ mod completion_tests {
             placement
                 .required_capabilities
                 .contains("credential-reference/v1")
+        );
+    }
+
+    #[test]
+    fn resource_placement_requires_resource_and_repository_credential_capabilities() {
+        use awaken_protocol_managed::resource_plane::{
+            BindingId, ClonePolicy, ConfigVersion, RepositoryConfigVersion, RepositoryId,
+            ResourceAccess,
+        };
+        use awaken_protocol_managed::{
+            ResolvedInput, ResolvedInputSource, ResolvedSessionResources, SessionResourceManifest,
+        };
+
+        let resources = SessionResourceManifest::new(
+            "workspace-a",
+            ResolvedSessionResources {
+                inputs: vec![ResolvedInput {
+                    binding_id: BindingId::new("repo-binding"),
+                    source: ResolvedInputSource::Repository {
+                        repository_id: RepositoryId::from("repo-a"),
+                        config: RepositoryConfigVersion {
+                            repository_id: "repo-a".into(),
+                            version: ConfigVersion::INITIAL,
+                            remote_url: "https://example.invalid/repo.git".into(),
+                            credential_binding: Some("credential-a".into()),
+                            initial_branch: None,
+                            clone_policy: ClonePolicy::default(),
+                        },
+                    },
+                    mount_path: "/workspace/repo".into(),
+                    access: ResourceAccess::ReadWrite,
+                    instructions: None,
+                }],
+                skills: Some(Vec::new()),
+            },
+        );
+        let placement = remote_worker_placement(None, Some(&resources), true);
+        assert!(
+            placement
+                .required_capabilities
+                .contains(awaken_run_ingress::SESSION_RESOURCES_CAPABILITY)
+        );
+        assert!(
+            placement
+                .required_capabilities
+                .contains(awaken_run_ingress::REPOSITORY_CREDENTIALS_CAPABILITY)
+        );
+    }
+
+    #[test]
+    fn explicit_empty_manifest_still_requires_the_revocation_capability() {
+        let resources = awaken_protocol_managed::SessionResourceManifest::new(
+            "workspace-a",
+            awaken_protocol_managed::ResolvedSessionResources {
+                inputs: Vec::new(),
+                skills: Some(Vec::new()),
+            },
+        );
+        let placement = remote_worker_placement(None, Some(&resources), true);
+        assert!(
+            placement
+                .required_capabilities
+                .contains(awaken_run_ingress::SESSION_RESOURCES_CAPABILITY),
+            "an empty successor manifest may need to remove prior sandbox material"
+        );
+        assert!(
+            !placement
+                .required_capabilities
+                .contains(awaken_run_ingress::REPOSITORY_CREDENTIALS_CAPABILITY)
         );
     }
 }

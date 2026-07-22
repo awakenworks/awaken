@@ -81,15 +81,44 @@ pub(crate) struct RunScheduler {
     pub(crate) reader: Arc<dyn ThreadReader>,
     pub(crate) owner: String,
     pub(crate) claimed_commit: Option<Arc<dyn ClaimedRunCommit>>,
+    /// Parent Session resource authority inherited by a child dispatch. The child
+    /// keeps its own Run/thread lifecycle while executing in the parent's Session
+    /// environment, so a replacement worker must install the same frozen manifest.
+    pub(crate) session_resources: Option<awaken_protocol_managed::SessionResourceManifest>,
 }
 
 fn child_dispatch_request(
     activation: RunActivation,
     parent_thread_id: ThreadId,
+    session_resources: Option<awaken_protocol_managed::SessionResourceManifest>,
 ) -> Result<RunDispatch, AgentRunError> {
-    let request = RunDispatch::new(activation)
+    let mut request = RunDispatch::new(activation)
         .for_session(parent_thread_id)
         .with_traceparent(awaken_observability::current_traceparent());
+    if let Some(resources) = session_resources {
+        let placement = crate::host::remote_worker_placement(
+            request
+                .activation
+                .snapshot
+                .metadata
+                .inference_access
+                .as_ref(),
+            Some(&resources),
+            false,
+        );
+        let envelope =
+            crate::provisioning::encode_session_resource_envelope(&resources).map_err(|error| {
+                AgentRunError::Configuration(format!(
+                    "serialize child Session resource manifest: {error}"
+                ))
+            })?;
+        request = request
+            .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
+                awaken_tenancy::ScopeId::from(resources.workspace_id.clone()),
+            ))
+            .with_session_resources(envelope)
+            .with_placement(placement);
+    }
     Ok(request)
 }
 
@@ -317,7 +346,11 @@ pub(crate) async fn run_configured_agent_until_boundary(
                 match reader.run_state(&child_run_id) {
                     Some(state @ (RunState::Awaiting | RunState::Ended(_))) => state,
                     _ => {
-                        let request = child_dispatch_request(activation, parent_thread_id.clone())?;
+                        let request = child_dispatch_request(
+                            activation,
+                            parent_thread_id.clone(),
+                            scheduler.session_resources.clone(),
+                        )?;
                         match worker.start_run(request, now_ms).await.map_err(|error| {
                             AgentRunError::Runtime(
                                 awaken_runtime_contract::execution::Error::Execution(
@@ -745,14 +778,43 @@ mod tests {
             RunInput::from(vec![user("go")]),
         );
 
-        let request = child_dispatch_request(activation, ThreadId("parent-thread".to_string()))
-            .expect("build child dispatch");
+        let manifest = awaken_protocol_managed::SessionResourceManifest::new(
+            "workspace-a",
+            awaken_protocol_managed::ResolvedSessionResources {
+                inputs: Vec::new(),
+                skills: Some(vec![awaken_protocol_managed::ResolvedSkillBinding {
+                    skill_id: "skill-a".into(),
+                    version: 3,
+                    bundle_sha256: "sha256:skill-a-v3".into(),
+                }]),
+            },
+        );
+        let request = child_dispatch_request(
+            activation,
+            ThreadId("parent-thread".to_string()),
+            Some(manifest.clone()),
+        )
+        .expect("build child dispatch");
 
         assert_eq!(
             request.activation.snapshot.metadata.inference_access,
             Some(expected)
         );
         assert_eq!(request.session_thread_id.unwrap().0, "parent-thread");
+        let carried = crate::provisioning::decode_session_resource_envelope(
+            request
+                .session_resources
+                .as_ref()
+                .expect("resource envelope"),
+        )
+        .expect("decode resource envelope");
+        assert_eq!(carried, manifest);
+        assert!(
+            request
+                .placement
+                .required_capabilities
+                .contains(awaken_run_ingress::SESSION_RESOURCES_CAPABILITY)
+        );
     }
 
     #[tokio::test]
@@ -991,6 +1053,7 @@ mod tests {
             reader: commit.clone(),
             owner: "replacement-worker".to_string(),
             claimed_commit: None,
+            session_resources: None,
         };
         let context = || {
             RuntimeRunContext::new()
@@ -1046,6 +1109,7 @@ mod tests {
             reader: commit.clone(),
             owner: "replacement-worker-2".to_string(),
             claimed_commit: None,
+            session_resources: None,
         };
 
         let recovered_boundary = run_agent_until_boundary(
@@ -1108,6 +1172,7 @@ mod tests {
                 reader: commit.clone(),
                 owner: "replacement-worker-3".to_string(),
                 claimed_commit: None,
+                session_resources: None,
             }),
             AgentRunSandbox::SharedLocal(&sandbox),
             ChildRunRequest {

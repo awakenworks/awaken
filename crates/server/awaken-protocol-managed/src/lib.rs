@@ -69,7 +69,7 @@ pub use awaken_session_contract::{
     MemoryExtractionMutation, MemoryExtractionReceipt, MemoryExtractionRepository,
     MemoryExtractionStatus, MemoryExtractorSnapshot, MemoryMutationReceipt, PersistedSession,
     PersistedSessionRuntime, PutMemoryExtractionOutcome, ResolvedInput, ResolvedInputSource,
-    ResolvedSessionResources, ResolvedSkillBinding, resource_plane,
+    ResolvedSessionResources, ResolvedSkillBinding, SessionResourceManifest, resource_plane,
 };
 pub use awaken_session_store::SqliteManagedSessionRepository;
 pub use state::{

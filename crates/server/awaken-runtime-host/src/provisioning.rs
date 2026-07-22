@@ -20,6 +20,29 @@ use awaken_runtime_contract::resolved::ToolDescriptor;
 /// resolved under the root to `<root>/outputs`, which `list_files("outputs")` reads.
 const OUTPUTS_PATH: &str = "/outputs";
 
+/// Serialize the Session-domain resource manifest into the dispatch context's
+/// opaque envelope. This one ACL keeps durable ingress independent of Session
+/// vocabulary while preserving a lossless, secret-free payload.
+pub(crate) fn encode_session_resource_envelope(
+    manifest: &awaken_protocol_managed::SessionResourceManifest,
+) -> Result<awaken_run_ingress::SessionResourceEnvelope, serde_json::Error> {
+    Ok(awaken_run_ingress::SessionResourceEnvelope::new(
+        manifest.workspace_id.clone(),
+        serde_json::to_string(&manifest.resources)?,
+    ))
+}
+
+/// Decode the dispatch-neutral envelope back into the Session contract before
+/// resource validation or sandbox creation.
+pub(crate) fn decode_session_resource_envelope(
+    envelope: &awaken_run_ingress::SessionResourceEnvelope,
+) -> Result<awaken_protocol_managed::SessionResourceManifest, serde_json::Error> {
+    Ok(awaken_protocol_managed::SessionResourceManifest::new(
+        envelope.workspace_id.clone(),
+        serde_json::from_str(&envelope.resolved_resources_json)?,
+    ))
+}
+
 fn file_ownership(workspace: &str, id: &str) -> ResourceReferenceRecord {
     ResourceReferenceRecord {
         target: ResourceTarget::new(workspace, ResourceKind::File, id),
@@ -157,6 +180,28 @@ impl SharedHost {
             .lock()
             .unwrap()
             .insert(thread.to_string(), staged);
+    }
+
+    pub(crate) fn register_thread_resource_manifest(
+        &self,
+        thread: &str,
+        manifest: awaken_protocol_managed::SessionResourceManifest,
+    ) {
+        self.thread_resource_manifests
+            .lock()
+            .expect("thread resource manifests mutex poisoned")
+            .insert(thread.to_string(), manifest);
+    }
+
+    pub(crate) fn thread_resource_manifest(
+        &self,
+        thread: &str,
+    ) -> Option<awaken_protocol_managed::SessionResourceManifest> {
+        self.thread_resource_manifests
+            .lock()
+            .expect("thread resource manifests mutex poisoned")
+            .get(thread)
+            .cloned()
     }
 
     pub(crate) fn thread_resources_snapshot(&self, thread: &str) -> StagedResources {

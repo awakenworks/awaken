@@ -206,6 +206,8 @@ impl SharedHost {
             thread_skills: std::sync::Mutex::new(HashMap::new()),
             mcp_relay: tokio::sync::OnceCell::new(),
             thread_resources: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
+            thread_resource_manifests: std::sync::Mutex::new(HashMap::new()),
+            dispatch_resource_preparer: std::sync::RwLock::new(None),
             thread_egress: crate::sandbox_source::ThreadEgress::new(),
             thread_sandbox: crate::sandbox_source::ThreadSandbox::new(),
             file_store,
@@ -696,6 +698,7 @@ impl SharedHost {
     /// gives each delegate a fresh, isolated root instead.
     pub(crate) fn run_delegation(
         &self,
+        thread: &str,
         sandbox: Arc<crate::session_environment::SessionEnvironment>,
         commit: Arc<crate::store::HostCommit>,
     ) -> Result<Option<Arc<dyn RunDelegationService>>, HostError> {
@@ -717,6 +720,7 @@ impl SharedHost {
                     }
                     Arc::new(commit) as Arc<dyn awaken_run_ingress::ClaimedRunCommit>
                 }),
+                session_resources: self.thread_resource_manifest(thread),
             })
         } else {
             None

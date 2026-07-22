@@ -73,6 +73,30 @@ pub struct ResolvedSessionResources {
     pub skills: Option<Vec<ResolvedSkillBinding>>,
 }
 
+/// Frozen, secret-free resource input installed before a Session execution
+/// environment is opened on any worker.
+///
+/// [`ResolvedSessionResources`] deliberately contains no tenant coordinate: it is
+/// the value owned by the Session aggregate. Durable dispatch adds the trusted
+/// Workspace partition beside it in this envelope so a cold worker can validate
+/// and realize the exact same inputs without consulting current Agent defaults.
+/// Authorization identities and decisions remain outside this value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionResourceManifest {
+    pub workspace_id: String,
+    pub resources: ResolvedSessionResources,
+}
+
+impl SessionResourceManifest {
+    #[must_use]
+    pub fn new(workspace_id: impl Into<String>, resources: ResolvedSessionResources) -> Self {
+        Self {
+            workspace_id: workspace_id.into(),
+            resources,
+        }
+    }
+}
+
 impl ResolvedSessionResources {
     /// Validate identity and mount invariants before an adapter performs any
     /// resource-specific side effect such as sealing a credential or creating a

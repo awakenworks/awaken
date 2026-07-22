@@ -150,6 +150,32 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
         let agent_id = claimed.request.activation.snapshot.root_agent_id.0.as_str();
         let agent_id = (!agent_id.is_empty()).then_some(agent_id);
 
+        if let Some(envelope) = &claimed.request.session_resources {
+            let dispatched_scope = claimed
+                .request
+                .execution_scope
+                .as_ref()
+                .map(|scope| scope.0.0.as_str());
+            if envelope.workspace_id.trim().is_empty()
+                || dispatched_scope != Some(envelope.workspace_id.as_str())
+            {
+                return Err(Self::execution_error(format!(
+                    "run {} has a resource manifest outside its execution scope",
+                    claimed.lease.run_id.0
+                )));
+            }
+            let manifest = crate::provisioning::decode_session_resource_envelope(envelope)
+                .map_err(|error| {
+                    Self::execution_error(format!(
+                        "run {} has an invalid Session resource manifest: {error}",
+                        claimed.lease.run_id.0
+                    ))
+                })?;
+            host.install_dispatched_resources(&thread_id.0, &manifest)
+                .await
+                .map_err(|error| Self::execution_error(error.to_string()))?;
+        }
+
         let (adopted, rebuild_binding) = adopt_bound_sandbox(
             &host,
             claimed.sandbox.as_deref(),
@@ -222,6 +248,195 @@ mod tests {
                 stop_reason: None,
             })
         }
+    }
+
+    fn test_activation(thread: &str, run: &str) -> RunActivation {
+        let fingerprint = CatalogFingerprint(format!("catalog-{run}"));
+        RunActivation::new(
+            RunId(run.to_string()),
+            ThreadId(thread.to_string()),
+            ExecutableAgentSnapshot {
+                id: ExecutableAgentSnapshotId(format!("snapshot-{run}")),
+                metadata: Default::default(),
+                root_agent_id: AgentId("agent-a".to_string()),
+                resolved_spec: ResolvedSpec {
+                    model_candidates: Vec::new(),
+                    catalog_fingerprint: fingerprint.clone(),
+                    instructions: "test".to_string(),
+                    max_steps: 1,
+                    delegation_limits: Default::default(),
+                    model_binding: ModelBinding::new("provider", "model", "backend"),
+                    tool_descriptors: Vec::new(),
+                    plugin_ids: Vec::new(),
+                    plugin_config: Default::default(),
+                    context_policy: Default::default(),
+                    tool_presentation: Default::default(),
+                },
+                fingerprint,
+            },
+            Vec::new(),
+        )
+    }
+
+    #[tokio::test]
+    async fn resource_manifest_must_match_the_durable_execution_scope() {
+        let storage = tempfile::tempdir().expect("storage");
+        let host = Arc::new(
+            SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()),
+        );
+        let run = RunId("run-scope-mismatch".to_string());
+        let request =
+            awaken_run_ingress::RunDispatch::new(test_activation("thread-scope-mismatch", &run.0))
+                .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
+                    awaken_tenancy::ScopeId::from("workspace-b"),
+                ))
+                .with_session_resources(awaken_run_ingress::SessionResourceEnvelope::new(
+                    "workspace-a",
+                    r#"{"inputs":[],"skills":[]}"#,
+                ));
+        let claimed = awaken_run_ingress::Claimed {
+            request,
+            lease: awaken_run_ingress::Lease {
+                run_id: run,
+                owner: "worker-a".to_string(),
+                expires_ms: 100,
+                epoch: 1,
+            },
+            cancellation_requested: false,
+            pending: Vec::new(),
+            recovered: false,
+            sandbox: None,
+            assignment: None,
+        };
+        let resolver = HostWorkerResolver {
+            host: Arc::downgrade(&host),
+        };
+
+        let error = match resolver.worker_for_claimed(&claimed).await {
+            Ok(_) => panic!("scope mismatch must fail closed"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("outside its execution scope"));
+        assert!(
+            host.session_environment("thread-scope-mismatch")
+                .await
+                .is_none(),
+            "scope rejection happens before sandbox creation"
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_resource_manifest_is_rejected_before_sandbox_creation() {
+        let storage = tempfile::tempdir().expect("storage");
+        let host = Arc::new(
+            SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()),
+        );
+        let run = RunId("run-malformed-resources".to_string());
+        let request = awaken_run_ingress::RunDispatch::new(test_activation(
+            "thread-malformed-resources",
+            &run.0,
+        ))
+        .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
+            awaken_tenancy::ScopeId::from("workspace-a"),
+        ))
+        .with_session_resources(awaken_run_ingress::SessionResourceEnvelope::new(
+            "workspace-a",
+            "not-json",
+        ));
+        let claimed = awaken_run_ingress::Claimed {
+            request,
+            lease: awaken_run_ingress::Lease {
+                run_id: run,
+                owner: "worker-a".to_string(),
+                expires_ms: 100,
+                epoch: 1,
+            },
+            cancellation_requested: false,
+            pending: Vec::new(),
+            recovered: false,
+            sandbox: None,
+            assignment: None,
+        };
+        let resolver = HostWorkerResolver {
+            host: Arc::downgrade(&host),
+        };
+
+        let error = match resolver.worker_for_claimed(&claimed).await {
+            Ok(_) => panic!("malformed manifest must fail closed"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("invalid Session resource manifest")
+        );
+        assert!(
+            host.session_environment("thread-malformed-resources")
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn cold_worker_installs_frozen_file_manifest_before_opening_environment() {
+        let storage = tempfile::tempdir().expect("storage");
+        let host = Arc::new(
+            SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()),
+        );
+        let _managed = crate::ManagedHost::new(host.clone());
+        let bytes = b"frozen worker input".to_vec();
+        let file_id = host.file_store().put(&bytes).await.expect("store file");
+        host.register_file_ownership("workspace-a", &file_id)
+            .await
+            .expect("own file");
+        let manifest = awaken_protocol_managed::SessionResourceManifest::new(
+            "workspace-a",
+            awaken_protocol_managed::ResolvedSessionResources {
+                inputs: vec![awaken_protocol_managed::ResolvedInput {
+                    binding_id: awaken_protocol_managed::resource_plane::BindingId::new(
+                        "file-binding",
+                    ),
+                    source: awaken_protocol_managed::ResolvedInputSource::File {
+                        file_id: awaken_protocol_managed::resource_plane::FileId::from(
+                            file_id.as_str(),
+                        ),
+                    },
+                    mount_path: "/uploads/input.bin".to_string(),
+                    access: awaken_protocol_managed::resource_plane::ResourceAccess::ReadOnly,
+                    instructions: None,
+                }],
+                skills: Some(Vec::new()),
+            },
+        );
+
+        host.install_dispatched_resources("thread-cold-resource", &manifest)
+            .await
+            .expect("install frozen manifest");
+        let activation = test_activation("thread-cold-resource", "run-cold-resource");
+        host.ctx_for_snapshot_with_sandbox(
+            "thread-cold-resource",
+            Some("agent-a"),
+            Some(activation.snapshot),
+            None,
+        )
+        .await
+        .expect("open environment after resource install");
+
+        let environment = host
+            .session_environment("thread-cold-resource")
+            .await
+            .expect("environment");
+        let files = environment.list_files(".mnt").await.expect("list mounts");
+        assert!(
+            files
+                .iter()
+                .any(|(path, contents)| path.ends_with("uploads/input.bin") && contents == &bytes),
+            "the first environment contains the exact immutable File bytes"
+        );
+        assert_eq!(
+            host.thread_resource_manifest("thread-cold-resource"),
+            Some(manifest)
+        );
     }
 
     #[tokio::test]
