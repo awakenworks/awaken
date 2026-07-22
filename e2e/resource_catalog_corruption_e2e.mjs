@@ -296,7 +296,63 @@ async function main() {
     await ready(server);
     assert.equal((await json('GET', 'memory_stores')).status, 200);
 
-    console.log('E2E PASS: missing resource configs fail closed and the same snapshot later recovers.');
+    // Repository aggregates have no standalone public collection route: they are
+    // execution inputs owned by the Session lifecycle. Drive the same corruption
+    // matrix through cold-start activation reconciliation. Every corrupt aggregate
+    // must leave the already-frozen generation prepared (never silently re-resolve
+    // from the remote), and restoring only the aggregate must converge that exact
+    // generation on the next boot.
+    const repositoryConfig = repositoryRecord.configs['1'];
+    const repositoryCorruptions = [
+      ['malformed-json', '{not-json'],
+      ['forged-definition-id', JSON.stringify({
+        ...repositoryRecord,
+        definition: { ...repositoryRecord.definition, id: 'forged-repository-id' },
+      })],
+      ['empty-workspace', JSON.stringify({
+        ...repositoryRecord,
+        definition: { ...repositoryRecord.definition, workspace_id: ' ' },
+      })],
+      ['zero-current-version', JSON.stringify({
+        ...repositoryRecord,
+        definition: { ...repositoryRecord.definition, current_config_version: 0 },
+      })],
+      ['missing-current-version', JSON.stringify({ ...repositoryRecord, configs: {} })],
+      ['forged-config-id', JSON.stringify({
+        ...repositoryRecord,
+        configs: { 1: { ...repositoryConfig, repository_id: 'forged-repository-id' } },
+      })],
+      ['forged-config-version', JSON.stringify({
+        ...repositoryRecord,
+        configs: { 1: { ...repositoryConfig, version: 2 } },
+      })],
+    ];
+    for (const [name, data] of repositoryCorruptions) {
+      await stop(server, 'SIGKILL');
+      writeCatalogRaw(adminDatabase, 'repository', repositoryId, data);
+      persistPreparedGeneration(sessionsDatabase, session.body.id);
+      server = start(bin, directory);
+      await ready(server);
+
+      const denied = sessionResources(sessionsDatabase, session.body.id);
+      assert.notEqual(denied.pending, undefined, `${name}: pending generation disappeared`);
+      assert.equal(denied.activations.at(-1).state, 'prepared', name);
+      assert.equal(denied.activations.at(-1).attempts, 1, name);
+      assert.ok(denied.activations.at(-1).last_error, `${name}: missing durable error receipt`);
+      assert.equal(server.exitCode, null, `${name}: catalog corruption crashed the process`);
+
+      await stop(server, 'SIGKILL');
+      writeCatalogRecord(adminDatabase, 'repository', repositoryId, repositoryRecord);
+      server = start(bin, directory);
+      await ready(server);
+      const repaired = sessionResources(sessionsDatabase, session.body.id);
+      assert.equal(repaired.pending, undefined, `${name}: repaired generation did not commit`);
+      assert.equal(repaired.activations.at(-1).state, 'active', name);
+      assert.equal(repaired.activations.at(-1).attempts, 2, name);
+      assert.equal(repaired.activations.at(-1).last_error, undefined, name);
+    }
+
+    console.log('E2E PASS: corrupt Memory and Repository aggregates fail closed and the same snapshot later recovers.');
   } finally {
     await stop(server).catch(() => {});
     fs.rmSync(directory, { recursive: true, force: true });
