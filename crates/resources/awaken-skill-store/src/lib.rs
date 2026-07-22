@@ -156,6 +156,68 @@ pub(crate) fn validate_create(
     Ok(())
 }
 
+fn corrupt(detail: impl Into<String>) -> SkillStoreError {
+    SkillStoreError::Storage(format!(
+        "invalid persisted Skill aggregate: {}",
+        detail.into()
+    ))
+}
+
+/// Decode one persisted aggregate and re-establish every invariant that a valid
+/// write guarantees. Repository adapters call this at their read boundary so a
+/// damaged row cannot be projected as a different Workspace/Skill or reach runtime
+/// materialization as a silently changed immutable version.
+pub(crate) fn decode_aggregate(
+    data: &[u8],
+    workspace_id: &str,
+    skill_id: &str,
+) -> Result<SkillAggregate, SkillStoreError> {
+    let aggregate: SkillAggregate = serde_json::from_slice(data)
+        .map_err(|error| corrupt(format!("malformed JSON: {error}")))?;
+    if aggregate.definition.workspace_id != workspace_id || aggregate.definition.id != skill_id {
+        return Err(corrupt("stored identity does not match its repository key"));
+    }
+    let Some((&last, _)) = aggregate.versions.last_key_value() else {
+        return Err(corrupt("version history is empty"));
+    };
+    if aggregate.definition.last_version != last {
+        return Err(corrupt("last_version does not match version history"));
+    }
+    if aggregate
+        .retired_versions
+        .iter()
+        .any(|version| !aggregate.versions.contains_key(version))
+    {
+        return Err(corrupt("retired version is absent from version history"));
+    }
+    let latest = aggregate
+        .versions
+        .keys()
+        .rev()
+        .find(|version| !aggregate.retired_versions.contains(version))
+        .copied()
+        .ok_or_else(|| corrupt("no visible version remains"))?;
+    if aggregate.definition.latest_version != latest {
+        return Err(corrupt(
+            "latest_version does not identify the newest visible version",
+        ));
+    }
+    for (ordinal, version) in &aggregate.versions {
+        if *ordinal == 0
+            || version.version != *ordinal
+            || version.skill_id != skill_id
+            || version.files.is_empty()
+            || version.skill_md().is_none()
+            || version.bundle_sha256 != bundle_sha256(&version.files)
+        {
+            return Err(corrupt(format!(
+                "version {ordinal} is inconsistent or its bundle hash changed"
+            )));
+        }
+    }
+    Ok(aggregate)
+}
+
 pub(crate) fn append_to(
     aggregate: &mut SkillAggregate,
     version: SkillVersion,
@@ -447,9 +509,7 @@ impl FsSkillStore {
         id: &str,
     ) -> Result<Option<SkillAggregate>, SkillStoreError> {
         match std::fs::read(self.aggregate_path(workspace, id)) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map(Some)
-                .map_err(|error| SkillStoreError::Storage(error.to_string())),
+            Ok(bytes) => decode_aggregate(&bytes, workspace, id).map(Some),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(SkillStoreError::Io(error.to_string())),
         }
@@ -566,9 +626,13 @@ impl SkillStore for FsSkillStore {
                 .is_some_and(|extension| extension == "json")
             {
                 let bytes =
-                    std::fs::read(path).map_err(|error| SkillStoreError::Io(error.to_string()))?;
+                    std::fs::read(&path).map_err(|error| SkillStoreError::Io(error.to_string()))?;
                 let aggregate: SkillAggregate = serde_json::from_slice(&bytes)
-                    .map_err(|error| SkillStoreError::Storage(error.to_string()))?;
+                    .map_err(|error| corrupt(format!("malformed JSON: {error}")))?;
+                let aggregate = decode_aggregate(&bytes, workspace_id, &aggregate.definition.id)?;
+                if path != self.aggregate_path(workspace_id, &aggregate.definition.id) {
+                    return Err(corrupt("stored identity does not match its filesystem key"));
+                }
                 if aggregate.definition.workspace_id == workspace_id && !aggregate.deleted {
                     out.push(aggregate.definition);
                 }
