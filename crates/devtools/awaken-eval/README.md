@@ -15,6 +15,66 @@ The three contracts remain separate:
 They share only execution and artifact plumbing. A good Judge score cannot hide
 context loss in Compact or unsafe persistence in Memory.
 
+## Public statistical benchmarks
+
+Public benchmarks use separate task protocols and scorers. They are diagnostics,
+not replacements for the independently adjudicated three-state Outcome release
+gate:
+
+- RewardBench 2 becomes pairwise Judge comparisons. The importer accepts one
+  Hugging Face datasets-server page or an array of pages, samples round-robin by
+  `subset`, and balances whether A or B is correct. Reports include Wilson 95%
+  confidence intervals, per-subset accuracy, position slices, strict-schema
+  compliance, and latency.
+- QMSum becomes query-focused reference compaction. Reports include token
+  precision/recall/F1, compression ratio, and latency. Lexical F1 is a
+  reproducible diagnostic and is not a semantic-fidelity release gate.
+- LoCoMo QA evidence becomes production Memory-selector cases. Annotated
+  evidence turns are mixed with deterministic lexical hard negatives. This
+  evaluates selector reranking; it deliberately does not claim to evaluate the
+  upstream vector retriever or answer generator.
+
+Downloaded corpora and model outputs stay outside the repository. The commands
+below pin dataset identities but callers should additionally record the source
+revision/checksum in experiment metadata.
+
+```bash
+# RewardBench 2: fetch one or more pages. Pass a JSON array of pages for a
+# statistically useful cross-subset sample; `-` reads the merged JSON from stdin.
+curl -L 'https://datasets-server.huggingface.co/rows?dataset=allenai%2Freward-bench-2&config=default&split=test&offset=0&length=100' \
+  -o /tmp/rewardbench2-page.json
+cargo run -p awaken-eval -- benchmark-import-rewardbench2 \
+  /tmp/rewardbench2-page.json /tmp/rewardbench2.json 100
+cargo run -p awaken-eval -- benchmark-run-pairwise-acp \
+  /tmp/rewardbench2.json /tmp/rewardbench2-acp.json \
+  '["npx","-y","@agentclientprotocol/codex-acp@1.1"]'
+
+# QMSum official checkout; the limit is an explicit cost/sample control.
+cargo run -p awaken-eval -- benchmark-import-qmsum \
+  /tmp/QMSum/data/ALL/test /tmp/qmsum.json 30
+cargo run -p awaken-eval -- benchmark-run-compact-reference-acp \
+  /tmp/qmsum.json /tmp/qmsum-acp.json \
+  '["npx","-y","@agentclientprotocol/codex-acp@1.1"]'
+
+# LoCoMo selector evaluation: 100 questions and nine hard negatives per case.
+curl -L https://raw.githubusercontent.com/snap-research/locomo/main/data/locomo10.json \
+  -o /tmp/locomo10.json
+cargo run -p awaken-eval -- benchmark-import-locomo-memory \
+  /tmp/locomo10.json /tmp/locomo-memory.json 100 9
+cargo run -p awaken-eval -- memory-run-acp \
+  /tmp/locomo-memory.json /tmp/locomo-memory-acp.json \
+  '["npx","-y","@agentclientprotocol/codex-acp@1.1"]'
+```
+
+Offline re-scoring never calls a provider:
+
+```bash
+cargo run -p awaken-eval -- benchmark-score-pairwise DATASET OBSERVATIONS
+cargo run -p awaken-eval -- benchmark-compare-pairwise DATASET LEFT RIGHT
+cargo run -p awaken-eval -- benchmark-score-compact-reference DATASET OBSERVATIONS
+cargo run -p awaken-eval -- memory-score DATASET OBSERVATIONS
+```
+
 ## Evaluation boundaries
 
 The Agent Judge owns only three business decisions:
@@ -61,7 +121,9 @@ independent adjudication against repository state, diffs and test evidence.
 
 The subprocess environment is cleared by the ACP launcher. Pass only explicit
 adapter configuration; normal HOME-backed provider authentication remains
-available. Judge runs use read-only mode and a deny-all tool permission policy.
+available. Judge runs use a deny-all tool permission policy. ACP mode identifiers
+are adapter-local, so the shared runner does not pin one; Codex's explicit launch
+configuration below additionally requests its read-only sandbox.
 The ACP protocol has no portable system-prompt field, so the unified ACP
 `RunExecutor` projects frozen snapshot instructions before the untrusted first
 input. Later steers reuse the ACP session and do not repeat that stable prefix,

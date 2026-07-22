@@ -32,7 +32,13 @@ impl ToolPermissionPolicy for DenyAllTools {
     }
 }
 
-/// Production ACP adapter configured for isolated, read-only auxiliary runs.
+/// Production ACP adapter configured for isolated, tool-free auxiliary runs.
+///
+/// ACP session-mode identifiers are adapter-local (`read-only` for Codex,
+/// `plan` for Claude Code), so this provider-neutral boundary does not pin one.
+/// The neutral permission policy still rejects every intrinsic tool request and
+/// the ACP session cwd defaults to `/`; provider-specific sandboxing may be
+/// supplied through the explicit launch environment.
 pub struct ToolFreeAcpRunner {
     executor: AcpRunExecutor,
 }
@@ -43,7 +49,7 @@ impl ToolFreeAcpRunner {
         let launch = AcpLaunch::custom(argv, env);
         let source = Arc::new(SubprocessChannelSource::new(launch).with_codec(Codec::Acp));
         Self {
-            executor: AcpRunExecutor::new(source).with_session_mode("read-only"),
+            executor: AcpRunExecutor::new(source),
         }
     }
 

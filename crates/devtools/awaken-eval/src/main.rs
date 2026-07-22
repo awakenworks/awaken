@@ -37,6 +37,30 @@ async fn main() -> ExitCode {
     if args.first().map(String::as_str) == Some("memory-run-acp") {
         return run_memory_acp(&args[1..]).await;
     }
+    if args.first().map(String::as_str) == Some("benchmark-import-rewardbench2") {
+        return import_rewardbench2(&args[1..]);
+    }
+    if args.first().map(String::as_str) == Some("benchmark-run-pairwise-acp") {
+        return run_pairwise_acp(&args[1..]).await;
+    }
+    if args.first().map(String::as_str) == Some("benchmark-score-pairwise") {
+        return score_pairwise(&args[1..]);
+    }
+    if args.first().map(String::as_str) == Some("benchmark-compare-pairwise") {
+        return compare_pairwise(&args[1..]);
+    }
+    if args.first().map(String::as_str) == Some("benchmark-import-qmsum") {
+        return import_qmsum(&args[1..]);
+    }
+    if args.first().map(String::as_str) == Some("benchmark-run-compact-reference-acp") {
+        return run_compact_reference_acp(&args[1..]).await;
+    }
+    if args.first().map(String::as_str) == Some("benchmark-score-compact-reference") {
+        return score_compact_reference(&args[1..]);
+    }
+    if args.first().map(String::as_str) == Some("benchmark-import-locomo-memory") {
+        return import_locomo_memory(&args[1..]);
+    }
     let Some(path) = args.first() else {
         eprintln!(
             "usage: awaken-eval <dataset.json> | \
@@ -395,6 +419,369 @@ fn save_json(path: &str, value: &(impl serde::Serialize + ?Sized)) -> std::io::R
     let data = serde_json::to_string_pretty(value)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
     std::fs::write(path, data)
+}
+
+fn load_json<T: serde::de::DeserializeOwned>(path: &str) -> Result<T, String> {
+    let data = if path == "-" {
+        let mut data = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut data)
+            .map_err(|error| format!("read stdin: {error}"))?;
+        data
+    } else {
+        std::fs::read_to_string(path).map_err(|error| format!("read {path}: {error}"))?
+    };
+    serde_json::from_str(&data).map_err(|error| format!("parse {path}: {error}"))
+}
+
+fn parse_limit(value: Option<&String>) -> Result<usize, String> {
+    value.map_or(Ok(0), |value| {
+        value
+            .parse::<usize>()
+            .map_err(|error| format!("invalid limit {value:?}: {error}"))
+    })
+}
+
+fn import_rewardbench2(args: &[String]) -> ExitCode {
+    let [input_path, output_path, rest @ ..] = args else {
+        eprintln!(
+            "usage: awaken-eval benchmark-import-rewardbench2 <datasets-server-rows.json> <dataset.json> [limit]"
+        );
+        return ExitCode::from(2);
+    };
+    if rest.len() > 1 {
+        eprintln!("benchmark-import-rewardbench2 accepts at most one limit");
+        return ExitCode::from(2);
+    }
+    let value = match load_json(input_path) {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::from(2);
+        }
+    };
+    let limit = match parse_limit(rest.first()) {
+        Ok(limit) => limit,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::from(2);
+        }
+    };
+    let dataset = match awaken_eval::public_benchmark::import_rewardbench2_rows(&value, limit) {
+        Ok(dataset) => dataset,
+        Err(error) => {
+            eprintln!("failed to import RewardBench 2: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    if let Err(error) = save_json(output_path, &dataset) {
+        eprintln!("failed to save pairwise dataset: {error}");
+        return ExitCode::from(2);
+    }
+    eprintln!("imported {} RewardBench 2 comparisons", dataset.cases.len());
+    ExitCode::SUCCESS
+}
+
+async fn run_pairwise_acp(args: &[String]) -> ExitCode {
+    let [dataset_path, artifact_path, argv_json] = args else {
+        eprintln!(
+            "usage: awaken-eval benchmark-run-pairwise-acp <dataset.json> <artifact.json> <argv-json>"
+        );
+        return ExitCode::from(2);
+    };
+    let dataset: awaken_eval::public_benchmark::PairwiseDataset = match load_json(dataset_path) {
+        Ok(dataset) => dataset,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::from(2);
+        }
+    };
+    if let Err(error) = dataset.validate() {
+        eprintln!("invalid pairwise dataset: {error}");
+        return ExitCode::from(2);
+    }
+    let (argv, env) = match acp_launch(argv_json) {
+        Ok(launch) => launch,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::from(2);
+        }
+    };
+    let observations = awaken_eval::public_benchmark::run_pairwise_acp(&dataset, argv, env).await;
+    if let Err(error) = save_json(artifact_path, &observations) {
+        eprintln!("failed to save pairwise observations: {error}");
+        return ExitCode::from(2);
+    }
+    print_pairwise(&dataset, &observations)
+}
+
+fn score_pairwise(args: &[String]) -> ExitCode {
+    let [dataset_path, artifact_path] = args else {
+        eprintln!("usage: awaken-eval benchmark-score-pairwise <dataset.json> <artifact.json>");
+        return ExitCode::from(2);
+    };
+    let dataset = match load_json(dataset_path) {
+        Ok(dataset) => dataset,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::from(2);
+        }
+    };
+    let observations: Vec<awaken_eval::public_benchmark::BenchmarkObservation> =
+        match load_json(artifact_path) {
+            Ok(observations) => observations,
+            Err(error) => {
+                eprintln!("{error}");
+                return ExitCode::from(2);
+            }
+        };
+    print_pairwise(&dataset, &observations)
+}
+
+fn print_pairwise(
+    dataset: &awaken_eval::public_benchmark::PairwiseDataset,
+    observations: &[awaken_eval::public_benchmark::BenchmarkObservation],
+) -> ExitCode {
+    let report = awaken_eval::public_benchmark::score_pairwise(dataset, observations);
+    println!("{}", serde_json::to_string_pretty(&report).unwrap());
+    if report.observed == report.total && report.schema_valid.correct == report.total {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+fn compare_pairwise(args: &[String]) -> ExitCode {
+    let [dataset_path, left_path, right_path] = args else {
+        eprintln!(
+            "usage: awaken-eval benchmark-compare-pairwise <dataset.json> <left-observations.json> <right-observations.json>"
+        );
+        return ExitCode::from(2);
+    };
+    let dataset = match load_json(dataset_path) {
+        Ok(dataset) => dataset,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::from(2);
+        }
+    };
+    let left: Vec<awaken_eval::public_benchmark::BenchmarkObservation> = match load_json(left_path)
+    {
+        Ok(observations) => observations,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::from(2);
+        }
+    };
+    let right: Vec<awaken_eval::public_benchmark::BenchmarkObservation> =
+        match load_json(right_path) {
+            Ok(observations) => observations,
+            Err(error) => {
+                eprintln!("{error}");
+                return ExitCode::from(2);
+            }
+        };
+    let report = awaken_eval::public_benchmark::compare_pairwise(&dataset, &left, &right);
+    println!("{}", serde_json::to_string_pretty(&report).unwrap());
+    if report.jointly_valid == report.total {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+fn import_qmsum(args: &[String]) -> ExitCode {
+    let [input_dir, output_path, rest @ ..] = args else {
+        eprintln!(
+            "usage: awaken-eval benchmark-import-qmsum <json-directory> <dataset.json> [limit]"
+        );
+        return ExitCode::from(2);
+    };
+    if rest.len() > 1 {
+        eprintln!("benchmark-import-qmsum accepts at most one limit");
+        return ExitCode::from(2);
+    }
+    let limit = match parse_limit(rest.first()) {
+        Ok(limit) => limit,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::from(2);
+        }
+    };
+    let entries = match std::fs::read_dir(input_dir) {
+        Ok(entries) => entries,
+        Err(error) => {
+            eprintln!("read QMSum directory: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    let mut paths = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "json")
+        })
+        .collect::<Vec<_>>();
+    paths.sort();
+    let mut documents = Vec::with_capacity(paths.len());
+    for path in paths {
+        let Some(path) = path.to_str() else {
+            eprintln!("non-UTF8 QMSum path");
+            return ExitCode::from(2);
+        };
+        match load_json(path) {
+            Ok(value) => documents.push(value),
+            Err(error) => {
+                eprintln!("{error}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    let dataset = match awaken_eval::public_benchmark::import_qmsum_documents(&documents, limit) {
+        Ok(dataset) => dataset,
+        Err(error) => {
+            eprintln!("failed to import QMSum: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    if let Err(error) = save_json(output_path, &dataset) {
+        eprintln!("failed to save QMSum dataset: {error}");
+        return ExitCode::from(2);
+    }
+    eprintln!("imported {} QMSum cases", dataset.cases.len());
+    ExitCode::SUCCESS
+}
+
+async fn run_compact_reference_acp(args: &[String]) -> ExitCode {
+    let [dataset_path, artifact_path, argv_json] = args else {
+        eprintln!(
+            "usage: awaken-eval benchmark-run-compact-reference-acp <dataset.json> <artifact.json> <argv-json>"
+        );
+        return ExitCode::from(2);
+    };
+    let dataset: awaken_eval::public_benchmark::ReferenceCompactDataset =
+        match load_json(dataset_path) {
+            Ok(dataset) => dataset,
+            Err(error) => {
+                eprintln!("{error}");
+                return ExitCode::from(2);
+            }
+        };
+    if let Err(error) = dataset.validate() {
+        eprintln!("invalid reference compact dataset: {error}");
+        return ExitCode::from(2);
+    }
+    let (argv, env) = match acp_launch(argv_json) {
+        Ok(launch) => launch,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::from(2);
+        }
+    };
+    let observations =
+        awaken_eval::public_benchmark::run_reference_compact_acp(&dataset, argv, env).await;
+    if let Err(error) = save_json(artifact_path, &observations) {
+        eprintln!("failed to save compact observations: {error}");
+        return ExitCode::from(2);
+    }
+    print_compact_reference(&dataset, &observations)
+}
+
+fn score_compact_reference(args: &[String]) -> ExitCode {
+    let [dataset_path, artifact_path] = args else {
+        eprintln!(
+            "usage: awaken-eval benchmark-score-compact-reference <dataset.json> <artifact.json>"
+        );
+        return ExitCode::from(2);
+    };
+    let dataset = match load_json(dataset_path) {
+        Ok(dataset) => dataset,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::from(2);
+        }
+    };
+    let observations: Vec<awaken_eval::public_benchmark::BenchmarkObservation> =
+        match load_json(artifact_path) {
+            Ok(observations) => observations,
+            Err(error) => {
+                eprintln!("{error}");
+                return ExitCode::from(2);
+            }
+        };
+    print_compact_reference(&dataset, &observations)
+}
+
+fn print_compact_reference(
+    dataset: &awaken_eval::public_benchmark::ReferenceCompactDataset,
+    observations: &[awaken_eval::public_benchmark::BenchmarkObservation],
+) -> ExitCode {
+    let report = awaken_eval::public_benchmark::score_reference_compact(dataset, observations);
+    println!("{}", serde_json::to_string_pretty(&report).unwrap());
+    if report.observed == report.total {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+fn import_locomo_memory(args: &[String]) -> ExitCode {
+    let [input_path, output_path, rest @ ..] = args else {
+        eprintln!(
+            "usage: awaken-eval benchmark-import-locomo-memory <locomo.json> <memory-dataset.json> [limit] [distractors]"
+        );
+        return ExitCode::from(2);
+    };
+    if rest.len() > 2 {
+        eprintln!("benchmark-import-locomo-memory accepts limit and distractors");
+        return ExitCode::from(2);
+    }
+    let limit = match parse_limit(rest.first()) {
+        Ok(limit) => limit,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::from(2);
+        }
+    };
+    let distractors = match rest.get(1).map_or(Ok(9), |value| {
+        value
+            .parse::<usize>()
+            .map_err(|error| format!("invalid distractors: {error}"))
+    }) {
+        Ok(value) if value > 0 => value,
+        Ok(_) => {
+            eprintln!("distractors must be positive");
+            return ExitCode::from(2);
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::from(2);
+        }
+    };
+    let value = match load_json(input_path) {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::from(2);
+        }
+    };
+    let dataset =
+        match awaken_eval::public_benchmark::import_locomo_selection(&value, limit, distractors) {
+            Ok(dataset) => dataset,
+            Err(error) => {
+                eprintln!("failed to import LoCoMo: {error}");
+                return ExitCode::from(2);
+            }
+        };
+    if let Err(error) = save_json(output_path, &dataset) {
+        eprintln!("failed to save LoCoMo dataset: {error}");
+        return ExitCode::from(2);
+    }
+    eprintln!(
+        "imported {} LoCoMo selector cases",
+        dataset.selection_cases.len()
+    );
+    ExitCode::SUCCESS
 }
 
 fn import_claude(args: &[String]) -> ExitCode {

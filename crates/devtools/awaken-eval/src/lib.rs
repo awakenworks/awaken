@@ -13,6 +13,7 @@ pub mod compact_eval;
 pub mod memory_eval;
 pub mod outcome_acp;
 pub mod outcome_judge;
+pub mod public_benchmark;
 pub mod record;
 pub mod replay;
 pub mod store;
