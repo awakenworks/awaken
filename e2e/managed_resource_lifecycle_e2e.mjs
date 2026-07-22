@@ -9,12 +9,8 @@
 //
 // Deterministic (echo model, no API key), so it runs in the keyless coverage arm.
 //
-// NOTE: detaching a memory_store is likewise rejected in the runtime, but that
-// guard is not reachable over the wire yet — a creation-time memory_store is not
-// reflected into `Session.resources`, and adding one is blocked here, so no
-// memory resource id ever exists to DELETE. That path gets a wire test once the
-// session-resource backfill lands; the runtime guard is covered by the Rust unit
-// test `session_resources::memory_store_cannot_attach_to_a_running_session`.
+// A creation-time memory_store is reflected into `Session.resources`, so this also
+// proves its binding cannot be detached after the Session has frozen it.
 
 import assert from 'node:assert/strict';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
@@ -60,6 +56,19 @@ async function main() {
     );
     assert.equal((await listResources(client, seeded.id)).length, 1, 'create-time resource is listed');
     pass('create-time resources are backfilled on the session and listed');
+
+    await assert.rejects(
+      () => client.beta.sessions.resources.delete(seeded.resources[0].id, {
+        session_id: seeded.id,
+        betas: BETAS,
+      }),
+      (e) => e.status === 400,
+      'a frozen memory_store binding cannot be detached from a live session',
+    );
+    const seededAfterDeny = await listResources(client, seeded.id);
+    assert.equal(seededAfterDeny.length, 1, 'rejected detach preserves the binding');
+    assert.equal(seededAfterDeny[0].memory_store_id, mem.id);
+    pass('create-time memory_store cannot be detached after the Session is live');
 
     const session = await client.beta.sessions.create({ agent: 'assistant', betas: BETAS });
     assert.ok(session.id.startsWith('sesn_'), `session created: ${session.id}`);
