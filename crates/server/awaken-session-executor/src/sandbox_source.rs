@@ -17,6 +17,9 @@
 //! (podman / docker / k8s), behind the same [`AgentChannelSource`] trait. The
 //! composition root wires whichever source a given worker is configured for.
 
+#[cfg(test)]
+mod container_projection;
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -26,6 +29,7 @@ use awaken_run_executor_acp::{
     AcpCli, AcpLaunch, AgentChannelSource, AgentSession, LaunchResolver, OpenError, project_launch,
 };
 use awaken_runtime_contract::activation::RunActivation;
+#[cfg(test)]
 use awaken_sandbox_container::AgentContainerProvider;
 use awaken_sandbox_local::NamespaceProvider;
 
@@ -855,11 +859,16 @@ impl ContainerChannelSource {
         self
     }
 
-    /// The staged file/resource mounts for `thread`. Empty when no registry is wired.
+    /// The staged file/resource mounts for `thread`. The resource plane stores paths
+    /// relative to a sandbox root (`.mnt/...`) so Workdir and namespace providers can
+    /// resolve them without trusting a host path. OCI runtimes instead require an
+    /// absolute bind destination, so project that same logical path below the fixed
+    /// container workspace at this backend boundary. Already-absolute mounts remain
+    /// unchanged (for example the ACP config and credential mounts added later).
     fn resource_mounts(&self, thread: &str) -> Vec<pc::MountRequirement> {
         self.resources
             .as_ref()
-            .map(|r| r.mounts_for(thread))
+            .map(|resources| container_projection::resource_mounts(resources.mounts_for(thread)))
             .unwrap_or_default()
     }
 
@@ -951,9 +960,12 @@ impl AgentChannelSource for ContainerChannelSource {
                 .as_ref()
                 .and_then(|binding| acp_credential_mount(cli, binding, SANDBOX_CONFIG_HOME))
         });
-        if let Some((_, (env_key, env_val))) = credential_mount.as_ref().or(config_mount.as_ref()) {
-            launch.env.retain(|(k, _)| k != env_key);
-            launch.env.push((env_key.clone(), env_val.clone()));
+        // A projected CLI's resolver returns a host-side durable config home. Never
+        // leak that path into a container where it is both meaningless and an
+        // implementation detail. Every CLI receives the fixed interior home; mounts
+        // below decide which governed bytes are present there.
+        if let Some(cli) = self.launch.cli() {
+            container_projection::config_home(&mut launch, cli);
         }
         let mut spec = self.spec(thread, &launch);
         if let Some((mount, _)) = config_mount {
