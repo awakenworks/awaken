@@ -85,9 +85,10 @@ conflate them:
 - **Materialization** — *where* a secret physically lives: `CredentialSource.kind`.
 - **Selection** — *which* source a run uses: `CredentialBinding` (+ `CredentialPool`).
 
-There is **no inline-secret-in-config path** (oversight-consistent): a secret
-always lives in a `CredentialSource` (vault or host-native), never embedded in a
-spec. The runtime sees neither axis — both resolve management-side into a
+There is **no inline or ambient-secret-in-config path**: an executable secret
+always lives in a persisted `CredentialSource` (vault or an explicitly persisted
+OAuth helper), never embedded in a spec or read from provider process environment.
+Environment inspection may produce a secret-free UI proposal only. The runtime sees neither axis — both resolve management-side into a
 `SecretInput` (see [ADR-0043](../adr/0043-management-plane-config-credential-model-and-runtime-unaware-secret-seam.md)).
 
 ### Credential source — the stored row (secret-free)
@@ -95,10 +96,10 @@ spec. The runtime sees neither axis — both resolve management-side into a
 ```rust
 struct CredentialSource {                     // supersedes this page's earlier `CredentialRecord`
     id, workspace_id,
-    kind: CredentialKind,                     // Vault | HostNative | WorkerLocal | EnvPassthrough | ExternalRef
+    kind: CredentialKind,                     // Vault | Oauth (`Env` decodes legacy rows but cannot execute)
     provider_id: Option<String>, adapter_registration_id: Option<String>,
     auth: CredentialAuth,                     // neutral; ACL maps the managed wire tags
-    material_ref: Option<SecretRef>,          // → SecretStore; None for host-native (secret never crosses control plane)
+    material_ref: Option<SecretRef>,          // → SecretStore; None for OAuth helpers
     status, max_concurrency,
     account_id: Option<CredentialAccountId>,  // shared upstream-account quota bucket
     version,
@@ -209,13 +210,13 @@ and always slots behind this same port.
 |---|---|---|
 | Type system | `RedactedString` (redacted, zeroize, non-serde), single `expose_secret()` | accidental serialization/logging; memory residue |
 | Secret-free aggregates | config holds only a `CredentialBinding` (source/pool id); `CredentialSource` holds only a `SecretRef` | leakage via snapshots, wire, audit, replication |
-| At rest | `SecretStore` sealed-AEAD, key separate; or don't store (`Env`/host-native) | stolen disk / DB dump / backup |
+| At rest | `SecretStore` sealed-AEAD with a separate key; or an explicitly persisted OAuth helper mints a short-lived token | stolen disk / DB dump / backup |
 | In use | materialize at injection seam only; `Networking.allowed_hosts`; sandbox can't see vault | compromised/malicious agent exfiltration |
 | Access control | `workspace_id` scoping + `credential.*` authz (ADR-0042) | wrong-tenant read/use |
 | Blast radius | optional `secretd`/egress proxy; process-group reap | master-key exposure; residual-process leak |
 
-Must-enforce: no inline-secret-in-config (a secret always lives in a
-`CredentialSource`, oversight-consistent); AEAD keys physically separate from
+Must-enforce: no inline/ambient-secret-in-config (an executable secret always lives in a
+persisted `CredentialSource`); AEAD keys physically separate from
 ciphertext; `credential.*` authz is required.
 
 ## Egress-Proxy Delivery (Managed, Untrusted Agents)
@@ -233,8 +234,8 @@ isolation.
 Model the **full oversight-next entity graph** from the start (so no rework), but
 wire only a subset in P0:
 
-- **P0 (single-machine):** `CredentialSource` (kind `Vault`/`EnvPassthrough`) +
-  `SecretStore` (inmem/plaintext-file) + `CredentialBinding::Exact` only. No
+- **P0 (single-machine):** `CredentialSource` (kind `Vault`) +
+  `SecretStore` (inmem/sealed durable adapter) + `CredentialBinding::Exact` only. No
   pool, no multi-tier routing, no `ProviderIdentity` per-endpoint toggle.
 - **P1 (managed):** `CredentialPool` + `CredentialBinding::OneOfCredentialPool` +
   `CredentialSelectionPolicy`; `ProviderIdentity.disabled_endpoint_ids`;

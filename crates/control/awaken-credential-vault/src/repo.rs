@@ -8,7 +8,7 @@ use std::sync::Mutex;
 
 use crate::{
     CredentialCreateParams, CredentialError, CredentialPool, CredentialPoolId, CredentialSource,
-    CredentialSourceId, SecretStore, prepare_source,
+    CredentialSourceId, SecretStore, prepare_source, reject_environment_source,
 };
 
 /// Secret-free durable intent written before secret material is touched.
@@ -187,6 +187,7 @@ pub async fn enter_credential(
     store: &dyn SecretStore,
     repo: &dyn CredentialRepo,
 ) -> Result<CredentialSource, CredentialError> {
+    reject_environment_source(&params)?;
     let (source, secret) = prepare_source(params);
     repo.begin_creation(CredentialCreationIntent {
         source: source.clone(),
@@ -628,10 +629,10 @@ mod tests {
         let owned = enter_credential(
             CredentialCreateParams {
                 workspace_id: "ws-owner".into(),
-                kind: CredentialKind::Env,
+                kind: CredentialKind::Vault,
                 provider_id: Some("anthropic".into()),
                 env_key: Some("ANTHROPIC_API_KEY".into()),
-                secret: None,
+                secret: Some(RedactedString::new("secret")),
                 oauth_command: None,
             },
             &store,

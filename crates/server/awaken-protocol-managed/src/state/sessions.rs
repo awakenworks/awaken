@@ -212,7 +212,7 @@ impl ManagedState {
                     .create_repository(
                         awaken_resource_contract::RepositoryDefinition {
                             id: repository_id.clone().into(),
-                            workspace_id: owner_scope.clone().into(),
+                            workspace_id: owner_scope.clone(),
                             name: format!("Session repository {index}"),
                             description: "Managed compatibility Session input".into(),
                             metadata: Default::default(),

@@ -37,9 +37,9 @@ pub use awaken_config_resolver::{
 };
 pub use router::{
     AdminState, CooldownRequest, CredentialProbe, CredentialSourceView, CredentialValidation,
-    EnterCredentialRequest, PoolEligibleView, ProbeStatus, ResolveAgentMcpRequest,
-    ResolveProfileRequest, ResolveRequest, ResolvedCandidatesView, ResolvedInferenceView,
-    ResolvedMcpServerView, ValidateCredentialRequest, admin_router,
+    EnterCredentialRequest, EnvironmentProviderProposal, PoolEligibleView, ProbeStatus,
+    ResolveAgentMcpRequest, ResolveProfileRequest, ResolveRequest, ResolvedCandidatesView,
+    ResolvedInferenceView, ResolvedMcpServerView, ValidateCredentialRequest, admin_router,
 };
 
 /// The API surface version this crate serves.

@@ -245,7 +245,7 @@ async fn create_store(
     let at = now_nanos();
     let def = MemoryStoreDefinition {
         id: id.clone().into(),
-        workspace_id: workspace.into(),
+        workspace_id: workspace,
         name: parsed
             .get("name")
             .and_then(Value::as_str)

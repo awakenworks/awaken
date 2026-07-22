@@ -49,7 +49,7 @@
 | D15 | 沙箱隔离级 | `AWAKEN_SANDBOX_TIER`(`SandboxTier::from_env_str`) | local/none · namespace(bwrap) · docker · podman · k8s | namespace |
 | D16 | 容器镜像 | `AWAKEN_CONTAINER_IMAGE`(+`container-*` feature) | ref · 未设 | 未设(容器级必需) |
 | D17 | bwrap 缺失降级 | `AWAKEN_SANDBOX_ALLOW_LOCAL_FALLBACK` | 1(降级) · 未设(fail-closed) | fail-closed |
-| D18 | ACP CLI 源 | `AWAKEN_ACP_CLI`(投影) / `AWAKEN_ACP_ARGV`(固定) | cli-id · argv · 皆无(native) | 皆无 |
+| D18 | ACP CLI 源 | `AWAKEN_ACP_CLI` 仅声明 worker capability；snapshot `acp:<cli>` 必须匹配；固定 argv 仅显式 dev/test composition | cli-id · snapshot binding · 皆无(native) | 皆无 |
 | D19 | Hand 拓扑 | brain 侧:`AWAKEN_REMOTE_HAND_UNIX`(C5 colocated) · `AWAKEN_REMOTE_HAND`(direct) · `AWAKEN_REMOTE_HAND_LISTEN`(reverse) · `AWAKEN_REMOTE_HAND_NATS`+`_SUBJECT`(relay);sandbox 侧 `awaken-sandbox hand --unix/--listen/--dial/--nats` | 四拓扑之一 | — |
 | D20 | 每会话出口 | 会话 environment networking → `NetworkPolicy::None/Unrestricted` | deny · allow | allow |
 | D21 | Worker 上游 & 秘密 | `AWAKEN_UPSTREAM_URL`/`AWAKEN_WORKER_SERVE_URL`;`AWAKEN_WORKER_GATEWAY_ONLY` | 本地凭证 · gateway-only(secretless) | 本地凭证 |

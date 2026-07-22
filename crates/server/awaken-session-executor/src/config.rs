@@ -215,24 +215,6 @@ pub fn advertised_tools(
     tools
 }
 
-/// Ordered pool fallbacks for the server's agent, from `AWAKEN_MODEL_FALLBACKS`
-/// (comma-separated model refs). Each is bound like the primary (`default`
-/// provider/backend), so a run fails over to the next when its model is down (#1).
-/// Empty when unset — a single-model server, unchanged behavior.
-fn model_fallbacks() -> Vec<ModelBinding> {
-    std::env::var("AWAKEN_MODEL_FALLBACKS")
-        .ok()
-        .into_iter()
-        .flat_map(|raw| {
-            raw.split(',')
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(|m| ModelBinding::new("default", m, "default"))
-                .collect::<Vec<_>>()
-        })
-        .collect()
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn server_config(
     agent_id: &str,
@@ -245,26 +227,11 @@ pub(crate) fn server_config(
     context_policy: ContextPolicy,
 ) -> ExecutableAgentSnapshot {
     let tools = advertised_tools(client_tools, delegates, dynamic_descriptors);
-    let model_candidates = model_fallbacks();
-    let inference_access = awaken_runtime_contract::InferenceAccess::candidate_set(
-        std::iter::once(model_ref)
-            .chain(
-                model_candidates
-                    .iter()
-                    .map(|candidate| candidate.model_ref.as_str()),
-            )
-            .map(|model| {
-                (
-                    model.to_string(),
-                    awaken_runtime_contract::InferenceAccess::host_executor(model),
-                )
-            }),
-    )
-    .expect("server config always contains its primary model");
+    let inference_access = awaken_runtime_contract::InferenceAccess::host_executor(model_ref);
     ExecutableAgentSnapshot::builder(agent_id)
         .instructions(SYSTEM_PROMPT)
         .model(ModelBinding::new("default", model_ref, "default"))
-        .model_candidates(model_candidates)
+        .model_candidates(Vec::new())
         .tools(tools)
         .max_steps(20)
         .plugins(plugin_ids.iter().cloned())
