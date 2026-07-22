@@ -71,6 +71,7 @@ use delegation::{
     stage_delegation_completed, stage_delegation_request, stage_delegation_requests,
 };
 use finalize::finish;
+pub(crate) use finalize::observe_committed_terminal;
 use inference::infer_with_retry;
 use resume::drive_resumed;
 

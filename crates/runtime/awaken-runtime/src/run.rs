@@ -16,8 +16,10 @@ use awaken_runtime_contract::execution::{Error, RunExecutor};
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
+use awaken_runtime_contract::terminal::CommittedTerminalRun;
 
 use crate::Runtime;
+use crate::engine::observe_committed_terminal;
 
 impl Runtime {
     /// Run `snapshot` once on a fresh thread, returning the resulting state.
@@ -105,7 +107,20 @@ impl Runtime {
             .as_deref()
             .and_then(|reader| reader.run_state(&run_id))
         {
-            Some(state @ RunState::Ended(_)) => return Ok(state),
+            Some(state @ RunState::Ended(_)) => {
+                if let RunState::Ended(cause) = &state {
+                    observe_committed_terminal(
+                        &context,
+                        &CommittedTerminalRun {
+                            run_id,
+                            thread_id: activation.thread_id,
+                            cause: cause.clone(),
+                        },
+                    )
+                    .await;
+                }
+                return Ok(state);
+            }
             Some(RunState::Awaiting) => RunState::Awaiting,
             Some(RunState::Running) | None => self.execute(activation, context.clone()).await?,
         };

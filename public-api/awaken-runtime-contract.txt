@@ -750,6 +750,7 @@ pub awaken_runtime_contract::runtime_context::RuntimeRunContext::reader: core::o
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::reschedules: core::option::Option<alloc::sync::Arc<core::sync::atomic::AtomicU32>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::stream_checkpoint: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::stream_sink: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>
+pub awaken_runtime_contract::runtime_context::RuntimeRunContext::terminal_observers: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::tool_executor: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolExecutor>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::tool_permission_policy: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy>>
 impl awaken_runtime_contract::runtime_context::RuntimeRunContext
@@ -769,6 +770,7 @@ pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_reader(
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_reschedules(self, alloc::sync::Arc<core::sync::atomic::AtomicU32>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_stream_checkpoint(self, alloc::sync::Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_stream_sink(self, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> Self
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_terminal_observer(self, alloc::sync::Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_tool_executor(self, alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolExecutor>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_tool_permission_policy(self, alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy>) -> Self
 pub mod awaken_runtime_contract::snapshot
@@ -802,6 +804,19 @@ pub awaken_runtime_contract::snapshot::ExecutableAgentSnapshot::root_agent_id: a
 impl awaken_runtime_contract::snapshot::ExecutableAgentSnapshot
 pub fn awaken_runtime_contract::snapshot::ExecutableAgentSnapshot::builder(impl core::convert::Into<alloc::string::String>) -> awaken_runtime_contract::ExecutableAgentSnapshotBuilder
 pub struct awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId(pub alloc::string::String)
+pub mod awaken_runtime_contract::terminal
+pub struct awaken_runtime_contract::terminal::CommittedTerminalRun
+pub awaken_runtime_contract::terminal::CommittedTerminalRun::cause: awaken_agent_contract::agent::run::EndCause
+pub awaken_runtime_contract::terminal::CommittedTerminalRun::run_id: awaken_agent_contract::agent::run::Id
+pub awaken_runtime_contract::terminal::CommittedTerminalRun::thread_id: awaken_agent_contract::agent::thread::Id
+pub struct awaken_runtime_contract::terminal::RunTerminalDeliveryFailure
+pub awaken_runtime_contract::terminal::RunTerminalDeliveryFailure::error: alloc::string::String
+pub awaken_runtime_contract::terminal::RunTerminalDeliveryFailure::observer_id: alloc::string::String
+pub struct awaken_runtime_contract::terminal::RunTerminalObserverError(pub alloc::string::String)
+pub trait awaken_runtime_contract::terminal::RunTerminalObserver: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::terminal::RunTerminalObserver::observe<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::terminal::CommittedTerminalRun) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_runtime_contract::terminal::RunTerminalObserverError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_runtime_contract::terminal::RunTerminalObserver::observer_id(&self) -> &str
+pub async fn awaken_runtime_contract::terminal::deliver_committed_terminal(&[alloc::sync::Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>], &awaken_runtime_contract::terminal::CommittedTerminalRun) -> alloc::vec::Vec<awaken_runtime_contract::terminal::RunTerminalDeliveryFailure>
 pub mod awaken_runtime_contract::tool
 pub enum awaken_runtime_contract::tool::ToolError
 pub awaken_runtime_contract::tool::ToolError::Execution(alloc::string::String)
@@ -1353,6 +1368,7 @@ pub awaken_runtime_contract::RuntimeRunContext::reader: core::option::Option<all
 pub awaken_runtime_contract::RuntimeRunContext::reschedules: core::option::Option<alloc::sync::Arc<core::sync::atomic::AtomicU32>>
 pub awaken_runtime_contract::RuntimeRunContext::stream_checkpoint: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>>
 pub awaken_runtime_contract::RuntimeRunContext::stream_sink: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>
+pub awaken_runtime_contract::RuntimeRunContext::terminal_observers: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>>
 pub awaken_runtime_contract::RuntimeRunContext::tool_executor: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolExecutor>>
 pub awaken_runtime_contract::RuntimeRunContext::tool_permission_policy: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy>>
 impl awaken_runtime_contract::runtime_context::RuntimeRunContext
@@ -1372,6 +1388,7 @@ pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_reader(
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_reschedules(self, alloc::sync::Arc<core::sync::atomic::AtomicU32>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_stream_checkpoint(self, alloc::sync::Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_stream_sink(self, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> Self
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_terminal_observer(self, alloc::sync::Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_tool_executor(self, alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolExecutor>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_tool_permission_policy(self, alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy>) -> Self
 pub struct awaken_runtime_contract::ToolBatch

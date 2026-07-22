@@ -16,6 +16,9 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
+use awaken_runtime_contract::terminal::{
+    CommittedTerminalRun, RunTerminalObserver, RunTerminalObserverError,
+};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use super::*;
@@ -138,6 +141,26 @@ impl RecordingCoordinator {
                     .collect()
             })
             .unwrap_or_default()
+    }
+}
+
+#[derive(Default)]
+struct TerminalRecordingObserver {
+    events: Mutex<Vec<CommittedTerminalRun>>,
+}
+
+#[async_trait]
+impl RunTerminalObserver for TerminalRecordingObserver {
+    fn observer_id(&self) -> &str {
+        "acp-terminal-test"
+    }
+
+    async fn observe(
+        &self,
+        terminal: &CommittedTerminalRun,
+    ) -> std::result::Result<(), RunTerminalObserverError> {
+        self.events.lock().unwrap().push(terminal.clone());
+        Ok(())
     }
 }
 
@@ -527,6 +550,34 @@ async fn drives_a_turn_commits_messages_and_returns_natural_end() {
     assert_eq!(
         commits[0].run_state(),
         RunState::Ended(EndCause::NaturalEnd)
+    );
+}
+
+#[tokio::test]
+async fn acp_delivers_the_same_post_commit_terminal_extension_contract() {
+    let e = exec(vec![
+        r#"{"type":"message","text":"done"}"#.into(),
+        r#"{"type":"turn_end","reason":"natural_end"}"#.into(),
+    ]);
+    let observer = Arc::new(TerminalRecordingObserver::default());
+    let state = e
+        .execute(
+            activation(),
+            RuntimeRunContext::new()
+                .with_commit(Arc::new(RecordingCoordinator::default()))
+                .with_terminal_observer(observer.clone()),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
+    assert_eq!(
+        observer.events.lock().unwrap().as_slice(),
+        &[CommittedTerminalRun {
+            run_id: RunId("run-1".into()),
+            thread_id: ThreadId("thread-1".into()),
+            cause: EndCause::NaturalEnd,
+        }]
     );
 }
 

@@ -29,6 +29,7 @@ use awaken_runtime_contract::execution::{
 use awaken_runtime_contract::resolved::Backend;
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult, validate_resume};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
+use awaken_runtime_contract::terminal::{CommittedTerminalRun, deliver_committed_terminal};
 
 // The A2A adapter of the neutral `RemoteAgent` interface: the host holds a
 // remote delegate behind the port and names no A2A type. The transport constructors
@@ -498,6 +499,10 @@ async fn commit_boundary(
     state: Vec<StateCommand>,
 ) -> Result<()> {
     if let Some(coordinator) = &context.commit {
+        let terminal_cause = match disposition.state() {
+            RunState::Ended(cause) => Some(cause),
+            RunState::Running | RunState::Awaiting => None,
+        };
         awaken_agent_contract::thread::commit::commit_run(
             coordinator.as_ref(),
             &activation.thread_id,
@@ -507,6 +512,17 @@ async fn commit_boundary(
         )
         .await
         .map_err(|error| Error::Commit(error.to_string()))?;
+
+        if let Some(cause) = terminal_cause {
+            let terminal = CommittedTerminalRun {
+                run_id: activation.run_id.clone(),
+                thread_id: activation.thread_id.clone(),
+                cause,
+            };
+            // The shared helper isolates observer failures from the committed
+            // remote Run result and permits recovery redelivery.
+            let _ = deliver_committed_terminal(&context.terminal_observers, &terminal).await;
+        }
     }
     Ok(())
 }
@@ -528,6 +544,7 @@ mod tests {
     use awaken_runtime_contract::snapshot::{
         AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
     };
+    use awaken_runtime_contract::terminal::{RunTerminalObserver, RunTerminalObserverError};
     use std::sync::Mutex;
 
     struct ScriptedTransport {
@@ -628,6 +645,24 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct TerminalRec(Mutex<Vec<CommittedTerminalRun>>);
+
+    #[async_trait]
+    impl RunTerminalObserver for TerminalRec {
+        fn observer_id(&self) -> &str {
+            "a2a-terminal-test"
+        }
+
+        async fn observe(
+            &self,
+            terminal: &CommittedTerminalRun,
+        ) -> std::result::Result<(), RunTerminalObserverError> {
+            self.0.lock().unwrap().push(terminal.clone());
+            Ok(())
+        }
+    }
+
     fn activation(backend_ref: &str) -> RunActivation {
         RunActivation {
             run_id: RunId("r".into()),
@@ -655,6 +690,29 @@ mod tests {
             delegation_origin: None,
             model_ref_override: None,
         }
+    }
+
+    #[tokio::test]
+    async fn a2a_delivers_the_same_post_commit_terminal_extension_contract() {
+        let activation = activation("a2a:https://example.test");
+        let observer = Arc::new(TerminalRec::default());
+        let context = RuntimeRunContext::new()
+            .with_commit(Arc::new(Rec::default()))
+            .with_terminal_observer(observer.clone());
+
+        let state = finish_terminal(&context, &activation, Vec::new(), EndCause::NaturalEnd)
+            .await
+            .unwrap();
+
+        assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
+        assert_eq!(
+            observer.0.lock().unwrap().as_slice(),
+            &[CommittedTerminalRun {
+                run_id: RunId("r".into()),
+                thread_id: ThreadId("t".into()),
+                cause: EndCause::NaturalEnd,
+            }]
+        );
     }
 
     // ---- pure translation units (prompt_of / task_reply / end_cause_of) ----

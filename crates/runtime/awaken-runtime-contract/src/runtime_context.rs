@@ -25,6 +25,7 @@ use crate::data_subject::{CaptureSink, DataSubjectId};
 use crate::live_inbox::LiveInbox;
 use crate::pause::PauseSignal;
 use crate::permission::ToolPermissionPolicy;
+use crate::terminal::RunTerminalObserver;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
 
 /// The content-capture wiring for one attempt (ADR-0050): the resolved decision
@@ -50,6 +51,10 @@ pub struct RuntimeRunContext {
     pub stream_sink: Option<Arc<dyn StreamSink>>,
     /// Durable write boundary for this attempt; absent means no persistence.
     pub commit: Option<Arc<dyn CommitCoordinator>>,
+    /// Reactions to an already-committed terminal Run. Delivery is at-least-once:
+    /// stable-id recovery may invoke an observer again, so observers own durable
+    /// idempotent intents/receipts. Awaiting Runs are never delivered.
+    pub terminal_observers: Vec<Arc<dyn RunTerminalObserver>>,
     /// Durable snapshot store for an interrupted inference stream. When set, the
     /// engine flushes the in-flight partial at an interruption boundary so a
     /// later process resumes mid-step instead of re-running it; absent means an
@@ -141,6 +146,15 @@ impl RuntimeRunContext {
     #[must_use]
     pub fn with_commit(mut self, commit: Arc<dyn CommitCoordinator>) -> Self {
         self.commit = Some(commit);
+        self
+    }
+
+    /// Add a committed-terminal observer for this Run. Observers are inherited
+    /// by in-process delegated child Runs because those children are ordinary
+    /// Runs sharing the same runtime extension composition.
+    #[must_use]
+    pub fn with_terminal_observer(mut self, observer: Arc<dyn RunTerminalObserver>) -> Self {
+        self.terminal_observers.push(observer);
         self
     }
 
