@@ -182,7 +182,66 @@ impl MemoryExtractionIntent {
                 "memory_config_version must be positive".into(),
             ));
         }
+        if self.mutations.iter().any(|mutation| {
+            mutation.path.trim().is_empty() || mutation.target_sha256.trim().is_empty()
+        }) {
+            return Err(MemoryExtractionError::Invalid(
+                "extraction mutations require a path and target hash".into(),
+            ));
+        }
+        match self.status {
+            MemoryExtractionStatus::Pending | MemoryExtractionStatus::Claimed
+                if !self.mutations.is_empty() || self.receipt.is_some() =>
+            {
+                return Err(MemoryExtractionError::Invalid(
+                    "pre-extraction intent cannot contain mutations or a receipt".into(),
+                ));
+            }
+            MemoryExtractionStatus::Extracted if self.receipt.is_some() => {
+                return Err(MemoryExtractionError::Invalid(
+                    "extracted intent cannot contain a storage receipt".into(),
+                ));
+            }
+            MemoryExtractionStatus::Stored | MemoryExtractionStatus::Completed
+                if self.receipt.is_none() =>
+            {
+                return Err(MemoryExtractionError::Invalid(
+                    "stored intent requires a storage receipt".into(),
+                ));
+            }
+            _ => {}
+        }
+        if let Some(receipt) = &self.receipt {
+            Self::validate_receipt(&self.mutations, receipt)?;
+        }
+        if self.status.is_terminal()
+            && (self.claim_owner.is_some() || self.lease_expires_at_unix_ms.is_some())
+        {
+            return Err(MemoryExtractionError::Invalid(
+                "terminal intent cannot retain a claim".into(),
+            ));
+        }
         Ok(())
+    }
+
+    fn validate_receipt(
+        mutations: &[MemoryExtractionMutation],
+        receipt: &MemoryExtractionReceipt,
+    ) -> Result<(), MemoryExtractionError> {
+        let matches = mutations.len() == receipt.mutations.len()
+            && mutations
+                .iter()
+                .zip(&receipt.mutations)
+                .all(|(mutation, stored)| {
+                    mutation.path == stored.path && mutation.target_sha256 == stored.target_sha256
+                });
+        if matches {
+            Ok(())
+        } else {
+            Err(MemoryExtractionError::Invalid(
+                "receipt must match every proposed mutation".into(),
+            ))
+        }
     }
 
     /// Whether two values describe the same immutable request. Lifecycle fields
@@ -296,11 +355,7 @@ impl MemoryExtractionIntent {
             MemoryExtractionStatus::Extracted,
             MemoryExtractionStatus::Stored,
         )?;
-        if receipt.mutations.len() != self.mutations.len() {
-            return Err(MemoryExtractionError::Invalid(
-                "receipt must cover every proposed mutation".into(),
-            ));
-        }
+        Self::validate_receipt(&self.mutations, &receipt)?;
         self.receipt = Some(receipt);
         self.status = MemoryExtractionStatus::Stored;
         self.bump_revision()
@@ -549,6 +604,47 @@ mod tests {
             intent.renew_claim("worker-b", generation, 130, 80),
             Err(MemoryExtractionError::StaleClaim)
         );
+    }
+
+    #[test]
+    fn storage_receipt_must_match_each_planned_mutation() {
+        let mut intent = intent();
+        let generation = intent.claim("worker-a", 100, 50).unwrap();
+        intent
+            .mark_extracted(
+                "worker-a",
+                generation,
+                110,
+                vec![MemoryExtractionMutation {
+                    path: "/customer.md".into(),
+                    content: "remember".into(),
+                    observed_sha256: None,
+                    target_sha256: "expected".into(),
+                }],
+            )
+            .unwrap();
+
+        let error = intent
+            .mark_stored(
+                "worker-a",
+                generation,
+                120,
+                MemoryExtractionReceipt {
+                    stored_at_unix_ms: 120,
+                    mutations: vec![MemoryMutationReceipt {
+                        path: "/customer.md".into(),
+                        target_sha256: "forged".into(),
+                        already_applied: false,
+                    }],
+                },
+            )
+            .unwrap_err();
+        assert_eq!(
+            error,
+            MemoryExtractionError::Invalid("receipt must match every proposed mutation".into())
+        );
+        assert_eq!(intent.status, MemoryExtractionStatus::Extracted);
+        assert!(intent.receipt.is_none());
     }
 
     #[test]
