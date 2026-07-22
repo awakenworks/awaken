@@ -69,6 +69,26 @@ function persistIntent(database, intent, insert) {
   );
 }
 
+function persistRecoverableRaw(database, intentId, data) {
+  sqlite(
+    database,
+    `UPDATE managed_memory_extraction SET
+      status='pending', lease_expires_at_unix_ms=NULL, data=${sqlQuote(data)}
+     WHERE intent_id=${sqlQuote(intentId)};`,
+  );
+}
+
+function rawIntent(database, intentId) {
+  const output = execFileSync('sqlite3', [
+    '-json',
+    database,
+    `SELECT data FROM managed_memory_extraction WHERE intent_id=${sqlQuote(intentId)}`,
+  ]).toString().trim();
+  const rows = output ? JSON.parse(output) : [];
+  assert.equal(rows.length, 1, `missing extraction ${intentId}`);
+  return rows[0].data;
+}
+
 async function reply(sessionId) {
   const events = [];
   for await (const event of client.beta.sessions.events.list(sessionId, { betas: BETAS })) {
@@ -254,6 +274,68 @@ async function main() {
     assert.equal(rows.get(unavailableExtractor.intent_id).status, 'terminal_failed');
     assert.equal(rows.get(unavailableExtractor.intent_id).attempts, 5);
     assert.match(rows.get(unavailableExtractor.intent_id).last_error, /pinned inference access/u);
+
+    // The durable repository validates the whole staged aggregate on every
+    // recoverable read. Inject malformed lifecycle combinations through SQLite
+    // while the real reconciler is running: each row must remain untouched and
+    // the process must keep serving, rather than resume from invented defaults.
+    const validCompleted = rows.get(stored.intent_id);
+    const validReceipt = validCompleted.receipt;
+    const validMutation = validCompleted.mutations[0];
+    const cleanPending = {
+      ...validCompleted,
+      status: 'pending',
+      mutations: [],
+      receipt: null,
+      claim_owner: null,
+      lease_expires_at_unix_ms: null,
+    };
+    const corruptions = [
+      { ...cleanPending, intent_id: ' ' },
+      { ...cleanPending, idempotency_key: ' ' },
+      { ...cleanPending, workspace_id: ' ' },
+      { ...cleanPending, session_id: ' ' },
+      { ...cleanPending, terminal_commit_id: ' ' },
+      { ...cleanPending, memory_store_id: ' ' },
+      { ...cleanPending, extractor: { ...cleanPending.extractor, agent_id: ' ' } },
+      { ...cleanPending, extractor: { ...cleanPending.extractor, model_ref: ' ' } },
+      { ...cleanPending, memory_config_version: 0 },
+      { ...cleanPending, mutations: [validMutation] },
+      { ...cleanPending, status: 'extracted', mutations: [validMutation], receipt: validReceipt },
+      { ...cleanPending, status: 'stored', mutations: [validMutation], receipt: null },
+      {
+        ...cleanPending,
+        status: 'stored',
+        mutations: [validMutation],
+        receipt: {
+          ...validReceipt,
+          mutations: [{ ...validReceipt.mutations[0], target_sha256: 'forged-target' }],
+        },
+      },
+      {
+        ...cleanPending,
+        status: 'terminal_failed',
+        claim_owner: 'stale-worker',
+        lease_expires_at_unix_ms: Number.MAX_SAFE_INTEGER,
+      },
+      {
+        ...cleanPending,
+        status: 'extracted',
+        mutations: [{ ...validMutation, path: ' ', target_sha256: ' ' }],
+      },
+    ];
+    for (const corrupt of corruptions) {
+      const data = JSON.stringify(corrupt);
+      persistRecoverableRaw(database, validCompleted.intent_id, data);
+      await sleep(800);
+      assert.equal(
+        rawIntent(database, validCompleted.intent_id),
+        data,
+        'a corrupt extraction aggregate must not be claimed or rewritten',
+      );
+      assert.equal(second.server.exitCode, null, 'corrupt extraction crashed the process');
+    }
+    persistIntent(database, validCompleted, false);
 
     const memories = await client.get(`/v1/memory_stores/${store.id}/memories`);
     const byPath = new Map(memories.data.map((memory) => [memory.path, memory]));
