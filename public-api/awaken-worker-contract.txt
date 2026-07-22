@@ -159,6 +159,8 @@ pub fn awaken_worker_contract::WorkerSnapshot::accepts(&self, &awaken_worker_con
 impl core::convert::From<&awaken_worker_contract::WorkerSnapshot> for awaken_worker_contract::WorkerAssignment
 pub fn awaken_worker_contract::WorkerAssignment::from(&awaken_worker_contract::WorkerSnapshot) -> Self
 pub const awaken_worker_contract::CURRENT_CONTRACT_VERSION: u32
+pub const awaken_worker_contract::REPOSITORY_CREDENTIALS_CAPABILITY: &str
+pub const awaken_worker_contract::SESSION_RESOURCES_CAPABILITY: &str
 pub trait awaken_worker_contract::PlacementPolicy: core::marker::Send + core::marker::Sync
 pub fn awaken_worker_contract::PlacementPolicy::id(&self) -> &str
 pub fn awaken_worker_contract::PlacementPolicy::rank(&self, &awaken_worker_contract::PlacementContext, &[awaken_worker_contract::WorkerSnapshot]) -> core::result::Result<alloc::vec::Vec<awaken_worker_contract::RankedWorker>, awaken_worker_contract::PlacementError>

@@ -1,4 +1,38 @@
 pub mod awaken_ext_goal
+pub mod awaken_ext_goal::controller
+pub enum awaken_ext_goal::controller::Error
+pub awaken_ext_goal::controller::Error::ActiveDefinitionConflict
+pub awaken_ext_goal::controller::Error::ActiveDefinitionConflict::outcome_id: awaken_ext_goal::outcome::Id
+pub awaken_ext_goal::controller::Error::Domain(alloc::string::String)
+pub awaken_ext_goal::controller::Error::Execution(awaken_ext_goal::outcome::ExecutionFailure)
+pub awaken_ext_goal::controller::Error::Persistence(alloc::string::String)
+pub awaken_ext_goal::controller::Error::Serialization(alloc::string::String)
+pub awaken_ext_goal::controller::Error::WorkerAwaiting
+pub awaken_ext_goal::controller::Error::WorkerAwaiting::run_id: awaken_agent_contract::agent::run::Id
+impl core::error::Error for awaken_ext_goal::controller::Error
+impl core::fmt::Display for awaken_ext_goal::controller::Error
+pub fn awaken_ext_goal::controller::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct awaken_ext_goal::controller::Controller<'a>
+impl<'a> awaken_ext_goal::controller::Controller<'a>
+pub async fn awaken_ext_goal::controller::Controller<'a>::define_or_resume(&self, awaken_ext_goal::outcome::Id, awaken_ext_goal::outcome::Definition, awaken_ext_goal::state::Binding) -> core::result::Result<awaken_ext_goal::controller::Report, awaken_ext_goal::controller::Error>
+pub fn awaken_ext_goal::controller::Controller<'a>::new(&'a awaken_agent_contract::agent::thread::Id, &'a dyn awaken_agent_contract::thread::read::thread_reader::ThreadReader, &'a dyn awaken_agent_contract::thread::commit::coordinator::Coordinator, &'a dyn awaken_runtime_contract::execution::RunExecutor, awaken_runtime_contract::runtime_context::RuntimeRunContext, &'a dyn awaken_ext_goal::outcome::Grader) -> Self
+pub struct awaken_ext_goal::controller::IterationReport
+pub awaken_ext_goal::controller::IterationReport::explanation: alloc::string::String
+pub awaken_ext_goal::controller::IterationReport::iteration: u32
+pub awaken_ext_goal::controller::IterationReport::messages: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
+pub awaken_ext_goal::controller::IterationReport::outcome_id: awaken_ext_goal::outcome::Id
+pub awaken_ext_goal::controller::IterationReport::result: awaken_ext_goal::outcome::EvaluationResult
+pub struct awaken_ext_goal::controller::Report
+pub awaken_ext_goal::controller::Report::iterations: alloc::vec::Vec<awaken_ext_goal::controller::IterationReport>
+pub mod awaken_ext_goal::grader
+pub struct awaken_ext_goal::grader::AgentGrader<'a>
+impl<'a> awaken_ext_goal::grader::AgentGrader<'a>
+pub fn awaken_ext_goal::grader::AgentGrader<'a>::new(&'a dyn awaken_runtime_contract::execution::RunExecutor, &'a dyn awaken_agent_contract::thread::read::thread_reader::ThreadReader, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> Self
+impl awaken_ext_goal::outcome::Grader for awaken_ext_goal::grader::AgentGrader<'_>
+pub fn awaken_ext_goal::grader::AgentGrader<'_>::grade<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, &'life2 awaken_ext_goal::outcome::GradingInput) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_ext_goal::outcome::Grade, awaken_ext_goal::outcome::GraderError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub const awaken_ext_goal::grader::DEFAULT_JUDGE_INSTRUCTIONS: &str
+pub fn awaken_ext_goal::grader::default_judge_agent(&str, &str, &str) -> awaken_runtime_contract::snapshot::ExecutableAgentSnapshot
+pub fn awaken_ext_goal::grader::grading_prompt(&awaken_ext_goal::outcome::GradingInput) -> core::result::Result<alloc::string::String, awaken_ext_goal::outcome::GraderError>
 pub mod awaken_ext_goal::outcome
 pub enum awaken_ext_goal::outcome::Error
 pub awaken_ext_goal::outcome::Error::CursorRegression
@@ -96,9 +130,6 @@ pub awaken_ext_goal::outcome::GradingInput::rubric: awaken_ext_goal::outcome::Ru
 pub awaken_ext_goal::outcome::GradingInput::transcript: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
 pub awaken_ext_goal::outcome::GradingInput::worker_state: serde_json::value::Value
 pub struct awaken_ext_goal::outcome::Id(pub alloc::string::String)
-pub struct awaken_ext_goal::outcome::KeywordGrader
-impl awaken_ext_goal::outcome::Grader for awaken_ext_goal::outcome::KeywordGrader
-pub fn awaken_ext_goal::outcome::KeywordGrader::grade<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_ext_goal::outcome::GradingInput) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_ext_goal::outcome::Grade, awaken_ext_goal::outcome::GraderError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub struct awaken_ext_goal::outcome::Rubric(pub alloc::string::String)
 pub struct awaken_ext_goal::outcome::State
 pub awaken_ext_goal::outcome::State::iteration: u32
@@ -117,7 +148,39 @@ pub fn awaken_ext_goal::outcome::State::worker_completed(&mut self, &awaken_agen
 pub const awaken_ext_goal::outcome::MAX_ITERATIONS: u32
 pub const awaken_ext_goal::outcome::MIN_ITERATIONS: u32
 pub trait awaken_ext_goal::outcome::Grader: core::marker::Send + core::marker::Sync
-pub fn awaken_ext_goal::outcome::Grader::grade<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_ext_goal::outcome::GradingInput) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_ext_goal::outcome::Grade, awaken_ext_goal::outcome::GraderError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-impl awaken_ext_goal::outcome::Grader for awaken_ext_goal::outcome::KeywordGrader
-pub fn awaken_ext_goal::outcome::KeywordGrader::grade<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_ext_goal::outcome::GradingInput) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_ext_goal::outcome::Grade, awaken_ext_goal::outcome::GraderError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_goal::outcome::Grader::grade<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, &'life2 awaken_ext_goal::outcome::GradingInput) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_ext_goal::outcome::Grade, awaken_ext_goal::outcome::GraderError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+impl awaken_ext_goal::outcome::Grader for awaken_ext_goal::grader::AgentGrader<'_>
+pub fn awaken_ext_goal::grader::AgentGrader<'_>::grade<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, &'life2 awaken_ext_goal::outcome::GradingInput) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_ext_goal::outcome::Grade, awaken_ext_goal::outcome::GraderError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_ext_goal::outcome::parse_grade(&str) -> core::result::Result<awaken_ext_goal::outcome::Grade, awaken_ext_goal::outcome::GraderError>
+pub mod awaken_ext_goal::state
+pub enum awaken_ext_goal::state::Error
+pub awaken_ext_goal::state::Error::ActivePointerMismatch
+pub awaken_ext_goal::state::Error::AlreadyActive(alloc::string::String)
+pub awaken_ext_goal::state::Error::Commit(alloc::string::String)
+pub awaken_ext_goal::state::Error::Conflict
+pub awaken_ext_goal::state::Error::Conflict::current: u64
+pub awaken_ext_goal::state::Error::Conflict::expected: u64
+pub awaken_ext_goal::state::Error::NotFound(alloc::string::String)
+pub awaken_ext_goal::state::Error::Serialization(alloc::string::String)
+impl core::error::Error for awaken_ext_goal::state::Error
+impl core::fmt::Display for awaken_ext_goal::state::Error
+pub fn awaken_ext_goal::state::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct awaken_ext_goal::state::Aggregate
+pub awaken_ext_goal::state::Aggregate::binding: awaken_ext_goal::state::Binding
+pub awaken_ext_goal::state::Aggregate::definition: awaken_ext_goal::outcome::Definition
+pub awaken_ext_goal::state::Aggregate::evaluations: alloc::vec::Vec<awaken_ext_goal::outcome::Evaluation>
+pub awaken_ext_goal::state::Aggregate::state: awaken_ext_goal::outcome::State
+pub struct awaken_ext_goal::state::Binding
+pub awaken_ext_goal::state::Binding::grader: awaken_runtime_contract::snapshot::ExecutableAgentSnapshot
+pub awaken_ext_goal::state::Binding::worker: awaken_runtime_contract::snapshot::ExecutableAgentSnapshot
+pub struct awaken_ext_goal::state::ThreadOutcomeState<'a>
+impl<'a> awaken_ext_goal::state::ThreadOutcomeState<'a>
+pub fn awaken_ext_goal::state::ThreadOutcomeState<'a>::active(&self) -> core::result::Result<core::option::Option<awaken_ext_goal::state::Aggregate>, awaken_ext_goal::state::Error>
+pub async fn awaken_ext_goal::state::ThreadOutcomeState<'a>::commit_if_current(&self, u64, &awaken_ext_goal::outcome::State, core::option::Option<&awaken_ext_goal::outcome::Evaluation>) -> core::result::Result<(), awaken_ext_goal::state::Error>
+pub async fn awaken_ext_goal::state::ThreadOutcomeState<'a>::create(&self, &awaken_ext_goal::outcome::Definition, &awaken_ext_goal::state::Binding, &awaken_ext_goal::outcome::State) -> core::result::Result<(), awaken_ext_goal::state::Error>
+pub fn awaken_ext_goal::state::ThreadOutcomeState<'a>::load(&self, &awaken_ext_goal::outcome::Id) -> core::result::Result<awaken_ext_goal::state::Aggregate, awaken_ext_goal::state::Error>
+pub fn awaken_ext_goal::state::ThreadOutcomeState<'a>::new(&'a awaken_agent_contract::agent::thread::Id, &'a dyn awaken_agent_contract::thread::read::thread_reader::ThreadReader, &'a dyn awaken_agent_contract::thread::commit::coordinator::Coordinator) -> Self
+pub fn awaken_ext_goal::state::acknowledgment_run_id(&awaken_ext_goal::outcome::Id) -> awaken_agent_contract::agent::run::Id
+pub fn awaken_ext_goal::state::grader_run_id(&awaken_ext_goal::outcome::Id, u32) -> awaken_agent_contract::agent::run::Id
+pub fn awaken_ext_goal::state::grader_thread_id(&awaken_ext_goal::outcome::Id, u32) -> awaken_agent_contract::agent::thread::Id
+pub fn awaken_ext_goal::state::worker_run_id(&awaken_ext_goal::outcome::Id, u32) -> awaken_agent_contract::agent::run::Id

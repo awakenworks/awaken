@@ -4,11 +4,6 @@ pub awaken_ext_permission::Mode::AcceptEdits
 pub awaken_ext_permission::Mode::BypassPermissions
 pub awaken_ext_permission::Mode::Default
 pub awaken_ext_permission::Mode::Plan
-pub enum awaken_ext_permission::PermissionRuleScope
-pub awaken_ext_permission::PermissionRuleScope::Local
-pub awaken_ext_permission::PermissionRuleScope::Project
-pub awaken_ext_permission::PermissionRuleScope::Session
-pub awaken_ext_permission::PermissionRuleScope::User
 pub enum awaken_ext_permission::ToolPermissionBehavior
 pub awaken_ext_permission::ToolPermissionBehavior::Allow
 pub awaken_ext_permission::ToolPermissionBehavior::Deny
@@ -16,7 +11,6 @@ pub awaken_ext_permission::ToolPermissionBehavior::RequireConfirmation
 pub struct awaken_ext_permission::PermissionRule
 pub awaken_ext_permission::PermissionRule::behavior: awaken_ext_permission::ToolPermissionBehavior
 pub awaken_ext_permission::PermissionRule::pattern: awaken_ext_permission::ToolCallPattern
-pub awaken_ext_permission::PermissionRule::scope: awaken_ext_permission::PermissionRuleScope
 impl awaken_ext_permission::PermissionRule
 pub fn awaken_ext_permission::PermissionRule::new(awaken_ext_permission::ToolCallPattern, awaken_ext_permission::ToolPermissionBehavior) -> Self
 pub struct awaken_ext_permission::PermissionRuleset
