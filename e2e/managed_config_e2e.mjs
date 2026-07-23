@@ -99,7 +99,7 @@ async function main() {
         { name: 'docs', url: 'https://mcp.example.invalid/v1' },
         { name: 'local', url: 'http://127.0.0.1:9/mcp' },
       ],
-      skills: ['skill-a', { id: 'skill-b' }, 'skill-a'],
+      skills: ['skill-a', { id: 'skill-b' }],
     };
     const bindingsValid = await json(
       'POST',
@@ -110,29 +110,41 @@ async function main() {
     assert.equal(bindingsValid.body.valid, true, JSON.stringify(bindingsValid.body));
 
     const invalidBindingCases = [
-      { mcp_servers: ['not-an-object'], skills: [] },
-      { mcp_servers: [{ url: 'https://mcp.example.invalid' }], skills: [] },
-      { mcp_servers: [{ name: 'docs' }], skills: [] },
-      { mcp_servers: [{ name: 'docs', url: 'file:///tmp/mcp' }], skills: [] },
+      { value: { mcp_servers: ['not-an-object'], skills: [] }, status: 400 },
       {
-        mcp_servers: [
-          { name: 'duplicate', url: 'https://one.example.invalid' },
-          { name: 'duplicate', url: 'https://two.example.invalid' },
-        ],
-        skills: [],
+        value: { mcp_servers: [{ url: 'https://mcp.example.invalid' }], skills: [] },
+        status: 400,
       },
-      { mcp_servers: [], skills: [7] },
-      { mcp_servers: [], skills: [{ id: '' }] },
+      { value: { mcp_servers: [{ name: 'docs' }], skills: [] }, status: 400 },
+      {
+        value: { mcp_servers: [{ name: 'docs', url: 'file:///tmp/mcp' }], skills: [] },
+        status: 200,
+      },
+      {
+        value: {
+          mcp_servers: [
+            { name: 'duplicate', url: 'https://one.example.invalid' },
+            { name: 'duplicate', url: 'https://two.example.invalid' },
+          ],
+          skills: [],
+        },
+        status: 200,
+      },
+      { value: { mcp_servers: [], skills: [7] }, status: 400 },
+      { value: { mcp_servers: [], skills: [{ id: '' }] }, status: 400 },
+      { value: { mcp_servers: [], skills: ['skill-a', { id: 'skill-a' }] }, status: 200 },
     ];
     for (const invalidBindings of invalidBindingCases) {
       const verdict = await json(
         'POST',
         `/v1/config/agents/${bindingsAgent}/validate`,
-        { ...bindingConfig, ...invalidBindings },
+        { ...bindingConfig, ...invalidBindings.value },
       );
-      assert.equal(verdict.status, 200);
-      assert.equal(verdict.body.valid, false, JSON.stringify(verdict.body));
-      assert.ok(verdict.body.issues[0].path === 'mcp_servers' || verdict.body.issues[0].path === 'skills');
+      assert.equal(verdict.status, invalidBindings.status, JSON.stringify(verdict.body));
+      if (verdict.status === 200) {
+        assert.equal(verdict.body.valid, false, JSON.stringify(verdict.body));
+        assert.ok(verdict.body.issues[0].path === 'mcp_servers' || verdict.body.issues[0].path === 'skills');
+      }
     }
     pass('Agent MCP/Skill bindings normalize once and malformed bindings fail closed');
 
