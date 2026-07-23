@@ -16,11 +16,15 @@ use axum::{Json, Router};
 use serde_json::{Value, json};
 
 use awaken_agent_contract::agent::run::RunState;
-use awaken_agent_contract::thread::commit::coordinator::{Coordinator, Error as CommitError};
+use awaken_agent_contract::thread::commit::coordinator::{
+    Coordinator, Error as CommitError, OperationCoordinator,
+};
+use awaken_agent_contract::thread::commit::operation::{CommitOperation, CommitReceipt};
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_dispatch::{
-    ClaimedRunCommit, DispatchQueue, RunClaim, WorkerDirectory, WorkerIdentity, WorkerState,
+    ClaimedCommitCommand, ClaimedRunCommit, DispatchQueue, RunClaim, WorkerDirectory,
+    WorkerIdentity, WorkerRequestAuthorizer, WorkerState, commit_payload_hash,
 };
 
 use crate::host::{HostError, SharedHost};
@@ -32,6 +36,8 @@ use crate::worker_security::{
 #[async_trait::async_trait]
 trait CommitApplier: Send + Sync {
     async fn apply(&self, commit: ThreadCommit) -> Result<CommitRecord, HostError>;
+    async fn apply_operation(&self, operation: CommitOperation)
+    -> Result<CommitReceipt, HostError>;
 }
 
 struct HostCommitApplier(Arc<SharedHost>);
@@ -40,6 +46,64 @@ struct HostCommitApplier(Arc<SharedHost>);
 impl CommitApplier for HostCommitApplier {
     async fn apply(&self, commit: ThreadCommit) -> Result<CommitRecord, HostError> {
         apply_commit(&self.0, commit).await
+    }
+
+    async fn apply_operation(
+        &self,
+        operation: CommitOperation,
+    ) -> Result<CommitReceipt, HostError> {
+        apply_commit_operation(&self.0, operation).await
+    }
+}
+
+struct CoordinatorCommitApplier(Arc<dyn OperationCoordinator>);
+
+#[async_trait::async_trait]
+impl CommitApplier for CoordinatorCommitApplier {
+    async fn apply(&self, commit: ThreadCommit) -> Result<CommitRecord, HostError> {
+        self.0
+            .commit(commit)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))
+    }
+
+    async fn apply_operation(
+        &self,
+        operation: CommitOperation,
+    ) -> Result<CommitReceipt, HostError> {
+        self.0
+            .commit_operation(operation)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))
+    }
+}
+
+/// Explicit application service for the claim-fenced commit boundary.
+///
+/// The injected coordinator is the committed-truth authority used by the
+/// embedding Control Node. The service never constructs a [`SharedHost`] or
+/// selects a storage backend.
+pub struct ClaimedCommitService {
+    dispatch: Arc<dyn DispatchQueue>,
+    coordinator: Arc<dyn OperationCoordinator>,
+    directory: Arc<dyn WorkerDirectory>,
+    authenticator: Arc<dyn WorkerRequestAuthenticator>,
+}
+
+impl ClaimedCommitService {
+    #[must_use]
+    pub fn new(
+        dispatch: Arc<dyn DispatchQueue>,
+        coordinator: Arc<dyn OperationCoordinator>,
+        directory: Arc<dyn WorkerDirectory>,
+        authenticator: Arc<dyn WorkerRequestAuthenticator>,
+    ) -> Self {
+        Self {
+            dispatch,
+            coordinator,
+            directory,
+            authenticator,
+        }
     }
 }
 
@@ -50,6 +114,7 @@ struct CommitIngestState {
     dispatch: Option<Arc<dyn DispatchQueue>>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     directory: Option<Arc<dyn WorkerDirectory>>,
+    allow_legacy_claimed_commit: bool,
 }
 
 /// The worker-facing commit-ingest router. Mount it on a cell server alongside the
@@ -61,6 +126,23 @@ pub fn commit_ingest_router(host: Arc<SharedHost>) -> Router {
         Arc::new(HeaderWorkerAuthenticator),
         None,
         true,
+        true,
+    )
+}
+
+/// Mount the injectable, registered-worker claimed-commit service.
+///
+/// This production surface accepts only versioned [`CommitOperation`] requests.
+/// The legacy raw `ThreadCommit` shape remains available only through the
+/// compatibility routers.
+pub fn claimed_commit_router(service: Arc<ClaimedCommitService>) -> Router {
+    commit_ingest_router_from_parts(
+        Arc::new(CoordinatorCommitApplier(service.coordinator.clone())),
+        Some(service.dispatch.clone()),
+        service.authenticator.clone(),
+        Some(service.directory.clone()),
+        false,
+        false,
     )
 }
 
@@ -79,6 +161,7 @@ pub fn claimed_commit_ingest_router(
         authenticator,
         None,
         false,
+        true,
     )
 }
 
@@ -96,6 +179,7 @@ pub fn claimed_commit_ingest_router_with_directory(
         authenticator,
         Some(directory),
         false,
+        true,
     )
 }
 
@@ -105,12 +189,14 @@ fn commit_ingest_router_from_parts(
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     directory: Option<Arc<dyn WorkerDirectory>>,
     allow_unclaimed: bool,
+    allow_legacy_claimed_commit: bool,
 ) -> Router {
     let state = Arc::new(CommitIngestState {
         applier,
         dispatch,
         authenticator,
         directory,
+        allow_legacy_claimed_commit,
     });
     let router = Router::new().route(
         "/v1/worker/commit-claimed",
@@ -161,7 +247,10 @@ async fn commit_ingest(
 #[derive(serde::Deserialize)]
 struct ClaimedCommitRequest {
     claim: RunClaim,
-    commit: ThreadCommit,
+    #[serde(default)]
+    commit: Option<ThreadCommit>,
+    #[serde(default)]
+    operation: Option<CommitOperation>,
     #[serde(default)]
     identity: Option<WorkerIdentity>,
 }
@@ -180,6 +269,11 @@ async fn commit_claimed(
         };
         if worker.worker_id() != identity.worker_id {
             return unauthorized("authenticated worker identity does not match".to_string());
+        }
+        if worker.credential_id().is_some() && worker.identity() != Some(identity) {
+            return unauthorized(
+                "authenticated worker incarnation does not match request identity".to_string(),
+            );
         }
         let current = match directory.current(&identity.worker_id).await {
             Ok(current) => current,
@@ -208,8 +302,31 @@ async fn commit_claimed(
         let Some(_guard) = guard else {
             return Err(HostError::bad_request("run claim is stale"));
         };
-        let record = state.applier.apply(request.commit).await?;
-        Ok(serde_json::to_value(record).expect("CommitRecord serializes"))
+        match (request.operation, request.commit) {
+            (Some(operation), None) => {
+                let expected_hash = commit_payload_hash(&operation.commit)
+                    .map_err(|error| HostError::bad_request(error.to_string()))?;
+                if expected_hash != operation.payload_hash {
+                    return Err(HostError::bad_request(
+                        "commit operation payload hash does not match ThreadCommit",
+                    ));
+                }
+                let receipt = state.applier.apply_operation(operation).await?;
+                Ok(serde_json::to_value(receipt).expect("CommitReceipt serializes"))
+            }
+            (None, Some(commit)) => {
+                if !state.allow_legacy_claimed_commit {
+                    return Err(HostError::bad_request(
+                        "claimed commit requires a versioned commit operation",
+                    ));
+                }
+                let record = state.applier.apply(commit).await?;
+                Ok(serde_json::to_value(record).expect("CommitRecord serializes"))
+            }
+            _ => Err(HostError::bad_request(
+                "claimed commit requires exactly one of operation or commit",
+            )),
+        }
     }
     .await;
     respond(result)
@@ -240,6 +357,18 @@ async fn apply_commit(
         .map_err(|error| HostError::internal(error.to_string()))
 }
 
+async fn apply_commit_operation(
+    host: &Arc<SharedHost>,
+    operation: CommitOperation,
+) -> Result<CommitReceipt, HostError> {
+    let thread = operation.commit.thread_id.0.clone();
+    let ctx = host.ctx_for(&thread, None).await?;
+    ctx.commit
+        .commit_operation(operation)
+        .await
+        .map_err(|error| HostError::internal(error.to_string()))
+}
+
 /// A database-less worker's [`Coordinator`]: `commit` posts the staged
 /// [`ThreadCommit`] to a cell server's [`commit_ingest_router`], which applies it
 /// through the thread's single writer. The worker holds only an HTTP client.
@@ -247,6 +376,7 @@ pub struct RemoteCoordinator {
     base_url: String,
     client: reqwest::Client,
     worker_id: String,
+    request_authorizer: Option<Arc<dyn WorkerRequestAuthorizer>>,
 }
 
 /// Atomic claimed-run commit used by a database-less worker. Unlike
@@ -255,6 +385,7 @@ pub struct RemoteClaimedRunCommit {
     base_url: String,
     client: reqwest::Client,
     identity: Option<WorkerIdentity>,
+    request_authorizer: Option<Arc<dyn WorkerRequestAuthorizer>>,
 }
 
 impl RemoteClaimedRunCommit {
@@ -263,6 +394,7 @@ impl RemoteClaimedRunCommit {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             client: reqwest::Client::new(),
             identity: None,
+            request_authorizer: None,
         }
     }
 
@@ -276,8 +408,34 @@ impl RemoteClaimedRunCommit {
 
     #[must_use]
     pub fn with_worker_identity(mut self, identity: WorkerIdentity) -> Self {
+        if let Some(authorizer) = &self.request_authorizer {
+            self.request_authorizer = Some(authorizer.bind_worker_identity(&identity));
+        }
         self.identity = Some(identity);
         self
+    }
+
+    #[must_use]
+    pub fn with_request_authorizer(mut self, authorizer: Arc<dyn WorkerRequestAuthorizer>) -> Self {
+        self.request_authorizer = Some(match &self.identity {
+            Some(identity) => authorizer.bind_worker_identity(identity),
+            None => authorizer,
+        });
+        self
+    }
+
+    fn authorize(
+        &self,
+        path: &str,
+        worker_id: &str,
+        request: reqwest::RequestBuilder,
+    ) -> Result<reqwest::RequestBuilder, CommitError> {
+        match &self.request_authorizer {
+            Some(authorizer) => authorizer
+                .authorize("POST", path, worker_id, request)
+                .map_err(CommitError::Rejected),
+            None => Ok(request.header(WORKER_ID_HEADER, worker_id)),
+        }
     }
 }
 
@@ -292,10 +450,10 @@ impl ClaimedRunCommit for RemoteClaimedRunCommit {
             .identity
             .as_ref()
             .map_or(claim.owner.as_str(), |identity| identity.worker_id.as_str());
+        let path = "/v1/worker/commit-claimed";
+        let request = self.client.post(format!("{}{path}", self.base_url));
         let response = self
-            .client
-            .post(format!("{}/v1/worker/commit-claimed", self.base_url))
-            .header(WORKER_ID_HEADER, authenticated_worker)
+            .authorize(path, authenticated_worker, request)?
             .json(&json!({ "claim": claim, "commit": commit, "identity": self.identity }))
             .send()
             .await
@@ -310,6 +468,40 @@ impl ClaimedRunCommit for RemoteClaimedRunCommit {
             .json()
             .await
             .map_err(|error| CommitError::Rejected(format!("commit record decode: {error}")))
+    }
+
+    async fn commit_operation(
+        &self,
+        command: ClaimedCommitCommand,
+    ) -> Result<CommitReceipt, CommitError> {
+        let authenticated_worker = self
+            .identity
+            .as_ref()
+            .map_or(command.claim.owner.as_str(), |identity| {
+                identity.worker_id.as_str()
+            });
+        let path = "/v1/worker/commit-claimed";
+        let request = self.client.post(format!("{}{path}", self.base_url));
+        let response = self
+            .authorize(path, authenticated_worker, request)?
+            .json(&json!({
+                "claim": command.claim,
+                "operation": command.operation,
+                "identity": self.identity
+            }))
+            .send()
+            .await
+            .map_err(|error| CommitError::Rejected(format!("claimed commit transport: {error}")))?;
+        if !response.status().is_success() {
+            return Err(CommitError::Rejected(format!(
+                "claimed commit server returned {}",
+                response.status()
+            )));
+        }
+        response
+            .json()
+            .await
+            .map_err(|error| CommitError::Rejected(format!("commit receipt decode: {error}")))
     }
 }
 
@@ -326,6 +518,7 @@ impl RemoteCoordinator {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             client: reqwest::Client::new(),
             worker_id: "awaken-worker".to_string(),
+            request_authorizer: None,
         }
     }
 
@@ -342,15 +535,26 @@ impl RemoteCoordinator {
         self.client = client;
         self
     }
+
+    #[must_use]
+    pub fn with_request_authorizer(mut self, authorizer: Arc<dyn WorkerRequestAuthorizer>) -> Self {
+        self.request_authorizer = Some(authorizer);
+        self
+    }
 }
 
 #[async_trait::async_trait]
 impl Coordinator for RemoteCoordinator {
     async fn commit(&self, commit: ThreadCommit) -> Result<CommitRecord, CommitError> {
-        let resp = self
-            .client
-            .post(format!("{}/v1/worker/commit", self.base_url))
-            .header(WORKER_ID_HEADER, &self.worker_id)
+        let path = "/v1/worker/commit";
+        let request = self.client.post(format!("{}{path}", self.base_url));
+        let request = match &self.request_authorizer {
+            Some(authorizer) => authorizer
+                .authorize("POST", path, &self.worker_id, request)
+                .map_err(CommitError::Rejected)?,
+            None => request.header(WORKER_ID_HEADER, &self.worker_id),
+        };
+        let resp = request
             .json(&commit)
             .send()
             .await
@@ -419,6 +623,13 @@ mod postgres_tests {
             }
             self.inner.apply(commit).await
         }
+
+        async fn apply_operation(
+            &self,
+            operation: CommitOperation,
+        ) -> Result<CommitReceipt, HostError> {
+            self.inner.apply_operation(operation).await
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -483,6 +694,7 @@ mod postgres_tests {
             Arc::new(HeaderWorkerAuthenticator),
             None,
             false,
+            true,
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await

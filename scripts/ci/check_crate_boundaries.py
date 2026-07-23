@@ -354,6 +354,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-store-inmem",
         "awaken-store-conformance",
         "async-trait",
+        "serde",
         "serde_json",
         "tokio",
     },
@@ -803,6 +804,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tokio-util",
         "serde",
         "serde_json",
+        "sha2",
         "thiserror",
     },
     # Durable worker-directory adapter. One shared transition kernel drives its
@@ -1324,6 +1326,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "sqlx",
         "tempfile",
         "base64",
+        "hmac",  # HMAC-SHA256 Worker request assertions.
         "form_urlencoded",
         "reqwest",
         "serde_json",

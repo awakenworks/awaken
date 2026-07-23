@@ -144,6 +144,7 @@ pub struct RunRecoverySnapshot {
     pub thread_id: ThreadId,
     pub claimed_run_id: RunId,
     pub runs: Vec<RunRecord>,
+    pub latest_run_id: Option<RunId>,
     pub messages: Vec<Message>,
     pub state: Vec<StateCommand>,
     pub resume_tickets: Vec<RunResumeTicket>,
@@ -154,6 +155,8 @@ pub struct RunRecoverySnapshot {
 ```
 
 - `thread_version` is per thread and is used for optimistic concurrency.
+- `latest_run_id` preserves the existing `RunStore::latest_run` semantics
+  without requiring the Worker to infer ordering from backend-specific records.
 - `store_cursor` identifies the source-store prefix for diagnostics, feed
   backfill, and future delta reads.
 - `next_commit_ordinal` is derived from committed truth. If a commit was applied
@@ -209,23 +212,31 @@ pub struct CommitOperationId {
     pub ordinal: u64,
 }
 
-pub struct ClaimedCommitCommand {
-    pub worker: WorkerIdentity,
-    pub claim: ClaimedRun,
+pub struct CommitOperation {
     pub operation_id: CommitOperationId,
     pub expected_thread_version: u64,
-    pub payload_hash: ContentHash,
+    pub payload_hash: CommitPayloadHash,
     pub commit: ThreadCommit,
+}
+
+pub struct ClaimedCommitCommand {
+    pub claim: RunClaim,
+    pub operation: CommitOperation,
 }
 
 pub struct CommitReceipt {
     pub operation_id: CommitOperationId,
     pub commit_sequence: u64,
     pub thread_version: u64,
-    pub payload_hash: ContentHash,
+    pub payload_hash: CommitPayloadHash,
     pub duplicate: bool,
 }
 ```
+
+The authenticated `WorkerIdentity`/incarnation is request context at the
+service edge, not a field passed into the fact-store coordinator. This preserves
+the existing separation between Worker authority (`RunClaim`) and Thread truth
+(`CommitOperation`).
 
 `operation_id` remains stable across HTTP retry, response loss, lease expiry,
 and reclaim. The claim epoch authorizes the current delivery attempt but is not
@@ -273,7 +284,7 @@ The public assembly shape is:
 ```rust
 pub struct ClaimedCommitService {
     dispatch: Arc<dyn DispatchQueue>,
-    coordinators: Arc<dyn ThreadCoordinatorResolver>,
+    coordinator: Arc<dyn OperationCoordinator>,
     directory: Arc<dyn WorkerDirectory>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
 }
@@ -283,10 +294,13 @@ pub fn claimed_commit_router(
 ) -> Router;
 ```
 
-`ThreadCoordinatorResolver` may return one shared coordinator for a SQLite cell
-or a request-scoped database-backed coordinator for PostgreSQL. The service
-does not construct `SharedHost`, choose a database, or own an application
-projection.
+The coordinator implementation may cover one SQLite cell or a PostgreSQL-backed
+set of Threads. It is the exact instance owned by the embedding composition
+root, so a successful commit updates the same authoritative store/projection
+used by that process. The service does not construct `SharedHost`, choose a
+database, or own an application projection. The public router accepts only
+versioned `CommitOperation`; raw claimed `ThreadCommit` remains a compatibility
+surface and is not part of the embeddable protocol.
 
 ### 4.5 Public Worker assembly
 
@@ -295,11 +309,19 @@ WorkerNodeBuilder::new(upstream)
     .with_manifest(manifest)
     .with_attempt_executor(executor)
     .with_inference_materializer(materializer)
-    .with_resource_plane(resources)
+    .with_resource_plane(WorkerResourcePlane::new(resources, validator))
     .build()?
     .run_until_shutdown()
     .await
 ```
+
+`build()` is synchronous and side-effect free: it validates the upstream and
+immutable manifest before registration. `run_until_shutdown()` owns process
+signals; supervisors and conformance tests use the same `WorkerNode::run_until`
+state machine with an injected shutdown future. `SharedHost::with_attempt_executor`
+replaces the complete per-Session attempt boundary, so an application decorator
+wraps Native/ACP/A2A selection rather than accidentally decorating only one
+backend.
 
 `WorkerNode` owns:
 
@@ -413,7 +435,7 @@ fleet.
 registered key:
 
 ```text
-native
+native-runtime
 acp:claude
 acp:codex
 acp:gemini
@@ -421,21 +443,52 @@ acp:opencode
 a2a:<endpoint-or-profile>
 ```
 
-The Worker manifest is derived from the registry. Configuration may narrow
-advertisement but cannot add an unimplemented capability. Duplicate keys,
-ambiguous matchers, unknown refs, or registry/manifest drift fail at build or
-registration time.
+`WorkerNodeBuilder::with_attempt_executor_registry` replaces every execution
+capability in the supplied manifest with `registry.manifest_capabilities()`, while
+preserving non-execution application/resource capabilities. Configuration may
+narrow advertisement but cannot add an unimplemented execution route.
+Duplicate keys, native refs registered as exact routes, empty ACP/A2A targets,
+unknown refs, or an empty explicit registry fail closed.
 
 ### 6.2 Worker identity
 
 The header-only worker id remains local/test configuration. Production adapters
 provide:
 
-- mTLS identity bound to `worker_id` and incarnation;
-- short-lived signed Worker leases or registration credentials;
-- bootstrap, rotation, revocation, and expiry;
-- one client/server identity configuration object;
-- redacted audit fields and replay protection.
+- `MtlsWorkerAuthenticator`, which consumes a verified
+  `MtlsWorkerPrincipal` request extension supplied by the TLS acceptor and binds
+  it to `worker_id` plus the registered incarnation;
+- `WorkerSigningCredential`, the shared provisioning object for one Worker,
+  rotation key, credential id, and redacted HMAC secret;
+- `SignedWorkerRequestAuthorizer`, which creates a fresh short-lived assertion
+  for every request and, after registration, binds it to the allocated
+  `WorkerIdentity`;
+- `SignedWorkerAuthenticator`, which supports overlapping credentials for key
+  rotation, immediate credential/key revocation, expiry/skew policy, route and
+  method binding, constant-time HMAC verification, and request-id replay
+  rejection;
+- the client-side `WorkerRequestAuthorizer` port, carried by `WorkerUpstream`
+  through registration, dispatch/recovery/checkpoint, and claimed commit.
+
+The signed flow is:
+
+```text
+bootstrap WorkerUpstream
+  -> signed register assertion(worker_id only)
+  -> RegisteredWorker(identity)
+  -> bind the same request authorizer to identity
+  -> fresh signed assertion(method, path, identity, issued/expiry, request_id)
+     on every heartbeat / claim / renew / recovery / commit / settle
+  -> authenticator verifies signature + time + route + replay
+  -> handler independently verifies directory identity + claim/epoch
+```
+
+An mTLS deployment configures the same `WorkerUpstream` with a client
+certificate and configures its server TLS acceptor to publish
+`MtlsWorkerPrincipal`; it does not trust a proxy-supplied certificate header.
+Signed assertions must still travel over TLS. They can be layered over mTLS when
+both proof-of-possession at the transport edge and application-level replay
+fencing are required.
 
 Authentication does not replace claim authorization: every state-changing
 request still validates owner, epoch, and operation semantics.

@@ -24,20 +24,34 @@ use awaken_agent_contract::agent::state::Command as StateCommand;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::record::Record as EventRecord;
 use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpointStore};
-use awaken_agent_contract::thread::commit::coordinator::{Coordinator, Error};
+use awaken_agent_contract::thread::commit::coordinator::{
+    Coordinator, Error, OperationCoordinator,
+};
+use awaken_agent_contract::thread::commit::operation::{CommitOperation, CommitReceipt};
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
+use awaken_agent_contract::thread::read::recovery::{
+    RecoveryError, RunRecoverySnapshot, RunRecoverySource,
+};
 use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_store_inmem::MemoryCommitCoordinator;
 
 const LOG_FILE: &str = "commits.ndjson";
 
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+enum CommitLogEntry {
+    Operation(CommitOperation),
+    Commit(ThreadCommit),
+}
+
 /// A filesystem `CommitCoordinator` + `CheckpointReader`. Durable truth is the
 /// append-only log; reads are served from an in-memory model rebuilt from it.
 pub struct FsCommitCoordinator {
     log: Mutex<File>,
     inner: MemoryCommitCoordinator,
+    write_lock: tokio::sync::Mutex<()>,
 }
 
 impl FsCommitCoordinator {
@@ -59,12 +73,18 @@ impl FsCommitCoordinator {
                 if line.trim().is_empty() {
                     continue;
                 }
-                match serde_json::from_str::<ThreadCommit>(&line) {
-                    Ok(commit) => {
+                match serde_json::from_str::<CommitLogEntry>(&line) {
+                    Ok(CommitLogEntry::Commit(commit)) => {
                         // Replaying through the tested read model reconstructs the
                         // same committed state (and sequence) the writer produced.
                         inner
                             .commit(commit)
+                            .await
+                            .map_err(|err| std::io::Error::other(err.to_string()))?;
+                    }
+                    Ok(CommitLogEntry::Operation(operation)) => {
+                        inner
+                            .commit_operation(operation)
                             .await
                             .map_err(|err| std::io::Error::other(err.to_string()))?;
                     }
@@ -77,13 +97,29 @@ impl FsCommitCoordinator {
         Ok(Self {
             log: Mutex::new(log),
             inner,
+            write_lock: tokio::sync::Mutex::new(()),
         })
+    }
+
+    fn append(&self, entry: &CommitLogEntry) -> Result<(), Error> {
+        let line = serde_json::to_string(entry)
+            .map_err(|err| Error::Rejected(format!("serialize commit: {err}")))?;
+        let mut file = self
+            .log
+            .lock()
+            .map_err(|_| Error::Rejected("fs commit log poisoned".to_string()))?;
+        file.write_all(line.as_bytes())
+            .and_then(|_| file.write_all(b"\n"))
+            .and_then(|_| file.flush())
+            .and_then(|_| file.sync_all())
+            .map_err(|err| Error::Rejected(format!("append commit: {err}")))
     }
 }
 
 #[async_trait]
 impl Coordinator for FsCommitCoordinator {
     async fn commit(&self, commit: ThreadCommit) -> Result<CommitRecord, Error> {
+        let _writing = self.write_lock.lock().await;
         // Every rejection the inner reference model would raise MUST be raised HERE
         // first — before the durable append below — so the append-only log never
         // records a line that the read model would then reject when it is rebuilt on
@@ -125,21 +161,21 @@ impl Coordinator for FsCommitCoordinator {
         }
         // Durable first: append + fsync the record before it is acknowledged, so a
         // crash after ack cannot lose it and a crash before ack replays nothing.
-        let line = serde_json::to_string(&commit)
-            .map_err(|err| Error::Rejected(format!("serialize commit: {err}")))?;
-        {
-            let mut file = self
-                .log
-                .lock()
-                .map_err(|_| Error::Rejected("fs commit log poisoned".to_string()))?;
-            file.write_all(line.as_bytes())
-                .and_then(|_| file.write_all(b"\n"))
-                .and_then(|_| file.flush())
-                .and_then(|_| file.sync_all())
-                .map_err(|err| Error::Rejected(format!("append commit: {err}")))?;
-        }
+        self.append(&CommitLogEntry::Commit(commit.clone()))?;
         // Then advance the read model; sequence matches the replayed order.
         self.inner.commit(commit).await
+    }
+}
+
+#[async_trait]
+impl OperationCoordinator for FsCommitCoordinator {
+    async fn commit_operation(&self, operation: CommitOperation) -> Result<CommitReceipt, Error> {
+        let _writing = self.write_lock.lock().await;
+        if let Some(duplicate) = self.inner.inspect_operation(&operation)? {
+            return Ok(duplicate);
+        }
+        self.append(&CommitLogEntry::Operation(operation.clone()))?;
+        self.inner.commit_operation(operation).await
     }
 }
 
@@ -178,6 +214,19 @@ impl CheckpointReader for FsCommitCoordinator {
 
     fn list_events(&self, scope: &EventScope, from: Option<u64>, limit: usize) -> Vec<EventRecord> {
         self.inner.list_events(scope, from, limit)
+    }
+}
+
+#[async_trait]
+impl RunRecoverySource for FsCommitCoordinator {
+    async fn recovery_snapshot(
+        &self,
+        thread_id: &ThreadId,
+        claimed_run_id: &RunId,
+    ) -> Result<RunRecoverySnapshot, RecoveryError> {
+        self.inner
+            .recovery_snapshot(thread_id, claimed_run_id)
+            .await
     }
 }
 

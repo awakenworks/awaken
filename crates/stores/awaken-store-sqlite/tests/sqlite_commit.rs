@@ -11,8 +11,12 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::draft::Draft;
 use awaken_agent_contract::audit::kind::Kind as EventKind;
 use awaken_agent_contract::thread::commit::RunDisposition;
-use awaken_agent_contract::thread::commit::coordinator::Coordinator;
+use awaken_agent_contract::thread::commit::coordinator::{Coordinator, OperationCoordinator};
+use awaken_agent_contract::thread::commit::operation::{
+    CommitOperation, CommitOperationId, CommitPayloadHash,
+};
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
+use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
 use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_store_sqlite::SqliteCommitCoordinator;
@@ -166,6 +170,19 @@ async fn projection_rehydrates_from_a_file_after_reopen() {
         ThreadReader::resume_ticket(&restarted, &RunId("run-1".to_string())).is_some(),
         "the active ticket rehydrated"
     );
+    let snapshot = restarted
+        .recovery_snapshot(
+            &ThreadId("thread-1".to_string()),
+            &RunId("run-1".to_string()),
+        )
+        .await
+        .expect("recovery snapshot");
+    assert_eq!(snapshot.thread_version, 1);
+    assert_eq!(snapshot.store_cursor, 1);
+    assert_eq!(snapshot.next_commit_ordinal, 1);
+    assert_eq!(snapshot.messages.len(), 1);
+    assert_eq!(snapshot.runs.len(), 1);
+    assert_eq!(snapshot.resume_tickets.len(), 1);
 
     let _ = std::fs::remove_file(&path);
 }
@@ -209,4 +226,50 @@ async fn g13_failed_commit_leaves_no_partial_state() {
         0,
         "fence unchanged after rejected commit"
     );
+}
+
+#[tokio::test]
+async fn operation_receipt_survives_reopen() {
+    let path = std::env::temp_dir().join(format!(
+        "awaken_store_sqlite_receipt_{}.db",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let operation = CommitOperation {
+        operation_id: CommitOperationId::new(RunId("receipt-run".into()), 0),
+        expected_thread_version: 0,
+        payload_hash: CommitPayloadHash("sha256:receipt".into()),
+        commit: ThreadCommit {
+            thread_id: ThreadId("receipt-thread".into()),
+            run: RunDisposition::running(RunId("receipt-run".into())),
+            messages: vec![message("receipt-message", "once")],
+            state: Vec::new(),
+            events: Vec::new(),
+        },
+    };
+    {
+        let store = SqliteCommitCoordinator::open(path.to_str().unwrap()).expect("open");
+        assert!(
+            !store
+                .commit_operation(operation.clone())
+                .await
+                .unwrap()
+                .duplicate
+        );
+    }
+    let reopened = SqliteCommitCoordinator::open(path.to_str().unwrap()).expect("reopen");
+    assert!(
+        reopened
+            .commit_operation(operation)
+            .await
+            .expect("durable duplicate receipt")
+            .duplicate
+    );
+    assert_eq!(
+        reopened
+            .committed_messages(&ThreadId("receipt-thread".into()))
+            .len(),
+        1
+    );
+    let _ = std::fs::remove_file(path);
 }

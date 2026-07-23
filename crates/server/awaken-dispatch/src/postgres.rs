@@ -456,18 +456,20 @@ impl DispatchQueue for PostgresDispatchStore {
         // claim/reclaim/settle/cancel from changing or removing the authority row
         // until the real ThreadCommit on its own connection has completed.
         let mut tx = self.pool.begin().await.map_err(reject)?;
-        let current: Option<(i64, Option<String>)> = sqlx::query_as(&format!(
-            "SELECT lease_epoch, lease_owner FROM {p}_dispatch WHERE run_id = $1 FOR UPDATE"
+        let current: Option<(i64, Option<String>, Json<RunDispatch>)> = sqlx::query_as(&format!(
+            "SELECT lease_epoch, lease_owner, request \
+             FROM {p}_dispatch WHERE run_id = $1 FOR UPDATE"
         ))
         .bind(&claim.run_id.0)
         .fetch_optional(&mut *tx)
         .await
         .map_err(reject)?;
-        Ok(current
-            .is_some_and(|(epoch, owner)| {
-                epoch.max(0) as u64 == claim.epoch && owner.as_deref() == Some(&claim.owner)
+        let request = current
+            .filter(|(epoch, owner, _)| {
+                (*epoch).max(0) as u64 == claim.epoch && owner.as_deref() == Some(&claim.owner)
             })
-            .then(|| CommitEpochGuard::new(tx)))
+            .map(|(_, _, Json(request))| request);
+        Ok(request.map(|request| CommitEpochGuard::new(tx, request)))
     }
 
     async fn claim(

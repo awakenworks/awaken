@@ -431,19 +431,33 @@ impl DispatchQueue for SqliteDispatchStore {
     ) -> Result<Option<CommitEpochGuard>, DispatchError> {
         let guard = self.authority.clone().lock_owned().await;
         let run = claim.run_id.0.clone();
-        let current: Option<(u64, Option<String>)> = self
+        let current: Option<(u64, Option<String>, String)> = self
             .with_conn_unlocked(move |conn, p| {
                 conn.query_row(
-                    &format!("SELECT lease_epoch, lease_owner FROM {p}_dispatch WHERE run_id = ?1"),
+                    &format!(
+                        "SELECT lease_epoch, lease_owner, request \
+                         FROM {p}_dispatch WHERE run_id = ?1"
+                    ),
                     params![run],
-                    |row| Ok((row.get::<_, i64>(0)?.max(0) as u64, row.get(1)?)),
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?.max(0) as u64,
+                            row.get(1)?,
+                            row.get(2)?,
+                        ))
+                    },
                 )
                 .optional()
                 .map_err(reject)
             })
             .await?;
-        Ok((current == Some((claim.epoch, Some(claim.owner.clone()))))
-            .then(|| CommitEpochGuard::new(guard)))
+        let request = current
+            .filter(|(epoch, owner, _)| {
+                *epoch == claim.epoch && owner.as_deref() == Some(&claim.owner)
+            })
+            .map(|(_, _, request)| serde_json::from_str(&request).map_err(json_err))
+            .transpose()?;
+        Ok(request.map(|request| CommitEpochGuard::new(guard, request)))
     }
 
     async fn claim(

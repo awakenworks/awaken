@@ -474,6 +474,7 @@ mod durable_cancel_tests {
             reader: commit.clone(),
             owner: "child-owner".to_string(),
             claimed_commit: None,
+            recovery_projection: None,
             session_resources: None,
         };
         let remote_agents = RemoteAgentDirectory::new();

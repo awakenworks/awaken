@@ -73,3 +73,20 @@ async fn delegation_and_tool_state_commit_atomically() {
 async fn two_threads_in_one_store_are_isolated() {
     awaken_store_conformance::two_threads_in_one_store_are_isolated(&fresh("iso").await).await;
 }
+
+#[tokio::test]
+async fn recovery_snapshot_is_consistent() {
+    awaken_store_conformance::recovery_snapshot_is_consistent(&fresh("recovery").await).await;
+}
+
+#[tokio::test]
+async fn commit_operation_is_idempotent_and_cas() {
+    awaken_store_conformance::commit_operation_is_idempotent_and_cas(&fresh("operation").await)
+        .await;
+}
+
+#[tokio::test]
+async fn concurrent_operations_cas_one_winner() {
+    awaken_store_conformance::concurrent_operations_cas_one_winner(&fresh("operation-race").await)
+        .await;
+}

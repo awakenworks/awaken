@@ -1,6 +1,23 @@
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+
 use thiserror::Error;
 
 use awaken_agent_contract::agent::run::RunState;
+
+use crate::resolved::Backend;
+
+/// Exact Worker capability for the built-in in-process runtime.
+pub const NATIVE_RUNTIME_CAPABILITY: &str = "native-runtime";
+
+/// Manifest/placement capability required by an immutable `backend_ref`.
+#[must_use]
+pub fn execution_capability(backend_ref: &str) -> String {
+    match Backend::from_ref(backend_ref) {
+        Backend::Native => NATIVE_RUNTIME_CAPABILITY.to_string(),
+        Backend::Acp { .. } | Backend::Remote { .. } => backend_ref.to_string(),
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -113,9 +130,152 @@ pub trait RunAttemptExecutor: RunExecutor {
     }
 }
 
+/// Invalid or conflicting executor registration.
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum AttemptExecutorRegistryError {
+    #[error("backend_ref is not an exact ACP or A2A route: {0}")]
+    InvalidBackendRef(String),
+    #[error("attempt executor is already registered for {0}")]
+    DuplicateBackend(String),
+}
+
+/// Exact-match router for immutable publication `backend_ref` values.
+///
+/// Native provider refs share one in-process executor. ACP CLI ids and A2A
+/// endpoints are registered under their complete `acp:*` / `a2a:*` refs, so a
+/// nearby but unregistered route fails closed.
+#[derive(Clone, Default)]
+pub struct AttemptExecutorRegistry {
+    native: Option<Arc<dyn RunAttemptExecutor>>,
+    exact: BTreeMap<String, Arc<dyn RunAttemptExecutor>>,
+}
+
+impl AttemptExecutorRegistry {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn register_native(
+        &mut self,
+        executor: Arc<dyn RunAttemptExecutor>,
+    ) -> std::result::Result<(), AttemptExecutorRegistryError> {
+        if self.native.is_some() {
+            return Err(AttemptExecutorRegistryError::DuplicateBackend(
+                NATIVE_RUNTIME_CAPABILITY.to_string(),
+            ));
+        }
+        self.native = Some(executor);
+        Ok(())
+    }
+
+    pub fn register(
+        &mut self,
+        backend_ref: impl Into<String>,
+        executor: Arc<dyn RunAttemptExecutor>,
+    ) -> std::result::Result<(), AttemptExecutorRegistryError> {
+        let backend_ref = backend_ref.into();
+        let valid = match Backend::from_ref(&backend_ref) {
+            Backend::Native => false,
+            Backend::Acp { ref cli } => backend_ref == "acp" || !cli.trim().is_empty(),
+            Backend::Remote { ref endpoint } => !endpoint.trim().is_empty(),
+        };
+        if !valid {
+            return Err(AttemptExecutorRegistryError::InvalidBackendRef(backend_ref));
+        }
+        if self.exact.contains_key(&backend_ref) {
+            return Err(AttemptExecutorRegistryError::DuplicateBackend(backend_ref));
+        }
+        self.exact.insert(backend_ref, executor);
+        Ok(())
+    }
+
+    /// Capabilities derived from executable registrations, never free-form
+    /// declarations.
+    #[must_use]
+    pub fn manifest_capabilities(&self) -> BTreeSet<String> {
+        let mut capabilities = self.exact.keys().cloned().collect::<BTreeSet<_>>();
+        if self.native.is_some() {
+            capabilities.insert(NATIVE_RUNTIME_CAPABILITY.to_string());
+        }
+        capabilities
+    }
+
+    #[must_use]
+    pub fn supports(&self, backend_ref: &str) -> bool {
+        match Backend::from_ref(backend_ref) {
+            Backend::Native => self.native.is_some(),
+            Backend::Acp { .. } | Backend::Remote { .. } => self.exact.contains_key(backend_ref),
+        }
+    }
+
+    fn executor(
+        &self,
+        activation: &crate::activation::RunActivation,
+    ) -> Result<Arc<dyn RunAttemptExecutor>> {
+        let backend_ref = &activation.snapshot.resolved_spec.model_binding.backend_ref;
+        match Backend::from_ref(backend_ref) {
+            Backend::Native => self.native.clone().ok_or_else(|| {
+                Error::Resolution(format!(
+                    "no native attempt executor is registered for {backend_ref}"
+                ))
+            }),
+            Backend::Acp { .. } | Backend::Remote { .. } => {
+                self.exact.get(backend_ref).cloned().ok_or_else(|| {
+                    Error::Resolution(format!(
+                        "no attempt executor is registered for exact backend_ref {backend_ref}"
+                    ))
+                })
+            }
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl RunExecutor for AttemptExecutorRegistry {
+    async fn execute(
+        &self,
+        activation: crate::activation::RunActivation,
+        context: crate::runtime_context::RuntimeRunContext,
+    ) -> Result<RunState> {
+        self.executor(&activation)?
+            .execute(activation, context)
+            .await
+    }
+}
+
+#[async_trait::async_trait]
+impl RunAttemptExecutor for AttemptExecutorRegistry {
+    async fn resume(
+        &self,
+        activation: crate::activation::RunActivation,
+        command: crate::resume::ResumeCommand,
+        context: crate::runtime_context::RuntimeRunContext,
+    ) -> Result<RunState> {
+        self.executor(&activation)?
+            .resume(activation, command, context)
+            .await
+    }
+
+    async fn cancel(
+        &self,
+        activation: crate::activation::RunActivation,
+        context: crate::runtime_context::RuntimeRunContext,
+    ) -> Result<()> {
+        self.executor(&activation)?
+            .cancel(activation, context)
+            .await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
+    use crate::snapshot::{AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId};
+    use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+    use awaken_agent_contract::agent::run::{EndCause, Id as RunId};
+    use awaken_agent_contract::agent::thread::Id as ThreadId;
 
     struct DefaultExecutor;
 
@@ -136,5 +296,136 @@ mod tests {
         assert_eq!(caps, ExecutorCapabilities::NATIVE);
         assert_eq!(caps.cancellation, Cancellation::CooperativeToken);
         assert_eq!(caps.wait, Wait::Both);
+    }
+
+    struct NamedExecutor(&'static str);
+
+    #[async_trait::async_trait]
+    impl RunExecutor for NamedExecutor {
+        async fn execute(
+            &self,
+            _activation: crate::activation::RunActivation,
+            _context: crate::runtime_context::RuntimeRunContext,
+        ) -> Result<RunState> {
+            Ok(RunState::Ended(EndCause::Stopped(self.0.to_string())))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl RunAttemptExecutor for NamedExecutor {
+        async fn resume(
+            &self,
+            activation: crate::activation::RunActivation,
+            _command: crate::resume::ResumeCommand,
+            context: crate::runtime_context::RuntimeRunContext,
+        ) -> Result<RunState> {
+            self.execute(activation, context).await
+        }
+    }
+
+    fn activation(backend_ref: &str) -> crate::activation::RunActivation {
+        crate::activation::RunActivation::new(
+            RunId(format!("run-{backend_ref}")),
+            ThreadId("thread-registry".into()),
+            ExecutableAgentSnapshot {
+                id: ExecutableAgentSnapshotId(format!("snapshot-{backend_ref}")),
+                metadata: Default::default(),
+                root_agent_id: AgentId("agent-registry".into()),
+                resolved_spec: ResolvedSpec {
+                    model_candidates: Vec::new(),
+                    catalog_fingerprint: CatalogFingerprint("catalog-registry".into()),
+                    instructions: String::new(),
+                    max_steps: 1,
+                    delegation_limits: Default::default(),
+                    model_binding: crate::resolved::ResolvedModelCandidate::host(
+                        ModelBinding::new("provider", "model", backend_ref),
+                    ),
+                    tool_descriptors: Vec::new(),
+                    plugin_ids: Vec::new(),
+                    plugin_config: Default::default(),
+                    context_policy: Default::default(),
+                    tool_presentation: Default::default(),
+                },
+                fingerprint: CatalogFingerprint("snapshot-registry".into()),
+            },
+            vec![Message::text(MessageId("input".into()), Role::User, "go")],
+        )
+    }
+
+    #[tokio::test]
+    async fn registry_routes_exact_backends_and_derives_capabilities() {
+        let mut registry = AttemptExecutorRegistry::new();
+        registry
+            .register_native(Arc::new(NamedExecutor("native")))
+            .unwrap();
+        registry
+            .register("acp:claude", Arc::new(NamedExecutor("claude")))
+            .unwrap();
+        registry
+            .register("acp:codex", Arc::new(NamedExecutor("codex")))
+            .unwrap();
+        registry
+            .register(
+                "a2a:https://agent.example",
+                Arc::new(NamedExecutor("remote")),
+            )
+            .unwrap();
+
+        assert_eq!(
+            registry.manifest_capabilities(),
+            BTreeSet::from([
+                NATIVE_RUNTIME_CAPABILITY.to_string(),
+                "a2a:https://agent.example".to_string(),
+                "acp:claude".to_string(),
+                "acp:codex".to_string(),
+            ])
+        );
+        for (backend_ref, expected) in [
+            ("genai", "native"),
+            ("acp:claude", "claude"),
+            ("acp:codex", "codex"),
+            ("a2a:https://agent.example", "remote"),
+        ] {
+            assert_eq!(
+                registry
+                    .execute(
+                        activation(backend_ref),
+                        crate::runtime_context::RuntimeRunContext::new(),
+                    )
+                    .await
+                    .unwrap(),
+                RunState::Ended(EndCause::Stopped(expected.to_string()))
+            );
+        }
+        assert!(
+            registry
+                .execute(
+                    activation("acp:gemini"),
+                    crate::runtime_context::RuntimeRunContext::new(),
+                )
+                .await
+                .is_err(),
+            "an unregistered neighboring CLI fails closed"
+        );
+    }
+
+    #[test]
+    fn registry_rejects_ambiguous_or_duplicate_registration() {
+        let mut registry = AttemptExecutorRegistry::new();
+        assert!(matches!(
+            registry.register("genai", Arc::new(NamedExecutor("wrong"))),
+            Err(AttemptExecutorRegistryError::InvalidBackendRef(_))
+        ));
+        assert!(matches!(
+            registry.register("a2a:", Arc::new(NamedExecutor("empty"))),
+            Err(AttemptExecutorRegistryError::InvalidBackendRef(_))
+        ));
+        registry
+            .register("acp:claude", Arc::new(NamedExecutor("first")))
+            .unwrap();
+        assert!(matches!(
+            registry.register("acp:claude", Arc::new(NamedExecutor("second"))),
+            Err(AttemptExecutorRegistryError::DuplicateBackend(_))
+        ));
     }
 }

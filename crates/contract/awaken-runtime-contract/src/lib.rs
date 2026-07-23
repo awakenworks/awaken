@@ -43,7 +43,10 @@ pub use delegation::{
     DelegationResume, DelegationStep, DelegationToolInput, PendingChildRunResults, RemoteAgent,
     ResultRecord, RunDelegationService, RunDelegations,
 };
-pub use execution::{Cancellation, ExecutorCapabilities, RunExecutor, Wait};
+pub use execution::{
+    AttemptExecutorRegistry, AttemptExecutorRegistryError, Cancellation, ExecutorCapabilities,
+    NATIVE_RUNTIME_CAPABILITY, RunAttemptExecutor, RunExecutor, Wait, execution_capability,
+};
 pub use live_inbox::{LiveInbox, LiveInboxMessage, LiveInboxMessageId};
 pub use llm::{ChatRequest, ChatResponse, LlmExecutor};
 pub use pause::PauseSignal;
@@ -63,6 +66,10 @@ pub use awaken_agent_contract::agent::state::{MergePolicy, Scope, Store};
 pub use awaken_agent_contract::agent::thread::Id as ThreadId;
 pub use awaken_agent_contract::thread::commit::coordinator::{
     Coordinator as CommitCoordinator, Error as CommitError,
+    OperationCoordinator as CommitOperationCoordinator,
+};
+pub use awaken_agent_contract::thread::commit::operation::{
+    CommitOperation, CommitOperationId, CommitPayloadHash, CommitReceipt,
 };
 pub use awaken_agent_contract::thread::commit::staged::{
     CommitRecord, RunDisposition, ThreadCommit,

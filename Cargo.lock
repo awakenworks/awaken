@@ -1143,6 +1143,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "sqlx",
  "thiserror 2.0.18",
  "tokio",
@@ -1281,6 +1282,7 @@ dependencies = [
  "axum",
  "base64",
  "form_urlencoded",
+ "hmac 0.12.1",
  "regex",
  "reqwest 0.12.28",
  "rusqlite",
@@ -1574,6 +1576,7 @@ dependencies = [
  "awaken-agent-contract",
  "awaken-store-conformance",
  "awaken-store-inmem",
+ "serde",
  "serde_json",
  "tokio",
 ]
