@@ -5,3 +5,4 @@
 pub mod checkpoint;
 pub mod run_store;
 pub mod thread_reader;
+pub mod transcript;
