@@ -615,13 +615,17 @@ impl SharedHost {
             )
         });
         let attempt_executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor> =
-            self.attempt_executor_override.clone().unwrap_or_else(|| {
-                Arc::new(crate::run_exec::SessionAttemptExecutor::new(
-                    runtime.clone(),
-                    acp_executor,
-                    self.remote_attempt_executor.clone(),
-                    &config.resolved_spec,
-                ))
+            Arc::new(crate::run_exec::SessionAttemptExecutor::new(
+                runtime.clone(),
+                acp_executor,
+                self.remote_attempt_executor.clone(),
+                &config.resolved_spec,
+            ));
+        let attempt_executor = self
+            .application_attempt_decorator
+            .as_ref()
+            .map_or(attempt_executor.clone(), |decorate| {
+                decorate(attempt_executor)
             });
         // The foreground delivery seam (slice C/D): a turn's execution goes through
         // `RunIngress` rather than calling `runtime.start_run` directly. Direct

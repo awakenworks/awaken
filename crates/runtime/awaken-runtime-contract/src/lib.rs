@@ -89,7 +89,9 @@ pub use resolver::{
     AgentSnapshotResolver, PublishedAgentSnapshotSource, RunResolver, StaticPublishedAgentSnapshots,
 };
 pub use resume::{ResumeCommand, ResumeError, ResumeResult, validate_resume};
-pub use runtime_context::{CaptureContext, RuntimeRunContext};
+pub use runtime_context::{
+    AttemptOwnershipError, AttemptOwnershipVerifier, CaptureContext, RuntimeRunContext,
+};
 pub use snapshot::{
     AgentConfigRevisionRef, AgentPublicationVersion, AgentSnapshotFingerprint,
     AgentSnapshotMetadata, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,

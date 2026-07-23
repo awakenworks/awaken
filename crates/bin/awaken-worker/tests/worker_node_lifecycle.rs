@@ -1,6 +1,7 @@
 use awaken_runtime_host::WorkerUpstream;
 use awaken_worker::{WorkerNodeBuilder, WorkerShutdown};
 use awaken_worker_contract::{VersionRange, WorkerManifest};
+use std::sync::{Arc, Mutex};
 
 mod support;
 use support::FakeWorkerUpstream;
@@ -42,14 +43,30 @@ fn builder_rejects_incomplete_or_invalid_topology() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_runs_register_ready_drain_quiesce_and_deregister() {
     let upstream = FakeWorkerUpstream::start();
+    let registered_identity = Arc::new(Mutex::new(None));
+    let observed = registered_identity.clone();
     WorkerNodeBuilder::new(WorkerUpstream::new(upstream.url()).with_worker_id("worker-node-test"))
         .with_manifest(manifest())
+        .with_application_decorator_factory(Arc::new(move |context| {
+            *observed.lock().expect("identity observation mutex") =
+                Some(context.identity().clone());
+            let decorator: awaken_runtime_host::AttemptExecutorDecorator = Arc::new(|inner| inner);
+            Ok(decorator)
+        }))
         .without_admin_surface()
         .build()
         .expect("valid explicit Worker topology")
         .run_until(async { Ok(WorkerShutdown::Prompt) })
         .await
         .expect("Worker lifecycle completes");
+
+    let identity = registered_identity
+        .lock()
+        .expect("identity observation mutex")
+        .clone()
+        .expect("factory receives registered identity");
+    assert_eq!(identity.worker_id, "worker-node-test");
+    assert_eq!(identity.generation, 1);
 
     let requests = upstream.requests();
     let positions: Vec<_> = [

@@ -19,7 +19,7 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpoint;
 use awaken_runtime_contract::resume::ResumeResult;
-use awaken_worker_contract::{PlacementPolicy, WorkerAssignment, WorkerSnapshot};
+use awaken_worker_contract::{PlacementPolicy, WorkerAssignment, WorkerIdentity, WorkerSnapshot};
 use serde::{Deserialize, Serialize};
 
 use crate::run_dispatch::RunDispatch;
@@ -176,14 +176,16 @@ pub struct DispatchCompletion {
 pub struct CommitEpochGuard {
     _held: Box<dyn Send>,
     request: RunDispatch,
+    expires_ms: u64,
 }
 
 impl CommitEpochGuard {
     #[must_use]
-    pub fn new(held: impl Send + 'static, request: RunDispatch) -> Self {
+    pub fn new(held: impl Send + 'static, request: RunDispatch, expires_ms: u64) -> Self {
         Self {
             _held: Box::new(held),
             request,
+            expires_ms,
         }
     }
 
@@ -193,6 +195,13 @@ impl CommitEpochGuard {
     #[must_use]
     pub fn request(&self) -> &RunDispatch {
         &self.request
+    }
+
+    /// Whether the guarded claim's lease is live at `now_ms`. The exact expiry
+    /// boundary remains live, matching the queue's recovery rule.
+    #[must_use]
+    pub fn is_live_at(&self, now_ms: u64) -> bool {
+        self.expires_ms >= now_ms
     }
 }
 
@@ -439,6 +448,34 @@ pub trait DispatchQueue: Send + Sync {
         lease_ms: u64,
         now_ms: u64,
     ) -> Result<usize, DispatchError>;
+
+    /// Whether one exact fenced claim still owns a live dispatch lease.
+    ///
+    /// The default reuses the backend's authoritative epoch guard instead of
+    /// introducing another claim source or duplicating owner/epoch queries.
+    async fn claim_is_current(&self, claim: &RunClaim, now_ms: u64) -> Result<bool, DispatchError> {
+        Ok(self
+            .lock_commit_epoch(claim)
+            .await?
+            .is_some_and(|guard| guard.is_live_at(now_ms)))
+    }
+
+    /// Whether this exact registered Worker incarnation currently owns the live
+    /// lease for `run_id`.
+    ///
+    /// Server-side application capability issuers use this shape because they
+    /// authenticate a Worker identity and Run id, but must not trust a
+    /// caller-supplied claim epoch.
+    async fn worker_owns_run(
+        &self,
+        _identity: &WorkerIdentity,
+        _run_id: &RunId,
+        _now_ms: u64,
+    ) -> Result<bool, DispatchError> {
+        Err(DispatchError::Rejected(
+            "backend does not expose registered-worker run authority".to_string(),
+        ))
+    }
 
     /// Settle a claimed dispatch, fenced by the lease `epoch` the caller holds (from
     /// [`Claimed`]`.lease.epoch`). The settle applies only when `epoch` is still the

@@ -130,6 +130,30 @@ impl SqliteDispatchStore {
 
 #[async_trait]
 impl DispatchQueue for SqliteDispatchStore {
+    async fn worker_owns_run(
+        &self,
+        identity: &crate::WorkerIdentity,
+        run_id: &RunId,
+        now_ms: u64,
+    ) -> Result<bool, DispatchError> {
+        let run = run_id.0.clone();
+        let owner = identity.lease_owner();
+        self.with_conn(move |conn, p| {
+            conn.query_row(
+                &format!(
+                    "SELECT EXISTS(SELECT 1 FROM {p}_dispatch \
+                     WHERE run_id = ?1 AND status = 'running' \
+                     AND lease_owner = ?2 AND lease_until IS NOT NULL \
+                     AND lease_until >= ?3)"
+                ),
+                params![run, owner, now_ms as i64],
+                |row| row.get(0),
+            )
+            .map_err(reject)
+        })
+        .await
+    }
+
     async fn enqueue_with(
         &self,
         request: RunDispatch,
@@ -454,11 +478,11 @@ impl DispatchQueue for SqliteDispatchStore {
     ) -> Result<Option<CommitEpochGuard>, DispatchError> {
         let guard = self.authority.clone().lock_owned().await;
         let run = claim.run_id.0.clone();
-        let current: Option<(u64, Option<String>, String)> = self
+        let current: Option<(u64, Option<String>, Option<i64>, String)> = self
             .with_conn_unlocked(move |conn, p| {
                 conn.query_row(
                     &format!(
-                        "SELECT lease_epoch, lease_owner, request \
+                        "SELECT lease_epoch, lease_owner, lease_until, request \
                          FROM {p}_dispatch WHERE run_id = ?1"
                     ),
                     params![run],
@@ -467,6 +491,7 @@ impl DispatchQueue for SqliteDispatchStore {
                             row.get::<_, i64>(0)?.max(0) as u64,
                             row.get(1)?,
                             row.get(2)?,
+                            row.get(3)?,
                         ))
                     },
                 )
@@ -475,12 +500,20 @@ impl DispatchQueue for SqliteDispatchStore {
             })
             .await?;
         let request = current
-            .filter(|(epoch, owner, _)| {
+            .filter(|(epoch, owner, _, _)| {
                 *epoch == claim.epoch && owner.as_deref() == Some(&claim.owner)
             })
-            .map(|(_, _, request)| serde_json::from_str(&request).map_err(json_err))
+            .map(|(_, _, expires_ms, request)| {
+                let expires_ms = expires_ms.ok_or_else(|| {
+                    DispatchError::Rejected(
+                        "current dispatch claim has no lease expiry".to_string(),
+                    )
+                })?;
+                let request = serde_json::from_str(&request).map_err(json_err)?;
+                Ok((request, expires_ms.max(0) as u64))
+            })
             .transpose()?;
-        Ok(request.map(|request| CommitEpochGuard::new(guard, request)))
+        Ok(request.map(|(request, expires_ms)| CommitEpochGuard::new(guard, request, expires_ms)))
     }
 
     async fn claim(

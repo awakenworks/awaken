@@ -306,7 +306,7 @@ application projection. The public router accepts only a versioned
 ```rust
 WorkerNodeBuilder::new(upstream)
     .with_manifest(manifest)
-    .with_attempt_executor(executor)
+    .with_application_decorator_factory(factory)
     .with_inference_materializer(materializer)
     .with_resource_plane(WorkerResourcePlane::new(resources, validator))
     .build()?
@@ -317,10 +317,12 @@ WorkerNodeBuilder::new(upstream)
 `build()` is synchronous and side-effect free: it validates the upstream and
 immutable manifest before registration. `run_until_shutdown()` owns process
 signals; supervisors and conformance tests use the same `WorkerNode::run_until`
-state machine with an injected shutdown future. `SharedHost::with_attempt_executor`
-replaces the complete per-Session attempt boundary, so an application decorator
-wraps Native/ACP/A2A selection rather than accidentally decorating only one
-backend.
+state machine with an injected shutdown future. Registration creates one
+immutable `RegisteredWorkerContext` from the returned `RegisteredWorker` and the
+identity-bound `WorkerUpstream`; the factory then creates the application
+decorator. `SharedHost` constructs its complete per-Session Native/ACP/A2A router
+first and applies that decorator around it. There is no public Worker/Host path
+that replaces the complete router.
 
 `WorkerNode` owns:
 
@@ -332,9 +334,12 @@ backend.
 - settle or typed abandon;
 - drain admission fence, quiesce, deregistration, and shutdown.
 
-The injected executor receives only a validated attempt context. A decorator may
-add Flow envelope parsing, Run-scoped MCP, resource delivery, and output
-projection, but cannot bypass claim, recovery, commit, or settlement.
+The decorated executor receives only a validated attempt context. Run ingress
+captures the exact `RunClaim` in an `AttemptOwnershipVerifier` carried by
+`RuntimeRunContext`, allowing a decorator to recheck live ownership without
+learning dispatch vocabulary. A decorator may add Flow envelope parsing,
+Run-scoped MCP, resource delivery, and output projection, but cannot bypass
+claim, recovery, backend routing, commit, or settlement.
 
 ### 4.6 Topology validation
 
@@ -446,7 +451,7 @@ any state --identity lost--> fail closed; no new claim
 P1 is secondary to P0 correctness but required for a broadly reusable Worker
 fleet.
 
-### 6.1 Attempt executor registry
+### 6.1 Attempt executor registry and application decoration
 
 `AttemptExecutorRegistry` is public and selects the frozen `backend_ref` by exact
 registered key:
@@ -460,12 +465,28 @@ acp:opencode
 a2a:<endpoint-or-profile>
 ```
 
-`WorkerNodeBuilder::with_attempt_executor_registry` replaces every execution
-capability in the supplied manifest with `registry.manifest_capabilities()`, while
-preserving non-execution application/resource capabilities. Configuration may
-narrow advertisement but cannot add an unimplemented execution route.
-Duplicate keys, native refs registered as exact routes, empty ACP/A2A targets,
-unknown refs, or an empty explicit registry fail closed.
+`SessionAttemptExecutor` is the one backend router. It builds an
+`AttemptExecutorRegistry` from the immutable Session publication and the
+Native/ACP/A2A executors actually installed by the Host. Duplicate keys, native
+refs registered as exact routes, empty ACP/A2A targets, or unknown refs fail
+closed.
+
+The Worker exposes only
+`WorkerNodeBuilder::with_application_decorator_factory`. The factory runs after
+registration and receives `RegisteredWorkerContext`; its returned function wraps
+the complete Session router for execute, resume, and cancel. The removed
+`with_attempt_executor`/`with_attempt_executor_registry` Worker paths are not
+retained as compatibility tracks.
+
+Current-attempt authority remains in `DispatchQueue`:
+
+- `claim_is_current(claim, now_ms)` reuses the exact epoch guard and verifies the
+  lease remains live;
+- `worker_owns_run(identity, run_id, now_ms)` supports a server-side application
+  capability edge that has authenticated Worker identity but must not trust a
+  caller-supplied epoch;
+- `HttpDispatchQueue` exposes only the first operation to the owning Worker. The
+  second remains a Control-side query.
 
 ### 6.2 Worker identity
 
@@ -758,7 +779,9 @@ helpers and CLI parsing do not belong here.
 | `ClaimedCommitService` | application service | authenticated, fenced, versioned, idempotent commit orchestration | directory, dispatch, coordinator resolver, authenticator | `SharedHost` construction or product projection | embedding system cannot use its coordinator; stale owner writes | G1/G13; dependency-injection and stale-epoch tests |
 | `ThreadCoordinatorResolver` | boundary port | coordinator selection for the addressed Thread/cell | configured commit backend | placement, auth, or application cache | request commits through a different authority | same-source and multi-node tests |
 | `WorkerNode` | public component | Worker lifecycle from registration through drain | control client, recovery client, commit client, executor | product envelope or Control database | every application rewrites lifecycle and diverges | G5/G6; lifecycle state-machine suite |
-| `WorkerNodeBuilder` | assembly API | validated explicit Worker dependency assembly | manifest, executor, materializers/resources | environment parsing or hidden global stores | invalid topology starts successfully | construction/fail-closed topology tests |
+| `WorkerNodeBuilder` | assembly API | validated explicit Worker dependency assembly and one post-registration decorator factory | manifest, materializers/resources, application factory | complete executor replacement, environment parsing, or hidden global stores | application duplicates Worker/router lifecycle | construction and registered-context lifecycle tests |
+| `RegisteredWorkerContext` | immutable assembly value | one allocated Worker incarnation plus its identity-bound request transport | `RegisteredWorker`, `WorkerUpstream` | mutable liveness truth, product ACL, or a second credential | application uses an unsigned/stale identity or parallel trust path | signed transport and registration-order tests |
+| `AttemptOwnershipVerifier` | Runtime live port | claim-bound current-attempt verdict | private run-ingress adapter over `DispatchQueue` | claim/epoch, Worker registry, HTTP, database, or product vocabulary | application performs an external effect after losing ownership | cross-backend current/expired/stale tests; signed HTTP test |
 | `AttemptExecutorRegistry` | public registry | exact frozen backend-ref to executor mapping and capability export | Native/ACP/A2A executors | arbitrary advertised capability or routing policy | manifest drifts from real execution support | G40; registry/manifest conformance |
 | `RunLifecycleFeed` | boundary port | durable cursor over committed Run lifecycle | commit outbox/projection | dispatch lease operations or product status | consumers infer store tables or miss reconnect events | cursor/redelivery tests |
 | `DispatchOperationalFeed` | boundary port | durable cursor over claim/lease/settle operations | dispatch store/outbox | Run outcome truth | operational status is mistaken for agent truth | cursor and separation tests |
@@ -768,7 +791,7 @@ helpers and CLI parsing do not belong here.
 | Priority | Required decision | Completion boundary |
 |---|---|---|
 | P0 | recovery snapshot/projection, operation receipts, injectable claimed commit, public Worker assembly, topology rejection, conformance + bounded model | remote Worker is correct, recoverable, and embeddable |
-| P1 | exact executor registry, derived manifest, production identity, separated lifecycle feeds | fleet is extensible and production-operable |
+| P1 | exact Session executor registry, registered application decoration, neutral ownership verification, production identity, separated lifecycle feeds | fleet is extensible and production-operable |
 | P2 | PostgreSQL active-active with authoritative recovery/lifecycle reads and multi-process failure injection | the physical Control singleton and sticky-routing constraint are removed |
 | Deferred | recovery cache/deltas, snapshot compaction, optional streaming, cell sharding/rebalancing, alternative primary stores, merged business event feed | requires measured scale or a separate accepted ADR |
 

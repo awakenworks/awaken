@@ -20,12 +20,15 @@ use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::execution::RunAttemptExecutor;
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
-use awaken_runtime_contract::runtime_context::RuntimeRunContext;
+use awaken_runtime_contract::runtime_context::{
+    AttemptOwnershipError, AttemptOwnershipVerifier, RuntimeRunContext,
+};
 use awaken_runtime_contract::terminal::redeliver_committed_terminal;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 use crate::Error;
+use crate::clock::{Clock, SystemClock};
 use crate::commit_fence::{ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit};
 use crate::dispatch::{Claimed, Dispatch, DispatchOutcome, PendingInput, RunClaim, SettleOutcome};
 use crate::worker_context::WorkerContext;
@@ -46,6 +49,28 @@ pub struct DispatchWorker<S> {
     owner: String,
     lease_ms: u64,
     cancellation: Option<CancellationToken>,
+    ownership_clock: Arc<dyn Clock>,
+}
+
+struct ClaimBoundOwnershipVerifier {
+    dispatch: Arc<dyn crate::DispatchQueue>,
+    claim: RunClaim,
+    clock: Arc<dyn Clock>,
+}
+
+#[async_trait::async_trait]
+impl AttemptOwnershipVerifier for ClaimBoundOwnershipVerifier {
+    async fn verify_current(&self) -> Result<(), AttemptOwnershipError> {
+        match self
+            .dispatch
+            .claim_is_current(&self.claim, self.clock.now_ms())
+            .await
+        {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(AttemptOwnershipError::Lost),
+            Err(error) => Err(AttemptOwnershipError::Unavailable(error.to_string())),
+        }
+    }
 }
 
 struct AttemptControlGuard {
@@ -102,6 +127,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             owner: owner.into(),
             lease_ms: DEFAULT_LEASE_MS,
             cancellation: None,
+            ownership_clock: Arc::new(SystemClock),
         }
     }
 
@@ -199,6 +225,14 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         self
     }
 
+    /// Install the same clock used by this Worker's dispatch authority. Tests and
+    /// embedded pools use this to keep ownership checks deterministic.
+    #[must_use]
+    pub fn with_ownership_clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.ownership_clock = clock;
+        self
+    }
+
     pub fn runtime(&self) -> &Arc<Runtime> {
         &self.runtime
     }
@@ -243,9 +277,17 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             coordinator = coordinator.with_recovery_projection(projection.clone());
         }
         let fenced: Arc<dyn CommitCoordinator> = Arc::new(coordinator);
-        let mut ctx = self.execution_context().with_commit(fenced);
+        let dispatch: Arc<dyn crate::DispatchQueue> = self.store.clone();
+        let ownership: Arc<dyn AttemptOwnershipVerifier> = Arc::new(ClaimBoundOwnershipVerifier {
+            dispatch: dispatch.clone(),
+            claim: claim.clone(),
+            clock: self.ownership_clock.clone(),
+        });
+        let mut ctx = self
+            .execution_context()
+            .with_commit(fenced)
+            .with_ownership(ownership);
         if let Some(checkpoint) = ctx.stream_checkpoint.clone() {
-            let dispatch: Arc<dyn crate::DispatchQueue> = self.store.clone();
             ctx = ctx.with_stream_checkpoint(Arc::new(crate::FencedStreamCheckpointStore::new(
                 checkpoint,
                 dispatch,
@@ -267,14 +309,10 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         now_ms: u64,
         model_executor: &Option<Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>,
     ) -> Result<RunState, Error> {
+        let context = self.execution_context_with(claim, model_executor);
         Ok(self
             .runtime
-            .perform_scheduled_action(
-                &claim.run_id,
-                self.reader.as_ref(),
-                self.execution_context_with(claim, model_executor),
-                now_ms,
-            )
+            .perform_scheduled_action(&claim.run_id, self.reader.as_ref(), context, now_ms)
             .await?)
     }
 

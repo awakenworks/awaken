@@ -16,8 +16,8 @@ use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_ext_builtin_tools::MessageSender;
 use awaken_run_ingress::{
-    DispatchOutcome, DispatchQueue, DispatchWorker, DurableRunIngress, Inbox, MemoryDispatchStore,
-    OutboxMessageSender, PendingInput, RunDispatch, RunIngressCapabilities,
+    DispatchOutcome, DispatchQueue, DispatchWorker, DurableRunIngress, Inbox, ManualClock,
+    MemoryDispatchStore, OutboxMessageSender, PendingInput, RunDispatch, RunIngressCapabilities,
 };
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime::{DirectRunIngress, RunIngress, RunService};
@@ -38,6 +38,57 @@ struct RecordingAttemptExecutor {
     executes: AtomicUsize,
     resumes: AtomicUsize,
     cancels: AtomicUsize,
+}
+
+struct OwnershipCheckingAttemptExecutor {
+    verified: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl RunExecutor for OwnershipCheckingAttemptExecutor {
+    async fn execute(
+        &self,
+        activation: RunActivation,
+        context: RuntimeRunContext,
+    ) -> ExecutionResult<RunState> {
+        context
+            .ownership
+            .as_ref()
+            .expect("claimed attempt receives ownership authority")
+            .verify_current()
+            .await
+            .expect("fresh exact claim remains current");
+        self.verified.fetch_add(1, Ordering::SeqCst);
+        RecordingAttemptExecutor::finish(&activation, &context).await
+    }
+}
+
+#[async_trait::async_trait]
+impl RunAttemptExecutor for OwnershipCheckingAttemptExecutor {
+    async fn resume(
+        &self,
+        activation: RunActivation,
+        _command: ResumeCommand,
+        context: RuntimeRunContext,
+    ) -> ExecutionResult<RunState> {
+        self.execute(activation, context).await
+    }
+
+    async fn cancel(
+        &self,
+        _activation: RunActivation,
+        context: RuntimeRunContext,
+    ) -> ExecutionResult<()> {
+        context
+            .ownership
+            .as_ref()
+            .expect("claimed cancellation receives ownership authority")
+            .verify_current()
+            .await
+            .expect("fresh exact claim remains current");
+        self.verified.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
 }
 
 impl RecordingAttemptExecutor {
@@ -192,6 +243,32 @@ async fn installed_attempt_executor_drives_a_fresh_durable_run() {
     );
     assert_eq!(selected.executes.load(Ordering::SeqCst), 1);
     assert_eq!(selected.resumes.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn claimed_attempt_receives_live_exact_ownership_authority() {
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let clock = Arc::new(ManualClock::new(7));
+    let selected = Arc::new(OwnershipCheckingAttemptExecutor {
+        verified: AtomicUsize::new(0),
+    });
+    let worker = DispatchWorker::new(text_runtime(), store.clone(), commit, "worker")
+        .with_ownership_clock(clock);
+    worker.install_attempt_executor(selected.clone());
+    store
+        .enqueue(RunDispatch::new(activation("ownership-run")))
+        .await
+        .expect("dispatch enqueued");
+
+    assert_eq!(
+        worker.tick(7).await.expect("claimed attempt completes"),
+        Some((
+            RunId("ownership-run".to_string()),
+            RunState::Ended(EndCause::NaturalEnd)
+        ))
+    );
+    assert_eq!(selected.verified.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
