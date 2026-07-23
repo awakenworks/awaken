@@ -54,6 +54,8 @@ pub struct LifecyclePage {
 
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 pub enum RunLifecycleFeedError {
+    #[error("run lifecycle source rejected: {0}")]
+    Rejected(String),
     #[error("committed lifecycle event {sequence} has an invalid RunState payload")]
     InvalidState { sequence: u64 },
     #[error("committed lifecycle event {sequence} references an unknown run")]
@@ -86,7 +88,13 @@ impl CheckpointRunLifecycleFeed {
     }
 }
 
-fn classify(state: &RunState, previous: Option<&RunState>) -> RunLifecycleKind {
+/// Classify one committed Run transition using the preceding state for that Run.
+///
+/// Store-native lifecycle feeds use the same classifier as the portable
+/// [`CheckpointRunLifecycleFeed`], so an authoritative database reader cannot
+/// drift from the backend-neutral projection vocabulary.
+#[must_use]
+pub fn classify_run_lifecycle(state: &RunState, previous: Option<&RunState>) -> RunLifecycleKind {
     match state {
         RunState::Running if matches!(previous, Some(RunState::Awaiting)) => {
             RunLifecycleKind::Resumed
@@ -130,7 +138,7 @@ impl RunLifecycleFeed for CheckpointRunLifecycleFeed {
             .map_err(|_| RunLifecycleFeedError::InvalidState {
                 sequence: record.sequence,
             })?;
-            let kind = classify(&state, previous.get(&record.run_id));
+            let kind = classify_run_lifecycle(&state, previous.get(&record.run_id));
             previous.insert(record.run_id.clone(), state.clone());
             if record.sequence <= cursor.0 {
                 continue;
@@ -335,15 +343,15 @@ mod tests {
     #[test]
     fn terminal_classification_is_total() {
         assert_eq!(
-            classify(&RunState::Ended(EndCause::NaturalEnd), None),
+            classify_run_lifecycle(&RunState::Ended(EndCause::NaturalEnd), None),
             RunLifecycleKind::Completed
         );
         assert_eq!(
-            classify(&RunState::Ended(EndCause::Cancelled), None),
+            classify_run_lifecycle(&RunState::Ended(EndCause::Cancelled), None),
             RunLifecycleKind::Cancelled
         );
         assert_eq!(
-            classify(&RunState::Ended(EndCause::Indeterminate), None),
+            classify_run_lifecycle(&RunState::Ended(EndCause::Indeterminate), None),
             RunLifecycleKind::Failed
         );
     }
