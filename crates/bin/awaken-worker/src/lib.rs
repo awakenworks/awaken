@@ -455,6 +455,48 @@ pub async fn run_with_upstream_application_and_inference_materializer(
     application_capabilities: std::collections::BTreeSet<String>,
     application: Option<RegisteredDecoratorFactory>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    build_secretless_worker(
+        upstream,
+        materializer,
+        application_capabilities,
+        application,
+    )
+    .await?
+    .run_until_shutdown()
+    .await
+}
+
+/// Supervised counterpart of
+/// [`run_with_upstream_application_and_inference_materializer`].
+pub async fn run_with_upstream_application_and_inference_materializer_until<F>(
+    upstream: WorkerUpstream,
+    materializer: Arc<dyn InferenceExecutorMaterializer>,
+    application_capabilities: std::collections::BTreeSet<String>,
+    application: Option<RegisteredDecoratorFactory>,
+    shutdown: F,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+where
+    F: std::future::Future<
+            Output = Result<WorkerShutdown, Box<dyn std::error::Error + Send + Sync>>,
+        >,
+{
+    build_secretless_worker(
+        upstream,
+        materializer,
+        application_capabilities,
+        application,
+    )
+    .await?
+    .run_until(shutdown)
+    .await
+}
+
+async fn build_secretless_worker(
+    upstream: WorkerUpstream,
+    materializer: Arc<dyn InferenceExecutorMaterializer>,
+    application_capabilities: std::collections::BTreeSet<String>,
+    application: Option<RegisteredDecoratorFactory>,
+) -> Result<WorkerNode, Box<dyn std::error::Error + Send + Sync>> {
     let resources = shared_resource_wiring(None).await?;
     let manifest = worker_manifest(
         Some(materializer.as_ref()),
@@ -469,9 +511,7 @@ pub async fn run_with_upstream_application_and_inference_materializer(
         None,
         resources,
         application,
-    )?
-    .run_until_shutdown()
-    .await
+    )
 }
 
 fn build_configured_worker(
