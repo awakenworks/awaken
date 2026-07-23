@@ -14,10 +14,10 @@
 //! ([`CredentialInferenceMaterializer`](awaken_server::inference_materializer::CredentialInferenceMaterializer)),
 //! which consumes the snapshot-pinned endpoint and credential reference and
 //! injects the credential from the shared vault — see
-//! [`awaken_control::open_inference_materialization_stores_from_env`]). Only a run whose model is not yet
-//! published falls back to the auxiliary
+//! [`awaken_control::open_inference_materialization_stores_from_env`]). The host's
 //! [`NoModelConfiguredExecutor`](awaken_server::no_model::NoModelConfiguredExecutor)
-//! — the production placeholder, never a mock echo model.
+//! is only an inert construction placeholder: because the materializer is installed,
+//! an unavailable publication pin fails closed before that executor can run.
 
 use std::sync::Arc;
 
@@ -105,9 +105,9 @@ impl WorkerLifecycle {
 /// 4. When shared resource backends are explicitly configured, inject the same
 ///    File/Memory/Skill/lifecycle ports and Resource Catalog validator used by the
 ///    server. Otherwise advertise no resource capability.
-/// 5. Assemble a [`SharedHost`] whose default executor is the production
-///    `NoModelConfiguredExecutor` fallback and whose per-run access is realized
-///    by the materializer, pushing committed facts to `upstream`.
+/// 5. Assemble a [`SharedHost`] with an inert default executor and the mandatory
+///    per-run materializer, pushing committed facts to `upstream`. A failed pin
+///    never falls back to the inert executor.
 /// 6. Start the dispatch pool and drain in the background until SIGINT / SIGTERM.
 ///
 /// Requires `AWAKEN_INGRESS=durable` (the pool's enable gate); the injected remote
@@ -140,14 +140,21 @@ pub async fn run_with_inference_materializer(
     upstream: &str,
     materializer: Arc<dyn InferenceExecutorMaterializer>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    run_with_upstream_and_inference_materializer(WorkerUpstream::new(upstream), materializer).await
+}
+
+/// Run a secretless Worker over one caller-configured control transport.
+///
+/// Managed compositions use this entrypoint so the same [`WorkerUpstream`]
+/// (including its mTLS client and logical Worker id) is cloned through
+/// registration, claim/renew/settle, claimed commit, and ordinary commit. This
+/// function never reconstructs the transport from its URL.
+pub async fn run_with_upstream_and_inference_materializer(
+    upstream: WorkerUpstream,
+    materializer: Arc<dyn InferenceExecutorMaterializer>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let resources = shared_resource_wiring(None).await?;
-    run_configured(
-        WorkerUpstream::new(upstream),
-        Some(materializer),
-        None,
-        resources,
-    )
-    .await
+    run_configured(upstream, Some(materializer), None, resources).await
 }
 
 async fn run_configured(

@@ -596,10 +596,11 @@ mod tests {
     impl ModelPublicationResolver for FirstOfferingResolver {
         async fn resolve_models(
             &self,
-            _workspace: &str,
+            _workspace: &awaken_tenancy::ScopeId,
             selection: &ModelSelection,
             fallbacks: &[ModelBinding],
-        ) -> Result<ResolvedPublicationModels, String> {
+        ) -> Result<ResolvedPublicationModels, awaken_config_service::PublicationResolutionError>
+        {
             let (primary, fallbacks) = if let Some(primary) = selection.resolved() {
                 (primary.clone(), fallbacks.to_vec())
             } else {
@@ -608,7 +609,7 @@ mod tests {
                 });
                 let primary = offerings
                     .next()
-                    .ok_or_else(|| "no provider-backed model in the catalog".to_string())?;
+                    .ok_or(awaken_config_service::PublicationResolutionError::MissingPrimary)?;
                 let binding = |offering: &Offering| {
                     ModelBinding::new(&offering.provider_id.0, &offering.model_id, "genai")
                 };
@@ -646,10 +647,14 @@ mod tests {
         }
     }
 
+    fn test_config_service() -> ConfigService {
+        ConfigService::new(Arc::new(FirstOfferingResolver(catalog("m-1"))))
+    }
+
     #[tokio::test]
     async fn draft_resource_bindings_keep_equal_agent_ids_in_their_workspace() {
         let plane = ConfigPlane::new(
-            Arc::new(ConfigService::new()),
+            Arc::new(test_config_service()),
             Arc::new(SqliteConfigStore::open_in_memory().unwrap()),
             Arc::new(StaticToolCatalog(Vec::new())),
         );
@@ -693,10 +698,7 @@ mod tests {
             RESERVED_ADMIN_SCOPE,
             awaken_admin_assistant::admin_tool_descriptors(),
         ));
-        let service = Arc::new(
-            ConfigService::new()
-                .with_model_publication_resolver(Arc::new(FirstOfferingResolver(catalog("m-1")))),
-        );
+        let service = Arc::new(test_config_service());
         let plane = ConfigPlane::new(service.clone(), store, tools);
 
         let execution_workspace = "wrkspc_live";
@@ -737,7 +739,7 @@ mod tests {
         .unwrap();
         // A config plane over an empty store → no existing agents.
         let plane = ConfigPlane::new(
-            Arc::new(ConfigService::new()),
+            Arc::new(test_config_service()),
             Arc::new(SqliteConfigStore::open_in_memory().unwrap()),
             Arc::new(StaticToolCatalog(vec![tool("read")])),
         );
@@ -846,7 +848,7 @@ mod tests {
     async fn capability_reader_lists_existing_agents_excluding_the_assistant() {
         let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
         let plane = ConfigPlane::new(
-            Arc::new(ConfigService::new()),
+            Arc::new(test_config_service()),
             store,
             Arc::new(StaticToolCatalog(vec![tool("read")])),
         );
@@ -875,7 +877,7 @@ mod tests {
     async fn capability_reader_lists_only_its_selected_execution_workspace() {
         let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
         let plane = ConfigPlane::new(
-            Arc::new(ConfigService::new()),
+            Arc::new(test_config_service()),
             store,
             Arc::new(StaticToolCatalog(vec![tool("read")])),
         );
@@ -909,7 +911,7 @@ mod tests {
     async fn draft_validator_rejects_an_unknown_tool_in_a_tenant_draft() {
         let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
         let plane = ConfigPlane::new(
-            Arc::new(ConfigService::new()),
+            Arc::new(test_config_service()),
             store,
             Arc::new(StaticToolCatalog(vec![tool("read")])),
         );
@@ -939,11 +941,9 @@ mod tests {
         ));
         // An EMPTY catalog: the Auto assistant cannot resolve a model, so publish
         // is Unresolvable and seed returns the error.
-        let service = Arc::new(
-            ConfigService::new().with_model_publication_resolver(Arc::new(FirstOfferingResolver(
-                ProviderCatalog::default(),
-            ))),
-        );
+        let service = Arc::new(ConfigService::new(Arc::new(FirstOfferingResolver(
+            ProviderCatalog::default(),
+        ))));
         let plane = ConfigPlane::new(service, store, tools);
         let err = seed_admin_assistant(&plane, DEFAULT_SCOPE)
             .await
@@ -960,10 +960,7 @@ mod tests {
             RESERVED_ADMIN_SCOPE,
             awaken_admin_assistant::admin_tool_descriptors(),
         ));
-        let service = Arc::new(
-            ConfigService::new()
-                .with_model_publication_resolver(Arc::new(FirstOfferingResolver(catalog("m-1")))),
-        );
+        let service = Arc::new(test_config_service());
         let plane = ConfigPlane::new(service.clone(), store, tools);
 
         seed_admin_assistant(&plane, DEFAULT_SCOPE)
@@ -999,7 +996,7 @@ mod tests {
     async fn draft_validator_error_carries_the_issue_message() {
         let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
         let plane = ConfigPlane::new(
-            Arc::new(ConfigService::new()),
+            Arc::new(test_config_service()),
             store,
             Arc::new(StaticToolCatalog(vec![tool("read")])),
         );

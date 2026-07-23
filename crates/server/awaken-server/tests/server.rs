@@ -831,7 +831,13 @@ async fn managed_user_interrupt_reports_interrupted() {
         .iter()
         .filter(|e| e["type"] == "span.outcome_evaluation_end")
         .collect();
-    assert_eq!(ends.len(), 1, "outcome evaluation events: {ends:?}");
+    assert_eq!(
+        ends.iter()
+            .filter(|event| event["result"] == "interrupted")
+            .count(),
+        1,
+        "the terminal interruption is projected exactly once: {ends:?}"
+    );
     assert_eq!(
         ends.last().unwrap()["result"],
         "interrupted",

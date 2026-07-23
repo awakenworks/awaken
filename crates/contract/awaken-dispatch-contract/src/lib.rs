@@ -11,13 +11,13 @@ pub mod dispatch;
 pub mod run_dispatch;
 
 pub use awaken_worker_contract::{
-    AssignmentRejection, ExecutionLocation, LeastLoadedPolicy, PlacementContext, PlacementError,
-    PlacementPolicy, REPOSITORY_CREDENTIALS_CAPABILITY, RankedWorker, RegisteredWorker,
-    RegistryError, RegistryMutation, SESSION_RESOURCES_CAPABILITY,
-    WORKER_LOCAL_CREDENTIALS_CAPABILITY, WorkerAssignment, WorkerCredentialRevision,
-    WorkerDirectory, WorkerHeartbeat, WorkerIdentity, WorkerManifest, WorkerRecoveryMode,
-    WorkerRegistration, WorkerSnapshot, WorkerState, can_assign, can_claim, can_claim_locally,
-    place_assignment,
+    AssignmentRejection, ExecutionLocation, HOST_EXECUTOR_CAPABILITY, LeastLoadedPolicy,
+    PROVIDER_CREDENTIAL_SOURCE_CAPABILITY, PlacementContext, PlacementError, PlacementPolicy,
+    REPOSITORY_CREDENTIALS_CAPABILITY, RankedWorker, RegisteredWorker, RegistryError,
+    RegistryMutation, SESSION_RESOURCES_CAPABILITY, WORKER_LOCAL_CREDENTIALS_CAPABILITY,
+    WorkerAssignment, WorkerCredentialRevision, WorkerDirectory, WorkerHeartbeat, WorkerIdentity,
+    WorkerManifest, WorkerRecoveryMode, WorkerRegistration, WorkerSnapshot, WorkerState,
+    can_assign, can_claim, can_claim_locally, place_assignment,
 };
 pub use dispatch::{
     CasOutcome, Claimed, CommitEpochGuard, Dispatch, DispatchCompletion, DispatchError,

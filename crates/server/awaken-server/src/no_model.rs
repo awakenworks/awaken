@@ -1,18 +1,16 @@
-//! The production "no model configured" fallback executor.
+//! Provider-free placeholder for a host with no executable model.
 //!
-//! The management assembly needs a host default model for the window before an
-//! operator has authored + published one through `/v1/config/*` + `/v1/vaults/*`.
-//! In production that default must NOT be a mock (an echo/tool scenario model
-//! belongs in tests only) — it returns a clear, actionable message instead, so a
-//! session that runs before a model is configured gets guidance rather than a
-//! surprising echo. Once a model is published, `CredentialInferenceMaterializer` materializes
-//! the real provider per session and this fallback is never reached for that agent.
+//! `SharedHost` needs an executor for bare/local composition and auxiliary setup.
+//! A production management host also installs `CredentialInferenceMaterializer`;
+//! every Session candidate must then materialize from its publication pin and a
+//! failure is rejected before this placeholder can run. It is not a publishable
+//! default, provider selection, or credential fallback.
 
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult,
 };
 
-/// The model ref this fallback registers under (a stable, non-provider token).
+/// Stable, non-provider identity of the inert placeholder.
 pub const UNCONFIGURED_MODEL_REF: &str = "unconfigured";
 
 /// A deterministic, provider-free executor that ends the turn with one line of
@@ -45,7 +43,7 @@ mod tests {
 
     #[tokio::test]
     async fn infer_returns_actionable_guidance_and_never_a_mock_echo() {
-        // The production fallback performs no inference: whatever the request, it ends
+        // The placeholder performs no inference: whatever the request, it ends
         // the turn with one line of guidance pointing at the config/vault surfaces —
         // never an echo of the input (which would be a mock leaking into production).
         let request = ChatRequest {
@@ -59,7 +57,7 @@ mod tests {
         let resp = NoModelConfiguredExecutor
             .infer(request)
             .await
-            .expect("the fallback never errors");
+            .expect("the placeholder never errors");
         let text = resp.output.text_content();
         assert!(
             text.contains("/v1/config"),
@@ -83,13 +81,13 @@ mod tests {
         assert!(resp.stop_reason.is_none());
         assert!(
             resp.output.tool_calls().is_empty(),
-            "the fallback calls no tools"
+            "the placeholder calls no tools"
         );
     }
 
     #[test]
     fn the_unconfigured_model_ref_is_a_stable_non_provider_token() {
-        // The ref this fallback registers under is a fixed, provider-free token.
+        // The placeholder ref is a fixed, provider-free token.
         assert_eq!(UNCONFIGURED_MODEL_REF, "unconfigured");
     }
 }

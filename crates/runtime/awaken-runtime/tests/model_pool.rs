@@ -33,6 +33,40 @@ struct RouteLlm {
     seen: Arc<Mutex<Vec<String>>>,
 }
 
+/// Routes by complete candidate identity so a model-level override can exercise
+/// fallback between two publication-pinned provider accounts for the same model.
+struct RouteByProviderLlm {
+    failing_provider: &'static str,
+    seen: Arc<Mutex<Vec<(String, String)>>>,
+}
+
+#[async_trait::async_trait]
+impl LlmExecutor for RouteByProviderLlm {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let provider = request.model_binding.provider_identity_ref.clone();
+        let model = request.model_binding.model_ref.clone();
+        self.seen
+            .lock()
+            .unwrap()
+            .push((provider.clone(), model.clone()));
+        if provider == self.failing_provider {
+            Err(LlmError::Overloaded {
+                message: format!("{provider} is down"),
+                retry_after: None,
+            })
+        } else {
+            Ok(ChatResponse {
+                output: AssistantOutput::text(format!("answered by {provider}")),
+                usage: None,
+                stop_reason: Some(StopReason::EndTurn),
+            })
+        }
+    }
+}
+
 #[async_trait::async_trait]
 impl LlmExecutor for RouteLlm {
     async fn infer(
@@ -196,6 +230,52 @@ async fn explicit_override_is_the_only_model_executed_for_the_run() {
 
     assert!(matches!(outcome, RunState::Ended(EndCause::NaturalEnd)));
     assert_eq!(&*seen.lock().unwrap(), &["chosen"]);
+}
+
+#[tokio::test]
+async fn model_override_preserves_same_model_provider_fallbacks_in_publication_order() {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(RouteByProviderLlm {
+            failing_provider: "account-a",
+            seen: seen.clone(),
+        }))
+        .with_retry_policy(no_retries());
+
+    let mut activation = activation("other", &[]);
+    activation.snapshot.resolved_spec.model_candidates = vec![
+        awaken_runtime_contract::resolved::ResolvedModelCandidate::host(ModelBinding::new(
+            "account-a",
+            "chosen",
+            "genai",
+        )),
+        awaken_runtime_contract::resolved::ResolvedModelCandidate::host(ModelBinding::new(
+            "account-b",
+            "chosen",
+            "genai",
+        )),
+        awaken_runtime_contract::resolved::ResolvedModelCandidate::host(ModelBinding::new(
+            "account-c",
+            "different",
+            "genai",
+        )),
+    ];
+    activation.model_ref_override = Some("chosen".to_string());
+
+    let outcome = runtime
+        .execute(activation, RuntimeRunContext::new())
+        .await
+        .expect("same-model fallback remains executable");
+
+    assert!(matches!(outcome, RunState::Ended(EndCause::NaturalEnd)));
+    assert_eq!(
+        &*seen.lock().unwrap(),
+        &[
+            ("account-a".to_string(), "chosen".to_string()),
+            ("account-b".to_string(), "chosen".to_string()),
+        ],
+        "the selector keeps every same-model binding and excludes other models"
+    );
 }
 
 #[tokio::test]

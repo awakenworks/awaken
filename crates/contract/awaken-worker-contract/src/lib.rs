@@ -20,6 +20,14 @@ use thiserror::Error;
 /// shared File/Memory/Skill/lifecycle and Resource Catalog ports.
 pub const SESSION_RESOURCES_CAPABILITY: &str = "session-resources/v1";
 
+/// Worker has an explicitly installed in-process executor for a published Host
+/// candidate. This is a realization capability, not a snapshot wire scheme.
+pub const HOST_EXECUTOR_CAPABILITY: &str = "host-executor/v1";
+
+/// Worker can open the exact persisted credential source frozen into a published
+/// Provider candidate. This capability grants no credential by itself.
+pub const PROVIDER_CREDENTIAL_SOURCE_CAPABILITY: &str = "credential-source/v1";
+
 /// Worker can inject a frozen Repository config's opaque credential reference at
 /// realization time. Kept separate so a secretless worker remains eligible for
 /// File/Memory/Skill and public Repository inputs.

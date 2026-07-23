@@ -9,7 +9,7 @@
 //!
 //! This crate is the DATA PLANE: the session surface + protocol adapters
 //! ([`mount`] / [`mount_with_managed`]), exact published-model credential
-//! materialization, the model publication resolver, the no-model fallback,
+//! materialization, the model publication resolver, the inert no-model placeholder,
 //! workspace path addressing, and the Worker
 //! role helper (the hand is now the separate `awaken-sandbox` execution-plane
 //! binary). Its sibling **authoring / authz plane** lives in
@@ -307,8 +307,9 @@ mod role_tests {
 
 // The database-less **worker** role moved to the production `awaken-worker` crate
 // (Stage C): it resolves EACH drained run's model from the DB-configured catalog +
-// vault via `CredentialInferenceMaterializer`, with `NoModelConfiguredExecutor` only as the
-// fallback. The `awaken` binary's Worker role delegates to `awaken_worker::run`. The
+// vault via `CredentialInferenceMaterializer`; its `NoModelConfiguredExecutor` is
+// only an inert construction placeholder and is never a materialization fallback.
+// The `awaken` binary's Worker role delegates to `awaken_worker::run`. The
 // test-only echo-draining worker (for the worker-pool e2e) lives in
 // `awaken-scenario-host::run_echo_worker`.
 

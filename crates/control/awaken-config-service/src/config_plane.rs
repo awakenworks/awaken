@@ -44,7 +44,6 @@ use crate::tool_catalog::ToolCatalogSource;
 /// trusted execution Workspace coordinate so the installed catalog cannot leak a
 /// same-id Agent across Workspaces. It receives no principal, role, policy, token, or
 /// authorization decision.
-#[derive(Default)]
 pub struct ConfigService {
     /// Workspace-keyed hot catalog; a runtime lookup must never observe another
     /// Workspace's same-id Agent publication.
@@ -54,28 +53,22 @@ pub struct ConfigService {
     /// `None` → compilation is byte-identical to an unbound agent.
     pub(crate) resources: Option<Arc<dyn AgentInputBindingRepository>>,
     /// Resolves authored selection into complete ordered model candidates in one
-    /// publication read. `None` permits explicit host-executor bindings only;
-    /// `Auto` remains fail-closed.
-    model_publication_resolver: Option<Arc<dyn ModelPublicationResolver>>,
+    /// publication read. Required at construction so a config service can never
+    /// publish through an implicit host/provider fallback.
+    model_publication_resolver: Arc<dyn ModelPublicationResolver>,
 }
 
 impl ConfigService {
-    /// A scope-free config service. Wire the model resolver and resource store with
-    /// the chainable builders; the scoped registry + tool catalog are supplied per
-    /// call by the edge, never held here.
+    /// A scope-free config service with one mandatory model-publication policy.
+    /// The scoped registry + tool catalog are supplied per call by the edge, never
+    /// held here.
     #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Wire the single model-publication resolver (ADR-0052 D5 / ADR-0062).
-    #[must_use]
-    pub fn with_model_publication_resolver(
-        mut self,
-        resolver: Arc<dyn ModelPublicationResolver>,
-    ) -> Self {
-        self.model_publication_resolver = Some(resolver);
-        self
+    pub fn new(model_publication_resolver: Arc<dyn ModelPublicationResolver>) -> Self {
+        Self {
+            installed: InstalledAgentCatalog::default(),
+            resources: None,
+            model_publication_resolver,
+        }
     }
 
     /// Wire the per-Agent input binding repository used by Session projections.
@@ -121,7 +114,7 @@ impl ConfigService {
     /// the edge resolves the catalog for the request scope).
     pub async fn validate(
         &self,
-        workspace: &str,
+        workspace: &ScopeId,
         config: &AgentConfig,
         catalog: &[ToolDescriptor],
     ) -> Result<(), ValidationIssue> {
@@ -130,7 +123,7 @@ impl ConfigService {
         // instead of parsing a free-text string. An auto-model that can't resolve is a
         // `model` issue; a compile failure carries its own field.
         let resolved = prepare_agent_publication(
-            self.model_publication_resolver.as_deref(),
+            self.model_publication_resolver.as_ref(),
             workspace,
             AgentConfigRevision {
                 config: config.clone(),
@@ -241,7 +234,7 @@ impl ConfigService {
     /// its `Auto` selection persists so the reconciler can re-resolve it later.
     pub async fn publish(
         &self,
-        workspace: &str,
+        workspace: &ScopeId,
         registry: &dyn ConfigRegistry,
         id: &str,
         catalog: &[ToolDescriptor],
@@ -256,7 +249,7 @@ impl ConfigService {
         }
         let source_revision = versioned.revision;
         let resolved = prepare_agent_publication(
-            self.model_publication_resolver.as_deref(),
+            self.model_publication_resolver.as_ref(),
             workspace,
             versioned,
         )
@@ -279,7 +272,7 @@ impl ConfigService {
             return Err(PublishError::StaleRevision(current_revision));
         }
         self.installed
-            .install(workspace, id, source_revision, snapshot);
+            .install(workspace.as_str(), id, source_revision, snapshot);
         Ok(publication)
     }
 
@@ -291,7 +284,7 @@ impl ConfigService {
     /// drives from the catalog write path.
     pub async fn reconcile(
         &self,
-        workspace: &str,
+        workspace: &ScopeId,
         registry: &dyn ConfigRegistry,
         id: &str,
         catalog: &[ToolDescriptor],
@@ -376,7 +369,11 @@ impl ConfigPlane {
         config: &AgentConfig,
     ) -> Result<(), ValidationIssue> {
         self.service
-            .validate(execution_workspace, config, &self.catalog_for(scope))
+            .validate(
+                &ScopeId::from(execution_workspace),
+                config,
+                &self.catalog_for(scope),
+            )
             .await
     }
 
@@ -532,7 +529,7 @@ impl ConfigPlane {
     ) -> Result<StoredPublication, PublishError> {
         self.service
             .publish(
-                execution_workspace,
+                &ScopeId::from(execution_workspace),
                 &self.registry_for(configuration_scope),
                 id,
                 &self.catalog_for(configuration_scope),
@@ -563,7 +560,7 @@ impl ConfigPlane {
     ) -> Result<bool, String> {
         self.service
             .reconcile(
-                execution_workspace,
+                &ScopeId::from(execution_workspace),
                 &self.registry_for(configuration_scope),
                 id,
                 &self.catalog_for(configuration_scope),
@@ -803,9 +800,15 @@ mod resource_prompt_tests {
     use awaken_config_store::{ConfigStoreError, ModelSelection, SqliteConfigStore};
     use awaken_runtime_contract::resolved::ContextPolicy;
 
-    use crate::binding_resolver::{ModelPublicationResolver, ResolvedPublicationModels};
+    use crate::binding_resolver::{
+        ModelPublicationResolver, PublicationResolutionError, ResolvedPublicationModels,
+    };
     use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate};
     use awaken_tenancy::WorkspaceScope;
+
+    fn scope(id: &str) -> ScopeId {
+        ScopeId::from(id)
+    }
 
     fn agent_config(id: &str) -> AgentConfig {
         AgentConfig {
@@ -832,8 +835,8 @@ mod resource_prompt_tests {
 
     async fn resolve_config(service: &ConfigService, config: AgentConfig) -> AgentConfig {
         prepare_agent_publication(
-            service.model_publication_resolver.as_deref(),
-            DEFAULT_SCOPE,
+            service.model_publication_resolver.as_ref(),
+            &scope(DEFAULT_SCOPE),
             AgentConfigRevision {
                 config,
                 revision: 1,
@@ -849,10 +852,10 @@ mod resource_prompt_tests {
     impl ModelPublicationResolver for FakeResolver {
         async fn resolve_models(
             &self,
-            _workspace: &str,
+            _workspace: &ScopeId,
             selection: &ModelSelection,
             candidates: &[ModelBinding],
-        ) -> Result<ResolvedPublicationModels, String> {
+        ) -> Result<ResolvedPublicationModels, PublicationResolutionError> {
             let (primary, candidates) = selection.resolved().map_or_else(
                 || {
                     (
@@ -868,16 +871,20 @@ mod resource_prompt_tests {
         }
     }
 
+    fn test_service() -> ConfigService {
+        ConfigService::new(Arc::new(FakeResolver))
+    }
+
     struct FakeProviderResolver;
 
     #[async_trait::async_trait]
     impl ModelPublicationResolver for FakeProviderResolver {
         async fn resolve_models(
             &self,
-            workspace: &str,
+            workspace: &ScopeId,
             selection: &ModelSelection,
             candidates: &[ModelBinding],
-        ) -> Result<ResolvedPublicationModels, String> {
+        ) -> Result<ResolvedPublicationModels, PublicationResolutionError> {
             let primary = selection
                 .resolved()
                 .cloned()
@@ -887,7 +894,7 @@ mod resource_prompt_tests {
                     binding.clone(),
                     "provider@2",
                     "endpoint@4",
-                    workspace,
+                    workspace.clone(),
                     Some(awaken_runtime_contract::CredentialAccess {
                         credential: awaken_runtime_contract::CredentialRef {
                             id: format!("credential-{workspace}"),
@@ -913,17 +920,14 @@ mod resource_prompt_tests {
     }
 
     /// A config plane (the scope edge) over a fresh in-memory store, an optional
-    /// resolver, an optional resource store, and the given tool catalog.
+    /// resolver override, an optional resource store, and the given tool catalog.
     fn plane_with(
         tools: Arc<dyn ToolCatalogSource>,
         resolver: Option<Arc<dyn ModelPublicationResolver>>,
         resources: Option<Arc<dyn AgentInputBindingRepository>>,
     ) -> ConfigPlane {
         let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
-        let mut service = ConfigService::new();
-        if let Some(resolver) = resolver {
-            service = service.with_model_publication_resolver(resolver);
-        }
+        let mut service = ConfigService::new(resolver.unwrap_or_else(|| Arc::new(FakeResolver)));
         if let Some(resources) = resources {
             service = service.with_resources(resources);
         }
@@ -933,9 +937,7 @@ mod resource_prompt_tests {
     #[tokio::test]
     async fn publish_resolves_scope_access_once_into_the_persisted_snapshot() {
         let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
-        let service = Arc::new(
-            ConfigService::new().with_model_publication_resolver(Arc::new(FakeProviderResolver)),
-        );
+        let service = Arc::new(ConfigService::new(Arc::new(FakeProviderResolver)));
         let plane = ConfigPlane::new(
             service,
             store,
@@ -962,7 +964,7 @@ mod resource_prompt_tests {
     async fn local_publication_pins_host_access_instead_of_deferring_to_runtime() {
         let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
         let plane = ConfigPlane::new(
-            Arc::new(ConfigService::new()),
+            Arc::new(test_service()),
             store,
             Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
         );
@@ -1142,7 +1144,7 @@ mod resource_prompt_tests {
 
     fn failing_scoped_plane() -> ConfigPlane {
         ConfigPlane::new(
-            Arc::new(ConfigService::new()),
+            Arc::new(test_service()),
             Arc::new(FailingScopedRegistry),
             Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
         )
@@ -1151,8 +1153,8 @@ mod resource_prompt_tests {
     // P1: a registry read failure on publish surfaces as `PublishError::Store`.
     #[tokio::test]
     async fn publish_maps_a_registry_read_failure_to_store() {
-        let err = ConfigService::new()
-            .publish(DEFAULT_SCOPE, &FailingRegistry, "a", &[])
+        let err = test_service()
+            .publish(&scope(DEFAULT_SCOPE), &FailingRegistry, "a", &[])
             .await
             .unwrap_err();
         assert!(matches!(err, PublishError::Store(_)), "got {err:?}");
@@ -1161,8 +1163,8 @@ mod resource_prompt_tests {
     // P6: a publication-persist failure (after a clean read + compile) is `Store`.
     #[tokio::test]
     async fn publish_maps_a_publication_persist_failure_to_store() {
-        let err = ConfigService::new()
-            .publish(DEFAULT_SCOPE, &PublishFailRegistry, "a", &[])
+        let err = test_service()
+            .publish(&scope(DEFAULT_SCOPE), &PublishFailRegistry, "a", &[])
             .await
             .unwrap_err();
         assert!(matches!(err, PublishError::Store(_)), "got {err:?}");
@@ -1170,9 +1172,9 @@ mod resource_prompt_tests {
 
     #[tokio::test]
     async fn publish_never_installs_an_artifact_from_a_stale_source_revision() {
-        let service = ConfigService::new();
+        let service = test_service();
         let err = service
-            .publish(DEFAULT_SCOPE, &StalePublishRegistry, "a", &[])
+            .publish(&scope(DEFAULT_SCOPE), &StalePublishRegistry, "a", &[])
             .await
             .unwrap_err();
 
@@ -1187,8 +1189,8 @@ mod resource_prompt_tests {
     #[tokio::test]
     async fn reconcile_propagates_a_registry_read_failure() {
         assert!(
-            ConfigService::new()
-                .reconcile(DEFAULT_SCOPE, &FailingRegistry, "a", &[])
+            test_service()
+                .reconcile(&scope(DEFAULT_SCOPE), &FailingRegistry, "a", &[])
                 .await
                 .is_err()
         );
@@ -1227,10 +1229,10 @@ mod resource_prompt_tests {
         impl ModelPublicationResolver for WindowResolver {
             async fn resolve_models(
                 &self,
-                _workspace: &str,
+                _workspace: &ScopeId,
                 selection: &ModelSelection,
                 candidates: &[ModelBinding],
-            ) -> Result<ResolvedPublicationModels, String> {
+            ) -> Result<ResolvedPublicationModels, PublicationResolutionError> {
                 Ok(ResolvedPublicationModels::host(
                     selection
                         .resolved()
@@ -1242,8 +1244,7 @@ mod resource_prompt_tests {
                 ))
             }
         }
-        let service =
-            ConfigService::new().with_model_publication_resolver(Arc::new(WindowResolver));
+        let service = ConfigService::new(Arc::new(WindowResolver));
         let pin = || ModelSelection::Pinned(ModelBinding::new("p", "m-x", "b"));
         // Usable budget = context_window − max_output_tokens = 200k − 40k = 160k;
         // default trigger = 3/4 × 160k = 120k.
@@ -1310,23 +1311,23 @@ mod resource_prompt_tests {
         impl ModelPublicationResolver for WindowResolver {
             async fn resolve_models(
                 &self,
-                _workspace: &str,
+                _workspace: &ScopeId,
                 selection: &ModelSelection,
                 candidates: &[ModelBinding],
-            ) -> Result<ResolvedPublicationModels, String> {
+            ) -> Result<ResolvedPublicationModels, PublicationResolutionError> {
                 Ok(ResolvedPublicationModels::host(
-                    selection
-                        .resolved()
-                        .cloned()
-                        .ok_or_else(|| "test requires a pinned model".to_string())?,
+                    selection.resolved().cloned().ok_or_else(|| {
+                        PublicationResolutionError::Invalid(
+                            "test requires a pinned model".to_string(),
+                        )
+                    })?,
                     candidates.to_vec(),
                     Some(200_000),
                     None,
                 ))
             }
         }
-        let service =
-            ConfigService::new().with_model_publication_resolver(Arc::new(WindowResolver));
+        let service = ConfigService::new(Arc::new(WindowResolver));
         let mut cfg = agent_config("a4");
         cfg.model_binding = ModelSelection::Pinned(ModelBinding::new("p", "m-x", "b"));
         cfg.plugin_config
@@ -1452,15 +1453,6 @@ mod resource_prompt_tests {
     }
 
     #[tokio::test]
-    async fn auto_without_a_resolver_is_a_conflict() {
-        let plane = static_plane(None);
-        let scope = ScopeId::from(DEFAULT_SCOPE);
-        plane.put(&scope, &auto_config("mgmt")).await.unwrap();
-        let err = plane.publish(&scope, "mgmt").await.unwrap_err();
-        assert!(matches!(err, PublishError::Unresolvable(_)));
-    }
-
-    #[tokio::test]
     async fn reconcile_re_publishes_auto_but_skips_pinned() {
         let plane = static_plane(Some(Arc::new(FakeResolver)));
         let scope = ScopeId::from(DEFAULT_SCOPE);
@@ -1502,7 +1494,7 @@ mod resource_prompt_tests {
     }
 
     #[tokio::test]
-    async fn pinned_publishes_without_a_resolver() {
+    async fn pinned_publication_uses_the_explicit_host_resolver() {
         let plane = static_plane(None);
         let scope = ScopeId::from(DEFAULT_SCOPE);
         plane.put(&scope, &agent_config("pinned")).await.unwrap();
@@ -1579,10 +1571,10 @@ mod resource_prompt_tests {
     impl ModelPublicationResolver for ErrResolver {
         async fn resolve_models(
             &self,
-            _workspace: &str,
+            _workspace: &ScopeId,
             _selection: &ModelSelection,
             _candidates: &[ModelBinding],
-        ) -> Result<ResolvedPublicationModels, String> {
+        ) -> Result<ResolvedPublicationModels, PublicationResolutionError> {
             Err("no provider-backed model in the catalog".into())
         }
     }
@@ -1625,9 +1617,9 @@ mod resource_prompt_tests {
     // ---- validate (F12) ----
 
     #[tokio::test]
-    async fn validate_auto_without_resolver_is_a_model_issue() {
+    async fn validate_reports_a_resolver_failure_as_a_model_issue() {
         // F12a: an Auto binding that cannot resolve is a `model`-field issue.
-        let plane = static_plane(None);
+        let plane = static_plane(Some(Arc::new(ErrResolver)));
         let issue = plane
             .validate(&ScopeId::from(DEFAULT_SCOPE), &auto_config("mgmt"))
             .await
@@ -1779,7 +1771,7 @@ mod resource_prompt_tests {
     #[tokio::test]
     async fn publish_handler_returns_409_on_unresolvable() {
         // F23b (the status partition): an unresolvable Auto binding → 409.
-        let plane = static_plane(None);
+        let plane = static_plane(Some(Arc::new(ErrResolver)));
         let scope = ScopeId::from(DEFAULT_SCOPE);
         plane.put(&scope, &auto_config("mgmt")).await.unwrap();
         let (status, _body) =
@@ -1830,7 +1822,7 @@ mod resource_prompt_tests {
     /// alongside the store so a test can read the durable rows directly.
     fn plane_over(store: Arc<SqliteConfigStore>) -> ConfigPlane {
         ConfigPlane::new(
-            Arc::new(ConfigService::new()),
+            Arc::new(test_service()),
             store,
             Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
         )
@@ -1877,13 +1869,13 @@ mod resource_prompt_tests {
         // must preserve that external Workspace coordinate rather than collapse it.
         let registry_a = SqliteConfigStore::open_in_memory().unwrap();
         let registry_b = SqliteConfigStore::open_in_memory().unwrap();
-        let service = ConfigService::new();
+        let service = test_service();
 
         let mut a = agent_config("shared-id");
         a.instructions = "workspace A".into();
         ConfigRegistry::put_config(&registry_a, &a).await.unwrap();
         service
-            .publish("wrkspc_a", &registry_a, &a.id, &[])
+            .publish(&scope("wrkspc_a"), &registry_a, &a.id, &[])
             .await
             .unwrap();
 
@@ -1891,7 +1883,7 @@ mod resource_prompt_tests {
         b.instructions = "workspace B".into();
         ConfigRegistry::put_config(&registry_b, &b).await.unwrap();
         service
-            .publish("wrkspc_b", &registry_b, &b.id, &[])
+            .publish(&scope("wrkspc_b"), &registry_b, &b.id, &[])
             .await
             .unwrap();
 
@@ -1940,7 +1932,7 @@ mod resource_prompt_tests {
         author.publish(&scope, "warm-agent").await.unwrap();
 
         // A FRESH service (empty in-memory catalog) warm-loads from the store.
-        let cold = ConfigService::new();
+        let cold = test_service();
         let n = cold.warm_install(store.as_ref(), &scope).await;
         assert_eq!(n, 2, "both published rows are read");
         let installed = cold
@@ -1952,7 +1944,7 @@ mod resource_prompt_tests {
         );
 
         // A store whose list fails → 0 installed (fail-closed rehydrate seam).
-        let cold2 = ConfigService::new();
+        let cold2 = test_service();
         assert_eq!(cold2.warm_install(&FailingScopedRegistry, &scope).await, 0);
     }
 

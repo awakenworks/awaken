@@ -28,13 +28,6 @@ use crate::executor_from_materialized_access;
 #[derive(Clone)]
 pub struct CredentialInferenceMaterializer {
     credentials: awaken_session_executor::PinnedCredentialMaterializer,
-    fallback: Option<HostFallback>,
-}
-
-#[derive(Clone)]
-struct HostFallback {
-    model_ref: String,
-    executor: Arc<dyn LlmExecutor>,
 }
 
 struct PinnedModelExecutor {
@@ -72,36 +65,7 @@ impl CredentialInferenceMaterializer {
                 credentials,
                 secrets,
             ),
-            fallback: None,
         }
-    }
-
-    /// Install the host's existing explicit fallback for an exactly matching
-    /// host-executor snapshot reference.
-    #[must_use]
-    pub fn with_fallback_executor(
-        mut self,
-        model_ref: impl Into<String>,
-        executor: Arc<dyn LlmExecutor>,
-    ) -> Self {
-        self.fallback = Some(HostFallback {
-            model_ref: model_ref.into(),
-            executor,
-        });
-        self
-    }
-
-    fn fallback_executor(
-        &self,
-        candidate: &ResolvedModelCandidate,
-    ) -> Option<Arc<dyn LlmExecutor>> {
-        self.fallback
-            .as_ref()
-            .filter(|fallback| {
-                fallback.model_ref == candidate.binding.model_ref
-                    && matches!(candidate.provisioning, ModelProvisioning::HostExecutor)
-            })
-            .map(|fallback| fallback.executor.clone())
     }
 
     async fn materialize_pinned(
@@ -138,11 +102,7 @@ impl CredentialInferenceMaterializer {
         &self,
         candidate: &ResolvedModelCandidate,
     ) -> Option<Arc<dyn LlmExecutor>> {
-        if let Some(executor) = self.fallback_executor(candidate) {
-            Some(executor)
-        } else {
-            self.materialize_pinned(candidate).await
-        }
+        self.materialize_pinned(candidate).await
     }
 }
 
@@ -194,7 +154,7 @@ impl LlmExecutor for PinnedCandidateExecutor {
 
 impl InferenceExecutorMaterializer for CredentialInferenceMaterializer {
     fn supported_access_schemes(&self) -> &'static [&'static str] {
-        &["credential-source/v1"]
+        &[awaken_session_executor::PROVIDER_CREDENTIAL_SOURCE_CAPABILITY]
     }
 
     fn materialize(
@@ -369,7 +329,7 @@ mod tests {
     async fn resolve_activation(
         resolver: &CatalogModelPublicationResolver,
         activation: &RunActivation,
-    ) -> Result<ResolvedPublicationModels, String> {
+    ) -> Result<ResolvedPublicationModels, awaken_session_executor::PublicationResolutionError> {
         let (primary, fallbacks) = if let Some(model_ref) = activation.model_ref_override.as_ref() {
             (
                 activation
@@ -377,7 +337,9 @@ mod tests {
                     .resolved_spec
                     .candidate_for_model(model_ref)
                     .ok_or_else(|| {
-                        format!("model {model_ref} is outside the published candidate set")
+                        awaken_session_executor::PublicationResolutionError::Invalid(format!(
+                            "model {model_ref} is outside the published candidate set"
+                        ))
                     })?
                     .binding
                     .clone(),
@@ -401,7 +363,11 @@ mod tests {
             )
         };
         resolver
-            .resolve_models("ws", &ModelSelection::Pinned(primary), &fallbacks)
+            .resolve_models(
+                &awaken_tenancy::ScopeId::from("ws"),
+                &ModelSelection::Pinned(primary),
+                &fallbacks,
+            )
             .await
     }
 
@@ -428,87 +394,21 @@ mod tests {
         .await
         .expect_err("a partial candidate pool must not be published");
 
-        assert!(error.contains("missing-fallback"));
+        assert!(error.to_string().contains("missing-fallback"));
     }
 
     #[tokio::test]
-    async fn runtime_failover_materializes_only_the_next_published_candidate() {
-        use awaken_agent_contract::agent::run::{EndCause, RunState};
-        use awaken_runtime::{LlmRetryPolicy, Runtime};
-        use awaken_runtime_contract::execution::RunExecutor;
-        use awaken_runtime_contract::llm::{AssistantOutput, ChatResponse};
-        use awaken_runtime_contract::runtime_context::RuntimeRunContext;
-
-        struct Fixed;
-        #[async_trait]
-        impl LlmExecutor for Fixed {
-            async fn infer(&self, _request: ChatRequest) -> Result<ChatResponse, LlmError> {
-                Ok(ChatResponse {
-                    output: AssistantOutput::text("fallback"),
-                    usage: None,
-                    stop_reason: None,
-                })
-            }
-        }
-
-        let p = provider("unused", None).await;
-        let materializer = p
-            .materializer
-            .with_fallback_executor("fallback", Arc::new(Fixed));
-        let activation = activation_with_fallback("unavailable-primary", "fallback");
-        let candidates = std::iter::once(&activation.snapshot.resolved_spec.model_binding)
-            .chain(activation.snapshot.resolved_spec.model_candidates.iter())
-            .cloned()
-            .collect();
-        let runtime = Runtime::new()
-            .with_llm(Arc::new(PinnedCandidateExecutor {
-                provider: materializer,
-                candidates,
-            }))
-            .with_retry_policy(LlmRetryPolicy {
-                max_retries: 0,
-                backoff_base_ms: 0,
-                overloaded_backoff_base_ms: 0,
-            });
-
-        let state = runtime
-            .execute(activation, RuntimeRunContext::new())
-            .await
-            .expect("published fallback runs");
-        assert!(matches!(state, RunState::Ended(EndCause::NaturalEnd)));
-    }
-
-    #[tokio::test]
-    async fn explicitly_installed_host_fallback_is_pinned_and_exact() {
-        let fallback: Arc<dyn LlmExecutor> = Arc::new(crate::no_model::NoModelConfiguredExecutor);
-        let mut p = provider("configured", None).await;
-        p.resolver = p.resolver.with_fallback_model("embedded");
-        p.materializer = p
-            .materializer
-            .with_fallback_executor("embedded", fallback.clone());
-        let mut activation = activation_with_fallback("configured", "other");
-        activation.snapshot.resolved_spec.model_candidates.push(
-            awaken_runtime_contract::resolved::ResolvedModelCandidate::host(ModelBinding::new(
-                "host", "embedded", "genai",
-            )),
+    async fn credential_materializer_rejects_host_executor_candidates() {
+        let p = provider("configured", None).await;
+        let candidate = awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+            ModelBinding::new("host", "embedded", "native"),
         );
-        let activation = activation.with_model_ref_override(Some("embedded".to_string()));
-
-        let pinned = resolve_activation(&p.resolver, &activation).await.unwrap();
-        assert!(pinned.candidates.is_empty());
-        assert!(matches!(
-            pinned.primary.provisioning,
-            ModelProvisioning::HostExecutor
-        ));
-        let materialized = p
-            .materializer
-            .materialize_candidate(&pinned.primary)
-            .await
-            .unwrap();
-        assert!(Arc::ptr_eq(&materialized, &fallback));
-        let mut other = pinned.primary;
-        other.binding.model_ref = "other".into();
-        assert!(p.materializer.materialize_candidate(&other).await.is_none());
+        assert!(
+            p.materializer
+                .materialize_candidate(&candidate)
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -628,7 +528,11 @@ mod tests {
         let model = ModelBinding::new("anthropic", "claude-x", "genai");
         let resolved = p
             .resolver
-            .resolve_models("workspace-b", &ModelSelection::Pinned(model), &[])
+            .resolve_models(
+                &awaken_tenancy::ScopeId::from("workspace-b"),
+                &ModelSelection::Pinned(model),
+                &[],
+            )
             .await
             .unwrap();
         let ModelProvisioning::Provider {
@@ -665,7 +569,7 @@ mod tests {
         let mut resolved = p
             .resolver
             .resolve_models(
-                "ws",
+                &awaken_tenancy::ScopeId::from("ws"),
                 &ModelSelection::Pinned(ModelBinding::new("anthropic", "claude-x", "genai")),
                 &[],
             )

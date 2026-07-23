@@ -110,18 +110,24 @@ impl ResolvedSpec {
             .find(|candidate| candidate.binding.model_ref == model_ref)
     }
 
-    /// Select one candidate from this ephemeral resolved view.
+    /// Select the ordered subset for one model from this ephemeral resolved view.
     ///
     /// The durable, content-addressed snapshot remains untouched. Selection is
     /// fail-closed: `false` means the requested model was not published and no
-    /// state changed. A successful explicit selection disables pool failover so
-    /// execution cannot silently leave the model selected for this run.
+    /// state changed. A successful explicit selection retains every published
+    /// candidate for that model in publication order. This preserves account/route
+    /// failover without allowing execution to leave the model selected for this run.
     pub fn select_execution_model(&mut self, model_ref: &str) -> bool {
-        let Some(selected) = self.candidate_for_model(model_ref).cloned() else {
+        let mut selected = std::iter::once(&self.model_binding)
+            .chain(self.model_candidates.iter())
+            .filter(|candidate| candidate.binding.model_ref == model_ref)
+            .cloned()
+            .collect::<Vec<_>>();
+        if selected.is_empty() {
             return false;
-        };
-        self.model_binding = selected;
-        self.model_candidates.clear();
+        }
+        self.model_binding = selected.remove(0);
+        self.model_candidates = selected;
         true
     }
 }
@@ -201,7 +207,7 @@ pub enum ContextPolicy {
     KeepLast { keep_last: usize },
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ModelBinding {
     /// The *provider identity* — the principal whose key and quota this attempt
     /// runs under. It is the cooldown / account-spread key: two candidates on the

@@ -11,6 +11,7 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Ajv2020 } from 'ajv/dist/2020.js';
@@ -44,12 +45,52 @@ async function req(base, method, uri, body) {
   return { status: res.status, json };
 }
 
+async function startModelDirectory(apiKey) {
+  const state = {
+    models: ['provider-model-a', 'provider-model-b'],
+    requests: [],
+  };
+  const server = http.createServer((request, response) => {
+    state.requests.push({
+      method: request.method,
+      url: request.url,
+      apiKey: request.headers['x-api-key'],
+    });
+    if (
+      request.method !== 'GET'
+      || !request.url.startsWith('/v1/models')
+      || request.headers['x-api-key'] !== apiKey
+    ) {
+      response.writeHead(401, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ error: { message: 'unauthorized' } }));
+      return;
+    }
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({
+      data: state.models.map((id) => ({ id })),
+      has_more: false,
+    }));
+  });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  return {
+    state,
+    url: `http://127.0.0.1:${address.port}`,
+    close: () => new Promise((resolve) => server.close(resolve)),
+  };
+}
+
 async function main() {
   // Provider environment is discovery input only. The spawned server may report
   // these coordinates as a secret-free proposal, but cannot execute them.
   process.env.ANTHROPIC_API_KEY = 'sk-proposal-only'; // awaken-allow: secret
   process.env.ANTHROPIC_BASE_URL = 'https://proposal.invalid/v1';
   process.env.ANTHROPIC_MODEL = 'proposal-only-model';
+  const directory = await startModelDirectory('sk-admin-e2e'); // awaken-allow: secret
   try {
     await withScenarioServer('management', 'mcp', 38150, async (base) => {
       let r = await req(base, 'GET', '/v1/config/provider-proposals');
@@ -116,6 +157,55 @@ async function main() {
       assert.ok(!JSON.stringify(r.json).includes('sk-admin-e2e'), 'secret must not be echoed');
       const credId = r.json.id;
       pass('POST /v1/config/credentials — secret-free CredentialSource matches contract');
+
+      // Provider model discovery is provisioning, not execution: the application
+      // service selects this persisted endpoint + exact Workspace credential, the
+      // adapter calls /models, and the existing Catalog aggregate reconciles the
+      // complete observation atomically.
+      r = await req(base, 'PUT', '/v1/config/endpoints/discovery-ep', {
+        id: 'ignored',
+        provider_id: 'anthropic',
+        dialect: 'anthropic_messages',
+        base_url: `${directory.url}/v1/`,
+        timeout_secs: 30,
+        display_name: 'local directory',
+        version: 1,
+      });
+      assert.equal(r.status, 200, JSON.stringify(r.json));
+      r = await req(base, 'POST', '/v1/config/endpoints/discovery-ep/discover-models', {
+        workspace_id: 'ws',
+        credential_source_id: credId,
+      });
+      assert.equal(r.status, 200, JSON.stringify(r.json));
+      checkContract('CatalogSyncResult', r.json);
+      assert.deepEqual(
+        {
+          discovered: r.json.discovered,
+          activated: r.json.activated,
+          marked_unavailable: r.json.marked_unavailable,
+        },
+        { discovered: 2, activated: 2, marked_unavailable: 0 },
+      );
+      assert.equal(directory.state.requests.length, 1);
+      assert.equal(directory.state.requests[0].apiKey, 'sk-admin-e2e'); // awaken-allow: secret
+
+      directory.state.models = ['provider-model-b'];
+      r = await req(base, 'POST', '/v1/config/endpoints/discovery-ep/discover-models', {
+        workspace_id: 'ws',
+        credential_source_id: credId,
+      });
+      assert.equal(r.status, 200, JSON.stringify(r.json));
+      checkContract('CatalogSyncResult', r.json);
+      assert.equal(r.json.marked_unavailable, 1);
+      const reconciled = await req(base, 'GET', '/v1/config/catalog');
+      checkContract('ProviderCatalog', reconciled.json);
+      const offering = (model) => reconciled.json.offerings.find((item) => item.model_id === model);
+      assert.equal(offering('provider-model-a').source, 'provider_api');
+      assert.equal(offering('provider-model-a').status, 'unavailable');
+      assert.equal(offering('provider-model-b').status ?? 'active', 'active');
+      assert.equal(offering('claude-opus-4-8').source ?? 'manual', 'manual');
+      assert.equal(offering('claude-opus-4-8').status ?? 'active', 'active');
+      pass('provider /models discovery reconciles only its endpoint-owned offerings');
 
       // --- resolve dry-run through the resolver, validated against the contract ---
       r = await req(base, 'POST', '/v1/config/inference/resolve', {
@@ -351,6 +441,11 @@ async function main() {
   } catch (err) {
     console.error('E2E FAIL:', err);
     process.exitCode = 1;
+  } finally {
+    await directory.close();
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_BASE_URL;
+    delete process.env.ANTHROPIC_MODEL;
   }
 }
 
