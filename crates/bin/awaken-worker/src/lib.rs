@@ -333,6 +333,26 @@ impl WorkerLifecycle {
 /// Requires `AWAKEN_INGRESS=durable` (the pool's enable gate); the injected remote
 /// store routes the drain over HTTP instead of a local queue.
 pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error>> {
+    run_with_standard_environment(WorkerUpstream::new(upstream), None).await
+}
+
+/// Run the standard database-less Worker with one registered application
+/// decorator around its authoritative Session attempt router.
+///
+/// Credential, resource-plane, ACP, manifest, and lifecycle assembly remain
+/// identical to [`run`]; the application contributes only the post-registration
+/// wrapper.
+pub async fn run_with_application_decorator(
+    upstream: WorkerUpstream,
+    factory: RegisteredDecoratorFactory,
+) -> Result<(), Box<dyn std::error::Error>> {
+    run_with_standard_environment(upstream, Some(factory)).await
+}
+
+async fn run_with_standard_environment(
+    upstream: WorkerUpstream,
+    application: Option<RegisteredDecoratorFactory>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let stores = awaken_control::open_inference_materialization_stores_from_env().await;
     let resource_credentials =
         shared_credential_backend(std::env::var("AWAKEN_CREDENTIAL_DB").ok().as_deref())
@@ -348,18 +368,18 @@ pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error>> {
             .as_ref()
             .is_some_and(WorkerResourcePlane::supports_repository_credentials),
     );
-    WorkerNodeBuilder::new(WorkerUpstream::new(upstream))
-        .with_manifest(manifest)
-        .with_inference_materializer(materializer)
-        .with_acp_credentials(awaken_runtime_host::PinnedCredentialMaterializer::new(
+    run_configured_worker(
+        upstream,
+        manifest,
+        materializer,
+        Some(awaken_runtime_host::PinnedCredentialMaterializer::new(
             stores.credentials,
             stores.secrets,
-        ))
-        .with_optional_resource_plane(resources)
-        .with_admin_listen(configured_admin_listen())
-        .build()?
-        .run_until_shutdown()
-        .await
+        )),
+        resources,
+        application,
+    )
+    .await
 }
 
 /// Run a genuinely secretless worker with a deployment-provided materializer.
@@ -383,16 +403,50 @@ pub async fn run_with_upstream_and_inference_materializer(
     upstream: WorkerUpstream,
     materializer: Arc<dyn InferenceExecutorMaterializer>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    run_with_upstream_application_and_inference_materializer(upstream, materializer, None).await
+}
+
+/// Run a caller-materialized Worker with an optional registered application
+/// decorator. This is the secretless counterpart of
+/// [`run_with_application_decorator`].
+pub async fn run_with_upstream_application_and_inference_materializer(
+    upstream: WorkerUpstream,
+    materializer: Arc<dyn InferenceExecutorMaterializer>,
+    application: Option<RegisteredDecoratorFactory>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let resources = shared_resource_wiring(None).await?;
     let manifest = worker_manifest(Some(materializer.as_ref()), resources.is_some(), false);
-    WorkerNodeBuilder::new(upstream)
+    run_configured_worker(
+        upstream,
+        manifest,
+        materializer,
+        None,
+        resources,
+        application,
+    )
+    .await
+}
+
+async fn run_configured_worker(
+    upstream: WorkerUpstream,
+    manifest: WorkerManifest,
+    materializer: Arc<dyn InferenceExecutorMaterializer>,
+    acp_credentials: Option<awaken_runtime_host::PinnedCredentialMaterializer>,
+    resources: Option<WorkerResourcePlane>,
+    application: Option<RegisteredDecoratorFactory>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut builder = WorkerNodeBuilder::new(upstream)
         .with_manifest(manifest)
         .with_inference_materializer(materializer)
         .with_optional_resource_plane(resources)
-        .with_admin_listen(configured_admin_listen())
-        .build()?
-        .run_until_shutdown()
-        .await
+        .with_admin_listen(configured_admin_listen());
+    if let Some(credentials) = acp_credentials {
+        builder = builder.with_acp_credentials(credentials);
+    }
+    if let Some(factory) = application {
+        builder = builder.with_application_decorator_factory(factory);
+    }
+    builder.build()?.run_until_shutdown().await
 }
 
 fn configured_admin_listen() -> String {
