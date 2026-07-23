@@ -1,9 +1,6 @@
-// Session-axis independence under an active embedded-IAM guard (audit #43): the
-// management_guard (ADR-0042/0043 P1) wraps ONLY the authoring surfaces
-// (/v1/config/*, /v1/vaults/*). The Managed session surface (/v1/sessions) is a
-// SEPARATE axis and must NOT be gated by the management bearer token. Existing IAM
-// tests only drive /v1/config + /v1/vaults, so the independence was asserted
-// nowhere — here we exercise BOTH surfaces with the guard ON.
+// Credential-axis separation under an active embedded-IAM guard: management and
+// Managed Agents both accept the workspace service key, while browser protocols
+// use separately minted application credentials.
 //
 // Run: (from e2e/) node management_session_axis_independent_e2e.mjs
 
@@ -33,30 +30,41 @@ async function main() {
     assert.equal(cfgTok.status, 200, `admin token authorizes the authoring surface, got ${cfgTok.status}`);
     pass('embedded-IAM guard is ACTIVE on /v1/config/* (401 without token, 200 with admin token)');
 
-    // The session axis is INDEPENDENT: creating a session needs NO management token
-    // (the management_guard never wraps /v1/sessions). A 401 here would mean the
-    // guard leaked onto the session surface.
-    const create = await fetch(`${base}/v1/sessions`, {
+    const noToken = await fetch(`${base}/v1/sessions`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'anthropic-beta': BETAS.join(',') },
       body: JSON.stringify({ agent: 'assistant', environment_id: 'env_local' }),
     });
-    assert.equal(create.status, 200, `session create is NOT gated by the management token (got ${create.status})`);
+    assert.equal(noToken.status, 401, `session create without a service key is rejected (got ${noToken.status})`);
+
+    const create = await fetch(`${base}/v1/sessions`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+        'anthropic-beta': BETAS.join(','),
+      },
+      body: JSON.stringify({ agent: 'assistant', environment_id: 'env_local' }),
+    });
+    assert.equal(create.status, 200, `service key authorizes session create (got ${create.status})`);
     const session = await create.json();
     assert.ok(session.id && session.type === 'session', `a real session was created: ${JSON.stringify(session).slice(0, 120)}`);
-    assert.notEqual(create.status, 401, 'the management IAM guard must not leak onto the session axis');
-    pass('embedded-IAM guard does NOT gate /v1/sessions: session created without a management token (axes independent)');
+    pass('Managed Agents rejects anonymous access and accepts the workspace service key');
 
-    // Reading it back also needs no management token (same independent axis).
-    const get = await fetch(`${base}/v1/sessions/${session.id}`, { headers: { 'anthropic-beta': BETAS.join(',') } });
-    assert.equal(get.status, 200, `session read on the independent axis (got ${get.status})`);
-    pass('the session axis remains fully usable while the management IAM guard is active');
+    const get = await fetch(`${base}/v1/sessions/${session.id}`, {
+      headers: {
+        authorization: `Bearer ${token}`,
+        'anthropic-beta': BETAS.join(','),
+      },
+    });
+    assert.equal(get.status, 200, `service key authorizes session read (got ${get.status})`);
+    pass('the service credential consistently protects Managed Agents reads and writes');
   } finally {
     await stopServer(server);
     fs.rmSync(dir, { recursive: true, force: true });
   }
 
-  console.log('E2E PASS: session axis is independent of the embedded-IAM management guard.');
+  console.log('E2E PASS: service credential protects the Managed Agents axis.');
 }
 
 main().catch((err) => {
