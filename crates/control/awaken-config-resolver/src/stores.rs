@@ -1,14 +1,11 @@
 //! Read ports for the authored control-plane aggregates — the store traits the
-//! resolver and the runtime host consult at bind time, plus in-memory reference
-//! impls.
+//! resolver and the runtime host consult at bind time.
 //!
 //! These live here, with the aggregate types they carry, so the **read** path
 //! stays in the open resolver crate and never reaches back up into the authoring
 //! HTTP surface. `awaken-admin-config-api` (the authoring plane) writes *through*
 //! these same ports and provides the durable SQLite backend for them; the
 //! runtime host reads *through* them at session-prepare time.
-
-use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -26,35 +23,6 @@ pub enum ConfigRepositoryError {
 pub trait InferenceProfileStore: Send + Sync {
     fn put(&self, id: String, profile: InferenceProfile) -> Result<(), ConfigRepositoryError>;
     fn get(&self, id: &str) -> Result<Option<InferenceProfile>, ConfigRepositoryError>;
-}
-
-/// The default in-memory [`InferenceProfileStore`].
-#[derive(Default)]
-pub struct InMemoryProfileStore(std::sync::Mutex<HashMap<String, InferenceProfile>>);
-
-impl InMemoryProfileStore {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-impl InferenceProfileStore for InMemoryProfileStore {
-    fn put(&self, id: String, profile: InferenceProfile) -> Result<(), ConfigRepositoryError> {
-        self.0
-            .lock()
-            .map_err(|_| ConfigRepositoryError::Storage("profile store mutex poisoned".into()))?
-            .insert(id, profile);
-        Ok(())
-    }
-    fn get(&self, id: &str) -> Result<Option<InferenceProfile>, ConfigRepositoryError> {
-        Ok(self
-            .0
-            .lock()
-            .map_err(|_| ConfigRepositoryError::Storage("profile store mutex poisoned".into()))?
-            .get(id)
-            .cloned())
-    }
 }
 
 /// A store for authored [`WebhookEndpointDef`]s (an admin-plane aggregate,
@@ -87,88 +55,6 @@ pub struct WebhookOutboxEvent {
     pub workspace_id: String,
     pub organization_id: Option<String>,
     pub timestamp: i64,
-}
-
-/// The default in-memory [`WebhookStore`], keyed by endpoint id.
-#[derive(Default)]
-pub struct InMemoryWebhookStore {
-    endpoints: std::sync::Mutex<HashMap<String, WebhookEndpointDef>>,
-    outbox: std::sync::Mutex<HashMap<String, WebhookOutboxEvent>>,
-}
-
-impl InMemoryWebhookStore {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-impl WebhookStore for InMemoryWebhookStore {
-    fn put(&self, def: WebhookEndpointDef) -> Result<(), ConfigRepositoryError> {
-        self.endpoints
-            .lock()
-            .map_err(|_| ConfigRepositoryError::Storage("webhook store mutex poisoned".into()))?
-            .insert(def.id.clone(), def);
-        Ok(())
-    }
-    fn get(&self, id: &str) -> Result<Option<WebhookEndpointDef>, ConfigRepositoryError> {
-        Ok(self
-            .endpoints
-            .lock()
-            .map_err(|_| ConfigRepositoryError::Storage("webhook store mutex poisoned".into()))?
-            .get(id)
-            .cloned())
-    }
-    fn list(&self, workspace_id: &str) -> Result<Vec<WebhookEndpointDef>, ConfigRepositoryError> {
-        let mut rows: Vec<WebhookEndpointDef> = self
-            .endpoints
-            .lock()
-            .map_err(|_| ConfigRepositoryError::Storage("webhook store mutex poisoned".into()))?
-            .values()
-            .filter(|d| d.workspace_id == workspace_id)
-            .cloned()
-            .collect();
-        rows.sort_by(|a, b| a.id.cmp(&b.id));
-        Ok(rows)
-    }
-    fn delete(&self, id: &str) -> Result<bool, ConfigRepositoryError> {
-        Ok(self
-            .endpoints
-            .lock()
-            .map_err(|_| ConfigRepositoryError::Storage("webhook store mutex poisoned".into()))?
-            .remove(id)
-            .is_some())
-    }
-    fn enqueue_outbox(&self, event: WebhookOutboxEvent) -> Result<bool, ConfigRepositoryError> {
-        let mut rows = self
-            .outbox
-            .lock()
-            .map_err(|_| ConfigRepositoryError::Storage("webhook outbox mutex poisoned".into()))?;
-        if rows.contains_key(&event.id) {
-            return Ok(false);
-        }
-        rows.insert(event.id.clone(), event);
-        Ok(true)
-    }
-    fn pending_outbox(&self) -> Result<Vec<WebhookOutboxEvent>, ConfigRepositoryError> {
-        let mut rows: Vec<_> = self
-            .outbox
-            .lock()
-            .map_err(|_| ConfigRepositoryError::Storage("webhook outbox mutex poisoned".into()))?
-            .values()
-            .cloned()
-            .collect();
-        rows.sort_by(|a, b| a.id.cmp(&b.id));
-        Ok(rows)
-    }
-    fn complete_outbox(&self, event_id: &str) -> Result<bool, ConfigRepositoryError> {
-        Ok(self
-            .outbox
-            .lock()
-            .map_err(|_| ConfigRepositoryError::Storage("webhook outbox mutex poisoned".into()))?
-            .remove(event_id)
-            .is_some())
-    }
 }
 
 /// Repository for an Agent's default input bindings. Workspace is mandatory on
@@ -228,72 +114,11 @@ pub trait AgentInputBindingRepository: Send + Sync {
     ) -> Result<Vec<AgentInputConfig>, AgentInputRepositoryError>;
 }
 
-/// Default in-memory Agent-input repository, keyed by `(Workspace, Agent)`.
-#[derive(Default)]
-pub struct InMemoryAgentInputBindingRepository(
-    std::sync::Mutex<HashMap<(String, String), AgentInputConfig>>,
-);
-
-impl InMemoryAgentInputBindingRepository {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-impl AgentInputBindingRepository for InMemoryAgentInputBindingRepository {
-    fn put_agent_inputs(
-        &self,
-        workspace_id: &str,
-        config: AgentInputConfig,
-    ) -> Result<(), AgentInputRepositoryError> {
-        let key = (workspace_id.to_string(), config.agent_id.clone());
-        let mut rows = self.0.lock().map_err(|_| {
-            AgentInputRepositoryError::Storage("agent input repository mutex poisoned".into())
-        })?;
-        if !validate_agent_input_revision(rows.get(&key), &config)? {
-            return Ok(());
-        }
-        rows.insert(key, config);
-        Ok(())
-    }
-    fn get_agent_inputs(
-        &self,
-        workspace_id: &str,
-        agent_id: &str,
-    ) -> Result<Option<AgentInputConfig>, AgentInputRepositoryError> {
-        Ok(self
-            .0
-            .lock()
-            .map_err(|_| {
-                AgentInputRepositoryError::Storage("agent input repository mutex poisoned".into())
-            })?
-            .get(&(workspace_id.to_string(), agent_id.to_string()))
-            .cloned())
-    }
-    fn list_agent_inputs(
-        &self,
-        workspace_id: &str,
-    ) -> Result<Vec<AgentInputConfig>, AgentInputRepositoryError> {
-        let mut configs: Vec<_> = self
-            .0
-            .lock()
-            .map_err(|_| {
-                AgentInputRepositoryError::Storage("agent input repository mutex poisoned".into())
-            })?
-            .iter()
-            .filter(|((workspace, _), _)| workspace == workspace_id)
-            .map(|(_, config)| config.clone())
-            .collect();
-        configs.sort_by(|a, b| a.agent_id.cmp(&b.agent_id));
-        Ok(configs)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{BindingId, FileId, InputBinding, InputResourceId, ResourceAccess};
+    use crate::{InMemoryAgentInputBindingRepository, InMemoryWebhookStore};
 
     #[test]
     fn agent_inputs_are_isolated_by_workspace_even_for_the_same_agent_id() {

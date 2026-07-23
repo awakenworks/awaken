@@ -32,9 +32,15 @@ cd "$(dirname "$0")/../.."
 #       runtime-examples — examples, not production composition.
 #       awaken-eval — the offline benchmark/replay CLI; it is intentionally not
 #                     linked into either served production composition.
+#       awaken-scenario-host — the deterministic E2E fixture server. Its code is
+#                     test orchestration, while the production crates it composes
+#                     remain inside the denominator.
 # (2) Alternate-backend / reference / real-provider modules inside LINKED crates,
 #     unreachable from a deterministic e2e by design:
 #       run-ingress/memory.rs   in-memory reference impl (the server uses SQLite).
+#       config-resolver/reference_stores.rs — process-local reference adapters
+#                     used by tests and local fixtures; production composition
+#                     injects the durable config repositories.
 #       ext-mcp/{stdio,plugin,sensitive}.rs + mcp-wire/jsonrpc.rs  the MCP
 #                      transport machinery the served path does not execute: the
 #                      host drives the HTTP client's request path via
@@ -62,7 +68,7 @@ cd "$(dirname "$0")/../.."
 # reviewed in e2e_unreachable.toml. The checker validates every range/reason,
 # rejects stale entries, still counts hits inside those ranges, and caps the
 # audited share at 15% so the manifest cannot become an unbounded escape hatch.
-IGNORE='(awaken-store-conformance|awaken-runtime-examples|awaken-eval)/|awaken-run-ingress/src/memory\.rs|awaken-ext-mcp/src/(stdio|plugin|sensitive)\.rs|awaken-mcp-wire/src/jsonrpc\.rs|awaken-protocol-acp/src/(error|real_acp)\.rs|awaken-server/src/models\.rs'
+IGNORE='(awaken-store-conformance|awaken-runtime-examples|awaken-eval|awaken-scenario-host)/|awaken-run-ingress/src/memory\.rs|awaken-config-resolver/src/reference_stores\.rs|awaken-ext-mcp/src/(stdio|plugin|sensitive)\.rs|awaken-mcp-wire/src/jsonrpc\.rs|awaken-protocol-acp/src/(error|real_acp)\.rs|awaken-server/src/models\.rs'
 
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/tmp/awaken-e2e-coverage}"
 export CARGO_LLVM_COV_TARGET_DIR="${CARGO_LLVM_COV_TARGET_DIR:-$CARGO_TARGET_DIR}"
