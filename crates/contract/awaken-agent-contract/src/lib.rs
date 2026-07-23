@@ -26,7 +26,7 @@ pub use thread::commit::staged::ThreadCommit;
 pub use thread::read::checkpoint::{CheckpointReader, EventScope};
 pub use thread::read::lifecycle::{
     CheckpointRunLifecycleFeed, LifecycleCursor, LifecyclePage, RunLifecycleEvent,
-    RunLifecycleFeed, RunLifecycleFeedError, RunLifecycleKind,
+    RunLifecycleFeed, RunLifecycleFeedError, RunLifecycleKind, classify_run_lifecycle,
 };
 pub use thread::read::transcript::{
     TranscriptError, TranscriptRange, TranscriptSlice, TranscriptSliceSpec, TranscriptSnapshot,

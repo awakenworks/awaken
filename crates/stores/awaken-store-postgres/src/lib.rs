@@ -31,6 +31,10 @@ use awaken_agent_contract::thread::commit::operation::{
 };
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
+use awaken_agent_contract::thread::read::lifecycle::{
+    LifecycleCursor, LifecyclePage, RunLifecycleEvent, RunLifecycleFeed, RunLifecycleFeedError,
+    classify_run_lifecycle,
+};
 use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource, RunResumeTicket,
 };
@@ -755,6 +759,97 @@ impl RunRecoverySource for PostgresCommitCoordinator {
             thread_version: thread_version.max(0) as u64,
             store_cursor: store_cursor.max(0) as u64,
             next_commit_ordinal: next_commit_ordinal.max(0) as u64,
+        })
+    }
+}
+
+/// Authoritative lifecycle feed for active-active PostgreSQL Control Nodes.
+///
+/// Unlike the synchronous compatibility read ports, this query never consults
+/// the process-local projection. PostgreSQL computes the preceding state per Run
+/// before applying the exclusive cursor, so `Running` after `Awaiting` remains a
+/// `Resumed` event even when another Control Node committed both transitions.
+#[async_trait]
+impl RunLifecycleFeed for PostgresCommitCoordinator {
+    async fn events_after(
+        &self,
+        cursor: LifecycleCursor,
+        limit: usize,
+    ) -> Result<LifecyclePage, RunLifecycleFeedError> {
+        if limit == 0 {
+            return Ok(LifecyclePage {
+                events: Vec::new(),
+                next_cursor: cursor,
+            });
+        }
+        let after = i64::try_from(cursor.0)
+            .map_err(|_| RunLifecycleFeedError::Rejected("cursor exceeds BIGINT range".into()))?;
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let prefix = NS;
+        let rows = sqlx::query(&format!(
+            "WITH lifecycle AS (\
+                 SELECT event.sequence, event.run_id, run.thread_id, event.payload, \
+                        lag(event.payload) OVER (\
+                            PARTITION BY event.run_id ORDER BY event.sequence\
+                        ) AS previous_payload \
+                 FROM {prefix}_event AS event \
+                 JOIN {prefix}_run_record AS run ON run.run_id = event.run_id \
+                 WHERE event.kind::text IN ('\"RunStateChanged\"', '\"RunPhaseChanged\"')\
+             ) \
+             SELECT sequence, run_id, thread_id, payload, previous_payload \
+             FROM lifecycle WHERE sequence > $1 ORDER BY sequence LIMIT $2"
+        ))
+        .bind(after)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|error| RunLifecycleFeedError::Rejected(error.to_string()))?;
+
+        let mut events = Vec::with_capacity(rows.len());
+        for row in rows {
+            let sequence = row
+                .try_get::<i64, _>("sequence")
+                .map_err(|error| RunLifecycleFeedError::Rejected(error.to_string()))?;
+            let sequence = u64::try_from(sequence).map_err(|_| {
+                RunLifecycleFeedError::Rejected(
+                    "persisted lifecycle sequence is negative".to_string(),
+                )
+            })?;
+            let Json(payload): Json<serde_json::Value> = row
+                .try_get("payload")
+                .map_err(|error| RunLifecycleFeedError::Rejected(error.to_string()))?;
+            let state = serde_json::from_value::<RunState>(
+                payload.get("state").cloned().unwrap_or_default(),
+            )
+            .map_err(|_| RunLifecycleFeedError::InvalidState { sequence })?;
+            let previous = row
+                .try_get::<Option<Json<serde_json::Value>>, _>("previous_payload")
+                .map_err(|error| RunLifecycleFeedError::Rejected(error.to_string()))?
+                .map(|Json(payload)| {
+                    serde_json::from_value::<RunState>(
+                        payload.get("state").cloned().unwrap_or_default(),
+                    )
+                    .map_err(|_| RunLifecycleFeedError::InvalidState { sequence })
+                })
+                .transpose()?;
+            events.push(RunLifecycleEvent {
+                cursor: LifecycleCursor(sequence),
+                thread_id: ThreadId(
+                    row.try_get("thread_id")
+                        .map_err(|error| RunLifecycleFeedError::Rejected(error.to_string()))?,
+                ),
+                run_id: RunId(
+                    row.try_get("run_id")
+                        .map_err(|error| RunLifecycleFeedError::Rejected(error.to_string()))?,
+                ),
+                kind: classify_run_lifecycle(&state, previous.as_ref()),
+                state,
+            });
+        }
+        let next_cursor = events.last().map_or(cursor, |event| event.cursor);
+        Ok(LifecyclePage {
+            events,
+            next_cursor,
         })
     }
 }

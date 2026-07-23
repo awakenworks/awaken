@@ -26,6 +26,7 @@ use awaken_agent_contract::thread::commit::operation::{
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
+use awaken_agent_contract::{LifecycleCursor, RunLifecycleFeed, RunLifecycleKind};
 use awaken_store_postgres::PostgresCommitCoordinator;
 use sqlx::Executor;
 use sqlx::Row;
@@ -640,6 +641,76 @@ async fn operation_receipt_survives_reconnect() {
             .committed_messages(&ThreadId("receipt-thread".into()))
             .len(),
         1
+    );
+}
+
+#[tokio::test]
+async fn peer_lifecycle_feed_reads_authoritative_postgres_without_projection_refresh() {
+    let Some(pool) = schema_pool("t_active_active_lifecycle").await else {
+        return;
+    };
+    let writer = PostgresCommitCoordinator::with_pool(pool.clone())
+        .await
+        .expect("writer coordinator");
+    let peer = PostgresCommitCoordinator::with_pool(pool)
+        .await
+        .expect("peer coordinator before commits");
+    let thread = ThreadId("active-active-thread".into());
+    let run = RunId("active-active-run".into());
+
+    for disposition in [
+        RunDisposition::running(run.clone()),
+        RunDisposition::awaiting(ticket(&run.0, &thread.0)),
+        RunDisposition::running(run.clone()),
+        RunDisposition::ended(run.clone(), EndCause::NaturalEnd),
+    ] {
+        writer
+            .commit(ThreadCommit::assemble(
+                thread.clone(),
+                disposition,
+                true,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            ))
+            .await
+            .expect("commit lifecycle transition");
+    }
+
+    assert!(
+        RunStore::get(&peer, &run).is_none(),
+        "the peer's synchronous compatibility projection remains stale"
+    );
+    let first = peer
+        .events_after(LifecycleCursor::default(), 2)
+        .await
+        .expect("authoritative first page");
+    assert_eq!(
+        first
+            .events
+            .iter()
+            .map(|event| event.kind)
+            .collect::<Vec<_>>(),
+        vec![RunLifecycleKind::Running, RunLifecycleKind::Awaiting]
+    );
+    let second = peer
+        .events_after(first.next_cursor, 8)
+        .await
+        .expect("authoritative second page");
+    assert_eq!(
+        second
+            .events
+            .iter()
+            .map(|event| event.kind)
+            .collect::<Vec<_>>(),
+        vec![RunLifecycleKind::Resumed, RunLifecycleKind::Completed]
+    );
+    assert!(
+        second
+            .events
+            .iter()
+            .all(|event| event.thread_id == thread && event.run_id == run),
+        "the authoritative feed retains Run and Thread ownership"
     );
 }
 
