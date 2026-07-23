@@ -372,7 +372,7 @@ mod completion_tests {
     }
 
     #[test]
-    fn coordinator_admission_requires_every_exact_execution_backend() {
+    fn coordinator_admission_requires_exact_acp_and_generic_a2a_capabilities() {
         let mut models = host_models();
         models.model_binding.binding.backend_ref = "acp:claude".to_string();
         let mut remote = models.model_binding.clone();
@@ -387,8 +387,8 @@ mod completion_tests {
         assert!(
             placement
                 .required_capabilities
-                .contains("a2a:https://agent.example"),
-            "A2A route identity is part of claim compatibility"
+                .contains(awaken_runtime_contract::A2A_RUNTIME_CAPABILITY),
+            "the generic A2A transport is part of claim compatibility"
         );
         assert!(
             !placement.required_capabilities.contains("native-runtime"),

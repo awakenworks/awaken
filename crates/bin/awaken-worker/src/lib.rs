@@ -116,7 +116,7 @@ impl WorkerResourcePlane {
 
 async fn shared_resource_wiring(
     credentials: Option<awaken_control::InferenceMaterializationStores>,
-) -> Result<Option<WorkerResourcePlane>, Box<dyn std::error::Error>> {
+) -> Result<Option<WorkerResourcePlane>, Box<dyn std::error::Error + Send + Sync>> {
     let ports = awaken_server::shared_worker_resource_plane_from_env().await?;
     let validator = awaken_control::open_shared_resource_validator_from_env().await?;
     match (ports, validator) {
@@ -330,9 +330,9 @@ impl WorkerLifecycle {
 ///    never falls back to the inert executor.
 /// 6. Start the dispatch pool and drain in the background until SIGINT / SIGTERM.
 ///
-/// Requires `AWAKEN_INGRESS=durable` (the pool's enable gate); the injected remote
-/// store routes the drain over HTTP instead of a local queue.
-pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error>> {
+/// The injected remote dispatch store is the durable-ingress authority and enables
+/// the pool directly; embedding does not require `AWAKEN_INGRESS=durable`.
+pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     run_with_standard_environment(WorkerUpstream::new(upstream), Default::default(), None).await
 }
 
@@ -346,7 +346,7 @@ pub async fn run_with_application_decorator(
     upstream: WorkerUpstream,
     application_capabilities: std::collections::BTreeSet<String>,
     factory: RegisteredDecoratorFactory,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     run_with_standard_environment(upstream, application_capabilities, Some(factory)).await
 }
 
@@ -354,7 +354,7 @@ async fn run_with_standard_environment(
     upstream: WorkerUpstream,
     application_capabilities: std::collections::BTreeSet<String>,
     application: Option<RegisteredDecoratorFactory>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let stores = awaken_control::open_inference_materialization_stores_from_env().await;
     let resource_credentials =
         shared_credential_backend(std::env::var("AWAKEN_CREDENTIAL_DB").ok().as_deref())
@@ -392,7 +392,7 @@ async fn run_with_standard_environment(
 pub async fn run_with_inference_materializer(
     upstream: &str,
     materializer: Arc<dyn InferenceExecutorMaterializer>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     run_with_upstream_and_inference_materializer(WorkerUpstream::new(upstream), materializer).await
 }
 
@@ -405,7 +405,7 @@ pub async fn run_with_inference_materializer(
 pub async fn run_with_upstream_and_inference_materializer(
     upstream: WorkerUpstream,
     materializer: Arc<dyn InferenceExecutorMaterializer>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     run_with_upstream_application_and_inference_materializer(
         upstream,
         materializer,
@@ -423,7 +423,7 @@ pub async fn run_with_upstream_application_and_inference_materializer(
     materializer: Arc<dyn InferenceExecutorMaterializer>,
     application_capabilities: std::collections::BTreeSet<String>,
     application: Option<RegisteredDecoratorFactory>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let resources = shared_resource_wiring(None).await?;
     let manifest = worker_manifest(
         Some(materializer.as_ref()),
@@ -449,7 +449,7 @@ async fn run_configured_worker(
     acp_credentials: Option<awaken_runtime_host::PinnedCredentialMaterializer>,
     resources: Option<WorkerResourcePlane>,
     application: Option<RegisteredDecoratorFactory>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut builder = WorkerNodeBuilder::new(upstream)
         .with_manifest(manifest)
         .with_inference_materializer(materializer)
@@ -486,7 +486,7 @@ impl WorkerNode {
 
     /// Register, enter Ready, run until SIGINT/SIGTERM, then drain, quiesce, and
     /// deregister. Losing registry authority closes the local claim gate.
-    pub async fn run_until_shutdown(self) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn run_until_shutdown(self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         self.run_until(async {
             #[cfg(unix)]
             {
@@ -512,9 +512,14 @@ impl WorkerNode {
 
     /// Run the same lifecycle with an injected shutdown source. This keeps
     /// embedding tests and supervisors independent of process signals.
-    pub async fn run_until<F>(self, shutdown: F) -> Result<(), Box<dyn std::error::Error>>
+    pub async fn run_until<F>(
+        self,
+        shutdown: F,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
     where
-        F: std::future::Future<Output = Result<WorkerShutdown, Box<dyn std::error::Error>>>,
+        F: std::future::Future<
+                Output = Result<WorkerShutdown, Box<dyn std::error::Error + Send + Sync>>,
+            >,
     {
         let upstream_url = self.upstream.base_url().to_string();
         let upstream = self.upstream;
@@ -742,8 +747,10 @@ fn worker_manifest(
             "namespace",
         ),
     };
-    let mut capabilities =
-        std::collections::BTreeSet::from([NATIVE_RUNTIME_CAPABILITY.to_string()]);
+    let mut capabilities = std::collections::BTreeSet::from([
+        NATIVE_RUNTIME_CAPABILITY.to_string(),
+        awaken_runtime_contract::A2A_RUNTIME_CAPABILITY.to_string(),
+    ]);
     capabilities.extend(
         materializer
             .into_iter()
@@ -914,6 +921,11 @@ mod grace_tests {
         let manifest = worker_manifest(Some(&materializer), false, false, Default::default());
 
         assert!(manifest.capabilities.contains("native-runtime"));
+        assert!(
+            manifest
+                .capabilities
+                .contains(awaken_runtime_contract::A2A_RUNTIME_CAPABILITY)
+        );
         assert!(manifest.capabilities.contains("test-access/v1"));
         assert_eq!(
             credential_observations(Some(&materializer)),
