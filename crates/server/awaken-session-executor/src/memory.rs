@@ -19,7 +19,7 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_agent_contract::thread::read::transcript::TranscriptSnapshot;
-use awaken_ext_builtin_tools::{AgentRunArgs, erase, invoke_agent_tool};
+use awaken_ext_builtin_tools::{AuxiliaryAgentInput, erase, invoke_auxiliary_agent};
 use awaken_ext_memory::{
     DEFAULT_SELECTOR_INSTRUCTIONS, EXTRACT_PROMPT, MEMORY_AGENT_ID, MemoryExtractionController,
     MemoryExtractionDriver, MemoryExtractionError, MemoryExtractionIntent,
@@ -83,10 +83,10 @@ impl RecallSelector for AgentSelector {
         // Fire the selector through the shared port; a runner error degrades to
         // "select nothing" (recall falls back to no memories rather than failing the
         // turn). The port surfaces only the reply text, its usage stays isolated.
-        let reply = invoke_agent_tool(
+        let reply = invoke_auxiliary_agent(
             self.agent_tool.as_ref(),
             "memory-selector-agent-run",
-            AgentRunArgs {
+            AuxiliaryAgentInput {
                 agent_id: SELECTOR_AGENT_ID.to_string(),
                 seed: vec![Message {
                     id: MessageId("mem-select".into()),

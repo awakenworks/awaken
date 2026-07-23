@@ -62,6 +62,7 @@ pub(crate) struct AgentExecution<'a> {
     pub(crate) delegates: &'a HashSet<String>,
     pub(crate) run_delegation: Option<Arc<dyn RunDelegationService>>,
     pub(crate) context: Option<RuntimeRunContext>,
+    #[cfg(test)]
     pub(crate) scheduler: Option<RunScheduler>,
 }
 
@@ -224,10 +225,9 @@ async fn await_committed_child_boundary(
 /// child's HITL request.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_configured_agent_until_boundary(
-    catalog: &AgentCatalog,
+    config: &awaken_runtime_contract::snapshot::ExecutableAgentSnapshot,
     sandbox: AgentRunSandbox<'_>,
     llm: Arc<dyn LlmExecutor>,
-    agent_id: &str,
     child_run_id: RunId,
     origin: DelegationOrigin,
     seed: Option<RunInput>,
@@ -237,10 +237,7 @@ pub(crate) async fn run_configured_agent_until_boundary(
     parent_thread_id: ThreadId,
     scheduler: Option<RunScheduler>,
 ) -> Result<AgentRunBoundary, AgentRunError> {
-    let config = catalog
-        .resolve(agent_id)
-        .ok_or_else(|| AgentRunError::Configuration(format!("unknown agent {agent_id:?}")))?
-        .clone();
+    let config = config.clone();
     let thread = child_run_id.0.clone();
     let created = match &sandbox {
         AgentRunSandbox::Fresh(provider) => Some(
@@ -610,7 +607,7 @@ pub(crate) async fn run_agent(
     input: impl Into<RunInput>,
     cancellation: Option<CancellationToken>,
 ) -> Result<(String, ThreadUsage), AgentRunError> {
-    // This compatibility wrapper does not offer skills (ADR-0036).
+    // Auxiliary Agents deliberately do not inherit user-visible Skills.
     let config = server_config(
         execution.agent_id,
         execution.model_ref,
@@ -640,6 +637,7 @@ pub(crate) async fn run_agent(
 /// One-boundary counterpart of [`run_agent`] for a first-class delegated Run.
 /// The target Agent receives the same config it would receive when admitted as a
 /// root Run; only the supplied identity records that a parent created it.
+#[cfg(test)]
 pub(crate) async fn run_agent_until_boundary(
     llm: Arc<dyn LlmExecutor>,
     execution: AgentExecution<'_>,
@@ -656,12 +654,10 @@ pub(crate) async fn run_agent_until_boundary(
         &[],
         awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
     );
-    let catalog = AgentCatalog::new().with_agent(config);
     run_configured_agent_until_boundary(
-        &catalog,
+        &config,
         sandbox,
         llm,
-        execution.agent_id,
         request.run_id,
         request.origin,
         request.seed,

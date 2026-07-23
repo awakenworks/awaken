@@ -184,7 +184,7 @@ impl SessionRuntime for AcceptingFake {
                 .lock()
                 .unwrap()
                 .last()
-                .and_then(|init| init.delegate_ids.clone())
+                .map(|init| init.delegate_ids.clone())
                 .unwrap_or_default(),
             ..Default::default()
         }
@@ -286,7 +286,7 @@ async fn session_inherits_published_agent_integrations_and_echoes_the_effective_
     assert_eq!(session["agent"]["multiagent"]["agents"][0], "researcher");
     assert_eq!(
         prepared.lock().unwrap()[0].delegate_ids,
-        Some(vec!["researcher".into()])
+        vec!["researcher".to_string()]
     );
     let prepared = prepared.lock().unwrap();
     assert_eq!(

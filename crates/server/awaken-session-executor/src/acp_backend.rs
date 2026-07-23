@@ -73,6 +73,8 @@ impl AcpBackend {
         &self,
         sandbox: Arc<crate::session_environment::SessionEnvironment>,
         permission: Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy>,
+        backend: awaken_runtime_contract::resolved::Backend,
+        mcp_servers: Vec<awaken_run_executor_acp::McpServerConfig>,
     ) -> Arc<AcpRunExecutor> {
         match &self.source {
             AcpExecutorSource::Static(executor) => {
@@ -86,6 +88,8 @@ impl AcpBackend {
                 let source = Arc::new(crate::BoundLocalChannelSource::from_environment(
                     sandbox,
                     launch.clone(),
+                    backend,
+                    mcp_servers,
                 ));
                 let mut executor = AcpRunExecutor::new(source);
                 if let Some(observer) = observer {
@@ -115,16 +119,11 @@ impl AcpBackend {
             .or_else(|| self.default_adapter.clone())
     }
 
-    /// Whether `thread` runs on an ACP CLI (`acp` / `acp:*`). Routes through the
-    /// typed [`Backend`](awaken_runtime_contract::resolved::Backend) so the `acp:`
-    /// parsing lives in one place, not duplicated as a string check here.
-    pub(crate) fn is_acp(&self, thread: &str) -> bool {
-        // The thread's explicit selection, else the deployment default — either way
-        // the `acp:` parse lives in the one `Backend::from_ref`, never a string check.
-        match self.adapter_for(thread).as_deref() {
-            Some(adapter) => awaken_runtime_contract::resolved::Backend::from_ref(adapter).is_acp(),
-            None => false,
-        }
+    #[cfg(test)]
+    fn is_acp(&self, thread: &str) -> bool {
+        self.adapter_for(thread).is_some_and(|adapter| {
+            awaken_runtime_contract::resolved::Backend::from_ref(&adapter).is_acp()
+        })
     }
 }
 

@@ -10,7 +10,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use awaken_ext_builtin_tools::{AGENT_RUN, AgentRunArgs};
+use awaken_ext_builtin_tools::{AUXILIARY_AGENT, AuxiliaryAgentInput};
 use awaken_ext_skills::{
     ActiveSkillTools, CompositeSkillRegistry, InMemorySkillRegistry, ListSkillsTool,
     PathActivations, RecordingGate, SkillAllowedToolsGate, SkillFile, SkillProvenance,
@@ -28,6 +28,16 @@ use awaken_skill_store::SkillVersion;
 /// negotiate a different dir via its `plugin_config.skills_dir`; this is the fallback.
 pub(crate) const DEFAULT_SKILLS_SUBDIR: &str = "skills";
 pub(crate) const DELIVERED_SKILLS_SUBDIR: &str = ".skills";
+
+/// Placement policy for Skill `context: fork` auxiliary Runs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SkillForkPlacement {
+    /// Execute in the Session-owned environment.
+    #[default]
+    SharedSession,
+    /// Provision a new isolated environment for the auxiliary Run.
+    FreshIsolation,
+}
 
 /// Bridges the sandbox [`LocalSandbox`] to the [`SkillSource`] port: scans the
 /// workspace skill dir live, returning neutral file data. The host owns this bridge
@@ -70,9 +80,8 @@ impl SkillSource for SnapshotSkillSource {
 }
 
 /// Runs a `context: fork` skill as an Agent with the capabilities declared by its
-/// config, returning its reply. By default it shares the parent Agent's sandbox
-/// (`默认共用`), so a forked skill sees the same workspace; with
-/// `reuse_sandbox` off it gets a fresh, isolated root. Implements the neutral
+/// config, returning its reply. Placement is explicit and defaults to the
+/// Session-owned environment. Implements the neutral
 /// ordinary Agent-backed tool — the same generic capability used by the goal
 /// judge and compactor.
 struct ForkAgentTool {
@@ -81,27 +90,29 @@ struct ForkAgentTool {
     provider: LocalProvider,
     /// The parent agent's sandbox, shared with the fork by default.
     sandbox: Arc<crate::session_environment::SessionEnvironment>,
-    /// Reuse the parent sandbox (default) vs. a fresh, isolated one.
-    reuse_sandbox: bool,
+    placement: SkillForkPlacement,
 }
 
 #[async_trait::async_trait]
 impl RawTool for ForkAgentTool {
     fn id(&self) -> &str {
-        AGENT_RUN
+        AUXILIARY_AGENT
     }
 
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
-        let request: AgentRunArgs = serde_json::from_value(call.arguments)
+        let request: AuxiliaryAgentInput = serde_json::from_value(call.arguments)
             .map_err(|error| ToolError::InvalidArguments(error.to_string()))?;
         // The skill id names the sub-run; the seed is the resolved skill body. Skill
         // activation is out-of-band housekeeping, so its usage stays isolated (this
         // port surfaces only the reply text).
         let name = format!("skill-{}", request.agent_id);
-        let sandbox = if self.reuse_sandbox {
-            crate::agent_runner::AgentRunSandbox::Shared(self.sandbox.as_ref())
-        } else {
-            crate::agent_runner::AgentRunSandbox::Fresh(&self.provider)
+        let sandbox = match self.placement {
+            SkillForkPlacement::SharedSession => {
+                crate::agent_runner::AgentRunSandbox::Shared(self.sandbox.as_ref())
+            }
+            SkillForkPlacement::FreshIsolation => {
+                crate::agent_runner::AgentRunSandbox::Fresh(&self.provider)
+            }
         };
         let delegates = std::collections::HashSet::new();
         crate::agent_runner::run_agent(
@@ -112,6 +123,7 @@ impl RawTool for ForkAgentTool {
                 delegates: &delegates,
                 run_delegation: None,
                 context: None,
+                #[cfg(test)]
                 scheduler: None,
             },
             sandbox,
@@ -148,7 +160,7 @@ pub(crate) async fn wire_skills(
     session_id: &str,
     base_gate: Arc<dyn ToolGateHook>,
     fork_base: PathBuf,
-    reuse_sandbox: bool,
+    placement: SkillForkPlacement,
     skills_subdir: &str,
 ) -> Result<Option<SkillWiring>, String> {
     // Offer skills when either a static set is configured or a durable catalog is
@@ -243,7 +255,7 @@ pub(crate) async fn wire_skills(
         model_ref: model_ref.to_string(),
         provider: LocalProvider::new(fork_base),
         sandbox: env,
-        reuse_sandbox,
+        placement,
     });
     let activate: Arc<dyn RawTool> = Arc::new(
         SkillTool::new(registry.clone())

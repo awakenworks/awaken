@@ -19,6 +19,33 @@ use crate::CancellationToken;
 use crate::llm::ThreadUsage;
 use crate::resume::ResumeResult;
 use crate::runtime_context::RuntimeRunContext;
+use crate::snapshot::AgentId;
+
+/// The single model-facing payload accepted by the delegation capability.
+///
+/// JSON exists only at the model/tool adapter. The runtime decodes it into this
+/// type before entering the delegation domain.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DelegationToolInput {
+    pub agent_id: AgentId,
+    pub input: String,
+}
+
+impl TryFrom<&Value> for DelegationToolInput {
+    type Error = DelegationExecutionError;
+
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        let input: Self = serde_json::from_value(value.clone()).map_err(|error| {
+            DelegationExecutionError::new(format!("invalid delegation input: {error}"))
+        })?;
+        if input.agent_id.0.is_empty() {
+            return Err(DelegationExecutionError::new(
+                "delegation target agent is missing",
+            ));
+        }
+        Ok(input)
+    }
+}
 
 /// Start a child Run. `arguments` remains the model-visible tool payload because
 /// the executor owns that tool's schema; identity and cancellation are typed.
@@ -29,6 +56,11 @@ pub struct DelegationRequest {
     /// boundary recover this child. The child keeps its own Run/Thread identity;
     /// this is routing, not domain ownership.
     pub parent_thread_id: ThreadId,
+    /// Target identity extracted by the concrete delegation adapter before the
+    /// request enters lifecycle handling.
+    pub target_agent_id: AgentId,
+    /// Opaque model/tool payload. It remains at the adapter seam; concrete
+    /// implementations decode it into their own strong input type.
     pub arguments: Value,
     /// The same resolved execution wiring a directly initiated Run receives.
     pub context: RuntimeRunContext,
@@ -43,6 +75,7 @@ pub struct DelegationRequest {
 pub struct DelegationResume {
     pub origin: DelegationOrigin,
     pub child_run_id: RunId,
+    pub target_agent_id: AgentId,
     pub parent_thread_id: ThreadId,
     pub continuation: Value,
     pub result: ResumeResult,
@@ -237,13 +270,8 @@ pub trait RunDelegationService: Send + Sync {
     /// Extract the target Agent identity from this tool's model-visible payload.
     /// The runtime needs the identity only for durable lineage/budget checks; the
     /// tool implementation continues to own its schema and placement decision.
-    fn target_agent_id(&self, arguments: &Value) -> Result<String, DelegationExecutionError> {
-        arguments
-            .get("agent_id")
-            .and_then(Value::as_str)
-            .filter(|agent_id| !agent_id.is_empty())
-            .map(str::to_string)
-            .ok_or_else(|| DelegationExecutionError::new("delegation target agent is missing"))
+    fn target_agent_id(&self, arguments: &Value) -> Result<AgentId, DelegationExecutionError> {
+        Ok(DelegationToolInput::try_from(arguments)?.agent_id)
     }
 
     /// Whether this request is guaranteed to run to a terminal child boundary

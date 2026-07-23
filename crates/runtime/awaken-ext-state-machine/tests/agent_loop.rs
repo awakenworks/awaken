@@ -287,7 +287,7 @@ async fn continuation_nudge_keeps_running_until_terminal() {
 
 fn activation_configured(plugin_config: BTreeMap<String, serde_json::Value>) -> RunActivation {
     let mut activation = activation();
-    activation.snapshot.resolved_spec.plugin_config = plugin_config;
+    activation.snapshot.resolved_spec.plugin_config = plugin_config.into();
     activation
 }
 

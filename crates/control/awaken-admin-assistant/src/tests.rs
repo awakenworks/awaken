@@ -393,7 +393,7 @@ async fn draft_agent_round_trips_mcp_skills_multiagent_and_metadata() {
                 "instructions": "do it all",
                 "mcp_servers": [{ "id": "github" }],
                 "skills": [{ "id": "greet" }],
-                "multiagent": { "workers": ["a", "b"] },
+                "multiagent": { "type": "coordinator", "agents": ["a", "b"] },
                 "metadata": { "team": "platform", "tier": "gold" }
             }),
         ))

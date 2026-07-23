@@ -1386,6 +1386,7 @@ impl CheckpointCtx<'_> {
 /// collecting their request-only context messages. The context is meaningful only
 /// at `BeforeInference` (where the caller prepends it to the request); other points
 /// discard it.
+#[allow(clippy::too_many_arguments)]
 async fn run_phase_hooks(
     env: &ResolvedExecutionEnv,
     run_id: &RunId,

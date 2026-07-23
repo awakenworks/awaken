@@ -2,7 +2,7 @@
 
 use awaken_runtime_contract::agent_bindings::AgentBindings;
 use awaken_runtime_contract::resolved::ResolvedModelCandidate;
-use awaken_runtime_contract::resolved::{ToolDescriptor, ToolFacet, ToolPresentation};
+use awaken_runtime_contract::resolved::{ToolDescriptor, ToolFacet, ToolKind, ToolPresentation};
 use awaken_runtime_contract::snapshot::AgentSnapshotMetadata;
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 use sha2::{Digest, Sha256};
@@ -141,6 +141,40 @@ fn compile_with_models(
             descriptors.push(descriptor.clone());
             seen.insert(descriptor.id.clone());
         }
+    }
+
+    // Delegation capability follows the typed target declaration. Authors never
+    // need to repeat `agent_run` in `tool_ids`, and a target-less Agent cannot
+    // accidentally publish the delegation tool. The semantic role, not a concrete
+    // builtin id, joins the config domain to the extension catalog.
+    let has_delegation_targets = config
+        .multiagent
+        .as_ref()
+        .is_some_and(|multiagent| !multiagent.agent_ids.is_empty());
+    if has_delegation_targets {
+        let mut delegation = tools
+            .iter()
+            .filter(|tool| tool.kind == ToolKind::AgentDelegation);
+        let descriptor = delegation
+            .next()
+            .ok_or_else(|| CompileError::InvalidBinding {
+                agent: config.id.clone(),
+                axis: "multiagent",
+                reason: "the tool catalog provides no Agent-delegation capability".into(),
+            })?;
+        if delegation.next().is_some() {
+            return Err(CompileError::InvalidBinding {
+                agent: config.id.clone(),
+                axis: "multiagent",
+                reason: "the tool catalog provides more than one Agent-delegation capability"
+                    .into(),
+            });
+        }
+        if seen.insert(descriptor.id.clone()) {
+            descriptors.push(descriptor.clone());
+        }
+    } else {
+        descriptors.retain(|tool| tool.kind != ToolKind::AgentDelegation);
     }
 
     // Execution recovery is keyed by canonical identity and is resolved into the
@@ -287,13 +321,8 @@ fn compile_with_models(
             .map_err(|error| CompileError::InvalidResolution(error.to_string()))?;
     }
 
-    // Normalize the flexible Managed-Agents integration unions into the small
-    // published runtime contract. This is intentionally stamped even when empty:
-    // an empty selection means this Agent gets no global skills, while an older
-    // publication without the section retains the legacy global catalog behavior.
-    let mut plugin_config = config.plugin_config.clone();
-    bindings.insert_into(&mut plugin_config);
-
+    // Compile authoring integrations into the typed runtime contract. Empty
+    // bindings are explicit capability absence.
     let fingerprint = fingerprint_of(config, &descriptors, &metadata, &model, &candidates)?;
     Ok(ExecutableAgentSnapshot::builder(&config.id)
         .instructions(config.instructions.clone())
@@ -303,7 +332,8 @@ fn compile_with_models(
         .delegation_limits(config.delegation_limits)
         .tools(descriptors)
         .plugins(config.plugin_ids.clone())
-        .plugin_config(plugin_config)
+        .plugin_config(config.plugin_config.clone())
+        .agent_bindings(bindings)
         .context_policy(config.context_policy.clone())
         .tool_presentation(presentation)
         .fingerprint(fingerprint)
@@ -397,7 +427,14 @@ fn normalize_agent_bindings(config: &AgentConfig) -> Result<AgentBindings, Compi
         delegate_ids: config
             .multiagent
             .as_ref()
-            .map(|multiagent| multiagent.agent_ids.clone())
+            .map(|multiagent| {
+                multiagent
+                    .agent_ids
+                    .iter()
+                    .cloned()
+                    .map(awaken_runtime_contract::snapshot::AgentId)
+                    .collect()
+            })
             .unwrap_or_default(),
     })
 }
@@ -1041,12 +1078,20 @@ mod tests {
         cfg.multiagent = Some(crate::config::MultiagentConfig {
             agent_ids: vec!["researcher".into(), "reviewer".into()],
         });
-        let snapshot = compile(&cfg, &[]).expect("valid integrations compile");
-        let bindings = AgentBindings::from_config(&snapshot.resolved_spec.plugin_config)
-            .expect("new publications always carry the binding section");
+        let delegation = tool("agent_run")
+            .with_kind(awaken_runtime_contract::resolved::ToolKind::AgentDelegation);
+        let snapshot = compile(&cfg, &[delegation]).expect("valid integrations compile");
+        let bindings = &snapshot.resolved_spec.plugin_config.agent;
         assert_eq!(bindings.mcp_servers[0].name, "docs");
         assert_eq!(bindings.skill_ids, vec!["skill_docs", "skill_release"]);
-        assert_eq!(bindings.delegate_ids, vec!["researcher", "reviewer"]);
+        assert_eq!(
+            bindings
+                .delegate_ids
+                .iter()
+                .map(|id| id.0.as_str())
+                .collect::<Vec<_>>(),
+            vec!["researcher", "reviewer"]
+        );
     }
 
     #[test]
