@@ -2,6 +2,10 @@
 // used-by lists, sparklines, stat cards, a JSON inspector, empty states, skeletons.
 
 import { useState, type ReactNode } from "react";
+import {
+  EmptyState as SharedEmptyState,
+  Skeleton as SharedSkeleton,
+} from "@awaken/ui";
 import { useApp } from "../../lib/app-state";
 import type { SessionUsage } from "../../lib/api/types";
 
@@ -149,17 +153,18 @@ export function JsonInspector({ value, collapsed = false }: { value: unknown; co
 // ---- empty state ----
 export function EmptyState({ title, hint, action }: { title: string; hint?: string; action?: ReactNode }) {
   return (
-    <div className="empty-state">
-      <div className="empty-title">{title}</div>
-      {hint && <div className="mut">{hint}</div>}
-      {action && <div style={{ marginTop: 8 }}>{action}</div>}
-    </div>
+    <SharedEmptyState
+      className="empty-state"
+      title={<span className="empty-title">{title}</span>}
+      body={hint ? <span className="mut">{hint}</span> : undefined}
+      actions={action}
+    />
   );
 }
 
 // ---- skeletons ----
 export function Skeleton({ width = "100%", height = 12 }: { width?: number | string; height?: number }) {
-  return <span className="skeleton" style={{ width, height, display: "inline-block" }} />;
+  return <SharedSkeleton className="skeleton" width={width} height={height} />;
 }
 export function SkeletonRows({ rows = 4, cols = 4 }: { rows?: number; cols?: number }) {
   return (

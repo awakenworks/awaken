@@ -1,11 +1,8 @@
-// Centered overlay dialog. The counterpart to Drawer (right slide-over): use
-// Modal for focused, transient interactions (a live model Test, a restore
-// preview, a confirm). Click-outside and the ✕ dismiss; an optional footer holds
-// the action buttons. Confirm is built on top of this.
-
+import { Dialog } from "@awaken/ui";
 import type { ReactNode } from "react";
 import { useApp } from "../../lib/app-state";
 
+/** Awaken always-open API adapter over the shared focus-managed dialog. */
 export default function Modal({
   title,
   onClose,
@@ -13,38 +10,26 @@ export default function Modal({
   footer,
   width,
 }: {
-  title: ReactNode;
-  onClose: () => void;
-  children: ReactNode;
-  footer?: ReactNode;
-  width?: string;
+  readonly title: ReactNode;
+  readonly onClose: () => void;
+  readonly children: ReactNode;
+  readonly footer?: ReactNode;
+  readonly width?: string;
 }) {
   const app = useApp();
   return (
-    <div className="overlay" onClick={onClose}>
-      <div
-        className="modal"
-        style={{ width: width ?? "min(560px, 92vw)" }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-          <h3 style={{ margin: 0 }}>{title}</h3>
-          <button
-            className="btn ghost"
-            style={{ height: 24 }}
-            onClick={onClose}
-            aria-label={app.t("Close", "关闭")}
-          >
-            ✕
-          </button>
-        </div>
-        {children}
-        {footer && (
-          <div className="row" style={{ justifyContent: "flex-end" }}>
-            {footer}
-          </div>
-        )}
-      </div>
-    </div>
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
+      title={title}
+      closeLabel={app.t("Close", "关闭")}
+      footer={footer}
+      className="modal"
+      style={{ width: width ?? "min(560px, 92vw)" }}
+    >
+      {children}
+    </Dialog>
   );
 }
