@@ -333,7 +333,7 @@ impl WorkerLifecycle {
 /// Requires `AWAKEN_INGRESS=durable` (the pool's enable gate); the injected remote
 /// store routes the drain over HTTP instead of a local queue.
 pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error>> {
-    run_with_standard_environment(WorkerUpstream::new(upstream), None).await
+    run_with_standard_environment(WorkerUpstream::new(upstream), Default::default(), None).await
 }
 
 /// Run the standard database-less Worker with one registered application
@@ -344,13 +344,15 @@ pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error>> {
 /// wrapper.
 pub async fn run_with_application_decorator(
     upstream: WorkerUpstream,
+    application_capabilities: std::collections::BTreeSet<String>,
     factory: RegisteredDecoratorFactory,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    run_with_standard_environment(upstream, Some(factory)).await
+    run_with_standard_environment(upstream, application_capabilities, Some(factory)).await
 }
 
 async fn run_with_standard_environment(
     upstream: WorkerUpstream,
+    application_capabilities: std::collections::BTreeSet<String>,
     application: Option<RegisteredDecoratorFactory>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let stores = awaken_control::open_inference_materialization_stores_from_env().await;
@@ -367,6 +369,7 @@ async fn run_with_standard_environment(
         resources
             .as_ref()
             .is_some_and(WorkerResourcePlane::supports_repository_credentials),
+        application_capabilities,
     );
     run_configured_worker(
         upstream,
@@ -403,7 +406,13 @@ pub async fn run_with_upstream_and_inference_materializer(
     upstream: WorkerUpstream,
     materializer: Arc<dyn InferenceExecutorMaterializer>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    run_with_upstream_application_and_inference_materializer(upstream, materializer, None).await
+    run_with_upstream_application_and_inference_materializer(
+        upstream,
+        materializer,
+        Default::default(),
+        None,
+    )
+    .await
 }
 
 /// Run a caller-materialized Worker with an optional registered application
@@ -412,10 +421,16 @@ pub async fn run_with_upstream_and_inference_materializer(
 pub async fn run_with_upstream_application_and_inference_materializer(
     upstream: WorkerUpstream,
     materializer: Arc<dyn InferenceExecutorMaterializer>,
+    application_capabilities: std::collections::BTreeSet<String>,
     application: Option<RegisteredDecoratorFactory>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let resources = shared_resource_wiring(None).await?;
-    let manifest = worker_manifest(Some(materializer.as_ref()), resources.is_some(), false);
+    let manifest = worker_manifest(
+        Some(materializer.as_ref()),
+        resources.is_some(),
+        false,
+        application_capabilities,
+    );
     run_configured_worker(
         upstream,
         manifest,
@@ -694,6 +709,7 @@ fn worker_manifest(
     materializer: Option<&dyn InferenceExecutorMaterializer>,
     resource_support: bool,
     repository_credential_support: bool,
+    application_capabilities: std::collections::BTreeSet<String>,
 ) -> WorkerManifest {
     use awaken_provisioning_contract::{IsolationClass, SandboxCapabilities};
     let tier = std::env::var("AWAKEN_SANDBOX_TIER").unwrap_or_else(|_| "namespace".to_string());
@@ -740,6 +756,7 @@ fn worker_manifest(
             capabilities.insert(REPOSITORY_CREDENTIALS_CAPABILITY.to_string());
         }
     }
+    capabilities.extend(application_capabilities);
     if let Some(cli) = std::env::var("AWAKEN_ACP_CLI")
         .ok()
         .filter(|value| !value.trim().is_empty())
@@ -894,7 +911,7 @@ mod grace_tests {
     #[test]
     fn worker_manifest_derives_materialization_capabilities_from_the_adapter() {
         let materializer = SchemeMaterializer;
-        let manifest = worker_manifest(Some(&materializer), false, false);
+        let manifest = worker_manifest(Some(&materializer), false, false, Default::default());
 
         assert!(manifest.capabilities.contains("native-runtime"));
         assert!(manifest.capabilities.contains("test-access/v1"));
@@ -909,7 +926,7 @@ mod grace_tests {
 
     #[test]
     fn worker_manifest_advertises_only_installed_resource_seams() {
-        let without = worker_manifest(None, false, false);
+        let without = worker_manifest(None, false, false, Default::default());
         assert!(
             !without
                 .capabilities
@@ -921,7 +938,7 @@ mod grace_tests {
                 .contains(super::REPOSITORY_CREDENTIALS_CAPABILITY)
         );
 
-        let secretless = worker_manifest(None, true, false);
+        let secretless = worker_manifest(None, true, false, Default::default());
         assert!(
             secretless
                 .capabilities
@@ -933,12 +950,32 @@ mod grace_tests {
                 .contains(super::REPOSITORY_CREDENTIALS_CAPABILITY)
         );
 
-        let credentialed = worker_manifest(None, true, true);
+        let credentialed = worker_manifest(None, true, true, Default::default());
         assert!(
             credentialed
                 .capabilities
                 .contains(super::REPOSITORY_CREDENTIALS_CAPABILITY)
         );
+    }
+
+    #[test]
+    fn worker_manifest_includes_explicit_application_capabilities() {
+        let manifest = worker_manifest(
+            None,
+            false,
+            false,
+            std::collections::BTreeSet::from([
+                "application:flow-envelope/v1".to_string(),
+                "application:flow-tools/v1".to_string(),
+            ]),
+        );
+
+        assert!(
+            manifest
+                .capabilities
+                .contains("application:flow-envelope/v1")
+        );
+        assert!(manifest.capabilities.contains("application:flow-tools/v1"));
     }
 
     #[test]
