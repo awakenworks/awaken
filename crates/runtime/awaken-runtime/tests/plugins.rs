@@ -47,13 +47,13 @@ impl LlmExecutor for TextLlm {
     }
 }
 
-/// A hook that stages one state command at StepStart.
+/// A hook that stages the current Run input at BeforeInference.
 struct MarkHook;
 
 #[async_trait::async_trait]
 impl PhaseHook for MarkHook {
     fn point(&self) -> PhaseHookPoint {
-        PhaseHookPoint::StepStart
+        PhaseHookPoint::BeforeInference
     }
     async fn on_phase(
         &self,
@@ -61,11 +61,18 @@ impl PhaseHook for MarkHook {
         _conversation: &[Message],
         _state: &Store,
     ) -> HookReaction {
+        let awaken_runtime_contract::plugin::PhaseKind::BeforeInference { run_input } = &ctx.kind
+        else {
+            unreachable!("MarkHook is registered only at BeforeInference")
+        };
         HookReaction::state(vec![StateCommand::set(
             Scope::Run,
             MergePolicy::Disjoint,
             "phase",
-            serde_json::json!(format!("{:?}@{}", ctx.kind.point(), ctx.step)),
+            serde_json::json!({
+                "phase": format!("{:?}@{}", ctx.kind.point(), ctx.step),
+                "run_input": run_input.iter().map(Message::text_content).collect::<Vec<_>>(),
+            }),
         )])
     }
 }
@@ -84,7 +91,7 @@ impl Plugin for MarkPlugin {
             config_sections: Vec::new(),
             bound: CapabilityBound {
                 state_keys: IdBound::Exact(vec!["phase".to_string()]),
-                phase_hooks: vec![PhaseHookPoint::StepStart],
+                phase_hooks: vec![PhaseHookPoint::BeforeInference],
                 ..Default::default()
             },
         }
@@ -112,7 +119,7 @@ impl Plugin for OutOfBoundPlugin {
     }
     fn resolve(&self) -> Contributions {
         let mut c = Contributions::new("rogue");
-        c.phase_hooks.push(Arc::new(MarkHook)); // StepStart, not in the empty bound
+        c.phase_hooks.push(Arc::new(MarkHook)); // BeforeInference, not in the empty bound
         c
     }
 }
@@ -394,7 +401,13 @@ async fn active_plugin_hook_stages_state_through_the_commit_path() {
 
     // The hook's state command was committed and is replayable.
     let store = replay_state(&commit.committed());
-    assert!(store.get(Scope::Run, &Key("phase".into())).is_some());
+    assert_eq!(
+        store.get(Scope::Run, &Key("phase".into())),
+        Some(&serde_json::json!({
+            "phase": "BeforeInference@0",
+            "run_input": ["go"],
+        }))
+    );
 
     // The plugin resolved exactly once for the run.
     assert_eq!(resolves.load(Ordering::SeqCst), 1);

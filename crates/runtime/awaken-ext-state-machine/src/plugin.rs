@@ -492,7 +492,7 @@ impl PhaseHook for StateMachineEventObserver {
     ) -> HookReaction {
         let event_name = match ctx.kind {
             PhaseKind::StepStart => "step.started",
-            PhaseKind::BeforeInference => "step.before_inference",
+            PhaseKind::BeforeInference { .. } => "step.before_inference",
             PhaseKind::AfterInference => "step.after_inference",
             PhaseKind::StepEnd => "step.ended",
             PhaseKind::AfterTool(_) => return HookReaction::default(),

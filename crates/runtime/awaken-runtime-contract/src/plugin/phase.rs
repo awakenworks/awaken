@@ -3,6 +3,7 @@
 //! request-only injection key, and the `PhaseHook` trait itself.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::Message;
@@ -38,13 +39,18 @@ pub struct AfterToolContext {
 }
 
 /// Which phase a hook is being invoked at, carrying exactly the data valid at that
-/// phase. Only [`PhaseKind::AfterTool`] carries a call/output, so a StepStart hook
-/// cannot be handed a tool result — the illegal combination is unrepresentable
-/// (ADR-0055), replacing the former `point` + `Option<after_tool>` pair.
+/// phase. [`PhaseKind::BeforeInference`] alone carries the activating Run-input
+/// window and [`PhaseKind::AfterTool`] alone carries a call/output, so a StepStart
+/// hook cannot be handed either — illegal combinations are unrepresentable
+/// (ADR-0055), replacing the former `point` plus optional side data.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PhaseKind {
     StepStart,
-    BeforeInference,
+    BeforeInference {
+        /// The immutable input window that activated this Run. It is deliberately
+        /// separate from the accumulated Thread conversation.
+        run_input: Arc<[Message]>,
+    },
     AfterInference,
     AfterTool(AfterToolContext),
     StepEnd,
@@ -57,7 +63,7 @@ impl PhaseKind {
     pub fn point(&self) -> PhaseHookPoint {
         match self {
             PhaseKind::StepStart => PhaseHookPoint::StepStart,
-            PhaseKind::BeforeInference => PhaseHookPoint::BeforeInference,
+            PhaseKind::BeforeInference { .. } => PhaseHookPoint::BeforeInference,
             PhaseKind::AfterInference => PhaseHookPoint::AfterInference,
             PhaseKind::AfterTool(_) => PhaseHookPoint::AfterTool,
             PhaseKind::StepEnd => PhaseHookPoint::StepEnd,
