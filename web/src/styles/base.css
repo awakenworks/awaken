@@ -385,6 +385,13 @@ a {
   opacity: 0.5;
   cursor: not-allowed;
 }
+.copy-btn {
+  width: auto;
+}
+.sessions-base-url-copy {
+  height: 22px;
+  margin-left: 6px;
+}
 
 .input,
 select.input,

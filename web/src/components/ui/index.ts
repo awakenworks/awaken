@@ -4,6 +4,7 @@
 
 export { cx, type Tone, type ClassValue } from "./cx";
 export { Button, type ButtonProps, type ButtonVariant } from "./Button";
+export { CopyButton, type CopyButtonProps } from "./CopyButton";
 export { Card, CardHeader, CardBody } from "./Card";
 export { Pill, Badge } from "./Pill";
 export { TextField, TextAreaField, SelectField } from "./Field";

@@ -7,7 +7,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import Drawer from "../components/ui/Drawer";
-import { Button, Card, Modal, Pill, Segmented, TextField } from "../components/ui";
+import { Button, Card, CopyButton, Modal, Pill, Segmented, TextField } from "../components/ui";
 import { api, getWorkspace, ws } from "../lib/api/client";
 import type {
   AgentConfigList,
@@ -229,17 +229,14 @@ export default function SessionsSurface() {
           />
           <span className="mut">
             baseURL <code>{getWorkspace() ? `/v1/workspaces/${getWorkspace()}` : "/ (default scope)"}</code>
-            <Button
-              variant="ghost"
-              style={{ height: 22, marginLeft: 6 }}
-              onClick={() =>
-                navigator.clipboard.writeText(
-                  getWorkspace() ? `${location.origin}/v1/workspaces/${getWorkspace()}` : location.origin,
-                )
+            <CopyButton
+              value={
+                getWorkspace()
+                  ? `${location.origin}/v1/workspaces/${getWorkspace()}`
+                  : location.origin
               }
-            >
-              copy
-            </Button>
+              className="sessions-base-url-copy"
+            />
           </span>
         </span>
         <Button variant="primary" onClick={() => setCreating(true)}>
