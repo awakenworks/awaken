@@ -170,6 +170,13 @@ production logic.
   lease expiry and retry. It checks that durable state remains secret-free,
   bindings and authority never widen, unavailable credentials cannot execute,
   secret materialization is claim-fenced, and stale claims cannot publish output.
+- `RemoteWorkerProtocol.tla` composes Worker incarnation and drain state,
+  dispatch claim/renew/expiry/reclaim, claim-authorized recovery snapshots,
+  execution admission, coordinator-owned optimistic commits, durable operation
+  receipts, response loss/retry, Worker-local projection advancement, pending
+  input/cancellation consumption, and settlement. It checks the P0 protocol
+  invariants across the old-Worker/new-Worker overlap that the component models
+  intentionally do not compose.
 
 `RuntimeVocabulary.tla` is the shared closed vocabulary, preventing component
 models from inventing incompatible aliases for the same lifecycle state.
@@ -250,6 +257,7 @@ graphs with zero invariant violations and zero states left on the queue:
 | SkillVersionPin | 747 | 184 | 8 |
 | McpServer | 15 | 15 | 6 |
 | WorkerReplacement | 452,881 | 98,160 | 16 |
+| RemoteWorkerProtocol | 2,155,183 | 258,524 | 30 |
 
 These are bounded exhaustive checks, not unbounded liveness proofs. The bounds
 are explicit in the corresponding `.cfg` files.
@@ -325,7 +333,7 @@ TLAPS, Java, or `tla2tools.jar` fails instead of producing a false green.
 `formal/coverage.json` is the versioned obligation ledger. The CI gate verifies
 that every evidence path exists and that at least 70% of formalizable safety
 obligations have a machine-checked production link. The current ledger is
-133/133, or 100%. Environmental properties are listed separately and never
+164/164, or 100%. Environmental properties are listed separately and never
 silently omitted or mislabeled as machine-linked merely to raise the percentage.
 
 ## Loom concurrency exploration
@@ -342,9 +350,12 @@ than in-process lock algorithms.
 
 The executable bridge machine-checks the covered real async executions, but is
 not a compiler theorem that every possible Rust scheduler, adapter, network, or
-database execution refines the TLA+ model. The current proof also does not
-establish liveness, fairness, eventual network recovery, eventual external
-input, or eventual tool-result arrival. External tool side effects, remote
+database execution refines the TLA+ model. `RemoteWorkerProtocol` checks bounded
+progress only while the corresponding claim, snapshot, commit, settle, or
+quiesce action remains enabled under its explicit weak-fairness assumptions.
+The current proof does not establish unbounded liveness, eventual network
+recovery, eventual Worker availability, eventual external input, or eventual
+tool-result arrival. External tool side effects, remote
 protocol implementations, database engines, provider-side key-revocation
 propagation, container/kernel and Kubernetes isolation, performance/long-run
 stability, external telemetry delivery and retention, and unbounded state spaces

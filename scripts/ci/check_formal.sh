@@ -263,6 +263,10 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/worker-replacement" \
     -config formal/tla/WorkerReplacement.cfg formal/tla/WorkerReplacement.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -workers auto \
+    -metadir "$tlc_state_root/remote-worker-protocol" \
+    -config formal/tla/RemoteWorkerProtocol.cfg formal/tla/RemoteWorkerProtocol.tla
   for trace_config in "$rendered_trace_dir"/RustTrace*.cfg; do
     trace_module="${trace_config%.cfg}.tla"
     trace_name="$(basename "$trace_module" .tla)"

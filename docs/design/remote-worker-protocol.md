@@ -662,14 +662,14 @@ This protocol has interacting lease, crash, retry, CAS, and projection states;
 bounded formal verification is justified. It complements rather than replaces
 database and HTTP failure-injection tests.
 
-Add a small `RemoteWorkerProtocol.tla` model with:
+`RemoteWorkerProtocol.tla` composes the protocol with:
 
 - variables for Worker incarnation/state, dispatch owner/epoch/lease/status,
   committed thread version/Run state/receipt map, Worker projection version, and
   pending input/cancellation;
 - actions for Register, Heartbeat, Claim, Snapshot, Execute, CommitRequest,
-  CommitApply, ResponseLost, Retry, Renew, Expire, Reclaim, Settle, Abandon, and
-  Drain.
+  CommitApply, ResponseLost, Retry, Renew, Expire, Reclaim, Settle, Abandon,
+  Drain, Quiesce, input delivery, and cancellation request.
 
 Safety properties:
 
@@ -701,6 +701,22 @@ Executable evidence includes:
 
 TLC results must state finite bounds and cannot be described as an unbounded
 liveness proof.
+
+Implementation evidence as of 2026-07-23:
+
+- TLC exhaustively checked two Workers, two lease epochs, two logical commit
+  operations, two payload hashes, two committed versions, and one incarnation
+  per Worker.
+- The complete graph generated 2,155,183 states, found 258,524 distinct states,
+  reached depth 30, and left zero states on the queue with no invariant or
+  temporal-property violation.
+- The checked progress properties are conditional: weak fairness applies only
+  while claim, snapshot, commit application, settlement, or quiescence remains
+  enabled. Network recovery, Worker availability, and external input remain
+  environmental assumptions; this is not an unbounded liveness proof.
+- `formal/coverage.json` links all nine protocol safety obligations to the TLA+
+  model and the production claim fence, commit ingest, operation receipt,
+  recovery projection, and Worker execution-admission code.
 
 ## 10. Remote Worker Component Catalog
 
