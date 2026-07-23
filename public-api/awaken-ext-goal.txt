@@ -128,6 +128,8 @@ pub awaken_ext_goal::outcome::GradingInput::message_start: usize
 pub awaken_ext_goal::outcome::GradingInput::outcome_id: awaken_ext_goal::outcome::Id
 pub awaken_ext_goal::outcome::GradingInput::rubric: awaken_ext_goal::outcome::Rubric
 pub awaken_ext_goal::outcome::GradingInput::transcript: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
+pub awaken_ext_goal::outcome::GradingInput::transcript_ranges: alloc::vec::Vec<awaken_agent_contract::thread::read::transcript::TranscriptRange>
+pub awaken_ext_goal::outcome::GradingInput::transcript_snapshot: awaken_agent_contract::thread::read::transcript::TranscriptSnapshotRef
 pub awaken_ext_goal::outcome::GradingInput::worker_state: serde_json::value::Value
 pub struct awaken_ext_goal::outcome::Id(pub alloc::string::String)
 pub struct awaken_ext_goal::outcome::Rubric(pub alloc::string::String)

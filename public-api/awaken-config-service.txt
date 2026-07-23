@@ -51,7 +51,6 @@ impl awaken_config_service::ConfigService
 pub fn awaken_config_service::ConfigService::agent_unavailable_in(&self, &str, &str) -> bool
 pub fn awaken_config_service::ConfigService::agents_referencing_input(&self, &str, &awaken_resource_contract::input::InputResourceId) -> alloc::vec::Vec<alloc::string::String>
 pub fn awaken_config_service::ConfigService::agents_referencing_skill(&self, &str, &str) -> alloc::vec::Vec<alloc::string::String>
-pub fn awaken_config_service::ConfigService::delegate_ids_in(&self, &str, &str) -> core::option::Option<alloc::vec::Vec<alloc::string::String>>
 pub async fn awaken_config_service::ConfigService::get(&self, &dyn awaken_config_store::store::ConfigRegistry, &str) -> core::result::Result<core::option::Option<awaken_config_store::config::AgentConfig>, alloc::string::String>
 pub async fn awaken_config_service::ConfigService::get_versioned(&self, &dyn awaken_config_store::store::ConfigRegistry, &str) -> core::result::Result<core::option::Option<awaken_config_store::store::AgentConfigRevision>, alloc::string::String>
 pub fn awaken_config_service::ConfigService::installed_in(&self, &str, &str) -> core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>
@@ -69,6 +68,9 @@ pub async fn awaken_config_service::ConfigService::warm_install_for_execution_wo
 impl awaken_config_service::ConfigService
 pub fn awaken_config_service::ConfigService::with_credential_reference_validator(self, alloc::sync::Arc<dyn awaken_config_service::CredentialReferenceValidator>) -> Self
 pub fn awaken_config_service::ConfigService::with_resources(self, alloc::sync::Arc<dyn awaken_config_resolver::stores::AgentInputBindingRepository>) -> Self
+impl awaken_runtime_contract::resolver::PublishedAgentSnapshotSource for awaken_config_service::ConfigService
+pub fn awaken_config_service::ConfigService::current(&self, &str, &awaken_runtime_contract::snapshot::AgentId) -> core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>
+pub fn awaken_config_service::ConfigService::exact(&self, &str, &awaken_runtime_contract::resolved::CatalogFingerprint) -> core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>
 pub struct awaken_config_service::ConfigServiceAgentSource(pub alloc::sync::Arc<awaken_config_service::ConfigService>)
 impl awaken_session_contract::agent_config::AgentConfigSource for awaken_config_service::ConfigServiceAgentSource
 pub fn awaken_config_service::ConfigServiceAgentSource::agent_unavailable_in(&self, &str, &str) -> bool
