@@ -4,45 +4,47 @@
 //! and prompts, and the recall-symmetric [`CompactPlugin`] that injects the summary
 //! as request-only context — lives in `awaken-ext-compact` (a bounded context).
 //! This module wires that onto the host's aux-agent substrate: [`compact_runner`]
-//! builds an ordinary Agent-backed tool over the `compactor` Agent,
-//! also used by memory selection). The plugin seeds it with the older slice at
-//! `BeforeInference` (once per run, cached), the same shape as memory's
-//! [`AgentSelector`](crate::memory::AgentSelector).
+//! builds an ordinary stable Agent-backed tool and [`compact_backend`] schedules
+//! soft-threshold prefetch while joining the same Run at the hard threshold.
 //!
 //! Compaction is non-destructive: the committed transcript is never rewritten (G13).
-//! The summary is injected request-only and the raw older turns drop from the model
-//! view via a [`ContextPolicy::KeepLast`](awaken_runtime_contract::resolved::ContextPolicy)
-//! on the main agent. Summarize + truncate together bound the window without erasing
-//! durable truth.
+//! The summary is injected request-only and activates a Run-scoped request window;
+//! no raw turn is hidden before the summary covers it. Durable truth is never erased.
 
-use std::sync::Arc;
+use std::collections::BTreeMap;
 use std::sync::atomic::AtomicU64;
+use std::sync::{Arc, Mutex};
 
+use async_trait::async_trait;
+use awaken_ext_builtin_tools::{AgentRunArgs, invoke_agent_tool};
+use awaken_ext_compact::{COMPACT_AGENT_ID, CompactArtifact, CompactBackend, CompactRequest};
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::tool::RawTool;
 use awaken_sandbox_local::LocalProvider;
 
 use crate::agent_catalog::AgentCatalog;
+use crate::background::BackgroundRuns;
 use crate::judge::AuxAgentTool;
+use crate::store::HostCommit;
 
 // The config pieces the host wires (registering the default compactor agent).
 pub use awaken_ext_compact::{DEFAULT_COMPACT_INSTRUCTIONS, default_compact_agent};
 
-/// A host's enabled compaction: the resolved config plus the `compactor` sub-agent
-/// runner that applies it. Sealed as one type so the pair is present-or-absent
-/// atomically — `SharedHost` holds a single `Option<Compaction>`, replacing the two
-/// separate `Option`s whose tuple-match had to fold three impossible mixes
-/// (`config` without `runner`, and the reverse) into one catch-all arm.
+/// A host's enabled compaction policy. Session construction binds its execution
+/// backend to that Session's commit/history boundary.
 pub(crate) struct Compaction {
     pub(crate) config: awaken_ext_compact::CompactConfig,
-    pub(crate) agent_tool: Arc<dyn RawTool>,
 }
 
 /// An ordinary tool whose catalog holds the `compactor` Agent.
 /// (ADR-0047 D5). The compaction plugin builds the seed (older slice + summarize
 /// prompt); this runs the named agent to completion, the read-side counterpart of
 /// memory's `AgentSelector`.
-pub(crate) fn compact_runner(llm: Arc<dyn LlmExecutor>, model_ref: &str) -> Arc<dyn RawTool> {
+pub(crate) fn compact_runner(
+    llm: Arc<dyn LlmExecutor>,
+    model_ref: &str,
+    commit: Arc<HostCommit>,
+) -> Arc<dyn RawTool> {
     let catalog = Arc::new(AgentCatalog::new().with_agent(default_compact_agent(
         model_ref,
         DEFAULT_COMPACT_INSTRUCTIONS,
@@ -55,6 +57,104 @@ pub(crate) fn compact_runner(llm: Arc<dyn LlmExecutor>, model_ref: &str) -> Arc<
         provider: LocalProvider::new(base),
         catalog,
         seq: AtomicU64::new(0),
+        execution: Some(commit),
+    })
+}
+
+type ArtifactCell = Arc<tokio::sync::OnceCell<Option<CompactArtifact>>>;
+
+/// Per-Session asynchronous compaction backend. The index is an optimization;
+/// each cell resolves through a stable ordinary Agent Run.
+struct HostCompactBackend {
+    agent_tool: Arc<dyn RawTool>,
+    background: Arc<BackgroundRuns>,
+    cells: Mutex<BTreeMap<String, ArtifactCell>>,
+}
+
+impl HostCompactBackend {
+    fn cell(&self, key: &str) -> ArtifactCell {
+        self.cells
+            .lock()
+            .expect("compact cache lock poisoned")
+            .entry(key.to_string())
+            .or_default()
+            .clone()
+    }
+
+    async fn execute(
+        agent_tool: Arc<dyn RawTool>,
+        request: CompactRequest,
+    ) -> Option<CompactArtifact> {
+        let reply = invoke_agent_tool(
+            agent_tool.as_ref(),
+            &request.key,
+            AgentRunArgs {
+                agent_id: COMPACT_AGENT_ID.to_string(),
+                seed: request.seed,
+            },
+            None,
+        )
+        .await
+        .ok()?;
+        let summary = reply.content;
+        if summary.trim().is_empty() {
+            return None;
+        }
+        Some(CompactArtifact {
+            scope: request.scope,
+            key: request.key,
+            covered_messages: request.covered_messages,
+            summary,
+        })
+    }
+}
+
+#[async_trait]
+impl CompactBackend for HostCompactBackend {
+    async fn prefetch(&self, request: CompactRequest) {
+        let cell = self.cell(&request.key);
+        if cell.get().is_some() {
+            return;
+        }
+        let agent_tool = self.agent_tool.clone();
+        self.background
+            .spawn(async move {
+                let _ = cell
+                    .get_or_init(|| Self::execute(agent_tool, request))
+                    .await;
+            })
+            .await;
+    }
+
+    async fn latest_ready(&self, scope: &str, at_most_messages: usize) -> Option<CompactArtifact> {
+        self.cells
+            .lock()
+            .expect("compact cache lock poisoned")
+            .values()
+            .filter_map(|cell| cell.get().cloned().flatten())
+            .filter(|artifact| {
+                artifact.scope == scope && artifact.covered_messages <= at_most_messages
+            })
+            .max_by_key(|artifact| artifact.covered_messages)
+    }
+
+    async fn summarize(&self, request: CompactRequest) -> Option<CompactArtifact> {
+        let cell = self.cell(&request.key);
+        let agent_tool = self.agent_tool.clone();
+        cell.get_or_init(|| Self::execute(agent_tool, request))
+            .await
+            .clone()
+    }
+}
+
+pub(crate) fn compact_backend(
+    agent_tool: Arc<dyn RawTool>,
+    background: Arc<BackgroundRuns>,
+) -> Arc<dyn CompactBackend> {
+    Arc::new(HostCompactBackend {
+        agent_tool,
+        background,
+        cells: Mutex::new(BTreeMap::new()),
     })
 }
 
@@ -64,19 +164,18 @@ mod tests {
     use async_trait::async_trait;
     use awaken_agent_contract::agent::content::ContentBlock;
     use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-    use awaken_ext_builtin_tools::{AgentRunArgs, invoke_agent_tool};
-    use awaken_ext_compact::COMPACT_AGENT_ID;
     use awaken_runtime_contract::llm::{
         AssistantOutput, ChatRequest, ChatResponse, Result as LlmResult,
     };
 
     /// A stub compactor: replies with a fixed summary that names how many messages
     /// it was asked to fold (proving it received the seed the plugin built).
-    struct SummaryModel;
+    struct SummaryModel(AtomicU64);
 
     #[async_trait]
     impl LlmExecutor for SummaryModel {
         async fn infer(&self, request: ChatRequest) -> LlmResult<ChatResponse> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let user_msgs = request
                 .messages
                 .iter()
@@ -84,6 +183,26 @@ mod tests {
                 .count();
             Ok(ChatResponse {
                 output: AssistantOutput::text(format!("summary of {user_msgs} messages")),
+                usage: None,
+                stop_reason: None,
+            })
+        }
+    }
+
+    struct GatedSummaryModel {
+        calls: AtomicU64,
+        started: Arc<tokio::sync::Semaphore>,
+        release: Arc<tokio::sync::Semaphore>,
+    }
+
+    #[async_trait]
+    impl LlmExecutor for GatedSummaryModel {
+        async fn infer(&self, _request: ChatRequest) -> LlmResult<ChatResponse> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.started.add_permits(1);
+            self.release.acquire().await.unwrap().forget();
+            Ok(ChatResponse {
+                output: AssistantOutput::text("background summary"),
                 usage: None,
                 stop_reason: None,
             })
@@ -99,22 +218,84 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn compact_runner_runs_the_compactor_on_its_seed() {
-        let runner = compact_runner(Arc::new(SummaryModel), "stub");
+    async fn compact_runner_recovers_the_stable_compactor_run_without_reinference() {
+        let model = Arc::new(SummaryModel(AtomicU64::new(0)));
+        let runner = compact_runner(
+            model.clone(),
+            "stub",
+            Arc::new(HostCommit::Local(Arc::new(
+                awaken_runtime::memory::MemoryCommitCoordinator::new(),
+            ))),
+        );
         // The plugin builds the seed (older slice + summarize prompt); here that is
         // 5 user messages.
         let seed: Vec<Message> = (0..5).map(user).collect();
-        let reply = invoke_agent_tool(
-            runner.as_ref(),
-            "compact-test",
-            AgentRunArgs {
-                agent_id: COMPACT_AGENT_ID.to_string(),
-                seed,
-            },
-            None,
-        )
-        .await
-        .unwrap();
-        assert_eq!(reply.content, "summary of 5 messages");
+        for seed in [seed, vec![user(99)]] {
+            let reply = invoke_agent_tool(
+                runner.as_ref(),
+                "compact-test",
+                AgentRunArgs {
+                    agent_id: COMPACT_AGENT_ID.to_string(),
+                    seed,
+                },
+                None,
+            )
+            .await
+            .unwrap();
+            assert_eq!(reply.content, "summary of 5 messages");
+        }
+        assert_eq!(model.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn prefetch_returns_before_inference_and_hard_resolution_joins_it() {
+        let started = Arc::new(tokio::sync::Semaphore::new(0));
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let model = Arc::new(GatedSummaryModel {
+            calls: AtomicU64::new(0),
+            started: started.clone(),
+            release: release.clone(),
+        });
+        let runner = compact_runner(
+            model.clone(),
+            "stub",
+            Arc::new(HostCommit::Local(Arc::new(
+                awaken_runtime::memory::MemoryCommitCoordinator::new(),
+            ))),
+        );
+        let background = Arc::new(BackgroundRuns::new());
+        let backend = compact_backend(runner, background.clone());
+        let request = CompactRequest {
+            scope: "thread-a".into(),
+            key: "stable-prefetch".into(),
+            covered_messages: 1,
+            seed: vec![user(1)],
+        };
+
+        backend.prefetch(request.clone()).await;
+        tokio::time::timeout(std::time::Duration::from_secs(1), started.acquire())
+            .await
+            .expect("background inference started")
+            .unwrap()
+            .forget();
+        assert!(
+            backend.latest_ready("thread-a", 1).await.is_none(),
+            "pending prefetch is never exposed as ready"
+        );
+
+        let resolving = tokio::spawn({
+            let backend = backend.clone();
+            async move { backend.summarize(request).await }
+        });
+        tokio::task::yield_now().await;
+        release.add_permits(1);
+        let artifact = resolving.await.unwrap().unwrap();
+        assert_eq!(artifact.summary, "background summary");
+        assert_eq!(
+            model.calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "hard resolution joins the identical in-flight prefetch"
+        );
+        assert!(background.drain(std::time::Duration::from_secs(1)).await);
     }
 }

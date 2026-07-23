@@ -3,6 +3,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_ext_builtin_tools::{AGENT_RUN, AgentRunArgs};
 use awaken_ext_goal::grader::AgentGrader;
 use awaken_ext_goal::outcome::{Grade, Grader, GraderError, GradingInput};
@@ -15,6 +16,7 @@ use awaken_sandbox_local::LocalProvider;
 use crate::agent_catalog::AgentCatalog;
 use crate::host::SharedHost;
 use crate::run_exec::BoundRunExecutor;
+use crate::store::HostCommit;
 
 /// Host composition of the extension-owned Agent Grader. It resolves the fresh
 /// Grader Thread and supplies Host backend/durable context; prompt, identity,
@@ -56,6 +58,10 @@ pub(crate) struct AuxAgentTool {
     /// model/instructions/window are configured per-agent.
     pub(crate) catalog: Arc<AgentCatalog>,
     pub(crate) seq: AtomicU64,
+    /// When present, housekeeping calls use their caller-owned `call_id` as a
+    /// stable auxiliary identity and commit through the Session's ordinary Run
+    /// boundary. `None` retains the transient selector behavior.
+    pub(crate) execution: Option<Arc<HostCommit>>,
 }
 
 #[async_trait::async_trait]
@@ -72,19 +78,40 @@ impl RawTool for AuxAgentTool {
         // Every Run behind this port is out-of-band housekeeping (compaction or
         // memory selection), not the Worker Run — its usage stays isolated on
         // its own Thread rather than folding into the parent tally.
-        let (text, _usage) = crate::agent_runner::run_configured_agent(
-            &self.catalog,
-            crate::agent_runner::AgentRunSandbox::Fresh(&self.provider),
-            self.llm.clone(),
-            &request.agent_id,
-            &name,
-            request.seed,
-            Vec::new(),
-            None,
-            None,
-            None,
-        )
-        .await
+        let (text, _usage) = match &self.execution {
+            Some(commit) => {
+                let thread = format!("aux/{}", call.call_id);
+                crate::agent_runner::run_configured_agent_with_id(
+                    &self.catalog,
+                    crate::agent_runner::AgentRunSandbox::Fresh(&self.provider),
+                    self.llm.clone(),
+                    &request.agent_id,
+                    &thread,
+                    RunId(format!("{thread}/run")),
+                    request.seed,
+                    Vec::new(),
+                    RuntimeRunContext::new()
+                        .with_commit(commit.clone())
+                        .with_reader(commit.clone()),
+                )
+                .await
+            }
+            None => {
+                crate::agent_runner::run_configured_agent(
+                    &self.catalog,
+                    crate::agent_runner::AgentRunSandbox::Fresh(&self.provider),
+                    self.llm.clone(),
+                    &request.agent_id,
+                    &name,
+                    request.seed,
+                    Vec::new(),
+                    None,
+                    None,
+                    None,
+                )
+                .await
+            }
+        }
         .map_err(|error| ToolError::Execution(error.to_string()))?;
         Ok(ToolOutput::ok(call.call_id, text))
     }

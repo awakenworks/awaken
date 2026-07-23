@@ -70,6 +70,7 @@ impl AgentSelector {
                 provider: LocalProvider::new(base),
                 catalog,
                 seq: AtomicU64::new(0),
+                execution: None,
             }),
         }
     }
@@ -428,6 +429,10 @@ impl MemoryRuntime {
     /// Await every in-flight extraction started by any bound Session.
     pub async fn drain(&self, timeout: Duration) -> bool {
         self.background.drain(timeout).await
+    }
+
+    pub(crate) fn background(&self) -> Arc<BackgroundRuns> {
+        self.background.clone()
     }
 
     pub fn set_extraction_repository(&self, repository: Arc<dyn MemoryExtractionRepository>) {

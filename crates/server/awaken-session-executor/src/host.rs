@@ -54,7 +54,9 @@ use awaken_ext_compact::{CompactConfig, CompactPlugin};
 
 use crate::agent_catalog::AgentCatalog;
 use crate::background::BackgroundRuns;
-use crate::compact::compact_runner as build_compact_runner;
+use crate::compact::{
+    compact_backend as build_compact_backend, compact_runner as build_compact_runner,
+};
 use crate::config::{build_runtime, config_permission_ruleset, server_config, server_gate_with};
 use crate::delegate::HostRunDelegationService;
 use crate::hub::{ThreadEvent, ThreadEventHub};
