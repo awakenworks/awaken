@@ -169,6 +169,8 @@ pub async fn commit_then_read<S: Coordinator + CheckpointReader>(store: &S) {
 pub async fn events_ordered_and_paged<S: Coordinator + CheckpointReader>(store: &S) {
     let thread = ThreadId("conf-events".to_string());
     let run = RunId("conf-events-r".to_string());
+    let other_thread = ThreadId("conf-events-other".to_string());
+    let other_run = RunId("conf-events-other-r".to_string());
     // A run's two events come from a mid-flight `Running` step and then the
     // terminal `Ended` commit — the order a real run produces them. (Committing
     // two terminal facts for one run would trip the terminal-is-final guard, which
@@ -178,6 +180,10 @@ pub async fn events_ordered_and_paged<S: Coordinator + CheckpointReader>(store: 
         .await
         .expect("commit 1");
     store
+        .commit(running_checkpoint(&other_thread, &other_run, "interleaved"))
+        .await
+        .expect("interleaved commit");
+    store
         .commit(ended_checkpoint(&thread, &run, "two"))
         .await
         .expect("commit 2");
@@ -186,6 +192,14 @@ pub async fn events_ordered_and_paged<S: Coordinator + CheckpointReader>(store: 
     let all = store.list_events(&scope, None, 10);
     assert_eq!(all.len(), 2, "both events");
     assert!(all[0].sequence < all[1].sequence, "commit order");
+    let partition = store.list_events(&EventScope::All, None, 10);
+    assert_eq!(partition.len(), 3, "all interleaved partition events");
+    assert!(
+        partition
+            .windows(2)
+            .all(|pair| pair[0].sequence < pair[1].sequence),
+        "the partition-wide scope preserves durable order across Threads"
+    );
 
     // Cursor paging: first page of one, then the remainder after that cursor.
     let first = store.list_events(&scope, None, 1);

@@ -503,7 +503,7 @@ trait RunLifecycleFeed {
         &self,
         cursor: LifecycleCursor,
         limit: usize,
-    ) -> LifecyclePage;
+    ) -> Result<LifecyclePage, RunLifecycleFeedError>;
 }
 
 trait DispatchOperationalFeed {
@@ -520,6 +520,33 @@ The Run feed contains committed `running`, `awaiting`, `resumed`, `completed`,
 `reclaimed`, `lease_lost`, `settled`, and `dead_lettered`. Consumers persist
 their cursor and backfill after reconnect. Live notification is only a wake
 hint; it never replaces the durable cursor.
+
+`CheckpointRunLifecycleFeed` is the portable P1 Run implementation. It reads
+`EventScope::All` from the existing committed-event projection, accepts an
+exclusive `LifecycleCursor`, and returns `LifecyclePage.next_cursor` equal to
+the last event actually returned. It projects only committed
+`RunStateChanged` facts:
+
+| Committed transition | Feed kind |
+|---|---|
+| first/non-awaiting → `Running` | `running` |
+| any → `Awaiting` | `awaiting` |
+| `Awaiting` → `Running` | `resumed` |
+| `Ended(NaturalEnd)` | `completed` |
+| `Ended(Cancelled)` | `cancelled` |
+| every other `Ended` cause | `failed` |
+
+The complete neutral `RunState` rides beside this classification, so a consumer
+does not need to parse strings or lose failure detail. Malformed lifecycle
+payloads and events referencing an unknown Run fail the page read; they are not
+silently skipped.
+
+A feed instance addresses one committed-truth partition. PostgreSQL's shared
+coordinator is a cell-wide partition; the current SQLite/filesystem host creates
+one coordinator per Thread, so its feed is Thread-partitioned. A cursor is valid
+only for the feed instance that produced it. P2 may add a durable merged outbox
+or partition-qualified cursor, but must not manufacture a global order across
+independent SQLite files.
 
 If a deployment exposes one merged feed, it must be a durable projection/outbox
 with explicit ordering semantics. It must not pretend that independently stored

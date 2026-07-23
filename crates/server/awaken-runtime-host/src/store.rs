@@ -70,10 +70,8 @@ impl RemoteHostCommit {
 /// `Arc<dyn HostStore>`. The remote Worker boundary is projected and is not a
 /// `HostStore`.
 pub(crate) trait HostStore:
-    Coordinator + OperationCoordinator + ThreadReader + RunStore + RunRecoverySource + Send + Sync
+    Coordinator + OperationCoordinator + CheckpointReader + RunStore + RunRecoverySource + Send + Sync
 {
-    /// Latest committed run on `thread`, used by after-commit outbox recovery.
-    fn latest_run(&self, thread: &ThreadId) -> Option<RunRecord>;
     /// The awaiting run on `thread`, if any, recovered from committed truth.
     fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, ResumeTicket)>;
 }
@@ -90,9 +88,6 @@ fn awaiting_from_reader<R: CheckpointReader>(
 }
 
 impl HostStore for MemoryCommitCoordinator {
-    fn latest_run(&self, _thread: &ThreadId) -> Option<RunRecord> {
-        self.committed().latest_run
-    }
     fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, ResumeTicket)> {
         let run = self.committed().latest_run?;
         let ticket = self.resume_ticket_for(&run.id)?;
@@ -101,9 +96,6 @@ impl HostStore for MemoryCommitCoordinator {
 }
 
 impl HostStore for SqliteCommitCoordinator {
-    fn latest_run(&self, thread: &ThreadId) -> Option<RunRecord> {
-        CheckpointReader::latest_run(self, thread)
-    }
     fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, ResumeTicket)> {
         // Inherent method wins over the trait method in resolution — not recursive.
         SqliteCommitCoordinator::open_wait_for_thread(self, thread)
@@ -111,29 +103,37 @@ impl HostStore for SqliteCommitCoordinator {
 }
 
 impl HostStore for FsCommitCoordinator {
-    fn latest_run(&self, thread: &ThreadId) -> Option<RunRecord> {
-        CheckpointReader::latest_run(self, thread)
-    }
     fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, ResumeTicket)> {
         awaiting_from_reader(self, thread)
     }
 }
 
 impl HostStore for PostgresCommitCoordinator {
-    fn latest_run(&self, thread: &ThreadId) -> Option<RunRecord> {
-        CheckpointReader::latest_run(self, thread)
-    }
     fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, ResumeTicket)> {
         awaiting_from_reader(self, thread)
     }
 }
 
 impl HostCommit {
+    pub(crate) fn lifecycle_feed(
+        &self,
+    ) -> Option<awaken_agent_contract::CheckpointRunLifecycleFeed> {
+        match self {
+            HostCommit::Local(store) => {
+                let reader: Arc<dyn CheckpointReader> = store.clone();
+                Some(awaken_agent_contract::CheckpointRunLifecycleFeed::new(
+                    reader,
+                ))
+            }
+            HostCommit::Remote(_) => None,
+        }
+    }
+
     /// Latest committed run from authoritative local storage or the remote
     /// Worker's non-authoritative recovery projection.
     pub(crate) fn latest_run(&self, thread: &ThreadId) -> Option<RunRecord> {
         match self {
-            HostCommit::Local(store) => store.latest_run(thread),
+            HostCommit::Local(store) => CheckpointReader::latest_run(store.as_ref(), thread),
             HostCommit::Remote(remote) => remote.projection.current().and_then(|snapshot| {
                 snapshot
                     .latest_run_id

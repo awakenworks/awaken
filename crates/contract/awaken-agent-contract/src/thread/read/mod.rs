@@ -3,6 +3,7 @@
 //! messages/state.
 
 pub mod checkpoint;
+pub mod lifecycle;
 pub mod recovery;
 pub mod run_store;
 pub mod thread_reader;

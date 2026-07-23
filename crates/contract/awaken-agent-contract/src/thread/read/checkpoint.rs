@@ -15,6 +15,8 @@ use crate::thread::read::thread_reader::ThreadReader;
 /// is the cursor; `from` is exclusive.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EventScope {
+    /// Every event visible through this committed-truth partition.
+    All,
     Thread(ThreadId),
     Run(RunId),
 }
