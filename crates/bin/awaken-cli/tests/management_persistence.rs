@@ -189,21 +189,19 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
         let (s, _) = call(
             &app,
             "PUT",
-            "/v1/config/mcp-servers/calc-def",
+            "/v1/config/agents/calc-agent",
             Some(json!({
-                "id": "calc-def", "display_name": "calc", "url": "http://127.0.0.1:1/",
-                "credential_binding": { "type": "exact", "credential_source_id": cred_id },
-                "version": 1
+                "name": "Calculator",
+                "model": {
+                    "provider_identity_ref": "anthropic",
+                    "model_ref": "claude-opus-4-8",
+                    "backend_ref": "default"
+                },
+                "mcp_servers": [{
+                    "name": "calc",
+                    "url": "http://127.0.0.1:1/"
+                }]
             })),
-        )
-        .await;
-        assert_eq!(s, StatusCode::OK);
-
-        let (s, _) = call(
-            &app,
-            "PUT",
-            "/v1/config/agents/calc-agent/mcp",
-            Some(json!({ "agent_id": "calc-agent", "mcp_server_ids": ["calc-def"], "version": 1 })),
         )
         .await;
         assert_eq!(s, StatusCode::OK);
@@ -246,14 +244,10 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
     assert_eq!(s, StatusCode::OK);
     assert_eq!(prof["model_id"], json!("claude-opus-4-8"));
 
-    let (s, servers) = call(&app, "GET", "/v1/config/mcp-servers", None).await;
+    let (s, agent) = call(&app, "GET", "/v1/config/agents/calc-agent", None).await;
     assert_eq!(s, StatusCode::OK);
-    assert_eq!(servers.as_array().unwrap().len(), 1);
-    assert_eq!(servers[0]["id"], json!("calc-def"));
-
-    let (s, binding) = call(&app, "GET", "/v1/config/agents/calc-agent/mcp", None).await;
-    assert_eq!(s, StatusCode::OK);
-    assert_eq!(binding["mcp_server_ids"], json!(["calc-def"]));
+    assert_eq!(agent["mcp_servers"][0]["name"], json!("calc"));
+    assert_eq!(agent["mcp_servers"][0]["url"], json!("http://127.0.0.1:1/"));
 
     let (s, resources) = call(&app, "GET", "/v1/config/agents/calc-agent/resources", None).await;
     assert_eq!(s, StatusCode::OK);

@@ -64,9 +64,6 @@ pub fn contract_schemas() -> Map<String, Value> {
 
     // Authored aggregates (resolver-side domain types).
     add!("InferenceProfile", awaken_config_resolver::InferenceProfile);
-    add!("McpServerId", awaken_config_resolver::McpServerId);
-    add!("McpServerDef", awaken_config_resolver::McpServerDef);
-    add!("AgentMcpConfig", awaken_config_resolver::AgentMcpConfig);
     add!("AgentInputConfig", awaken_config_resolver::AgentInputConfig);
 
     // Route request bodies (secret-in is write-only by construction).
@@ -77,12 +74,10 @@ pub fn contract_schemas() -> Map<String, Value> {
     );
     add!("ResolveRequest", crate::ResolveRequest);
     add!("ResolveProfileRequest", crate::ResolveProfileRequest);
-    add!("ResolveAgentMcpRequest", crate::ResolveAgentMcpRequest);
 
     // Route responses (secret-free views).
     add!("ResolvedInferenceView", crate::ResolvedInferenceView);
     add!("ResolvedCandidatesView", crate::ResolvedCandidatesView);
-    add!("ResolvedMcpServerView", crate::ResolvedMcpServerView);
     add!("CredentialValidation", crate::CredentialValidation);
     add!("PoolEligibleView", crate::PoolEligibleView);
 
@@ -312,31 +307,11 @@ fn paths() -> Value {
             "post": op("resolve_inference", "inference", "Dry-run resolve a model + credential binding against the catalog (secret-free view)",
                 &[], Some(schema_ref("ResolveRequest")), 200, schema_ref("ResolvedInferenceView"))
         },
-        "/v1/config/mcp-servers": {
-            "get": op("list_mcp_servers", "mcp", "List authored MCP server definitions",
-                &[], None, 200, array_of("McpServerDef"))
-        },
-        "/v1/config/mcp-servers/{id}": {
-            "put": op("put_mcp_server", "mcp", "Author (upsert) an MCP server definition (credential binding validated fail-closed)",
-                &id("MCP server id"), Some(schema_ref("McpServerDef")), 200, schema_ref("McpServerDef")),
-            "get": op("get_mcp_server", "mcp", "Fetch an MCP server definition",
-                &id("MCP server id"), None, 200, schema_ref("McpServerDef"))
-        },
-        "/v1/config/agents/{agent_id}/mcp": {
-            "put": op("put_agent_mcp", "mcp", "Bind which MCP servers an agent uses at workspace level (fail-closed)",
-                &[path_param("agent_id", "Agent id")], Some(schema_ref("AgentMcpConfig")), 200, schema_ref("AgentMcpConfig")),
-            "get": op("get_agent_mcp", "mcp", "Fetch an agent's workspace-level MCP binding",
-                &[path_param("agent_id", "Agent id")], None, 200, schema_ref("AgentMcpConfig"))
-        },
         "/v1/config/agents/{agent_id}/resources": {
             "put": op("put_agent_inputs", "mcp", "Bind typed File/Memory/Repository Agent defaults; stored whole, path id authoritative",
                 &[path_param("agent_id", "Agent id")], Some(schema_ref("AgentInputConfig")), 200, schema_ref("AgentInputConfig")),
             "get": op("get_agent_inputs", "mcp", "Fetch an Agent's typed default inputs",
                 &[path_param("agent_id", "Agent id")], None, 200, schema_ref("AgentInputConfig"))
-        },
-        "/v1/config/agents/{agent_id}/mcp/resolve": {
-            "post": op("resolve_agent_mcp", "mcp", "Dry-run resolve an agent's MCP binding (secret-free views)",
-                &[path_param("agent_id", "Agent id")], Some(schema_ref("ResolveAgentMcpRequest")), 200, array_of("ResolvedMcpServerView"))
         }
     })
 }

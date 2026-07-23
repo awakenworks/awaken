@@ -393,7 +393,7 @@ async fn session_inline_mcp_server_with_vault_credential_converses_multi_turn() 
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn management_plane_agent_mcp_config_takes_effect_without_inline_servers() {
+async fn published_agent_mcp_binding_takes_effect_without_session_inline_servers() {
     let url = mock_calc_mcp().await;
     let app = build_management_router().await;
     let vault_id = vault_with_calc_credential(&app, &url).await;

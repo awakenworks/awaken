@@ -1759,8 +1759,6 @@ pub async fn build_config_router() -> Router {
         catalog_repo.clone(),
         &global,
         &awaken_runtime_host::authorable_config_sections(),
-        // No authored MCP servers in the scenario host.
-        Arc::new(awaken_config_resolver::InMemoryMcpStore::new()),
         // The config plane, to list existing agent ids in the tenant scope.
         plane.clone(),
         platform_workspace.clone(),

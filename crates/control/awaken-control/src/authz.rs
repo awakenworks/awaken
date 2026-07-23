@@ -1141,13 +1141,6 @@ const ROUTE_POLICIES: &[RoutePolicyDescriptor] = &[
         },
     },
     RoutePolicyDescriptor {
-        prefix: "/v1/config/mcp-servers",
-        policy: RouteFamilyPolicy::Scoped {
-            read: WORKSPACE_READ,
-            write: WORKSPACE_WRITE,
-        },
-    },
-    RoutePolicyDescriptor {
         prefix: "/v1/config/agents",
         policy: RouteFamilyPolicy::Scoped {
             read: WORKSPACE_READ,

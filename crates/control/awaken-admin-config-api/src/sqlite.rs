@@ -1,11 +1,9 @@
 //! SQLite adapter (feature `sqlite`, ADR-0043 sqlite-repos) for the admin-plane
 //! aggregates, over the crate's own `admin` migration scope ([`admin_bundle`]):
-//! one [`SqliteAdminStore`] serves **both** sync store ports —
-//! [`InferenceProfileStore`] and [`McpStore`] — from a single database
-//! connection (one `admin.db` file; the two aggregates share one bundle, so one
-//! connection keeps the composition root simple and the ledger in one place).
+//! one [`SqliteAdminStore`] serves the admin aggregate ports from a single
+//! database connection and migration ledger.
 //!
-//! Profile and MCP ports expose storage errors to the application layer; malformed
+//! Repository ports expose storage errors to the application layer; malformed
 //! rows and unavailable SQLite storage therefore become HTTP 500 responses rather
 //! than panics or false not-found results. Calls remain synchronous and short under
 //! the connection mutex.
@@ -15,9 +13,9 @@ use std::sync::{Arc, Mutex};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use awaken_config_resolver::{
-    AgentInputBindingRepository, AgentInputConfig, AgentInputRepositoryError, AgentMcpConfig,
-    ConfigRepositoryError, InferenceProfile, InferenceProfileStore, McpServerDef, McpStore,
-    WebhookEndpointDef, WebhookStore, validate_agent_input_revision,
+    AgentInputBindingRepository, AgentInputConfig, AgentInputRepositoryError,
+    ConfigRepositoryError, InferenceProfile, InferenceProfileStore, WebhookEndpointDef,
+    WebhookStore, validate_agent_input_revision,
 };
 
 use crate::schema::admin_bundle;
@@ -34,10 +32,8 @@ pub enum StoreError {
     Migrate(String),
 }
 
-/// A SQLite-backed store for the admin-plane aggregates: one database file
-/// (or in-memory connection) implementing both [`InferenceProfileStore`] and
-/// [`McpStore`]. Clone the `Arc<SqliteAdminStore>` into both `AdminState`
-/// slots so the two ports share the row set.
+/// A SQLite-backed store for the admin-plane aggregates using one database file
+/// (or in-memory connection) and one scoped migration ledger.
 pub struct SqliteAdminStore {
     pub(crate) conn: Arc<Mutex<Connection>>,
 }
@@ -210,43 +206,6 @@ impl InferenceProfileStore for SqliteAdminStore {
     }
 }
 
-impl McpStore for SqliteAdminStore {
-    fn put_server(&self, def: McpServerDef) -> Result<(), ConfigRepositoryError> {
-        self.put_row("mcp_server", "id", &def.id.0.clone(), &def)
-    }
-    fn get_server(&self, id: &str) -> Result<Option<McpServerDef>, ConfigRepositoryError> {
-        self.get_row("mcp_server", "id", id)
-    }
-    fn list_servers(&self) -> Result<Vec<McpServerDef>, ConfigRepositoryError> {
-        // Sorted by id, matching the in-memory store's ordering contract.
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|_| ConfigRepositoryError::Storage("admin store mutex poisoned".into()))?;
-        let mut stmt = conn
-            .prepare(&format!("SELECT data FROM {NS}_mcp_server ORDER BY id"))
-            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-        let rows = stmt
-            .query_map([], |row| row.get::<_, String>(0))
-            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-        rows.map(|data| {
-            let data = data.map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-            serde_json::from_str(&data)
-                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))
-        })
-        .collect()
-    }
-    fn put_agent_config(&self, config: AgentMcpConfig) -> Result<(), ConfigRepositoryError> {
-        self.put_row("agent_mcp", "agent_id", &config.agent_id.clone(), &config)
-    }
-    fn get_agent_config(
-        &self,
-        agent_id: &str,
-    ) -> Result<Option<AgentMcpConfig>, ConfigRepositoryError> {
-        self.get_row("agent_mcp", "agent_id", agent_id)
-    }
-}
-
 impl WebhookStore for SqliteAdminStore {
     fn put(&self, def: WebhookEndpointDef) -> Result<(), ConfigRepositoryError> {
         self.put_row("webhook", "id", &def.id.clone(), &def)
@@ -349,8 +308,7 @@ impl WebhookStore for SqliteAdminStore {
 mod tests {
     use super::*;
     use awaken_config_resolver::{
-        BindingId, FileId, InputBinding, InputResourceId, McpServerId, MemoryStoreId,
-        ResourceAccess,
+        BindingId, FileId, InputBinding, InputResourceId, MemoryStoreId, ResourceAccess,
     };
     use awaken_credential_vault::CredentialBinding;
 
@@ -361,17 +319,6 @@ mod tests {
             model_fallbacks: Vec::new(),
             credential_binding: CredentialBinding::None,
             disabled_endpoint_ids: vec![],
-        }
-    }
-
-    fn server(id: &str) -> McpServerDef {
-        McpServerDef {
-            workspace_id: "ws".into(),
-            id: McpServerId(id.to_string()),
-            display_name: id.to_string(),
-            url: format!("http://{id}.example/"),
-            credential_binding: CredentialBinding::None,
-            version: 1,
         }
     }
 
@@ -398,39 +345,19 @@ mod tests {
     }
 
     #[test]
-    fn mcp_server_and_agent_config_round_trip_sorted() {
+    fn legacy_mcp_tables_are_removed_by_the_scoped_migration() {
         let store = SqliteAdminStore::open_in_memory().unwrap();
-        store.put_server(server("zeta")).unwrap();
-        store.put_server(server("alpha")).unwrap();
-        assert_eq!(
-            store.get_server("zeta").unwrap().unwrap().url,
-            "http://zeta.example/"
-        );
-        assert!(store.get_server("missing").unwrap().is_none());
-        let ids: Vec<String> = store
-            .list_servers()
-            .unwrap()
-            .into_iter()
-            .map(|s| s.id.0)
-            .collect();
-        assert_eq!(ids, vec!["alpha".to_string(), "zeta".to_string()]);
-
-        let config = AgentMcpConfig {
-            workspace_id: "ws".into(),
-            agent_id: "agent-1".into(),
-            mcp_server_ids: vec![McpServerId("alpha".into())],
-            version: 1,
-        };
-        store.put_agent_config(config.clone()).unwrap();
-        assert_eq!(
-            store
-                .get_agent_config("agent-1")
-                .unwrap()
-                .unwrap()
-                .mcp_server_ids,
-            config.mcp_server_ids
-        );
-        assert!(store.get_agent_config("agent-2").unwrap().is_none());
+        let conn = store.conn.lock().unwrap();
+        for table in ["admin_mcp_server", "admin_agent_mcp"] {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    [table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 0, "{table} must not survive migration V9");
+        }
     }
 
     #[test]
@@ -502,15 +429,6 @@ mod tests {
         {
             let store = SqliteAdminStore::open(path).unwrap();
             InferenceProfileStore::put(&store, "p1".into(), profile("m1")).unwrap();
-            store.put_server(server("calc")).unwrap();
-            store
-                .put_agent_config(AgentMcpConfig {
-                    workspace_id: "ws".into(),
-                    agent_id: "agent-1".into(),
-                    mcp_server_ids: vec![McpServerId("calc".into())],
-                    version: 1,
-                })
-                .unwrap();
         }
         // Reopen: the migration is idempotent and the rows are still there.
         let store = SqliteAdminStore::open(path).unwrap();
@@ -520,15 +438,6 @@ mod tests {
                 .unwrap()
                 .model_id,
             "m1"
-        );
-        assert_eq!(store.list_servers().unwrap().len(), 1);
-        assert_eq!(
-            store
-                .get_agent_config("agent-1")
-                .unwrap()
-                .unwrap()
-                .mcp_server_ids,
-            vec![McpServerId("calc".into())]
         );
     }
 

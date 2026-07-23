@@ -183,7 +183,6 @@ struct ManagementStores {
     credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
     secrets: Arc<dyn awaken_credential_vault::SecretStore>,
     profiles: Arc<dyn awaken_admin_config_api::InferenceProfileStore>,
-    mcp: Arc<dyn awaken_admin_config_api::McpStore>,
     resources: Arc<dyn awaken_config_resolver::AgentInputBindingRepository>,
     resource_catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
     /// Authored webhook endpoints (ADR-0048), an id-addressed config resource beside
@@ -322,7 +321,6 @@ fn in_memory_management_stores() -> ManagementStores {
         credentials: Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new()),
         secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
         profiles: admin.clone(),
-        mcp: admin.clone(),
         resources: admin.clone(),
         resource_catalog: admin.clone(),
         webhooks: admin,
@@ -389,7 +387,6 @@ fn durable_management_stores(dir: &std::path::Path, key: &[u8; 32]) -> Managemen
             Arc::new(blobs),
         )),
         profiles: admin.clone(),
-        mcp: admin.clone(),
         resources: admin.clone(),
         resource_catalog: admin.clone(),
         // Webhook endpoints share admin.db (one more secret-free table under the
@@ -503,7 +500,6 @@ async fn open_management_stores(
     // The admin aggregate backs three ports (profiles / MCP / webhooks) off one store.
     ensure_parent(&cfg.admin);
     let admin_profiles: Arc<dyn awaken_admin_config_api::InferenceProfileStore>;
-    let admin_mcp: Arc<dyn awaken_admin_config_api::McpStore>;
     let admin_webhooks: Arc<dyn awaken_admin_config_api::WebhookStore>;
     let admin_resources: Arc<dyn awaken_config_resolver::AgentInputBindingRepository>;
     let admin_catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>;
@@ -516,7 +512,6 @@ async fn open_management_stores(
                 .expect("migrate legacy MemoryStore catalog rows");
             let admin = Arc::new(admin);
             admin_profiles = admin.clone();
-            admin_mcp = admin.clone();
             admin_resources = admin.clone();
             admin_catalog = admin.clone();
             admin_webhooks = admin;
@@ -537,7 +532,6 @@ async fn open_management_stores(
                 .migrate_legacy_memory_stores()
                 .expect("migrate legacy MemoryStore catalog rows");
             admin_profiles = admin.clone();
-            admin_mcp = admin.clone();
             admin_resources = admin.clone();
             admin_catalog = admin.clone();
             admin_webhooks = admin;
@@ -616,7 +610,6 @@ async fn open_management_stores(
         credentials,
         secrets,
         profiles: admin_profiles,
-        mcp: admin_mcp,
         resources: admin_resources,
         resource_catalog: admin_catalog,
         webhooks: admin_webhooks,
@@ -942,7 +935,6 @@ async fn management_router_over(
         credentials,
         secrets,
         profiles,
-        mcp: mcp_store,
         resources: resource_store,
         resource_catalog,
         webhooks: webhook_store,
@@ -1102,8 +1094,6 @@ async fn management_router_over(
         // knows it CAN author a state machine etc. — not an empty list (it would
         // otherwise refuse, thinking no plugins exist).
         &awaken_runtime_host::authorable_config_sections(),
-        // The LIVE authored MCP servers.
-        mcp_store.clone(),
         // The config plane, to list existing agent ids in the tenant scope.
         plane.clone(),
         platform_workspace.clone(),
@@ -1156,7 +1146,6 @@ async fn management_router_over(
         credentials: credentials.clone(),
         secrets: secrets.clone(),
         profiles,
-        mcp_store: mcp_store.clone(),
         webhook_store,
         sessions: sessions.clone(),
         resource_store: resource_store.clone(),

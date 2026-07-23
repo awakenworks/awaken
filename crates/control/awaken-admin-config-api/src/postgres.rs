@@ -1,10 +1,9 @@
 //! Postgres adapter (feature `postgres`, ADR-0043) for the admin-plane
 //! aggregates, over the crate's own `admin` migration scope ([`admin_bundle`]):
 //! one [`PostgresAdminStore`] serves the same four sync store ports the sqlite
-//! backend does — [`InferenceProfileStore`], [`McpStore`] and
-//! [`AgentInputBindingRepository`] — from a single connection pool.
+//! backend does from a single connection pool.
 //!
-//! The profile and MCP ports are synchronous but fallible: SQL and JSON failures
+//! The repository ports are synchronous but fallible: SQL and JSON failures
 //! cross the repository boundary as `ConfigRepositoryError`. `sqlx` is async-only,
 //! so this backend
 //! owns a dedicated single-worker Tokio runtime and drives each short query to
@@ -23,9 +22,9 @@ use sqlx::types::Json;
 use tokio::runtime::{Builder, Handle, Runtime};
 
 use awaken_config_resolver::{
-    AgentInputBindingRepository, AgentInputConfig, AgentInputRepositoryError, AgentMcpConfig,
-    ConfigRepositoryError, InferenceProfile, InferenceProfileStore, McpServerDef, McpStore,
-    WebhookEndpointDef, WebhookStore, validate_agent_input_revision,
+    AgentInputBindingRepository, AgentInputConfig, AgentInputRepositoryError,
+    ConfigRepositoryError, InferenceProfile, InferenceProfileStore, WebhookEndpointDef,
+    WebhookStore, validate_agent_input_revision,
 };
 
 use crate::schema::admin_bundle;
@@ -374,26 +373,5 @@ impl InferenceProfileStore for PostgresAdminStore {
     }
     fn get(&self, id: &str) -> Result<Option<InferenceProfile>, ConfigRepositoryError> {
         self.get_json("inference_profile", "id", id)
-    }
-}
-
-impl McpStore for PostgresAdminStore {
-    fn put_server(&self, def: McpServerDef) -> Result<(), ConfigRepositoryError> {
-        self.put_json("mcp_server", "id", &def.id.0.clone(), &def)
-    }
-    fn get_server(&self, id: &str) -> Result<Option<McpServerDef>, ConfigRepositoryError> {
-        self.get_json("mcp_server", "id", id)
-    }
-    fn list_servers(&self) -> Result<Vec<McpServerDef>, ConfigRepositoryError> {
-        self.list_json("mcp_server", "id")
-    }
-    fn put_agent_config(&self, config: AgentMcpConfig) -> Result<(), ConfigRepositoryError> {
-        self.put_json("agent_mcp", "agent_id", &config.agent_id.clone(), &config)
-    }
-    fn get_agent_config(
-        &self,
-        agent_id: &str,
-    ) -> Result<Option<AgentMcpConfig>, ConfigRepositoryError> {
-        self.get_json("agent_mcp", "agent_id", agent_id)
     }
 }

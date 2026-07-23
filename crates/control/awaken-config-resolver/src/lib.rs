@@ -23,7 +23,7 @@ pub use awaken_resource_contract::{
     BindingId, FileId, InputBinding, InputResourceId, MemoryStoreId, RepositoryId, ResourceAccess,
 };
 
-/// Read ports for the authored aggregates (`McpStore`, `InferenceProfileStore`,
+/// Read ports for the authored aggregates (`InferenceProfileStore`,
 /// `AgentInputBindingRepository`) + in-memory reference impls. They live on the
 /// read side so the runtime host reads config without depending on the authoring HTTP crate
 /// (which writes through the same ports).
@@ -32,9 +32,8 @@ pub mod stores;
 pub mod telemetry;
 pub use stores::{
     AgentInputBindingRepository, AgentInputRepositoryError, ConfigRepositoryError,
-    InMemoryAgentInputBindingRepository, InMemoryMcpStore, InMemoryProfileStore,
-    InMemoryWebhookStore, InferenceProfileStore, McpStore, WebhookOutboxEvent, WebhookStore,
-    validate_agent_input_revision,
+    InMemoryAgentInputBindingRepository, InMemoryProfileStore, InMemoryWebhookStore,
+    InferenceProfileStore, WebhookOutboxEvent, WebhookStore, validate_agent_input_revision,
 };
 pub use telemetry::{RedactionMode, TelemetryCeiling};
 
@@ -492,32 +491,9 @@ pub fn cooldown_deadline(
     }
 }
 
-/// A management-plane MCP server identifier.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct McpServerId(pub String);
-
-/// An authored MCP server definition (ADR-0043 Phase 3): where the server lives
-/// and which credential authenticates to it. The binding is the same vault-backed
-/// [`CredentialBinding`] inference uses (never an inline secret), so
-/// `OneOfCredentialPool` failover applies to MCP credentials for free. The
-/// resolver reads it — it is never flowed into the runtime.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct McpServerDef {
-    pub id: McpServerId,
-    /// Owning workspace, stamped by the trusted configuration edge.
-    #[serde(default)]
-    pub workspace_id: String,
-    pub display_name: String,
-    pub url: String,
-    pub credential_binding: CredentialBinding,
-    pub version: i64,
-}
-
 /// An authored webhook endpoint (ADR-0048): a workspace-scoped subscription that
 /// receives signed lifecycle events. A management config resource alongside
-/// [`McpServerDef`]/[`InferenceProfile`], so it shares the admin store, the tenant
+/// [`InferenceProfile`], so it shares the admin store, the tenant
 /// fence, and the secret-free invariant — the `whsec_` signing key is NOT on the
 /// row; it is sealed in the [`SecretStore`] and reached by [`secret_ref`], resolved
 /// only at dispatch. Unlike a provider credential it is a bare sealed secret (a
@@ -548,20 +524,6 @@ impl WebhookEndpointDef {
     pub fn wants(&self, event_type: &str) -> bool {
         self.event_types.is_empty() || self.event_types.iter().any(|t| t == event_type)
     }
-}
-
-/// Which MCP servers an agent uses — the management-plane agent↔MCP binding
-/// (ADR-0043 Phase 3). References [`McpServerDef`]s by id; the resolver
-/// materializes the referenced defs into [`ResolvedMcpServer`]s at run bind time.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct AgentMcpConfig {
-    /// Owning workspace, stamped by the trusted configuration edge.
-    #[serde(default)]
-    pub workspace_id: String,
-    pub agent_id: String,
-    pub mcp_server_ids: Vec<McpServerId>,
-    pub version: i64,
 }
 
 /// An Agent's authored default inputs. The repository supplies Workspace as the
@@ -710,53 +672,6 @@ impl<'de> serde::Deserialize<'de> for AgentInputConfig {
             }
         }
     }
-}
-
-/// The injection-ready MCP server the resolver hands the runtime: the display
-/// name, the URL, and an already-materialized credential (or `None` for an
-/// unauthenticated server). The runtime sees only this — never a binding, a ref,
-/// or the stores (D6/D9); secret-free rows never cross after this point.
-#[derive(Debug)]
-pub struct ResolvedMcpServer {
-    pub name: String,
-    pub url: String,
-    pub credential: Option<RedactedString>,
-}
-
-/// Resolve authored [`McpServerDef`]s into injection-ready [`ResolvedMcpServer`]s
-/// by materializing each def's credential binding — the same
-/// [`resolve_credential`] path inference uses, so a pool binding fails over
-/// member-by-member. Fail-closed: a def whose `Exact` source is missing or
-/// cannot be materialized (or whose pool is missing/exhausted) is an error, never
-/// a silently unauthenticated server; a `None` binding yields `credential: None`.
-pub async fn resolve_mcp_servers(
-    defs: &[McpServerDef],
-    sources: &dyn SourceLookup,
-    secret_store: &dyn SecretStore,
-) -> Result<Vec<ResolvedMcpServer>, ResolveError> {
-    let mut resolved = Vec::with_capacity(defs.len());
-    for def in defs {
-        // MCP-server credential: not a model provider, so no can_consume join and no
-        // availability ledger.
-        // The managed-MCP path prefetches per-binding and carries no workspace
-        // parameter; the intrinsic pool fence (member vs pool workspace) still
-        // applies, closing the reachable cross-tenant pool hole.
-        let credential = resolve_credential(
-            &def.credential_binding,
-            sources,
-            secret_store,
-            None,
-            None,
-            None,
-        )
-        .await?;
-        resolved.push(ResolvedMcpServer {
-            name: def.display_name.clone(),
-            url: def.url.clone(),
-            credential,
-        });
-    }
-    Ok(resolved)
 }
 
 #[cfg(test)]
