@@ -220,6 +220,11 @@ pub struct McpServerBinding {
     /// speaks no control-plane vocabulary — the host re-types it into the vault's
     /// `CredentialSourceId` at the lookup). `None` = no vault credential matched.
     pub credential_source_id: Option<String>,
+    /// Exact revision required by a published Agent binding. Session-inline
+    /// vault matches leave this `None` because their wire credential lifecycle
+    /// is already pinned by the Session's vault binding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_revision: Option<u64>,
     /// The matched credential's stored refresh configuration
     /// ([`VaultState::mcp_refresh_for_source`]), so the host can register a
     /// transport-level refresher next to the bearer. `None` when the credential

@@ -1953,6 +1953,67 @@ async fn file_activation_enforces_workspace_ownership_without_iam_policy_logic()
     );
 }
 
+#[tokio::test]
+async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_revision() {
+    use awaken_protocol_managed::{McpServerBinding, SessionRuntime};
+
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
+    let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
+    let credential = awaken_credential_vault::repo::enter_credential(
+        awaken_credential_vault::CredentialCreateParams {
+            workspace_id: "workspace-a".into(),
+            kind: awaken_credential_vault::CredentialKind::Vault,
+            provider_id: None,
+            env_key: None,
+            secret: Some(awaken_agent_contract::RedactedString::from(
+                "published-mcp-token".to_string(),
+            )),
+            oauth_command: None,
+        },
+        secrets.as_ref(),
+        credentials.as_ref(),
+    )
+    .await
+    .unwrap();
+    let managed = crate::ManagedHost::new(host.clone())
+        .with_credentials(credentials.clone(), secrets.clone());
+    let binding = |revision| McpServerBinding {
+        name: "docs".into(),
+        url: "https://mcp.example.test".into(),
+        credential_source_id: Some(credential.id.0.clone()),
+        credential_revision: Some(revision),
+        refresh: None,
+    };
+
+    let mut exact = bare_session("agent", "workspace-a");
+    exact.mcp_servers = vec![binding(1)];
+    managed.prepare_session("mcp-exact", exact).await.unwrap();
+    assert_eq!(
+        host.thread_mcp("mcp-exact")[0]
+            .bearer
+            .as_ref()
+            .map(|secret| secret.expose_secret()),
+        Some("published-mcp-token")
+    );
+
+    let mut stale = bare_session("agent", "workspace-a");
+    stale.mcp_servers = vec![binding(2)];
+    let stale_error = managed
+        .prepare_session("mcp-stale", stale)
+        .await
+        .unwrap_err();
+    assert!(stale_error.message.contains("published revision"));
+
+    let mut foreign = bare_session("agent", "workspace-b");
+    foreign.mcp_servers = vec![binding(1)];
+    let foreign_error = managed
+        .prepare_session("mcp-foreign", foreign)
+        .await
+        .unwrap_err();
+    assert!(foreign_error.message.contains("published revision"));
+}
+
 /// Managed-Agents model: a `github_repository` session resource clones host-side AND injects
 /// a scoped `github:<logical>` MCP server whose token is held host-side — so the agent drives
 /// branch/commit/push/PR through MCP tools while the credential never enters the sandbox.

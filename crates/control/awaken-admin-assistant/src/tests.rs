@@ -407,6 +407,7 @@ async fn draft_agent_round_trips_mcp_skills_multiagent_and_metadata() {
             awaken_runtime_contract::agent_bindings::AgentMcpServerBinding {
                 name: "github".into(),
                 url: String::new(),
+                credential: None,
             }
         ]
     );

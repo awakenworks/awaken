@@ -111,6 +111,8 @@ impl AgentConfigSource for AgentWithIntegrations {
             mcp_servers: vec![awaken_protocol_managed::AgentMcpServerView {
                 name: "docs".into(),
                 url: "https://mcp.example.test".into(),
+                credential_source_id: Some("cred:workspace:docs".into()),
+                credential_revision: Some(7),
             }],
             skill_ids: vec!["skill_release".into()],
             delegate_ids: vec!["researcher".into()],
@@ -286,6 +288,12 @@ async fn session_inherits_published_agent_integrations_and_echoes_the_effective_
         prepared.lock().unwrap()[0].delegate_ids,
         Some(vec!["researcher".into()])
     );
+    let prepared = prepared.lock().unwrap();
+    assert_eq!(
+        prepared[0].mcp_servers[0].credential_source_id.as_deref(),
+        Some("cred:workspace:docs")
+    );
+    assert_eq!(prepared[0].mcp_servers[0].credential_revision, Some(7));
 }
 
 async fn app_with_session() -> (Router, String) {

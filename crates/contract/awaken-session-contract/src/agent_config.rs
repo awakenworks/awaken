@@ -8,6 +8,11 @@
 pub struct AgentMcpServerView {
     pub name: String,
     pub url: String,
+    /// Exact credential source selected by the published Agent snapshot.
+    pub credential_source_id: Option<String>,
+    /// Published source revision. It is checked again at materialization so a
+    /// rotated or replaced source fails closed instead of silently drifting.
+    pub credential_revision: Option<u64>,
 }
 
 pub struct AgentConfigView {

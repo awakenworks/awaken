@@ -15,9 +15,11 @@ mod binding_resolver;
 mod capabilities;
 mod compaction;
 mod config_plane;
+mod credential_reference;
 mod installed_catalog;
 mod managed_agent;
 mod publication;
+mod service_wiring;
 mod tool_catalog;
 mod warm_install;
 
@@ -28,6 +30,7 @@ pub use binding_resolver::{
 };
 pub use capabilities::{capabilities_router, runtime_catalog, sandbox_capability};
 pub use config_plane::{ConfigPlane, ConfigService, config_router};
+pub use credential_reference::CredentialReferenceValidator;
 pub use managed_agent::{agent_config_from_managed, managed_from_agent_config};
 pub use publication::{PublishError, ValidationIssue};
 pub use tool_catalog::{

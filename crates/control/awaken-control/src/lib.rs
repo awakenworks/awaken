@@ -18,6 +18,7 @@
 pub mod admin_assistant;
 pub mod authz;
 pub mod control_stores;
+mod credential_reference;
 mod managed_agents;
 pub mod worker_stores;
 
@@ -39,6 +40,7 @@ pub use crate::authz::{
     embedded_iam_for_tenant, embedded_iam_for_workspace,
 };
 pub use crate::control_stores::{ControlStoreConfig, StoreBackend};
+pub use crate::credential_reference::CredentialRevisionValidator;
 pub use crate::managed_agents::ConfigPlaneManagedAgentRepository;
 // The database-less worker's materialization subset (Stage C): only the credential
 // vault + secret store needed by snapshot-pinned inference access.

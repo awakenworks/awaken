@@ -221,6 +221,10 @@ async fn create_binds_mcp_server_to_vault_credential_and_echoes_the_wire_shape()
         init.mcp_servers[0].credential_source_id.as_ref(),
         Some(&expected.0)
     );
+    assert_eq!(
+        init.mcp_servers[0].credential_revision, None,
+        "Session-inline vault bindings use the wire credential lifecycle"
+    );
     // The credential was entered without a refresh object, so the binding
     // carries no refresh configuration.
     assert!(init.mcp_servers[0].refresh.is_none());

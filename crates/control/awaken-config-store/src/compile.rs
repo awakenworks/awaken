@@ -337,6 +337,20 @@ fn normalize_agent_bindings(config: &AgentConfig) -> Result<AgentBindings, Compi
                 format!("server name {name:?} is duplicated"),
             ));
         }
+        if let Some(credential) = &server.credential {
+            if credential.id.trim().is_empty() {
+                return Err(invalid(
+                    "mcp_servers",
+                    format!("entry {index} credential requires a non-empty `id`"),
+                ));
+            }
+            if credential.revision == 0 {
+                return Err(invalid(
+                    "mcp_servers",
+                    format!("entry {index} credential revision must be positive"),
+                ));
+            }
+        }
     }
 
     let mut seen_skills = std::collections::BTreeSet::new();
@@ -486,7 +500,37 @@ mod tests {
         awaken_runtime_contract::agent_bindings::AgentMcpServerBinding {
             name: name.to_string(),
             url: url.to_string(),
+            credential: None,
         }
+    }
+
+    #[test]
+    fn mcp_credential_reference_requires_a_stable_id_and_positive_revision() {
+        let mut cfg = config(&[]);
+        cfg.mcp_servers = vec![mcp("docs", "https://mcp.example.test")];
+        cfg.mcp_servers[0].credential = Some(awaken_runtime_contract::credential::CredentialRef {
+            id: String::new(),
+            revision: 1,
+        });
+        assert!(matches!(
+            compile(&cfg, &[]),
+            Err(CompileError::InvalidBinding {
+                axis: "mcp_servers",
+                ..
+            })
+        ));
+
+        cfg.mcp_servers[0].credential = Some(awaken_runtime_contract::credential::CredentialRef {
+            id: "cred:workspace:docs".into(),
+            revision: 0,
+        });
+        assert!(matches!(
+            compile(&cfg, &[]),
+            Err(CompileError::InvalidBinding {
+                axis: "mcp_servers",
+                ..
+            })
+        ));
     }
 
     #[test]

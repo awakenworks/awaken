@@ -1040,6 +1040,9 @@ async fn management_router_over(
     // be constructed with an implicit model fallback.
     let config_service = Arc::new(
         ConfigService::new(model_wiring.publication_resolver)
+            .with_credential_reference_validator(Arc::new(
+                awaken_control::CredentialRevisionValidator::new(credentials.clone()),
+            ))
             .with_resources(resource_store.clone()),
     );
     // Warm-load the installed catalog from the durable config store BEFORE the plane

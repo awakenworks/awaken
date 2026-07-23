@@ -60,6 +60,14 @@ impl ConfigServiceAgentSource {
                 .map(|server| awaken_session_contract::AgentMcpServerView {
                     name: server.name,
                     url: server.url,
+                    credential_source_id: server
+                        .credential
+                        .as_ref()
+                        .map(|credential| credential.id.clone()),
+                    credential_revision: server
+                        .credential
+                        .as_ref()
+                        .map(|credential| credential.revision),
                 })
                 .collect(),
             skill_ids: bindings.skill_ids,

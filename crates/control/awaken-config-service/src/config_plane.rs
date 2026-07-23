@@ -26,6 +26,7 @@ use axum::{Extension, Json, Router};
 use serde_json::{Value, json};
 
 use crate::binding_resolver::ModelPublicationResolver;
+use crate::credential_reference::{CredentialReferenceValidator, validate_credential_references};
 use crate::installed_catalog::InstalledAgentCatalog;
 use crate::managed_agent::{agent_config_from_managed, managed_from_agent_config};
 use crate::publication::{
@@ -56,6 +57,7 @@ pub struct ConfigService {
     /// publication read. Required at construction so a config service can never
     /// publish through an implicit host/provider fallback.
     model_publication_resolver: Arc<dyn ModelPublicationResolver>,
+    pub(crate) credential_reference_validator: Option<Arc<dyn CredentialReferenceValidator>>,
 }
 
 impl ConfigService {
@@ -68,16 +70,8 @@ impl ConfigService {
             installed: InstalledAgentCatalog::default(),
             resources: None,
             model_publication_resolver,
+            credential_reference_validator: None,
         }
-    }
-
-    /// Wire the per-Agent input binding repository used by Session projections.
-    /// Resource inputs are deliberately not compiled into the Agent snapshot: the
-    /// Session resolver composes current defaults with temporary attachments once.
-    #[must_use]
-    pub fn with_resources(mut self, resources: Arc<dyn AgentInputBindingRepository>) -> Self {
-        self.resources = Some(resources);
-        self
     }
 
     /// Agent ids whose current default-input configuration references `target` in
@@ -134,6 +128,16 @@ impl ConfigService {
         .map_err(|e| ValidationIssue {
             path: "model".to_string(),
             message: e.to_string(),
+        })?;
+        validate_credential_references(
+            self.credential_reference_validator.as_ref(),
+            workspace,
+            &resolved.config,
+        )
+        .await
+        .map_err(|error| ValidationIssue {
+            path: "mcp_servers".to_string(),
+            message: error,
         })?;
         awaken_config_store::compile_published(
             &resolved.config,
@@ -254,6 +258,13 @@ impl ConfigService {
             versioned,
         )
         .await?;
+        validate_credential_references(
+            self.credential_reference_validator.as_ref(),
+            workspace,
+            &resolved.config,
+        )
+        .await
+        .map_err(PublishError::Unresolvable)?;
         let snapshot = awaken_config_store::compile_published(
             &resolved.config,
             catalog,

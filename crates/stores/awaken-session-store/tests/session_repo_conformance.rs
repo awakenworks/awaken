@@ -34,6 +34,7 @@ fn session(id: &str, title: &str) -> PersistedSession {
                 name: "github".into(),
                 url: "https://mcp.example".into(),
                 credential_source_id: Some("cred-1".into()),
+                credential_revision: Some(3),
                 refresh: None,
             }],
             delegate_ids: Some(vec!["researcher".into()]),
