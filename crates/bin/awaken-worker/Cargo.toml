@@ -40,6 +40,7 @@ awaken-server = { workspace = true }
 # Reuse the composition's credential-vault + secret-store opening and seal-key
 # resolution. The worker does not open catalog/config/admin/session stores.
 awaken-control = { workspace = true }
+awaken-credential-vault = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal"] }
 # The cloud-native admin surface (readyz / livez / metrics / drain) on a separate
 # port, so an orchestrator can gate routing and drain the worker gracefully.
@@ -56,7 +57,6 @@ getrandom = "0.2"
 tower = { version = "0.5", features = ["util"] }
 # The materialization test builds a CredentialInferenceMaterializer over in-memory
 # stores and asserts exact published access materializes a real executor.
-awaken-credential-vault = { workspace = true }
 awaken-agent-contract = { workspace = true }
 async-trait = { workspace = true }
 
