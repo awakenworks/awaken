@@ -20,6 +20,10 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-acp-projected-local-')
 const STORAGE = path.join(TMP, 'storage');
 const BIN_DIR = path.join(TMP, 'bin');
 const BETAS = ['managed-agents-2026-04-01'];
+const WORKSPACE = `workspace_acp_projected_${process.pid}`;
+const SEAL_KEY = '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff';
+const GEMINI_AGENT = 'projected-gemini-agent';
+const CODEX_AGENT = 'projected-codex-agent';
 
 function awakenBin() {
   const output = execSync('cargo build --quiet --message-format=json -p awaken-cli --bin awaken', {
@@ -85,14 +89,18 @@ function start(binary, cli) {
       ...environment,
       PATH: `${BIN_DIR}:${environment.PATH ?? ''}`,
       AWAKEN_HTTP_ADDR: `127.0.0.1:${PORT}`,
-      AWAKEN_STORAGE_DIR: STORAGE,
+      AWAKEN_LOCAL_WORKSPACE_ID: WORKSPACE,
+      AWAKEN_DEPLOYMENT_DATA_DIR: STORAGE,
+      AWAKEN_CONTROL_SEAL_KEY: SEAL_KEY,
       AWAKEN_ACP_CLI: cli,
       AWAKEN_SANDBOX_TIER: 'local',
-      GOOGLE_GEMINI_BASE_URL: 'http://model-gateway.invalid/v1',
-      GEMINI_API_KEY: 'lease-projected-e2e', // awaken-allow: secret (fixture)
+      // These ambient values are deliberately wrong. The launched CLI must receive
+      // only the endpoint, upstream model, and credential revision published below.
+      GOOGLE_GEMINI_BASE_URL: 'http://ambient-gemini.invalid/v1',
+      GEMINI_API_KEY: 'ambient-gemini-must-not-win', // awaken-allow: secret (fixture)
       GEMINI_MODEL: 'environment-fallback-must-not-win',
-      OPENAI_BASE_URL: 'http://codex-gateway.invalid/v1',
-      OPENAI_API_KEY: 'lease-codex-e2e', // awaken-allow: secret (fixture)
+      OPENAI_BASE_URL: 'http://ambient-codex.invalid/v1',
+      OPENAI_API_KEY: 'ambient-codex-must-not-win', // awaken-allow: secret (fixture)
       OPENAI_MODEL: 'codex-fallback-must-not-win',
     },
     stdio: ['ignore', 'ignore', 'inherit'],
@@ -132,6 +140,62 @@ async function messages(client, sessionId) {
     .map((content) => content.text ?? '');
 }
 
+async function request(base, method, route, body) {
+  const response = await fetch(`${base}${route}`, {
+    method,
+    headers: body === undefined ? {} : { 'content-type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const value = await response.json().catch(() => ({}));
+  assert.ok(
+    response.ok,
+    `${method} ${route}: ${response.status} ${JSON.stringify(value)}`,
+  );
+  return value;
+}
+
+async function publishProviderAgent(base, definition) {
+  const {
+    agent, provider, endpoint, model, upstreamModel, baseUrl, secret, envKey,
+  } = definition;
+  await request(base, 'PUT', `/v1/config/providers/${provider}`, {
+    id: provider,
+    slug: provider,
+    display_name: provider,
+    version: 1,
+  });
+  await request(base, 'PUT', `/v1/config/endpoints/${endpoint}`, {
+    id: endpoint,
+    provider_id: provider,
+    dialect: 'open_ai_chat',
+    base_url: baseUrl,
+    timeout_secs: 30,
+    display_name: endpoint,
+    version: 1,
+  });
+  await request(base, 'POST', '/v1/config/offerings', {
+    model_id: model,
+    provider_id: provider,
+    protocol_endpoint_id: endpoint,
+    dialect: 'open_ai_chat',
+    upstream_model: upstreamModel,
+  });
+  await request(base, 'POST', '/v1/config/credentials', {
+    workspace_id: WORKSPACE,
+    kind: 'vault',
+    provider_id: provider,
+    env_key: envKey,
+    secret,
+  });
+  await request(base, 'PUT', `/v1/config/agents/${agent}`, {
+    name: agent,
+    model: { id: model, provider_identity_ref: provider },
+    system: 'Exercise publication-pinned ACP provisioning.',
+    tools: [],
+  });
+  await request(base, 'POST', `/v1/config/agents/${agent}/publish`);
+}
+
 async function main() {
   installGeminiFixture();
   fs.mkdirSync(STORAGE, { recursive: true });
@@ -141,6 +205,27 @@ async function main() {
   const fixture = await startCalcFixture(mcpToken);
   try {
     await ready(server);
+    const base = `http://127.0.0.1:${PORT}`;
+    await publishProviderAgent(base, {
+      agent: GEMINI_AGENT,
+      provider: 'google',
+      endpoint: 'gemini-endpoint',
+      model: 'gemini-published',
+      upstreamModel: 'gemini-upstream',
+      baseUrl: 'http://gemini-db.invalid/v1',
+      secret: 'persisted-gemini-key', // awaken-allow: secret (fixture)
+      envKey: 'GEMINI_API_KEY',
+    });
+    await publishProviderAgent(base, {
+      agent: CODEX_AGENT,
+      provider: 'openai',
+      endpoint: 'codex-endpoint',
+      model: 'codex-published',
+      upstreamModel: 'codex-upstream',
+      baseUrl: 'http://codex-db.invalid/v1',
+      secret: 'persisted-codex-key', // awaken-allow: secret (fixture)
+      envKey: 'OPENAI_API_KEY',
+    });
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
     const environment = await client.beta.environments.create({
       name: `projected-local-${process.pid}`,
@@ -152,7 +237,7 @@ async function main() {
       betas: BETAS,
     });
     const session = await client.beta.sessions.create({
-      agent: 'assistant',
+      agent: GEMINI_AGENT,
       environment_id: environment.id,
       metadata: { 'awaken.runtime': 'acp:gemini' },
       betas: BETAS,
@@ -163,10 +248,11 @@ async function main() {
     });
     const reply = (await messages(client, session.id)).find((text) => text.includes('PROJECTED'));
     assert.ok(reply, 'the production projected ACP process returned an agent message');
-    assert.match(reply, /base=http:\/\/model-gateway\.invalid\/v1/u);
-    assert.match(reply, /model=unconfigured/u, 'the frozen run model wins over the fallback model env');
+    assert.match(reply, /base=http:\/\/gemini-db\.invalid\/v1/u);
+    assert.match(reply, /model=gemini-upstream/u);
+    assert.match(reply, /key=persis/u);
+    assert.ok(!reply.includes('ambient-gemini'));
     assert.ok(!reply.includes('environment-fallback-must-not-win'));
-    assert.match(reply, /key=lease-/u);
     assert.match(reply, /cwd=.*awaken-acp-sbx/u);
     assert.match(reply, /home=.*awaken-acp-sbx/u);
     assert.ok(!reply.includes(os.homedir()), 'the CLI never receives the operator home');
@@ -194,7 +280,7 @@ async function main() {
       betas: BETAS,
     });
     const codexSession = await codexClient.beta.sessions.create({
-      agent: 'assistant',
+      agent: CODEX_AGENT,
       environment_id: codexEnvironment.id,
       metadata: { 'awaken.runtime': 'acp:codex' },
       mcp_servers: [{ name: 'calc', type: 'url', url: fixture.url }],
@@ -208,12 +294,13 @@ async function main() {
     const codexReply = (await messages(codexClient, codexSession.id))
       .find((text) => text.includes('CODEX_PROJECTED'));
     assert.ok(codexReply, 'the projected Codex adapter returned an agent message');
-    assert.match(codexReply, /base=http:\/\/codex-gateway\.invalid\/v1/u);
-    assert.match(codexReply, /key=lease-/u);
+    assert.match(codexReply, /base=http:\/\/codex-db\.invalid\/v1/u);
+    assert.match(codexReply, /key=persis/u);
+    assert.ok(!codexReply.includes('ambient-codex'));
     assert.match(codexReply, /home=\.acp-config/u);
     assert.match(codexReply, /config=yes/u, 'the projected config.toml was materialized');
 
-    console.log('E2E PASS: aggregated awaken projects Gemini and Codex launches into per-thread local sandboxes, including config-file materialization.');
+    console.log('E2E PASS: aggregated awaken projects publication-pinned Gemini and Codex access into per-thread local sandboxes, including config-file materialization.');
   } finally {
     await stop(server).catch(() => {});
     await fixture.close();
