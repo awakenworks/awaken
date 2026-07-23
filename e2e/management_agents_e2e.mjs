@@ -94,11 +94,11 @@ async function main() {
         mcp_servers: [{ name: 'docs', type: 'url', url: 'https://example.invalid/mcp' }],
         skills: [{ id: 'skill-a' }],
         tools: ['bash', { id: 'glob' }, { name: 'read' }, 7, null],
-        multiagent: { enabled: true },
+        multiagent: { type: 'coordinator', agents: ['researcher'] },
       });
       assert.equal(rich.status, 200, JSON.stringify(rich.body));
       assert.deepEqual(rich.body.tools.map((tool) => tool.name), ['bash', 'glob', 'read']);
-      assert.deepEqual(rich.body.multiagent, { enabled: true });
+      assert.deepEqual(rich.body.multiagent, { type: 'coordinator', agents: ['researcher'] });
 
       const richUpdated = await json(baseUrl, 'POST', `/v1/agents/${rich.body.id}`, {
         version: rich.body.version,
@@ -117,7 +117,10 @@ async function main() {
       assert.deepEqual(richUpdated.body.mcp_servers, []);
       assert.deepEqual(richUpdated.body.skills, []);
       assert.deepEqual(richUpdated.body.tools.map((tool) => tool.name), ['write']);
-      assert.deepEqual(richUpdated.body.multiagent, { enabled: true });
+      assert.deepEqual(
+        richUpdated.body.multiagent,
+        { type: 'coordinator', agents: ['researcher'] },
+      );
 
       const richArchived = await json(baseUrl, 'POST', `/v1/agents/${rich.body.id}/archive`);
       assert.equal(richArchived.status, 200);
