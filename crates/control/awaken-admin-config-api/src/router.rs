@@ -14,10 +14,9 @@ use std::sync::Arc;
 use awaken_agent_contract::RedactedString;
 use awaken_api_contract::{ApiError, PROBLEM_JSON_CONTENT_TYPE, REQUEST_ID_HEADER};
 use awaken_config_resolver::{
-    AgentInputBindingRepository, AgentInputConfig, AgentMcpConfig, ConfigRepositoryError,
-    InferenceProfile, InferenceProfileStore, McpServerDef, McpServerId, McpStore, ResolveError,
-    ResolvedInference, SourceLookup, cooldown_deadline, resolve_inference, resolve_mcp_servers,
-    resolve_profile, resolve_profile_candidates,
+    AgentInputBindingRepository, AgentInputConfig, ConfigRepositoryError, InferenceProfile,
+    InferenceProfileStore, ResolveError, ResolvedInference, SourceLookup, cooldown_deadline,
+    resolve_inference, resolve_profile, resolve_profile_candidates,
 };
 use awaken_credential_vault::repo::{CredentialRepo, enter_credential};
 use awaken_credential_vault::{
@@ -48,9 +47,6 @@ pub struct AdminState {
     pub secrets: Arc<dyn SecretStore>,
     /// Authored [`InferenceProfile`]s, keyed by id (the resolver reads these).
     pub profiles: Arc<dyn InferenceProfileStore>,
-    /// Authored [`McpServerDef`]s + per-agent [`AgentMcpConfig`] bindings
-    /// (ADR-0043 Phase 3; the resolver materializes these at run bind time).
-    pub mcp: Arc<dyn McpStore>,
     /// Per-agent [`AgentInputConfig`] bindings (ADR-0038): which resources an
     /// agent mounts. Rendered into the agent's system prompt at compile (A3a) and
     /// realized into the sandbox at run bind time.
@@ -176,22 +172,9 @@ pub fn admin_router(state: AdminState) -> Router {
             "/v1/config/credential-pools/{id}/eligible",
             get(get_pool_eligible),
         )
-        .route("/v1/config/mcp-servers", get(list_mcp_servers))
-        .route(
-            "/v1/config/mcp-servers/{id}",
-            put(put_mcp_server).get(get_mcp_server),
-        )
-        .route(
-            "/v1/config/agents/{agent_id}/mcp",
-            put(put_agent_mcp).get(get_agent_mcp),
-        )
         .route(
             "/v1/config/agents/{agent_id}/resources",
             put(put_agent_inputs).get(get_agent_inputs),
-        )
-        .route(
-            "/v1/config/agents/{agent_id}/mcp/resolve",
-            post(resolve_agent_mcp),
         )
         .with_state(state)
 }
@@ -1042,156 +1025,6 @@ fn profile_missing(id: &str, rid: &str) -> Problem {
     ))
 }
 
-/// Author an MCP server definition. The path id is authoritative, and the
-/// credential binding is validated fail-closed on write: an `Exact` binding
-/// referencing an unknown credential source (or a pool binding referencing an
-/// unknown pool) is a 404, so a def that can never resolve is never stored.
-async fn put_mcp_server(
-    State(state): State<AdminState>,
-    scope: Option<Extension<ResourceWorkspace>>,
-    Path(id): Path<String>,
-    headers: HeaderMap,
-    Json(mut def): Json<McpServerDef>,
-) -> Result<Json<McpServerDef>, Problem> {
-    let rid = req_id(&headers);
-    def.id = McpServerId(id);
-    if let Some(Extension(scope)) = scope {
-        if state
-            .mcp
-            .get_server(&def.id.0)
-            .map_err(|error| config_repository_problem(&error, &rid))?
-            .is_some_and(|current| current.workspace_id != scope.0)
-        {
-            return Err(mcp_server_missing(&def.id.0, &rid));
-        }
-        def.workspace_id = scope.0;
-    }
-    match &def.credential_binding {
-        CredentialBinding::None => {}
-        CredentialBinding::Exact {
-            credential_source_id,
-        } => {
-            let source = state
-                .credentials
-                .get(credential_source_id)
-                .await
-                .map_err(|e| cred_problem(&e, &rid))?;
-            if !def.workspace_id.is_empty() && source.workspace_id != def.workspace_id {
-                return Err(mcp_server_missing(&def.id.0, &rid));
-            }
-        }
-        CredentialBinding::OneOfCredentialPool { credential_pool_id } => {
-            let pool = state
-                .credentials
-                .get_pool(credential_pool_id)
-                .await
-                .map_err(|e| cred_problem(&e, &rid))?;
-            if !def.workspace_id.is_empty() && pool.workspace_id != def.workspace_id {
-                return Err(mcp_server_missing(&def.id.0, &rid));
-            }
-        }
-    }
-    state
-        .mcp
-        .put_server(def.clone())
-        .map_err(|error| config_repository_problem(&error, &rid))?;
-    Ok(Json(def))
-}
-
-async fn get_mcp_server(
-    State(state): State<AdminState>,
-    scope: Option<Extension<ResourceWorkspace>>,
-    Path(id): Path<String>,
-    headers: HeaderMap,
-) -> Result<Json<McpServerDef>, Problem> {
-    let def = state
-        .mcp
-        .get_server(&id)
-        .map_err(|error| config_repository_problem(&error, &req_id(&headers)))?
-        .ok_or_else(|| mcp_server_missing(&id, &req_id(&headers)))?;
-    if scope.is_some_and(|Extension(scope)| def.workspace_id != scope.0) {
-        return Err(mcp_server_missing(&id, &req_id(&headers)));
-    }
-    Ok(Json(def))
-}
-
-async fn list_mcp_servers(
-    State(state): State<AdminState>,
-    scope: Option<Extension<ResourceWorkspace>>,
-    headers: HeaderMap,
-) -> Result<Json<Vec<McpServerDef>>, Problem> {
-    let mut servers = state
-        .mcp
-        .list_servers()
-        .map_err(|error| config_repository_problem(&error, &req_id(&headers)))?;
-    if let Some(Extension(scope)) = scope {
-        servers.retain(|server| server.workspace_id == scope.0);
-    }
-    Ok(Json(servers))
-}
-
-/// Bind which MCP servers an agent uses. The path agent id is authoritative, and
-/// every referenced server id must already be authored (fail-closed: a binding to
-/// an unknown server is a 404, never a dangling reference).
-async fn put_agent_mcp(
-    State(state): State<AdminState>,
-    scope: Option<Extension<ResourceWorkspace>>,
-    Path(agent_id): Path<String>,
-    headers: HeaderMap,
-    Json(mut config): Json<AgentMcpConfig>,
-) -> Result<Json<AgentMcpConfig>, Problem> {
-    let rid = req_id(&headers);
-    config.agent_id = agent_id;
-    let trusted_workspace = scope.map(|Extension(scope)| scope.0);
-    let workspace = trusted_workspace
-        .clone()
-        .unwrap_or_else(|| config.workspace_id.clone());
-    if let Some(workspace) = &trusted_workspace
-        && state
-            .mcp
-            .get_agent_config(&config.agent_id)
-            .map_err(|error| config_repository_problem(&error, &rid))?
-            .is_some_and(|current| current.workspace_id != *workspace)
-    {
-        return Err(agent_mcp_missing(&config.agent_id, &rid));
-    }
-    for server_id in &config.mcp_server_ids {
-        let Some(server) = state
-            .mcp
-            .get_server(&server_id.0)
-            .map_err(|error| config_repository_problem(&error, &rid))?
-        else {
-            return Err(mcp_server_missing(&server_id.0, &rid));
-        };
-        if server.workspace_id != workspace {
-            return Err(mcp_server_missing(&server_id.0, &rid));
-        }
-    }
-    config.workspace_id = workspace;
-    state
-        .mcp
-        .put_agent_config(config.clone())
-        .map_err(|error| config_repository_problem(&error, &rid))?;
-    Ok(Json(config))
-}
-
-async fn get_agent_mcp(
-    State(state): State<AdminState>,
-    scope: Option<Extension<ResourceWorkspace>>,
-    Path(agent_id): Path<String>,
-    headers: HeaderMap,
-) -> Result<Json<AgentMcpConfig>, Problem> {
-    let config = state
-        .mcp
-        .get_agent_config(&agent_id)
-        .map_err(|error| config_repository_problem(&error, &req_id(&headers)))?
-        .ok_or_else(|| agent_mcp_missing(&agent_id, &req_id(&headers)))?;
-    if scope.is_some_and(|Extension(scope)| config.workspace_id != scope.0) {
-        return Err(agent_mcp_missing(&agent_id, &req_id(&headers)));
-    }
-    Ok(Json(config))
-}
-
 /// Bind which resources an agent mounts (ADR-0038). The path agent id is
 /// authoritative; the binding set is stored whole (upsert by agent id).
 async fn put_agent_inputs(
@@ -1257,94 +1090,6 @@ fn agent_input_write_problem(
 }
 
 /// Resolve an agent's MCP binding within a workspace's credential scope.
-#[derive(serde::Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct ResolveAgentMcpRequest {
-    workspace_id: String,
-}
-
-/// The **secret-free** projection of a resolved MCP server (ADR-0043): what the
-/// agent's binding materializes to, and whether a credential resolved — never the
-/// secret itself. This is what an operator's "test binding" call sees.
-#[derive(serde::Serialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct ResolvedMcpServerView {
-    name: String,
-    url: String,
-    /// Whether a credential was materialized (never the value).
-    credential_present: bool,
-}
-
-/// Dry-run an agent's MCP binding through the resolver: load the agent's
-/// [`AgentMcpConfig`], collect the referenced [`McpServerDef`]s, and materialize
-/// each credential binding against the workspace's sources/pools — the same
-/// `resolve_mcp_servers` path a run uses — returning the secret-free views.
-async fn resolve_agent_mcp(
-    State(state): State<AdminState>,
-    scope: Option<Extension<ResourceWorkspace>>,
-    Path(agent_id): Path<String>,
-    headers: HeaderMap,
-    Json(request): Json<ResolveAgentMcpRequest>,
-) -> Result<Json<Vec<ResolvedMcpServerView>>, Problem> {
-    let rid = req_id(&headers);
-    let config = state
-        .mcp
-        .get_agent_config(&agent_id)
-        .map_err(|error| config_repository_problem(&error, &rid))?
-        .ok_or_else(|| agent_mcp_missing(&agent_id, &rid))?;
-    let scoped_workspace = scope.map(|Extension(scope)| scope.0);
-    let workspace = scoped_workspace.clone().unwrap_or(request.workspace_id);
-    if config.workspace_id != workspace {
-        return Err(agent_mcp_missing(&agent_id, &rid));
-    }
-    let mut defs = Vec::with_capacity(config.mcp_server_ids.len());
-    for server_id in &config.mcp_server_ids {
-        let def = state
-            .mcp
-            .get_server(&server_id.0)
-            .map_err(|error| config_repository_problem(&error, &rid))?
-            .ok_or_else(|| mcp_server_missing(&server_id.0, &rid))?;
-        if def.workspace_id != workspace {
-            return Err(mcp_server_missing(&server_id.0, &rid));
-        }
-        defs.push(def);
-    }
-    let lookup = workspace_lookup(&state, &workspace, &rid).await?;
-    let resolved = resolve_mcp_servers(&defs, &lookup, &*state.secrets)
-        .await
-        .map_err(|e| resolve_problem(&e, &rid))?;
-    Ok(Json(
-        resolved
-            .into_iter()
-            .map(|s| ResolvedMcpServerView {
-                name: s.name,
-                url: s.url,
-                credential_present: s.credential.is_some(),
-            })
-            .collect(),
-    ))
-}
-
-fn mcp_server_missing(id: &str, rid: &str) -> Problem {
-    Problem(ApiError::new(
-        404,
-        "not_found",
-        "MCP server not found",
-        format!("no mcp server `{id}`"),
-        rid,
-    ))
-}
-
-fn agent_mcp_missing(agent_id: &str, rid: &str) -> Problem {
-    Problem(ApiError::new(
-        404,
-        "not_found",
-        "Agent MCP config not found",
-        format!("no mcp config for agent `{agent_id}`"),
-        rid,
-    ))
-}
-
 /// Disable a credential (soft archive): a disabled source fails closed at
 /// materialization, so a leaked/rotated key can be pulled without deleting the row.
 async fn archive_credential(

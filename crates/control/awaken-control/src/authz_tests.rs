@@ -221,14 +221,6 @@ fn the_route_table_maps_reads_to_read_actions_and_mutations_to_writes() {
         action_for(&post, "/v1/config/inference-profiles/p/resolve"),
         Some(WORKSPACE_READ)
     );
-    assert_eq!(
-        action_for(&put, "/v1/config/agents/a1/mcp"),
-        Some(WORKSPACE_WRITE)
-    );
-    assert_eq!(
-        action_for(&post, "/v1/config/agents/a1/mcp/resolve"),
-        Some(WORKSPACE_READ)
-    );
     assert_eq!(action_for(&post, "/v1/vaults"), Some(APIKEY_WRITE));
     // Listing (GET) reads; the SDK `beta.vaults.list` / `credentials.list`.
     assert_eq!(action_for(&get, "/v1/vaults"), Some(APIKEY_READ));
@@ -822,25 +814,13 @@ fn af_covers_the_deployment_environment_and_agent_families() {
     let post = Method::POST;
     let put = Method::PUT;
 
-    // -- config: endpoints / mcp-servers / inference-profiles / authoring agents --
+    // -- config: endpoints / inference-profiles / authoring agents --
     assert_eq!(
         scoped(get.clone(), "/v1/config/endpoints/ep1"),
         Some(WORKSPACE_READ)
     );
     assert_eq!(
         scoped(put.clone(), "/v1/config/endpoints/ep1"),
-        Some(WORKSPACE_WRITE)
-    );
-    assert_eq!(
-        scoped(get.clone(), "/v1/config/mcp-servers"),
-        Some(WORKSPACE_READ)
-    );
-    assert_eq!(
-        scoped(get.clone(), "/v1/config/mcp-servers/m1"),
-        Some(WORKSPACE_READ)
-    );
-    assert_eq!(
-        scoped(put.clone(), "/v1/config/mcp-servers/m1"),
         Some(WORKSPACE_WRITE)
     );
     assert_eq!(

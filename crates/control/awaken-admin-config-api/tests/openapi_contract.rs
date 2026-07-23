@@ -14,8 +14,7 @@ use std::sync::Arc;
 
 use awaken_admin_config_api::openapi::openapi_document;
 use awaken_admin_config_api::{
-    AdminState, InMemoryAgentInputBindingRepository, InMemoryMcpStore, InMemoryProfileStore,
-    admin_router,
+    AdminState, InMemoryAgentInputBindingRepository, InMemoryProfileStore, admin_router,
 };
 use awaken_credential_vault::InMemorySecretStore;
 use awaken_credential_vault::repo::InMemoryCredentialRepo;
@@ -30,7 +29,6 @@ fn state() -> AdminState {
         credentials: Arc::new(InMemoryCredentialRepo::new()),
         secrets: Arc::new(InMemorySecretStore::new()),
         profiles: Arc::new(InMemoryProfileStore::new()),
-        mcp: Arc::new(InMemoryMcpStore::new()),
         resources: Arc::new(InMemoryAgentInputBindingRepository::new()),
         probe: None,
         model_discovery: None,
@@ -57,17 +55,13 @@ fn document_shape_and_schema_components() {
         "CredentialPool",
         "CredentialBinding",
         "InferenceProfile",
-        "McpServerDef",
-        "AgentMcpConfig",
         "AgentInputConfig",
         "EnterCredentialRequest",
         "ValidateCredentialRequest",
         "ResolveRequest",
         "ResolveProfileRequest",
-        "ResolveAgentMcpRequest",
         "ResolvedInferenceView",
         "ResolvedCandidatesView",
-        "ResolvedMcpServerView",
         "CredentialValidation",
         "PoolEligibleView",
         "ModelAttributes",
@@ -173,12 +167,6 @@ fn every_mounted_route_is_documented() {
             "/v1/config/inference-profiles/{id}/resolve-candidates",
         ),
         ("post", "/v1/config/inference/resolve"),
-        ("get", "/v1/config/mcp-servers"),
-        ("put", "/v1/config/mcp-servers/{id}"),
-        ("get", "/v1/config/mcp-servers/{id}"),
-        ("put", "/v1/config/agents/{agent_id}/mcp"),
-        ("get", "/v1/config/agents/{agent_id}/mcp"),
-        ("post", "/v1/config/agents/{agent_id}/mcp/resolve"),
         ("put", "/v1/config/agents/{agent_id}/resources"),
         ("get", "/v1/config/agents/{agent_id}/resources"),
     ];

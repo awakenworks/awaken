@@ -34,7 +34,6 @@ fn router(probe: Option<Arc<dyn CredentialProbe>>) -> Router {
         credentials: Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new()),
         secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
         profiles: Arc::new(awaken_admin_config_api::InMemoryProfileStore::new()),
-        mcp: Arc::new(awaken_admin_config_api::InMemoryMcpStore::new()),
         resources: Arc::new(awaken_admin_config_api::InMemoryAgentInputBindingRepository::new()),
         probe,
         model_discovery: None,

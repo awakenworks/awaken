@@ -265,30 +265,6 @@ async fn the_bootstrap_admin_token_authorizes_full_crud_over_http() {
     .await;
     assert_eq!(s, StatusCode::OK);
 
-    // Admin aggregates (workspace.*): MCP server def + agent binding.
-    let (s, _) = call(
-        &app,
-        "PUT",
-        "/v1/config/mcp-servers/calc-def",
-        t,
-        Some(json!({
-            "id": "calc-def", "display_name": "calc", "url": "http://127.0.0.1:1/",
-            "credential_binding": { "type": "exact", "credential_source_id": cred_id },
-            "version": 1
-        })),
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK);
-    let (s, _) = call(
-        &app,
-        "PUT",
-        "/v1/config/agents/calc-agent/mcp",
-        t,
-        Some(json!({ "agent_id": "calc-agent", "mcp_server_ids": ["calc-def"], "version": 1 })),
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK);
-
     // The vault front door (apikey.*).
     let (s, vault) = call(
         &app,

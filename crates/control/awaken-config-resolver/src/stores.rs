@@ -12,7 +12,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{AgentInputConfig, AgentMcpConfig, InferenceProfile, McpServerDef, WebhookEndpointDef};
+use crate::{AgentInputConfig, InferenceProfile, WebhookEndpointDef};
 
 /// Infrastructure failure from a synchronous authored-config repository.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -57,84 +57,9 @@ impl InferenceProfileStore for InMemoryProfileStore {
     }
 }
 
-/// A store for authored [`McpServerDef`]s (by server id) and per-agent
-/// [`AgentMcpConfig`] bindings (by agent id) — the admin-plane MCP aggregates.
-/// Sync + in-memory by default; a durable backend can implement the same port.
-pub trait McpStore: Send + Sync {
-    fn put_server(&self, def: McpServerDef) -> Result<(), ConfigRepositoryError>;
-    fn get_server(&self, id: &str) -> Result<Option<McpServerDef>, ConfigRepositoryError>;
-    fn list_servers(&self) -> Result<Vec<McpServerDef>, ConfigRepositoryError>;
-    fn put_agent_config(&self, config: AgentMcpConfig) -> Result<(), ConfigRepositoryError>;
-    fn get_agent_config(
-        &self,
-        agent_id: &str,
-    ) -> Result<Option<AgentMcpConfig>, ConfigRepositoryError>;
-}
-
-/// The default in-memory [`McpStore`].
-#[derive(Default)]
-pub struct InMemoryMcpStore {
-    servers: std::sync::Mutex<HashMap<String, McpServerDef>>,
-    agents: std::sync::Mutex<HashMap<String, AgentMcpConfig>>,
-}
-
-impl InMemoryMcpStore {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-impl McpStore for InMemoryMcpStore {
-    fn put_server(&self, def: McpServerDef) -> Result<(), ConfigRepositoryError> {
-        self.servers
-            .lock()
-            .map_err(|_| ConfigRepositoryError::Storage("MCP store mutex poisoned".into()))?
-            .insert(def.id.0.clone(), def);
-        Ok(())
-    }
-    fn get_server(&self, id: &str) -> Result<Option<McpServerDef>, ConfigRepositoryError> {
-        Ok(self
-            .servers
-            .lock()
-            .map_err(|_| ConfigRepositoryError::Storage("MCP store mutex poisoned".into()))?
-            .get(id)
-            .cloned())
-    }
-    fn list_servers(&self) -> Result<Vec<McpServerDef>, ConfigRepositoryError> {
-        let mut servers: Vec<McpServerDef> = self
-            .servers
-            .lock()
-            .map_err(|_| ConfigRepositoryError::Storage("MCP store mutex poisoned".into()))?
-            .values()
-            .cloned()
-            .collect();
-        servers.sort_by(|a, b| a.id.0.cmp(&b.id.0));
-        Ok(servers)
-    }
-    fn put_agent_config(&self, config: AgentMcpConfig) -> Result<(), ConfigRepositoryError> {
-        self.agents
-            .lock()
-            .map_err(|_| ConfigRepositoryError::Storage("MCP store mutex poisoned".into()))?
-            .insert(config.agent_id.clone(), config);
-        Ok(())
-    }
-    fn get_agent_config(
-        &self,
-        agent_id: &str,
-    ) -> Result<Option<AgentMcpConfig>, ConfigRepositoryError> {
-        Ok(self
-            .agents
-            .lock()
-            .map_err(|_| ConfigRepositoryError::Storage("MCP store mutex poisoned".into()))?
-            .get(agent_id)
-            .cloned())
-    }
-}
-
 /// A store for authored [`WebhookEndpointDef`]s (an admin-plane aggregate,
 /// ADR-0048). Sync + in-memory by default; the durable admin backend implements
-/// the same port. Unlike [`McpStore`]/[`InferenceProfileStore`] it enumerates by
+/// the same port. Unlike [`InferenceProfileStore`] it enumerates by
 /// workspace (dispatch fan-out) and supports delete (unsubscribe).
 pub trait WebhookStore: Send + Sync {
     fn put(&self, def: WebhookEndpointDef) -> Result<(), ConfigRepositoryError>;
