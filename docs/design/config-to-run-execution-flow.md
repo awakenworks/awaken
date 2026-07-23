@@ -348,7 +348,8 @@ Config authoring creates versioned records. It is not runtime execution.
 The config domain owns:
 
 - `ModelProviderSpec`, `ModelSpec`, `ModelPoolSpec`, `AgentSpec`, `ToolSpec`,
-  `SkillSpec`, MCP server specs, A2A server specs, and related config records;
+  `SkillSpec`, typed Agent MCP/Skill/delegation bindings, A2A server specs, and
+  related config records;
 - draft and publish workflows;
 - admin/operator validation and audit policy;
 - builtin seed application and user override merge rules.

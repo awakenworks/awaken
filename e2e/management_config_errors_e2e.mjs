@@ -21,7 +21,7 @@ async function main() {
     for (const uri of [
       '/v1/config/providers/ghost',
       '/v1/config/endpoints/ghost',
-      '/v1/config/mcp-servers/ghost',
+      '/v1/config/agents/ghost',
     ]) {
       const r = await req(base, 'GET', uri);
       assert.equal(r.status, 404, `${uri} -> 404 (got ${r.status})`);
