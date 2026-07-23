@@ -34,6 +34,10 @@ use awaken_agent_contract::thread::commit::operation::{
 };
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
+use awaken_agent_contract::thread::read::lifecycle::{
+    LifecycleCursor, LifecyclePage, RunLifecycleEvent, RunLifecycleFeed, RunLifecycleFeedError,
+    classify_run_lifecycle,
+};
 use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource, RunResumeTicket,
 };
@@ -295,6 +299,102 @@ impl CheckpointReader for SqliteCommitCoordinator {
             .take(limit)
             .cloned()
             .collect()
+    }
+}
+
+/// Authoritative lifecycle feed for multiple processes sharing one SQLite file.
+///
+/// The synchronous compatibility ports retain their process-local projection,
+/// but lifecycle delivery must observe commits made by a peer Worker or Control
+/// process. This query therefore reads durable event truth on every page, just
+/// like the PostgreSQL implementation.
+#[async_trait]
+impl RunLifecycleFeed for SqliteCommitCoordinator {
+    async fn events_after(
+        &self,
+        cursor: LifecycleCursor,
+        limit: usize,
+    ) -> Result<LifecyclePage, RunLifecycleFeedError> {
+        if limit == 0 {
+            return Ok(LifecyclePage {
+                events: Vec::new(),
+                next_cursor: cursor,
+            });
+        }
+        let after = i64::try_from(cursor.0).map_err(|_| {
+            RunLifecycleFeedError::Rejected("cursor exceeds SQLite INTEGER range".into())
+        })?;
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let rows = {
+            let conn = self.conn.lock().map_err(|_| {
+                RunLifecycleFeedError::Rejected("commit connection poisoned".into())
+            })?;
+            let mut statement = conn
+                .prepare(&format!(
+                    "WITH lifecycle AS (\
+                         SELECT event.sequence, event.run_id, run.thread_id, event.payload, \
+                                lag(event.payload) OVER (\
+                                    PARTITION BY event.run_id ORDER BY event.sequence\
+                                ) AS previous_payload \
+                         FROM {NS}_event AS event \
+                         JOIN {NS}_run_record AS run ON run.run_id = event.run_id \
+                         WHERE event.kind IN ('\"RunStateChanged\"', '\"RunPhaseChanged\"')\
+                     ) \
+                     SELECT sequence, run_id, thread_id, payload, previous_payload \
+                     FROM lifecycle WHERE sequence > ?1 ORDER BY sequence LIMIT ?2"
+                ))
+                .map_err(|error| RunLifecycleFeedError::Rejected(error.to_string()))?;
+            let mapped = statement
+                .query_map(params![after, limit], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                    ))
+                })
+                .map_err(|error| RunLifecycleFeedError::Rejected(error.to_string()))?;
+            mapped
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| RunLifecycleFeedError::Rejected(error.to_string()))?
+        };
+
+        let mut events = Vec::with_capacity(rows.len());
+        for (sequence, run_id, thread_id, payload, previous_payload) in rows {
+            let sequence = u64::try_from(sequence).map_err(|_| {
+                RunLifecycleFeedError::Rejected(
+                    "persisted lifecycle sequence is negative".to_string(),
+                )
+            })?;
+            let payload = serde_json::from_str::<serde_json::Value>(&payload)
+                .map_err(|_| RunLifecycleFeedError::InvalidState { sequence })?;
+            let state = serde_json::from_value::<RunState>(
+                payload.get("state").cloned().unwrap_or_default(),
+            )
+            .map_err(|_| RunLifecycleFeedError::InvalidState { sequence })?;
+            let previous = previous_payload
+                .map(|payload| {
+                    serde_json::from_str::<serde_json::Value>(&payload)
+                        .ok()
+                        .and_then(|payload| payload.get("state").cloned())
+                        .and_then(|state| serde_json::from_value::<RunState>(state).ok())
+                        .ok_or(RunLifecycleFeedError::InvalidState { sequence })
+                })
+                .transpose()?;
+            events.push(RunLifecycleEvent {
+                cursor: LifecycleCursor(sequence),
+                thread_id: ThreadId(thread_id),
+                run_id: RunId(run_id),
+                kind: classify_run_lifecycle(&state, previous.as_ref()),
+                state,
+            });
+        }
+        let next_cursor = events.last().map_or(cursor, |event| event.cursor);
+        Ok(LifecyclePage {
+            events,
+            next_cursor,
+        })
     }
 }
 

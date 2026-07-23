@@ -156,19 +156,18 @@ impl ApplicationAccessStore {
     }
 
     /// Authenticate only credentials minted by this application store.
-    pub fn authenticate(&self, presented: &str) -> Result<ApplicationIdentity, ()> {
-        let (principal, workspace) = self.engine.authenticate(presented).map_err(|_| ())?;
+    pub fn authenticate(&self, presented: &str) -> Option<ApplicationIdentity> {
+        let (principal, workspace) = self.engine.authenticate(presented).ok()?;
         let PrincipalRef::Service { service_id } = principal else {
-            return Err(());
+            return None;
         };
         let grant = self
             .grants
             .lock()
             .expect("application grant store poisoned")
             .get(&service_id)
-            .cloned()
-            .ok_or(())?;
-        Ok(ApplicationIdentity {
+            .cloned()?;
+        Some(ApplicationIdentity {
             workspace_id: workspace.0,
             grant,
         })
@@ -186,6 +185,22 @@ impl ApplicationAccessStore {
 
 const MAX_APPLICATION_BODY: usize = 2 * 1024 * 1024;
 
+#[derive(Debug, Clone, Copy)]
+struct ApplicationRejection {
+    status: StatusCode,
+    detail: &'static str,
+}
+
+impl ApplicationRejection {
+    const fn new(status: StatusCode, detail: &'static str) -> Self {
+        Self { status, detail }
+    }
+
+    fn into_response(self) -> Response {
+        reject(self.status, self.detail)
+    }
+}
+
 /// Blanket PEP for browser/application protocol routes.
 ///
 /// It accepts only an application credential, checks the route operation and
@@ -199,7 +214,7 @@ pub async fn application_guard(
     let Some(presented) = presented_bearer(request.headers()) else {
         return reject(StatusCode::UNAUTHORIZED, "missing application access token");
     };
-    let Ok(identity) = store.authenticate(&presented) else {
+    let Some(identity) = store.authenticate(&presented) else {
         return reject(StatusCode::UNAUTHORIZED, "invalid application access token");
     };
     let operation = if matches!(request.method().as_str(), "GET" | "HEAD") {
@@ -215,14 +230,14 @@ pub async fn application_guard(
     }
     match scope_application_request(request, &identity).await {
         Ok(request) => next.run(request).await,
-        Err(response) => response,
+        Err(rejection) => rejection.into_response(),
     }
 }
 
 async fn scope_application_request(
     mut request: Request,
     identity: &ApplicationIdentity,
-) -> Result<Request, Response> {
+) -> Result<Request, ApplicationRejection> {
     let path = request.uri().path().to_string();
     let segments: Vec<&str> = path.split('/').collect();
     let path_agent = segments
@@ -250,13 +265,14 @@ async fn scope_application_request(
 
     if matches!(request.method().as_str(), "POST" | "PUT" | "PATCH") {
         let (mut parts, body) = request.into_parts();
-        let bytes = to_bytes(body, MAX_APPLICATION_BODY)
-            .await
-            .map_err(|_| reject(StatusCode::BAD_REQUEST, "invalid application request body"))?;
-        let mut value: serde_json::Value = serde_json::from_slice(&bytes)
-            .map_err(|_| reject(StatusCode::BAD_REQUEST, "application request must be JSON"))?;
+        let bytes = to_bytes(body, MAX_APPLICATION_BODY).await.map_err(|_| {
+            ApplicationRejection::new(StatusCode::BAD_REQUEST, "invalid application request body")
+        })?;
+        let mut value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|_| {
+            ApplicationRejection::new(StatusCode::BAD_REQUEST, "application request must be JSON")
+        })?;
         let object = value.as_object_mut().ok_or_else(|| {
-            reject(
+            ApplicationRejection::new(
                 StatusCode::BAD_REQUEST,
                 "application request must be an object",
             )
@@ -295,26 +311,32 @@ async fn scope_application_request(
                 .get(key)
                 .and_then(serde_json::Value::as_str)
                 .filter(|value| !value.trim().is_empty())
-                .ok_or_else(|| reject(StatusCode::BAD_REQUEST, "thread id must be a string"))?;
+                .ok_or_else(|| {
+                    ApplicationRejection::new(StatusCode::BAD_REQUEST, "thread id must be a string")
+                })?;
             let internal = identity.grant.bind_thread(&identity.workspace_id, external);
             object.insert(key.to_string(), serde_json::Value::String(internal));
         } else if !parts.uri.path().contains("/threads/") {
-            return Err(reject(
+            return Err(ApplicationRejection::new(
                 StatusCode::BAD_REQUEST,
                 "application protocol requests require a thread id",
             ));
         }
-        let encoded = serde_json::to_vec(&value)
-            .map_err(|_| reject(StatusCode::BAD_REQUEST, "invalid application request body"))?;
+        let encoded = serde_json::to_vec(&value).map_err(|_| {
+            ApplicationRejection::new(StatusCode::BAD_REQUEST, "invalid application request body")
+        })?;
         parts.headers.remove(header::CONTENT_LENGTH);
         request = Request::from_parts(parts, Body::from(encoded));
     }
     Ok(request)
 }
 
-fn authorize_agent(identity: &ApplicationIdentity, agent_id: Option<&str>) -> Result<(), Response> {
+fn authorize_agent(
+    identity: &ApplicationIdentity,
+    agent_id: Option<&str>,
+) -> Result<(), ApplicationRejection> {
     let Some(agent_id) = agent_id else {
-        return Err(reject(
+        return Err(ApplicationRejection::new(
             StatusCode::BAD_REQUEST,
             "application protocol requests require an agent id",
         ));
@@ -322,21 +344,21 @@ fn authorize_agent(identity: &ApplicationIdentity, agent_id: Option<&str>) -> Re
     if identity.grant.agent_ids.contains(agent_id) {
         Ok(())
     } else {
-        Err(reject(
+        Err(ApplicationRejection::new(
             StatusCode::FORBIDDEN,
             "application token does not allow this agent",
         ))
     }
 }
 
-fn replace_path(uri: &mut Uri, path: &str) -> Result<(), Response> {
+fn replace_path(uri: &mut Uri, path: &str) -> Result<(), ApplicationRejection> {
     let query = uri
         .query()
         .map(|query| format!("?{query}"))
         .unwrap_or_default();
     *uri = format!("{path}{query}")
         .parse()
-        .map_err(|_| reject(StatusCode::BAD_REQUEST, "invalid thread id"))?;
+        .map_err(|_| ApplicationRejection::new(StatusCode::BAD_REQUEST, "invalid thread id"))?;
     Ok(())
 }
 
