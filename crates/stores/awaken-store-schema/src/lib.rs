@@ -18,7 +18,7 @@ pub const COMMIT_BUNDLE_ID: &str = "awaken.runtime_commit";
 
 /// `(version, description, portable SQL)` for each commit table — one row per
 /// field of the committed thread.
-const COMMIT_SPECS: [(i64, &str, &str); 6] = [
+const COMMIT_SPECS: [(i64, &str, &str); 8] = [
     (
         1,
         "commit log: run-fact state authority and the monotonic fence",
@@ -73,6 +73,25 @@ const COMMIT_SPECS: [(i64, &str, &str); 6] = [
         "CREATE TABLE {prefix}_waiting (\
             run_id TEXT PRIMARY KEY, \
             ticket {json} NOT NULL)",
+    ),
+    (
+        7,
+        "per-thread optimistic commit version",
+        "CREATE TABLE {prefix}_thread_version (\
+            thread_id TEXT PRIMARY KEY, \
+            version BIGINT NOT NULL)",
+    ),
+    (
+        8,
+        "durable idempotency receipts for logical commit operations",
+        "CREATE TABLE {prefix}_commit_receipt (\
+            operation_run_id TEXT NOT NULL, \
+            operation_ordinal BIGINT NOT NULL, \
+            thread_id TEXT NOT NULL, \
+            payload_hash TEXT NOT NULL, \
+            commit_sequence BIGINT NOT NULL, \
+            thread_version BIGINT NOT NULL, \
+            PRIMARY KEY (operation_run_id, operation_ordinal))",
     ),
 ];
 
@@ -163,17 +182,21 @@ mod tests {
     #[test]
     fn commit_bundle_has_one_table_per_committed_field() {
         let bundle = commit_bundle().expect("bundle builds");
-        assert_eq!(bundle.migrations().len(), 6);
+        assert_eq!(bundle.migrations().len(), 8);
     }
 
     // The migrator requires a strictly increasing version stream; a duplicated or
     // out-of-order version (a copy-paste slip when appending a spec) must be caught
-    // here, not at first migration against a live DB. Pin the stream is dense 1..=6.
+    // here, not at first migration against a live DB. Pin the stream is dense 1..=8.
     #[test]
     fn commit_bundle_versions_are_dense_and_strictly_increasing() {
         let bundle = commit_bundle().expect("bundle builds");
         let versions: Vec<i64> = bundle.migrations().iter().map(|m| m.version()).collect();
-        assert_eq!(versions, vec![1, 2, 3, 4, 5, 6], "dense 1..=6, in order");
+        assert_eq!(
+            versions,
+            vec![1, 2, 3, 4, 5, 6, 7, 8],
+            "dense 1..=8, in order"
+        );
         assert!(
             versions.windows(2).all(|w| w[0] < w[1]),
             "versions strictly increase"
@@ -226,11 +249,12 @@ mod tests {
                     sql.contains("runtime_"),
                     "{{prefix}} expanded in {dialect:?}"
                 );
-                // `{json}` is on every table (legacy phase column / data / kind / payload / ticket).
-                assert!(
-                    sql.contains(json),
-                    "{{json}} → {json} in {dialect:?}: {sql}"
-                );
+                if template.contains("{json}") {
+                    assert!(
+                        sql.contains(json),
+                        "{{json}} → {json} in {dialect:?}: {sql}"
+                    );
+                }
                 if template.contains("{timestamptz}") {
                     assert!(sql.contains(ts), "{{timestamptz}} → {ts} in {dialect:?}");
                 }

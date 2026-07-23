@@ -150,6 +150,7 @@ pub awaken_session_contract::AgentCapabilities::custom_tools: alloc::vec::Vec<aw
 pub awaken_session_contract::AgentCapabilities::delegates: alloc::vec::Vec<alloc::string::String>
 pub awaken_session_contract::AgentCapabilities::skills: alloc::vec::Vec<alloc::string::String>
 pub struct awaken_session_contract::AgentConfigView
+pub awaken_session_contract::AgentConfigView::delegate_ids: alloc::vec::Vec<alloc::string::String>
 pub awaken_session_contract::AgentConfigView::mcp_servers: alloc::vec::Vec<awaken_session_contract::AgentMcpServerView>
 pub awaken_session_contract::AgentConfigView::model: core::option::Option<alloc::string::String>
 pub awaken_session_contract::AgentConfigView::resources: alloc::vec::Vec<awaken_resource_contract::input::InputBinding>
@@ -157,6 +158,8 @@ pub awaken_session_contract::AgentConfigView::skill_ids: alloc::vec::Vec<alloc::
 pub awaken_session_contract::AgentConfigView::system: core::option::Option<alloc::string::String>
 pub awaken_session_contract::AgentConfigView::tool_ids: alloc::vec::Vec<alloc::string::String>
 pub struct awaken_session_contract::AgentMcpServerView
+pub awaken_session_contract::AgentMcpServerView::credential_revision: core::option::Option<u64>
+pub awaken_session_contract::AgentMcpServerView::credential_source_id: core::option::Option<alloc::string::String>
 pub awaken_session_contract::AgentMcpServerView::name: alloc::string::String
 pub awaken_session_contract::AgentMcpServerView::url: alloc::string::String
 pub struct awaken_session_contract::BuiltinTool
@@ -188,6 +191,7 @@ pub awaken_session_contract::McpRefreshBinding::scope: core::option::Option<allo
 pub awaken_session_contract::McpRefreshBinding::token_endpoint: alloc::string::String
 pub awaken_session_contract::McpRefreshBinding::token_endpoint_auth: awaken_session_contract::TokenEndpointAuthBinding
 pub struct awaken_session_contract::McpServerBinding
+pub awaken_session_contract::McpServerBinding::credential_revision: core::option::Option<u64>
 pub awaken_session_contract::McpServerBinding::credential_source_id: core::option::Option<alloc::string::String>
 pub awaken_session_contract::McpServerBinding::name: alloc::string::String
 pub awaken_session_contract::McpServerBinding::refresh: core::option::Option<awaken_session_contract::McpRefreshBinding>
@@ -219,6 +223,7 @@ pub awaken_session_contract::PersistedSession::session_id: alloc::string::String
 pub awaken_session_contract::PersistedSession::status: alloc::string::String
 pub awaken_session_contract::PersistedSession::title: core::option::Option<alloc::string::String>
 pub struct awaken_session_contract::PersistedSessionRuntime
+pub awaken_session_contract::PersistedSessionRuntime::delegate_ids: core::option::Option<alloc::vec::Vec<alloc::string::String>>
 pub awaken_session_contract::PersistedSessionRuntime::deny_egress: bool
 pub awaken_session_contract::PersistedSessionRuntime::mcp_servers: alloc::vec::Vec<awaken_session_contract::McpServerBinding>
 pub awaken_session_contract::PersistedSessionRuntime::runtime: core::option::Option<alloc::string::String>
@@ -252,6 +257,7 @@ pub awaken_session_contract::ScopedPersistedSession::session: awaken_session_con
 pub awaken_session_contract::ScopedPersistedSession::workspace_id: alloc::string::String
 pub struct awaken_session_contract::SessionInit
 pub awaken_session_contract::SessionInit::agent_id: alloc::string::String
+pub awaken_session_contract::SessionInit::delegate_ids: core::option::Option<alloc::vec::Vec<alloc::string::String>>
 pub awaken_session_contract::SessionInit::deny_egress: bool
 pub awaken_session_contract::SessionInit::mcp_servers: alloc::vec::Vec<awaken_session_contract::McpServerBinding>
 pub awaken_session_contract::SessionInit::model: core::option::Option<alloc::string::String>

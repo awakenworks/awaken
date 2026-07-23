@@ -1143,6 +1143,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "sqlx",
  "thiserror 2.0.18",
  "tokio",
@@ -1574,6 +1575,7 @@ dependencies = [
  "awaken-agent-contract",
  "awaken-store-conformance",
  "awaken-store-inmem",
+ "serde",
  "serde_json",
  "tokio",
 ]

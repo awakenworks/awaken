@@ -2,6 +2,7 @@
 //! the write aggregate it commits.
 
 pub mod coordinator;
+pub mod operation;
 pub mod run;
 pub mod run_fact;
 pub mod staged;

@@ -13,6 +13,7 @@ use awaken_agent_contract::agent::run::{Id as RunId, Record as RunRecord, RunSta
 use awaken_agent_contract::agent::state::Command as StateCommand;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::coordinator::Error as CommitError;
+use awaken_agent_contract::thread::commit::operation::{CommitOperation, CommitReceipt};
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::recovery::{RunRecoverySnapshot, RunResumeTicket};
 use awaken_agent_contract::thread::read::run_store::RunStore;
@@ -76,35 +77,64 @@ impl RecoveryProjection {
             ));
         }
 
-        let run_id = commit.run_id().clone();
-        let run_state = commit.run_state();
-        let resume_ticket = commit.resume_ticket().cloned();
-        snapshot.messages.extend(commit.messages);
-        snapshot.state.extend(commit.state);
-        let record_value = RunRecord {
-            id: run_id.clone(),
-            thread_id: commit.thread_id,
-            state: run_state.clone(),
-        };
-        if let Some(existing) = snapshot.runs.iter_mut().find(|run| run.id == run_id) {
-            *existing = record_value;
-        } else {
-            snapshot.runs.push(record_value);
-        }
-        snapshot.latest_run_id = Some(run_id.clone());
-        snapshot
-            .resume_tickets
-            .retain(|entry| entry.run_id != run_id);
-        if let Some(ticket) = resume_ticket
-            && matches!(run_state, RunState::Awaiting)
+        apply_to_snapshot(snapshot, commit, record.sequence);
+        Ok(())
+    }
+
+    /// Apply an authoritative operation receipt exactly once. A duplicate
+    /// receipt after response loss advances an unadvanced cache, while a
+    /// duplicate after a successful local projection is a verified no-op.
+    pub fn apply_receipt(
+        &self,
+        operation: CommitOperation,
+        receipt: &CommitReceipt,
+    ) -> Result<(), CommitError> {
+        if receipt.operation_id != operation.operation_id
+            || receipt.payload_hash != operation.payload_hash
         {
-            snapshot
-                .resume_tickets
-                .push(RunResumeTicket { run_id, ticket });
+            return Err(CommitError::Rejected(
+                "commit receipt does not match the submitted operation".to_string(),
+            ));
         }
-        snapshot.thread_version = snapshot.thread_version.saturating_add(1);
-        snapshot.store_cursor = snapshot.store_cursor.max(record.sequence);
-        snapshot.next_commit_ordinal = snapshot.next_commit_ordinal.saturating_add(1);
+        let mut guard = self
+            .snapshot
+            .write()
+            .map_err(|_| CommitError::Rejected("recovery projection poisoned".to_string()))?;
+        let snapshot = guard.as_mut().ok_or_else(|| {
+            CommitError::Rejected("remote commit has no installed recovery snapshot".to_string())
+        })?;
+        if snapshot.thread_id != operation.commit.thread_id
+            || snapshot.claimed_run_id != *operation.commit.run_id()
+        {
+            return Err(CommitError::Rejected(
+                "remote commit does not match the installed recovery projection".to_string(),
+            ));
+        }
+        let next_ordinal = operation
+            .operation_id
+            .ordinal
+            .checked_add(1)
+            .ok_or_else(|| CommitError::Rejected("commit ordinal overflow".to_string()))?;
+        let next_version = operation
+            .expected_thread_version
+            .checked_add(1)
+            .ok_or_else(|| CommitError::Rejected("Thread version overflow".to_string()))?;
+        if snapshot.thread_version == receipt.thread_version
+            && snapshot.next_commit_ordinal == next_ordinal
+            && snapshot.store_cursor >= receipt.commit_sequence
+        {
+            return Ok(());
+        }
+        if snapshot.thread_version != operation.expected_thread_version
+            || receipt.thread_version != next_version
+            || snapshot.next_commit_ordinal != operation.operation_id.ordinal
+        {
+            return Err(CommitError::Rejected(format!(
+                "commit receipt projection gap: cache version {}, expected {}, receipt {}",
+                snapshot.thread_version, operation.expected_thread_version, receipt.thread_version
+            )));
+        }
+        apply_to_snapshot(snapshot, operation.commit, receipt.commit_sequence);
         Ok(())
     }
 
@@ -121,6 +151,42 @@ impl RecoveryProjection {
             *snapshot = None;
         }
     }
+}
+
+fn apply_to_snapshot(
+    snapshot: &mut RunRecoverySnapshot,
+    commit: ThreadCommit,
+    commit_sequence: u64,
+) {
+    let run_id = commit.run_id().clone();
+    let run_state = commit.run_state();
+    let resume_ticket = commit.resume_ticket().cloned();
+    snapshot.messages.extend(commit.messages);
+    snapshot.state.extend(commit.state);
+    let record_value = RunRecord {
+        id: run_id.clone(),
+        thread_id: commit.thread_id,
+        state: run_state.clone(),
+    };
+    if let Some(existing) = snapshot.runs.iter_mut().find(|run| run.id == run_id) {
+        *existing = record_value;
+    } else {
+        snapshot.runs.push(record_value);
+    }
+    snapshot.latest_run_id = Some(run_id.clone());
+    snapshot
+        .resume_tickets
+        .retain(|entry| entry.run_id != run_id);
+    if let Some(ticket) = resume_ticket
+        && matches!(run_state, RunState::Awaiting)
+    {
+        snapshot
+            .resume_tickets
+            .push(RunResumeTicket { run_id, ticket });
+    }
+    snapshot.thread_version = snapshot.thread_version.saturating_add(1);
+    snapshot.store_cursor = snapshot.store_cursor.max(commit_sequence);
+    snapshot.next_commit_ordinal = snapshot.next_commit_ordinal.saturating_add(1);
 }
 
 impl ThreadReader for RecoveryProjection {

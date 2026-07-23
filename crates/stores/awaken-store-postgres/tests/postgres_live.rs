@@ -17,7 +17,12 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::draft::Draft;
 use awaken_agent_contract::audit::kind::Kind as EventKind;
 use awaken_agent_contract::thread::commit::RunDisposition;
-use awaken_agent_contract::thread::commit::coordinator::{Coordinator, Error as CommitError};
+use awaken_agent_contract::thread::commit::coordinator::{
+    Coordinator, Error as CommitError, OperationCoordinator,
+};
+use awaken_agent_contract::thread::commit::operation::{
+    CommitOperation, CommitOperationId, CommitPayloadHash,
+};
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
@@ -197,6 +202,22 @@ async fn conformance_recovery_snapshot_is_consistent() {
         return;
     };
     awaken_store_conformance::recovery_snapshot_is_consistent(&store).await;
+}
+
+#[tokio::test]
+async fn conformance_commit_operation_is_idempotent_and_cas() {
+    let Some(store) = conformance_store("t_c_operation").await else {
+        return;
+    };
+    awaken_store_conformance::commit_operation_is_idempotent_and_cas(&store).await;
+}
+
+#[tokio::test]
+async fn conformance_concurrent_operations_cas_one_winner() {
+    let Some(store) = conformance_store("t_c_operation_race").await else {
+        return;
+    };
+    awaken_store_conformance::concurrent_operations_cas_one_winner(&store).await;
 }
 
 #[tokio::test]
@@ -572,6 +593,53 @@ async fn projection_rehydrates_from_postgres_after_reconnect() {
     assert!(
         ThreadReader::resume_ticket(&restarted, &RunId("run-1".to_string())).is_some(),
         "active ticket rehydrated"
+    );
+}
+
+#[tokio::test]
+async fn operation_receipt_survives_reconnect() {
+    let Some(pool) = schema_pool("t_operation_receipt_reconnect").await else {
+        return;
+    };
+    let operation = CommitOperation {
+        operation_id: CommitOperationId::new(RunId("receipt-run".into()), 0),
+        expected_thread_version: 0,
+        payload_hash: CommitPayloadHash("sha256:receipt".into()),
+        commit: ThreadCommit {
+            thread_id: ThreadId("receipt-thread".into()),
+            run: RunDisposition::running(RunId("receipt-run".into())),
+            messages: vec![message("receipt-message", "once")],
+            state: Vec::new(),
+            events: Vec::new(),
+        },
+    };
+    {
+        let coordinator = PostgresCommitCoordinator::with_pool(pool.clone())
+            .await
+            .expect("coordinator a");
+        assert!(
+            !coordinator
+                .commit_operation(operation.clone())
+                .await
+                .unwrap()
+                .duplicate
+        );
+    }
+    let reopened = PostgresCommitCoordinator::with_pool(pool)
+        .await
+        .expect("coordinator b");
+    assert!(
+        reopened
+            .commit_operation(operation)
+            .await
+            .expect("durable duplicate receipt")
+            .duplicate
+    );
+    assert_eq!(
+        reopened
+            .committed_messages(&ThreadId("receipt-thread".into()))
+            .len(),
+        1
     );
 }
 

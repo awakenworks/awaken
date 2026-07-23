@@ -18,6 +18,7 @@ mod any;
 mod capability;
 mod clock;
 mod commit_fence;
+mod commit_operation;
 mod dispatch;
 mod dispatch_schema;
 mod durable;
@@ -40,17 +41,19 @@ pub use capability::RunIngressCapabilities;
 // The database-less worker's HTTP dispatch client (drives claim/settle over the wire
 // to a cell server's dispatch_transport_router), extracted from awaken-runtime-host.
 pub use awaken_run_ingress_contract::{
-    AssignmentRejection, ExecutionLocation, ExecutionScopeRef, HOST_EXECUTOR_CAPABILITY,
-    LeastLoadedPolicy, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY, PlacementContext, PlacementError,
-    PlacementPolicy, PlacementRequirements, REPOSITORY_CREDENTIALS_CAPABILITY, RankedWorker,
-    RegisteredWorker, RegistryError, RegistryMutation, RunDispatch, SESSION_RESOURCES_CAPABILITY,
-    SessionResourceEnvelope, WORKER_LOCAL_CREDENTIALS_CAPABILITY, WorkerAssignment,
-    WorkerCredentialRevision, WorkerDirectory, WorkerHeartbeat, WorkerIdentity, WorkerManifest,
-    WorkerRecoveryMode, WorkerRegistration, WorkerSnapshot, WorkerState, can_assign, can_claim,
-    can_claim_locally, place_assignment,
+    AssignmentRejection, ClaimedCommitCommand, ExecutionLocation, ExecutionScopeRef,
+    HOST_EXECUTOR_CAPABILITY, LeastLoadedPolicy, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY,
+    PlacementContext, PlacementError, PlacementPolicy, PlacementRequirements,
+    REPOSITORY_CREDENTIALS_CAPABILITY, RankedWorker, RegisteredWorker, RegistryError,
+    RegistryMutation, RunDispatch, SESSION_RESOURCES_CAPABILITY, SessionResourceEnvelope,
+    WORKER_LOCAL_CREDENTIALS_CAPABILITY, WorkerAssignment, WorkerCredentialRevision,
+    WorkerDirectory, WorkerHeartbeat, WorkerIdentity, WorkerManifest, WorkerRecoveryMode,
+    WorkerRegistration, WorkerSnapshot, WorkerState, can_assign, can_claim, can_claim_locally,
+    place_assignment,
 };
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use commit_fence::{ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit};
+pub use commit_operation::{CommitHashError, commit_payload_hash};
 pub use dispatch::{
     CasOutcome, Claimed, CommitEpochGuard, Dispatch, DispatchCompletion, DispatchError,
     DispatchOutcome, DispatchQueue, DispatchState, DispatchSummary, Inbox, Lease, Outbox,

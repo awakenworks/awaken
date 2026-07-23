@@ -3,6 +3,11 @@ pub use awaken_runtime_contract::CancellationToken
 pub use awaken_runtime_contract::ChildRunCancellation
 pub use awaken_runtime_contract::CommitCoordinator
 pub use awaken_runtime_contract::CommitError
+pub use awaken_runtime_contract::CommitOperation
+pub use awaken_runtime_contract::CommitOperationCoordinator
+pub use awaken_runtime_contract::CommitOperationId
+pub use awaken_runtime_contract::CommitPayloadHash
+pub use awaken_runtime_contract::CommitReceipt
 pub use awaken_runtime_contract::CommitRecord
 pub use awaken_runtime_contract::DelegationLimits
 pub use awaken_runtime_contract::EndCause
@@ -39,12 +44,14 @@ pub fn awaken_runtime_contract::activation::RunActivation::with_model_ref_overri
 pub fn awaken_runtime_contract::activation::RunActivation::without_tools(self) -> Self
 pub mod awaken_runtime_contract::agent_bindings
 pub struct awaken_runtime_contract::agent_bindings::AgentBindings
+pub awaken_runtime_contract::agent_bindings::AgentBindings::delegate_ids: alloc::vec::Vec<alloc::string::String>
 pub awaken_runtime_contract::agent_bindings::AgentBindings::mcp_servers: alloc::vec::Vec<awaken_runtime_contract::agent_bindings::AgentMcpServerBinding>
 pub awaken_runtime_contract::agent_bindings::AgentBindings::skill_ids: alloc::vec::Vec<alloc::string::String>
 impl awaken_runtime_contract::agent_bindings::AgentBindings
 pub fn awaken_runtime_contract::agent_bindings::AgentBindings::from_config(&alloc::collections::btree::map::BTreeMap<alloc::string::String, serde_json::value::Value>) -> core::option::Option<Self>
 pub fn awaken_runtime_contract::agent_bindings::AgentBindings::insert_into(self, &mut alloc::collections::btree::map::BTreeMap<alloc::string::String, serde_json::value::Value>)
 pub struct awaken_runtime_contract::agent_bindings::AgentMcpServerBinding
+pub awaken_runtime_contract::agent_bindings::AgentMcpServerBinding::credential: core::option::Option<awaken_runtime_contract::credential::CredentialRef>
 pub awaken_runtime_contract::agent_bindings::AgentMcpServerBinding::name: alloc::string::String
 pub awaken_runtime_contract::agent_bindings::AgentMcpServerBinding::url: alloc::string::String
 pub const awaken_runtime_contract::agent_bindings::AGENT_BINDINGS_CONFIG_KEY: &str

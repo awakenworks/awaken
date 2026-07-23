@@ -16,11 +16,15 @@ use axum::{Json, Router};
 use serde_json::{Value, json};
 
 use awaken_agent_contract::agent::run::RunState;
-use awaken_agent_contract::thread::commit::coordinator::{Coordinator, Error as CommitError};
+use awaken_agent_contract::thread::commit::coordinator::{
+    Coordinator, Error as CommitError, OperationCoordinator,
+};
+use awaken_agent_contract::thread::commit::operation::{CommitOperation, CommitReceipt};
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_run_ingress::{
-    ClaimedRunCommit, DispatchQueue, RunClaim, WorkerDirectory, WorkerIdentity, WorkerState,
+    ClaimedCommitCommand, ClaimedRunCommit, DispatchQueue, RunClaim, WorkerDirectory,
+    WorkerIdentity, WorkerState, commit_payload_hash,
 };
 
 use crate::host::{HostError, SharedHost};
@@ -32,6 +36,8 @@ use crate::worker_security::{
 #[async_trait::async_trait]
 trait CommitApplier: Send + Sync {
     async fn apply(&self, commit: ThreadCommit) -> Result<CommitRecord, HostError>;
+    async fn apply_operation(&self, operation: CommitOperation)
+    -> Result<CommitReceipt, HostError>;
 }
 
 struct HostCommitApplier(Arc<SharedHost>);
@@ -40,6 +46,13 @@ struct HostCommitApplier(Arc<SharedHost>);
 impl CommitApplier for HostCommitApplier {
     async fn apply(&self, commit: ThreadCommit) -> Result<CommitRecord, HostError> {
         apply_commit(&self.0, commit).await
+    }
+
+    async fn apply_operation(
+        &self,
+        operation: CommitOperation,
+    ) -> Result<CommitReceipt, HostError> {
+        apply_commit_operation(&self.0, operation).await
     }
 }
 
@@ -161,7 +174,10 @@ async fn commit_ingest(
 #[derive(serde::Deserialize)]
 struct ClaimedCommitRequest {
     claim: RunClaim,
-    commit: ThreadCommit,
+    #[serde(default)]
+    commit: Option<ThreadCommit>,
+    #[serde(default)]
+    operation: Option<CommitOperation>,
     #[serde(default)]
     identity: Option<WorkerIdentity>,
 }
@@ -208,8 +224,26 @@ async fn commit_claimed(
         let Some(_guard) = guard else {
             return Err(HostError::bad_request("run claim is stale"));
         };
-        let record = state.applier.apply(request.commit).await?;
-        Ok(serde_json::to_value(record).expect("CommitRecord serializes"))
+        match (request.operation, request.commit) {
+            (Some(operation), None) => {
+                let expected_hash = commit_payload_hash(&operation.commit)
+                    .map_err(|error| HostError::bad_request(error.to_string()))?;
+                if expected_hash != operation.payload_hash {
+                    return Err(HostError::bad_request(
+                        "commit operation payload hash does not match ThreadCommit",
+                    ));
+                }
+                let receipt = state.applier.apply_operation(operation).await?;
+                Ok(serde_json::to_value(receipt).expect("CommitReceipt serializes"))
+            }
+            (None, Some(commit)) => {
+                let record = state.applier.apply(commit).await?;
+                Ok(serde_json::to_value(record).expect("CommitRecord serializes"))
+            }
+            _ => Err(HostError::bad_request(
+                "claimed commit requires exactly one of operation or commit",
+            )),
+        }
     }
     .await;
     respond(result)
@@ -236,6 +270,18 @@ async fn apply_commit(
     }
     ctx.commit
         .commit(commit)
+        .await
+        .map_err(|error| HostError::internal(error.to_string()))
+}
+
+async fn apply_commit_operation(
+    host: &Arc<SharedHost>,
+    operation: CommitOperation,
+) -> Result<CommitReceipt, HostError> {
+    let thread = operation.commit.thread_id.0.clone();
+    let ctx = host.ctx_for(&thread, None).await?;
+    ctx.commit
+        .commit_operation(operation)
         .await
         .map_err(|error| HostError::internal(error.to_string()))
 }
@@ -310,6 +356,40 @@ impl ClaimedRunCommit for RemoteClaimedRunCommit {
             .json()
             .await
             .map_err(|error| CommitError::Rejected(format!("commit record decode: {error}")))
+    }
+
+    async fn commit_operation(
+        &self,
+        command: ClaimedCommitCommand,
+    ) -> Result<CommitReceipt, CommitError> {
+        let authenticated_worker = self
+            .identity
+            .as_ref()
+            .map_or(command.claim.owner.as_str(), |identity| {
+                identity.worker_id.as_str()
+            });
+        let response = self
+            .client
+            .post(format!("{}/v1/worker/commit-claimed", self.base_url))
+            .header(WORKER_ID_HEADER, authenticated_worker)
+            .json(&json!({
+                "claim": command.claim,
+                "operation": command.operation,
+                "identity": self.identity
+            }))
+            .send()
+            .await
+            .map_err(|error| CommitError::Rejected(format!("claimed commit transport: {error}")))?;
+        if !response.status().is_success() {
+            return Err(CommitError::Rejected(format!(
+                "claimed commit server returned {}",
+                response.status()
+            )));
+        }
+        response
+            .json()
+            .await
+            .map_err(|error| CommitError::Rejected(format!("commit receipt decode: {error}")))
     }
 }
 
@@ -418,6 +498,13 @@ mod postgres_tests {
                 self.release.notified().await;
             }
             self.inner.apply(commit).await
+        }
+
+        async fn apply_operation(
+            &self,
+            operation: CommitOperation,
+        ) -> Result<CommitReceipt, HostError> {
+            self.inner.apply_operation(operation).await
         }
     }
 

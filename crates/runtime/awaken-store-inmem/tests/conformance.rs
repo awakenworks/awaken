@@ -78,3 +78,17 @@ async fn recovery_snapshot_is_consistent() {
     awaken_store_conformance::recovery_snapshot_is_consistent(&MemoryCommitCoordinator::new())
         .await;
 }
+
+#[tokio::test]
+async fn commit_operation_is_idempotent_and_cas() {
+    awaken_store_conformance::commit_operation_is_idempotent_and_cas(
+        &MemoryCommitCoordinator::new(),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn concurrent_operations_cas_one_winner() {
+    awaken_store_conformance::concurrent_operations_cas_one_winner(&MemoryCommitCoordinator::new())
+        .await;
+}

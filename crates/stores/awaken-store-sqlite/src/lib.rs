@@ -26,7 +26,12 @@ use awaken_agent_contract::agent::run::{Id as RunId, Record as RunRecord, RunSta
 use awaken_agent_contract::agent::state::Command as StateCommand;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::record::Record as EventRecord;
-use awaken_agent_contract::thread::commit::coordinator::{Coordinator as CommitCoordinator, Error};
+use awaken_agent_contract::thread::commit::coordinator::{
+    Coordinator as CommitCoordinator, Error, OperationCoordinator,
+};
+use awaken_agent_contract::thread::commit::operation::{
+    CommitOperation, CommitPayloadHash, CommitReceipt,
+};
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
 use awaken_agent_contract::thread::read::recovery::{
@@ -34,7 +39,7 @@ use awaken_agent_contract::thread::read::recovery::{
 };
 use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
-use rusqlite::{Connection, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 pub use awaken_store_schema::{COMMIT_BUNDLE_ID as BUNDLE_ID, commit_bundle};
 
@@ -179,98 +184,48 @@ impl CommitCoordinator for SqliteCommitCoordinator {
         // Serialize commits: assign the fence and advance the projection without
         // a race, matching SQLite's single-writer model.
         let _writing = self.write_lock.lock().await;
-
-        // Terminal-is-final (exactly-once committed LOG under a stale reclaim):
-        // reject a post-terminal commit for a run whose committed state is already
-        // `Ended`. A stale owner whose lease lapsed mid-flight and was superseded by
-        // a reclaimer that already drove the run to `Ended` would otherwise append a
-        // duplicate transcript and a second terminal fact. The first `Ended` commit
-        // lands (the run is not yet terminal); only a SUBSEQUENT commit is fenced.
-        // The state is read from the same fact-derived projection that serves
-        // `run`/`latest_run`. (See the in-memory reference for the full rationale.)
-        //
-        // This read is process-LOCAL (the in-memory projection), which is correct
-        // here because the SQLite store is single-writer / single-process by
-        // construction (the write lock serializes all commits in one process; the
-        // fleet uses Postgres, whose guard is instead a durable in-transaction
-        // `SELECT ... FOR UPDATE` on the shared DB). Do not assume this SQLite fence
-        // holds across processes sharing a database file.
-        {
-            let projection = lock(&self.projection)?;
-            if projection
-                .run_records
-                .get(commit.run_id())
-                .is_some_and(|record| !record.state.permits(&commit.run_state()))
-            {
-                return Err(Error::Rejected(format!(
-                    "run {} is already terminal; refusing post-terminal commit",
-                    commit.run_id().0
-                )));
-            }
-        }
-
-        let next = lock(&self.projection)?.sequence + 1;
-
         let conn = self.conn.clone();
         let data = commit.clone();
-        tokio::task::spawn_blocking(move || {
+        let next = tokio::task::spawn_blocking(move || {
             let mut guard = conn
                 .lock()
                 .map_err(|_| Error::Rejected("sqlite connection poisoned".to_string()))?;
-            write_commit(&mut guard, next, &data)
+            write_commit(&mut guard, &data)
         })
         .await
         .map_err(|err| Error::Rejected(err.to_string()))??;
-
-        // The transaction is durable; advance the in-memory projection to match.
-        let run_state = commit.run_state();
-        let run_id = commit.run_id().clone();
-        let thread_id = commit.thread_id.clone();
-        let resume_ticket = commit.resume_ticket().cloned();
-        let awaiting = matches!((&resume_ticket, &run_state), (Some(_), RunState::Awaiting));
-
         let mut projection = lock(&self.projection)?;
-        projection.sequence = next;
-        *projection
-            .thread_versions
-            .entry(thread_id.clone())
-            .or_default() += 1;
-        *projection
-            .run_commit_counts
-            .entry(run_id.clone())
-            .or_default() += 1;
-        for message in commit.messages {
-            projection.messages.push((thread_id.clone(), message));
-        }
-        for command in commit.state {
-            projection.state.push((thread_id.clone(), command));
-        }
-        for (offset, draft) in commit.events.into_iter().enumerate() {
-            projection.events.push(EventRecord {
-                sequence: next * 1_000 + offset as u64,
-                run_id: run_id.clone(),
-                kind: draft.kind,
-                payload: draft.payload,
-            });
-        }
-        let record = RunRecord {
-            id: run_id.clone(),
-            thread_id: thread_id.clone(),
-            state: run_state,
-        };
-        projection
-            .run_records
-            .insert(run_id.clone(), record.clone());
-        projection.latest_by_thread.insert(thread_id, record);
-        if awaiting {
-            projection
-                .resume_tickets
-                .insert(run_id, resume_ticket.expect("awaiting has a ticket"));
-        } else {
-            projection.resume_tickets.remove(&run_id);
-        }
-
+        advance_projection(&mut projection, commit, next);
         Ok(CommitRecord { sequence: next })
+    }
+}
+
+#[async_trait]
+impl OperationCoordinator for SqliteCommitCoordinator {
+    async fn commit_operation(&self, operation: CommitOperation) -> Result<CommitReceipt, Error> {
+        operation
+            .commit
+            .validate()
+            .map_err(|error| Error::Rejected(error.to_string()))?;
+        let _writing = self.write_lock.lock().await;
+        let conn = self.conn.clone();
+        let data = operation.clone();
+        let outcome = tokio::task::spawn_blocking(move || {
+            let mut guard = conn
+                .lock()
+                .map_err(|_| Error::Rejected("sqlite connection poisoned".to_string()))?;
+            write_operation(&mut guard, &data)
+        })
+        .await
+        .map_err(|error| Error::Rejected(error.to_string()))??;
+        match outcome {
+            OperationWrite::Duplicate(receipt) => Ok(receipt),
+            OperationWrite::Applied(receipt) => {
+                let mut projection = lock(&self.projection)?;
+                advance_projection(&mut projection, operation.commit, receipt.commit_sequence);
+                Ok(receipt)
+            }
+        }
     }
 }
 
@@ -412,19 +367,204 @@ fn lock(projection: &Mutex<Projection>) -> Result<std::sync::MutexGuard<'_, Proj
         .map_err(|_| Error::Rejected("commit projection poisoned".to_string()))
 }
 
+enum OperationWrite {
+    Applied(CommitReceipt),
+    Duplicate(CommitReceipt),
+}
+
 /// Write one staged commit in a single IMMEDIATE transaction (atomic, G1/G13).
+fn write_commit(conn: &mut Connection, commit: &ThreadCommit) -> Result<u64, Error> {
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(reject)?;
+    validate_transition_tx(&tx, commit)?;
+    ensure_thread_version(&tx, &commit.thread_id)?;
+    let next: i64 = tx
+        .query_row(
+            &format!("SELECT COALESCE(MAX(sequence), 0) + 1 FROM {NS}_commit"),
+            [],
+            |row| row.get(0),
+        )
+        .map_err(reject)?;
+    write_commit_rows(&tx, next as u64, commit)?;
+    tx.execute(
+        &format!("UPDATE {NS}_thread_version SET version = version + 1 WHERE thread_id = ?1"),
+        params![&commit.thread_id.0],
+    )
+    .map_err(reject)?;
+    tx.commit().map_err(reject)?;
+    Ok(next as u64)
+}
+
+fn write_operation(
+    conn: &mut Connection,
+    operation: &CommitOperation,
+) -> Result<OperationWrite, Error> {
+    if operation.operation_id.run_id != *operation.commit.run_id() {
+        return Err(Error::Rejected(
+            "commit operation run_id does not match ThreadCommit run_id".to_string(),
+        ));
+    }
+    let operation_ordinal = i64::try_from(operation.operation_id.ordinal).map_err(|_| {
+        Error::Rejected("commit operation ordinal exceeds backend range".to_string())
+    })?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(reject)?;
+    let existing = tx
+        .query_row(
+            &format!(
+                "SELECT payload_hash, commit_sequence, thread_version \
+                 FROM {NS}_commit_receipt \
+                 WHERE operation_run_id = ?1 AND operation_ordinal = ?2"
+            ),
+            params![&operation.operation_id.run_id.0, operation_ordinal],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(reject)?;
+    if let Some((payload_hash, commit_sequence, thread_version)) = existing {
+        if payload_hash != operation.payload_hash.0 {
+            return Err(Error::Rejected(format!(
+                "commit operation {}:{} was reused with another payload",
+                operation.operation_id.run_id.0, operation.operation_id.ordinal
+            )));
+        }
+        return Ok(OperationWrite::Duplicate(CommitReceipt {
+            operation_id: operation.operation_id.clone(),
+            commit_sequence: commit_sequence as u64,
+            thread_version: thread_version as u64,
+            payload_hash: CommitPayloadHash(payload_hash),
+            duplicate: true,
+        }));
+    }
+
+    ensure_thread_version(&tx, &operation.commit.thread_id)?;
+    let current_version: i64 = tx
+        .query_row(
+            &format!("SELECT version FROM {NS}_thread_version WHERE thread_id = ?1"),
+            params![&operation.commit.thread_id.0],
+            |row| row.get(0),
+        )
+        .map_err(reject)?;
+    if current_version as u64 != operation.expected_thread_version {
+        return Err(Error::Rejected(format!(
+            "thread version conflict: expected {}, current {}",
+            operation.expected_thread_version, current_version
+        )));
+    }
+    let current_ordinal: i64 = tx
+        .query_row(
+            &format!("SELECT COUNT(*) FROM {NS}_commit WHERE run_id = ?1"),
+            params![&operation.operation_id.run_id.0],
+            |row| row.get(0),
+        )
+        .map_err(reject)?;
+    if current_ordinal as u64 != operation.operation_id.ordinal {
+        return Err(Error::Rejected(format!(
+            "commit operation ordinal conflict: expected {}, current {}",
+            operation.operation_id.ordinal, current_ordinal
+        )));
+    }
+    validate_transition_tx(&tx, &operation.commit)?;
+    let next: i64 = tx
+        .query_row(
+            &format!("SELECT COALESCE(MAX(sequence), 0) + 1 FROM {NS}_commit"),
+            [],
+            |row| row.get(0),
+        )
+        .map_err(reject)?;
+    write_commit_rows(&tx, next as u64, &operation.commit)?;
+    let thread_version = current_version + 1;
+    tx.execute(
+        &format!("UPDATE {NS}_thread_version SET version = ?2 WHERE thread_id = ?1"),
+        params![&operation.commit.thread_id.0, thread_version],
+    )
+    .map_err(reject)?;
+    tx.execute(
+        &format!(
+            "INSERT INTO {NS}_commit_receipt \
+             (operation_run_id, operation_ordinal, thread_id, payload_hash, \
+              commit_sequence, thread_version) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
+        ),
+        params![
+            &operation.operation_id.run_id.0,
+            operation_ordinal,
+            &operation.commit.thread_id.0,
+            &operation.payload_hash.0,
+            next,
+            thread_version
+        ],
+    )
+    .map_err(reject)?;
+    tx.commit().map_err(reject)?;
+    Ok(OperationWrite::Applied(CommitReceipt {
+        operation_id: operation.operation_id.clone(),
+        commit_sequence: next as u64,
+        thread_version: thread_version as u64,
+        payload_hash: operation.payload_hash.clone(),
+        duplicate: false,
+    }))
+}
+
+fn ensure_thread_version(
+    tx: &rusqlite::Transaction<'_>,
+    thread_id: &ThreadId,
+) -> Result<(), Error> {
+    tx.execute(
+        &format!(
+            "INSERT OR IGNORE INTO {NS}_thread_version (thread_id, version) \
+             SELECT ?1, COUNT(*) FROM {NS}_commit WHERE thread_id = ?1"
+        ),
+        params![&thread_id.0],
+    )
+    .map_err(reject)?;
+    Ok(())
+}
+
+fn validate_transition_tx(
+    tx: &rusqlite::Transaction<'_>,
+    commit: &ThreadCommit,
+) -> Result<(), Error> {
+    let phase: Option<String> = tx
+        .query_row(
+            &format!("SELECT phase FROM {NS}_run_record WHERE run_id = ?1"),
+            params![&commit.run_id().0],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(reject)?;
+    if phase
+        .as_deref()
+        .and_then(|phase| serde_json::from_str::<RunState>(phase).ok())
+        .is_some_and(|state| !state.permits(&commit.run_state()))
+    {
+        return Err(Error::Rejected(format!(
+            "run {} is already terminal; refusing post-terminal commit",
+            commit.run_id().0
+        )));
+    }
+    Ok(())
+}
+
 /// JSON columns are stored as serialized text — the schema renders `{json}` to
 /// TEXT on SQLite.
-fn write_commit(conn: &mut Connection, next: u64, commit: &ThreadCommit) -> Result<(), Error> {
+fn write_commit_rows(
+    tx: &rusqlite::Transaction<'_>,
+    next: u64,
+    commit: &ThreadCommit,
+) -> Result<(), Error> {
     let p = NS;
     let run_id = &commit.run_id().0;
     let thread_id = &commit.thread_id.0;
     let run_state = commit.run_state();
     let state_json = json(&run_state)?;
-
-    let tx = conn
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(reject)?;
 
     tx.execute(
         &format!(
@@ -502,8 +642,55 @@ fn write_commit(conn: &mut Connection, next: u64, commit: &ThreadCommit) -> Resu
         .map_err(reject)?;
     }
 
-    tx.commit().map_err(reject)?;
     Ok(())
+}
+
+fn advance_projection(projection: &mut Projection, commit: ThreadCommit, sequence: u64) {
+    let run_state = commit.run_state();
+    let run_id = commit.run_id().clone();
+    let thread_id = commit.thread_id.clone();
+    let resume_ticket = commit.resume_ticket().cloned();
+    let awaiting = matches!((&resume_ticket, &run_state), (Some(_), RunState::Awaiting));
+
+    projection.sequence = projection.sequence.max(sequence);
+    *projection
+        .thread_versions
+        .entry(thread_id.clone())
+        .or_default() += 1;
+    *projection
+        .run_commit_counts
+        .entry(run_id.clone())
+        .or_default() += 1;
+    for message in commit.messages {
+        projection.messages.push((thread_id.clone(), message));
+    }
+    for command in commit.state {
+        projection.state.push((thread_id.clone(), command));
+    }
+    for (offset, draft) in commit.events.into_iter().enumerate() {
+        projection.events.push(EventRecord {
+            sequence: sequence * 1_000 + offset as u64,
+            run_id: run_id.clone(),
+            kind: draft.kind,
+            payload: draft.payload,
+        });
+    }
+    let record = RunRecord {
+        id: run_id.clone(),
+        thread_id: thread_id.clone(),
+        state: run_state,
+    };
+    projection
+        .run_records
+        .insert(run_id.clone(), record.clone());
+    projection.latest_by_thread.insert(thread_id, record);
+    if awaiting {
+        projection
+            .resume_tickets
+            .insert(run_id, resume_ticket.expect("awaiting has a ticket"));
+    } else {
+        projection.resume_tickets.remove(&run_id);
+    }
 }
 
 /// Rebuild the read projection from the committed log in SQLite.

@@ -11,11 +11,13 @@ use awaken_agent_contract::agent::run::{EndCause, Id as RunId};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator;
+use awaken_agent_contract::thread::commit::operation::{CommitOperation, CommitOperationId};
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_run_ingress::{
-    ClaimedRunCommit, DispatchQueue, MemoryDispatchStore, RegisteredWorker, RegistryError,
-    RegistryMutation, RunClaim, RunDispatch, WorkerDirectory, WorkerHeartbeat, WorkerIdentity,
-    WorkerManifest, WorkerRegistration, WorkerSnapshot, WorkerState,
+    ClaimedCommitCommand, ClaimedRunCommit, DispatchQueue, MemoryDispatchStore, RegisteredWorker,
+    RegistryError, RegistryMutation, RunClaim, RunDispatch, WorkerDirectory, WorkerHeartbeat,
+    WorkerIdentity, WorkerManifest, WorkerRegistration, WorkerSnapshot, WorkerState,
+    commit_payload_hash,
 };
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::llm::{
@@ -367,4 +369,113 @@ async fn registered_claimed_commit_requires_the_current_worker_incarnation() {
         .await
         .unwrap();
     assert_eq!(host.committed_messages("registered-thread").await.len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn claimed_commit_receipt_survives_response_loss_retry_and_fences_stale_context() {
+    let dispatch = Arc::new(MemoryDispatchStore::new());
+    dispatch
+        .enqueue(RunDispatch::new(activation(
+            "receipt-run",
+            "receipt-thread",
+        )))
+        .await
+        .unwrap();
+    let claimed = dispatch
+        .claim("worker-a", 30_000, 0)
+        .await
+        .unwrap()
+        .expect("claim");
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let router = claimed_commit_ingest_router(
+        host.clone(),
+        dispatch.clone() as Arc<dyn DispatchQueue>,
+        Arc::new(HeaderWorkerAuthenticator),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let remote = RemoteClaimedRunCommit::new(format!("http://{address}"));
+    let claim = RunClaim::from(&claimed.lease);
+
+    let first_commit = ThreadCommit {
+        thread_id: ThreadId("receipt-thread".into()),
+        run: RunDisposition::running(RunId("receipt-run".into())),
+        messages: vec![Message::text(
+            MessageId("receipt-1".into()),
+            Role::Assistant,
+            "first",
+        )],
+        state: Vec::new(),
+        events: Vec::new(),
+    };
+    let first = CommitOperation {
+        operation_id: CommitOperationId::new(RunId("receipt-run".into()), 0),
+        expected_thread_version: 0,
+        payload_hash: commit_payload_hash(&first_commit).unwrap(),
+        commit: first_commit,
+    };
+    let applied = remote
+        .commit_operation(ClaimedCommitCommand {
+            claim: claim.clone(),
+            operation: first.clone(),
+        })
+        .await
+        .expect("first commit");
+    assert!(!applied.duplicate);
+    let retried = remote
+        .commit_operation(ClaimedCommitCommand {
+            claim: claim.clone(),
+            operation: first.clone(),
+        })
+        .await
+        .expect("retry after an ambiguous response");
+    assert!(retried.duplicate);
+    assert_eq!(retried.commit_sequence, applied.commit_sequence);
+    assert_eq!(host.committed_messages("receipt-thread").await.len(), 1);
+
+    let replacement = dispatch
+        .claim("worker-b", 30_000, 40_000)
+        .await
+        .unwrap()
+        .expect("reclaim after lease expiry");
+    let replacement_claim = RunClaim::from(&replacement.lease);
+    let replacement_remote = RemoteClaimedRunCommit::new(format!("http://{address}"));
+    let reclaimed_retry = replacement_remote
+        .commit_operation(ClaimedCommitCommand {
+            claim: replacement_claim.clone(),
+            operation: first,
+        })
+        .await
+        .expect("replacement owner reuses the logical operation id");
+    assert!(reclaimed_retry.duplicate);
+    assert_eq!(host.committed_messages("receipt-thread").await.len(), 1);
+
+    let terminal_commit = claimed_commit("receipt-run", "receipt-thread", "terminal");
+    let mut terminal = CommitOperation {
+        operation_id: CommitOperationId::new(RunId("receipt-run".into()), 1),
+        expected_thread_version: 0,
+        payload_hash: commit_payload_hash(&terminal_commit).unwrap(),
+        commit: terminal_commit,
+    };
+    assert!(
+        replacement_remote
+            .commit_operation(ClaimedCommitCommand {
+                claim: replacement_claim.clone(),
+                operation: terminal.clone(),
+            })
+            .await
+            .is_err(),
+        "a commit built from stale Thread version zero is rejected"
+    );
+    terminal.expected_thread_version = 1;
+    let terminal_receipt = replacement_remote
+        .commit_operation(ClaimedCommitCommand {
+            claim: replacement_claim,
+            operation: terminal,
+        })
+        .await
+        .expect("refreshed Thread version commits");
+    assert_eq!(terminal_receipt.thread_version, 2);
+    assert_eq!(host.committed_messages("receipt-thread").await.len(), 2);
 }

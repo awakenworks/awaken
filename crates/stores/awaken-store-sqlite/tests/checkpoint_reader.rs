@@ -70,6 +70,18 @@ async fn conformance_recovery_snapshot_is_consistent() {
 }
 
 #[tokio::test]
+async fn conformance_commit_operation_is_idempotent_and_cas() {
+    let store = SqliteCommitCoordinator::open_in_memory().expect("open");
+    awaken_store_conformance::commit_operation_is_idempotent_and_cas(&store).await;
+}
+
+#[tokio::test]
+async fn conformance_concurrent_operations_cas_one_winner() {
+    let store = SqliteCommitCoordinator::open_in_memory().expect("open");
+    awaken_store_conformance::concurrent_operations_cas_one_winner(&store).await;
+}
+
+#[tokio::test]
 async fn conformance_empty_store_reads_are_absent() {
     let store = SqliteCommitCoordinator::open_in_memory().expect("open");
     awaken_store_conformance::empty_store_reads_are_absent(&store).await;

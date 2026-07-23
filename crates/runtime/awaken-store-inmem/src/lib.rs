@@ -20,7 +20,12 @@ use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpoi
 use awaken_agent_contract::stream::event::Event as StreamEvent;
 use awaken_agent_contract::stream::sink::{Error as SinkError, Sink as StreamSink};
 use awaken_agent_contract::thread::commit::RunFact;
-use awaken_agent_contract::thread::commit::coordinator::{Coordinator as CommitCoordinator, Error};
+use awaken_agent_contract::thread::commit::coordinator::{
+    Coordinator as CommitCoordinator, Error, OperationCoordinator,
+};
+use awaken_agent_contract::thread::commit::operation::{
+    CommitOperation, CommitOperationId, CommitReceipt,
+};
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
 use awaken_agent_contract::thread::read::recovery::{
@@ -56,6 +61,9 @@ struct CommitState {
     /// Active awaiting tickets keyed by run; present only while a run is awaiting,
     /// so a resume against a terminal/resumed run finds nothing (fail closed).
     resume_tickets: HashMap<RunId, ResumeTicket>,
+    /// Durable in the reference store's lifetime; filesystem persistence replays
+    /// operation log entries through this same map.
+    receipts: HashMap<CommitOperationId, CommitReceipt>,
 }
 
 impl CommitState {
@@ -124,6 +132,23 @@ impl MemoryCommitCoordinator {
             .ok()
             .and_then(|state| state.resume_tickets.get(run_id).cloned())
     }
+
+    /// Validate an operation without applying it. Used by the filesystem adapter
+    /// while it holds its append lock so rejection always happens before fsync.
+    pub fn inspect_operation(
+        &self,
+        operation: &CommitOperation,
+    ) -> Result<Option<CommitReceipt>, Error> {
+        operation
+            .commit
+            .validate()
+            .map_err(|error| Error::Rejected(error.to_string()))?;
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| Error::Rejected("commit store poisoned".to_string()))?;
+        inspect_operation_locked(&state, operation)
+    }
 }
 
 #[async_trait]
@@ -136,82 +161,153 @@ impl CommitCoordinator for MemoryCommitCoordinator {
             .state
             .lock()
             .map_err(|_| Error::Rejected("commit store poisoned".to_string()))?;
+        validate_transition_locked(&state, &commit)?;
+        Ok(apply_commit_locked(&mut state, commit))
+    }
+}
 
-        let next = state.sequence + 1;
-        let run_id = commit.run_id().clone();
-        let run_state = commit.run_state();
-        let run_fact = commit.run_fact();
-        let resume_ticket = commit.resume_ticket().cloned();
+#[async_trait]
+impl OperationCoordinator for MemoryCommitCoordinator {
+    async fn commit_operation(&self, operation: CommitOperation) -> Result<CommitReceipt, Error> {
+        operation
+            .commit
+            .validate()
+            .map_err(|error| Error::Rejected(error.to_string()))?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::Rejected("commit store poisoned".to_string()))?;
+        if let Some(receipt) = inspect_operation_locked(&state, &operation)? {
+            return Ok(receipt);
+        }
+        let operation_id = operation.operation_id;
+        let payload_hash = operation.payload_hash;
+        let expected_thread_version = operation.expected_thread_version;
+        let thread_version = expected_thread_version
+            .checked_add(1)
+            .ok_or_else(|| Error::Rejected("Thread version overflow".to_string()))?;
+        let commit = operation.commit;
+        let record = apply_commit_locked(&mut state, commit);
+        let receipt = CommitReceipt {
+            operation_id: operation_id.clone(),
+            commit_sequence: record.sequence,
+            thread_version,
+            payload_hash,
+            duplicate: false,
+        };
+        state.receipts.insert(operation_id, receipt.clone());
+        Ok(receipt)
+    }
+}
 
-        // Terminal-is-final (exactly-once committed LOG under a stale reclaim):
-        // once a run's committed state is terminal, reject any later commit for
-        // that run. A stale owner — slow-but-alive, its lease lapsed mid-flight and
-        // superseded by a reclaimer that already drove the run to `Ended` — would
-        // otherwise re-execute from the activation and append duplicate assistant
-        // messages and a second terminal fact. The FIRST `Ended` commit is allowed
-        // (the run is not yet terminal when it lands); only a SUBSEQUENT commit to
-        // an already-terminal run is fenced. This keeps the transcript exactly-once
-        // even though the external tool side effect may still have run twice (an
-        // at-least-once effect inherent to lease-based recovery, not fixable here).
-        // The fence scans the run's OWN thread (a run belongs to exactly one
-        // thread), so a post-terminal duplicate is fenced regardless of what other
-        // threads committed in between — and threads never fence each other.
-        if state
-            .threads
-            .get(&commit.thread_id)
-            .and_then(|thread| {
-                thread
-                    .run_facts
-                    .iter()
-                    .rev()
-                    .find(|fact| fact.run_id == run_id)
-            })
-            .is_some_and(|fact| !fact.state.permits(&run_state))
-        {
+fn inspect_operation_locked(
+    state: &CommitState,
+    operation: &CommitOperation,
+) -> Result<Option<CommitReceipt>, Error> {
+    if operation.operation_id.run_id != *operation.commit.run_id() {
+        return Err(Error::Rejected(
+            "commit operation run_id does not match ThreadCommit run_id".to_string(),
+        ));
+    }
+    if let Some(existing) = state.receipts.get(&operation.operation_id) {
+        if existing.payload_hash != operation.payload_hash {
             return Err(Error::Rejected(format!(
-                "run {} is already terminal; refusing post-terminal commit",
-                run_id.0
+                "commit operation {}:{} was reused with another payload",
+                operation.operation_id.run_id.0, operation.operation_id.ordinal
             )));
         }
-
-        // Await or clear the awaiting ticket atomically with the checkpoint: a
-        // `Some` ticket awaits the run; any ended state clears it so a
-        // resumed/terminal run can no longer be resumed (G5).
-        match (&resume_ticket, &run_state) {
-            (Some(ticket), RunState::Awaiting) => {
-                state.resume_tickets.insert(run_id.clone(), ticket.clone());
-            }
-            _ => {
-                state.resume_tickets.remove(&run_id);
-            }
-        }
-
-        let thread_id = commit.thread_id.clone();
-        if !state.threads.contains_key(&thread_id) {
-            state.order.push(thread_id.clone());
-        }
-        let thread = state.threads.entry(thread_id.clone()).or_default();
-        thread.thread_id = Some(thread_id.clone());
-        thread.messages.extend(commit.messages);
-        thread.state.extend(commit.state);
-        for (offset, draft) in commit.events.into_iter().enumerate() {
-            thread.events.push(EventRecord {
-                sequence: next * 1_000 + offset as u64,
-                run_id: run_id.clone(),
-                kind: draft.kind,
-                payload: draft.payload,
-            });
-        }
-        thread.run_facts.push(run_fact);
-        thread.latest_run = Some(RunRecord {
-            id: run_id,
-            thread_id,
-            state: run_state,
-        });
-
-        state.sequence = next;
-        Ok(CommitRecord { sequence: next })
+        let mut duplicate = existing.clone();
+        duplicate.duplicate = true;
+        return Ok(Some(duplicate));
     }
+    let thread = state.threads.get(&operation.commit.thread_id);
+    let current_thread_version = thread.map_or(0, |thread| thread.run_facts.len() as u64);
+    if current_thread_version != operation.expected_thread_version {
+        return Err(Error::Rejected(format!(
+            "thread version conflict: expected {}, current {}",
+            operation.expected_thread_version, current_thread_version
+        )));
+    }
+    let current_run_ordinal = thread.map_or(0, |thread| {
+        thread
+            .run_facts
+            .iter()
+            .filter(|fact| fact.run_id == operation.operation_id.run_id)
+            .count() as u64
+    });
+    if current_run_ordinal != operation.operation_id.ordinal {
+        return Err(Error::Rejected(format!(
+            "commit operation ordinal conflict: expected {}, current {}",
+            operation.operation_id.ordinal, current_run_ordinal
+        )));
+    }
+    validate_transition_locked(state, &operation.commit)?;
+    Ok(None)
+}
+
+fn validate_transition_locked(state: &CommitState, commit: &ThreadCommit) -> Result<(), Error> {
+    let run_id = commit.run_id();
+    if state
+        .threads
+        .get(&commit.thread_id)
+        .and_then(|thread| {
+            thread
+                .run_facts
+                .iter()
+                .rev()
+                .find(|fact| &fact.run_id == run_id)
+        })
+        .is_some_and(|fact| !fact.state.permits(&commit.run_state()))
+    {
+        return Err(Error::Rejected(format!(
+            "run {} is already terminal; refusing post-terminal commit",
+            run_id.0
+        )));
+    }
+    Ok(())
+}
+
+fn apply_commit_locked(state: &mut CommitState, commit: ThreadCommit) -> CommitRecord {
+    let next = state.sequence + 1;
+    let run_id = commit.run_id().clone();
+    let run_state = commit.run_state();
+    let run_fact = commit.run_fact();
+    let resume_ticket = commit.resume_ticket().cloned();
+
+    match (&resume_ticket, &run_state) {
+        (Some(ticket), RunState::Awaiting) => {
+            state.resume_tickets.insert(run_id.clone(), ticket.clone());
+        }
+        _ => {
+            state.resume_tickets.remove(&run_id);
+        }
+    }
+
+    let thread_id = commit.thread_id.clone();
+    if !state.threads.contains_key(&thread_id) {
+        state.order.push(thread_id.clone());
+    }
+    let thread = state.threads.entry(thread_id.clone()).or_default();
+    thread.thread_id = Some(thread_id.clone());
+    thread.messages.extend(commit.messages);
+    thread.state.extend(commit.state);
+    for (offset, draft) in commit.events.into_iter().enumerate() {
+        thread.events.push(EventRecord {
+            sequence: next * 1_000 + offset as u64,
+            run_id: run_id.clone(),
+            kind: draft.kind,
+            payload: draft.payload,
+        });
+    }
+    thread.run_facts.push(run_fact);
+    thread.latest_run = Some(RunRecord {
+        id: run_id,
+        thread_id,
+        state: run_state,
+    });
+
+    state.sequence = next;
+    CommitRecord { sequence: next }
 }
 
 /// The committed run is readable through the contract read port — the same

@@ -15,10 +15,15 @@ fn assert_boundary<T: Serialize + DeserializeOwned>() {}
 
 #[test]
 fn commit_boundary_values_are_plain_serializable_data() {
+    use awaken_agent_contract::thread::commit::operation;
     use awaken_agent_contract::thread::commit::staged;
 
     assert_boundary::<staged::ThreadCommit>();
     assert_boundary::<staged::CommitRecord>();
+    assert_boundary::<operation::CommitOperationId>();
+    assert_boundary::<operation::CommitPayloadHash>();
+    assert_boundary::<operation::CommitOperation>();
+    assert_boundary::<operation::CommitReceipt>();
 }
 
 // RunState is durable truth: every variant must survive a serde round trip, and

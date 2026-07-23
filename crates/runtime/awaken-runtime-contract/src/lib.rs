@@ -63,6 +63,10 @@ pub use awaken_agent_contract::agent::state::{MergePolicy, Scope, Store};
 pub use awaken_agent_contract::agent::thread::Id as ThreadId;
 pub use awaken_agent_contract::thread::commit::coordinator::{
     Coordinator as CommitCoordinator, Error as CommitError,
+    OperationCoordinator as CommitOperationCoordinator,
+};
+pub use awaken_agent_contract::thread::commit::operation::{
+    CommitOperation, CommitOperationId, CommitPayloadHash, CommitReceipt,
 };
 pub use awaken_agent_contract::thread::commit::staged::{
     CommitRecord, RunDisposition, ThreadCommit,

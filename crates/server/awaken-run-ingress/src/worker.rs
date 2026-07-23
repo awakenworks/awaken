@@ -26,9 +26,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 use crate::Error;
-use crate::commit_fence::{
-    ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit, ProjectingClaimedRunCommit,
-};
+use crate::commit_fence::{ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit};
 use crate::dispatch::{Claimed, Dispatch, DispatchOutcome, PendingInput, RunClaim, SettleOutcome};
 use crate::worker_context::WorkerContext;
 
@@ -239,15 +237,12 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         // The base commit boundary, wrapped per drive because the fence epoch is per
         // claim. `self.store` (the dispatch queue) reports the run's current epoch, so
         // a superseded owner's per-step commits are rejected.
-        let service: Arc<dyn ClaimedRunCommit> = match &self.recovery_projection {
-            Some(projection) => Arc::new(ProjectingClaimedRunCommit::new(
-                self.claimed_commit.clone(),
-                projection.clone(),
-            )),
-            None => self.claimed_commit.clone(),
-        };
-        let fenced: Arc<dyn CommitCoordinator> =
-            Arc::new(ClaimedCommitCoordinator::new(service, claim.clone()));
+        let mut coordinator =
+            ClaimedCommitCoordinator::new(self.claimed_commit.clone(), claim.clone());
+        if let Some(projection) = &self.recovery_projection {
+            coordinator = coordinator.with_recovery_projection(projection.clone());
+        }
+        let fenced: Arc<dyn CommitCoordinator> = Arc::new(coordinator);
         let mut ctx = self.execution_context().with_commit(fenced);
         if let Some(checkpoint) = ctx.stream_checkpoint.clone() {
             let dispatch: Arc<dyn crate::DispatchQueue> = self.store.clone();

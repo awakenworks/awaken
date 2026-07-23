@@ -13,7 +13,10 @@ use awaken_agent_contract::agent::awaiting::ResumeTicket;
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::run::{Id as RunId, Record as RunRecord, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::thread::commit::coordinator::{Coordinator, Error};
+use awaken_agent_contract::thread::commit::coordinator::{
+    Coordinator, Error, OperationCoordinator,
+};
+use awaken_agent_contract::thread::commit::operation::{CommitOperation, CommitReceipt};
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::checkpoint::CheckpointReader;
 use awaken_agent_contract::thread::read::recovery::{
@@ -67,7 +70,7 @@ impl RemoteHostCommit {
 /// `Arc<dyn HostStore>`. The remote Worker boundary is projected and is not a
 /// `HostStore`.
 pub(crate) trait HostStore:
-    Coordinator + ThreadReader + RunStore + RunRecoverySource + Send + Sync
+    Coordinator + OperationCoordinator + ThreadReader + RunStore + RunRecoverySource + Send + Sync
 {
     /// Latest committed run on `thread`, used by after-commit outbox recovery.
     fn latest_run(&self, thread: &ThreadId) -> Option<RunRecord>;
@@ -183,6 +186,18 @@ impl Coordinator for HostCommit {
                 }
                 Ok(record)
             }
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl OperationCoordinator for HostCommit {
+    async fn commit_operation(&self, operation: CommitOperation) -> Result<CommitReceipt, Error> {
+        match self {
+            HostCommit::Local(store) => store.commit_operation(operation).await,
+            HostCommit::Remote(_) => Err(Error::Rejected(
+                "a remote Worker cannot coordinate authoritative commit operations".to_string(),
+            )),
         }
     }
 }

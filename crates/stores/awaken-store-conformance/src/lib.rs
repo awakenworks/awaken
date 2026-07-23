@@ -19,7 +19,10 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::draft::Draft;
 use awaken_agent_contract::audit::kind::Kind as EventKind;
 use awaken_agent_contract::thread::commit::RunDisposition;
-use awaken_agent_contract::thread::commit::coordinator::Coordinator;
+use awaken_agent_contract::thread::commit::coordinator::{Coordinator, OperationCoordinator};
+use awaken_agent_contract::thread::commit::operation::{
+    CommitOperation, CommitOperationId, CommitPayloadHash,
+};
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
 use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
@@ -437,6 +440,114 @@ pub async fn recovery_snapshot_is_consistent<S: Coordinator + RunRecoverySource>
     assert_eq!(snapshot.thread_version, 2, "per-Thread version");
     assert_eq!(snapshot.store_cursor, 3, "backend-wide prefix cursor");
     assert_eq!(snapshot.next_commit_ordinal, 1, "claimed Run ordinal");
+}
+
+/// Operation receipts make an ambiguous acknowledgement retry exactly-once at
+/// the committed-fact boundary, while Thread CAS rejects stale recovery context.
+pub async fn commit_operation_is_idempotent_and_cas<
+    S: OperationCoordinator + CheckpointReader + RunRecoverySource,
+>(
+    store: &S,
+) {
+    let thread = ThreadId("conf-operation".to_string());
+    let run = RunId("conf-operation-run".to_string());
+    let first = CommitOperation {
+        operation_id: CommitOperationId::new(run.clone(), 0),
+        expected_thread_version: 0,
+        payload_hash: CommitPayloadHash("sha256:first".to_string()),
+        commit: running_checkpoint(&thread, &run, "first"),
+    };
+    let applied = store
+        .commit_operation(first.clone())
+        .await
+        .expect("first operation");
+    assert!(!applied.duplicate);
+    assert_eq!(applied.thread_version, 1);
+
+    let duplicate = store
+        .commit_operation(first.clone())
+        .await
+        .expect("same operation retry");
+    assert!(duplicate.duplicate);
+    assert_eq!(duplicate.commit_sequence, applied.commit_sequence);
+    assert_eq!(duplicate.thread_version, applied.thread_version);
+    assert_eq!(
+        store.committed_messages(&thread).len(),
+        1,
+        "a duplicate receipt does not append facts"
+    );
+
+    let mut hash_conflict = first;
+    hash_conflict.payload_hash = CommitPayloadHash("sha256:different".to_string());
+    assert!(
+        store.commit_operation(hash_conflict).await.is_err(),
+        "one operation id cannot identify two payloads"
+    );
+
+    let stale = CommitOperation {
+        operation_id: CommitOperationId::new(run.clone(), 1),
+        expected_thread_version: 0,
+        payload_hash: CommitPayloadHash("sha256:second".to_string()),
+        commit: ended_checkpoint(&thread, &run, "second"),
+    };
+    assert!(
+        store.commit_operation(stale.clone()).await.is_err(),
+        "stale Thread context is rejected"
+    );
+    assert_eq!(
+        store.committed_messages(&thread).len(),
+        1,
+        "CAS rejection is atomic"
+    );
+
+    let mut current = stale;
+    current.expected_thread_version = 1;
+    let second = store
+        .commit_operation(current)
+        .await
+        .expect("current Thread version");
+    assert_eq!(second.thread_version, 2);
+    assert_eq!(store.committed_messages(&thread).len(), 2);
+
+    let snapshot = store
+        .recovery_snapshot(&thread, &run)
+        .await
+        .expect("post-operation recovery");
+    assert_eq!(snapshot.thread_version, 2);
+    assert_eq!(snapshot.next_commit_ordinal, 2);
+}
+
+/// Two operations prepared from the same Thread prefix race: the Thread CAS
+/// admits exactly one, even when they target different Runs.
+pub async fn concurrent_operations_cas_one_winner<
+    S: OperationCoordinator + CheckpointReader + Sync,
+>(
+    store: &S,
+) {
+    let thread = ThreadId("conf-operation-race".to_string());
+    let operation = |run: &str| {
+        let run_id = RunId(run.to_string());
+        CommitOperation {
+            operation_id: CommitOperationId::new(run_id.clone(), 0),
+            expected_thread_version: 0,
+            payload_hash: CommitPayloadHash(format!("sha256:{run}")),
+            commit: running_checkpoint(&thread, &run_id, run),
+        }
+    };
+    let (left, right) = tokio::join!(
+        store.commit_operation(operation("left")),
+        store.commit_operation(operation("right")),
+    );
+    assert_eq!(
+        usize::from(left.is_ok()) + usize::from(right.is_ok()),
+        1,
+        "one stale-prefix operation wins and one conflicts"
+    );
+    assert_eq!(
+        store.committed_messages(&thread).len(),
+        1,
+        "the losing CAS appends no partial facts"
+    );
 }
 
 /// Empty-store reads: before any commit, every read port is absent — no messages,

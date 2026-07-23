@@ -23,7 +23,12 @@ use awaken_agent_contract::agent::run::{Id as RunId, Record as RunRecord, RunSta
 use awaken_agent_contract::agent::state::Command as StateCommand;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::record::Record as EventRecord;
-use awaken_agent_contract::thread::commit::coordinator::{Coordinator as CommitCoordinator, Error};
+use awaken_agent_contract::thread::commit::coordinator::{
+    Coordinator as CommitCoordinator, Error, OperationCoordinator,
+};
+use awaken_agent_contract::thread::commit::operation::{
+    CommitOperation, CommitPayloadHash, CommitReceipt,
+};
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
 use awaken_agent_contract::thread::read::recovery::{
@@ -34,6 +39,7 @@ use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use sqlx::Row;
 use sqlx::postgres::PgPool;
 use sqlx::types::Json;
+use sqlx::{Postgres, Transaction};
 
 pub use awaken_store_schema::{COMMIT_BUNDLE_ID as BUNDLE_ID, commit_bundle};
 
@@ -237,194 +243,324 @@ impl CommitCoordinator for PostgresCommitCoordinator {
         commit
             .validate()
             .map_err(|e| Error::Rejected(e.to_string()))?;
-        let run_id = commit.run_id().clone();
-        let thread_id = commit.thread_id.clone();
-        let run_state = commit.run_state();
-        let resume_ticket = commit.resume_ticket().cloned();
-        let p = NS;
-
         let mut tx = self
             .pool
             .begin()
             .await
             .map_err(|err| Error::Rejected(err.to_string()))?;
+        let current_version = lock_thread_version(&mut tx, &commit.thread_id).await?;
+        let (next, committed_events) = append_commit(&mut tx, &commit).await?;
+        set_thread_version(&mut tx, &commit.thread_id, current_version + 1).await?;
+        tx.commit().await.map_err(reject)?;
+        let mut projection = lock(&self.projection)?;
+        advance_projection(&mut projection, commit, next, committed_events);
+        Ok(CommitRecord { sequence: next })
+    }
+}
 
-        // Terminal-is-final (exactly-once committed LOG under a stale reclaim),
-        // fenced DURABLY and IN-TRANSACTION — this is the authoritative check, not
-        // the per-process projection. In a fleet the projection is per-process
-        // (cross-node visibility is reconnect-only), so a stale owner on a DIFFERENT
-        // node would never see the reclaimer's `Ended` in its own projection; only
-        // the shared database is common ground. `SELECT ... FOR UPDATE` locks the
-        // run's `run_record` row (a row exists once any Running/Ended fact was
-        // committed, which is always true by the time a run could be terminal), so
-        // two committers racing the same run serialize on it: the first commits
-        // `Ended`; the second's read then sees `Ended` and is rejected — no
-        // duplicate terminal fact or transcript lands in the shared DB. A rejected
-        // commit drops `tx` unread, rolling back and releasing the lock. When no row
-        // exists (the run's first-ever commit) there is nothing to reject, so the
-        // first commit — even a first `Ended` — lands.
-        let existing: Option<Json<RunState>> = sqlx::query_scalar(&format!(
-            "SELECT phase FROM {p}_run_record WHERE run_id = $1 FOR UPDATE"
-        ))
-        .bind(&run_id.0)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(reject)?;
-        if existing
-            .as_ref()
-            .is_some_and(|Json(state)| !state.permits(&run_state))
-        {
+#[async_trait]
+impl OperationCoordinator for PostgresCommitCoordinator {
+    async fn commit_operation(&self, operation: CommitOperation) -> Result<CommitReceipt, Error> {
+        operation
+            .commit
+            .validate()
+            .map_err(|error| Error::Rejected(error.to_string()))?;
+        if operation.operation_id.run_id != *operation.commit.run_id() {
+            return Err(Error::Rejected(
+                "commit operation run_id does not match ThreadCommit run_id".to_string(),
+            ));
+        }
+        let operation_ordinal = i64::try_from(operation.operation_id.ordinal).map_err(|_| {
+            Error::Rejected("commit operation ordinal exceeds backend range".to_string())
+        })?;
+        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let current_version = lock_thread_version(&mut tx, &operation.commit.thread_id).await?;
+        if let Some(receipt) = load_receipt(&mut tx, &operation).await? {
+            return Ok(receipt);
+        }
+        if current_version != operation.expected_thread_version {
             return Err(Error::Rejected(format!(
-                "run {} is already terminal; refusing post-terminal commit",
-                run_id.0
+                "thread version conflict: expected {}, current {}",
+                operation.expected_thread_version, current_version
             )));
         }
-
-        // Allocate the commit sequence at the database, not from the in-process
-        // projection counter: that counter is per-process, so concurrent commits —
-        // parallel drives in one process AND a cross-process fleet — would read the
-        // same value and collide on `runtime_commit_pkey`, failing every committer
-        // but one. `nextval` on the dedicated sequence allocates the next value with
-        // a short internal latch that is NOT held to transaction end, so committers
-        // never convoy on one lock across the whole commit fsync (an earlier
-        // transaction-scoped advisory lock did exactly that, starving the pool under
-        // a fleet burst until leases expired and runs double-executed). A rolled-back
-        // allocation leaves a gap; the commit log's contract is strict monotonicity,
-        // not contiguity, so a gap is harmless.
-        let next: i64 = sqlx::query_scalar(&format!("SELECT nextval('{p}_commit_seq')"))
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(reject)?;
-        let next = next as u64;
-
+        let current_ordinal: i64 = sqlx::query_scalar(&format!(
+            "SELECT COUNT(*) FROM {NS}_commit WHERE run_id = $1"
+        ))
+        .bind(&operation.operation_id.run_id.0)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(reject)?;
+        if current_ordinal as u64 != operation.operation_id.ordinal {
+            return Err(Error::Rejected(format!(
+                "commit operation ordinal conflict: expected {}, current {}",
+                operation.operation_id.ordinal, current_ordinal
+            )));
+        }
+        let (next, committed_events) = append_commit(&mut tx, &operation.commit).await?;
+        let thread_version = current_version + 1;
+        set_thread_version(&mut tx, &operation.commit.thread_id, thread_version).await?;
         sqlx::query(&format!(
-            "INSERT INTO {p}_commit (sequence, thread_id, run_id, phase) VALUES ($1, $2, $3, $4)"
+            "INSERT INTO {NS}_commit_receipt \
+             (operation_run_id, operation_ordinal, thread_id, payload_hash, \
+              commit_sequence, thread_version) VALUES ($1, $2, $3, $4, $5, $6)"
+        ))
+        .bind(&operation.operation_id.run_id.0)
+        .bind(operation_ordinal)
+        .bind(&operation.commit.thread_id.0)
+        .bind(&operation.payload_hash.0)
+        .bind(next as i64)
+        .bind(thread_version as i64)
+        .execute(&mut *tx)
+        .await
+        .map_err(reject)?;
+        tx.commit().await.map_err(reject)?;
+        let receipt = CommitReceipt {
+            operation_id: operation.operation_id,
+            commit_sequence: next,
+            thread_version,
+            payload_hash: operation.payload_hash,
+            duplicate: false,
+        };
+        let mut projection = lock(&self.projection)?;
+        advance_projection(&mut projection, operation.commit, next, committed_events);
+        Ok(receipt)
+    }
+}
+
+async fn lock_thread_version(
+    tx: &mut Transaction<'_, Postgres>,
+    thread_id: &ThreadId,
+) -> Result<u64, Error> {
+    // One transaction-scoped lock per Thread serializes its CAS without
+    // serializing unrelated Threads. The hash may create a harmless false
+    // serialization collision, but never a false version conflict.
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(&thread_id.0)
+        .execute(&mut **tx)
+        .await
+        .map_err(reject)?;
+    let committed: i64 = sqlx::query_scalar(&format!(
+        "SELECT COUNT(*) FROM {NS}_commit WHERE thread_id = $1"
+    ))
+    .bind(&thread_id.0)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(reject)?;
+    sqlx::query(&format!(
+        "INSERT INTO {NS}_thread_version (thread_id, version) VALUES ($1, $2) \
+         ON CONFLICT (thread_id) DO UPDATE SET version = EXCLUDED.version"
+    ))
+    .bind(&thread_id.0)
+    .bind(committed)
+    .execute(&mut **tx)
+    .await
+    .map_err(reject)?;
+    Ok(committed.max(0) as u64)
+}
+
+async fn set_thread_version(
+    tx: &mut Transaction<'_, Postgres>,
+    thread_id: &ThreadId,
+    version: u64,
+) -> Result<(), Error> {
+    sqlx::query(&format!(
+        "UPDATE {NS}_thread_version SET version = $2 WHERE thread_id = $1"
+    ))
+    .bind(&thread_id.0)
+    .bind(version as i64)
+    .execute(&mut **tx)
+    .await
+    .map_err(reject)?;
+    Ok(())
+}
+
+async fn load_receipt(
+    tx: &mut Transaction<'_, Postgres>,
+    operation: &CommitOperation,
+) -> Result<Option<CommitReceipt>, Error> {
+    let row = sqlx::query(&format!(
+        "SELECT payload_hash, commit_sequence, thread_version \
+         FROM {NS}_commit_receipt \
+         WHERE operation_run_id = $1 AND operation_ordinal = $2"
+    ))
+    .bind(&operation.operation_id.run_id.0)
+    .bind(operation.operation_id.ordinal as i64)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(reject)?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let payload_hash: String = row.try_get("payload_hash").map_err(reject)?;
+    if payload_hash != operation.payload_hash.0 {
+        return Err(Error::Rejected(format!(
+            "commit operation {}:{} was reused with another payload",
+            operation.operation_id.run_id.0, operation.operation_id.ordinal
+        )));
+    }
+    Ok(Some(CommitReceipt {
+        operation_id: operation.operation_id.clone(),
+        commit_sequence: row.try_get::<i64, _>("commit_sequence").map_err(reject)? as u64,
+        thread_version: row.try_get::<i64, _>("thread_version").map_err(reject)? as u64,
+        payload_hash: CommitPayloadHash(payload_hash),
+        duplicate: true,
+    }))
+}
+
+async fn append_commit(
+    tx: &mut Transaction<'_, Postgres>,
+    commit: &ThreadCommit,
+) -> Result<(u64, Vec<EventRecord>), Error> {
+    let run_id = commit.run_id();
+    let thread_id = &commit.thread_id;
+    let run_state = commit.run_state();
+    let p = NS;
+    let existing: Option<Json<RunState>> = sqlx::query_scalar(&format!(
+        "SELECT phase FROM {p}_run_record WHERE run_id = $1 FOR UPDATE"
+    ))
+    .bind(&run_id.0)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(reject)?;
+    if existing
+        .as_ref()
+        .is_some_and(|Json(state)| !state.permits(&run_state))
+    {
+        return Err(Error::Rejected(format!(
+            "run {} is already terminal; refusing post-terminal commit",
+            run_id.0
+        )));
+    }
+
+    let next: i64 = sqlx::query_scalar(&format!("SELECT nextval('{p}_commit_seq')"))
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(reject)?;
+    let next = next as u64;
+    sqlx::query(&format!(
+        "INSERT INTO {p}_commit (sequence, thread_id, run_id, phase) VALUES ($1, $2, $3, $4)"
+    ))
+    .bind(next as i64)
+    .bind(&thread_id.0)
+    .bind(&run_id.0)
+    .bind(Json(&run_state))
+    .execute(&mut **tx)
+    .await
+    .map_err(reject)?;
+
+    for message in &commit.messages {
+        sqlx::query(&format!(
+            "INSERT INTO {p}_message (commit_sequence, thread_id, data) VALUES ($1, $2, $3)"
         ))
         .bind(next as i64)
         .bind(&thread_id.0)
-        .bind(&run_id.0)
-        .bind(Json(&run_state))
-        .execute(&mut *tx)
+        .bind(Json(message))
+        .execute(&mut **tx)
         .await
         .map_err(reject)?;
-
-        for message in &commit.messages {
-            sqlx::query(&format!(
-                "INSERT INTO {p}_message (commit_sequence, thread_id, data) VALUES ($1, $2, $3)"
-            ))
-            .bind(next as i64)
-            .bind(&thread_id.0)
-            .bind(Json(message))
-            .execute(&mut *tx)
-            .await
-            .map_err(reject)?;
-        }
-
-        for command in &commit.state {
-            sqlx::query(&format!(
-                "INSERT INTO {p}_state_command (commit_sequence, thread_id, data) VALUES ($1, $2, $3)"
-            ))
-            .bind(next as i64)
-            .bind(&thread_id.0)
-            .bind(Json(command))
-            .execute(&mut *tx)
-            .await
-            .map_err(reject)?;
-        }
-
-        let mut committed_events = Vec::with_capacity(commit.events.len());
-        for (offset, draft) in commit.events.iter().enumerate() {
-            let sequence = next * 1_000 + offset as u64;
-            sqlx::query(&format!(
-                "INSERT INTO {p}_event (sequence, run_id, kind, payload) VALUES ($1, $2, $3, $4)"
-            ))
-            .bind(sequence as i64)
-            .bind(&run_id.0)
-            .bind(Json(&draft.kind))
-            .bind(Json(&draft.payload))
-            .execute(&mut *tx)
-            .await
-            .map_err(reject)?;
-            committed_events.push(EventRecord {
-                sequence,
-                run_id: run_id.clone(),
-                kind: draft.kind.clone(),
-                payload: draft.payload.clone(),
-            });
-        }
-
+    }
+    for command in &commit.state {
         sqlx::query(&format!(
-            "INSERT INTO {p}_run_record (run_id, thread_id, phase) VALUES ($1, $2, $3) \
-             ON CONFLICT (run_id) DO UPDATE \
-             SET thread_id = EXCLUDED.thread_id, phase = EXCLUDED.phase, updated_at = now()"
+            "INSERT INTO {p}_state_command (commit_sequence, thread_id, data) VALUES ($1, $2, $3)"
+        ))
+        .bind(next as i64)
+        .bind(&thread_id.0)
+        .bind(Json(command))
+        .execute(&mut **tx)
+        .await
+        .map_err(reject)?;
+    }
+    let mut committed_events = Vec::with_capacity(commit.events.len());
+    for (offset, draft) in commit.events.iter().enumerate() {
+        let sequence = next * 1_000 + offset as u64;
+        sqlx::query(&format!(
+            "INSERT INTO {p}_event (sequence, run_id, kind, payload) VALUES ($1, $2, $3, $4)"
+        ))
+        .bind(sequence as i64)
+        .bind(&run_id.0)
+        .bind(Json(&draft.kind))
+        .bind(Json(&draft.payload))
+        .execute(&mut **tx)
+        .await
+        .map_err(reject)?;
+        committed_events.push(EventRecord {
+            sequence,
+            run_id: run_id.clone(),
+            kind: draft.kind.clone(),
+            payload: draft.payload.clone(),
+        });
+    }
+    sqlx::query(&format!(
+        "INSERT INTO {p}_run_record (run_id, thread_id, phase) VALUES ($1, $2, $3) \
+         ON CONFLICT (run_id) DO UPDATE \
+         SET thread_id = EXCLUDED.thread_id, phase = EXCLUDED.phase, updated_at = now()"
+    ))
+    .bind(&run_id.0)
+    .bind(&thread_id.0)
+    .bind(Json(&run_state))
+    .execute(&mut **tx)
+    .await
+    .map_err(reject)?;
+
+    if matches!(run_state, RunState::Awaiting) {
+        let ticket = commit
+            .resume_ticket()
+            .expect("awaiting disposition has a ticket");
+        sqlx::query(&format!(
+            "INSERT INTO {p}_waiting (run_id, ticket) VALUES ($1, $2) \
+             ON CONFLICT (run_id) DO UPDATE SET ticket = EXCLUDED.ticket"
         ))
         .bind(&run_id.0)
-        .bind(&thread_id.0)
-        .bind(Json(&run_state))
-        .execute(&mut *tx)
+        .bind(Json(ticket))
+        .execute(&mut **tx)
         .await
         .map_err(reject)?;
-
-        // Persist or clear the resume ticket atomically with the disposition: an
-        // `Awaiting` disposition owns a ticket; anything else clears
-        // it so a resumed/terminal run can no longer be resumed (G5).
-        let awaiting = matches!(run_state, RunState::Awaiting);
-        if awaiting {
-            let ticket = resume_ticket
-                .as_ref()
-                .expect("awaiting disposition has a ticket");
-            sqlx::query(&format!(
-                "INSERT INTO {p}_waiting (run_id, ticket) VALUES ($1, $2) \
-                 ON CONFLICT (run_id) DO UPDATE SET ticket = EXCLUDED.ticket"
-            ))
+    } else {
+        sqlx::query(&format!("DELETE FROM {p}_waiting WHERE run_id = $1"))
             .bind(&run_id.0)
-            .bind(Json(ticket))
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
             .map_err(reject)?;
-        } else {
-            sqlx::query(&format!("DELETE FROM {p}_waiting WHERE run_id = $1"))
-                .bind(&run_id.0)
-                .execute(&mut *tx)
-                .await
-                .map_err(reject)?;
-        }
+    }
+    Ok((next, committed_events))
+}
 
-        tx.commit().await.map_err(reject)?;
-
-        // The transaction is durable; advance the in-memory projection to match.
-        // The fence only ever moves forward: with lock-free `nextval` allocation two
-        // commits can interleave (allocate 5, then 6, but 6 commits first), so take
-        // the max rather than clobbering with this commit's own (possibly lower)
-        // sequence. `commit_count` reads this fence and must never regress.
-        let mut projection = lock(&self.projection)?;
-        projection.sequence = projection.sequence.max(next);
-        for message in commit.messages {
-            projection.messages.push((thread_id.clone(), message));
-        }
-        for command in commit.state {
-            projection.state.push((thread_id.clone(), command));
-        }
-        projection.events.extend(committed_events);
-        let record = RunRecord {
-            id: run_id.clone(),
-            thread_id: thread_id.clone(),
-            state: run_state,
-        };
-        projection
-            .run_records
-            .insert(run_id.clone(), record.clone());
-        projection.latest_by_thread.insert(thread_id, record);
-        if awaiting {
-            projection.resume_tickets.insert(
-                run_id.clone(),
-                resume_ticket.expect("awaiting has a ticket"),
-            );
-        } else {
-            projection.resume_tickets.remove(&run_id);
-        }
-
-        Ok(CommitRecord { sequence: next })
+fn advance_projection(
+    projection: &mut Projection,
+    commit: ThreadCommit,
+    sequence: u64,
+    committed_events: Vec<EventRecord>,
+) {
+    let run_id = commit.run_id().clone();
+    let thread_id = commit.thread_id.clone();
+    let run_state = commit.run_state();
+    let resume_ticket = commit.resume_ticket().cloned();
+    let awaiting = matches!(run_state, RunState::Awaiting);
+    projection.sequence = projection.sequence.max(sequence);
+    for message in commit.messages {
+        projection.messages.push((thread_id.clone(), message));
+    }
+    for command in commit.state {
+        projection.state.push((thread_id.clone(), command));
+    }
+    projection.events.extend(committed_events);
+    let record = RunRecord {
+        id: run_id.clone(),
+        thread_id: thread_id.clone(),
+        state: run_state,
+    };
+    projection
+        .run_records
+        .insert(run_id.clone(), record.clone());
+    projection.latest_by_thread.insert(thread_id, record);
+    if awaiting {
+        projection.resume_tickets.insert(
+            run_id.clone(),
+            resume_ticket.expect("awaiting has a ticket"),
+        );
+    } else {
+        projection.resume_tickets.remove(&run_id);
     }
 }
 

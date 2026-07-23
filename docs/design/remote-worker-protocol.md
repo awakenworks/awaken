@@ -212,23 +212,31 @@ pub struct CommitOperationId {
     pub ordinal: u64,
 }
 
-pub struct ClaimedCommitCommand {
-    pub worker: WorkerIdentity,
-    pub claim: ClaimedRun,
+pub struct CommitOperation {
     pub operation_id: CommitOperationId,
     pub expected_thread_version: u64,
-    pub payload_hash: ContentHash,
+    pub payload_hash: CommitPayloadHash,
     pub commit: ThreadCommit,
+}
+
+pub struct ClaimedCommitCommand {
+    pub claim: RunClaim,
+    pub operation: CommitOperation,
 }
 
 pub struct CommitReceipt {
     pub operation_id: CommitOperationId,
     pub commit_sequence: u64,
     pub thread_version: u64,
-    pub payload_hash: ContentHash,
+    pub payload_hash: CommitPayloadHash,
     pub duplicate: bool,
 }
 ```
+
+The authenticated `WorkerIdentity`/incarnation is request context at the
+service edge, not a field passed into the fact-store coordinator. This preserves
+the existing separation between Worker authority (`RunClaim`) and Thread truth
+(`CommitOperation`).
 
 `operation_id` remains stable across HTTP retry, response loss, lease expiry,
 and reclaim. The claim epoch authorizes the current delivery attempt but is not

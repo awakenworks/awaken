@@ -93,6 +93,16 @@ impl From<&Lease> for RunClaim {
     }
 }
 
+/// One logical Thread commit plus the exact dispatch authority that admits it.
+///
+/// Worker identity/incarnation is authenticated by the transport/service edge;
+/// the durable coordinator receives only `operation`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClaimedCommitCommand {
+    pub claim: RunClaim,
+    pub operation: awaken_agent_contract::thread::commit::operation::CommitOperation,
+}
+
 /// A claimed, ready-to-run dispatch and the run's undelivered pending input.
 /// `pending` is empty for a fresh run and non-empty for a wake.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

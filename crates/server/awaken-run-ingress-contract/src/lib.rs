@@ -20,9 +20,9 @@ pub use awaken_worker_contract::{
     can_assign, can_claim, can_claim_locally, place_assignment,
 };
 pub use dispatch::{
-    CasOutcome, Claimed, CommitEpochGuard, Dispatch, DispatchCompletion, DispatchError,
-    DispatchOutcome, DispatchQueue, DispatchState, DispatchSummary, Inbox, Lease, Outbox,
-    PendingInput, PendingRecord, RunClaim, SettleOutcome, SubmitOptions,
+    CasOutcome, Claimed, ClaimedCommitCommand, CommitEpochGuard, Dispatch, DispatchCompletion,
+    DispatchError, DispatchOutcome, DispatchQueue, DispatchState, DispatchSummary, Inbox, Lease,
+    Outbox, PendingInput, PendingRecord, RunClaim, SettleOutcome, SubmitOptions,
 };
 pub use run_dispatch::{
     ExecutionScopeRef, PlacementRequirements, RunDispatch, SessionResourceEnvelope,
