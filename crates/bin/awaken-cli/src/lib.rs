@@ -1151,6 +1151,7 @@ async fn management_router_over(
     // router is assembled, so neither plane depends on the other's services.
     let resource_iam = iam.clone();
     let resource_remote_iam = remote_iam.clone();
+    let application_access = Arc::new(awaken_authz_enforce::ApplicationAccessStore::new());
     let (mgmt, webhook_sink) = awaken_control::control_router(awaken_control::ControlRouterInput {
         platform_workspace: platform_workspace.clone(),
         catalog,
@@ -1172,6 +1173,7 @@ async fn management_router_over(
         org_id: Some(local_org_id()),
         iam,
         remote_iam,
+        application_access: application_access.clone(),
     });
 
     // The data plane: the host runs the server model, resolves a session's agent to
@@ -1302,10 +1304,11 @@ async fn management_router_over(
     // surface so a `/v1/workspaces/{ws}/…` request is captured, rewritten to its flat
     // `/v1/…` form, and its `{ws}` stamped as the edge scope before it re-enters
     // routing. Flat requests fall through unchanged.
-    let mut data = awaken_server::mount_with_managed_and_resource_catalog(
+    let mut data = awaken_server::mount_with_managed_and_application_access(
         host,
         managed_state,
         resource_catalog,
+        application_access,
     );
     if let Some(iam) = resource_iam {
         data = data.layer(axum::middleware::from_fn_with_state(

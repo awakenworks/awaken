@@ -1071,6 +1071,13 @@ const ROUTE_POLICIES: &[RoutePolicyDescriptor] = &[
         policy: RouteFamilyPolicy::TokenAdmin,
     },
     RoutePolicyDescriptor {
+        prefix: "/v1/application-access-tokens",
+        policy: RouteFamilyPolicy::Scoped {
+            read: APIKEY_READ,
+            write: APIKEY_WRITE,
+        },
+    },
+    RoutePolicyDescriptor {
         prefix: "/v1/config/credentials",
         policy: RouteFamilyPolicy::Scoped {
             read: APIKEY_READ,
