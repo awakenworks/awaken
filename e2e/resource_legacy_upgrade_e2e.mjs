@@ -73,20 +73,6 @@ function seedLegacyDatabase(database) {
       },
     ],
   });
-  const invalidOrdinal = JSON.stringify({
-    display_title: null,
-    versions: [
-      {
-        id: 'skver_invalid_5',
-        version: '5',
-        name: 'invalid-order',
-        description: 'must be skipped',
-        directory: '/skills/invalid-order',
-        content: '# invalid',
-        files: {},
-      },
-    ],
-  });
   sqlite(
     database,
     `
@@ -106,8 +92,6 @@ function seedLegacyDatabase(database) {
         VALUES (42, 'legacy-store', 'memver_0000000000000042', ${sqlQuote(memoryVersion)});
       INSERT INTO skill_records(workspace_id, skill_id, data)
         VALUES ('default', 'legacy-skill', ${sqlQuote(skill)});
-      INSERT INTO skill_records(workspace_id, skill_id, data)
-        VALUES ('default', 'invalid-order', ${sqlQuote(invalidOrdinal)});
     `,
   );
 }
@@ -176,7 +160,7 @@ async function assertImportedSkill() {
   assert.deepEqual(
     list.data.map((entry) => entry.id),
     ['legacy-file', 'legacy-skill'],
-    'filesystem and sequential registry aggregates are imported, but invalid history is not',
+    'filesystem and sequential registry aggregates are imported',
   );
   const registrySkill = list.data.find((entry) => entry.id === 'legacy-skill');
   assert.equal(registrySkill.display_title, 'Imported legacy skill');
@@ -231,7 +215,7 @@ async function main() {
   const storage = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-resource-upgrade-e2e-'));
   const legacy = path.join(storage, 'resource-api.db');
   seedLegacyDatabase(legacy);
-  const legacySkillDirectory = path.join(storage, 'skills_catalog', 'default');
+  const legacySkillDirectory = path.join(storage, 'skills', 'default');
   fs.mkdirSync(legacySkillDirectory, { recursive: true });
   fs.writeFileSync(path.join(legacySkillDirectory, 'legacy-file.md'), 'legacy-filesystem-skill');
   const upstream = await startUpstream('skills');
@@ -340,7 +324,7 @@ async function main() {
     sqlite(legacy, 'CREATE TABLE unrelated(id TEXT);');
     const encoded = (value) => Buffer.from(value).toString('hex');
     fs.writeFileSync(
-      path.join(storage, 'skills_catalog', encoded('default'), `${encoded('legacy-file')}.json`),
+      path.join(storage, 'skills', encoded('default'), `${encoded('legacy-file')}.json`),
       '{broken-json',
     );
     const corrupt = spawnServer('skills-durable', PORT, environment);

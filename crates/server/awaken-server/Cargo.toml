@@ -30,8 +30,8 @@ awaken-config-store = { workspace = true }
 # redaction. The composition root selects its durable or ephemeral adapter once.
 awaken-memory-store = { workspace = true, features = ["sqlite", "postgres"] }
 awaken-file-store = { workspace = true, features = ["sqlite", "postgres"] }
-awaken-skill-store = { workspace = true, features = ["postgres"] }
-awaken-resource-store = { workspace = true, features = ["postgres"] }
+awaken-skill-store = { workspace = true, features = ["sqlite", "postgres"] }
+awaken-resource-store = { workspace = true, features = ["sqlite", "postgres"] }
 # Concrete worker adapter is assembled here, outside runtime-host, behind the
 # neutral MemoryMounter port (FUSE where available, copy/harvest otherwise).
 awaken-sandbox-memoryd = { workspace = true }

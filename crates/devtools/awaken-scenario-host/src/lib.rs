@@ -1683,11 +1683,21 @@ pub fn build_skills_router() -> Router {
 /// restart. The `SkillDrivingModel` discovers → activates `greet` → replies with its
 /// body, so an e2e proves a durably-configured skill reaches the model across a
 /// restart. `AWAKEN_MODEL_MODE=skills-durable`.
-pub fn build_skills_durable_router() -> Router {
+pub async fn build_skills_durable_router() -> Router {
     let (model, model_ref) = scenario_model(Arc::new(SkillDrivingModel), "skills-durable");
-    mount(Arc::new(
-        SharedHost::new(model, model_ref).with_skill_store(scenario_skill_store_dir()),
-    ))
+    let directory = scenario_skill_store_dir();
+    let storage_root = directory
+        .parent()
+        .expect("Skill store directory has a storage root");
+    let resources = awaken_server::embedded_resource_plane(storage_root);
+    let (files, memory, skills, lifecycle) = resources.into_parts();
+    awaken_server::migrate_legacy_skill_registry(storage_root, skills.as_ref())
+        .await
+        .expect("migrate legacy Skill registry before serving");
+    let resources = awaken_runtime_host::ResourcePlanePorts::new(files, memory, skills, lifecycle);
+    mount(Arc::new(SharedHost::new_with_resource_plane(
+        model, model_ref, resources,
+    )))
 }
 pub async fn build_config_router() -> Router {
     // The MODEL is chosen by `scenario_model` (in-process echo, or the real provider
