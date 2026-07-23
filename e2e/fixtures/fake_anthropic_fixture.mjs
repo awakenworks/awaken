@@ -72,8 +72,10 @@ function outcomeJudgeInput(parsed) {
 }
 
 function evaluatedOutcomeText(input) {
+  // `transcript` is the materialized frozen selection. `message_start/end` retain
+  // global Thread positions for evidence/reporting and must not be applied a
+  // second time to this already-sliced array.
   return (input.transcript ?? [])
-    .slice(input.message_start, input.message_end)
     .map((message) => blockText(message.content))
     .join('\n');
 }

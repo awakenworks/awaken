@@ -49,6 +49,7 @@ async function main() {
   const realHome = os.homedir();
   const runtime = process.env.ACP_RUNTIME ?? 'claude';
   const noMcp = process.env.ACP_NO_MCP === '1';
+  const multiTurn = process.env.ACP_MULTITURN === '1';
   const supported = new Set(['claude', 'kimi', 'opencode', 'hermes', 'codex']);
   assert.ok(supported.has(runtime), `ACP_RUNTIME must be one of ${[...supported].join(', ')}`);
   const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-acp-home-'));
@@ -106,6 +107,7 @@ async function main() {
   // the model cannot manufacture it from the prompt and must really call the
   // dynamically injected tool for the assertion to pass.
   const attestation = `awaken-${crypto.randomBytes(12).toString('hex')}`;
+  const conversationMarker = `turn-memory-${crypto.randomBytes(12).toString('hex')}`;
   const fixture = await startCalcFixture(CALC_TOKEN, { opaqueResult: attestation });
   try {
     await withServer('acp-real-mcp', 38198, async (baseUrl) => {
@@ -136,7 +138,9 @@ async function main() {
           content: [{
             type: 'text',
             text: noMcp
-              ? 'Reply with only OK. Do not call tools.'
+              ? (multiTurn
+                  ? `Remember this exact token for the next turn: ${conversationMarker}. Reply with only ACK.`
+                  : 'Reply with only OK. Do not call tools.')
               : 'Use the available tool named mcp__calc__attest, then reply with only its opaque audit token. The token is not present in this prompt and must not be guessed.',
           }],
         }],
@@ -158,7 +162,33 @@ async function main() {
       // but only the host relay materializes it; the sandboxed CLI receives a loopback URL.
       const initializes = fixture.calls.filter((c) => c.method === 'initialize').length;
       if (noMcp) {
-        assert.ok(texts.some((t) => t.trim() === 'OK'), `expected a plain ACP reply, got ${JSON.stringify(texts)}`);
+        const expected = multiTurn ? 'ACK' : 'OK';
+        assert.ok(
+          texts.some((t) => t.trim() === expected),
+          `expected a plain ACP ${expected} reply, got ${JSON.stringify(texts)}`,
+        );
+        if (multiTurn) {
+          const before = texts.length;
+          await client.beta.sessions.events.send(session.id, {
+            events: [{
+              type: 'user.message',
+              content: [{
+                type: 'text',
+                text: 'What exact token did I ask you to remember? Reply with only that token.',
+              }],
+            }],
+            betas: BETAS,
+          });
+          const after = (await listEvents(client, session.id))
+            .filter((event) => event.type === 'agent.message')
+            .map((event) => (event.content ?? []).map((content) => content.text ?? '').join(''));
+          assert.ok(after.length > before, 'the second ACP turn produced a new assistant message');
+          assert.ok(
+            after.at(-1).includes(conversationMarker),
+            `${runtime} session/load recalled the first-turn token: ${JSON.stringify(after.at(-1))}`,
+          );
+          pass(`ACP ${runtime} recalled prior context on a second managed turn`);
+        }
         pass(`ACP ${runtime} completed a namespace turn without MCP`);
         return;
       }
