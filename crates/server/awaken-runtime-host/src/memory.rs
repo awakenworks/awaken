@@ -15,6 +15,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+use awaken_agent_contract::agent::run::Id as RunId;
+use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_agent_contract::thread::read::transcript::TranscriptSnapshot;
 use awaken_ext_builtin_tools::{AgentRunArgs, erase, invoke_agent_tool};
 use awaken_ext_memory::{
@@ -23,17 +26,19 @@ use awaken_ext_memory::{
     MemoryExtractionMutation, MemoryExtractionRepository, MemoryExtractorSnapshot,
     MemoryMutationReceipt, MemoryStoreHandle, MemoryTerminalExtraction,
     MemoryTerminalExtractionRequest, MemoryTerminalObserver, RecallBounds, RecallSelector,
-    SELECTOR_AGENT_ID, WriteMemoryTool, default_selector_agent, parse_indices, sanitize_stem,
-    select_input,
+    SELECTOR_AGENT_ID, WriteMemoryTool, accepts_memory_content, default_selector_agent,
+    parse_indices, sanitize_stem, select_input,
 };
 use awaken_runtime_contract::llm::LlmExecutor;
+use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::tool::RawTool;
 use awaken_sandbox_local::LocalProvider;
 
 use crate::agent_catalog::AgentCatalog;
-use crate::agent_runner::run_configured_agent;
+use crate::agent_runner::run_configured_agent_with_id;
 use crate::background::BackgroundRuns;
 use crate::judge::AuxAgentTool;
+use crate::store::HostCommit;
 
 // The config pieces the host wires (registering the default extractor agent).
 pub use awaken_ext_memory::{DEFAULT_MEMORY_INSTRUCTIONS, default_memory_agent};
@@ -203,6 +208,28 @@ impl CapturedMemoryWrites {
     }
 }
 
+fn writes_from_committed_agent(messages: &[Message]) -> BTreeMap<String, String> {
+    let mut writes = BTreeMap::new();
+    for block in messages.iter().flat_map(|message| &message.content) {
+        let ContentBlock::ToolUse { name, input, .. } = block else {
+            continue;
+        };
+        if name != "write_memory" {
+            continue;
+        }
+        let Some(name) = input.get("name").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let Some(content) = input.get("content").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        if accepts_memory_content(content) {
+            writes.insert(format!("/{}.md", sanitize_stem(name)), content.to_string());
+        }
+    }
+    writes
+}
+
 #[async_trait]
 impl MemoryStoreHandle for CapturedMemoryWrites {
     async fn write(&self, name: &str, content: &str) -> Result<String, String> {
@@ -315,6 +342,7 @@ pub struct BoundMemory {
     bounds: RecallBounds,
     recall_enabled: bool,
     extraction_enabled: bool,
+    execution: Arc<RwLock<Option<Arc<HostCommit>>>>,
 }
 
 struct BoundMemoryTerminalExtraction {
@@ -393,6 +421,7 @@ impl MemoryRuntime {
             bounds,
             recall_enabled: config.recall_policy.enabled,
             extraction_enabled: writable && config.extraction_policy.enabled,
+            execution: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -467,6 +496,13 @@ impl BoundMemory {
         self.extraction_enabled
     }
 
+    fn bind_execution(&self, commit: Arc<HostCommit>) {
+        *self
+            .execution
+            .write()
+            .expect("Memory execution context lock poisoned") = Some(commit);
+    }
+
     fn matches_intent(&self, intent: &MemoryExtractionIntent) -> bool {
         intent.session_id == self.session_id
             && intent.workspace_id == self.workspace_id
@@ -517,6 +553,14 @@ impl BoundMemory {
     /// after enqueue and after Session rehydration, so a process crash cannot lose
     /// the remaining extraction/store/receipt work.
     pub async fn reconcile(&self, thread: &str) -> bool {
+        if self
+            .execution
+            .read()
+            .expect("Memory execution context lock poisoned")
+            .is_none()
+        {
+            return false;
+        }
         let Ok(candidates) = self
             .runtime
             .extraction_repository()
@@ -578,21 +622,38 @@ impl BoundMemory {
         ));
         let executor = self.runtime.materialize_extractor(&intent.extractor)?;
         let tool = erase(WriteMemoryTool::from_handle(capture.clone()));
-        run_configured_agent(
+        let commit = self
+            .execution
+            .read()
+            .expect("Memory execution context lock poisoned")
+            .clone()
+            .ok_or_else(|| {
+                "Memory extraction is waiting for the Session commit/history binding".to_string()
+            })?;
+        let context = RuntimeRunContext::new()
+            .with_commit(commit.clone())
+            .with_reader(commit.clone());
+        let auxiliary_thread_id = intent.auxiliary_thread_id();
+        run_configured_agent_with_id(
             &catalog,
             crate::agent_runner::AgentRunSandbox::Fresh(&self.runtime.provider),
             executor,
             &intent.extractor.agent_id,
-            &format!("{}::mem", intent.session_id),
+            &auxiliary_thread_id,
+            RunId(intent.auxiliary_run_id()),
             seed,
             vec![tool],
-            None,
-            None,
-            None,
+            context,
         )
         .await
         .map_err(|error| error.to_string())?;
-        self.platform.plan_mutations(capture.take()).await
+        let mut writes = capture.take();
+        if writes.is_empty() {
+            writes = writes_from_committed_agent(
+                &commit.committed_messages(&ThreadId(auxiliary_thread_id)),
+            );
+        }
+        self.platform.plan_mutations(writes).await
     }
 
     /// A live-validating Memory handle shared with the recall plugin. Returning
@@ -696,15 +757,17 @@ impl crate::host::SharedHost {
             .flatten()
     }
 
-    pub(crate) fn memory_terminal_observer(
+    pub(crate) async fn memory_terminal_observer(
         &self,
         thread: &str,
         snapshot: &awaken_runtime_contract::ExecutableAgentSnapshot,
-        reader: Arc<dyn awaken_agent_contract::thread::read::thread_reader::ThreadReader>,
+        commit: Arc<HostCommit>,
     ) -> Option<Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>> {
         let memory = self
             .memory_for_thread(thread)
             .filter(|memory| memory.extraction_enabled())?;
+        memory.bind_execution(commit.clone());
+        memory.reconcile(thread).await;
         if !snapshot
             .resolved_spec
             .plugin_ids
@@ -747,6 +810,7 @@ impl crate::host::SharedHost {
                 extraction_prompt: config.extraction_prompt,
             },
         });
+        let reader: Arc<dyn ThreadReader> = commit;
         Some(Arc::new(MemoryTerminalObserver::new(reader, extraction)))
     }
 
@@ -854,6 +918,45 @@ mod tests {
         )
     }
 
+    #[test]
+    fn committed_agent_tool_calls_rebuild_only_policy_accepted_mutations() {
+        let messages = vec![Message::new(
+            MessageId("assistant".into()),
+            Role::Assistant,
+            vec![
+                ContentBlock::tool_use(
+                    "valid",
+                    "write_memory",
+                    serde_json::json!({
+                        "name": "User Pref",
+                        "content": "The user prefers concise reviews."
+                    }),
+                ),
+                ContentBlock::tool_use(
+                    "rejected",
+                    "write_memory",
+                    serde_json::json!({
+                        "name": "fix",
+                        "content": "Fixed the bug by patching queue.rs."
+                    }),
+                ),
+                ContentBlock::tool_use(
+                    "other",
+                    "unrelated",
+                    serde_json::json!({"name": "ignored", "content": "ignored"}),
+                ),
+            ],
+        )];
+
+        assert_eq!(
+            writes_from_committed_agent(&messages),
+            BTreeMap::from([(
+                "/User-Pref.md".to_string(),
+                "The user prefers concise reviews.".to_string()
+            )])
+        );
+    }
+
     fn extractor(
         instructions: Option<&str>,
         extraction_prompt: Option<&str>,
@@ -914,6 +1017,9 @@ mod tests {
             &config,
             true,
         );
+        bound.bind_execution(Arc::new(HostCommit::Local(Arc::new(
+            awaken_runtime::memory::MemoryCommitCoordinator::new(),
+        ))));
         (runtime, bound, repository, extractions)
     }
 

@@ -88,11 +88,10 @@ impl HostWorkerResolver {
             commit.clone(),
             claimed.lease.owner.clone(),
         );
-        if let Some(observer) = host.memory_terminal_observer(
-            &thread_id.0,
-            &claimed.request.activation.snapshot,
-            commit,
-        ) {
+        if let Some(observer) = host
+            .memory_terminal_observer(&thread_id.0, &claimed.request.activation.snapshot, commit)
+            .await
+        {
             worker = worker.with_context(
                 awaken_runtime_contract::RuntimeRunContext::new().with_terminal_observer(observer),
             );

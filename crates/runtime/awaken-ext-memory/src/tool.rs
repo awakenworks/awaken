@@ -49,7 +49,7 @@ impl Tool for WriteMemoryTool {
         // Model-independent backstop for the extractor's "what NOT to save" gate.
         // Skip an implementation note here — NOT an error, so the extractor's
         // other valid writes still land.
-        if looks_like_implementation_note(content) {
+        if !accepts_memory_content(content) {
             return Ok(format!(
                 "skipped `{name}`: implementation detail (code / a fix) belongs in the repo, not memory"
             ));
@@ -104,6 +104,13 @@ fn looks_like_implementation_note(content: &str) -> bool {
                 .iter()
                 .any(|ext| tok.ends_with(ext) && tok.len() > ext.len())
         })
+}
+
+/// Deterministic policy backstop shared by live tool execution and recovery
+/// from a committed auxiliary Agent transcript.
+#[must_use]
+pub fn accepts_memory_content(content: &str) -> bool {
+    !looks_like_implementation_note(content)
 }
 
 /// The model-visible descriptor for [`WriteMemoryTool`].

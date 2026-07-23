@@ -595,6 +595,7 @@ impl SharedHost {
         // through a dispatch store first. Both share this thread's `runtime`/`commit`.
         let terminal_observers: Vec<_> = self
             .memory_terminal_observer(thread, &config, commit.clone())
+            .await
             .into_iter()
             .collect();
         let (ingress, durable_ingress) = self

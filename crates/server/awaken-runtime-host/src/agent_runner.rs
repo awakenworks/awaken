@@ -461,6 +461,69 @@ pub(crate) async fn run_configured_agent(
     context: Option<RuntimeRunContext>,
     run_delegation: Option<Arc<dyn RunDelegationService>>,
 ) -> Result<(String, ThreadUsage), AgentRunError> {
+    run_configured_agent_inner(
+        catalog,
+        sandbox,
+        llm,
+        agent_id,
+        thread,
+        seed.into(),
+        extra_tools,
+        cancellation,
+        context,
+        run_delegation,
+        None,
+    )
+    .await
+}
+
+/// Execute one recoverable auxiliary Agent using a caller-owned stable Run id.
+///
+/// This is still the ordinary Runtime lifecycle and commit boundary. The helper
+/// only removes random identity from housekeeping retries; it carries no parent
+/// delegation origin and cannot create a delegated child relationship.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_configured_agent_with_id(
+    catalog: &AgentCatalog,
+    sandbox: AgentRunSandbox<'_>,
+    llm: Arc<dyn LlmExecutor>,
+    agent_id: &str,
+    thread: &str,
+    run_id: RunId,
+    seed: impl Into<RunInput>,
+    extra_tools: Vec<Arc<dyn RawTool>>,
+    context: RuntimeRunContext,
+) -> Result<(String, ThreadUsage), AgentRunError> {
+    run_configured_agent_inner(
+        catalog,
+        sandbox,
+        llm,
+        agent_id,
+        thread,
+        seed.into(),
+        extra_tools,
+        None,
+        Some(context),
+        None,
+        Some(run_id),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_configured_agent_inner(
+    catalog: &AgentCatalog,
+    sandbox: AgentRunSandbox<'_>,
+    llm: Arc<dyn LlmExecutor>,
+    agent_id: &str,
+    thread: &str,
+    seed: RunInput,
+    extra_tools: Vec<Arc<dyn RawTool>>,
+    cancellation: Option<CancellationToken>,
+    context: Option<RuntimeRunContext>,
+    run_delegation: Option<Arc<dyn RunDelegationService>>,
+    stable_run_id: Option<RunId>,
+) -> Result<(String, ThreadUsage), AgentRunError> {
     let config = catalog
         .resolve(agent_id)
         .ok_or_else(|| AgentRunError::Configuration(format!("unknown agent {agent_id:?}")))?
@@ -511,10 +574,21 @@ pub(crate) async fn run_configured_agent(
     }
     let reader = ctx.reader.clone().expect("checked above");
     let thread_id = ThreadId(thread.to_string());
-    runtime
-        .run_to_completion(&config, thread, seed, ctx, |_| ResumeResult::allow())
-        .await
-        .map_err(AgentRunError::Runtime)?;
+    match stable_run_id {
+        Some(run_id) => {
+            runtime
+                .run_to_completion_with_id(&config, run_id, thread, seed, ctx, |_| {
+                    ResumeResult::allow()
+                })
+                .await
+        }
+        None => {
+            runtime
+                .run_to_completion(&config, thread, seed, ctx, |_| ResumeResult::allow())
+                .await
+        }
+    }
+    .map_err(AgentRunError::Runtime)?;
     let text = latest_assistant_text(&reader.committed_messages(&thread_id));
     let usage = usage_from_committed(reader.as_ref(), &thread_id);
     Ok((text, usage))
@@ -884,6 +958,66 @@ mod tests {
                 stop_reason: None,
             })
         }
+    }
+
+    struct CountingModel(AtomicUsize);
+
+    #[async_trait::async_trait]
+    impl LlmExecutor for CountingModel {
+        async fn infer(&self, _request: ChatRequest) -> LlmResult<ChatResponse> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(ChatResponse {
+                output: AssistantOutput::text("stable"),
+                usage: None,
+                stop_reason: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn stable_auxiliary_run_reuses_committed_terminal_truth_without_reinference() {
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = LocalProvider::new(tmp.path());
+        let catalog = AgentCatalog::new().with_agent(agent("worker", "WORK"));
+        let model = Arc::new(CountingModel(AtomicUsize::new(0)));
+        let commit = Arc::new(MemoryCommitCoordinator::new());
+        let context = || {
+            RuntimeRunContext::new()
+                .with_commit(commit.clone())
+                .with_reader(commit.clone())
+        };
+        let run_id = RunId("aux/stable/run".into());
+
+        for input in ["first", "ignored retry input"] {
+            let (reply, _) = run_configured_agent_with_id(
+                &catalog,
+                AgentRunSandbox::Fresh(&provider),
+                model.clone(),
+                "worker",
+                "aux/stable",
+                run_id.clone(),
+                vec![user(input)],
+                Vec::new(),
+                context(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(reply, "stable");
+        }
+
+        assert_eq!(model.0.load(Ordering::SeqCst), 1);
+        assert!(matches!(
+            commit.run_state(&run_id),
+            Some(RunState::Ended(_))
+        ));
+        assert_eq!(
+            commit
+                .committed_messages(&ThreadId("aux/stable".into()))
+                .iter()
+                .filter(|message| message.role == Role::Assistant)
+                .count(),
+            1
+        );
     }
 
     #[tokio::test]
