@@ -945,3 +945,116 @@ fails CI, not production.
   the requirement is that a vendor's same-type keys pool *automatically*; a
   derived read-model over the existing selection machinery meets it with no new
   persistence.
+
+## Amendment (2026-07-23): typed Agent publication is the implemented authoring boundary
+
+This amendment replaces the earlier proposed `McpServerDef` /
+`AgentMcpConfig` authoring split and the raw `Vec<Value>` passthrough described
+above. It does not implement the still-proposed Native/ACP/A2A discriminated
+aggregate. The implemented bounded slice keeps the existing `AgentConfig`
+aggregate and removes duplicate authoring truth.
+
+### Static structure
+
+```text
+Managed/Admin HTTP anti-corruption adapters
+  -> Workspace-scoped AgentConfig revision
+       - ModelSelection + ordered ModelBinding fallbacks
+       - AgentMcpServerBinding { name, url, CredentialRef? }
+       - skill_ids
+       - MultiagentConfig { agent_ids }
+  -> ConfigService publication
+       - ModelPublicationResolver
+       - CredentialReferenceValidator
+       - compile_resolved
+  -> StoredPublication / ExecutableAgentSnapshot
+       - ResolvedModelCandidate[]
+       - normalized AgentBindings
+  -> AgentConfigSource
+  -> persisted Session runtime envelope
+  -> SessionRuntimeSlot
+  -> execution adapters
+```
+
+There is one mutable behavioral aggregate: the Workspace-scoped
+`AgentConfig` revision. The external SDK unions are accepted only by the HTTP
+adapter and normalized on entry. `MultiagentConfig` stores one coordinator
+roster; the legacy `workers` spelling is read compatibility and immediately
+serializes back as `{type:"coordinator", agents:[...]}`. Skills store ids, not
+SDK object unions. MCP stores one typed endpoint plus an optional exact,
+secret-free `CredentialRef { id, revision }`.
+
+`AgentBindings` is not another authoring aggregate. It is the normalized,
+fingerprinted execution value compiled into the immutable snapshot. Likewise,
+`AgentConfigView` is a query/projection port over the installed publication,
+not a repository. The removed `McpServerDef`, `AgentMcpConfig`,
+`ResolvedMcpServerView`, their repositories, and their HTTP routes must not be
+reintroduced.
+
+`AgentInputConfig` remains separate by design. It owns Agent-to-resource
+identity defaults whose Memory/Repository configuration versions are selected
+at Session creation under ADR-0063. It has a different lifecycle and invariant
+from Agent behavior, so merging it into `AgentConfig` would couple publication
+to mutable resource configuration and would not remove duplicate truth.
+
+The Runtime Host holds one private `SessionRuntimeSlot` per Session for
+process-local realization: workspace, frozen manifest, environment, resources,
+Memory, Skills, MCP, model routing, sandbox and egress. The durable Session
+record and its frozen manifests remain authoritative. The slot is replaceable
+cache/realization state and cannot be addressed by HTTP authoring APIs.
+
+### Dynamic behavior
+
+```text
+author
+  -> normalize public wire
+  -> CAS one AgentConfig revision
+  -> publish in trusted Workspace
+       -> resolve model-only selection to one exact catalog binding
+       -> validate every exact MCP credential owner/status/revision
+       -> compile normalized AgentBindings
+       -> persist/install immutable snapshot
+  -> create Session
+       -> read installed snapshot, never the current draft
+       -> apply explicit Session-local MCP overrides
+       -> freeze effective MCP/Skill/delegate values and resource manifest
+       -> materialize exact credential revision during preparation
+       -> install one SessionRuntimeSlot
+  -> execute
+```
+
+Draft edits cannot affect an existing publication. Republishing affects only
+later Sessions; an existing Session keeps its persisted effective values across
+retry and restart. Session-inline MCP is a distinct, explicit Session override,
+not a second Agent authoring repository. It is frozen into the Session envelope
+before Runtime preparation.
+
+Missing or ambiguous model selection, duplicate/self/empty delegation entries,
+missing credential validation wiring, cross-Workspace credentials, inactive
+credentials, revision mismatch, or Runtime owner/revision mismatch fails closed.
+Runtime may materialize the published credential but may not choose another
+credential or consult current Agent configuration.
+
+Legacy schema cleanup is a scoped migration: historical migration files remain
+immutable, while the latest migration drops the retired MCP aggregate tables.
+Legacy import is an explicit startup action and never runs in an HTTP handler,
+Runtime constructor, repository query, or normal `open()` read path.
+
+### Simple design and DDD assessment
+
+- **Single source of truth:** one editable `AgentConfig`; immutable publication,
+  Session envelope and runtime slot are successive cross-context values, not
+  parallel mutable aggregates.
+- **Make invalid states hard to express:** delegation and MCP bindings are typed;
+  exact credential revisions and complete model bindings are validated before
+  publication.
+- **Fewest elements:** the old MCP aggregate, repository, DTO, route and generated
+  contract family is deleted instead of deprecated.
+- **Dependency inversion:** configuration application services depend on model
+  and credential validation ports; control-plane adapters implement them.
+  Runtime receives immutable values and narrow materialization ports, never
+  configuration repositories.
+- **Clear orchestration/runtime boundary:** ConfigService coordinates authoring
+  and publication; the Managed Session application freezes one executable
+  Session; Runtime validates, realizes and executes it. Runtime does not edit,
+  publish or re-resolve Agent configuration.

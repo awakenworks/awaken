@@ -1,7 +1,7 @@
 // Management-plane MCP e2e: the whole agent↔MCP binding is authored through the
 // ADMIN config surface (`/v1/config/*`, validated against the generated TS API
 // contract with Ajv, like management_admin_e2e.mjs) — credential (secret-in) →
-// McpServerDef (Exact binding) → AgentMcpConfig for `calc-agent` — then a
+// typed AgentConfig MCP binding with an exact CredentialRef — then a
 // managed session for that agent with NO inline mcp_servers converses
 // multi-turn through the official Anthropic TypeScript SDK: the management
 // plane's config supplies the server + credential. The Node fixture records
@@ -100,41 +100,34 @@ async function main() {
       checkContract('CredentialSource', r.json);
       assert.ok(!JSON.stringify(r.json).includes(CALC_TOKEN), 'secret must not be echoed');
       const credId = r.json.id;
+      const credRevision = r.json.version;
       pass('POST /v1/config/credentials — secret-free CredentialSource matches contract');
 
-      r = await req(base, 'PUT', '/v1/config/mcp-servers/calc-def', {
-        id: 'calc-def',
-        display_name: 'calc',
-        url: fixture.url,
-        credential_binding: { type: 'exact', credential_source_id: credId },
-        version: 1,
+      r = await req(base, 'PUT', '/v1/config/agents/calc-agent', {
+        name: 'Calculator',
+        system: 'Use the calculator tool and report its result.',
+        model: {
+          provider_identity_ref: 'default',
+          model_ref: 'management',
+          backend_ref: 'default',
+        },
+        mcp_servers: [{
+          name: 'calc',
+          url: fixture.url,
+          credential: { id: credId, revision: credRevision },
+        }],
       });
       assert.equal(r.status, 200, JSON.stringify(r.json));
-      checkContract('McpServerDef', r.json);
-      assert.equal(r.json.url, fixture.url);
-      pass('PUT /v1/config/mcp-servers/calc-def — McpServerDef matches contract');
-
-      r = await req(base, 'PUT', '/v1/config/agents/calc-agent/mcp', {
-        agent_id: 'calc-agent',
-        mcp_server_ids: ['calc-def'],
-        version: 1,
+      r = await req(base, 'GET', '/v1/config/agents/calc-agent');
+      assert.deepEqual(r.json.mcp_servers[0].credential, {
+        id: credId,
+        revision: credRevision,
       });
+      r = await req(base, 'POST', '/v1/config/agents/calc-agent/publish');
       assert.equal(r.status, 200, JSON.stringify(r.json));
-      checkContract('AgentMcpConfig', r.json);
-      assert.deepEqual(r.json.mcp_server_ids, ['calc-def']);
-      pass('PUT /v1/config/agents/calc-agent/mcp — AgentMcpConfig matches contract');
-
-      // --- dry-run the binding through the resolver: secret-free view ---
-      r = await req(base, 'POST', '/v1/config/agents/calc-agent/mcp/resolve', {
-        workspace_id: 'ws',
-      });
-      assert.equal(r.status, 200, JSON.stringify(r.json));
-      assert.ok(Array.isArray(r.json) && r.json.length === 1, 'one resolved server');
-      checkContract('ResolvedMcpServerView', r.json[0]);
-      assert.equal(r.json[0].url, fixture.url);
-      assert.equal(r.json[0].credential_present, true);
-      assert.ok(!JSON.stringify(r.json).includes(CALC_TOKEN), 'resolve view is secret-free');
-      pass('POST .../mcp/resolve — credential_present=true, secret absent');
+      assert.ok(r.json.fingerprint, 'publication carries immutable identity');
+      assert.ok(!JSON.stringify(r.json).includes(CALC_TOKEN), 'publication is secret-free');
+      pass('typed Agent MCP binding published with an exact secret-free credential revision');
 
       // --- a session for calc-agent with NO inline mcp_servers ---
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });

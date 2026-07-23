@@ -226,3 +226,17 @@ canonical constants live in `awaken-worker-contract`. Coordinator placement and
 installed materializers consume those constants rather than maintaining parallel
 string literals. The strings describe Worker capability, not a snapshot wire
 scheme.
+
+## Amendment: model-only authoring is normalized at publication (2026-07-23)
+
+The UI/Managed API may author a model-level selection with empty provider and
+backend axes. This is authoring intent, not an executable binding and not a
+second resolution protocol. `CatalogModelPublicationResolver` must map it to
+exactly one Active catalog offering in the trusted Workspace. No match or more
+than one match fails publication; a non-empty authored provider/backend axis may
+never be rewritten.
+
+After that boundary, only the complete `ModelBinding` and
+`ResolvedModelCandidate` exist. They are the shared identity for publication
+deduplication, override filtering, fallback order, fingerprinting and runtime
+materialization. Runtime never repeats the model-only lookup.

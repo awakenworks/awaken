@@ -371,6 +371,15 @@ mod tests {
                 attempted: 3,
             })
         );
+        assert_eq!(
+            store
+                .get_agent_inputs("workspace", "agent")
+                .unwrap()
+                .unwrap()
+                .revision,
+            1,
+            "a skipped revision must not mutate the accepted aggregate"
+        );
         store.put_agent_inputs("workspace", config(2)).unwrap();
         assert_eq!(
             store.put_agent_inputs("workspace", config(1)),
@@ -378,6 +387,15 @@ mod tests {
                 current: 2,
                 attempted: 1,
             })
+        );
+        assert_eq!(
+            store
+                .get_agent_inputs("workspace", "agent")
+                .unwrap()
+                .unwrap()
+                .revision,
+            2,
+            "a stale revision must not roll back the accepted aggregate"
         );
         assert_eq!(
             store.put_agent_inputs("new-workspace", config(0)),

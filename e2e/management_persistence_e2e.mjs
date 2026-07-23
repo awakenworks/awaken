@@ -6,8 +6,8 @@
 // assert exactly the documented persistence contract:
 //
 //   - DOMAIN state persists: catalog, secret-free credential rows (the SDK-entered
-//     vault credential included), pool, inference profile, MCP server def,
-//     agent↔MCP binding — and an MCP conversation still works, i.e. the sealed
+//     vault credential included), pool, inference profile, typed Agent MCP
+//     binding — and an MCP conversation still works, i.e. the sealed
 //     access token materialized from SQLite after the restart.
 //   - WIRE state is host-ephemeral by design: the vault wire object 404s after
 //     the restart (VaultState is rebuilt per process) while the domain row it
@@ -97,8 +97,8 @@ async function main() {
     const credId = r.json[0].id;
     pass(`SDK vault mcp_oauth credential entered -> domain row ${credId} (secret-free)`);
 
-    // Admin aggregates: pool + profile + MCP def (Exact-bound to the SDK-entered
-    // credential) + agent binding.
+    // Admin aggregates: pool + profile + one typed Agent definition whose MCP
+    // binding freezes the exact SDK-entered credential revision.
     r = await req(base, 'PUT', '/v1/config/credential-pools/pool1', {
       id: 'pool1', workspace_id: vault.id,
       members: [{ credential_source_id: credId, ordinal: 0, enabled: true, selection_weight: 0 }],
@@ -110,16 +110,24 @@ async function main() {
       disabled_endpoint_ids: [],
     });
     assert.equal(r.status, 200);
-    r = await req(base, 'PUT', '/v1/config/mcp-servers/calc-def', {
-      id: 'calc-def', display_name: 'calc', url: fixture.url,
-      credential_binding: { type: 'exact', credential_source_id: credId }, version: 1,
+    r = await req(base, 'PUT', '/v1/config/agents/calc-agent', {
+      name: 'Calculator',
+      system: 'Use the calculator tool and report its result.',
+      model: {
+        provider_identity_ref: 'default',
+        model_ref: 'management',
+        backend_ref: 'default',
+      },
+      mcp_servers: [{
+        name: 'calc',
+        url: fixture.url,
+        credential: { id: credId, revision: 1 },
+      }],
     });
     assert.equal(r.status, 200);
-    r = await req(base, 'PUT', '/v1/config/agents/calc-agent/mcp', {
-      agent_id: 'calc-agent', mcp_server_ids: ['calc-def'], version: 1,
-    });
-    assert.equal(r.status, 200);
-    pass('authored pool + profile + mcp-server def + agent binding');
+    r = await req(base, 'POST', '/v1/config/agents/calc-agent/publish');
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    pass('authored pool + profile + published typed Agent MCP binding');
 
     // ---- restart: kill the process, respawn over the same dir + key -------
     await stopServer(server);
@@ -155,20 +163,11 @@ async function main() {
     assert.equal(r.status, 200);
     assert.equal(r.json.model_id, 'claude-opus-4-8');
 
-    r = await req(base, 'GET', '/v1/config/mcp-servers/calc-def');
+    r = await req(base, 'GET', '/v1/config/agents/calc-agent');
     assert.equal(r.status, 200);
-    assert.equal(r.json.url, fixture.url);
-
-    r = await req(base, 'GET', '/v1/config/agents/calc-agent/mcp');
-    assert.equal(r.status, 200);
-    assert.deepEqual(r.json.mcp_server_ids, ['calc-def']);
-    pass('catalog + credential + pool + profile + mcp def + agent binding all persisted');
-
-    // The sealed secret survived too: the persisted binding still resolves...
-    r = await req(base, 'POST', '/v1/config/agents/calc-agent/mcp/resolve', { workspace_id: vault.id });
-    assert.equal(r.status, 200, JSON.stringify(r.json));
-    assert.equal(r.json[0].credential_present, true);
-    pass('post-restart mcp resolve: credential_present=true from the sealed store');
+    assert.equal(r.json.mcp_servers[0].url, fixture.url);
+    assert.deepEqual(r.json.mcp_servers[0].credential, { id: credId, revision: 1 });
+    pass('catalog + credential + pool + profile + typed Agent binding all persisted');
 
     // ...and an MCP conversation works through the ADMIN-authored path (no
     // inline mcp_servers), with the PERSISTED credential as the bearer.

@@ -65,7 +65,7 @@ pub(crate) async fn prepare_agent_publication(
         }
     }
     if let Some(authored) = config.model_binding.resolved()
-        && models.primary.binding != *authored
+        && !resolved_binding_matches_authored(&models.primary.binding, authored)
     {
         return Err(PublishError::Unresolvable(
             "resolved primary candidate does not match the pinned authoring binding".into(),
@@ -73,11 +73,11 @@ pub(crate) async fn prepare_agent_publication(
     }
     if config.model_binding.resolved().is_some()
         && (models.candidates.len() != config.model_candidates.len()
-            || models
-                .candidates
-                .iter()
-                .zip(&config.model_candidates)
-                .any(|(resolved, authored)| &resolved.binding != authored))
+            || models.candidates.iter().zip(&config.model_candidates).any(
+                |(resolved, authored)| {
+                    !resolved_binding_matches_authored(&resolved.binding, authored)
+                },
+            ))
     {
         return Err(PublishError::Unresolvable(
             "resolved fallback candidates do not match the pinned authoring order".into(),
@@ -131,6 +131,16 @@ pub(crate) async fn prepare_agent_publication(
         manifest,
         models,
     })
+}
+
+fn resolved_binding_matches_authored(
+    resolved: &awaken_runtime_contract::resolved::ModelBinding,
+    authored: &awaken_runtime_contract::resolved::ModelBinding,
+) -> bool {
+    resolved.model_ref == authored.model_ref
+        && (authored.provider_identity_ref.is_empty()
+            || resolved.provider_identity_ref == authored.provider_identity_ref)
+        && (authored.backend_ref.is_empty() || resolved.backend_ref == authored.backend_ref)
 }
 
 pub(crate) fn snapshot_metadata(
@@ -203,6 +213,27 @@ mod tests {
         .unwrap();
         assert_eq!(draft.config.model_binding.resolved(), Some(&primary));
         assert_eq!(draft.config.model_candidates, vec![fallback]);
+    }
+
+    #[tokio::test]
+    async fn resolver_may_complete_unspecified_provider_and_backend_axes() {
+        let resolved = ModelBinding::new("provider", "primary", "genai");
+        let resolver = FixedResolver {
+            expected_workspace: "workspace-a",
+            output: ResolvedPublicationModels::host(resolved.clone(), vec![], None, None),
+        };
+        let draft = prepare_agent_publication(
+            &resolver,
+            &awaken_tenancy::ScopeId::from("workspace-a"),
+            revision(
+                ModelSelection::Pinned(ModelBinding::new("", "primary", "")),
+                vec![],
+            ),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(draft.config.model_binding.resolved(), Some(&resolved));
     }
 
     #[tokio::test]
