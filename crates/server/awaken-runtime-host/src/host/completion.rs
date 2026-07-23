@@ -58,15 +58,17 @@ pub(crate) fn remote_worker_placement(
     } else {
         PlacementRequirements::default()
     };
-    placement
-        .required_capabilities
-        .insert("native-runtime".to_string());
     placement.required_credentials = required_credentials;
-    placement.required_capabilities.extend(
-        std::iter::once(&models.model_binding)
-            .chain(models.model_candidates.iter())
-            .map(|candidate| model_realization_capability(candidate).to_string()),
-    );
+    for candidate in std::iter::once(&models.model_binding).chain(models.model_candidates.iter()) {
+        placement.required_capabilities.insert(
+            awaken_runtime_contract::execution::execution_capability(
+                &candidate.binding.backend_ref,
+            ),
+        );
+        placement
+            .required_capabilities
+            .insert(model_realization_capability(candidate).to_string());
+    }
     if let Some(resources) = resources {
         placement
             .required_capabilities
@@ -366,6 +368,31 @@ mod completion_tests {
             placement
                 .required_capabilities
                 .contains(HOST_EXECUTOR_CAPABILITY)
+        );
+    }
+
+    #[test]
+    fn coordinator_admission_requires_every_exact_execution_backend() {
+        let mut models = host_models();
+        models.model_binding.binding.backend_ref = "acp:claude".to_string();
+        let mut remote = models.model_binding.clone();
+        remote.binding.backend_ref = "a2a:https://agent.example".to_string();
+        models.model_candidates.push(remote);
+
+        let placement = remote_worker_placement(&models, None, true);
+        assert!(
+            placement.required_capabilities.contains("acp:claude"),
+            "ACP CLI identity is part of claim compatibility"
+        );
+        assert!(
+            placement
+                .required_capabilities
+                .contains("a2a:https://agent.example"),
+            "A2A route identity is part of claim compatibility"
+        );
+        assert!(
+            !placement.required_capabilities.contains("native-runtime"),
+            "native is not advertised as a substitute for exact external backends"
         );
     }
 

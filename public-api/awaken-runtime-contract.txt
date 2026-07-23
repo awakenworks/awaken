@@ -247,6 +247,9 @@ pub fn awaken_runtime_contract::delegation::RunDelegationService::supports_paral
 pub fn awaken_runtime_contract::delegation::RunDelegationService::target_agent_id(&self, &serde_json::value::Value) -> core::result::Result<alloc::string::String, awaken_runtime_contract::delegation::DelegationExecutionError>
 pub fn awaken_runtime_contract::delegation::RunDelegationService::tool_id(&self) -> &str
 pub mod awaken_runtime_contract::execution
+pub enum awaken_runtime_contract::execution::AttemptExecutorRegistryError
+pub awaken_runtime_contract::execution::AttemptExecutorRegistryError::DuplicateBackend(alloc::string::String)
+pub awaken_runtime_contract::execution::AttemptExecutorRegistryError::InvalidBackendRef(alloc::string::String)
 pub enum awaken_runtime_contract::execution::Cancellation
 pub awaken_runtime_contract::execution::Cancellation::CooperativeToken
 pub awaken_runtime_contract::execution::Cancellation::None
@@ -261,17 +264,38 @@ pub awaken_runtime_contract::execution::Wait::Auth
 pub awaken_runtime_contract::execution::Wait::Both
 pub awaken_runtime_contract::execution::Wait::Input
 pub awaken_runtime_contract::execution::Wait::None
+pub struct awaken_runtime_contract::execution::AttemptExecutorRegistry
+impl awaken_runtime_contract::execution::AttemptExecutorRegistry
+pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::manifest_capabilities(&self) -> alloc::collections::btree::set::BTreeSet<alloc::string::String>
+pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::new() -> Self
+pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::register(&mut self, impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>) -> core::result::Result<(), awaken_runtime_contract::execution::AttemptExecutorRegistryError>
+pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::register_native(&mut self, alloc::sync::Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>) -> core::result::Result<(), awaken_runtime_contract::execution::AttemptExecutorRegistryError>
+pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::supports(&self, &str) -> bool
+impl awaken_runtime_contract::execution::RunAttemptExecutor for awaken_runtime_contract::execution::AttemptExecutorRegistry
+pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::cancel<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<()>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::resume<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::resume::ResumeCommand, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::RunState>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+impl awaken_runtime_contract::execution::RunExecutor for awaken_runtime_contract::execution::AttemptExecutorRegistry
+pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::capabilities(&self) -> awaken_runtime_contract::execution::ExecutorCapabilities
+pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::execute<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::RunState>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub struct awaken_runtime_contract::execution::ExecutorCapabilities
 pub awaken_runtime_contract::execution::ExecutorCapabilities::cancellation: awaken_runtime_contract::execution::Cancellation
 pub awaken_runtime_contract::execution::ExecutorCapabilities::wait: awaken_runtime_contract::execution::Wait
 impl awaken_runtime_contract::execution::ExecutorCapabilities
 pub const awaken_runtime_contract::execution::ExecutorCapabilities::NATIVE: Self
+pub const awaken_runtime_contract::execution::NATIVE_RUNTIME_CAPABILITY: &str
 pub trait awaken_runtime_contract::execution::RunAttemptExecutor: awaken_runtime_contract::execution::RunExecutor
 pub fn awaken_runtime_contract::execution::RunAttemptExecutor::cancel<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<()>> + core::marker::Send + 'async_trait)>> where Self: core::marker::Sync + 'async_trait, 'life0: 'async_trait
 pub fn awaken_runtime_contract::execution::RunAttemptExecutor::resume<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::resume::ResumeCommand, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::RunState>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+impl awaken_runtime_contract::execution::RunAttemptExecutor for awaken_runtime_contract::execution::AttemptExecutorRegistry
+pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::cancel<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<()>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::resume<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::resume::ResumeCommand, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::RunState>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_runtime_contract::execution::RunExecutor: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::execution::RunExecutor::capabilities(&self) -> awaken_runtime_contract::execution::ExecutorCapabilities
 pub fn awaken_runtime_contract::execution::RunExecutor::execute<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::RunState>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+impl awaken_runtime_contract::execution::RunExecutor for awaken_runtime_contract::execution::AttemptExecutorRegistry
+pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::capabilities(&self) -> awaken_runtime_contract::execution::ExecutorCapabilities
+pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::execute<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::RunState>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_runtime_contract::execution::execution_capability(&str) -> alloc::string::String
 pub type awaken_runtime_contract::execution::Result<T> = core::result::Result<T, awaken_runtime_contract::execution::Error>
 pub mod awaken_runtime_contract::live_inbox
 pub enum awaken_runtime_contract::live_inbox::EditError
@@ -1025,6 +1049,9 @@ pub fn awaken_runtime_contract::tool_batch::ToolBatchId::for_step(&awaken_agent_
 pub struct awaken_runtime_contract::tool_batch::ToolWait
 pub awaken_runtime_contract::tool_batch::ToolWait::correlation_id: alloc::string::String
 pub awaken_runtime_contract::tool_batch::ToolWait::kind: awaken_runtime_contract::tool_batch::ToolWaitKind
+pub enum awaken_runtime_contract::AttemptExecutorRegistryError
+pub awaken_runtime_contract::AttemptExecutorRegistryError::DuplicateBackend(alloc::string::String)
+pub awaken_runtime_contract::AttemptExecutorRegistryError::InvalidBackendRef(alloc::string::String)
 pub enum awaken_runtime_contract::BoundaryOutcome
 pub awaken_runtime_contract::BoundaryOutcome::Await
 pub awaken_runtime_contract::BoundaryOutcome::Await::fold: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
@@ -1211,6 +1238,19 @@ impl awaken_runtime_contract::snapshot::AgentSnapshotMetadata
 pub fn awaken_runtime_contract::snapshot::AgentSnapshotMetadata::is_legacy_default(&self) -> bool
 impl core::default::Default for awaken_runtime_contract::snapshot::AgentSnapshotMetadata
 pub fn awaken_runtime_contract::snapshot::AgentSnapshotMetadata::default() -> Self
+pub struct awaken_runtime_contract::AttemptExecutorRegistry
+impl awaken_runtime_contract::execution::AttemptExecutorRegistry
+pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::manifest_capabilities(&self) -> alloc::collections::btree::set::BTreeSet<alloc::string::String>
+pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::new() -> Self
+pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::register(&mut self, impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>) -> core::result::Result<(), awaken_runtime_contract::execution::AttemptExecutorRegistryError>
+pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::register_native(&mut self, alloc::sync::Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>) -> core::result::Result<(), awaken_runtime_contract::execution::AttemptExecutorRegistryError>
+pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::supports(&self, &str) -> bool
+impl awaken_runtime_contract::execution::RunAttemptExecutor for awaken_runtime_contract::execution::AttemptExecutorRegistry
+pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::cancel<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<()>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::resume<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::resume::ResumeCommand, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::RunState>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+impl awaken_runtime_contract::execution::RunExecutor for awaken_runtime_contract::execution::AttemptExecutorRegistry
+pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::capabilities(&self) -> awaken_runtime_contract::execution::ExecutorCapabilities
+pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::execute<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::RunState>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub struct awaken_runtime_contract::CapabilityBound
 pub awaken_runtime_contract::CapabilityBound::action_kinds: awaken_runtime_contract::IdBound
 pub awaken_runtime_contract::CapabilityBound::phase_hooks: alloc::vec::Vec<awaken_runtime_contract::PhaseHookPoint>
@@ -1546,6 +1586,7 @@ pub fn awaken_runtime_contract::tool::ToolRecoveryPolicy::default() -> Self
 pub struct awaken_runtime_contract::ToolWait
 pub awaken_runtime_contract::ToolWait::correlation_id: alloc::string::String
 pub awaken_runtime_contract::ToolWait::kind: awaken_runtime_contract::tool_batch::ToolWaitKind
+pub const awaken_runtime_contract::NATIVE_RUNTIME_CAPABILITY: &str
 pub trait awaken_runtime_contract::AgentSnapshotResolver
 pub fn awaken_runtime_contract::AgentSnapshotResolver::get_snapshot(&self, &awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId) -> core::result::Result<core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>, awaken_runtime_contract::resolver::Error>
 pub trait awaken_runtime_contract::CaptureSink: core::marker::Send + core::marker::Sync
@@ -1584,6 +1625,12 @@ pub fn awaken_runtime_contract::RemoteAgent::cancel<'life0, 'life1, 'life2, 'lif
 pub fn awaken_runtime_contract::RemoteAgent::card<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<serde_json::value::Value, awaken_runtime_contract::delegation::DelegationExecutionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_contract::RemoteAgent::resume<'life0, 'life1, 'life2, 'life3, 'life4, 'life5, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, &'life3 serde_json::value::Value, &'life4 str, core::option::Option<&'life5 tokio_util::sync::cancellation_token::CancellationToken>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::delegation::DelegationStep, awaken_runtime_contract::delegation::DelegationExecutionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait, 'life4: 'async_trait, 'life5: 'async_trait
 pub fn awaken_runtime_contract::RemoteAgent::run<'life0, 'life1, 'life2, 'life3, 'life4, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, &'life3 str, core::option::Option<&'life4 tokio_util::sync::cancellation_token::CancellationToken>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::delegation::DelegationStep, awaken_runtime_contract::delegation::DelegationExecutionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait, 'life4: 'async_trait
+pub trait awaken_runtime_contract::RunAttemptExecutor: awaken_runtime_contract::execution::RunExecutor
+pub fn awaken_runtime_contract::RunAttemptExecutor::cancel<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<()>> + core::marker::Send + 'async_trait)>> where Self: core::marker::Sync + 'async_trait, 'life0: 'async_trait
+pub fn awaken_runtime_contract::RunAttemptExecutor::resume<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::resume::ResumeCommand, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::RunState>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+impl awaken_runtime_contract::execution::RunAttemptExecutor for awaken_runtime_contract::execution::AttemptExecutorRegistry
+pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::cancel<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<()>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::resume<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::resume::ResumeCommand, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::RunState>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_runtime_contract::RunDelegationService: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::RunDelegationService::cancel<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::agent::delegation::ChildRunCancellation) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_runtime_contract::delegation::DelegationExecutionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_runtime_contract::RunDelegationService::resume<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::delegation::DelegationResume) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::delegation::DelegationStep, awaken_runtime_contract::delegation::DelegationExecutionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
@@ -1597,6 +1644,9 @@ pub fn awaken_runtime_contract::RunEndGuard::id(&self) -> &str
 pub trait awaken_runtime_contract::RunExecutor: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::RunExecutor::capabilities(&self) -> awaken_runtime_contract::execution::ExecutorCapabilities
 pub fn awaken_runtime_contract::RunExecutor::execute<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::RunState>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+impl awaken_runtime_contract::execution::RunExecutor for awaken_runtime_contract::execution::AttemptExecutorRegistry
+pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::capabilities(&self) -> awaken_runtime_contract::execution::ExecutorCapabilities
+pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::execute<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::RunState>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_runtime_contract::RunResolver
 pub fn awaken_runtime_contract::RunResolver::resolve(&self, &awaken_runtime_contract::snapshot::ExecutableAgentSnapshot) -> core::result::Result<awaken_runtime_contract::resolved::ResolvedRun, awaken_runtime_contract::resolver::Error>
 pub trait awaken_runtime_contract::Tool: core::marker::Send + core::marker::Sync
@@ -1617,4 +1667,5 @@ impl awaken_runtime_contract::permission::ToolPermissionPolicy for awaken_runtim
 pub fn awaken_runtime_contract::permission::DenyAllTools::evaluate<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::ToolPermissionVerdict> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_contract::content_fingerprint<T: serde_core::ser::Serialize + ?core::marker::Sized>(&T) -> core::result::Result<alloc::string::String, serde_json::error::Error>
 pub fn awaken_runtime_contract::evaluate_boundary(&awaken_runtime_contract::runtime_context::RuntimeRunContext, &awaken_agent_contract::agent::run::Id, &[awaken_agent_contract::agent::message::Message]) -> awaken_runtime_contract::boundary::BoundaryOutcome
+pub fn awaken_runtime_contract::execution_capability(&str) -> alloc::string::String
 pub fn awaken_runtime_contract::validate_resume(&awaken_agent_contract::agent::awaiting::ResumeTicket, &awaken_runtime_contract::resume::ResumeCommand) -> core::result::Result<(), awaken_runtime_contract::resume::ResumeError>

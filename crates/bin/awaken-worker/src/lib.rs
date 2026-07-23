@@ -23,7 +23,10 @@ use std::sync::Arc;
 
 mod admin;
 
-use awaken_runtime_contract::execution::RunAttemptExecutor;
+use awaken_runtime_contract::execution::{
+    AttemptExecutorRegistry, NATIVE_RUNTIME_CAPABILITY, RunAttemptExecutor,
+};
+use awaken_runtime_contract::resolved::Backend;
 use awaken_runtime_host::WorkerControlClient;
 use awaken_runtime_host::WorkerUpstream;
 use awaken_server::inference_materializer::CredentialInferenceMaterializer;
@@ -117,6 +120,7 @@ pub struct WorkerNodeBuilder {
     upstream: WorkerUpstream,
     manifest: Option<WorkerManifest>,
     attempt_executor: Option<Arc<dyn RunAttemptExecutor>>,
+    registry_capabilities: Option<std::collections::BTreeSet<String>>,
     materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,
     acp_credentials: Option<awaken_runtime_host::PinnedCredentialMaterializer>,
     resources: Option<WorkerResourcePlane>,
@@ -130,6 +134,7 @@ impl WorkerNodeBuilder {
             upstream,
             manifest: None,
             attempt_executor: None,
+            registry_capabilities: None,
             materializer: None,
             acp_credentials: None,
             resources: None,
@@ -148,6 +153,15 @@ impl WorkerNodeBuilder {
     #[must_use]
     pub fn with_attempt_executor(mut self, executor: Arc<dyn RunAttemptExecutor>) -> Self {
         self.attempt_executor = Some(executor);
+        self.registry_capabilities = None;
+        self
+    }
+
+    /// Install an exact backend registry and derive its manifest capabilities.
+    #[must_use]
+    pub fn with_attempt_executor_registry(mut self, registry: AttemptExecutorRegistry) -> Self {
+        self.registry_capabilities = Some(registry.manifest_capabilities());
+        self.attempt_executor = Some(Arc::new(registry));
         self
     }
 
@@ -193,9 +207,20 @@ impl WorkerNodeBuilder {
                 "Worker upstream URL must not be empty".to_string(),
             ));
         }
-        let manifest = self.manifest.ok_or_else(|| {
+        let mut manifest = self.manifest.ok_or_else(|| {
             WorkerNodeBuildError("Worker manifest must be supplied explicitly".to_string())
         })?;
+        if let Some(capabilities) = self.registry_capabilities {
+            if capabilities.is_empty() {
+                return Err(WorkerNodeBuildError(
+                    "attempt executor registry must not be empty".to_string(),
+                ));
+            }
+            manifest
+                .capabilities
+                .retain(|capability| !is_executor_capability(capability));
+            manifest.capabilities.extend(capabilities);
+        }
         if manifest.build_digest.trim().is_empty() {
             return Err(WorkerNodeBuildError(
                 "Worker manifest build_digest must not be empty".to_string(),
@@ -224,6 +249,14 @@ impl WorkerNodeBuilder {
             admin_listen: self.admin_listen,
         })
     }
+}
+
+fn is_executor_capability(capability: &str) -> bool {
+    capability == NATIVE_RUNTIME_CAPABILITY
+        || matches!(
+            Backend::from_ref(capability),
+            Backend::Acp { .. } | Backend::Remote { .. }
+        )
 }
 
 /// Why the Worker lifecycle is stopping.
@@ -364,6 +397,11 @@ impl WorkerNodeBuilder {
 }
 
 impl WorkerNode {
+    #[must_use]
+    pub fn manifest(&self) -> &WorkerManifest {
+        &self.manifest
+    }
+
     /// Register, enter Ready, run until SIGINT/SIGTERM, then drain, quiesce, and
     /// deregister. Losing registry authority closes the local claim gate.
     pub async fn run_until_shutdown(self) -> Result<(), Box<dyn std::error::Error>> {
@@ -605,7 +643,8 @@ fn worker_manifest(
             "namespace",
         ),
     };
-    let mut capabilities = std::collections::BTreeSet::from(["native-runtime".to_string()]);
+    let mut capabilities =
+        std::collections::BTreeSet::from([NATIVE_RUNTIME_CAPABILITY.to_string()]);
     capabilities.extend(
         materializer
             .into_iter()
@@ -617,6 +656,12 @@ fn worker_manifest(
         if repository_credential_support {
             capabilities.insert(REPOSITORY_CREDENTIALS_CAPABILITY.to_string());
         }
+    }
+    if let Some(cli) = std::env::var("AWAKEN_ACP_CLI")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    {
+        capabilities.insert(format!("acp:{cli}"));
     }
     capabilities.extend(
         std::env::var("AWAKEN_WORKER_CAPABILITIES")
@@ -732,12 +777,43 @@ fn grace_window(graceful: bool, configured_secs: Option<u64>) -> std::time::Dura
 mod grace_tests {
     use std::sync::Arc;
 
+    use awaken_runtime_contract::execution::{
+        AttemptExecutorRegistry, Result as ExecutionResult, RunAttemptExecutor, RunExecutor,
+    };
     use awaken_runtime_contract::llm::LlmExecutor;
+    use awaken_runtime_contract::resume::ResumeCommand;
+    use awaken_runtime_contract::{RunActivation, RunState, RuntimeRunContext};
+    use awaken_runtime_host::WorkerUpstream;
 
     use super::{
         InferenceExecutorMaterializer, credential_observations, grace_window,
         shared_credential_backend, worker_manifest,
     };
+
+    struct NoopAttemptExecutor;
+
+    #[async_trait::async_trait]
+    impl RunExecutor for NoopAttemptExecutor {
+        async fn execute(
+            &self,
+            _activation: RunActivation,
+            _context: RuntimeRunContext,
+        ) -> ExecutionResult<RunState> {
+            unreachable!("assembly-only executor")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl RunAttemptExecutor for NoopAttemptExecutor {
+        async fn resume(
+            &self,
+            _activation: RunActivation,
+            _command: ResumeCommand,
+            _context: RuntimeRunContext,
+        ) -> ExecutionResult<RunState> {
+            unreachable!("assembly-only executor")
+        }
+    }
 
     struct SchemeMaterializer;
 
@@ -810,6 +886,37 @@ mod grace_tests {
             credentialed
                 .capabilities
                 .contains(super::REPOSITORY_CREDENTIALS_CAPABILITY)
+        );
+    }
+
+    #[test]
+    fn executor_registry_replaces_free_form_execution_capabilities() {
+        let mut manifest = worker_manifest(None, false, false);
+        manifest.capabilities.extend([
+            "acp:stale".to_string(),
+            "a2a:https://stale.example".to_string(),
+            "application-capability".to_string(),
+        ]);
+        let mut registry = AttemptExecutorRegistry::new();
+        registry
+            .register("acp:claude", Arc::new(NoopAttemptExecutor))
+            .unwrap();
+        registry
+            .register("acp:codex", Arc::new(NoopAttemptExecutor))
+            .unwrap();
+
+        let node = super::WorkerNodeBuilder::new(WorkerUpstream::new("http://control"))
+            .with_manifest(manifest)
+            .with_attempt_executor_registry(registry)
+            .build()
+            .unwrap();
+        assert_eq!(
+            node.manifest().capabilities,
+            std::collections::BTreeSet::from([
+                "acp:claude".to_string(),
+                "acp:codex".to_string(),
+                "application-capability".to_string(),
+            ])
         );
     }
 

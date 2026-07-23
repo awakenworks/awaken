@@ -435,7 +435,7 @@ fleet.
 registered key:
 
 ```text
-native
+native-runtime
 acp:claude
 acp:codex
 acp:gemini
@@ -443,10 +443,12 @@ acp:opencode
 a2a:<endpoint-or-profile>
 ```
 
-The Worker manifest is derived from the registry. Configuration may narrow
-advertisement but cannot add an unimplemented capability. Duplicate keys,
-ambiguous matchers, unknown refs, or registry/manifest drift fail at build or
-registration time.
+`WorkerNodeBuilder::with_attempt_executor_registry` replaces every execution
+capability in the supplied manifest with `registry.manifest_capabilities()`, while
+preserving non-execution application/resource capabilities. Configuration may
+narrow advertisement but cannot add an unimplemented execution route.
+Duplicate keys, native refs registered as exact routes, empty ACP/A2A targets,
+unknown refs, or an empty explicit registry fail closed.
 
 ### 6.2 Worker identity
 

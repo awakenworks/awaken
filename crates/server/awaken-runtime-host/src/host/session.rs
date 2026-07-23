@@ -634,7 +634,7 @@ impl SharedHost {
                     runtime.clone(),
                     acp_executor,
                     self.remote_attempt_executor.clone(),
-                    execution_backend,
+                    &config.resolved_spec,
                 ))
             });
         // The foreground delivery seam (slice C/D): a turn's execution goes through
