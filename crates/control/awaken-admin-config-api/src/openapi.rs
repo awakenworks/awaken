@@ -31,6 +31,9 @@ pub fn contract_schemas() -> Map<String, Value> {
     add!("Provider", awaken_model_catalog::Provider);
     add!("ProtocolEndpoint", awaken_model_catalog::ProtocolEndpoint);
     add!("Offering", awaken_model_catalog::Offering);
+    add!("AuthorOfferingRequest", crate::AuthorOfferingRequest);
+    add!("DiscoverModelsRequest", crate::DiscoverModelsRequest);
+    add!("CatalogSyncResult", awaken_model_catalog::CatalogSyncResult);
     add!("ApiDialect", awaken_model_catalog::ApiDialect);
     add!("ProviderCatalog", awaken_model_catalog::ProviderCatalog);
     add!(
@@ -233,9 +236,13 @@ fn paths() -> Value {
             "get": op("get_endpoint", "catalog", "Fetch an authored protocol endpoint",
                 &id("Protocol endpoint id"), None, 200, schema_ref("ProtocolEndpoint"))
         },
+        "/v1/config/endpoints/{id}/discover-models": {
+            "post": op("discover_endpoint_models", "catalog", "Discover the provider's complete model list and atomically reconcile provider-owned offerings",
+                &id("Protocol endpoint id"), Some(schema_ref("DiscoverModelsRequest")), 200, schema_ref("CatalogSyncResult"))
+        },
         "/v1/config/offerings": {
             "post": op("post_offering", "catalog", "Author an offering (fail-closed reference integrity to provider/endpoint)",
-                &[], Some(schema_ref("Offering")), 200, schema_ref("Offering"))
+                &[], Some(schema_ref("AuthorOfferingRequest")), 200, schema_ref("Offering"))
         },
         "/v1/config/catalog": {
             "get": op("get_catalog", "catalog", "Snapshot the full authored catalog (what the resolver binds against)",

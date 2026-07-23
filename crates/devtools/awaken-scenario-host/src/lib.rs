@@ -1074,6 +1074,8 @@ pub async fn build_resolved_real_router() -> Router {
             protocol_endpoint_id: ProtocolEndpointId::new("ep1"),
             dialect: ApiDialect::AnthropicMessages,
             upstream_model: None,
+            source: Default::default(),
+            status: Default::default(),
         })
         .await
         .expect("put offering");
@@ -1171,6 +1173,8 @@ pub async fn build_oauth_resolved_router() -> Router {
             protocol_endpoint_id: ProtocolEndpointId::new("ep1"),
             dialect: ApiDialect::AnthropicMessages,
             upstream_model: None,
+            source: Default::default(),
+            status: Default::default(),
         })
         .await
         .expect("put offering");
@@ -1736,6 +1740,8 @@ pub async fn build_config_router() -> Router {
             protocol_endpoint_id: awaken_model_catalog::ProtocolEndpointId::new("ep"),
             dialect: awaken_model_catalog::ApiDialect::AnthropicMessages,
             upstream_model: None,
+            source: Default::default(),
+            status: Default::default(),
         })
         .await
         .expect("put offering");

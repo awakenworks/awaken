@@ -36,10 +36,12 @@ pub use awaken_config_resolver::{
     InMemoryProfileStore, InMemoryWebhookStore, InferenceProfileStore, McpStore, WebhookStore,
 };
 pub use router::{
-    AdminState, CooldownRequest, CredentialProbe, CredentialSourceView, CredentialValidation,
-    EnterCredentialRequest, EnvironmentProviderProposal, PoolEligibleView, ProbeStatus,
-    ResolveAgentMcpRequest, ResolveProfileRequest, ResolveRequest, ResolvedCandidatesView,
-    ResolvedInferenceView, ResolvedMcpServerView, ValidateCredentialRequest, admin_router,
+    AdminState, AuthorOfferingRequest, CooldownRequest, CredentialProbe, CredentialSourceView,
+    CredentialValidation, DiscoverModelsRequest, EnterCredentialRequest,
+    EnvironmentProviderProposal, ModelCatalogDiscovery, ModelCatalogDiscoveryError,
+    PoolEligibleView, ProbeStatus, ResolveAgentMcpRequest, ResolveProfileRequest, ResolveRequest,
+    ResolvedCandidatesView, ResolvedInferenceView, ResolvedMcpServerView,
+    ValidateCredentialRequest, admin_router,
 };
 
 /// The API surface version this crate serves.

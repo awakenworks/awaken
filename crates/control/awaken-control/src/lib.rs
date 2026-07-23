@@ -179,6 +179,8 @@ pub struct ControlRouterInput {
     pub resource_store: Arc<dyn AgentInputBindingRepository>,
     /// The live credential probe (provider-backed), injected by the composition root.
     pub probe: Arc<dyn CredentialProbe>,
+    /// Provisioning-side provider model discovery, injected by composition.
+    pub model_discovery: Arc<dyn awaken_admin_config_api::ModelCatalogDiscovery>,
     /// The Managed vault state, shared with the data-plane managed state.
     pub vault_state: Arc<VaultState>,
     /// The environment state, shared with the data-plane managed state.
@@ -216,6 +218,7 @@ pub fn control_router(input: ControlRouterInput) -> (Router, Arc<WebhookLifecycl
         sessions,
         resource_store,
         probe,
+        model_discovery,
         vault_state,
         env_state,
         deployment_state,
@@ -242,6 +245,7 @@ pub fn control_router(input: ControlRouterInput) -> (Router, Arc<WebhookLifecycl
         // root — the only place the model SDK is named; the admin CRUD crate stays
         // SDK-free.
         probe: Some(probe),
+        model_discovery: Some(model_discovery),
         // Shared credential-availability cooldowns (E3-4).
         availability: Default::default(),
     });

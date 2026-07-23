@@ -2,26 +2,26 @@
 /**
  * A management-plane MCP server identifier.
  *
- * Stable id of a [`CredentialSource`].
- *
- * A credential pool identifier.
- *
  * Stable id of a [`ProtocolEndpoint`].
  *
  * Stable id of a [`Provider`] (vendor namespace).
+ *
+ * Stable id of a [`CredentialSource`].
+ *
+ * A credential pool identifier.
  */
 type CredentialPoolID = string;
 
 /**
  * A management-plane MCP server identifier.
  *
- * Stable id of a [`CredentialSource`].
- *
- * A credential pool identifier.
- *
  * Stable id of a [`ProtocolEndpoint`].
  *
  * Stable id of a [`Provider`] (vendor namespace).
+ *
+ * Stable id of a [`CredentialSource`].
+ *
+ * A credential pool identifier.
  */
 type MCPServerID = string;
 
@@ -119,6 +119,33 @@ export interface Error {
 }
 
 /**
+ * Wire command for explicit authoring. Discovery provenance and availability
+ * are server-owned and therefore cannot be forged by an HTTP client.
+ */
+export interface AuthorOfferingRequest {
+    dialect:              APIDialect;
+    model_id:             string;
+    protocol_endpoint_id: string;
+    provider_id:          string;
+    upstream_model?:      null | string;
+}
+
+/**
+ * The wire/model-API dialect a surface speaks. Replaces oversight's `WireFormat`;
+ * the credential/model bindings are resolved against this dialect (ADR-0043).
+ *
+ * The `claude` adapter's wire.
+ *
+ * The `codex`/OpenAI chat wire.
+ *
+ * The Gemini wire.
+ *
+ * Gemini on Vertex AI: native Gemini payloads with OAuth Bearer auth and
+ * a project/location endpoint.
+ */
+export type APIDialect = "anthropic_messages" | "open_ai_chat" | "gemini" | "vertex_gemini";
+
+/**
  * The availability of one credential source at a point in time.
  *
  * Selectable now.
@@ -137,6 +164,16 @@ export interface AvailabilityState {
 }
 
 export type State = "available" | "cooled_down" | "exhausted";
+
+/**
+ * Durable outcome of reconciling one complete provider model listing.
+ */
+export interface CatalogSyncResult {
+    activated:          number;
+    discovered:         number;
+    marked_unavailable: number;
+    [property: string]: unknown;
+}
 
 /**
  * A cooldown signal an operator (or an external rate-limit integration) records
@@ -274,8 +311,12 @@ export interface CredentialSourceView {
  * Bearer token minted on demand by running `oauth_command`, never stored. The
  * long-lived grant lives inside the helper (e.g. `gcloud`), so nothing secret
  * crosses the control plane.
+ *
+ * Secret material is installed and retained on an eligible worker. The
+ * persisted source id and revision are the only cross-plane handle; worker
+ * heartbeats advertise whether that exact handle is currently available.
  */
-export type CredentialKind = "vault" | "env" | "oauth";
+export type CredentialKind = "vault" | "env" | "oauth" | "worker_local";
 
 /**
  * Server-owned OAuth token helper. The API carries this allowlisted id, never
@@ -296,7 +337,7 @@ export type CredentialStatus = "active" | "disabled" | "archived";
  */
 export interface CredentialValidation {
     adapter_kind: string;
-    status:       Status;
+    status:       CredentialValidationStatus;
     [property: string]: unknown;
 }
 
@@ -304,7 +345,17 @@ export interface CredentialValidation {
  * The result of a live credential probe (secret-free), aligned with the Managed
  * wire's `valid` / `invalid` / `unknown` statuses.
  */
-export type Status = "valid" | "invalid" | "unknown";
+export type CredentialValidationStatus = "valid" | "invalid" | "unknown";
+
+export interface DiscoverModelsRequest {
+    credential_source_id: string;
+    /**
+     * Used only by an unwrapped/test router. The authenticated management edge
+     * supplies `WorkspaceScope`, which is authoritative when present.
+     */
+    workspace_id?: null | string;
+    [property: string]: unknown;
+}
 
 /**
  * The credential-entry wire body. `secret` is write-only: it is sealed into the
@@ -325,7 +376,7 @@ export interface EnterCredentialRequest {
      * The secret to seal — required for `vault`. Environment-backed credentials
      * are not accepted; environment discovery is exposed only as proposals.
      */
-    secret?:      string;
+    secret?:      null | string;
     workspace_id: string;
     [property: string]: unknown;
 }
@@ -346,21 +397,6 @@ export interface EnvironmentProviderProposal {
     provider_id:        string;
     [property: string]: unknown;
 }
-
-/**
- * The wire/model-API dialect a surface speaks. Replaces oversight's `WireFormat`;
- * the credential/model bindings are resolved against this dialect (ADR-0043).
- *
- * The `claude` adapter's wire.
- *
- * The `codex`/OpenAI chat wire.
- *
- * The Gemini wire.
- *
- * Gemini on Vertex AI: native Gemini payloads with OAuth Bearer auth and
- * a project/location endpoint.
- */
-export type APIDialect = "anthropic_messages" | "open_ai_chat" | "gemini" | "vertex_gemini";
 
 /**
  * An authored "how to run this model" unit (ADR-0043 `InferenceProfile` /
@@ -495,11 +531,45 @@ export interface Offering {
     protocol_endpoint_id: string;
     provider_id:          string;
     /**
+     * Who owns the catalog fact. Manually authored rows are never demoted by a
+     * provider refresh; provider-discovered rows follow the provider's latest
+     * complete listing.
+     */
+    source?: Source;
+    /**
+     * Whether this route may be selected for a new publication. Provider sync is
+     * non-destructive: a missing discovered model becomes unavailable instead of
+     * being deleted, so existing immutable publications remain explainable.
+     */
+    status?: OfferingStatus;
+    /**
      * Provider-canonical model name sent upstream when it differs from `model_id`.
      */
     upstream_model?: null | string;
     [property: string]: unknown;
 }
+
+/**
+ * Who owns the catalog fact. Manually authored rows are never demoted by a
+ * provider refresh; provider-discovered rows follow the provider's latest
+ * complete listing.
+ *
+ * Authority that published an [`Offering`].
+ *
+ * Explicit UI/API authoring is authoritative over provider discovery.
+ *
+ * Observed from the configured endpoint's provider API.
+ */
+export type Source = "manual" | "provider_api";
+
+/**
+ * Whether this route may be selected for a new publication. Provider sync is
+ * non-destructive: a missing discovered model becomes unavailable instead of
+ * being deleted, so existing immutable publications remain explainable.
+ *
+ * Admission status for new publications using an offering.
+ */
+export type OfferingStatus = "active" | "unavailable";
 
 /**
  * Which members of a pool are selectable right now — `selection_order` with cooled
@@ -619,6 +689,18 @@ export interface OfferingElement {
     model_id:             string;
     protocol_endpoint_id: string;
     provider_id:          string;
+    /**
+     * Who owns the catalog fact. Manually authored rows are never demoted by a
+     * provider refresh; provider-discovered rows follow the provider's latest
+     * complete listing.
+     */
+    source?: Source;
+    /**
+     * Whether this route may be selected for a new publication. Provider sync is
+     * non-destructive: a missing discovered model becomes unavailable instead of
+     * being deleted, so existing immutable publications remain explainable.
+     */
+    status?: OfferingStatus;
     /**
      * Provider-canonical model name sent upstream when it differs from `model_id`.
      */

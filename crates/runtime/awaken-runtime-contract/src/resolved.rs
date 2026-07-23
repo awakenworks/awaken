@@ -228,7 +228,10 @@ pub enum ModelProvisioning {
     Provider {
         provider_ref: String,
         route_ref: String,
-        scope_id: String,
+        /// Opaque ownership coordinate for the pinned credential. It denotes a
+        /// Workspace today but deliberately carries no action/capability: scope
+        /// range and authorization function remain orthogonal.
+        scope_id: awaken_tenancy::ScopeId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         credential: Option<Box<crate::CredentialAccess>>,
         endpoint: Box<crate::InferenceEndpoint>,
@@ -268,7 +271,7 @@ impl ResolvedModelCandidate {
         binding: ModelBinding,
         provider_ref: impl Into<String>,
         route_ref: impl Into<String>,
-        scope_id: impl Into<String>,
+        scope_id: impl Into<awaken_tenancy::ScopeId>,
         credential: Option<crate::CredentialAccess>,
         endpoint: crate::InferenceEndpoint,
     ) -> Self {

@@ -13,8 +13,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::repo::{CatalogRepo, RepoError};
 use crate::schema::catalog_bundle;
 use crate::{
-    CatalogError, ModelAttributes, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider,
-    ProviderCatalog, ProviderId, ValidCatalog,
+    CatalogError, CatalogSyncResult, DiscoveredModel, ModelAttributes, Offering, ProtocolEndpoint,
+    ProtocolEndpointId, Provider, ProviderCatalog, ProviderId, ValidCatalog,
 };
 
 /// The catalog component's table namespace (its bundle prefix).
@@ -201,7 +201,9 @@ impl CatalogRepo for SqliteCatalogRepo {
         .await
     }
 
-    async fn put_offering(&self, offering: Offering) -> Result<(), RepoError> {
+    async fn put_offering(&self, mut offering: Offering) -> Result<(), RepoError> {
+        offering.source = crate::OfferingSource::Manual;
+        offering.status = crate::OfferingStatus::Active;
         let model_id = offering.model_id.clone();
         let endpoint_id = offering.protocol_endpoint_id.0.clone();
         let data = serde_json::to_string(&offering).map_err(storage)?;
@@ -227,6 +229,45 @@ impl CatalogRepo for SqliteCatalogRepo {
             ValidCatalog::parse(load_catalog(&tx, p)?)?;
             tx.commit().map_err(storage)?;
             Ok(())
+        })
+        .await
+    }
+
+    async fn reconcile_discovered_models(
+        &self,
+        endpoint_id: &ProtocolEndpointId,
+        models: Vec<DiscoveredModel>,
+    ) -> Result<CatalogSyncResult, RepoError> {
+        let endpoint_id = endpoint_id.0.clone();
+        self.with_conn(move |conn, p| {
+            let tx = conn.transaction().map_err(storage)?;
+            if !row_exists(&tx, &format!("{p}_protocol_endpoint"), &endpoint_id)? {
+                return Err(RepoError::EndpointNotFound(endpoint_id));
+            }
+            let mut catalog = load_catalog(&tx, p)?;
+            let result = catalog.reconcile_discovered_models(
+                &ProtocolEndpointId::new(endpoint_id.clone()),
+                models,
+            )?;
+            for offering in catalog
+                .offerings
+                .iter()
+                .filter(|offering| offering.protocol_endpoint_id.as_str() == endpoint_id)
+            {
+                let data = serde_json::to_string(offering).map_err(storage)?;
+                tx.execute(
+                    &format!(
+                        "INSERT INTO {p}_offering (model_id, protocol_endpoint_id, data) \
+                         VALUES (?1, ?2, ?3) ON CONFLICT(model_id, protocol_endpoint_id) \
+                         DO UPDATE SET data = excluded.data"
+                    ),
+                    params![offering.model_id, endpoint_id, data],
+                )
+                .map_err(storage)?;
+            }
+            ValidCatalog::parse(load_catalog(&tx, p)?)?;
+            tx.commit().map_err(storage)?;
+            Ok(result)
         })
         .await
     }

@@ -686,7 +686,7 @@ pub awaken_runtime_contract::resolved::ModelProvisioning::Provider::credential: 
 pub awaken_runtime_contract::resolved::ModelProvisioning::Provider::endpoint: alloc::boxed::Box<awaken_runtime_contract::resolved::InferenceEndpoint>
 pub awaken_runtime_contract::resolved::ModelProvisioning::Provider::provider_ref: alloc::string::String
 pub awaken_runtime_contract::resolved::ModelProvisioning::Provider::route_ref: alloc::string::String
-pub awaken_runtime_contract::resolved::ModelProvisioning::Provider::scope_id: alloc::string::String
+pub awaken_runtime_contract::resolved::ModelProvisioning::Provider::scope_id: awaken_tenancy::ScopeId
 pub struct awaken_runtime_contract::resolved::CatalogFingerprint(pub alloc::string::String)
 pub struct awaken_runtime_contract::resolved::InferenceEndpoint
 pub awaken_runtime_contract::resolved::InferenceEndpoint::adapter_kind: alloc::string::String
@@ -708,7 +708,7 @@ pub awaken_runtime_contract::resolved::ResolvedModelCandidate::binding: awaken_r
 pub awaken_runtime_contract::resolved::ResolvedModelCandidate::provisioning: awaken_runtime_contract::resolved::ModelProvisioning
 impl awaken_runtime_contract::resolved::ResolvedModelCandidate
 pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::host(awaken_runtime_contract::resolved::ModelBinding) -> Self
-pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::provider(awaken_runtime_contract::resolved::ModelBinding, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, core::option::Option<awaken_runtime_contract::credential::CredentialAccess>, awaken_runtime_contract::resolved::InferenceEndpoint) -> Self
+pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::provider(awaken_runtime_contract::resolved::ModelBinding, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<awaken_tenancy::ScopeId>, core::option::Option<awaken_runtime_contract::credential::CredentialAccess>, awaken_runtime_contract::resolved::InferenceEndpoint) -> Self
 impl core::convert::AsRef<awaken_runtime_contract::resolved::ModelBinding> for awaken_runtime_contract::resolved::ResolvedModelCandidate
 pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::as_ref(&self) -> &awaken_runtime_contract::resolved::ModelBinding
 impl core::ops::deref::Deref for awaken_runtime_contract::resolved::ResolvedModelCandidate

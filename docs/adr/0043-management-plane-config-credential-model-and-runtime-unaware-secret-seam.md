@@ -141,6 +141,25 @@ commands; until then it cannot be published or executed.
 Environment values may be inspected only by the admin proposal adapter; they must be
 explicitly entered into the vault/catalog and published before any run can consume them.
 
+### 5. Provider model discovery reconciles the existing catalog; it is not runtime resolution
+
+An operator may ask an authored `ProtocolEndpoint` to list models using one exact,
+Workspace-owned `CredentialSource`. The admin application passes those two
+secret-free facts to a provisioning port. Its provider adapter materializes the
+credential at that seam, follows every provider pagination cursor, and returns only
+normalized model ids. The application then atomically reconciles the result through
+the existing `CatalogRepo`; there is no discovery cache or second model directory.
+
+Discovered offerings carry provider provenance and an active/unavailable admission
+status. A complete later listing marks missing provider-owned rows unavailable
+instead of deleting them, while explicitly authored offerings always win and are
+never demoted by discovery. Only active offerings may enter a new publication;
+already-published immutable candidates remain explainable and executable according
+to their own pins. A failed, partial, malformed, or unconfigured discovery performs
+no catalog mutation. Worker-private material requires a worker/provisioning adapter
+that owns that reference; a control-plane adapter cannot fall back to environment
+variables or request the plaintext.
+
 ## Management-plane decomposition, layering, and naming (amended 2026-07-04)
 
 ### Three layers

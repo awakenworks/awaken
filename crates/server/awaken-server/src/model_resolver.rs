@@ -84,7 +84,10 @@ impl CatalogModelPublicationResolver {
         if let Some(primary) = selection.resolved() {
             return Ok((primary.clone(), fallbacks.to_vec()));
         }
-        let mut offerings = catalog.offerings.iter();
+        let mut offerings = catalog
+            .offerings
+            .iter()
+            .filter(|offering| offering.status == awaken_model_catalog::OfferingStatus::Active);
         let primary = offerings.next().ok_or_else(|| {
             "no provider-backed model in the catalog; configure and publish a model first"
                 .to_string()
@@ -99,10 +102,10 @@ impl CatalogModelPublicationResolver {
         catalog: &'a ProviderCatalog,
         binding: &ModelBinding,
     ) -> Option<&'a Offering> {
-        catalog
-            .offerings
-            .iter()
-            .find(|offering| offering.model_id == binding.model_ref)
+        catalog.offerings.iter().find(|offering| {
+            offering.status == awaken_model_catalog::OfferingStatus::Active
+                && offering.model_id == binding.model_ref
+        })
     }
 
     fn credential_for<'a>(
@@ -256,6 +259,8 @@ mod tests {
             protocol_endpoint_id: ProtocolEndpointId::new(endpoint),
             dialect: ApiDialect::OpenAiChat,
             upstream_model: None,
+            source: Default::default(),
+            status: Default::default(),
         }
     }
 

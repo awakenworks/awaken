@@ -292,6 +292,8 @@ mod tests {
                 protocol_endpoint_id: ProtocolEndpointId::new("ep1"),
                 dialect: ApiDialect::AnthropicMessages,
                 upstream_model: None,
+                source: Default::default(),
+                status: Default::default(),
             })
             .await
             .unwrap();
@@ -638,7 +640,7 @@ mod tests {
             panic!("publication must carry a complete provider candidate")
         };
         assert_eq!(credential.credential.id, other.id.0);
-        assert_eq!(scope_id, "workspace-b");
+        assert_eq!(scope_id.as_str(), "workspace-b");
         assert!(
             p.materializer
                 .materialize_pinned(&resolved.primary)
@@ -744,6 +746,8 @@ mod tests {
                 protocol_endpoint_id: ProtocolEndpointId::new("ep-openai"),
                 dialect: ApiDialect::OpenAiChat,
                 upstream_model: None,
+                source: Default::default(),
+                status: Default::default(),
             })
             .await
             .unwrap();

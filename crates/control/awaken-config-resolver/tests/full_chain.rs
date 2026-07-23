@@ -46,6 +46,8 @@ fn catalog(model_id: &str, base_url: &str) -> ProviderCatalog {
         protocol_endpoint_id: ProtocolEndpointId::new("ep1"),
         dialect: ApiDialect::AnthropicMessages,
         upstream_model: None,
+        source: Default::default(),
+        status: Default::default(),
     });
     c
 }

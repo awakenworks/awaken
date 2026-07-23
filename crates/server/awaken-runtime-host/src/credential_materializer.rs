@@ -67,7 +67,7 @@ impl PinnedCredentialMaterializer {
             .map_err(|error| error.to_string())?;
         let revision = u64::try_from(source.version)
             .map_err(|_| format!("credential {} has a negative version", source.id.0))?;
-        if source.workspace_id != *scope_id {
+        if source.workspace_id != scope_id.as_str() {
             return Err("published credential Workspace owner changed".to_string());
         }
         if source.status != CredentialStatus::Active {

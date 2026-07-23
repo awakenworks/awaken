@@ -953,7 +953,7 @@ mod resource_prompt_tests {
         else {
             panic!("publication carries a complete provider candidate")
         };
-        assert_eq!(scope_id, "workspace-a");
+        assert_eq!(scope_id.as_str(), "workspace-a");
         assert_eq!(credential.credential.id, "credential-workspace-a");
         assert_eq!(publication.fingerprint, publication.snapshot.fingerprint.0);
     }

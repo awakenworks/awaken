@@ -43,7 +43,7 @@ Forbidden runtime dependencies:
 
 `ResolvedModelCandidate` is the immutable, secret-free published model value. Its
 `ModelProvisioning::Provider` variant contains the provider/route/endpoint pins,
-Workspace owner, and existing `CredentialAccess`; `HostExecutor` names an explicit
+opaque typed `ScopeId` owner, and existing `CredentialAccess`; `HostExecutor` names an explicit
 host-installed executor. The primary and fallback candidates live only in
 `ResolvedSpec.model_binding`/`model_candidates`, so the complete execution choice
 is already covered by the snapshot fingerprint. There is no parallel
@@ -112,6 +112,12 @@ Inference publication receives a trusted Workspace scope from the management
 PEP. The publisher selects only inventory owned by that scope and records it in
 the snapshot. Runtime validates the persisted credential owner against the pin;
 it does not call IAM and does not infer scope from a resource id.
+
+The persisted/wire coordinate is `awaken_tenancy::ScopeId`, not an untyped
+`String`. It denotes a Workspace in the current deployment but remains opaque and
+contains no action, role, or capability. Authorization function and scope range
+are therefore orthogonal: extending the hierarchy changes the PEP/scope graph,
+not the model-provisioning contract or runtime behavior.
 
 Awaken's authorization hierarchy stops at Org -> Workspace; Project is not a
 Runtime scope. The single-machine composition hides Org and supplies its

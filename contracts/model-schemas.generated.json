@@ -249,6 +249,75 @@
       "title": "ApiError",
       "type": "object"
     },
+    "AuthorOfferingRequest": {
+      "$defs": {
+        "ApiDialect": {
+          "description": "The wire/model-API dialect a surface speaks. Replaces oversight's `WireFormat`;\nthe credential/model bindings are resolved against this dialect (ADR-0043).",
+          "oneOf": [
+            {
+              "const": "anthropic_messages",
+              "description": "The `claude` adapter's wire.",
+              "type": "string"
+            },
+            {
+              "const": "open_ai_chat",
+              "description": "The `codex`/OpenAI chat wire.",
+              "type": "string"
+            },
+            {
+              "const": "gemini",
+              "description": "The Gemini wire.",
+              "type": "string"
+            },
+            {
+              "const": "vertex_gemini",
+              "description": "Gemini on Vertex AI: native Gemini payloads with OAuth Bearer auth and\na project/location endpoint.",
+              "type": "string"
+            }
+          ]
+        },
+        "ProtocolEndpointId": {
+          "description": "Stable id of a [`ProtocolEndpoint`].",
+          "type": "string"
+        },
+        "ProviderId": {
+          "description": "Stable id of a [`Provider`] (vendor namespace).",
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "Wire command for explicit authoring. Discovery provenance and availability\nare server-owned and therefore cannot be forged by an HTTP client.",
+      "properties": {
+        "dialect": {
+          "$ref": "#/$defs/ApiDialect"
+        },
+        "model_id": {
+          "type": "string"
+        },
+        "protocol_endpoint_id": {
+          "$ref": "#/$defs/ProtocolEndpointId"
+        },
+        "provider_id": {
+          "$ref": "#/$defs/ProviderId"
+        },
+        "upstream_model": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "model_id",
+        "provider_id",
+        "protocol_endpoint_id",
+        "dialect"
+      ],
+      "title": "AuthorOfferingRequest",
+      "type": "object"
+    },
     "AvailabilityState": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "description": "The availability of one credential source at a point in time.",
@@ -300,6 +369,34 @@
         }
       ],
       "title": "AvailabilityState"
+    },
+    "CatalogSyncResult": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Durable outcome of reconciling one complete provider model listing.",
+      "properties": {
+        "activated": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "discovered": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "marked_unavailable": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "discovered",
+        "activated",
+        "marked_unavailable"
+      ],
+      "title": "CatalogSyncResult",
+      "type": "object"
     },
     "CooldownRequest": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -405,6 +502,11 @@
         {
           "const": "oauth",
           "description": "An OAuth-backed provider credential (#5): the secret is a short-lived\nBearer token minted on demand by running `oauth_command`, never stored. The\nlong-lived grant lives inside the helper (e.g. `gcloud`), so nothing secret\ncrosses the control plane.",
+          "type": "string"
+        },
+        {
+          "const": "worker_local",
+          "description": "Secret material is installed and retained on an eligible worker. The\npersisted source id and revision are the only cross-plane handle; worker\nheartbeats advertise whether that exact handle is currently available.",
           "type": "string"
         }
       ],
@@ -559,6 +661,11 @@
               "const": "oauth",
               "description": "An OAuth-backed provider credential (#5): the secret is a short-lived\nBearer token minted on demand by running `oauth_command`, never stored. The\nlong-lived grant lives inside the helper (e.g. `gcloud`), so nothing secret\ncrosses the control plane.",
               "type": "string"
+            },
+            {
+              "const": "worker_local",
+              "description": "Secret material is installed and retained on an eligible worker. The\npersisted source id and revision are the only cross-plane handle; worker\nheartbeats advertise whether that exact handle is currently available.",
+              "type": "string"
             }
           ]
         },
@@ -678,6 +785,33 @@
       "title": "CredentialValidation",
       "type": "object"
     },
+    "DiscoverModelsRequest": {
+      "$defs": {
+        "CredentialSourceId": {
+          "description": "Stable id of a [`CredentialSource`].",
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "credential_source_id": {
+          "$ref": "#/$defs/CredentialSourceId"
+        },
+        "workspace_id": {
+          "default": null,
+          "description": "Used only by an unwrapped/test router. The authenticated management edge\nsupplies `WorkspaceScope`, which is authoritative when present.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "credential_source_id"
+      ],
+      "title": "DiscoverModelsRequest",
+      "type": "object"
+    },
     "EnterCredentialRequest": {
       "$defs": {
         "CredentialKind": {
@@ -696,6 +830,11 @@
             {
               "const": "oauth",
               "description": "An OAuth-backed provider credential (#5): the secret is a short-lived\nBearer token minted on demand by running `oauth_command`, never stored. The\nlong-lived grant lives inside the helper (e.g. `gcloud`), so nothing secret\ncrosses the control plane.",
+              "type": "string"
+            },
+            {
+              "const": "worker_local",
+              "description": "Secret material is installed and retained on an eligible worker. The\npersisted source id and revision are the only cross-plane handle; worker\nheartbeats advertise whether that exact handle is currently available.",
               "type": "string"
             }
           ]
@@ -744,9 +883,12 @@
           ]
         },
         "secret": {
-          "default": "",
+          "default": null,
           "description": "The secret to seal — required for `vault`. Environment-backed credentials\nare not accepted; environment discovery is exposed only as proposals.",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "workspace_id": {
           "type": "string"
@@ -1091,6 +1233,29 @@
             }
           ]
         },
+        "OfferingSource": {
+          "description": "Authority that published an [`Offering`].",
+          "oneOf": [
+            {
+              "const": "manual",
+              "description": "Explicit UI/API authoring is authoritative over provider discovery.",
+              "type": "string"
+            },
+            {
+              "const": "provider_api",
+              "description": "Observed from the configured endpoint's provider API.",
+              "type": "string"
+            }
+          ]
+        },
+        "OfferingStatus": {
+          "description": "Admission status for new publications using an offering.",
+          "enum": [
+            "active",
+            "unavailable"
+          ],
+          "type": "string"
+        },
         "ProtocolEndpointId": {
           "description": "Stable id of a [`ProtocolEndpoint`].",
           "type": "string"
@@ -1115,6 +1280,14 @@
         },
         "provider_id": {
           "$ref": "#/$defs/ProviderId"
+        },
+        "source": {
+          "$ref": "#/$defs/OfferingSource",
+          "description": "Who owns the catalog fact. Manually authored rows are never demoted by a\nprovider refresh; provider-discovered rows follow the provider's latest\ncomplete listing."
+        },
+        "status": {
+          "$ref": "#/$defs/OfferingStatus",
+          "description": "Whether this route may be selected for a new publication. Provider sync is\nnon-destructive: a missing discovered model becomes unavailable instead of\nbeing deleted, so existing immutable publications remain explainable."
         },
         "upstream_model": {
           "description": "Provider-canonical model name sent upstream when it differs from `model_id`.",
@@ -1339,6 +1512,14 @@
             "provider_id": {
               "$ref": "#/$defs/ProviderId"
             },
+            "source": {
+              "$ref": "#/$defs/OfferingSource",
+              "description": "Who owns the catalog fact. Manually authored rows are never demoted by a\nprovider refresh; provider-discovered rows follow the provider's latest\ncomplete listing."
+            },
+            "status": {
+              "$ref": "#/$defs/OfferingStatus",
+              "description": "Whether this route may be selected for a new publication. Provider sync is\nnon-destructive: a missing discovered model becomes unavailable instead of\nbeing deleted, so existing immutable publications remain explainable."
+            },
             "upstream_model": {
               "description": "Provider-canonical model name sent upstream when it differs from `model_id`.",
               "type": [
@@ -1354,6 +1535,29 @@
             "dialect"
           ],
           "type": "object"
+        },
+        "OfferingSource": {
+          "description": "Authority that published an [`Offering`].",
+          "oneOf": [
+            {
+              "const": "manual",
+              "description": "Explicit UI/API authoring is authoritative over provider discovery.",
+              "type": "string"
+            },
+            {
+              "const": "provider_api",
+              "description": "Observed from the configured endpoint's provider API.",
+              "type": "string"
+            }
+          ]
+        },
+        "OfferingStatus": {
+          "description": "Admission status for new publications using an offering.",
+          "enum": [
+            "active",
+            "unavailable"
+          ],
+          "type": "string"
         },
         "ProtocolEndpoint": {
           "description": "A concrete protocol surface of a provider: which wire + which URL. Distinct\nflavors of one provider typically have distinct `base_url`s.",

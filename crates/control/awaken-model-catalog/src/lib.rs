@@ -148,6 +148,70 @@ pub struct Offering {
     /// Provider-canonical model name sent upstream when it differs from `model_id`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream_model: Option<String>,
+    /// Who owns the catalog fact. Manually authored rows are never demoted by a
+    /// provider refresh; provider-discovered rows follow the provider's latest
+    /// complete listing.
+    #[serde(default, skip_serializing_if = "OfferingSource::is_manual")]
+    pub source: OfferingSource,
+    /// Whether this route may be selected for a new publication. Provider sync is
+    /// non-destructive: a missing discovered model becomes unavailable instead of
+    /// being deleted, so existing immutable publications remain explainable.
+    #[serde(default, skip_serializing_if = "OfferingStatus::is_active")]
+    pub status: OfferingStatus,
+}
+
+/// Authority that published an [`Offering`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum OfferingSource {
+    /// Explicit UI/API authoring is authoritative over provider discovery.
+    #[default]
+    Manual,
+    /// Observed from the configured endpoint's provider API.
+    ProviderApi,
+}
+
+impl OfferingSource {
+    fn is_manual(&self) -> bool {
+        *self == Self::Manual
+    }
+}
+
+/// Admission status for new publications using an offering.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum OfferingStatus {
+    #[default]
+    Active,
+    Unavailable,
+}
+
+impl OfferingStatus {
+    fn is_active(&self) -> bool {
+        *self == Self::Active
+    }
+}
+
+/// Provider-neutral model observation returned by a discovery adapter. It carries
+/// no provider, endpoint, credential, or authorization decision; the catalog
+/// application service supplies those from its already-authored endpoint.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct DiscoveredModel {
+    pub model_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream_model: Option<String>,
+}
+
+/// Durable outcome of reconciling one complete provider model listing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct CatalogSyncResult {
+    pub discovered: usize,
+    pub activated: usize,
+    pub marked_unavailable: usize,
 }
 
 /// The catalog aggregate: providers, their endpoints, and the offerings across
@@ -199,6 +263,18 @@ pub enum CatalogError {
         offering: ApiDialect,
         endpoint: ApiDialect,
     },
+    #[error(
+        "offering `{model}` provider `{offering}` disagrees with endpoint provider `{endpoint}`"
+    )]
+    OfferingProviderMismatch {
+        model: String,
+        offering: String,
+        endpoint: String,
+    },
+    #[error("provider discovery returned an empty model id")]
+    EmptyDiscoveredModelId,
+    #[error("provider discovery references unknown endpoint `{0}`")]
+    DiscoveryEndpointUnknown(String),
     /// Not an invariant: a durable-backend failure (I/O, serde, poisoned lock)
     /// surfaced by a persistent [`repo::CatalogRepo`] such as the sqlite one. It
     /// lives here rather than on [`repo::RepoError`] so downstream exhaustive
@@ -238,6 +314,13 @@ impl ProviderCatalog {
                     endpoint: ep.dialect,
                 });
             }
+            if ep.provider_id != off.provider_id {
+                return Err(CatalogError::OfferingProviderMismatch {
+                    model: off.model_id.clone(),
+                    offering: off.provider_id.0.clone(),
+                    endpoint: ep.provider_id.0.clone(),
+                });
+            }
         }
         Ok(())
     }
@@ -246,9 +329,78 @@ impl ProviderCatalog {
     /// (`Offering(model) ∩ dialect` — the `Derive` endpoint axis of ADR-0043).
     #[must_use]
     pub fn resolve_offering(&self, model_id: &str, dialect: ApiDialect) -> Option<&Offering> {
-        self.offerings
-            .iter()
-            .find(|o| o.model_id == model_id && o.dialect == dialect)
+        self.offerings.iter().find(|o| {
+            o.status == OfferingStatus::Active && o.model_id == model_id && o.dialect == dialect
+        })
+    }
+
+    /// Reconcile a complete provider listing into this aggregate. Only rows owned
+    /// by provider discovery are changed; explicit authoring wins on the same key.
+    /// Missing discovered rows are retained as unavailable rather than deleted.
+    pub fn reconcile_discovered_models(
+        &mut self,
+        endpoint_id: &ProtocolEndpointId,
+        models: Vec<DiscoveredModel>,
+    ) -> Result<CatalogSyncResult, CatalogError> {
+        let endpoint = self
+            .endpoints
+            .get(endpoint_id.as_str())
+            .cloned()
+            .ok_or_else(|| CatalogError::DiscoveryEndpointUnknown(endpoint_id.0.clone()))?;
+        let mut normalized = BTreeMap::new();
+        for model in models {
+            let model_id = model.model_id.trim();
+            if model_id.is_empty() {
+                return Err(CatalogError::EmptyDiscoveredModelId);
+            }
+            normalized.insert(model_id.to_string(), model.upstream_model);
+        }
+
+        let mut result = CatalogSyncResult {
+            discovered: normalized.len(),
+            ..CatalogSyncResult::default()
+        };
+        for offering in self.offerings.iter_mut().filter(|offering| {
+            offering.protocol_endpoint_id == *endpoint_id
+                && offering.source == OfferingSource::ProviderApi
+        }) {
+            if let Some(upstream_model) = normalized.remove(&offering.model_id) {
+                if offering.status != OfferingStatus::Active {
+                    result.activated += 1;
+                }
+                offering.status = OfferingStatus::Active;
+                offering.upstream_model = upstream_model;
+            } else if offering.status != OfferingStatus::Unavailable {
+                offering.status = OfferingStatus::Unavailable;
+                result.marked_unavailable += 1;
+            }
+        }
+
+        for (model_id, upstream_model) in normalized {
+            if self.offerings.iter().any(|offering| {
+                offering.model_id == model_id
+                    && offering.protocol_endpoint_id == *endpoint_id
+                    && offering.source == OfferingSource::Manual
+            }) {
+                continue;
+            }
+            self.offerings.push(Offering {
+                model_id,
+                provider_id: endpoint.provider_id.clone(),
+                protocol_endpoint_id: endpoint.id.clone(),
+                dialect: endpoint.dialect,
+                upstream_model,
+                source: OfferingSource::ProviderApi,
+                status: OfferingStatus::Active,
+            });
+            result.activated += 1;
+        }
+        self.offerings.sort_by(|left, right| {
+            (left.model_id.as_str(), left.protocol_endpoint_id.as_str())
+                .cmp(&(right.model_id.as_str(), right.protocol_endpoint_id.as_str()))
+        });
+        self.validate()?;
+        Ok(result)
     }
 }
 
@@ -322,6 +474,8 @@ mod tests {
             protocol_endpoint_id: ProtocolEndpointId::new("ep1"),
             dialect: ApiDialect::AnthropicMessages,
             upstream_model: None,
+            source: Default::default(),
+            status: Default::default(),
         });
         c
     }
@@ -380,6 +534,8 @@ mod tests {
             protocol_endpoint_id: ProtocolEndpointId::new("ep2"),
             dialect: ApiDialect::AnthropicMessages,
             upstream_model: None,
+            source: Default::default(),
+            status: Default::default(),
         });
         let got = c
             .resolve_offering("claude-opus-4-8", ApiDialect::AnthropicMessages)
@@ -401,6 +557,8 @@ mod tests {
             protocol_endpoint_id: ProtocolEndpointId::new("ghost"),
             dialect: ApiDialect::AnthropicMessages,
             upstream_model: None,
+            source: Default::default(),
+            status: Default::default(),
         });
         assert!(matches!(
             c.validate(),
@@ -421,6 +579,8 @@ mod tests {
             protocol_endpoint_id: ProtocolEndpointId::new("ghost"),
             dialect: ApiDialect::AnthropicMessages,
             upstream_model: None,
+            source: Default::default(),
+            status: Default::default(),
         });
         assert!(matches!(
             ValidCatalog::parse(c),
@@ -546,6 +706,8 @@ mod tests {
             protocol_endpoint_id: ProtocolEndpointId::new("ep1"),
             dialect: ApiDialect::AnthropicMessages,
             upstream_model: None,
+            source: Default::default(),
+            status: Default::default(),
         };
         assert!(
             !serde_json::to_string(&off)
@@ -595,6 +757,8 @@ mod tests {
             protocol_endpoint_id: ProtocolEndpointId::new("g1"),
             dialect: ApiDialect::Gemini,
             upstream_model: Some("models/gemini-2.5-pro".into()),
+            source: Default::default(),
+            status: Default::default(),
         });
         assert!(c.validate().is_ok());
         let got = c

@@ -106,7 +106,9 @@ impl CapabilityReader for CatalogCapabilityReader {
             Ok(catalog) => {
                 let mut models = Vec::new();
                 for offering in &catalog.offerings {
-                    if !models.contains(&offering.model_id) {
+                    if offering.status == awaken_model_catalog::OfferingStatus::Active
+                        && !models.contains(&offering.model_id)
+                    {
                         models.push(offering.model_id.clone());
                     }
                 }
@@ -575,6 +577,8 @@ mod tests {
             protocol_endpoint_id: ProtocolEndpointId::new("ep1"),
             dialect: ApiDialect::AnthropicMessages,
             upstream_model: None,
+            source: Default::default(),
+            status: Default::default(),
         })
         .await
         .unwrap();
@@ -599,7 +603,9 @@ mod tests {
             let (primary, fallbacks) = if let Some(primary) = selection.resolved() {
                 (primary.clone(), fallbacks.to_vec())
             } else {
-                let mut offerings = self.0.offerings.iter();
+                let mut offerings = self.0.offerings.iter().filter(|offering| {
+                    offering.status == awaken_model_catalog::OfferingStatus::Active
+                });
                 let primary = offerings
                     .next()
                     .ok_or_else(|| "no provider-backed model in the catalog".to_string())?;
@@ -633,6 +639,8 @@ mod tests {
                 protocol_endpoint_id: ProtocolEndpointId::new("ep1"),
                 dialect: ApiDialect::AnthropicMessages,
                 upstream_model: None,
+                source: Default::default(),
+                status: Default::default(),
             }],
             ..Default::default()
         }
