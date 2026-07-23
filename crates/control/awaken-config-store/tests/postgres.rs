@@ -144,6 +144,38 @@ async fn schema_pool(schema: &'static str) -> Option<PgPool> {
         .ok()
 }
 
+#[tokio::test]
+async fn existing_postgres_store_validates_without_applying_schema() {
+    let Some(pool) = schema_pool("t_config_existing").await else {
+        return;
+    };
+    let error = match PostgresConfigStore::with_existing_pool(pool.clone()).await {
+        Ok(_) => panic!("an application connection must not create a missing ledger"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().starts_with("schema:"));
+
+    PostgresConfigStore::with_pool(pool.clone())
+        .await
+        .expect("migration phase");
+    PostgresConfigStore::with_existing_pool(pool.clone())
+        .await
+        .expect("application opens an already-migrated schema");
+
+    sqlx::query(
+        "UPDATE config_schema_migrations SET checksum='drift' \
+         WHERE bundle_id='awaken.config'",
+    )
+    .execute(&pool)
+    .await
+    .expect("corrupt fixture ledger");
+    let error = match PostgresConfigStore::with_existing_pool(pool).await {
+        Ok(_) => panic!("checksum drift must fail closed"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("checksum mismatch"));
+}
+
 fn agent_config() -> AgentConfig {
     AgentConfig {
         id: "agent-1".to_string(),
