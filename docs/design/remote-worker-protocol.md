@@ -1,6 +1,6 @@
 # Recoverable Remote Worker Protocol
 
-- Status: Proposed P0/P1/P2 implementation design
+- Status: Accepted P0/P1 and P2 active-active design
 - Date: 2026-07-23
 - Decision: [ADR-0065](../adr/0065-recoverable-embeddable-remote-worker.md)
 - Builds on: [distributed ACP execution](distributed-acp-execution.md),
@@ -616,9 +616,28 @@ substitute for it. Row locks/serializable transactions protect database state;
 operation receipts solve ambiguous responses; versions solve stale execution
 context; durable reads solve process-cache coherence.
 
+Implementation evidence as of 2026-07-23:
+
+- `active_active_postgres.rs` re-executes its test binary as two independent
+  Control processes with separate coordinator/dispatch instances over one
+  PostgreSQL schema.
+- The Worker alternates enqueue, claim, recovery, commit retry, and settle
+  across the two origins; no request-affinity state is used.
+- Control A exits in the ambiguous window after commit apply and before receipt
+  delivery. Control B returns the persisted duplicate receipt, reads the
+  committed snapshot from PostgreSQL, and settles the still-valid claim.
+- The final database assertion requires exactly one operation receipt, message,
+  and dispatch completion. `scripts/ci/pg_tests.sh` supplies a disposable real
+  PostgreSQL instance and runs the scenario single-threaded.
+- `PostgresCommitCoordinator` implements `RunLifecycleFeed` with an
+  authoritative SQL window query. A peer constructed before another node's
+  commits still pages `Running`, `Awaiting`, `Resumed`, and `Completed` without
+  refreshing its synchronous compatibility projection.
+
 ### 7.2 Recovery optimization
 
-After full snapshots are correct:
+These are optional transfer/performance optimizations after full snapshots are
+correct, and remain deferred until profiling justifies them:
 
 - serve checkpoint plus ordered committed deltas;
 - bound and compress snapshot size;
@@ -628,12 +647,16 @@ After full snapshots are correct:
 
 ### 7.3 API/config cleanup
 
-- core assembly accepts explicit typed configuration; CLI adapters read env;
-- remove process-level shared-store initialization where dependency injection
-  is sufficient;
-- expose the Worker lifecycle state machine as a reusable component;
-- optional gRPC/bidirectional streaming may batch renew/commit/feed traffic but
-  must carry the same claim, epoch, operation id, version, hash, and receipt.
+Completed:
+
+- core Worker and commit assembly accept explicit typed dependencies;
+- the CLI bridge parses deployment environment into `DeploymentConfig`;
+- `WorkerNode` exposes the reusable lifecycle state machine.
+
+Deferred cleanup may remove remaining compatibility globals where dependency
+injection is sufficient. Optional gRPC/bidirectional streaming may batch
+renew/commit/feed traffic, but it must carry the same claim, epoch, operation
+id, version, hash, and receipt.
 
 ## 8. Storage and Component Choices
 
@@ -695,7 +718,7 @@ Executable evidence includes:
 - shared in-memory/SQLite/PostgreSQL state-machine specs;
 - simulated-clock lease and reclaim tests;
 - HTTP tests that drop responses after durable apply;
-- two-Control-node PostgreSQL tests in P2;
+- the two-Control-process PostgreSQL active-active failure-injection test;
 - property tests for operation id/hash/version rules;
 - concurrency model checking for process-local projection code where applicable.
 
@@ -743,8 +766,8 @@ helpers and CLI parsing do not belong here.
 |---|---|---|
 | P0 | recovery snapshot/projection, operation receipts, injectable claimed commit, public Worker assembly, topology rejection, conformance + bounded model | remote Worker is correct, recoverable, and embeddable |
 | P1 | exact executor registry, derived manifest, production identity, separated lifecycle feeds | fleet is extensible and production-operable |
-| P2 | PostgreSQL active-active, cache/delta optimization, explicit config cleanup, optional streaming transport | physical singleton and performance constraints are removed |
-| Deferred | cell sharding/rebalancing, alternative primary store adapters, a merged business event feed | requires measured scale or a separate accepted ADR |
+| P2 | PostgreSQL active-active with authoritative recovery/lifecycle reads and multi-process failure injection | the physical Control singleton and sticky-routing constraint are removed |
+| Deferred | recovery cache/deltas, snapshot compaction, remaining compatibility-global cleanup, optional streaming, cell sharding/rebalancing, alternative primary stores, merged business event feed | requires measured scale or a separate accepted ADR |
 
 The first vertical slice is one Worker, one Control Node, one claimed Run that
 Awaits, crashes, is reclaimed by another Worker, resumes from a consistent
