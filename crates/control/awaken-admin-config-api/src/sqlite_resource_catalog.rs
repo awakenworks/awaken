@@ -9,48 +9,15 @@ use awaken_resource_contract::{
     ResourceCatalogRules, ResourceConfigSource, ResourceState,
 };
 use rusqlite::{OptionalExtension, params};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
+use crate::resource_catalog_codec::{
+    LegacyMemoryStoreDef, MemoryRecord, RepositoryRecord, now_nanos,
+};
 use crate::sqlite::{NS, SqliteAdminStore};
 
 const MEMORY: &str = "memory_store";
 const REPOSITORY: &str = "repository";
-
-fn now_nanos() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos().min(u64::MAX as u128) as u64)
-        .unwrap_or_default()
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct MemoryRecord {
-    definition: MemoryStoreDefinition,
-    configs: BTreeMap<ConfigVersion, MemoryStoreConfigVersion>,
-}
-
-/// Upgrade-only shape written by the removed `MemoryStoreRegistry`. Empty-owner
-/// rows are deliberately quarantined: ownership cannot be inferred safely.
-#[derive(Debug, Deserialize)]
-struct LegacyMemoryStoreDef {
-    id: String,
-    #[serde(default)]
-    workspace_id: String,
-    #[serde(default)]
-    name: String,
-    #[serde(default)]
-    description: String,
-    #[serde(default)]
-    metadata: BTreeMap<String, String>,
-    #[serde(default)]
-    archived: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct RepositoryRecord {
-    definition: RepositoryDefinition,
-    configs: BTreeMap<ConfigVersion, RepositoryConfigVersion>,
-}
 
 fn storage(error: impl ToString) -> ResourceCatalogError {
     ResourceCatalogError::Storage(error.to_string())
@@ -75,33 +42,13 @@ impl SqliteAdminStore {
             .collect::<Result<Vec<_>, _>>()?
         };
         for legacy in rows {
-            if legacy.workspace_id.trim().is_empty() || self.memory_record(&legacy.id)?.is_some() {
+            if self.memory_record(&legacy.id)?.is_some() {
                 continue;
             }
-            let id = legacy.id;
-            let result = self.create_memory_store(
-                MemoryStoreDefinition {
-                    id: id.clone().into(),
-                    workspace_id: legacy.workspace_id,
-                    name: legacy.name,
-                    description: legacy.description,
-                    metadata: legacy.metadata,
-                    state: if legacy.archived {
-                        ResourceState::Archived
-                    } else {
-                        ResourceState::Active
-                    },
-                    current_config_version: ConfigVersion::INITIAL,
-                    timestamps: Default::default(),
-                },
-                MemoryStoreConfigVersion {
-                    memory_store_id: id.into(),
-                    version: ConfigVersion::INITIAL,
-                    recall_policy: Default::default(),
-                    extraction_policy: Default::default(),
-                    retention_policy: Default::default(),
-                },
-            );
+            let Some((definition, config)) = legacy.into_catalog_records() else {
+                continue;
+            };
+            let result = self.create_memory_store(definition, config);
             match result {
                 Ok(()) | Err(ResourceCatalogError::AlreadyExists(_)) => {}
                 Err(error) => return Err(error),
