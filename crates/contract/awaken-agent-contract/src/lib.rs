@@ -24,3 +24,7 @@ pub use thread::commit::coordinator::Coordinator as CommitCoordinator;
 pub use thread::commit::run_fact::RunFact;
 pub use thread::commit::staged::ThreadCommit;
 pub use thread::read::checkpoint::{CheckpointReader, EventScope};
+pub use thread::read::transcript::{
+    TranscriptError, TranscriptRange, TranscriptSlice, TranscriptSliceSpec, TranscriptSnapshot,
+    TranscriptSnapshotRef, TranscriptView,
+};

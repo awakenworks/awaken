@@ -22,6 +22,9 @@ use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator;
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
+use awaken_agent_contract::thread::read::transcript::{
+    TranscriptError, TranscriptRange, TranscriptSliceSpec, TranscriptView,
+};
 
 const RUN_DELEGATIONS_KEY: &str = "runtime.delegations.v1";
 const ACTIVE_TOOL_BATCH_KEY: &str = "runtime.active_tool_batch.v1";
@@ -247,6 +250,53 @@ pub async fn commits_accumulate<S: Coordinator + CheckpointReader>(store: &S) {
         Some(run2),
         "latest run wins"
     );
+}
+
+/// Transcript snapshots freeze an append-only prefix. A later commit may extend
+/// the Thread, but the old reference still reconstructs byte-identical messages;
+/// a changed identity fails closed. This is the neutral window substrate used by
+/// Memory, Compact, Outcome, and inference without teaching the store those
+/// business consumers.
+pub async fn transcript_snapshots_freeze_append_only_prefix<S: Coordinator + CheckpointReader>(
+    store: &S,
+) {
+    let thread = ThreadId("conf-transcript-snapshot".to_string());
+    let first_run = RunId("conf-transcript-snapshot-r1".to_string());
+    let second_run = RunId("conf-transcript-snapshot-r2".to_string());
+
+    store
+        .commit(ended_checkpoint(&thread, &first_run, "first"))
+        .await
+        .expect("first commit");
+    let frozen = store.transcript_snapshot(&thread, TranscriptView::RawCommitted);
+    assert_eq!(frozen.reference().version, 1);
+    assert_eq!(frozen.reference().end_seq, 1);
+
+    store
+        .commit(ended_checkpoint(&thread, &second_run, "second"))
+        .await
+        .expect("second commit");
+    let latest = store.transcript_snapshot(&thread, TranscriptView::RawCommitted);
+    assert_eq!(latest.reference().version, 2);
+
+    let old_slice = store
+        .transcript_slice(&TranscriptSliceSpec {
+            snapshot: frozen.reference().clone(),
+            ranges: vec![TranscriptRange::new(0, 1)],
+        })
+        .expect("old append-only prefix remains readable");
+    assert_eq!(old_slice.messages.len(), 1);
+    assert_eq!(old_slice.messages[0].text_content(), "first");
+
+    let mut tampered = frozen.reference().clone();
+    tampered.version += 1;
+    let error = store
+        .transcript_slice(&TranscriptSliceSpec {
+            snapshot: tampered,
+            ranges: vec![TranscriptRange::new(0, 1)],
+        })
+        .expect_err("a forged snapshot identity fails closed");
+    assert_eq!(error, TranscriptError::SnapshotMismatch);
 }
 
 /// Awaiting-ticket lifecycle: a `Awaiting` checkpoint with a correlated ticket awaits

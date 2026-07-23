@@ -24,6 +24,14 @@ async fn commits_accumulate() {
 }
 
 #[tokio::test]
+async fn transcript_snapshots_freeze_append_only_prefix() {
+    awaken_store_conformance::transcript_snapshots_freeze_append_only_prefix(
+        &fresh("transcript-snapshot").await,
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn terminal_run_is_fenced() {
     awaken_store_conformance::terminal_run_is_fenced(&fresh("fence").await).await;
 }
