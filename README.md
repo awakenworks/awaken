@@ -16,9 +16,10 @@ cargo run -p awaken-cli --bin awaken -- start
 ```
 
 Open `http://127.0.0.1:8080`. The command builds `web/dist` with `pnpm` when it
-is missing. Set `AWAKEN_HTTP_ADDR` to change the listener or `AWAKEN_WEB_DIST`
-to serve an existing console build. Running `awaken` without `start` keeps the
-API-only behavior.
+compiles the `awaken` executable; the resulting binary contains the complete
+production console and needs no external web directory or Node.js at runtime.
+Set `AWAKEN_HTTP_ADDR` to change the listener. Running `awaken` without `start`
+keeps the API-only behavior.
 
 ## License
 

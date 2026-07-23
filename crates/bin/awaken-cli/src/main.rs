@@ -100,9 +100,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // session's model from the DB-configured catalog + credential vault. Configure a
     // provider/model/credential through /v1/config/* + /v1/vaults/* and sessions run
     // that real model.
-    let console_dist = match mode {
-        console::Mode::Console => Some(console::prepare_dist()?),
-        console::Mode::Server => None,
+    let serve_console = match mode {
+        console::Mode::Console => true,
+        console::Mode::Server => false,
         console::Mode::Help => unreachable!(),
     };
     let app = awaken_cli::build_management_router().await;
@@ -130,9 +130,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Root every request span in the ingress middleware (extracts the inbound
     // traceparent); the whole request→inference path nests under it.
     let app = app.layer(axum::middleware::from_fn(awaken_observability::trace_http));
-    let app = match console_dist {
-        Some(dist) => awaken_server::console::mount(app, &dist),
-        None => app,
+    let app = if serve_console {
+        console::mount(app)
+    } else {
+        app
     };
 
     // Serve the split admin surface on its own port, if configured.
