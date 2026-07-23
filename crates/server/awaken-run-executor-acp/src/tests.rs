@@ -2325,7 +2325,8 @@ fn every_backend_row_projects_a_launchable_process_through_the_source() {
 #[cfg(all(feature = "real-acp", unix))]
 const PONG_ECHO: &str = "while IFS= read -r line; do \
       case \"$line\" in \
-        *'\"id\":1'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{}}}';; \
+        *'\"id\":1'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{},\"authMethods\":[{\"id\":\"api-key\",\"name\":\"API key\"}]}}';; \
+        *'\"id\":5'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":5,\"result\":{}}';; \
         *'\"id\":2'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"s1\"}}';; \
         *'\"id\":3'*) \
           printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"pong\"}}}}'; \

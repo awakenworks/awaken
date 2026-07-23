@@ -23,11 +23,21 @@ pub struct ModelDelivery {
     /// with `model_config_key`, the projection merges the resolved model into the
     /// row's static JSON config. `None` retains the legacy `-c key=value` delivery.
     pub model_config_env: Option<&'static str>,
+    /// Optional Codex-style provider object merged into `model_config_env`.
+    /// This is needed when a CLI ignores the generic base-url environment and
+    /// requires an explicitly named OpenAI-compatible provider.
+    pub provider_config: Option<ProviderConfigDelivery>,
     /// Env key for the API key (a secret — the host materializes it; never stored).
     pub key: &'static str,
     /// Extra model-name env keys the CLI reads as tier aliases, all set to the same
     /// resolved model (e.g. `ANTHROPIC_SONNET_MODEL`/`OPUS`/`HAIKU`).
     pub aliases: &'static [&'static str],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProviderConfigDelivery {
+    pub id: &'static str,
+    pub wire_api: &'static str,
 }
 
 /// How a CLI keys its persisted sessions — decides whether cross-directory
@@ -86,6 +96,9 @@ pub struct AcpCli {
     /// branches in the container mechanism.
     pub container_argv: &'static [&'static str],
     pub model_delivery: ModelDelivery,
+    /// ACP authentication method to select after initialize. Credentials remain
+    /// in the typed model-delivery environment and never cross the protocol wire.
+    pub auth_method_id: Option<&'static str>,
     pub mcp_interface: McpInterface,
     /// Env key naming the CLI's isolated config directory (e.g. `CLAUDE_CONFIG_DIR`).
     pub config_home_env: &'static str,
@@ -204,6 +217,25 @@ impl AcpCli {
                     key.to_string(),
                     serde_json::Value::String(model.model.clone()),
                 );
+                if let Some(provider) = d.provider_config
+                    && !model.base_url.is_empty()
+                {
+                    config.insert(
+                        "model_provider".to_string(),
+                        serde_json::Value::String(provider.id.to_string()),
+                    );
+                    config.insert(
+                        "model_providers".to_string(),
+                        serde_json::json!({
+                            (provider.id): {
+                                "name": provider.id,
+                                "base_url": model.base_url,
+                                "env_key": d.key,
+                                "wire_api": provider.wire_api,
+                            }
+                        }),
+                    );
+                }
                 env.insert(
                     config_env.to_string(),
                     serde_json::Value::Object(config).to_string(),
@@ -356,6 +388,7 @@ const CLAUDE: AcpCli = AcpCli {
         model: "ANTHROPIC_MODEL",
         model_config_key: None,
         model_config_env: None,
+        provider_config: None,
         key: "ANTHROPIC_API_KEY",
         aliases: &[
             "ANTHROPIC_SONNET_MODEL",
@@ -363,6 +396,7 @@ const CLAUDE: AcpCli = AcpCli {
             "ANTHROPIC_HAIKU_MODEL",
         ],
     },
+    auth_method_id: None,
     mcp_interface: McpInterface::AcpSession,
     config_home_env: "CLAUDE_CONFIG_DIR",
     config_home_aliases: &[],
@@ -394,9 +428,11 @@ const KIMI: AcpCli = AcpCli {
         model: "KIMI_MODEL_NAME",
         model_config_key: None,
         model_config_env: None,
+        provider_config: None,
         key: "KIMI_MODEL_API_KEY",
         aliases: &[],
     },
+    auth_method_id: None,
     mcp_interface: McpInterface::AcpSession,
     config_home_env: "KIMI_CODE_HOME",
     config_home_aliases: &[],
@@ -427,9 +463,14 @@ const CODEX: AcpCli = AcpCli {
         model: "OPENAI_MODEL",
         model_config_key: Some("model"),
         model_config_env: Some("CODEX_CONFIG"),
+        provider_config: Some(ProviderConfigDelivery {
+            id: "awaken-openai-compatible",
+            wire_api: "responses",
+        }),
         key: "OPENAI_API_KEY",
         aliases: &[],
     },
+    auth_method_id: Some("api-key"),
     mcp_interface: McpInterface::ConfigFileToml {
         path: "config.toml",
     },
@@ -463,9 +504,11 @@ const GEMINI: AcpCli = AcpCli {
         model: "GEMINI_MODEL",
         model_config_key: None,
         model_config_env: None,
+        provider_config: None,
         key: "GEMINI_API_KEY",
         aliases: &[],
     },
+    auth_method_id: None,
     mcp_interface: McpInterface::AcpSession,
     config_home_env: "GEMINI_DIR",
     config_home_aliases: &[],
@@ -498,9 +541,11 @@ const OPENCODE: AcpCli = AcpCli {
         model: "OPENAI_MODEL",
         model_config_key: None,
         model_config_env: None,
+        provider_config: None,
         key: "OPENAI_API_KEY",
         aliases: &[],
     },
+    auth_method_id: None,
     mcp_interface: McpInterface::AcpSession,
     config_home_env: "OPENCODE_CONFIG_DIR",
     config_home_aliases: &[
@@ -538,9 +583,11 @@ const HERMES: AcpCli = AcpCli {
         model: "HERMES_MODEL",
         model_config_key: None,
         model_config_env: None,
+        provider_config: None,
         key: "KIMI_API_KEY",
         aliases: &[],
     },
+    auth_method_id: None,
     mcp_interface: McpInterface::AcpSession,
     config_home_env: "HERMES_HOME",
     config_home_aliases: &[],
@@ -1033,6 +1080,7 @@ mod tests {
         let cli = acp_cli("codex").unwrap();
         assert_eq!(cli.command, "npx");
         assert!(cli.args.contains(&"@agentclientprotocol/codex-acp@1.1"));
+        assert_eq!(cli.auth_method_id, Some("api-key"));
         assert!(is_dynamic_install(cli));
     }
 
@@ -1044,6 +1092,19 @@ mod tests {
         let config: serde_json::Value =
             serde_json::from_str(&env_of(&launch, "CODEX_CONFIG").unwrap()).unwrap();
         assert_eq!(config["model"], model.model);
+        assert_eq!(config["model_provider"], "awaken-openai-compatible");
+        assert_eq!(
+            config["model_providers"]["awaken-openai-compatible"]["base_url"],
+            model.base_url
+        );
+        assert_eq!(
+            config["model_providers"]["awaken-openai-compatible"]["wire_api"],
+            "responses"
+        );
+        assert_eq!(
+            config["model_providers"]["awaken-openai-compatible"]["env_key"],
+            "OPENAI_API_KEY"
+        );
         assert_eq!(config["approval_policy"], "never");
         assert_eq!(config["sandbox_mode"], "workspace-write");
         assert!(!launch.argv.iter().any(|arg| arg == "-c"));

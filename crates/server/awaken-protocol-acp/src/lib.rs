@@ -257,6 +257,10 @@ pub struct TurnConfig<'a> {
     /// Code), holding this stable across relaunches/machines is what lets
     /// `session/load` find the session cross-directory. `None` → `/` (the default).
     pub session_cwd: Option<String>,
+    /// Authentication method selected by the host's ACP adapter catalog. The
+    /// credential itself stays in the launched process environment; the protocol
+    /// carries only this advertised method id.
+    pub auth_method_id: Option<String>,
 }
 
 impl<'a> TurnConfig<'a> {
@@ -270,6 +274,7 @@ impl<'a> TurnConfig<'a> {
             session_id: None,
             session_mode: None,
             session_cwd: None,
+            auth_method_id: None,
         }
     }
 }
