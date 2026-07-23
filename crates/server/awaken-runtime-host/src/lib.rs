@@ -1444,12 +1444,12 @@ impl ProtocolRuntime for ProtocolHost {
     async fn run(
         &self,
         thread: &str,
-        _agent: Option<String>,
+        agent: Option<String>,
         messages: Vec<Message>,
     ) -> Result<PortStepOutcome, DriverError> {
         let result = self
             .host
-            .run(None, thread, messages)
+            .run(agent.as_deref(), thread, messages)
             .await
             .map_err(to_driver_error)?;
         Ok(to_port_step_outcome(result))
@@ -1458,13 +1458,13 @@ impl ProtocolRuntime for ProtocolHost {
     async fn run_streaming(
         &self,
         thread: &str,
-        _agent: Option<String>,
+        agent: Option<String>,
         messages: Vec<Message>,
         sink: std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>,
     ) -> Result<PortStepOutcome, DriverError> {
         let result = self
             .host
-            .run_streaming(None, thread, messages, sink)
+            .run_streaming(agent.as_deref(), thread, messages, sink)
             .await
             .map_err(to_driver_error)?;
         Ok(to_port_step_outcome(result))

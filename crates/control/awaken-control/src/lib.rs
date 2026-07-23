@@ -16,6 +16,7 @@
 //! guard exactly where it applied before.
 
 pub mod admin_assistant;
+pub mod application_access;
 pub mod authz;
 pub mod control_stores;
 mod credential_reference;
@@ -198,6 +199,8 @@ pub struct ControlRouterInput {
     pub iam: Option<Arc<ManagementAuthz>>,
     /// Awaken Cloud identity adapter. Mutually exclusive with `iam`.
     pub remote_iam: Option<Arc<RemoteManagementAuthz>>,
+    /// Short-lived credentials used only by browser/application protocol routes.
+    pub application_access: Arc<awaken_authz_enforce::ApplicationAccessStore>,
 }
 
 /// Build the authoring / authz management router over the shared handles, and
@@ -226,6 +229,7 @@ pub fn control_router(input: ControlRouterInput) -> (Router, Arc<WebhookLifecycl
         org_id,
         iam,
         remote_iam,
+        application_access,
     } = input;
 
     let admin = admin_router(AdminState {
@@ -270,7 +274,7 @@ pub fn control_router(input: ControlRouterInput) -> (Router, Arc<WebhookLifecycl
     let agents = agents_router(Arc::new(AgentRegistryState::from_repository(Arc::new(
         managed_agents::ConfigPlaneManagedAgentRepository::new(
             audit_plane.clone(),
-            platform_workspace,
+            platform_workspace.clone(),
         ),
     ))));
     // Capability snapshot (`GET /v1/capabilities`): the host's tool descriptors +
@@ -290,7 +294,11 @@ pub fn control_router(input: ControlRouterInput) -> (Router, Arc<WebhookLifecycl
         .merge(deployments)
         .merge(environments)
         .merge(config_plane)
-        .merge(capabilities);
+        .merge(capabilities)
+        .merge(crate::application_access::router(
+            application_access,
+            platform_workspace,
+        ));
     if let Some(iam) = iam {
         mgmt = mgmt.merge(crate::authz::token_router(iam.clone()));
         // Layer order is outside-in in reverse application order: audit is

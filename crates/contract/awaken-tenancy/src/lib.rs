@@ -88,6 +88,17 @@ pub struct WorkspaceScope(pub String);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecutionWorkspace(pub String);
 
+/// An opaque resource id resolved by a trusted ingress policy layer.
+///
+/// A protocol adapter may prefer this over an untrusted public id. It carries
+/// no customer user, role, project, or authorization vocabulary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedResourceId(pub String);
+
+/// An Agent id selected and allow-listed by a trusted ingress policy layer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedAgentId(pub String);
+
 impl ScopeId {
     /// Borrow the underlying id.
     #[must_use]

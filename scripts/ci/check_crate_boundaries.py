@@ -33,6 +33,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-tenancy",
         "axum",
         "serde_json",
+        # Stable, non-reversible internal thread ids for application scopes.
+        "sha2",
         # dev-only: guard middleware tests drive a minimal axum router.
         "tokio",
         "tower",
@@ -944,6 +946,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     "awaken-protocol-ai-sdk": {
         "awaken-agent-contract",
         "awaken-api-contract",
+        "awaken-tenancy",
         "awaken-protocol-transport",
         "async-trait",
         "serde",
@@ -961,6 +964,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     "awaken-protocol-ag-ui": {
         "awaken-agent-contract",
         "awaken-api-contract",
+        "awaken-tenancy",
         "awaken-protocol-transport",
         "async-trait",
         "serde",
@@ -1511,6 +1515,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-runtime-contract",
         "rusqlite",
         "async-trait",
+        "serde",
         "serde_json",
         # Secret-free, fixed-size request-body fingerprints for the durable
         # management audit middleware. The body itself is never persisted.
@@ -1530,6 +1535,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     "awaken-cli": {
         "awaken-control",
         "awaken-server",
+        "awaken-authz-enforce",
         # Stage C: the Worker role delegates to the production database-less worker.
         "awaken-worker",
         "awaken-runtime-host",

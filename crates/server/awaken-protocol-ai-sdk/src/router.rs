@@ -14,7 +14,7 @@ use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{FromRequest, Json, Path, Query, Request, State};
+use axum::extract::{Extension, FromRequest, Json, Path, Query, Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -27,6 +27,7 @@ use awaken_protocol_transport::{
     ChannelStreamSink, CursorParams, DriverError, Pending, ProtocolRuntime, Resume, StepOutcome,
     paginate_history,
 };
+use awaken_tenancy::ResolvedResourceId;
 
 use crate::encoder::{AiSdkEncoder, encode_close, encode_history, encode_step};
 use crate::request::{DecisionKind, process_request, result_text};
@@ -82,9 +83,14 @@ async fn chat(
 async fn chat_threaded(
     State(rt): State<Runtime>,
     Path(thread_id): Path<String>,
+    resolved: Option<Extension<ResolvedResourceId>>,
     AiSdkJson(mut payload): AiSdkJson<AiSdkChatRequest>,
 ) -> Response {
-    payload.thread_id = Some(thread_id);
+    payload.thread_id = Some(
+        resolved
+            .map(|Extension(thread)| thread.0)
+            .unwrap_or(thread_id),
+    );
     run(rt, payload).await
 }
 
@@ -273,8 +279,12 @@ fn to_resume(kind: &DecisionKind, pending: &Pending) -> Resume {
 async fn thread_messages(
     State(rt): State<Runtime>,
     Path(thread_id): Path<String>,
+    resolved: Option<Extension<ResolvedResourceId>>,
     Query(params): Query<CursorParams>,
 ) -> Response {
+    let thread_id = resolved
+        .map(|Extension(thread)| thread.0)
+        .unwrap_or(thread_id);
     let history = rt.history(&thread_id).await;
     match paginate_history(&history, params.cursor.as_deref(), params.limit()) {
         // The house cursor-page envelope (`awaken-api-contract`): `{ items, cursor }`,
