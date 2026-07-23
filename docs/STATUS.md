@@ -63,6 +63,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `design/neutral-waist.md` | Delegated boundary narrative | Delegated | [runtime-interface-boundaries.md](design/runtime-interface-boundaries.md#role-catalog) |
 | `design/tool-and-capability.md` | Role owner | Required | self |
 | `design/run-ingress-message-delivery.md` | Role owner | Required | self |
+| `design/remote-worker-protocol.md` | Role owner | Required | self |
 | `design/anthropic-alignment-and-sessions.md` | Product/downstream mapping | Not required | n/a |
 | `design/web-ui.md` | Product/downstream mapping | Not required | n/a |
 | `design/awaken-server-local-overview.md` | Product/downstream mapping | Not required | n/a |
@@ -140,3 +141,4 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0062-published-inference-access-and-runtime-credential-injection.md` | Decision record | Not required | n/a |
 | `adr/0063-resource-input-identity-configuration-pinning-and-lifecycle.md` | Decision record | Not required | n/a |
 | `adr/0064-runtime-owned-outcome-orchestration.md` | Decision record | Not required | n/a |
+| `adr/0065-recoverable-embeddable-remote-worker.md` | Decision record | Not required | n/a |

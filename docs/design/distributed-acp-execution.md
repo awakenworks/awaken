@@ -12,8 +12,12 @@ lands on awaken's existing seams (`RunExecutor`, `RunIngress`/`DispatchQueue`,
   authenticated HTTP, commits neutral `ThreadCommit` facts through the server's
   claim-fenced ingest, and materializes ACP locally in its Session sandbox. The
   server remains the sole store writer. Worker identity, capability placement,
-  replacement, recovery, and stale-epoch rejection are wired through the same
-  durable dispatch path. Multi-cell sharding is still gated on measured need.
+  replacement, lease recovery, and stale-epoch rejection are wired through the
+  same durable dispatch path. Full cross-Worker committed-context recovery is
+  not implemented: the remote commit host still has an empty read projection.
+  That closure is specified by
+  [the recoverable remote Worker protocol](remote-worker-protocol.md).
+  Multi-cell sharding is still gated on measured need.
 - Builds on: [run-ingress-message-delivery](run-ingress-message-delivery.md)
   (the Dispatch/Server boundary; `thread_id` is the shard and consistency key;
   only one owner may freeze/snapshot/execute a thread); the ACP `RunExecutor`
@@ -45,12 +49,12 @@ localize that write path and the architecture scales — and SQLite survives as
 
 | Principle | What it means |
 |---|---|
-| **Server in the data path** | The server is the sole writer; it commits the edge-projected facts as it forwards them. The single-writer SQLite model holds natively, and it dissolves the "how does a cross-node worker write the DB" problem — the worker does not write, the server does. |
+| **Coordinator in the data path** | The Control Node coordinator is the logical committed-truth authority; it commits the edge-projected facts as it forwards them. SQLite has one physical writer. PostgreSQL may later have several Control Nodes only when they implement the same fenced, versioned, idempotent protocol and authoritative recovery reads. The worker never writes the Control database. |
 | **Worker multiplexes runs** | One worker drives hundreds of ACP CLIs asynchronously (I/O-bound), not pod-per-run. Density buys cost and throughput. |
 | **ACP local + edge projection** | Raw ACP stdio stays in the pod; the worker converges the token stream into neutral `AgentEvent` before it crosses the network. Facts cross the hub, not every token. |
 | **Egress local** | Agent tool egress goes out from the worker locally with policy enforced in place — **never proxied through the hub**. |
 | **k8s scales workers only** | Kubernetes schedules pods, not runs. HPA scales workers; the dispatch protocol distributes runs. Complementary. |
-| **Swappable store per cell** | Because the server is the sole writer, a cell whose SQLite tops out on writes can be moved to Postgres independently, without touching other cells. |
+| **Swappable store per cell** | Because Workers depend on coordinator/recovery ports rather than a database, a cell whose SQLite tops out can move to PostgreSQL independently. The storage swap does not by itself make process-local projections coherent or active-active safe. |
 
 ## The worker is convergence + a trust gate, not a relay
 
@@ -196,8 +200,9 @@ threads. The single-writer + SQLite elegance is preserved **inside** each cell �
 - **Phase 2 — multiple cells, shard-router**: only when one cell tops out, add
   `thread_id` sharding + cell membership. Each cell is a Phase-1 copy.
 - **Phase 3 — swap a cell to Postgres on demand**: if a cell's SQLite tops out on
-  writes (or needs in-cell HA), move that cell's store. Single-writer semantics
-  make the swap smooth.
+  writes (or needs in-cell HA), move that cell's store. Keep one logical
+  coordinator protocol; active-active Control Nodes require the P2 criteria in
+  [the remote Worker design](remote-worker-protocol.md#71-postgresql-active-active-control-nodes).
 
 > **Strongest recommendation: do not build sharding now.** The shard-router +
 > membership + rebalancing + failover is the largest, riskiest piece and does not
@@ -222,7 +227,9 @@ are provisioned via image + config + vault.
   seconds-scale takeover; in-flight runs recover from committed truth via lease
   expiry + `reconcile`.
 - **Stronger HA**: move that cell to Postgres — the store provides HA and the
-  server becomes stateless multi-replica (Phase 3).
+  Control Node can become multi-replica only after recovery reads stop depending
+  on process-local projections and commit retries have durable operation
+  receipts (Phase 3 / remote Worker P2).
 
 ### Capacity — when to shard / swap
 
@@ -239,8 +246,8 @@ Order: scale workers first (cheapest) → swap store (single-cell write bottlene
 
 | Failure | Behavior | Guarantee |
 |---|---|---|
-| worker crash | lease expires → another worker reclaims | at-least-once; idempotency / epoch dedupe |
-| cell server crash | PVC re-attach + restart takeover (or Postgres multi-replica) | committed truth not lost; brief write unavailability |
+| worker crash | lease expires → another worker reclaims; full resume additionally requires a committed recovery snapshot | at-least-once execution; epoch fencing alone is not commit idempotency |
+| cell server crash | PVC re-attach + restart takeover (or protocol-complete Postgres multi-replica) | committed truth not lost; brief write unavailability |
 | cell migration (Phase 2) | quiesce thread → hand off owner → recover from truth | single-owner-executes invariant; no split-brain |
 
 ## Task list — a local node as an ACP worker (awaken)
@@ -256,7 +263,8 @@ Order: scale workers first (cheapest) → swap store (single-cell write bottlene
 | **done · thin slice** | **ONE end-to-end path**: one worker → authenticated **HTTP dispatch transport** (claim/settle) → run → push `ThreadCommit` → server ingest + commit. **Workers are db-less** — they never open SQLite; the server stays the single writer | `HttpDispatchQueue`, `registered_worker_transport_router`, `commit_ingest_router`, `RemoteCoordinator` |
 | **done · worker-only mode** | a process runs the ordinary execution pool over HTTP dispatch and remote commit ingest, without opening the server store | deployment config worker mode, `worker_dispatch_store_with_upstream`, `SharedHost::with_upstream` |
 | **done · placement and egress** | capability is a worker-manifest/dispatch requirement, filtered before replaceable policy ranking; ACP/tool egress occurs inside the selected Session sandbox under its network policy | `PlacementRequirements`, worker registry, `SessionEnvironmentProvider` |
-| **done · recovery protocol** | claim epochs fence every remote commit and settle; committed truth makes post-commit/pre-settle recovery idempotent; terminal dispatch completion is an atomic tombstone. There is intentionally no cross-bounded-context distributed transaction | claimed commit ingest, stale-epoch tests, ADR-0060 completion tombstone |
+| **done · recovery fencing** | claim epochs fence remote commit and settle; terminal dispatch completion is an atomic tombstone. This closes stale-owner and terminal-redelivery safety, not cold-Worker context reconstruction or nonterminal response-loss idempotency | claimed commit ingest, stale-epoch tests, ADR-0060 completion tombstone |
+| **P0 · recoverable Worker closure** | claim-authorized consistent recovery snapshot, local non-authoritative recovery projection, stable commit operation receipt, expected thread version, injectable claimed-commit service, and public Worker assembly | [recoverable remote Worker protocol](remote-worker-protocol.md) and ADR-0065 |
 | **optional · not on the path** | **`journal_mode=WAL` + `busy_timeout`, set once on the shared db** — a within-process read/write-concurrency + robustness tweak, *not* a correctness requirement: no target opens the sqlite file from multiple processes (merged = one process/one shared db; split = db-less workers over HTTP) | at the shared connection open, benefits every `with_prefix(NS)` schema |
 | **Phase 2** | shard-router + cell membership + migration/failover — build only when a cell tops out | |
 
