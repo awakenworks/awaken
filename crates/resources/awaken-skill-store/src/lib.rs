@@ -490,7 +490,6 @@ impl FsSkillStore {
             root,
             gate: Mutex::new(()),
         };
-        store.import_legacy_files()?;
         Ok(store)
     }
 
@@ -543,7 +542,11 @@ impl FsSkillStore {
         std::fs::rename(&temp, &path).map_err(|error| SkillStoreError::Io(error.to_string()))
     }
 
-    fn import_legacy_files(&self) -> std::io::Result<()> {
+    /// Explicit one-time import for the removed `<workspace>/<skill>.md` layout.
+    ///
+    /// Repository construction is deliberately side-effect free beyond opening
+    /// its own root; deployment startup owns when compatibility data is imported.
+    pub fn migrate_legacy_files(&self) -> std::io::Result<()> {
         for workspace in std::fs::read_dir(&self.root)? {
             let workspace = workspace?;
             if !workspace.file_type()?.is_dir() {
@@ -906,7 +909,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn filesystem_open_imports_legacy_skill_md_once() {
+    async fn explicit_filesystem_migration_imports_legacy_skill_md_once() {
         let root = scratch("legacy");
         std::fs::create_dir_all(root.join("workspace-a")).unwrap();
         std::fs::write(
@@ -915,6 +918,7 @@ mod tests {
         )
         .unwrap();
         let store = FsSkillStore::open(&root).unwrap();
+        store.migrate_legacy_files().unwrap();
         let version = store
             .version("workspace-a", "greet", 1)
             .await
@@ -923,6 +927,7 @@ mod tests {
         assert!(version.skill_md().unwrap().ends_with(b"legacy"));
         drop(store);
         let reopened = FsSkillStore::open(&root).unwrap();
+        reopened.migrate_legacy_files().unwrap();
         assert_eq!(
             reopened
                 .list_versions("workspace-a", "greet")
