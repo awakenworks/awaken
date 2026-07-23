@@ -8,7 +8,7 @@ use std::sync::Mutex;
 
 use crate::{
     CredentialCreateParams, CredentialError, CredentialPool, CredentialPoolId, CredentialSource,
-    CredentialSourceId, SecretStore, prepare_source, reject_environment_source,
+    CredentialSourceId, SecretStore, prepare_source, validate_create_params,
 };
 
 /// Secret-free durable intent written before secret material is touched.
@@ -187,7 +187,7 @@ pub async fn enter_credential(
     store: &dyn SecretStore,
     repo: &dyn CredentialRepo,
 ) -> Result<CredentialSource, CredentialError> {
-    reject_environment_source(&params)?;
+    validate_create_params(&params)?;
     let (source, secret) = prepare_source(params);
     repo.begin_creation(CredentialCreationIntent {
         source: source.clone(),

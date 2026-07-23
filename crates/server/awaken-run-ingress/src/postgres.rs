@@ -26,7 +26,7 @@ use crate::dispatch::{
 use crate::dispatch_schema::dispatch_bundle;
 use crate::{
     DispatchPlacement, PlacementPolicy, WorkerAssignment, WorkerSnapshot, can_assign,
-    policy_selects_requester,
+    can_claim_locally, policy_selects_requester,
 };
 use awaken_run_ingress_contract::RunDispatch;
 
@@ -275,6 +275,9 @@ impl DispatchQueue for PostgresDispatchStore {
         lease_ms: u64,
         now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
+        if !can_claim_locally(&request.placement) {
+            return Ok(None);
+        }
         let p = NS;
         let expires = now_ms + lease_ms;
         let mut tx = self.pool.begin().await.map_err(reject)?;
@@ -479,10 +482,16 @@ impl DispatchQueue for PostgresDispatchStore {
         // Priority: recover an expired lease, then wake an awaiting run with pending
         // input, then a fresh pending run. Each locks its row, skipping rows a
         // concurrent worker already holds.
+        let local_eligible = "(d.cancel_requested = 1 OR (\
+            COALESCE(d.request #>> '{placement,location}', 'remote_preferred') \
+                <> 'remote_required' AND \
+            jsonb_array_length(COALESCE(\
+                d.request #> '{placement,required_credentials}', '[]'::jsonb)) = 0))";
         let recovery = format!(
-            "SELECT run_id, request, sandbox, cancel_requested FROM {p}_dispatch \
-             WHERE status = 'running' AND lease_until IS NOT NULL AND lease_until < $1 \
-             ORDER BY cancel_requested DESC, created_at FOR UPDATE SKIP LOCKED LIMIT 1"
+            "SELECT d.run_id, d.request, d.sandbox, d.cancel_requested FROM {p}_dispatch d \
+             WHERE d.status = 'running' AND d.lease_until IS NOT NULL \
+             AND d.lease_until < $1 AND {local_eligible} \
+             ORDER BY d.cancel_requested DESC, d.created_at FOR UPDATE SKIP LOCKED LIMIT 1"
         );
         // Single-writer-per-thread (ADR-0022): a wake or fresh pick skips any thread
         // that already has a run in flight. Recovery is exempt (it re-owns the SAME
@@ -497,12 +506,12 @@ impl DispatchQueue for PostgresDispatchStore {
              WHERE d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS ( \
                  SELECT 1 FROM {p}_pending pe WHERE pe.run_id = d.run_id \
                  AND (pe.available_at IS NULL OR pe.available_at <= $1))) \
-             AND {not_running} \
+             AND {not_running} AND {local_eligible} \
              ORDER BY d.cancel_requested DESC, d.created_at FOR UPDATE SKIP LOCKED LIMIT 1"
         );
         let fresh = format!(
             "SELECT d.run_id, d.request, d.sandbox, d.cancel_requested FROM {p}_dispatch d \
-             WHERE d.status = 'pending' AND {not_running} \
+             WHERE d.status = 'pending' AND {not_running} AND {local_eligible} \
              ORDER BY d.cancel_requested DESC, d.priority DESC, d.created_at \
              FOR UPDATE SKIP LOCKED LIMIT 1"
         );
@@ -541,7 +550,6 @@ impl DispatchQueue for PostgresDispatchStore {
         let Json(request): Json<RunDispatch> = row.try_get("request").map_err(reject)?;
         let sandbox: Option<String> = row.try_get("sandbox").map_err(reject)?;
         let cancellation_requested: i64 = row.try_get("cancel_requested").map_err(reject)?;
-
         let expires = now_ms + lease_ms;
         // Bump the fence token on every claim (fresh, wake, recovery) and read it
         // back, so the returned lease carries the epoch the holder settles under.
@@ -1438,15 +1446,17 @@ async fn claim_exact_transaction(
     let sandbox: Option<String> = row.try_get("sandbox").map_err(reject)?;
     let cancellation_requested: i64 = row.try_get("cancel_requested").map_err(reject)?;
     if cancellation_requested == 0
-        && let Some(worker) = worker
-        && can_assign(
-            worker,
-            &request.placement,
-            previous.as_ref().map(|value| &value.0),
-            sandbox.is_some(),
-            now_ms,
-        )
-        .is_err()
+        && match worker {
+            Some(worker) => can_assign(
+                worker,
+                &request.placement,
+                previous.as_ref().map(|value| &value.0),
+                sandbox.is_some(),
+                now_ms,
+            )
+            .is_err(),
+            None => !can_claim_locally(&request.placement),
+        }
     {
         return Ok(None);
     }

@@ -25,7 +25,7 @@ use crate::dispatch::{
 use crate::dispatch_schema::dispatch_bundle;
 use crate::{
     DispatchPlacement, PlacementPolicy, WorkerAssignment, WorkerSnapshot, can_assign,
-    policy_selects_requester,
+    can_claim_locally, policy_selects_requester,
 };
 use awaken_run_ingress_contract::RunDispatch;
 
@@ -220,6 +220,9 @@ impl DispatchQueue for SqliteDispatchStore {
         lease_ms: u64,
         now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
+        if !can_claim_locally(&request.placement) {
+            return Ok(None);
+        }
         let run_id = request.run_id().0.clone();
         let thread_id = request.thread_id().0.clone();
         let request_json = json(&request)?;
@@ -458,10 +461,16 @@ impl DispatchQueue for SqliteDispatchStore {
             // Priority: recover an expired lease, then wake an awaiting run with
             // pending input, then a fresh pending run. SQLite has no SKIP LOCKED;
             // the IMMEDIATE transaction is the single-owner guard.
+            let local_eligible = "(d.cancel_requested = 1 OR (\
+                COALESCE(json_extract(d.request, '$.placement.location'), 'remote_preferred') \
+                    <> 'remote_required' AND \
+                COALESCE(json_array_length(json_extract(\
+                    d.request, '$.placement.required_credentials')), 0) = 0))";
             let recovery = format!(
-                "SELECT run_id, request, sandbox, cancel_requested FROM {p}_dispatch \
-                 WHERE status = 'running' AND lease_until IS NOT NULL AND lease_until < ?1 \
-                 ORDER BY cancel_requested DESC, created_at LIMIT 1"
+                "SELECT d.run_id, d.request, d.sandbox, d.cancel_requested FROM {p}_dispatch d \
+                 WHERE d.status = 'running' AND d.lease_until IS NOT NULL \
+                 AND d.lease_until < ?1 AND {local_eligible} \
+                 ORDER BY d.cancel_requested DESC, d.created_at LIMIT 1"
             );
             // Single-writer-per-thread (ADR-0022): a wake or fresh pick skips any
             // thread that already has a run in flight. Recovery (above) is exempt —
@@ -475,12 +484,12 @@ impl DispatchQueue for SqliteDispatchStore {
                  WHERE d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS ( \
                      SELECT 1 FROM {p}_pending pe WHERE pe.run_id = d.run_id \
                      AND (pe.available_at IS NULL OR pe.available_at <= ?1))) \
-                 AND {not_running} \
+                 AND {not_running} AND {local_eligible} \
                  ORDER BY d.cancel_requested DESC, d.created_at LIMIT 1"
             );
             let fresh = format!(
                 "SELECT run_id, request, sandbox, cancel_requested FROM {p}_dispatch d \
-                 WHERE d.status = 'pending' AND {not_running} \
+                 WHERE d.status = 'pending' AND {not_running} AND {local_eligible} \
                  ORDER BY d.cancel_requested DESC, d.priority DESC, d.created_at LIMIT 1"
             );
 
@@ -1526,15 +1535,17 @@ fn claim_exact_transaction(
         .map(|value| serde_json::from_str(&value).map_err(json_err))
         .transpose()?;
     if cancellation_requested == 0
-        && let Some(worker) = worker
-        && can_assign(
-            worker,
-            &request.placement,
-            previous.as_ref(),
-            sandbox.is_some(),
-            now_ms,
-        )
-        .is_err()
+        && match worker {
+            Some(worker) => can_assign(
+                worker,
+                &request.placement,
+                previous.as_ref(),
+                sandbox.is_some(),
+                now_ms,
+            )
+            .is_err(),
+            None => !can_claim_locally(&request.placement),
+        }
     {
         return Ok(None);
     }

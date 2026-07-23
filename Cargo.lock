@@ -776,14 +776,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "awaken-inference-contract"
-version = "1.0.0-dev"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "awaken-managed-bridge"
 version = "1.0.0-dev"
 dependencies = [
@@ -1201,7 +1193,6 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
- "awaken-inference-contract",
  "futures-util",
  "serde",
  "serde_json",

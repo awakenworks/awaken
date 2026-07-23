@@ -78,6 +78,7 @@ pub awaken_worker_contract::PlacementRequirements::require_network_isolation: bo
 pub awaken_worker_contract::PlacementRequirements::require_resource_limits: bool
 pub awaken_worker_contract::PlacementRequirements::require_tool_transparent: bool
 pub awaken_worker_contract::PlacementRequirements::required_capabilities: alloc::collections::btree::set::BTreeSet<alloc::string::String>
+pub awaken_worker_contract::PlacementRequirements::required_credentials: alloc::collections::btree::set::BTreeSet<awaken_worker_contract::WorkerCredentialRevision>
 pub awaken_worker_contract::PlacementRequirements::required_zone: core::option::Option<alloc::string::String>
 pub awaken_worker_contract::PlacementRequirements::runtime_protocol_version: u32
 pub awaken_worker_contract::PlacementRequirements::sandbox_backend: core::option::Option<alloc::string::String>
@@ -116,7 +117,11 @@ pub awaken_worker_contract::WorkerCapacity::max_concurrent: u32
 pub awaken_worker_contract::WorkerCapacity::resources: awaken_provisioning_contract::vocab::ResourceLimits
 impl core::default::Default for awaken_worker_contract::WorkerCapacity
 pub fn awaken_worker_contract::WorkerCapacity::default() -> Self
+pub struct awaken_worker_contract::WorkerCredentialRevision
+pub awaken_worker_contract::WorkerCredentialRevision::revision: u64
+pub awaken_worker_contract::WorkerCredentialRevision::source_id: alloc::string::String
 pub struct awaken_worker_contract::WorkerHeartbeat
+pub awaken_worker_contract::WorkerHeartbeat::available_credentials: alloc::collections::btree::set::BTreeSet<awaken_worker_contract::WorkerCredentialRevision>
 pub awaken_worker_contract::WorkerHeartbeat::in_flight: u32
 pub awaken_worker_contract::WorkerHeartbeat::ready: bool
 pub awaken_worker_contract::WorkerHeartbeat::sequence: u64
@@ -148,6 +153,7 @@ pub awaken_worker_contract::WorkerRegistration::incarnation_id: alloc::string::S
 pub awaken_worker_contract::WorkerRegistration::manifest: awaken_worker_contract::WorkerManifest
 pub awaken_worker_contract::WorkerRegistration::worker_id: alloc::string::String
 pub struct awaken_worker_contract::WorkerSnapshot
+pub awaken_worker_contract::WorkerSnapshot::available_credentials: alloc::collections::btree::set::BTreeSet<awaken_worker_contract::WorkerCredentialRevision>
 pub awaken_worker_contract::WorkerSnapshot::capability_fingerprint: alloc::string::String
 pub awaken_worker_contract::WorkerSnapshot::expires_at_ms: u64
 pub awaken_worker_contract::WorkerSnapshot::identity: awaken_worker_contract::WorkerIdentity
@@ -161,6 +167,7 @@ pub fn awaken_worker_contract::WorkerAssignment::from(&awaken_worker_contract::W
 pub const awaken_worker_contract::CURRENT_CONTRACT_VERSION: u32
 pub const awaken_worker_contract::REPOSITORY_CREDENTIALS_CAPABILITY: &str
 pub const awaken_worker_contract::SESSION_RESOURCES_CAPABILITY: &str
+pub const awaken_worker_contract::WORKER_LOCAL_CREDENTIALS_CAPABILITY: &str
 pub trait awaken_worker_contract::PlacementPolicy: core::marker::Send + core::marker::Sync
 pub fn awaken_worker_contract::PlacementPolicy::id(&self) -> &str
 pub fn awaken_worker_contract::PlacementPolicy::rank(&self, &awaken_worker_contract::PlacementContext, &[awaken_worker_contract::WorkerSnapshot]) -> core::result::Result<alloc::vec::Vec<awaken_worker_contract::RankedWorker>, awaken_worker_contract::PlacementError>
@@ -179,5 +186,6 @@ pub fn awaken_worker_contract::WorkerDirectory::register<'life0, 'async_trait>(&
 pub const fn awaken_worker_contract::assignment_recovery_rejection(bool, awaken_worker_contract::WorkerRecoveryMode, bool) -> core::option::Option<awaken_worker_contract::AssignmentRejection>
 pub fn awaken_worker_contract::can_assign(&awaken_worker_contract::WorkerSnapshot, &awaken_worker_contract::PlacementRequirements, core::option::Option<&awaken_worker_contract::WorkerAssignment>, bool, u64) -> core::result::Result<(), awaken_worker_contract::AssignmentRejection>
 pub fn awaken_worker_contract::can_claim(&awaken_worker_contract::WorkerManifest, &awaken_worker_contract::PlacementRequirements) -> core::result::Result<(), awaken_worker_contract::Incompatibility>
+pub fn awaken_worker_contract::can_claim_locally(&awaken_worker_contract::PlacementRequirements) -> bool
 pub fn awaken_worker_contract::place(&dyn awaken_worker_contract::PlacementPolicy, &awaken_worker_contract::PlacementContext, &[awaken_worker_contract::WorkerSnapshot], u64) -> core::result::Result<awaken_worker_contract::RankedWorker, awaken_worker_contract::PlacementError>
 pub fn awaken_worker_contract::place_assignment(&dyn awaken_worker_contract::PlacementPolicy, &awaken_worker_contract::PlacementContext, &[awaken_worker_contract::WorkerSnapshot], core::option::Option<&awaken_worker_contract::WorkerAssignment>, bool, u64) -> core::result::Result<awaken_worker_contract::RankedWorker, awaken_worker_contract::PlacementError>

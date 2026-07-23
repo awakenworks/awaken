@@ -152,18 +152,17 @@ async function main() {
     dispatch.activation.run_id = `${claimed.request.activation.run_id}-materialized`;
     dispatch.activation.thread_id = THREAD;
     dispatch.session_thread_id = THREAD;
-    dispatch.activation.snapshot.metadata = {
-      source: { agent_id: '', revision: 0 },
-      publication_version: '',
-      resolution: { inputs: [] },
-      fingerprint: '',
-      inference_access: {
-        scheme: 'credential-source/v1',
-        reference: credential.json.id,
+    const publishedCandidate = {
+      ...structuredClone(dispatch.activation.snapshot.resolved_spec.model_binding),
+      provider_identity_ref: 'anthropic',
+      model_ref: 'fake-worker-model',
+      backend_ref: 'genai',
+      provisioning: {
+        type: 'provider',
         provider_ref: 'anthropic@1',
         route_ref: 'fake-endpoint@1',
         scope_id: credential.json.workspace_id,
-        credential_access: {
+        credential: {
           credential: { id: credential.json.id, revision: credential.json.version },
           injection: 'reference',
           usage: { type: 'provider_adapter' },
@@ -175,43 +174,66 @@ async function main() {
         },
       },
     };
+    dispatch.activation.snapshot.resolved_spec.model_binding = publishedCandidate;
+    dispatch.activation.snapshot.resolved_spec.model_candidates = [];
     dispatch.placement.required_capabilities = ['credential-source/v1', 'native-runtime'];
 
     // The same production Worker must fail closed for malformed or stale pins
     // and continue draining. Dispatch retry policy retains failed attempts; none
     // may reach a provider or fall back to catalog resolution.
-    const invalidAccesses = [
-      { ...structuredClone(dispatch.activation.snapshot.metadata.inference_access), scheme: 'unknown/v1' },
+    const invalidCandidates = [
       {
-        ...structuredClone(dispatch.activation.snapshot.metadata.inference_access),
-        credential_access: {
-          ...structuredClone(dispatch.activation.snapshot.metadata.inference_access.credential_access),
+        ...structuredClone(publishedCandidate),
+        provisioning: {
+          ...structuredClone(publishedCandidate.provisioning),
+          provider_ref: 'unversioned-provider',
+        },
+      },
+      {
+        ...structuredClone(publishedCandidate),
+        provisioning: {
+          ...structuredClone(publishedCandidate.provisioning),
+          credential: {
+            ...structuredClone(publishedCandidate.provisioning.credential),
           credential: { id: 'different-credential', revision: credential.json.version },
-        },
-      },
-      { ...structuredClone(dispatch.activation.snapshot.metadata.inference_access), scope_id: 'foreign-workspace' },
-      {
-        ...structuredClone(dispatch.activation.snapshot.metadata.inference_access),
-        endpoint: {
-          ...structuredClone(dispatch.activation.snapshot.metadata.inference_access.endpoint),
-          upstream_model: '',
+          },
         },
       },
       {
-        ...structuredClone(dispatch.activation.snapshot.metadata.inference_access),
-        candidates: [{
-          model_ref: 'a-different-model',
-          access: structuredClone(dispatch.activation.snapshot.metadata.inference_access),
-        }],
+        ...structuredClone(publishedCandidate),
+        provisioning: {
+          ...structuredClone(publishedCandidate.provisioning),
+          scope_id: 'foreign-workspace',
+        },
+      },
+      {
+        ...structuredClone(publishedCandidate),
+        provisioning: {
+          ...structuredClone(publishedCandidate.provisioning),
+          endpoint: {
+            ...structuredClone(publishedCandidate.provisioning.endpoint),
+            upstream_model: '',
+          },
+        },
+      },
+      {
+        ...structuredClone(publishedCandidate),
+        provisioning: {
+          ...structuredClone(publishedCandidate.provisioning),
+          credential: {
+            ...structuredClone(publishedCandidate.provisioning.credential),
+            injection: 'direct',
+          },
+        },
       },
     ];
-    for (const [index, inferenceAccess] of invalidAccesses.entries()) {
+    for (const [index, candidate] of invalidCandidates.entries()) {
       const invalid = structuredClone(dispatch);
       const thread = `${THREAD}-invalid-${index}`;
       invalid.activation.run_id = `${claimed.request.activation.run_id}-invalid-${index}`;
       invalid.activation.thread_id = thread;
       invalid.session_thread_id = thread;
-      invalid.activation.snapshot.metadata.inference_access = inferenceAccess;
+      invalid.activation.snapshot.resolved_spec.model_binding = candidate;
       assert.equal((await request('POST', '/v1/worker/dispatch/enqueue', { request: invalid }, seed.id)).status, 200);
     }
     assert.equal((await request('POST', '/v1/worker/dispatch/enqueue', { request: dispatch }, seed.id)).status, 200);

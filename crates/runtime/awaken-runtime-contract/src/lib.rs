@@ -29,7 +29,6 @@ pub mod tool;
 pub mod tool_batch;
 
 pub use activation::RunActivation;
-pub use awaken_inference_contract::InferenceEndpoint;
 pub use boundary::{BoundaryOutcome, evaluate_boundary};
 pub use capture::{CaptureDecision, ContentCapture, ContentKind, ContentRedactor, NoopRedactor};
 pub use control::LiveRunControl;
@@ -78,7 +77,7 @@ pub use resolution::{
     ResolutionManifest, ResolutionManifestError, ResolvedInputRef, ResolvedInputVersion,
     content_fingerprint,
 };
-pub use resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
+pub use resolved::{CatalogFingerprint, InferenceEndpoint, ModelBinding, ResolvedSpec};
 pub use resolver::{AgentSnapshotResolver, RunResolver};
 pub use resume::{ResumeCommand, ResumeError, ResumeResult, validate_resume};
 pub use runtime_context::{CaptureContext, RuntimeRunContext};

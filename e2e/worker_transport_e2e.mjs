@@ -73,7 +73,7 @@ async function registerReadyWorker() {
       manifest: {
         manifest_version: 1,
         build_digest: 'worker-transport-e2e',
-        capabilities: ['credential-reference/v1', 'host-executor/v1', 'native-runtime'],
+        capabilities: ['credential-source/v1', 'host-executor/v1', 'native-runtime'],
         zone: null,
         architecture: process.arch,
         sandbox: {
@@ -140,22 +140,36 @@ async function main() {
     assert.ok(claimed.lease.epoch >= 1, `claim carries a fencing epoch: ${claim.text}`);
     pass('dispatch claim binds owner to authenticated worker and returns a fencing epoch');
 
-    // Re-enqueue the exact durable wire record with an opaque gateway grant. This
-    // is the open-runtime side of secretless execution: persist/transport the
-    // capability reference without interpreting it or carrying a provider key.
+    // Re-enqueue the exact durable wire record with one complete, immutable model
+    // candidate. Dispatch persists/transports it without interpreting the route or
+    // carrying provider key material.
     const granted = structuredClone(claimed.request);
     granted.activation.run_id = `${claimed.request.activation.run_id}-grant`;
     granted.activation.thread_id = `${claimed.request.activation.thread_id}-grant`;
     granted.session_thread_id = granted.activation.thread_id;
     granted.execution_scope = 'scope-ts-17';
-    granted.activation.snapshot.metadata = {
-      source: { agent_id: '', revision: 0 },
-      publication_version: '',
-      resolution: { inputs: [] },
-      fingerprint: '',
-      inference_access: { scheme: 'credential-reference/v1', reference: 'grant-ts-17' },
+    const pinnedCandidate = {
+      ...structuredClone(granted.activation.snapshot.resolved_spec.model_binding),
+      provisioning: {
+        type: 'provider',
+        provider_ref: 'fixture-provider@1',
+        route_ref: 'fixture-route@1',
+        scope_id: 'scope-ts-17',
+        credential: {
+          credential: { id: 'grant-ts-17', revision: 3 },
+          injection: 'reference',
+          usage: { type: 'provider_adapter' },
+        },
+        endpoint: {
+          adapter_kind: 'fixture',
+          base_url: 'https://fixture.invalid/v1',
+          upstream_model: granted.activation.snapshot.resolved_spec.model_binding.model_ref,
+        },
+      },
     };
-    granted.placement.required_capabilities = ['credential-reference/v1', 'native-runtime'];
+    granted.activation.snapshot.resolved_spec.model_binding = pinnedCandidate;
+    granted.activation.snapshot.resolved_spec.model_candidates = [];
+    granted.placement.required_capabilities = ['credential-source/v1', 'native-runtime'];
     const enqueuedGrant = await postJson('/v1/worker/dispatch/enqueue', { request: granted });
     assert.equal(enqueuedGrant.status, 200, `grant-bearing dispatch enqueued: ${enqueuedGrant.text}`);
 
@@ -173,9 +187,9 @@ async function main() {
     assert.equal(grantClaim.status, 200, `grant dispatch claimed: ${grantClaim.text}`);
     const grant = grantClaim.json?.claimed;
     assert.deepEqual(
-      grant?.request?.activation?.snapshot?.metadata?.inference_access,
-      { scheme: 'credential-reference/v1', reference: 'grant-ts-17' },
-      'snapshot inference_access survives enqueue → durable store → authenticated claim unchanged',
+      grant?.request?.activation?.snapshot?.resolved_spec?.model_binding,
+      pinnedCandidate,
+      'the complete published candidate survives enqueue → durable store → authenticated claim unchanged',
     );
     assert.equal(
       grant?.request?.execution_scope,
@@ -183,7 +197,7 @@ async function main() {
       'verified execution scope survives the durable worker boundary as an opaque coordinate',
     );
     assert.ok(!JSON.stringify(grant).includes('provider-key'), 'claim contains no provider credential');
-    pass('secretless snapshot access survives durable dispatch without a provider key');
+    pass('secret-free published model candidate survives durable dispatch without a provider key');
 
     // A different authenticated worker cannot commit the claim. The owner-bound
     // request is rejected before thread facts are applied.

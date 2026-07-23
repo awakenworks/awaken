@@ -10,9 +10,12 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_run_ingress_contract::RunDispatch;
 use awaken_run_ingress_contract::dispatch::{
-    DispatchOutcome, DispatchQueue, PendingInput, RunClaim, SettleOutcome,
+    DispatchOutcome, DispatchQueue, PendingInput, RunClaim, SettleOutcome, SubmitOptions,
 };
-use awaken_run_ingress_contract::{WorkerIdentity, WorkerManifest, WorkerSnapshot, WorkerState};
+use awaken_run_ingress_contract::{
+    PlacementRequirements, WORKER_LOCAL_CREDENTIALS_CAPABILITY, WorkerCredentialRevision,
+    WorkerIdentity, WorkerManifest, WorkerSnapshot, WorkerState,
+};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
 use awaken_runtime_contract::resume::ResumeResult;
@@ -93,11 +96,93 @@ pub async fn assert_dispatch_conformance_with_clock(
     capabilities: ConformanceCapabilities,
     clock: &dyn ConformanceClock,
 ) {
+    if capabilities.local_commit_guard {
+        local_claims_skip_remote_only_work(store, namespace).await;
+    }
     exact_claim_recovery_and_fencing(store, namespace, clock).await;
     parent_mediated_commands_are_atomic(store, namespace, clock).await;
     current_claim_guard_is_exact(store, namespace, capabilities, clock).await;
     sandbox_binding_survives_recovery(store, namespace, capabilities, clock).await;
     completion_is_atomic_and_prevents_resurrection(store, namespace, capabilities, clock).await;
+}
+
+async fn local_claims_skip_remote_only_work(store: &dyn DispatchQueue, ns: &str) {
+    let required_credential = WorkerCredentialRevision {
+        source_id: format!("{ns}-worker-credential"),
+        revision: 7,
+    };
+    let mut remote_placement = PlacementRequirements::remote_required();
+    remote_placement
+        .required_capabilities
+        .insert(WORKER_LOCAL_CREDENTIALS_CAPABILITY.to_string());
+    remote_placement
+        .required_credentials
+        .insert(required_credential.clone());
+
+    let remote_id = run_id(ns, "worker-private");
+    let local_id = run_id(ns, "local-fallback");
+    store
+        .enqueue_with(
+            dispatch(ns, "worker-private", "worker-private-thread")
+                .with_placement(remote_placement),
+            SubmitOptions {
+                priority: 100,
+                ..SubmitOptions::default()
+            },
+        )
+        .await
+        .expect("enqueue worker-private run");
+    store
+        .enqueue(dispatch(ns, "local-fallback", "local-fallback-thread"))
+        .await
+        .expect("enqueue local fallback run");
+
+    let local = store
+        .claim("conformance-local", LEASE_MS, 0)
+        .await
+        .expect("local claim succeeds")
+        .expect("local-compatible work is available");
+    assert_eq!(
+        local.request.run_id(),
+        &local_id,
+        "a local executor must skip higher-priority remote-only work"
+    );
+    assert_eq!(
+        store
+            .settle(&local_id, local.lease.epoch, DispatchOutcome::Done, &[])
+            .await
+            .expect("settle local fallback"),
+        SettleOutcome::Applied
+    );
+
+    let mut manifest = WorkerManifest::default();
+    manifest
+        .capabilities
+        .insert(WORKER_LOCAL_CREDENTIALS_CAPABILITY.to_string());
+    let worker = WorkerSnapshot {
+        identity: WorkerIdentity::new(format!("{ns}-worker"), "boot", 1),
+        capability_fingerprint: manifest
+            .fingerprint()
+            .expect("worker-local manifest fingerprints"),
+        manifest,
+        state: WorkerState::Ready,
+        in_flight: 0,
+        available_credentials: [required_credential].into_iter().collect(),
+        expires_at_ms: 10_000,
+    };
+    let remote = store
+        .claim_compatible(&worker, LEASE_MS, 0)
+        .await
+        .expect("worker-compatible claim succeeds")
+        .expect("the exact worker credential revision is available");
+    assert_eq!(remote.request.run_id(), &remote_id);
+    assert_eq!(
+        store
+            .settle(&remote_id, remote.lease.epoch, DispatchOutcome::Done, &[])
+            .await
+            .expect("settle worker-private run"),
+        SettleOutcome::Applied
+    );
 }
 
 async fn exact_claim_recovery_and_fencing(
@@ -498,6 +583,7 @@ async fn completion_is_atomic_and_prevents_resurrection(
             .expect("default worker manifest fingerprints"),
         manifest,
         in_flight: 0,
+        available_credentials: Default::default(),
         expires_at_ms: 100_000,
     };
     assert!(

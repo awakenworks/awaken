@@ -161,7 +161,13 @@ impl CatalogModelPublicationResolver {
                     id: credential.id.0.clone(),
                     revision,
                 },
-                injection: CredentialInjectionKind::Reference,
+                injection: match credential.kind {
+                    CredentialKind::WorkerLocal => CredentialInjectionKind::WorkerReference,
+                    CredentialKind::Vault | CredentialKind::Oauth => {
+                        CredentialInjectionKind::Reference
+                    }
+                    CredentialKind::Env => unreachable!("environment sources are filtered out"),
+                },
                 usage: CredentialUsage::ProviderAdapter,
             }),
             InferenceEndpoint {
@@ -408,5 +414,39 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resolved.primary, ResolvedModelCandidate::host(binding));
+    }
+
+    #[tokio::test]
+    async fn worker_local_source_publishes_an_exact_worker_reference() {
+        let credentials = Arc::new(InMemoryCredentialRepo::new());
+        let source = enter_credential(
+            CredentialCreateParams {
+                workspace_id: "workspace-a".into(),
+                kind: CredentialKind::WorkerLocal,
+                provider_id: Some("openai".into()),
+                env_key: None,
+                secret: None,
+                oauth_command: None,
+            },
+            &InMemorySecretStore::new(),
+            credentials.as_ref(),
+        )
+        .await
+        .unwrap();
+        let resolver = CatalogModelPublicationResolver::new(catalog(&["primary"]), credentials);
+        let resolved = resolver
+            .resolve_models("workspace-a", &ModelSelection::Auto, &[])
+            .await
+            .unwrap();
+        let ModelProvisioning::Provider {
+            credential: Some(access),
+            ..
+        } = resolved.primary.provisioning
+        else {
+            panic!("provider publication carries its credential")
+        };
+        assert_eq!(access.credential.id, source.id.0);
+        assert_eq!(access.credential.revision, 1);
+        assert_eq!(access.injection, CredentialInjectionKind::WorkerReference);
     }
 }

@@ -20,6 +20,7 @@ const CONFIG_BASE = `http://127.0.0.1:${CONFIG_PORT}`;
 const WORKSPACE = `worker-resource-${process.pid}`;
 const THREAD = `resource-session-${process.pid}`;
 const GRANT = 'resource-manifest-e2e';
+const GRANT_REVISION = 1;
 const FILE_BYTES = Buffer.from('immutable input selected by the frozen Session manifest\n');
 const MOUNT_PATH = 'uploads/input.txt';
 const SKILL_NAME = `remote-worker-skill-${process.pid}`;
@@ -281,20 +282,34 @@ function runRequest(seed: any, suffix: string, envelope: any, thread = THREAD): 
   request.activation.run_id = `${seed.activation.run_id}-${suffix}`;
   request.activation.thread_id = thread;
   request.session_thread_id = thread;
-  request.activation.snapshot.metadata = {
-    source: { agent_id: '', revision: 0 },
-    publication_version: '',
-    resolution: { inputs: [] },
-    fingerprint: '',
-    inference_access: { scheme: 'credential-reference/v1', reference: GRANT },
+  request.activation.snapshot.resolved_spec.model_binding = {
+    ...structuredClone(request.activation.snapshot.resolved_spec.model_binding),
+    provisioning: {
+      type: 'provider',
+      provider_ref: 'fixture-provider@1',
+      route_ref: 'fixture-worker-local@1',
+      scope_id: WORKSPACE,
+      credential: {
+        credential: { id: GRANT, revision: GRANT_REVISION },
+        injection: 'worker_reference',
+        usage: { type: 'provider_adapter' },
+      },
+      endpoint: {
+        adapter_kind: 'fixture',
+        base_url: 'https://worker-local.invalid',
+        upstream_model: request.activation.snapshot.resolved_spec.model_binding.model_ref,
+      },
+    },
   };
+  request.activation.snapshot.resolved_spec.model_candidates = [];
   request.execution_scope = WORKSPACE;
   request.session_resources = envelope;
   request.placement.required_capabilities = [
-    'credential-reference/v1',
+    'worker-local-credentials/v1',
     'native-runtime',
     'session-resources/v1',
   ];
+  request.placement.required_credentials = [{ source_id: GRANT, revision: GRANT_REVISION }];
   return request;
 }
 
@@ -430,7 +445,8 @@ async function main(): Promise<void> {
       AWAKEN_INGRESS: 'durable',
       AWAKEN_STORAGE_DIR: workerStorage,
       AWAKEN_WORKER_GATEWAY_ONLY: '1',
-      AWAKEN_WORKER_CAPABILITIES: 'credential-reference/v1',
+      AWAKEN_TEST_CREDENTIAL_ID: GRANT,
+      AWAKEN_TEST_CREDENTIAL_REVISION: String(GRANT_REVISION),
       AWAKEN_WORKER_ID: `resource-worker-${process.pid}`,
       AWAKEN_WORKER_ADMIN_LISTEN: `127.0.0.1:${WORKER_ADMIN_PORT}`,
     });

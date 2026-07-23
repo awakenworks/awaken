@@ -1,8 +1,7 @@
 pub mod awaken_run_ingress_contract
 pub use awaken_run_ingress_contract::AssignmentRejection
+pub use awaken_run_ingress_contract::ExecutionLocation
 pub use awaken_run_ingress_contract::ExecutionScopeRef
-pub use awaken_run_ingress_contract::InferenceAccess
-pub use awaken_run_ingress_contract::InferenceAccessCandidate
 pub use awaken_run_ingress_contract::LeastLoadedPolicy
 pub use awaken_run_ingress_contract::PlacementContext
 pub use awaken_run_ingress_contract::PlacementError
@@ -14,7 +13,9 @@ pub use awaken_run_ingress_contract::RegisteredWorker
 pub use awaken_run_ingress_contract::RegistryError
 pub use awaken_run_ingress_contract::RegistryMutation
 pub use awaken_run_ingress_contract::SESSION_RESOURCES_CAPABILITY
+pub use awaken_run_ingress_contract::WORKER_LOCAL_CREDENTIALS_CAPABILITY
 pub use awaken_run_ingress_contract::WorkerAssignment
+pub use awaken_run_ingress_contract::WorkerCredentialRevision
 pub use awaken_run_ingress_contract::WorkerDirectory
 pub use awaken_run_ingress_contract::WorkerHeartbeat
 pub use awaken_run_ingress_contract::WorkerIdentity
@@ -25,6 +26,7 @@ pub use awaken_run_ingress_contract::WorkerSnapshot
 pub use awaken_run_ingress_contract::WorkerState
 pub use awaken_run_ingress_contract::can_assign
 pub use awaken_run_ingress_contract::can_claim
+pub use awaken_run_ingress_contract::can_claim_locally
 pub use awaken_run_ingress_contract::place_assignment
 pub mod awaken_run_ingress_contract::dispatch
 pub enum awaken_run_ingress_contract::dispatch::CasOutcome

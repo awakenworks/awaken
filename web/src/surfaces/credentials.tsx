@@ -55,8 +55,13 @@ function SourceRow({ source }: { source: CredentialSource }) {
           onChange={(e) => setModel(e.target.value)}
           title={app.t("model to probe with", "用于探针的模型")}
         />
-        <Button variant="ghost" style={{ height: 26 }} disabled={validate.isPending} onClick={() => validate.mutate()}>
-          {app.t("Validate", "验证")}
+        <Button
+          variant="ghost"
+          style={{ height: 26 }}
+          disabled={validate.isPending || source.kind === "worker_local"}
+          onClick={() => validate.mutate()}
+        >
+          {source.kind === "worker_local" ? app.t("Worker-reported", "Worker 上报") : app.t("Validate", "验证")}
         </Button>{" "}
         <Button
           variant="ghost"
@@ -86,7 +91,7 @@ export default function CredentialsSurface() {
         workspace_id: WORKSPACE,
         kind: form.kind,
         provider_id: form.provider || undefined,
-        secret: form.secret,
+        secret: form.kind === "vault" ? form.secret : undefined,
         oauth_helper: form.kind === "oauth" ? form.oauthHelper : undefined,
       }),
     onSuccess: () => {
@@ -157,7 +162,7 @@ export default function CredentialsSurface() {
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h3>{app.t("Enter credential", "录入凭证")}</h3>
             <div className="row">
-              {["vault", "oauth"].map((k) => (
+              {["vault", "oauth", "worker_local"].map((k) => (
                 <Button key={k} variant={form.kind === k ? "primary" : "ghost"} onClick={() => setForm({ ...form, kind: k })}>
                   {k}
                 </Button>
@@ -177,7 +182,7 @@ export default function CredentialsSurface() {
                   )}
                 </small>
               </label>
-            ) : (
+            ) : form.kind === "vault" ? (
               // The single secret-entry seam (ADR-0038 invariant: a stored secret is
               // never read back into the UI — write-only). For a new credential nothing
               // is stored yet, so it renders as a masked "replace" input.
@@ -186,11 +191,21 @@ export default function CredentialsSurface() {
                 hasStored={false}
                 onChange={(intent) => setForm({ ...form, secret: intent.value ?? "" })}
               />
+            ) : (
+              <div className="banner info">
+                <span>ⓘ</span>
+                <span>
+                  {app.t(
+                    "Only a non-secret source binding is saved. Install the secret on a worker using that source ID; worker heartbeats report availability.",
+                    "这里只保存无秘密的来源绑定。请用该来源 ID 在 Worker 本地安装秘密；可用性由 Worker 心跳上报。",
+                  )}
+                </span>
+              </div>
             )}
             {enter.error instanceof Error && <div className="err">{enter.error.message}</div>}
             <div className="row" style={{ justifyContent: "flex-end" }}>
               <Button variant="primary" disabled={enter.isPending} onClick={() => enter.mutate()}>
-                {app.t("Seal & save", "密封保存")}
+                {form.kind === "vault" ? app.t("Seal & save", "密封保存") : app.t("Save binding", "保存绑定")}
               </Button>
             </div>
           </div>

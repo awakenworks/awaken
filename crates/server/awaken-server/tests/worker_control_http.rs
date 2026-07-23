@@ -6,6 +6,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpointStore};
 use awaken_run_ingress::{
     DispatchQueue, HttpDispatchQueue, MemoryDispatchStore, PlacementRequirements, RunDispatch,
+    WORKER_LOCAL_CREDENTIALS_CAPABILITY,
 };
 use awaken_runtime::memory::MemoryStreamCheckpointStore;
 use awaken_runtime_contract::activation::RunActivation;
@@ -18,8 +19,8 @@ use awaken_runtime_host::{
     WorkerDispatchService, WorkerUpstream, dispatch_transport_router_with_service,
 };
 use awaken_worker_registry::{
-    MemoryWorkerDirectory, RegistryMutation, WorkerDirectory, WorkerHeartbeat, WorkerManifest,
-    WorkerState,
+    MemoryWorkerDirectory, RegistryMutation, WorkerCredentialRevision, WorkerDirectory,
+    WorkerHeartbeat, WorkerManifest, WorkerState,
 };
 
 #[tokio::test]
@@ -49,6 +50,10 @@ async fn authenticated_client_drives_the_registry_lifecycle_over_real_http() {
     let identity = registered.snapshot.identity;
 
     clock.set(110);
+    let observed = WorkerCredentialRevision {
+        source_id: "cred:worker".into(),
+        revision: 9,
+    };
     assert_eq!(
         client
             .heartbeat(
@@ -57,6 +62,7 @@ async fn authenticated_client_drives_the_registry_lifecycle_over_real_http() {
                     sequence: 1,
                     ready: true,
                     in_flight: 1,
+                    available_credentials: std::collections::BTreeSet::from([observed.clone(),]),
                 },
             )
             .await
@@ -72,6 +78,16 @@ async fn authenticated_client_drives_the_registry_lifecycle_over_real_http() {
             .snapshot
             .state,
         WorkerState::Ready
+    );
+    assert_eq!(
+        directory
+            .current("worker-http")
+            .await
+            .unwrap()
+            .unwrap()
+            .snapshot
+            .available_credentials,
+        std::collections::BTreeSet::from([observed])
     );
 
     assert_eq!(
@@ -89,6 +105,7 @@ async fn authenticated_client_drives_the_registry_lifecycle_over_real_http() {
                 sequence: 2,
                 ready: true,
                 in_flight: 0,
+                available_credentials: Default::default(),
             },
         )
         .await
@@ -224,6 +241,7 @@ async fn registered_http_claim_skips_incompatible_work_and_uses_incarnation_owne
                 sequence: 1,
                 ready: true,
                 in_flight: 0,
+                available_credentials: Default::default(),
             },
         )
         .await
@@ -283,4 +301,101 @@ async fn registered_http_claim_skips_incompatible_work_and_uses_incarnation_owne
         "a draining incarnation cannot receive new work"
     );
     assert!(checkpoints.get(&claim.run_id.0).await.is_some());
+}
+
+#[tokio::test]
+async fn http_claim_requires_the_exact_worker_private_credential_revision() {
+    let clock = Arc::new(ManualWorkerClock::new(100));
+    let directory = Arc::new(MemoryWorkerDirectory::new());
+    let dispatch = Arc::new(MemoryDispatchStore::new());
+    let required = WorkerCredentialRevision {
+        source_id: "credential-source-worker-private".to_string(),
+        revision: 12,
+    };
+    let mut placement = PlacementRequirements::remote_required();
+    placement
+        .required_capabilities
+        .insert(WORKER_LOCAL_CREDENTIALS_CAPABILITY.to_string());
+    placement.required_credentials.insert(required.clone());
+    dispatch
+        .enqueue(
+            dispatch_with_capability("worker-private", WORKER_LOCAL_CREDENTIALS_CAPABILITY)
+                .with_placement(placement),
+        )
+        .await
+        .unwrap();
+
+    let service = WorkerDispatchService::new(
+        dispatch as Arc<dyn DispatchQueue>,
+        Arc::new(HeaderWorkerAuthenticator),
+        clock,
+        Arc::new(FixedWorkerLeasePolicy::new(1_000)),
+    )
+    .with_worker_directory(directory, 1_000);
+    let router = dispatch_transport_router_with_service(Arc::new(service));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+
+    async fn ready_worker(
+        address: std::net::SocketAddr,
+        worker_id: &str,
+        credential: WorkerCredentialRevision,
+    ) -> awaken_worker_registry::WorkerIdentity {
+        let control = WorkerControlClient::new(
+            WorkerUpstream::new(format!("http://{address}")).with_worker_id(worker_id),
+        );
+        let mut manifest = WorkerManifest::default();
+        manifest
+            .capabilities
+            .insert(WORKER_LOCAL_CREDENTIALS_CAPABILITY.to_string());
+        let registered = control
+            .register(format!("boot-{worker_id}"), manifest)
+            .await
+            .unwrap();
+        control
+            .heartbeat(
+                &registered.snapshot.identity,
+                WorkerHeartbeat {
+                    sequence: 1,
+                    ready: true,
+                    in_flight: 0,
+                    available_credentials: [credential].into_iter().collect(),
+                },
+            )
+            .await
+            .unwrap();
+        registered.snapshot.identity
+    }
+
+    let wrong = ready_worker(
+        address,
+        "worker-wrong-revision",
+        WorkerCredentialRevision {
+            source_id: required.source_id.clone(),
+            revision: required.revision - 1,
+        },
+    )
+    .await;
+    let wrong_queue =
+        HttpDispatchQueue::new(format!("http://{address}")).with_worker_identity(wrong);
+    assert!(
+        wrong_queue
+            .claim("ignored", 1_000, 100)
+            .await
+            .unwrap()
+            .is_none(),
+        "a nearby credential revision is not equivalent to the published revision"
+    );
+
+    let exact = ready_worker(address, "worker-exact-revision", required).await;
+    let exact_queue =
+        HttpDispatchQueue::new(format!("http://{address}")).with_worker_identity(exact.clone());
+    let claimed = exact_queue
+        .claim("ignored", 1_000, 100)
+        .await
+        .unwrap()
+        .expect("the worker reporting the exact revision can claim the run");
+    assert_eq!(claimed.request.run_id().0, "worker-private");
+    assert_eq!(claimed.assignment.unwrap().identity, exact);
 }

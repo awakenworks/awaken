@@ -358,6 +358,7 @@ mod tests {
                         sequence: 1,
                         ready: true,
                         in_flight,
+                        available_credentials: Default::default(),
                     },
                     11,
                     1_000,

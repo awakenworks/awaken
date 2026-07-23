@@ -3,17 +3,44 @@
 
 use super::*;
 use awaken_run_ingress::PlacementRequirements;
-use std::collections::HashMap;
+use awaken_runtime_contract::CredentialInjectionKind;
+use std::collections::{BTreeSet, HashMap};
 
 fn model_realization_capability(
-    provisioning: &awaken_runtime_contract::resolved::ModelProvisioning,
+    candidate: &awaken_runtime_contract::resolved::ResolvedModelCandidate,
 ) -> &'static str {
-    match provisioning {
+    match &candidate.provisioning {
         awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor => "host-executor/v1",
+        awaken_runtime_contract::resolved::ModelProvisioning::Provider {
+            credential: Some(credential),
+            ..
+        } if credential.injection == CredentialInjectionKind::WorkerReference => {
+            awaken_run_ingress::WORKER_LOCAL_CREDENTIALS_CAPABILITY
+        }
         awaken_runtime_contract::resolved::ModelProvisioning::Provider { .. } => {
             "credential-source/v1"
         }
     }
+}
+
+fn worker_local_credentials(
+    models: &awaken_runtime_contract::resolved::ResolvedSpec,
+) -> BTreeSet<awaken_run_ingress::WorkerCredentialRevision> {
+    std::iter::once(&models.model_binding)
+        .chain(models.model_candidates.iter())
+        .filter_map(|candidate| match &candidate.provisioning {
+            awaken_runtime_contract::resolved::ModelProvisioning::Provider {
+                credential: Some(credential),
+                ..
+            } if credential.injection == CredentialInjectionKind::WorkerReference => {
+                Some(awaken_run_ingress::WorkerCredentialRevision {
+                    source_id: credential.credential.id.clone(),
+                    revision: credential.credential.revision,
+                })
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 pub(crate) fn remote_worker_placement(
@@ -21,7 +48,8 @@ pub(crate) fn remote_worker_placement(
     resources: Option<&awaken_protocol_managed::SessionResourceManifest>,
     remote_required: bool,
 ) -> PlacementRequirements {
-    let mut placement = if remote_required {
+    let required_credentials = worker_local_credentials(models);
+    let mut placement = if remote_required || !required_credentials.is_empty() {
         PlacementRequirements::remote_required()
     } else {
         PlacementRequirements::default()
@@ -29,10 +57,11 @@ pub(crate) fn remote_worker_placement(
     placement
         .required_capabilities
         .insert("native-runtime".to_string());
+    placement.required_credentials = required_credentials;
     placement.required_capabilities.extend(
         std::iter::once(&models.model_binding)
             .chain(models.model_candidates.iter())
-            .map(|candidate| model_realization_capability(&candidate.provisioning).to_string()),
+            .map(|candidate| model_realization_capability(candidate).to_string()),
     );
     if let Some(resources) = resources {
         placement
@@ -64,13 +93,15 @@ impl SharedHost {
         // A mixed deployment may have both the local pool and remote workers.
         // Any carried manifest still needs capability admission: an explicit empty
         // successor can be the operation that removes a prior projection.
-        let placement = (self.deployment.disable_local_pool || resources.is_some()).then(|| {
-            remote_worker_placement(
-                &activation.snapshot.resolved_spec,
-                resources.as_ref(),
-                self.deployment.disable_local_pool,
-            )
-        });
+        let worker_local = !worker_local_credentials(&activation.snapshot.resolved_spec).is_empty();
+        let placement = (self.deployment.disable_local_pool || resources.is_some() || worker_local)
+            .then(|| {
+                remote_worker_placement(
+                    &activation.snapshot.resolved_spec,
+                    resources.as_ref(),
+                    self.deployment.disable_local_pool,
+                )
+            });
         let mut request = RunDispatch::new(activation)
             .with_traceparent(awaken_observability::current_traceparent());
         if let Some(resources) = resources {
@@ -325,6 +356,65 @@ mod completion_tests {
                 .contains("credential-source/v1")
         );
         assert!(placement.required_capabilities.contains("host-executor/v1"));
+    }
+
+    #[test]
+    fn worker_local_candidates_pin_every_exact_credential_for_claim_admission() {
+        use awaken_runtime_contract::{
+            CredentialAccess, CredentialInjectionKind, CredentialRef, CredentialUsage,
+            InferenceEndpoint,
+        };
+
+        let worker_candidate = |model: &str, credential: &str, revision: u64| {
+            ResolvedModelCandidate::provider(
+                ModelBinding::new("provider", model, "genai"),
+                "provider@1",
+                "route@1",
+                "workspace-a",
+                Some(CredentialAccess {
+                    credential: CredentialRef {
+                        id: credential.into(),
+                        revision,
+                    },
+                    injection: CredentialInjectionKind::WorkerReference,
+                    usage: CredentialUsage::ProviderAdapter,
+                }),
+                InferenceEndpoint {
+                    adapter_kind: "openai".into(),
+                    base_url: "https://example.invalid".into(),
+                    upstream_model: model.into(),
+                },
+            )
+        };
+        let mut models = host_models();
+        models.model_binding = worker_candidate("primary", "cred:primary", 2);
+        models
+            .model_candidates
+            .push(worker_candidate("fallback", "cred:fallback", 5));
+
+        let placement = remote_worker_placement(&models, None, false);
+        assert_eq!(
+            placement.location,
+            awaken_run_ingress::ExecutionLocation::RemoteRequired
+        );
+        assert!(
+            placement
+                .required_capabilities
+                .contains(awaken_run_ingress::WORKER_LOCAL_CREDENTIALS_CAPABILITY)
+        );
+        assert_eq!(
+            placement.required_credentials,
+            std::collections::BTreeSet::from([
+                awaken_run_ingress::WorkerCredentialRevision {
+                    source_id: "cred:fallback".into(),
+                    revision: 5,
+                },
+                awaken_run_ingress::WorkerCredentialRevision {
+                    source_id: "cred:primary".into(),
+                    revision: 2,
+                },
+            ])
+        );
     }
 
     #[test]

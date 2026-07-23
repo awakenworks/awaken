@@ -17,6 +17,7 @@ const PORT = Number(process.env.E2E_PORT ?? 38813);
 const WORKER_ADMIN_PORT = Number(process.env.E2E_WORKER_PORT ?? 39813);
 const BASE = `http://127.0.0.1:${PORT}`;
 const GRANT = 'grant-ts-provider-23';
+const GRANT_REVISION = 1;
 const THREAD = 'secretless-gateway-worker';
 
 function buildGatewayWorker(): string {
@@ -143,14 +144,28 @@ async function main(): Promise<void> {
     request.activation.run_id = `${seed.request.activation.run_id}-gateway`;
     request.activation.thread_id = THREAD;
     request.session_thread_id = THREAD;
-    request.activation.snapshot.metadata = {
-      source: { agent_id: '', revision: 0 },
-      publication_version: '',
-      resolution: { inputs: [] },
-      fingerprint: '',
-      inference_access: { scheme: 'credential-reference/v1', reference: GRANT },
+    request.activation.snapshot.resolved_spec.model_binding = {
+      ...structuredClone(request.activation.snapshot.resolved_spec.model_binding),
+      provisioning: {
+        type: 'provider',
+        provider_ref: 'fixture-provider@1',
+        route_ref: 'fixture-worker-local@1',
+        scope_id: 'fixture-workspace',
+        credential: {
+          credential: { id: GRANT, revision: GRANT_REVISION },
+          injection: 'worker_reference',
+          usage: { type: 'provider_adapter' },
+        },
+        endpoint: {
+          adapter_kind: 'fixture',
+          base_url: 'https://worker-local.invalid',
+          upstream_model: request.activation.snapshot.resolved_spec.model_binding.model_ref,
+        },
+      },
     };
-    request.placement.required_capabilities = ['credential-reference/v1', 'native-runtime'];
+    request.activation.snapshot.resolved_spec.model_candidates = [];
+    request.placement.required_capabilities = ['worker-local-credentials/v1', 'native-runtime'];
+    request.placement.required_credentials = [{ source_id: GRANT, revision: GRANT_REVISION }];
     await post('/v1/worker/dispatch/enqueue', { request }, 'seed-worker');
     const seedSettle = await post(
       '/v1/worker/dispatch/settle',
@@ -172,7 +187,8 @@ async function main(): Promise<void> {
       AWAKEN_UPSTREAM_URL: BASE,
       AWAKEN_INGRESS: 'durable',
       AWAKEN_WORKER_GATEWAY_ONLY: '1',
-      AWAKEN_WORKER_CAPABILITIES: 'credential-reference/v1',
+      AWAKEN_TEST_CREDENTIAL_ID: GRANT,
+      AWAKEN_TEST_CREDENTIAL_REVISION: String(GRANT_REVISION),
       AWAKEN_WORKER_ID: 'gateway-worker-ts',
       AWAKEN_WORKER_ADMIN_LISTEN: `127.0.0.1:${WORKER_ADMIN_PORT}`,
     });

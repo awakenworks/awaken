@@ -52,6 +52,7 @@ pub(crate) fn register(
                 manifest: registration.manifest,
                 capability_fingerprint: fingerprint,
                 in_flight: 0,
+                available_credentials: Default::default(),
                 expires_at_ms: now_ms.saturating_add(ttl_ms),
             },
             heartbeat_sequence: 0,
@@ -104,6 +105,7 @@ pub(crate) fn heartbeat(
         };
     }
     next.snapshot.in_flight = heartbeat.in_flight;
+    next.snapshot.available_credentials = heartbeat.available_credentials;
     next.snapshot.expires_at_ms = now_ms.saturating_add(ttl_ms);
     next.heartbeat_sequence = heartbeat.sequence;
     next.heartbeat_at_ms = now_ms;
@@ -228,11 +230,39 @@ mod tests {
                 sequence: 1,
                 ready: true,
                 in_flight: 1,
+                available_credentials: Default::default(),
             },
             20,
             100,
         );
         assert_eq!(result, RegistryMutation::Applied);
         assert_eq!(updated.unwrap().snapshot.state, WorkerState::Draining);
+    }
+
+    #[test]
+    fn heartbeat_replaces_the_live_credential_observation_set() {
+        let (first, _) = register(None, registration("boot-1"), 10, 100).unwrap();
+        let identity = first.snapshot.identity.clone();
+        let credential = awaken_worker_contract::WorkerCredentialRevision {
+            source_id: "cred:worker".into(),
+            revision: 3,
+        };
+        let (updated, result) = heartbeat(
+            Some(&first),
+            &identity,
+            WorkerHeartbeat {
+                sequence: 1,
+                ready: true,
+                in_flight: 0,
+                available_credentials: std::collections::BTreeSet::from([credential.clone()]),
+            },
+            20,
+            100,
+        );
+        assert_eq!(result, RegistryMutation::Applied);
+        assert_eq!(
+            updated.unwrap().snapshot.available_credentials,
+            std::collections::BTreeSet::from([credential])
+        );
     }
 }
