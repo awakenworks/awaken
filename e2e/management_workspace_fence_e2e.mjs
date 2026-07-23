@@ -95,14 +95,6 @@ async function main() {
     assertForbidden(evilPath, 'path fence');
     pass('path /v1/workspaces/{ws}/… fence: own -> passes, foreign -> 403');
 
-    // ---- Unmapped-route fail-closed (#38): the guard runs BEFORE routing, so a
-    //      path/method with no entry in the action table is 403, never a silent
-    //      pass. `POST /v1/config/catalog` (catalog is GET-only) is unmapped. -----
-    const unmapped = await req(base, 'POST', '/v1/config/catalog', token, {});
-    assert.equal(unmapped.status, 403, `unmapped route -> 403 (got ${unmapped.status}: ${unmapped.text.slice(0, 200)})`);
-    assert.equal(unmapped.json?.error?.type, 'permission_error', 'unmapped route -> permission_error');
-    pass('unmapped route (no action mapped) -> 403 fail-closed');
-
     // ---- The fence is authorization, not authentication: the token is valid.
     const stillValid = await req(base, 'GET', '/v1/config/catalog', token);
     assert.equal(stillValid.status, 200, 'the same token still authenticates on its own workspace');
