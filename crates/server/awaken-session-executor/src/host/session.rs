@@ -182,10 +182,7 @@ impl SharedHost {
     ) -> Option<awaken_dispatch::InferenceMaterializerFn> {
         self.inference_routing.materializer().map(|materializer| {
             let resolve: awaken_dispatch::InferenceMaterializerFn =
-                Arc::new(move |activation| {
-                    let access = activation.snapshot.metadata.inference_access.as_ref()?;
-                    materializer.materialize(activation, access)
-                });
+                Arc::new(move |activation| materializer.materialize(activation));
             resolve
         })
     }

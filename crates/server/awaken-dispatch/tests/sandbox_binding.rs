@@ -44,11 +44,13 @@ fn activation(run: &str, thread: &str) -> RunActivation {
                 instructions: String::new(),
                 max_steps: 8,
                 delegation_limits: Default::default(),
-                model_binding: ModelBinding {
-                    provider_identity_ref: "p".into(),
-                    model_ref: "m".into(),
-                    backend_ref: "b".into(),
-                },
+                model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+                    ModelBinding {
+                        provider_identity_ref: "p".into(),
+                        model_ref: "m".into(),
+                        backend_ref: "b".into(),
+                    },
+                ),
                 tool_descriptors: vec![],
                 plugin_ids: vec![],
                 plugin_config: Default::default(),

@@ -1,6 +1,7 @@
 //! Compilation: a pure config → executable-snapshot function.
 
 use awaken_runtime_contract::agent_bindings::AgentBindings;
+use awaken_runtime_contract::resolved::ResolvedModelCandidate;
 use awaken_runtime_contract::resolved::{ToolDescriptor, ToolFacet, ToolPresentation};
 use awaken_runtime_contract::snapshot::AgentSnapshotMetadata;
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
@@ -45,6 +46,8 @@ pub enum CompileError {
     /// unsupported capability (`"skills"` / `"mcp_servers"`).
     #[error("agent {agent} is a remote (a2a) agent and cannot honor local {axis}")]
     UnsupportedCapability { agent: String, axis: &'static str },
+    #[error("agent {agent} has inconsistent published model candidates: {reason}")]
+    InvalidResolvedModels { agent: String, reason: String },
 }
 
 impl CompileError {
@@ -60,6 +63,7 @@ impl CompileError {
             CompileError::InvalidToolRecovery { .. } => "recovery_policies",
             CompileError::InvalidBinding { axis, .. } => axis,
             CompileError::UnsupportedCapability { axis, .. } => axis,
+            CompileError::InvalidResolvedModels { .. } => "model",
             CompileError::Serialize(_) | CompileError::InvalidResolution(_) => "",
         }
     }
@@ -71,7 +75,41 @@ impl CompileError {
 pub fn compile_resolved(
     config: &AgentConfig,
     tools: &[ToolDescriptor],
+    metadata: AgentSnapshotMetadata,
+) -> Result<ExecutableAgentSnapshot, CompileError> {
+    let primary = config
+        .model_binding
+        .resolved()
+        .cloned()
+        .map(ResolvedModelCandidate::host);
+    let candidates = config
+        .model_candidates
+        .iter()
+        .cloned()
+        .map(ResolvedModelCandidate::host)
+        .collect();
+    compile_with_models(config, tools, metadata, primary, candidates)
+}
+
+/// Compile a publication whose complete model candidates were resolved by the
+/// configuration plane. This is the production publish path; direct examples use
+/// [`compile_resolved`] and receive explicit host-executor candidates.
+pub fn compile_published(
+    config: &AgentConfig,
+    tools: &[ToolDescriptor],
+    metadata: AgentSnapshotMetadata,
+    primary: ResolvedModelCandidate,
+    candidates: Vec<ResolvedModelCandidate>,
+) -> Result<ExecutableAgentSnapshot, CompileError> {
+    compile_with_models(config, tools, metadata, Some(primary), candidates)
+}
+
+fn compile_with_models(
+    config: &AgentConfig,
+    tools: &[ToolDescriptor],
     mut metadata: AgentSnapshotMetadata,
+    primary: Option<ResolvedModelCandidate>,
+    candidates: Vec<ResolvedModelCandidate>,
 ) -> Result<ExecutableAgentSnapshot, CompileError> {
     let mut descriptors = Vec::with_capacity(config.tool_ids.len());
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
@@ -180,13 +218,34 @@ pub fn compile_resolved(
     // The model must be concrete by now: `Auto` is resolved to a first-offering in
     // `ConfigService::publish` before compile (ADR-0052 D5). A bare compile of an
     // `Auto` config is fail-closed (`UnresolvedModel`), never a silent empty binding.
-    let model = config
+    let authored_model = config
         .model_binding
         .resolved()
         .ok_or_else(|| CompileError::UnresolvedModel {
             agent: config.id.clone(),
         })?
         .clone();
+    let model = primary.ok_or_else(|| CompileError::UnresolvedModel {
+        agent: config.id.clone(),
+    })?;
+    if model.binding != authored_model {
+        return Err(CompileError::InvalidResolvedModels {
+            agent: config.id.clone(),
+            reason: "primary candidate does not match the resolved authoring binding".into(),
+        });
+    }
+    let authored_candidates = &config.model_candidates;
+    if candidates.len() != authored_candidates.len()
+        || candidates
+            .iter()
+            .zip(authored_candidates)
+            .any(|(resolved, authored)| &resolved.binding != authored)
+    {
+        return Err(CompileError::InvalidResolvedModels {
+            agent: config.id.clone(),
+            reason: "fallback candidates do not match the resolved authoring order".into(),
+        });
+    }
 
     if !metadata.is_legacy_default() {
         let mut inputs = std::mem::take(&mut metadata.resolution.inputs);
@@ -210,7 +269,7 @@ pub fn compile_resolved(
     // agent runs everything on the far side, so local skills/MCP would be a silent
     // runtime no-op; reject at publish so the mistake surfaces at authoring time.
     if let awaken_runtime_contract::resolved::Backend::Remote { .. } =
-        awaken_runtime_contract::resolved::Backend::from_ref(&model.backend_ref)
+        awaken_runtime_contract::resolved::Backend::from_ref(&model.binding.backend_ref)
     {
         if !config.skill_ids.is_empty() {
             return Err(CompileError::UnsupportedCapability {
@@ -234,11 +293,11 @@ pub fn compile_resolved(
     let mut plugin_config = config.plugin_config.clone();
     bindings.insert_into(&mut plugin_config);
 
-    let fingerprint = fingerprint_of(config, &descriptors, &metadata)?;
+    let fingerprint = fingerprint_of(config, &descriptors, &metadata, &model, &candidates)?;
     Ok(ExecutableAgentSnapshot::builder(&config.id)
         .instructions(config.instructions.clone())
-        .model(model)
-        .model_candidates(config.model_candidates.clone())
+        .resolved_model(model)
+        .resolved_model_candidates(candidates)
         .max_steps(config.max_steps)
         .delegation_limits(config.delegation_limits)
         .tools(descriptors)
@@ -329,6 +388,8 @@ fn fingerprint_of(
     config: &AgentConfig,
     tools: &[ToolDescriptor],
     metadata: &AgentSnapshotMetadata,
+    primary: &ResolvedModelCandidate,
+    candidates: &[ResolvedModelCandidate],
 ) -> Result<String, CompileError> {
     let mut behavioral = config.clone();
     behavioral.name = None;
@@ -342,6 +403,10 @@ fn fingerprint_of(
         );
         bytes.extend_from_slice(
             &serde_json::to_vec(metadata)
+                .map_err(|err| CompileError::Serialize(err.to_string()))?,
+        );
+        bytes.extend_from_slice(
+            &serde_json::to_vec(&(primary, candidates))
                 .map_err(|err| CompileError::Serialize(err.to_string()))?,
         );
     }
@@ -703,36 +768,49 @@ mod tests {
     }
 
     #[test]
-    fn publication_pinned_inference_access_is_part_of_the_fingerprint() {
+    fn publication_pinned_model_provisioning_is_part_of_the_fingerprint() {
         let cfg = config(&[]);
-        let metadata = |credential: &str| AgentSnapshotMetadata {
+        let metadata = || AgentSnapshotMetadata {
             source: awaken_runtime_contract::AgentConfigRevisionRef {
                 agent_id: awaken_runtime_contract::snapshot::AgentId("agent-1".into()),
                 revision: 1,
             },
-            inference_access: Some(
-                awaken_runtime_contract::InferenceAccess::resolved_credential(
-                    credential,
-                    1,
-                    "workspace-a",
-                    "anthropic@1",
-                    "primary@1",
-                    awaken_runtime_contract::InferenceEndpoint {
-                        adapter_kind: "anthropic".into(),
-                        base_url: "https://api.example/v1".into(),
-                        upstream_model: "model-a".into(),
-                    },
-                ),
-            ),
             ..Default::default()
         };
-        let first = compile_resolved(&cfg, &[], metadata("credential-a")).unwrap();
-        let second = compile_resolved(&cfg, &[], metadata("credential-b")).unwrap();
+        let candidate = |credential: &str| {
+            awaken_runtime_contract::resolved::ResolvedModelCandidate::provider(
+                cfg.model_binding.resolved().unwrap().clone(),
+                "anthropic@1",
+                "primary@1",
+                "workspace-a",
+                Some(awaken_runtime_contract::CredentialAccess {
+                    credential: awaken_runtime_contract::CredentialRef {
+                        id: credential.into(),
+                        revision: 1,
+                    },
+                    injection: awaken_runtime_contract::CredentialInjectionKind::Reference,
+                    usage: awaken_runtime_contract::CredentialUsage::ProviderAdapter,
+                }),
+                awaken_runtime_contract::InferenceEndpoint {
+                    adapter_kind: "anthropic".into(),
+                    base_url: "https://api.example/v1".into(),
+                    upstream_model: "model-a".into(),
+                },
+            )
+        };
+        let first =
+            compile_published(&cfg, &[], metadata(), candidate("credential-a"), vec![]).unwrap();
+        let second =
+            compile_published(&cfg, &[], metadata(), candidate("credential-b"), vec![]).unwrap();
         assert_ne!(first.fingerprint, second.fingerprint);
-        assert_eq!(
-            first.metadata.inference_access.unwrap().reference,
-            "credential-a"
-        );
+        let awaken_runtime_contract::resolved::ModelProvisioning::Provider {
+            credential: Some(credential),
+            ..
+        } = first.resolved_spec.model_binding.provisioning
+        else {
+            panic!("provider candidate")
+        };
+        assert_eq!(credential.credential.id, "credential-a");
     }
 
     #[test]

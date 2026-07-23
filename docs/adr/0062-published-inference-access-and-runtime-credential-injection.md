@@ -1,4 +1,4 @@
-# ADR-0062: Published inference access and runtime credential injection
+# ADR-0062: Published model candidates and runtime credential injection
 
 - Status: Accepted
 - Date: 2026-07-20
@@ -25,9 +25,9 @@ Configuration bounded context
   AgentDefinition -> AgentPublication -> ExecutableAgentSnapshot
        |                    |                       |
        |              resolve once by              +-- fingerprint includes
-       |              Workspace scope                  InferenceAccess
+       |              Workspace scope                  complete model candidates
        v                    v
-  Model Catalog ----> CatalogInferenceAccessPublisher <---- Credential inventory
+  Model Catalog ----> CatalogModelPublicationResolver <---- Credential inventory
 
 Runtime bounded context
   ExecutableAgentSnapshot -> CredentialInferenceMaterializer -> LlmExecutor
@@ -41,20 +41,17 @@ Forbidden runtime dependencies:
   configuration CRUD, Workspace constants
 ```
 
-`InferenceAccess` is immutable, secret-free snapshot data. It contains the
-published provider/route/endpoint pins, Workspace owner, and `CredentialAccess`.
-`CredentialAccess` is the single description of credential revision, the one
-injection mechanism selected at publication, and provider usage. Candidate failover composes complete
-`InferenceAccess` values; it does not maintain a second parallel field set.
-
-`ExecutableAgentSnapshot.metadata.inference_access` participates in snapshot
-fingerprinting. The same agent configuration with a different route, credential
-revision, injection policy or candidate set is therefore a different executable
-snapshot.
+`ResolvedModelCandidate` is the immutable, secret-free published model value. Its
+`ModelProvisioning::Provider` variant contains the provider/route/endpoint pins,
+Workspace owner, and existing `CredentialAccess`; `HostExecutor` names an explicit
+host-installed executor. The primary and fallback candidates live only in
+`ResolvedSpec.model_binding`/`model_candidates`, so the complete execution choice
+is already covered by the snapshot fingerprint. There is no parallel
+`InferenceAccess` metadata projection.
 
 The concrete adapters are intentionally separate:
 
-- `CatalogInferenceAccessPublisher` belongs to configuration publication and
+- `CatalogModelPublicationResolver` belongs to configuration publication and
   depends on `CatalogRepo` plus credential inventory. It has no `SecretStore` or
   executor dependency.
 - `CredentialInferenceMaterializer` belongs to execution composition and depends
@@ -82,20 +79,20 @@ it does not participate in model access or credential handling.
 ### Dynamic view
 
 ```text
-author       ConfigService       AccessPublisher       snapshot store
+author       ConfigService       ModelResolver         snapshot store
   | publish(scope, definition)          |                    |
   |------------------>|                 |                    |
   |                   | resolve(scope, ordered models)       |
   |                   |---------------->|                    |
-  |                   |<----------------| pinned access      |
-  |                   | fingerprint(spec + metadata/access)  |
+  |                   |<----------------| complete candidates|
+  |                   | fingerprint(resolved spec)           |
   |                   |------------------------------------->|
   |<------------------| publication/version                 |
 
 dispatcher       Worker/Host       CredentialMaterializer      provider
   | activation(snapshot) |                    |                    |
   |--------------------->|                    |                    |
-  |                      | exact materialize(snapshot access)     |
+  |                      | exact materialize(snapshot candidate)  |
   |                      |------------------->|                    |
   |                      |                    | get exact id       |
   |                      |                    | verify scope/revoked/version
@@ -143,8 +140,10 @@ The implementation removes `RunDispatch.model_access`, its builder, runtime
 `InferenceAccessResolver`/`ModelAccessResolver`, admission-time `pin_access`,
 child-dispatch re-resolution, `ConfiguredInferenceMaterializer`, and its fixed
 Workspace field. `credential_version` is replaced by the existing typed
-`CredentialAccess.credential.revision`; duplicated candidate access fields are
-replaced by composition of one `InferenceAccess` value. The unused
+`CredentialAccess.credential.revision`; the duplicate `InferenceAccess` type and
+`ExecutableAgentSnapshot.metadata.inference_access` projection are deleted because
+`ResolvedModelCandidate::provisioning` already contains the complete route and
+credential contract. The unused
 `CredentialInjectionPolicy`, `CredentialPolicyError`, and `InjectedCredential`
 types are deleted: execution receives one selected `CredentialInjectionKind`,
 not a fallback list it could reinterpret.
@@ -152,7 +151,7 @@ not a fallback list it could reinterpret.
 The later single-truth-source cleanup also removes runtime
 `AWAKEN_MODEL_FALLBACKS`, production `AWAKEN_ACP_ARGV`, ambient ACP provider/gateway
 resolution and host native-credential-file projection. Candidate failover remains a
-published `InferenceAccess` candidate set; fixed launch sources remain explicit
+published `ResolvedModelCandidate` set; fixed launch sources remain explicit
 dev/test composition only.
 
 The same cleanup also removes the two resource-layer `ResourceWorkspace`

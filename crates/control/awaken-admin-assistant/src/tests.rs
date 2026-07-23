@@ -58,8 +58,9 @@ impl EnvironmentAuthor for FakeEnvAuthor {
 /// Rejects any draft that names a tool id containing "ghost" (stands in for the real
 /// compile-time `UnknownTool` fence).
 struct FakeValidator;
+#[async_trait]
 impl DraftValidator for FakeValidator {
-    fn validate(&self, draft: &AgentConfig) -> Result<(), String> {
+    async fn validate(&self, draft: &AgentConfig) -> Result<(), String> {
         if draft.tool_ids.iter().any(|t| t.contains("ghost")) {
             Err("references unknown tool".into())
         } else {
@@ -923,8 +924,9 @@ fn seeded_instructions_are_authorable_and_mention_no_publish() {
 /// `admin_*` tools are simply not nameable there, so naming one is `UnknownTool`
 /// (fail-closed). Stands in for the compile-time scope fence (ADR-0052 D3).
 struct ScopeFenceValidator;
+#[async_trait]
 impl DraftValidator for ScopeFenceValidator {
-    fn validate(&self, draft: &AgentConfig) -> Result<(), String> {
+    async fn validate(&self, draft: &AgentConfig) -> Result<(), String> {
         match draft.tool_ids.iter().find(|t| t.starts_with("admin_")) {
             Some(t) => Err(format!("unknown tool: {t}")),
             None => Ok(()),

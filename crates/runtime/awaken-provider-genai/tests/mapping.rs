@@ -171,9 +171,12 @@ fn usage_maps_and_clamps_missing_or_negative_to_zero() {
 
 #[test]
 fn executor_constructors_are_available() {
-    let _ = GenaiExecutor::new();
-    let _ = GenaiExecutor::default().with_timeout(Duration::from_secs(5));
-    let _ = GenaiExecutor::with_client(genai::Client::default());
+    let _ = GenaiExecutor::from_resolved(
+        genai::adapter::AdapterKind::OpenAI,
+        None,
+        "explicit-test-key",
+    )
+    .with_timeout(Duration::from_secs(5));
 }
 
 #[test]

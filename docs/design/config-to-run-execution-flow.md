@@ -740,8 +740,8 @@ implementation-ready.
 
 ## Credential Resolution: routing graph → resolved secret
 
-The configuration layer selects the full routing graph once and fingerprints a
-secret-free `InferenceAccess` into the snapshot. At execution, the worker/host
+The configuration layer selects the full routing graph once as complete,
+secret-free `ResolvedModelCandidate` values in `ResolvedSpec`. At execution, the worker/host
 validates that exact Workspace/provider/revision pin and only then materializes the
 persisted secret. The runtime kernel sees only the resulting executor/value and is
 unaware of pool selection, endpoint intersection, vaults, or environment discovery (see
@@ -758,7 +758,7 @@ host / integration layer (owns the seam; NOT awaken-runtime-contract)
         |    (pool member)                    -> policy picks a candidate
         |    Offering(model) ∩ flavor         -> the ProtocolEndpoint
         v  selected endpoint + credential id/revision/Workspace
-  InferenceAccess (secret-free) -> ExecutableAgentSnapshot fingerprint
+  ResolvedModelCandidate::Provider (secret-free) -> ResolvedSpec -> snapshot fingerprint
         |
         v  dispatch copies the snapshot unchanged
 worker/host provisioning (no selection/catalog enumeration)

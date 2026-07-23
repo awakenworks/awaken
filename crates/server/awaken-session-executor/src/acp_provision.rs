@@ -6,6 +6,7 @@
 
 use awaken_run_executor_acp::{AcpCli, ConfigHome, LaunchResolver, OpenError, ResolvedModel};
 use awaken_runtime_contract::activation::RunActivation;
+use awaken_runtime_contract::resolved::ModelProvisioning;
 use std::path::PathBuf;
 
 /// Resolves an ACP run from its published access and a worker-side exact credential
@@ -32,21 +33,21 @@ impl PublishedAcpLaunchResolver {
 
     fn resolve_model(&self, activation: &RunActivation) -> Result<ResolvedModel, OpenError> {
         let model_ref = activation.effective_model_ref();
-        let published = activation
+        let candidate = activation
             .snapshot
-            .metadata
-            .inference_access
-            .as_ref()
-            .ok_or_else(|| OpenError("run has no published inference access".to_string()))?;
-        let access = published.for_model(model_ref).ok_or_else(|| {
-            OpenError(format!(
-                "model {model_ref} is outside the publication-pinned candidate set"
-            ))
-        })?;
-        let endpoint = access
-            .endpoint
-            .clone()
-            .ok_or_else(|| OpenError(format!("published model {model_ref} has no endpoint pin")))?;
+            .resolved_spec
+            .candidate_for_model(model_ref)
+            .ok_or_else(|| {
+                OpenError(format!(
+                    "model {model_ref} is outside the publication-pinned candidate set"
+                ))
+            })?;
+        let ModelProvisioning::Provider { endpoint, .. } = &candidate.provisioning else {
+            return Err(OpenError(format!(
+                "published model {model_ref} has no provider endpoint"
+            )));
+        };
+        let endpoint = endpoint.clone();
         if endpoint.base_url.trim().is_empty() || endpoint.upstream_model.trim().is_empty() {
             return Err(OpenError(format!(
                 "published model {model_ref} has incomplete endpoint coordinates"
@@ -54,7 +55,7 @@ impl PublishedAcpLaunchResolver {
         }
         let secret = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current()
-                .block_on(self.credentials.materialize_provider(&access))
+                .block_on(self.credentials.materialize_provider(candidate))
         })
         .map_err(OpenError)?;
         Ok(ResolvedModel {
@@ -98,25 +99,27 @@ mod tests {
     use awaken_credential_vault::{CredentialCreateParams, CredentialKind, InMemorySecretStore};
     use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
     use awaken_runtime_contract::snapshot::{
-        AgentId, AgentSnapshotMetadata, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
+        AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
     };
-    use awaken_runtime_contract::{InferenceAccess, InferenceEndpoint};
+    use awaken_runtime_contract::{
+        CredentialAccess, CredentialInjectionKind, CredentialRef, CredentialUsage,
+        InferenceEndpoint,
+    };
     use std::sync::Arc;
 
     fn claude() -> AcpCli {
         *awaken_run_executor_acp::acp_cli("claude").unwrap()
     }
 
-    fn activation(inference_access: Option<InferenceAccess>) -> RunActivation {
+    fn activation(
+        model: Option<awaken_runtime_contract::resolved::ResolvedModelCandidate>,
+    ) -> RunActivation {
         RunActivation {
             run_id: RunId("r".into()),
             thread_id: ThreadId("th".into()),
             snapshot: ExecutableAgentSnapshot {
                 id: ExecutableAgentSnapshotId("s".into()),
-                metadata: AgentSnapshotMetadata {
-                    inference_access,
-                    ..Default::default()
-                },
+                metadata: Default::default(),
                 root_agent_id: AgentId("a".into()),
                 resolved_spec: ResolvedSpec {
                     model_candidates: Vec::new(),
@@ -124,7 +127,11 @@ mod tests {
                     instructions: String::new(),
                     max_steps: 4,
                     delegation_limits: Default::default(),
-                    model_binding: ModelBinding::new("p", "published-model", "acp:claude"),
+                    model_binding: model.unwrap_or_else(|| {
+                        awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+                            ModelBinding::new("p", "published-model", "acp:claude"),
+                        )
+                    }),
                     tool_descriptors: Vec::new(),
                     plugin_ids: Vec::new(),
                     plugin_config: Default::default(),
@@ -157,12 +164,19 @@ mod tests {
             repo.as_ref(),
         );
         let source = source.await.unwrap();
-        let access = InferenceAccess::resolved_credential(
-            source.id.0,
-            1,
-            "ws",
+        let model = awaken_runtime_contract::resolved::ResolvedModelCandidate::provider(
+            ModelBinding::new("anthropic", "published-model", "acp:claude"),
             "anthropic@1",
             "anthropic-messages@1",
+            "ws",
+            Some(CredentialAccess {
+                credential: CredentialRef {
+                    id: source.id.0,
+                    revision: 1,
+                },
+                injection: CredentialInjectionKind::Reference,
+                usage: CredentialUsage::ProviderAdapter,
+            }),
             InferenceEndpoint {
                 adapter_kind: "anthropic".into(),
                 base_url: "https://db.example/v1".into(),
@@ -174,14 +188,14 @@ mod tests {
             None,
             crate::PinnedCredentialMaterializer::new(repo, secrets),
         );
-        let model = resolver.model(&activation(Some(access))).unwrap();
-        assert_eq!(model.base_url, "https://db.example/v1");
-        assert_eq!(model.model, "upstream-model");
-        assert_eq!(model.api_key, "persisted-key");
+        let resolved = resolver.model(&activation(Some(model))).unwrap();
+        assert_eq!(resolved.base_url, "https://db.example/v1");
+        assert_eq!(resolved.model, "upstream-model");
+        assert_eq!(resolved.api_key, "persisted-key");
     }
 
     #[test]
-    fn missing_published_access_fails_closed() {
+    fn missing_provider_candidate_fails_closed() {
         let resolver = PublishedAcpLaunchResolver::new(
             claude(),
             None,

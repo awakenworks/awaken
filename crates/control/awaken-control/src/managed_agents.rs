@@ -87,7 +87,7 @@ impl ConfigPlaneManagedAgentRepository {
             .service()
             .installed_in(workspace_id, &revision.config.id)
         {
-            let binding = snapshot.resolved_spec.model_binding;
+            let binding = snapshot.resolved_spec.model_binding.binding;
             revision.config.model_binding = ModelSelection::Pinned(binding);
         }
         project(revision)

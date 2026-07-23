@@ -153,9 +153,8 @@ async fn acp_sandboxed_factory_also_mounts_the_environments_surface() {
     );
 }
 
-// Multi-thread: `build_config_router` seeds the admin assistant, whose publish
-// resolves a model through `CatalogModelResolver`, which bridges the async catalog
-// snapshot via `block_in_place` (valid only on a multi-thread runtime).
+// Multi-thread matches the production host; admin-assistant publication resolves
+// through the scenario's async catalog adapter.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn config_factory_mounts_the_config_agents_plane_absent_from_a_plain_mount() {
     // `build_config_router` merges the config data plane (`/v1/config/agents`) onto the
