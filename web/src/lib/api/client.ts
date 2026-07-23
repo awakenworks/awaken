@@ -135,6 +135,36 @@ export const api = {
   download,
 };
 
+export interface ApplicationAccessTokenRequest {
+  authority_id: string;
+  application_scope: string;
+  thread_namespace: string;
+  actor_key?: string;
+  operations: Array<"thread.run" | "thread.read">;
+  agent_ids: string[];
+  default_agent_id?: string;
+  expires_in_seconds?: number;
+}
+
+export interface IssuedApplicationAccessToken {
+  id: string;
+  object: "application_access_token";
+  token_type: "Bearer";
+  access_token: string;
+  expires_at: string;
+  application_scope: string;
+  thread_namespace: string;
+}
+
+/** Exchange the console's management credential for a short-lived application
+ * credential. The returned secret stays in the caller's memory; this module does
+ * not persist it in localStorage. */
+export function issueApplicationAccessToken(
+  request: ApplicationAccessTokenRequest,
+): Promise<IssuedApplicationAccessToken> {
+  return api.post<IssuedApplicationAccessToken>(ws("/v1/application-access-tokens"), request);
+}
+
 /** URL for EventSource consumers (sessions SSE; that face carries no bearer). */
 export function streamUrl(path: string): string {
   return path;
