@@ -221,6 +221,42 @@ async function main(): Promise<void> {
     });
     assert.equal(response.status, 200, JSON.stringify(response.body));
 
+    const rejectedCredentials = [
+      {
+        kind: 'env',
+        provider_id: PROVIDER,
+        env_key: 'ANTHROPIC_API_KEY',
+      },
+      {
+        kind: 'vault',
+        provider_id: PROVIDER,
+      },
+      {
+        kind: 'oauth',
+        provider_id: PROVIDER,
+        oauth_helper: 'gcloud',
+        secret: FAKE_KEY,
+      },
+      {
+        kind: 'worker_local',
+        provider_id: PROVIDER,
+        secret: FAKE_KEY,
+      },
+      {
+        kind: 'worker_local',
+        provider_id: PROVIDER,
+        env_key: 'WORKER_PRIVATE_KEY',
+      },
+    ];
+    for (const invalid of rejectedCredentials) {
+      response = await request('POST', '/v1/config/credentials', {
+        workspace_id: WORKSPACE,
+        ...invalid,
+      });
+      assert.equal(response.status, 422, JSON.stringify(response.body));
+      assert.equal(response.body.code, 'credential_invalid');
+    }
+
     response = await request('POST', '/v1/config/credentials', {
       workspace_id: WORKSPACE,
       kind: 'vault',
@@ -312,6 +348,25 @@ async function main(): Promise<void> {
 
     await executePublishedAgent(2);
     assert.equal(upstream.requests.length, 2);
+
+    for (const valid of [
+      {
+        kind: 'oauth',
+        provider_id: PROVIDER,
+        oauth_helper: 'gcloud',
+      },
+      {
+        kind: 'worker_local',
+        provider_id: PROVIDER,
+      },
+    ]) {
+      response = await request('POST', '/v1/config/credentials', {
+        workspace_id: WORKSPACE,
+        ...valid,
+      });
+      assert.equal(response.status, 201, JSON.stringify(response.body));
+      assert.equal(response.body.kind, valid.kind);
+    }
 
     console.log(
       'POSTGRES CONTROL PLANE TS E2E PASS: catalog, credentials, Agent publication, admin resources/webhooks, and Sessions survive one process replacement.',
