@@ -4,6 +4,7 @@
 use awaken_agent_contract::agent::awaiting::{AwaitReason, ResumeTicket};
 use awaken_agent_contract::agent::message::{Id as MsgId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
+use awaken_agent_contract::agent::state::{Command as StateCommand, MergePolicy, Scope};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::draft::Draft;
 use awaken_agent_contract::audit::kind::Kind as EventKind;
@@ -14,6 +15,7 @@ use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventSco
 use awaken_agent_contract::thread::read::lifecycle::{
     LifecycleCursor, RunLifecycleFeed, RunLifecycleKind,
 };
+use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
 use awaken_store_sqlite::SqliteCommitCoordinator;
 
 #[tokio::test]
@@ -271,5 +273,56 @@ async fn lifecycle_feed_observes_peer_commits_and_backfills_exclusively() {
         vec![RunLifecycleKind::Resumed, RunLifecycleKind::Completed]
     );
     assert!(second.next_cursor > first.next_cursor);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn recovery_snapshot_observes_peer_committed_transcript_and_state() {
+    let dir = std::env::temp_dir().join(format!(
+        "awaken_store_sqlite_peer_recovery_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let path = dir.join("commit.db");
+    let path = path.to_str().expect("utf8 path");
+    let thread = ThreadId("peer-recovery-thread".into());
+    let run = RunId("peer-recovery-run".into());
+    let reader = SqliteCommitCoordinator::open(path).expect("open reader before peer");
+    let writer = SqliteCommitCoordinator::open(path).expect("open peer writer");
+    writer
+        .commit(ThreadCommit {
+            thread_id: thread.clone(),
+            run: RunDisposition::ended(run.clone(), EndCause::NaturalEnd),
+            messages: vec![Message::text(
+                MsgId("peer-response".into()),
+                Role::Assistant,
+                r#"{"result":"peer-visible"}"#,
+            )],
+            state: vec![StateCommand::set(
+                Scope::Thread,
+                MergePolicy::Disjoint,
+                "usage",
+                serde_json::json!({"input_tokens": 3}),
+            )],
+            events: Vec::new(),
+        })
+        .await
+        .expect("peer commit");
+
+    let snapshot = reader
+        .recovery_snapshot(&thread, &run)
+        .await
+        .expect("authoritative peer snapshot");
+
+    assert_eq!(snapshot.latest_run_id, Some(run));
+    assert_eq!(snapshot.messages.len(), 1);
+    assert_eq!(
+        snapshot.messages[0].text_content(),
+        r#"{"result":"peer-visible"}"#
+    );
+    assert_eq!(snapshot.state.len(), 1);
+    assert_eq!(snapshot.thread_version, 1);
+    assert_eq!(snapshot.next_commit_ordinal, 1);
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -405,61 +405,133 @@ impl RunRecoverySource for SqliteCommitCoordinator {
         thread_id: &ThreadId,
         claimed_run_id: &RunId,
     ) -> Result<RunRecoverySnapshot, RecoveryError> {
-        let projection = self
-            .projection
+        let mut conn = self
+            .conn
             .lock()
-            .map_err(|_| RecoveryError::Rejected("commit projection poisoned".to_string()))?;
-        let mut runs: Vec<RunRecord> = projection
-            .run_records
-            .values()
-            .filter(|record| &record.thread_id == thread_id)
-            .cloned()
-            .collect();
-        runs.sort_by(|left, right| left.id.0.cmp(&right.id.0));
-        let mut resume_tickets: Vec<RunResumeTicket> = projection
-            .resume_tickets
-            .iter()
-            .filter(|(_, ticket)| &ticket.thread_id == thread_id)
-            .map(|(run_id, ticket)| RunResumeTicket {
-                run_id: run_id.clone(),
-                ticket: ticket.clone(),
-            })
-            .collect();
-        resume_tickets.sort_by(|left, right| left.run_id.0.cmp(&right.run_id.0));
+            .map_err(|_| RecoveryError::Rejected("commit connection poisoned".to_string()))?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Deferred)
+            .map_err(recovery_reject)?;
+        let store_cursor: i64 = tx
+            .query_row(
+                &format!("SELECT COALESCE(MAX(sequence), 0) FROM {NS}_commit"),
+                [],
+                |row| row.get(0),
+            )
+            .map_err(recovery_reject)?;
+        let thread_version: i64 = tx
+            .query_row(
+                &format!("SELECT COUNT(*) FROM {NS}_commit WHERE thread_id = ?1"),
+                params![&thread_id.0],
+                |row| row.get(0),
+            )
+            .map_err(recovery_reject)?;
+        let next_commit_ordinal: i64 = tx
+            .query_row(
+                &format!("SELECT COUNT(*) FROM {NS}_commit WHERE run_id = ?1"),
+                params![&claimed_run_id.0],
+                |row| row.get(0),
+            )
+            .map_err(recovery_reject)?;
+
+        let mut runs = Vec::<RunRecord>::new();
+        let mut latest_run_id = None;
+        {
+            let mut statement = tx
+                .prepare(&format!(
+                    "SELECT run_id, phase FROM {NS}_commit \
+                     WHERE thread_id = ?1 ORDER BY sequence"
+                ))
+                .map_err(recovery_reject)?;
+            let rows = statement
+                .query_map(params![&thread_id.0], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(recovery_reject)?;
+            for row in rows {
+                let (run_id, state) = row.map_err(recovery_reject)?;
+                let run_id = RunId(run_id);
+                let state = serde_json::from_str::<RunState>(&state).map_err(recovery_reject)?;
+                let record = RunRecord {
+                    id: run_id.clone(),
+                    thread_id: thread_id.clone(),
+                    state,
+                };
+                latest_run_id = Some(run_id.clone());
+                if let Some(existing) = runs.iter_mut().find(|existing| existing.id == run_id) {
+                    *existing = record;
+                } else {
+                    runs.push(record);
+                }
+            }
+        }
+
+        let messages = read_thread_json_rows::<Message>(&tx, "message", thread_id)?;
+        let state = read_thread_json_rows::<StateCommand>(&tx, "state_command", thread_id)?;
+        let mut resume_tickets = Vec::new();
+        {
+            let mut statement = tx
+                .prepare(&format!(
+                    "SELECT waiting.run_id, waiting.ticket \
+                     FROM {NS}_waiting AS waiting \
+                     JOIN {NS}_run_record AS run ON run.run_id = waiting.run_id \
+                     WHERE run.thread_id = ?1 ORDER BY waiting.run_id"
+                ))
+                .map_err(recovery_reject)?;
+            let rows = statement
+                .query_map(params![&thread_id.0], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(recovery_reject)?;
+            for row in rows {
+                let (run_id, ticket) = row.map_err(recovery_reject)?;
+                resume_tickets.push(RunResumeTicket {
+                    run_id: RunId(run_id),
+                    ticket: serde_json::from_str(&ticket).map_err(recovery_reject)?,
+                });
+            }
+        }
+        tx.commit().map_err(recovery_reject)?;
         Ok(RunRecoverySnapshot {
             thread_id: thread_id.clone(),
             claimed_run_id: claimed_run_id.clone(),
             runs,
-            latest_run_id: projection
-                .latest_by_thread
-                .get(thread_id)
-                .map(|run| run.id.clone()),
-            messages: projection
-                .messages
-                .iter()
-                .filter(|(id, _)| id == thread_id)
-                .map(|(_, message)| message.clone())
-                .collect(),
-            state: projection
-                .state
-                .iter()
-                .filter(|(id, _)| id == thread_id)
-                .map(|(_, command)| command.clone())
-                .collect(),
+            latest_run_id,
+            messages,
+            state,
             resume_tickets,
-            thread_version: projection
-                .thread_versions
-                .get(thread_id)
-                .copied()
-                .unwrap_or(0),
-            store_cursor: projection.sequence,
-            next_commit_ordinal: projection
-                .run_commit_counts
-                .get(claimed_run_id)
-                .copied()
-                .unwrap_or(0),
+            thread_version: thread_version.max(0) as u64,
+            store_cursor: store_cursor.max(0) as u64,
+            next_commit_ordinal: next_commit_ordinal.max(0) as u64,
         })
     }
+}
+
+fn read_thread_json_rows<T>(
+    tx: &rusqlite::Transaction<'_>,
+    table: &str,
+    thread_id: &ThreadId,
+) -> Result<Vec<T>, RecoveryError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let mut statement = tx
+        .prepare(&format!(
+            "SELECT data FROM {NS}_{table} WHERE thread_id = ?1 ORDER BY id"
+        ))
+        .map_err(recovery_reject)?;
+    let rows = statement
+        .query_map(params![&thread_id.0], |row| row.get::<_, String>(0))
+        .map_err(recovery_reject)?;
+    rows.map(|row| {
+        row.map_err(recovery_reject)
+            .and_then(|data| serde_json::from_str(&data).map_err(recovery_reject))
+    })
+    .collect()
+}
+
+fn recovery_reject(error: impl ToString) -> RecoveryError {
+    RecoveryError::Rejected(error.to_string())
 }
 
 fn lock(projection: &Mutex<Projection>) -> Result<std::sync::MutexGuard<'_, Projection>, Error> {
