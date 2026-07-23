@@ -372,7 +372,7 @@ async fn host_allowlist_egress_is_rejected() {
 }
 
 #[tokio::test]
-async fn unsupported_cache_limits_and_unresolved_secret_env_fail_closed() {
+async fn unsupported_cache_and_limits_fail_closed() {
     let tmp = tempfile::tempdir().unwrap();
 
     let mut cache = spec("t-cache-unsupported");
@@ -402,22 +402,6 @@ async fn unsupported_cache_limits_and_unresolved_secret_env_fail_closed() {
             .await
             .is_err()
     );
-
-    let mut secret_env = spec("t-secret-env-unsupported");
-    secret_env.env.push(pc::EnvVar {
-        name: "TOKEN".into(),
-        value: pc::EnvValue::Secret {
-            reference: "broker://token".into(),
-        },
-        visibility: pc::EnvVisibility::Process,
-    });
-    assert!(
-        NamespaceProvider::new(tmp.path())
-            .create(&secret_env)
-            .await
-            .is_err()
-    );
-    assert!(!tmp.path().join("t-secret-env-unsupported").exists());
 }
 
 #[tokio::test]

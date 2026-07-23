@@ -818,7 +818,13 @@ mod tests {
 
         let reserved = sandbox_dir(base, "CON");
         assert_ne!(reserved, base.join("CON"));
-        assert!(!reserved.file_name().unwrap().to_string_lossy().ends_with('.'));
+        assert!(
+            !reserved
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .ends_with('.')
+        );
 
         let trailing_dot = sandbox_dir(base, "session.");
         assert_ne!(trailing_dot, base.join("session."));
