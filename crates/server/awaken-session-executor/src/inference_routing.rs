@@ -10,9 +10,9 @@
 
 use std::sync::Arc;
 
-use awaken_runtime_contract::InferenceAccess;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::llm::LlmExecutor;
+use awaken_runtime_contract::resolved::ResolvedModelCandidate;
 
 /// Turns an admission-pinned, secret-free inference access descriptor into a live
 /// executor. Selecting models and routes is deliberately outside this port; the
@@ -31,20 +31,17 @@ pub trait InferenceExecutorMaterializer: Send + Sync {
     /// different model, route, scope, or credential.
     fn materialize_pinned(
         &self,
-        model_ref: &str,
-        access: &InferenceAccess,
+        candidate: &ResolvedModelCandidate,
     ) -> Option<Arc<dyn LlmExecutor>>;
 
     /// Materialize exactly the pinned access for this activation. Returning
     /// `None` rejects the run; it never falls back to a different route.
-    fn materialize(
-        &self,
-        activation: &RunActivation,
-        access: &InferenceAccess,
-    ) -> Option<Arc<dyn LlmExecutor>> {
-        let model_ref = activation.effective_model_ref();
-        let exact = access.for_model(model_ref)?;
-        self.materialize_pinned(model_ref, &exact)
+    fn materialize(&self, activation: &RunActivation) -> Option<Arc<dyn LlmExecutor>> {
+        let exact = activation
+            .snapshot
+            .resolved_spec
+            .candidate_for_model(activation.effective_model_ref())?;
+        self.materialize_pinned(exact)
     }
 }
 
@@ -105,19 +102,8 @@ impl InferenceRouting {
         let Some(materializer) = &self.materializer else {
             return Ok(None);
         };
-        let access = activation
-            .snapshot
-            .metadata
-            .inference_access
-            .as_ref()
-            .ok_or_else(|| {
-                format!(
-                    "snapshot `{}` has no publication-pinned inference access",
-                    activation.snapshot.id.0
-                )
-            })?;
         materializer
-            .materialize(activation, access)
+            .materialize(activation)
             .map(Some)
             .ok_or_else(|| {
                 format!(
@@ -146,37 +132,22 @@ mod tests {
         InferenceRouting::new(Default::default())
     }
 
-    fn opaque_access(scheme: &str, reference: &str) -> InferenceAccess {
-        InferenceAccess {
-            scheme: scheme.into(),
-            reference: reference.into(),
-            provider_ref: None,
-            route_ref: None,
-            scope_id: None,
-            credential_access: None,
-            endpoint: None,
-            candidates: Vec::new(),
-        }
-    }
-
     fn activation(model_ref: &str) -> RunActivation {
-        let metadata = awaken_runtime_contract::AgentSnapshotMetadata {
-            inference_access: Some(InferenceAccess::host_executor(model_ref)),
-            ..Default::default()
-        };
         RunActivation::new(
             RunId("run".into()),
             ThreadId("thread".into()),
             ExecutableAgentSnapshot {
                 id: ExecutableAgentSnapshotId("snapshot".into()),
-                metadata,
+                metadata: Default::default(),
                 root_agent_id: AgentId("agent".into()),
                 resolved_spec: ResolvedSpec {
                     catalog_fingerprint: CatalogFingerprint("catalog".into()),
                     instructions: String::new(),
                     max_steps: 1,
                     delegation_limits: Default::default(),
-                    model_binding: ModelBinding::new("provider", model_ref, "backend"),
+                    model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+                        ModelBinding::new("provider", model_ref, "backend"),
+                    ),
                     model_candidates: Vec::new(),
                     tool_descriptors: Vec::new(),
                     plugin_ids: Vec::new(),
@@ -209,13 +180,14 @@ mod tests {
     impl InferenceExecutorMaterializer for MapProvider {
         fn materialize_pinned(
             &self,
-            model_ref: &str,
-            access: &InferenceAccess,
+            candidate: &ResolvedModelCandidate,
         ) -> Option<Arc<dyn LlmExecutor>> {
-            access
-                .is_host_executor_for(model_ref)
-                .then(|| self.0.get(model_ref).cloned())
-                .flatten()
+            matches!(
+                candidate.provisioning,
+                awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor
+            )
+            .then(|| self.0.get(&candidate.binding.model_ref).cloned())
+            .flatten()
         }
     }
 
@@ -255,18 +227,12 @@ mod tests {
         routing.set_materializer(Arc::new(MapProvider(map)));
 
         let mut activation = activation("fast-model");
-        activation.snapshot.metadata.inference_access = Some(
-            InferenceAccess::candidate_set([
-                (
-                    "fast-model".into(),
-                    InferenceAccess::host_executor("fast-model"),
-                ),
-                (
-                    "slow-model".into(),
-                    InferenceAccess::host_executor("slow-model"),
-                ),
-            ])
-            .unwrap(),
+        activation.snapshot.resolved_spec.model_candidates.push(
+            awaken_runtime_contract::resolved::ResolvedModelCandidate::host(ModelBinding::new(
+                "provider",
+                "slow-model",
+                "backend",
+            )),
         );
 
         assert!(Arc::ptr_eq(
@@ -317,42 +283,39 @@ mod tests {
     }
 
     #[test]
-    fn installed_materializer_rejects_a_snapshot_without_pinned_access() {
+    fn installed_materializer_rejects_an_unavailable_published_candidate() {
         let mut binding = routing();
         binding.set_materializer(Arc::new(MapProvider(HashMap::new())));
-        let mut activation = activation("model-a");
-        activation.snapshot.metadata.inference_access = None;
+        let activation = activation("model-a");
 
         let error = match binding.executor_for_activation(&activation) {
             Ok(_) => panic!("snapshot without pinned access must be rejected"),
             Err(error) => error,
         };
 
-        assert!(error.contains("no publication-pinned inference access"));
+        assert!(error.contains("cannot materialize model"));
     }
 
     #[test]
-    fn durable_run_materialization_forwards_the_opaque_access_reference() {
+    fn durable_run_materialization_forwards_the_complete_candidate() {
         struct ReferenceMaterializer {
-            seen: Arc<Mutex<Option<InferenceAccess>>>,
+            seen: Arc<Mutex<Option<ResolvedModelCandidate>>>,
             executor: Arc<dyn LlmExecutor>,
         }
 
         impl InferenceExecutorMaterializer for ReferenceMaterializer {
             fn materialize_pinned(
                 &self,
-                model_ref: &str,
-                access: &InferenceAccess,
+                candidate: &ResolvedModelCandidate,
             ) -> Option<Arc<dyn LlmExecutor>> {
-                assert_eq!(model_ref, "gateway-model");
-                *self.seen.lock().expect("grant capture mutex") = Some(access.clone());
+                assert_eq!(candidate.binding.model_ref, "gateway-model");
+                *self.seen.lock().expect("candidate capture mutex") = Some(candidate.clone());
                 Some(self.executor.clone())
             }
         }
 
         let seen = Arc::new(Mutex::new(None));
         let executor: Arc<dyn LlmExecutor> = Arc::new(LabeledModel("gateway"));
-        let grant = opaque_access("credential-reference/v1", "grant-42");
         let mut binding = routing();
         let materializer = Arc::new(ReferenceMaterializer {
             seen: seen.clone(),
@@ -360,14 +323,17 @@ mod tests {
         });
         binding.set_materializer(materializer);
 
-        let mut activation = activation("gateway-model");
-        activation.snapshot.metadata.inference_access = Some(grant.clone());
+        let activation = activation("gateway-model");
+        let candidate = activation.snapshot.resolved_spec.model_binding.clone();
         let resolved = binding
             .executor_for_activation(&activation)
             .unwrap()
             .expect("reference materializer resolves the run");
         assert!(Arc::ptr_eq(&resolved, &executor));
-        assert_eq!(*seen.lock().expect("grant capture mutex"), Some(grant));
+        assert_eq!(
+            *seen.lock().expect("candidate capture mutex"),
+            Some(candidate)
+        );
     }
 
     #[test]

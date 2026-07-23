@@ -10,7 +10,6 @@
 pub mod dispatch;
 pub mod run_dispatch;
 
-pub use awaken_runtime_contract::{InferenceAccess, InferenceAccessCandidate};
 pub use awaken_worker_contract::{
     AssignmentRejection, LeastLoadedPolicy, PlacementContext, PlacementError, PlacementPolicy,
     REPOSITORY_CREDENTIALS_CAPABILITY, RankedWorker, RegisteredWorker, RegistryError,

@@ -16,8 +16,8 @@ use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_ext_builtin_tools::MessageSender;
 use awaken_dispatch::{
-    DispatchOutcome, DispatchQueue, DispatchWorker, DurableRunIngress, Inbox, InferenceAccess,
-    MemoryDispatchStore, OutboxMessageSender, PendingInput, RunDispatch, RunIngressCapabilities,
+    DispatchOutcome, DispatchQueue, DispatchWorker, DurableRunIngress, Inbox, MemoryDispatchStore,
+    OutboxMessageSender, PendingInput, RunDispatch, RunIngressCapabilities,
 };
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime::{DirectRunIngress, RunIngress, RunService};
@@ -98,17 +98,28 @@ impl RunAttemptExecutor for RecordingAttemptExecutor {
     }
 }
 
-fn opaque_access(scheme: &str, reference: &str) -> InferenceAccess {
-    InferenceAccess {
-        scheme: scheme.into(),
-        reference: reference.into(),
-        provider_ref: None,
-        route_ref: None,
-        scope_id: None,
-        credential_access: None,
-        endpoint: None,
-        candidates: Vec::new(),
-    }
+fn provider_candidate(
+    reference: &str,
+) -> awaken_runtime_contract::resolved::ResolvedModelCandidate {
+    awaken_runtime_contract::resolved::ResolvedModelCandidate::provider(
+        awaken_runtime_contract::ModelBinding::new("provider@1", "gateway-model", "genai"),
+        "provider@1",
+        "route@1",
+        "workspace-a",
+        Some(awaken_runtime_contract::CredentialAccess {
+            credential: awaken_runtime_contract::CredentialRef {
+                id: reference.into(),
+                revision: 1,
+            },
+            injection: awaken_runtime_contract::CredentialInjectionKind::Reference,
+            usage: awaken_runtime_contract::CredentialUsage::ProviderAdapter,
+        }),
+        awaken_runtime_contract::InferenceEndpoint {
+            adapter_kind: "openai".into(),
+            base_url: "https://gateway.invalid/v1".into(),
+            upstream_model: "gateway-model".into(),
+        },
+    )
 }
 
 fn allow_command() -> ResumeCommand {
@@ -285,7 +296,7 @@ async fn a_secretless_worker_reads_the_snapshot_pinned_access() {
     let capture = seen.clone();
     let resolver: awaken_dispatch::InferenceMaterializerFn = Arc::new(move |activation| {
         *capture.lock().expect("grant capture mutex") =
-            activation.snapshot.metadata.inference_access.clone();
+            Some(activation.snapshot.resolved_spec.model_binding.clone());
         Some(Arc::new(Gateway) as Arc<dyn LlmExecutor>)
     });
     let store = Arc::new(MemoryDispatchStore::new());
@@ -298,9 +309,9 @@ async fn a_secretless_worker_reads_the_snapshot_pinned_access() {
         None,
         Some(resolver),
     );
-    let access = opaque_access("credential-reference/v1", "grant-17");
+    let candidate = provider_candidate("grant-17");
     let mut activation = activation("run-gateway");
-    activation.snapshot.metadata.inference_access = Some(access.clone());
+    activation.snapshot.resolved_spec.model_binding = candidate.clone();
     let request = RunDispatch::new(activation);
     let (_, state) = ingress
         .worker()
@@ -310,7 +321,7 @@ async fn a_secretless_worker_reads_the_snapshot_pinned_access() {
         .expect("new run is claimed");
 
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
-    assert_eq!(*seen.lock().expect("grant capture mutex"), Some(access));
+    assert_eq!(*seen.lock().expect("grant capture mutex"), Some(candidate));
     assert_eq!(
         commit
             .committed()
@@ -324,11 +335,10 @@ async fn a_secretless_worker_reads_the_snapshot_pinned_access() {
 
 #[tokio::test]
 async fn a_per_run_model_override_routes_the_worker_to_the_overridden_model() {
-    // R5, end to end on the worker path: a run carrying `model_ref_override` resolves
-    // through `effective_model_ref → materialize_inference` to a DIFFERENT executor than its
-    // snapshot binding names — proving the per-turn switch reaches the provider seam,
-    // not just the binding. The resolver is keyed by ref: binding "m" → "BOUND",
-    // override "alt" → "ALT"; the committed reply must be "ALT".
+    // R5, end to end on the worker path: a run selects the already-published `alt`
+    // candidate and resolves it to a different executor than the primary binding.
+    // This proves the per-turn switch reaches the materialization seam without
+    // allowing an arbitrary model ref outside the immutable snapshot.
     use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 
     struct Fixed(&'static str);
@@ -362,7 +372,13 @@ async fn a_per_run_model_override_routes_the_worker_to_the_overridden_model() {
         Some(resolver),
     );
 
-    let over = activation("run-override").with_model_ref_override(Some("alt".into()));
+    let mut over = activation("run-override");
+    over.snapshot.resolved_spec.model_candidates.push(
+        awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+            awaken_runtime_contract::resolved::ModelBinding::new("alt", "alt", "stub"),
+        ),
+    );
+    let over = over.with_model_ref_override(Some("alt".into()));
     let state = ingress
         .submit_background(over)
         .await

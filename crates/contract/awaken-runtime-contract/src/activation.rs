@@ -14,13 +14,14 @@ pub struct RunActivation {
     /// recovery must retain the same origin even when every live handle changes.
     #[serde(default, alias = "initiator", skip_serializing_if = "Option::is_none")]
     pub delegation_origin: Option<awaken_agent_contract::agent::delegation::DelegationOrigin>,
-    /// Per-run model override (R5): the model ref to run THIS attempt on, when it
-    /// differs from the agent's published binding. Deliberately OFF the fingerprinted
+    /// Per-run model selector (R5): the model ref of one candidate already present
+    /// in the agent publication. Deliberately OFF the fingerprinted
     /// snapshot — a per-Run model switch is a runtime choice, not a catalog change,
     /// so it must not mint a new `catalog_fingerprint` (mirrors how display metadata
     /// is excluded from the content address). Absent ⇒ the run uses its snapshot's
     /// `model_binding.model_ref`. This names *which* model to run; the runtime never
-    /// sees *how* it is reached — that is the provider's job at the resolve seam.
+    /// sees *how* it is reached — that is the provisioning seam's job. A selector
+    /// outside the published candidate set is rejected before any model call.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_ref_override: Option<String>,
     /// Durable, backend-neutral restriction on the executor's configured tool
@@ -79,7 +80,9 @@ impl RunActivation {
                     instructions: String::new(),
                     max_steps: 4,
                     delegation_limits: Default::default(),
-                    model_binding: ModelBinding::new("prov", binding_model_ref, "backend"),
+                    model_binding: crate::resolved::ResolvedModelCandidate::host(
+                        ModelBinding::new("prov", binding_model_ref, "backend"),
+                    ),
                     tool_descriptors: Vec::new(),
                     plugin_ids: Vec::new(),
                     plugin_config: Default::default(),
@@ -129,10 +132,12 @@ impl RunActivation {
         }
     }
 
-    /// The model ref this attempt runs on: its per-run override (R5) when set,
+    /// The model ref this attempt requests: its per-run selector (R5) when set,
     /// otherwise the model its pinned snapshot binding names. This is the single
     /// input the resolve seam turns into a provider — the runtime never looks a model
-    /// up, it is handed the resolved executor. A blank override is treated as absent.
+    /// up, it is handed the resolved executor. The execution gate separately
+    /// verifies that a non-blank selector belongs to the published candidate set;
+    /// a blank selector is treated as absent.
     #[must_use]
     pub fn effective_model_ref(&self) -> &str {
         match self.model_ref_override.as_deref() {

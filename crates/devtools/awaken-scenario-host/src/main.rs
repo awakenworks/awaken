@@ -305,8 +305,8 @@ mod dispatch_tests {
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
-    // Multi-thread: `build_config_router`'s admin-assistant seeding resolves a model
-    // through `CatalogModelResolver`, which uses `block_in_place` (multi-thread only).
+    // Multi-thread matches the production host while admin-assistant seeding resolves
+    // through the scenario's async model-publication adapter.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_config_mode_maps_to_the_config_factory() {
         // `config` is async but environment-free (in-memory SQLite); assert it too.

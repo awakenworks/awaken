@@ -73,11 +73,13 @@ fn snapshot_for(model_id: &str) -> ExecutableAgentSnapshot {
             instructions: String::new(),
             max_steps: 8,
             delegation_limits: Default::default(),
-            model_binding: ModelBinding {
-                provider_identity_ref: "anthropic".into(),
-                model_ref: model_id.into(),
-                backend_ref: "genai".into(),
-            },
+            model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+                ModelBinding {
+                    provider_identity_ref: "anthropic".into(),
+                    model_ref: model_id.into(),
+                    backend_ref: "genai".into(),
+                },
+            ),
             tool_descriptors: Vec::new(),
             plugin_ids: Vec::new(),
             plugin_config: Default::default(),

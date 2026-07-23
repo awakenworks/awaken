@@ -134,7 +134,9 @@ fn activation(run: &str, thread: &str) -> RunActivation {
                 instructions: "test".into(),
                 max_steps: 2,
                 delegation_limits: Default::default(),
-                model_binding: ModelBinding::new("provider", "model", "local"),
+                model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+                    ModelBinding::new("provider", "model", "local"),
+                ),
                 tool_descriptors: Vec::new(),
                 plugin_ids: Vec::new(),
                 plugin_config: Default::default(),

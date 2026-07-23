@@ -1,5 +1,7 @@
 //! Live provider smoke test. Ignored by default; it needs network and a
-//! provider API key in the environment (e.g. `OPENAI_API_KEY`). Run with:
+//! an explicit OpenAI API key in the environment. This test reads it itself and
+//! injects it into a fixed adapter; the provider adapter has no ambient default.
+//! Run with:
 //!
 //! ```sh
 //! AWAKEN_GENAI_MODEL=gpt-4o-mini cargo test -p awaken-provider-genai --test live -- --ignored
@@ -15,7 +17,9 @@ use awaken_runtime_contract::resolved::ModelBinding;
 #[ignore = "requires network and a provider API key"]
 async fn live_text_completion() {
     let model = std::env::var("AWAKEN_GENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
-    let executor = GenaiExecutor::new();
+    let key = std::env::var("OPENAI_API_KEY").expect("set OPENAI_API_KEY");
+    let executor =
+        GenaiExecutor::from_resolved(awaken_provider_genai::AdapterKind::OpenAI, None, key);
 
     let request = ChatRequest {
         model_binding: ModelBinding {

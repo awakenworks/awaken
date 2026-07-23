@@ -138,11 +138,13 @@ fn activation() -> RunActivation {
                 instructions: String::new(),
                 max_steps: 8,
                 delegation_limits: Default::default(),
-                model_binding: ModelBinding {
-                    provider_identity_ref: "provider-1".to_string(),
-                    model_ref: "model-1".to_string(),
-                    backend_ref: "backend-1".to_string(),
-                },
+                model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+                    ModelBinding {
+                        provider_identity_ref: "provider-1".to_string(),
+                        model_ref: "model-1".to_string(),
+                        backend_ref: "backend-1".to_string(),
+                    },
+                ),
                 // No static descriptors: every visible tool is dynamic.
                 tool_descriptors: Vec::new(),
                 plugin_ids: vec!["mcp:srv".to_string()],

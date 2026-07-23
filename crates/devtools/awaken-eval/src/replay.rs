@@ -132,7 +132,9 @@ async fn replay(case: &Case) -> (String, bool, Vec<String>) {
                 instructions: case.instructions.clone(),
                 max_steps: 16,
                 delegation_limits: Default::default(),
-                model_binding: ModelBinding::new("eval", "eval-model", "genai"),
+                model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+                    ModelBinding::new("eval", "eval-model", "genai"),
+                ),
                 model_candidates: Vec::new(),
                 tool_descriptors: Vec::new(),
                 plugin_ids: Vec::new(),

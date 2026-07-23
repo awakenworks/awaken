@@ -597,7 +597,9 @@ mod postgres_tests {
                     instructions: "test".to_string(),
                     max_steps: 2,
                     delegation_limits: Default::default(),
-                    model_binding: ModelBinding::new("provider", "model", "backend"),
+                    model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+                        ModelBinding::new("provider", "model", "backend"),
+                    ),
                     tool_descriptors: Vec::new(),
                     plugin_ids: Vec::new(),
                     plugin_config: Default::default(),

@@ -248,11 +248,13 @@ impl ConfigServiceDraftValidator {
     }
 }
 
+#[async_trait::async_trait]
 impl DraftValidator for ConfigServiceDraftValidator {
-    fn validate(&self, draft: &AgentConfig) -> Result<(), String> {
+    async fn validate(&self, draft: &AgentConfig) -> Result<(), String> {
         // This consumer only needs a human message; flatten the field-routed issue.
         self.plane
             .validate(&self.scope, draft)
+            .await
             .map_err(|issue| issue.message)
     }
 }
@@ -530,8 +532,8 @@ mod tests {
         InMemoryAgentInputBindingRepository, InMemoryMcpStore, McpServerDef, McpServerId,
     };
     use awaken_config_service::{
-        ConfigPlane, ConfigService, ModelResolver, ResolvedModel, ScopedToolCatalog,
-        StaticToolCatalog,
+        ConfigPlane, ConfigService, ModelPublicationResolver, ResolvedPublicationModels,
+        ScopedToolCatalog, StaticToolCatalog,
     };
     use awaken_config_store::{DEFAULT_SCOPE, ModelSelection, SqliteConfigStore};
     use awaken_credential_vault::CredentialBinding;
@@ -583,23 +585,32 @@ mod tests {
         ToolDescriptor::pinned("t", id, "d", serde_json::json!({"type": "object"}))
     }
 
-    /// A minimal `ModelResolver` for the test: resolves `Auto` to the catalog's
-    /// first offering (the data-plane's `CatalogModelResolver` lives in the server
-    /// crate; this crate needs only a stub to publish the seeded assistant).
+    /// A minimal host-executor publication resolver for this control-plane test.
     struct FirstOfferingResolver(ProviderCatalog);
 
-    impl ModelResolver for FirstOfferingResolver {
-        fn resolve_auto(&self) -> Result<ResolvedModel, String> {
-            let mut offerings = self.0.offerings.iter();
-            let primary = offerings
-                .next()
-                .ok_or_else(|| "no provider-backed model in the catalog".to_string())?;
-            Ok(ResolvedModel {
-                primary: ModelBinding::new("default", primary.model_id.clone(), "default"),
-                candidates: offerings
-                    .map(|o| ModelBinding::new("default", o.model_id.clone(), "default"))
-                    .collect(),
-            })
+    #[async_trait::async_trait]
+    impl ModelPublicationResolver for FirstOfferingResolver {
+        async fn resolve_models(
+            &self,
+            _workspace: &str,
+            selection: &ModelSelection,
+            fallbacks: &[ModelBinding],
+        ) -> Result<ResolvedPublicationModels, String> {
+            let (primary, fallbacks) = if let Some(primary) = selection.resolved() {
+                (primary.clone(), fallbacks.to_vec())
+            } else {
+                let mut offerings = self.0.offerings.iter();
+                let primary = offerings
+                    .next()
+                    .ok_or_else(|| "no provider-backed model in the catalog".to_string())?;
+                let binding = |offering: &Offering| {
+                    ModelBinding::new(&offering.provider_id.0, &offering.model_id, "genai")
+                };
+                (binding(primary), offerings.map(binding).collect())
+            };
+            Ok(ResolvedPublicationModels::host(
+                primary, fallbacks, None, None,
+            ))
         }
     }
 
@@ -676,7 +687,7 @@ mod tests {
         ));
         let service = Arc::new(
             ConfigService::new()
-                .with_model_resolver(Arc::new(FirstOfferingResolver(catalog("m-1")))),
+                .with_model_publication_resolver(Arc::new(FirstOfferingResolver(catalog("m-1")))),
         );
         let plane = ConfigPlane::new(service.clone(), store, tools);
 
@@ -899,11 +910,11 @@ mod tests {
         let mut good = admin_assistant_config();
         good.model_binding = ModelSelection::pinned("p", "m", "b");
         good.tool_ids = vec!["read".to_string()];
-        assert!(validator.validate(&good).is_ok());
+        assert!(validator.validate(&good).await.is_ok());
 
         let mut bad = good.clone();
         bad.tool_ids = vec!["ghost".to_string()];
-        assert!(validator.validate(&bad).is_err());
+        assert!(validator.validate(&bad).await.is_err());
     }
 
     // ---- CEG §10 additions -------------------------------------------------
@@ -921,8 +932,9 @@ mod tests {
         // An EMPTY catalog: the Auto assistant cannot resolve a model, so publish
         // is Unresolvable and seed returns the error.
         let service = Arc::new(
-            ConfigService::new()
-                .with_model_resolver(Arc::new(FirstOfferingResolver(ProviderCatalog::default()))),
+            ConfigService::new().with_model_publication_resolver(Arc::new(FirstOfferingResolver(
+                ProviderCatalog::default(),
+            ))),
         );
         let plane = ConfigPlane::new(service, store, tools);
         let err = seed_admin_assistant(&plane, DEFAULT_SCOPE)
@@ -942,7 +954,7 @@ mod tests {
         ));
         let service = Arc::new(
             ConfigService::new()
-                .with_model_resolver(Arc::new(FirstOfferingResolver(catalog("m-1")))),
+                .with_model_publication_resolver(Arc::new(FirstOfferingResolver(catalog("m-1")))),
         );
         let plane = ConfigPlane::new(service.clone(), store, tools);
 
@@ -989,6 +1001,7 @@ mod tests {
         bad.tool_ids = vec!["ghost".to_string()];
         let err = validator
             .validate(&bad)
+            .await
             .expect_err("an unknown tool is rejected");
         assert!(
             !err.is_empty(),

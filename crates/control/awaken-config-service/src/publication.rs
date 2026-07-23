@@ -1,10 +1,9 @@
 //! Configuration publication preparation and values shared by the service and HTTP edge.
 
-use awaken_config_resolver::InferenceAccessPublisher;
 use awaken_config_store::{AgentConfig, AgentConfigRevision, ModelSelection};
-use awaken_runtime_contract::{InferenceAccess, ResolutionManifest};
+use awaken_runtime_contract::ResolutionManifest;
 
-use crate::binding_resolver::ModelResolver;
+use crate::binding_resolver::{ModelPublicationResolver, ResolvedPublicationModels};
 use crate::compaction::apply_compaction;
 
 /// A publish failure, split so the edge can map it to an HTTP status.
@@ -16,7 +15,7 @@ pub enum PublishError {
     NotStored(String),
     #[error("agent `{0}` is archived")]
     Archived(String),
-    #[error("cannot resolve an auto model binding: {0}")]
+    #[error("cannot resolve model publication: {0}")]
     Unresolvable(String),
     #[error("config changed while it was being published (current revision: {0:?})")]
     StaleRevision(Option<u64>),
@@ -39,37 +38,62 @@ pub(crate) struct AgentPublicationDraft {
     pub(crate) source: awaken_runtime_contract::AgentConfigRevisionRef,
     pub(crate) config: AgentConfig,
     pub(crate) manifest: ResolutionManifest,
-    pub(crate) inference_access: Option<InferenceAccess>,
+    pub(crate) models: ResolvedPublicationModels,
 }
 
 /// Read every authored configuration input once and prepare one publication.
 /// Runtime and worker paths receive only the resulting immutable snapshot.
-pub(crate) fn prepare_agent_publication(
-    model_resolver: Option<&dyn ModelResolver>,
+pub(crate) async fn prepare_agent_publication(
+    model_resolver: Option<&dyn ModelPublicationResolver>,
+    workspace: &str,
     source: AgentConfigRevision,
 ) -> Result<AgentPublicationDraft, PublishError> {
     let source_revision = source.revision;
     let mut config = source.config;
-    if crate::binding_resolver::needs_resolution(&config.model_binding) {
-        let resolver = model_resolver
-            .ok_or_else(|| PublishError::Unresolvable("no model resolver wired".into()))?;
-        let resolved = resolver
-            .resolve_auto()
-            .map_err(PublishError::Unresolvable)?;
-        config.model_binding = ModelSelection::Pinned(resolved.primary);
-        config.model_candidates = resolved.candidates;
-    }
-    if let Some(resolver) = model_resolver
-        && let Some(model_id) = config.model_binding.resolved().map(|b| b.model_ref.clone())
+    let models = match model_resolver {
+        Some(resolver) => resolver
+            .resolve_models(workspace, &config.model_binding, &config.model_candidates)
+            .await
+            .map_err(PublishError::Unresolvable)?,
+        None => {
+            let primary = config.model_binding.resolved().cloned().ok_or_else(|| {
+                PublishError::Unresolvable("no model publication resolver wired".into())
+            })?;
+            ResolvedPublicationModels::host(primary, config.model_candidates.clone(), None, None)
+        }
+    };
+    if let Some(authored) = config.model_binding.resolved()
+        && models.primary.binding != *authored
     {
-        let strategy = config.compaction.clone().unwrap_or_default();
-        apply_compaction(
-            &mut config.plugin_config,
-            &strategy,
-            resolver.context_window(&model_id),
-            resolver.max_output_tokens(&model_id),
-        );
+        return Err(PublishError::Unresolvable(
+            "resolved primary candidate does not match the pinned authoring binding".into(),
+        ));
     }
+    if config.model_binding.resolved().is_some()
+        && (models.candidates.len() != config.model_candidates.len()
+            || models
+                .candidates
+                .iter()
+                .zip(&config.model_candidates)
+                .any(|(resolved, authored)| &resolved.binding != authored))
+    {
+        return Err(PublishError::Unresolvable(
+            "resolved fallback candidates do not match the pinned authoring order".into(),
+        ));
+    }
+    config.model_binding = ModelSelection::Pinned(models.primary.binding.clone());
+    config.model_candidates = models
+        .candidates
+        .iter()
+        .map(|candidate| candidate.binding.clone())
+        .collect();
+    let strategy = config.compaction.clone().unwrap_or_default();
+    apply_compaction(
+        &mut config.plugin_config,
+        &strategy,
+        models.context_window,
+        models.max_output_tokens,
+    );
     let model_bytes = serde_json::to_vec(&(
         config.model_binding.resolved(),
         &config.model_candidates,
@@ -103,40 +127,7 @@ pub(crate) fn prepare_agent_publication(
         },
         config,
         manifest,
-        inference_access: None,
-    })
-}
-
-/// Select provider/gateway access or the explicit local-host access exactly once.
-pub(crate) async fn pin_inference_access(
-    publisher: Option<&dyn InferenceAccessPublisher>,
-    workspace: &str,
-    draft: &AgentPublicationDraft,
-) -> Result<InferenceAccess, PublishError> {
-    let models = draft
-        .config
-        .model_binding
-        .resolved()
-        .into_iter()
-        .chain(draft.config.model_candidates.iter())
-        .cloned()
-        .collect::<Vec<_>>();
-    if let Some(publisher) = publisher {
-        return publisher
-            .resolve_access(workspace, &models)
-            .await
-            .map_err(PublishError::Unresolvable);
-    }
-    InferenceAccess::candidate_set(models.iter().map(|model| {
-        (
-            model.model_ref.clone(),
-            InferenceAccess::host_executor(&model.model_ref),
-        )
-    }))
-    .ok_or_else(|| {
-        PublishError::Unresolvable(
-            "published agent has no resolved model for inference access".into(),
-        )
+        models,
     })
 }
 
@@ -148,6 +139,116 @@ pub(crate) fn snapshot_metadata(
         publication_version: awaken_runtime_contract::AgentPublicationVersion(String::new()),
         resolution: resolved.manifest.clone(),
         fingerprint: awaken_runtime_contract::AgentSnapshotFingerprint(String::new()),
-        inference_access: resolved.inference_access.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use awaken_runtime_contract::resolved::ModelBinding;
+
+    fn revision(selection: ModelSelection, fallbacks: Vec<ModelBinding>) -> AgentConfigRevision {
+        AgentConfigRevision {
+            config: AgentConfig {
+                id: "agent-a".into(),
+                model_binding: selection,
+                model_candidates: fallbacks,
+                ..Default::default()
+            },
+            revision: 7,
+        }
+    }
+
+    struct FixedResolver {
+        expected_workspace: &'static str,
+        output: ResolvedPublicationModels,
+    }
+
+    #[async_trait::async_trait]
+    impl ModelPublicationResolver for FixedResolver {
+        async fn resolve_models(
+            &self,
+            workspace: &str,
+            _selection: &ModelSelection,
+            _candidates: &[ModelBinding],
+        ) -> Result<ResolvedPublicationModels, String> {
+            if workspace != self.expected_workspace {
+                return Err(format!("unexpected Workspace {workspace}"));
+            }
+            Ok(self.output.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn auto_requires_the_single_publication_resolver() {
+        let error = prepare_agent_publication(
+            None,
+            "workspace-a",
+            revision(ModelSelection::Auto, Vec::new()),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("no model publication resolver"));
+    }
+
+    #[tokio::test]
+    async fn explicit_embedded_composition_publishes_host_candidates_without_a_resolver() {
+        let primary = ModelBinding::new("host", "primary", "native");
+        let fallback = ModelBinding::new("host", "fallback", "native");
+        let draft = prepare_agent_publication(
+            None,
+            "workspace-a",
+            revision(
+                ModelSelection::Pinned(primary.clone()),
+                vec![fallback.clone()],
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(draft.models.primary.binding, primary);
+        assert_eq!(draft.models.candidates[0].binding, fallback);
+    }
+
+    #[tokio::test]
+    async fn resolver_receives_execution_workspace_and_auto_output_becomes_authoring_projection() {
+        let primary = ModelBinding::new("provider", "primary", "genai");
+        let fallback = ModelBinding::new("provider", "fallback", "genai");
+        let resolver = FixedResolver {
+            expected_workspace: "workspace-real",
+            output: ResolvedPublicationModels::host(
+                primary.clone(),
+                vec![fallback.clone()],
+                None,
+                None,
+            ),
+        };
+        let draft = prepare_agent_publication(
+            Some(&resolver),
+            "workspace-real",
+            revision(ModelSelection::Auto, Vec::new()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(draft.config.model_binding.resolved(), Some(&primary));
+        assert_eq!(draft.config.model_candidates, vec![fallback]);
+    }
+
+    #[tokio::test]
+    async fn resolver_cannot_rewrite_pinned_primary_or_fallback_order() {
+        let primary = ModelBinding::new("provider", "primary", "genai");
+        let fallback = ModelBinding::new("provider", "fallback", "genai");
+        let rewritten = ModelBinding::new("provider", "other", "genai");
+        let resolver = FixedResolver {
+            expected_workspace: "workspace-a",
+            output: ResolvedPublicationModels::host(primary.clone(), vec![rewritten], None, None),
+        };
+        let error = prepare_agent_publication(
+            Some(&resolver),
+            "workspace-a",
+            revision(ModelSelection::Pinned(primary), vec![fallback]),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("fallback candidates"));
     }
 }

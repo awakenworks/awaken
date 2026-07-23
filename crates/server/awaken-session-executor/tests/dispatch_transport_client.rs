@@ -37,7 +37,9 @@ fn activation(run: &str, thread: &str) -> RunActivation {
                 instructions: "be helpful".into(),
                 max_steps: 8,
                 delegation_limits: Default::default(),
-                model_binding: ModelBinding::new("prov", "model", "acp:test"),
+                model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+                    ModelBinding::new("prov", "model", "acp:test"),
+                ),
                 tool_descriptors: Vec::new(),
                 plugin_ids: Vec::new(),
                 plugin_config: Default::default(),

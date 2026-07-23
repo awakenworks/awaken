@@ -12,15 +12,57 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Role;
-use awaken_config_resolver::ResolvedInference;
 use awaken_protocol_managed::ManagedState;
-use awaken_provider_genai::GenaiExecutor;
+use awaken_provider_genai::{AdapterKind, GenaiExecutor};
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
 };
 use awaken_runtime_contract::resolved::ModelBinding;
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 use axum::Router;
+
+/// Test composition adapter: scenario models are host-installed executors, while
+/// their model directory remains live so management-assistant `Auto` authoring
+/// exercises the ordinary publication path.
+struct ScenarioHostModelResolver {
+    catalog: Arc<dyn awaken_model_catalog::repo::CatalogRepo>,
+}
+
+#[async_trait::async_trait]
+impl awaken_session_executor::ModelPublicationResolver for ScenarioHostModelResolver {
+    async fn resolve_models(
+        &self,
+        _workspace: &str,
+        selection: &awaken_config_store::ModelSelection,
+        fallbacks: &[ModelBinding],
+    ) -> Result<awaken_session_executor::ResolvedPublicationModels, String> {
+        let catalog = self
+            .catalog
+            .snapshot()
+            .await
+            .map_err(|error| error.to_string())?;
+        let (primary, fallbacks) = if let Some(primary) = selection.resolved() {
+            (primary.clone(), fallbacks.to_vec())
+        } else {
+            let mut offerings = catalog.offerings.iter();
+            let primary = offerings
+                .next()
+                .ok_or_else(|| "scenario catalog has no model offering".to_string())?;
+            let binding = |offering: &awaken_model_catalog::Offering| {
+                ModelBinding::new(&offering.provider_id.0, &offering.model_id, "genai")
+            };
+            (binding(primary), offerings.map(binding).collect())
+        };
+        let context_window = catalog.context_window(&primary.model_ref);
+        let max_output_tokens = catalog.max_output_tokens(&primary.model_ref);
+        Ok(awaken_session_executor::ResolvedPublicationModels::host(
+            primary,
+            fallbacks,
+            context_window,
+            max_output_tokens,
+        ))
+    }
+}
 
 // The managed-agents service layer (`awaken-session-executor`): the neutral host,
 // the two port adapters, the per-plane routers, and the authoring/transport
@@ -29,7 +71,6 @@ pub use awaken_managed_routers::{default_models, files_router, models_router};
 // The A2A remote-delegate adapter + its transport constructor: the composition root
 // builds the adapter here and injects it behind the host's neutral RemoteAgent interface.
 use awaken_run_executor_a2a::{A2aRemoteAgent, HttpTransport};
-use awaken_runtime_contract::InferenceAccess;
 pub use awaken_session_executor::{
     ConfigService, ExtMcpProbe, HostResume, InferenceExecutorMaterializer, ManagedHost,
     PreparedMcpRefresh, ProtocolHost, SharedHost, SkillContext, SkillSpec, ThreadEvent,
@@ -38,11 +79,11 @@ pub use awaken_session_executor::{
     skills_router,
 };
 
-use awaken_server::placement;
 /// An [`InferenceExecutorMaterializer`] mapping a model ref to a labeled executor, so a
 /// session bound to `fast`/`slow` resolves a distinct model — the R1/R2/R5 demo
 /// surface.
-use awaken_server::{ResolvedExecutorError, executor_from_resolved, mount_with_managed};
+use awaken_server::mount_with_managed;
+use awaken_server::placement;
 
 /// Scenario equivalent of the production composition root: one secret-free
 /// Resource Catalog is shared by the Memory API, Managed ACL, and runtime
@@ -97,12 +138,15 @@ struct RouteProvider;
 impl InferenceExecutorMaterializer for RouteProvider {
     fn materialize_pinned(
         &self,
-        model_ref: &str,
-        access: &InferenceAccess,
+        candidate: &awaken_runtime_contract::resolved::ResolvedModelCandidate,
     ) -> Option<Arc<dyn LlmExecutor>> {
-        if !access.is_host_executor_for(model_ref) {
+        if !matches!(
+            candidate.provisioning,
+            awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor
+        ) {
             return None;
         }
+        let model_ref = candidate.binding.model_ref.as_str();
         let labeled: Arc<dyn LlmExecutor> = match model_ref {
             "fast" => Arc::new(LabelModel("fast")),
             "slow" => Arc::new(LabelModel("slow")),
@@ -358,10 +402,12 @@ pub async fn run_echo_worker(upstream: &str) -> Result<(), Box<dyn std::error::E
 
         fn materialize_pinned(
             &self,
-            model_ref: &str,
-            access: &InferenceAccess,
+            candidate: &awaken_runtime_contract::resolved::ResolvedModelCandidate,
         ) -> Option<Arc<dyn LlmExecutor>> {
-            if !access.is_host_executor_for(model_ref) {
+            if !matches!(
+                candidate.provisioning,
+                awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor
+            ) {
                 return None;
             }
             Some(Arc::new(EchoModel))
@@ -847,17 +893,6 @@ pub async fn build_acp_container_router() -> Router {
 
 // ── Router assembly ─────────────────────────────────────────────────────────
 
-/// Mount every public protocol adapter over one shared host. Managed Agents, AI
-/// SDK, and AG-UI routes have disjoint path prefixes (`/v1/sessions...`,
-/// `/v1/ai-sdk...`, `/v1/ag-ui...`) and drive the same `host`, so all three
-/// protocols operate on the same threads.
-pub fn build_resolved_router(
-    inference: &ResolvedInference,
-) -> Result<Router, ResolvedExecutorError> {
-    let executor = executor_from_resolved(inference)?;
-    Ok(build_router(executor, inference.triple.model_id.clone()))
-}
-
 /// Build the server router backed by the kernel with the given model.
 pub fn build_router(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> Router {
     mount(Arc::new(resource_host(llm, model_ref)))
@@ -894,17 +929,18 @@ pub fn scenario_model(
                 model,
             )
         }
-        // A live Gemini via the genai default client's AI-Studio adapter, keyed by
-        // `GEMINI_API_KEY`/`GOOGLE_API_KEY` in the environment. Same host-config seam
-        // as `http`, but the model calls cross the real Gemini wire — used where a
-        // real LLM is needed but only a Google key is available (KIMI creds dead).
+        // A dev-only live Gemini fixture. Even here the key is read explicitly and
+        // injected into a fixed adapter; no SDK ambient-default path is exercised.
         Ok("gemini") => {
-            std::env::var("GEMINI_API_KEY")
+            let key = std::env::var("GEMINI_API_KEY")
                 .or_else(|_| std::env::var("GOOGLE_API_KEY"))
                 .expect("AWAKEN_MODEL_SOURCE=gemini requires GEMINI_API_KEY/GOOGLE_API_KEY");
             let model =
                 std::env::var("GEMINI_MODEL").unwrap_or_else(|_| "gemini-2.5-flash".to_string());
-            (Arc::new(GenaiExecutor::new()), model)
+            (
+                Arc::new(GenaiExecutor::from_resolved(AdapterKind::Gemini, None, key)),
+                model,
+            )
         }
         _ => (in_process, default_ref.to_string()),
     }
@@ -936,8 +972,7 @@ fn normalize_anthropic_compatible_base(base_url: String) -> String {
 /// A server backed by a **live** Anthropic-compatible model, configured from the
 /// environment: `ANTHROPIC_API_KEY` (or `KIMI_API_KEY`), `ANTHROPIC_BASE_URL` (or
 /// `KIMI_BASE_URL`), `ANTHROPIC_MODEL` (or `KIMI_MODEL`). This is the same
-/// `RedactedString` → `GenaiExecutor` seam the resolver's `executor_from_resolved`
-/// uses (verified equivalent by `tests/resolved_run.rs`), exposed as a server mode
+/// `RedactedString` → `GenaiExecutor` seam used by worker materialization, exposed as a server mode
 /// so the TypeScript e2e can drive a real turn through the managed / ai-sdk / a2a
 /// adapters. Panics if no API key is set, so a misconfigured run fails loudly.
 pub fn build_real_router() -> Router {
@@ -983,23 +1018,16 @@ pub async fn build_real_gemini_router() -> Router {
     build_router(Arc::new(executor), model)
 }
 
-/// A live-model server whose executor is built **through the resolver**
-/// (ADR-0043): it authors an in-memory catalog + enters a credential from the
-/// environment, then `resolve_inference` + `executor_from_resolved` produce the
-/// host executor — the same config → resolve → run path a managed run takes, rather
-/// than constructing the provider directly (as `build_real_router` does). Exposed
-/// so a session e2e exercises the resolver end to end against a real model. Env:
+/// A live-model server whose executor is built through the production
+/// publication + worker-materialization path. It authors an in-memory catalog,
+/// persists a credential, freezes one complete model candidate, then lets the
+/// worker adapter materialize exactly that candidate. Env:
 /// `ANTHROPIC_API_KEY`/`KIMI_API_KEY` (+ `*_BASE_URL`, `*_MODEL`).
 pub async fn build_resolved_real_router() -> Router {
-    use std::collections::HashMap;
-
     use awaken_agent_contract::RedactedString;
-    use awaken_config_resolver::resolve_inference;
-    use awaken_credential_vault::repo::{CredentialRepo, InMemoryCredentialRepo, enter_credential};
-    use awaken_credential_vault::{
-        CredentialBinding, CredentialCreateParams, CredentialKind, CredentialSource,
-        CredentialSourceId, InMemorySecretStore,
-    };
+    use awaken_config_store::ModelSelection;
+    use awaken_credential_vault::repo::{InMemoryCredentialRepo, enter_credential};
+    use awaken_credential_vault::{CredentialCreateParams, CredentialKind, InMemorySecretStore};
     use awaken_model_catalog::repo::{CatalogRepo, InMemoryCatalogRepo};
     use awaken_model_catalog::{
         ApiDialect, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
@@ -1017,7 +1045,7 @@ pub async fn build_resolved_real_router() -> Router {
         .unwrap_or_else(|_| default_anthropic_compatible_model(&base).to_string());
 
     // Author the catalog: one provider + endpoint + offering for `model`.
-    let catalog_repo = InMemoryCatalogRepo::new();
+    let catalog_repo = Arc::new(InMemoryCatalogRepo::new());
     catalog_repo
         .put_provider(Provider {
             id: ProviderId::new("anthropic"),
@@ -1050,11 +1078,11 @@ pub async fn build_resolved_real_router() -> Router {
         .await
         .expect("put offering");
 
-    // Enter the credential (secret-in), then resolve the inference against the
-    // authored catalog and build the executor from the resolved value.
-    let secrets = InMemorySecretStore::new();
-    let cred_repo = InMemoryCredentialRepo::new();
-    let source = enter_credential(
+    // Persist the credential, publish a secret-free candidate, and materialize it
+    // only at the worker boundary.
+    let secrets = Arc::new(InMemorySecretStore::new());
+    let cred_repo = Arc::new(InMemoryCredentialRepo::new());
+    enter_credential(
         CredentialCreateParams {
             workspace_id: "ws".into(),
             kind: CredentialKind::Vault,
@@ -1063,43 +1091,44 @@ pub async fn build_resolved_real_router() -> Router {
             secret: Some(RedactedString::new(key)),
             oauth_command: None,
         },
-        &secrets,
-        &cred_repo,
+        secrets.as_ref(),
+        cred_repo.as_ref(),
     )
     .await
     .expect("enter credential");
-    let catalog = catalog_repo.snapshot().await.expect("catalog snapshot");
-    let row = cred_repo.get(&source.id).await.expect("credential row");
-    let mut sources: HashMap<String, CredentialSource> = HashMap::new();
-    sources.insert(row.id.0.clone(), row);
-    let inference = resolve_inference(
-        &catalog,
-        &model,
-        &CredentialBinding::Exact {
-            credential_source_id: CredentialSourceId(source.id.0.clone()),
-        },
-        &sources,
-        &secrets,
+    let resolver = awaken_server::model_resolver::CatalogModelPublicationResolver::from_repo(
+        catalog_repo,
+        cred_repo.clone(),
+    );
+    let published = awaken_session_executor::ModelPublicationResolver::resolve_models(
+        &resolver,
+        "ws",
+        &ModelSelection::Pinned(ModelBinding::new("anthropic", &model, "genai")),
+        &[],
     )
     .await
-    .expect("resolve inference");
-    let executor = executor_from_resolved(&inference).expect("build executor from resolved");
-    build_router(executor, inference.triple.model_id.clone())
+    .expect("publish model candidate");
+    let materializer = awaken_server::inference_materializer::CredentialInferenceMaterializer::new(
+        cred_repo, secrets,
+    );
+    let executor = materializer
+        .materialize_candidate(&published.primary)
+        .await
+        .expect("materialize published model candidate");
+    build_router(executor, published.primary.binding.model_ref)
 }
 
 /// The resolved path with an **OAuth** credential (#5): the credential source is
-/// `CredentialKind::Oauth`, so `resolve_inference` materializes it by running its
-/// `oauth_command` helper (`printf oauth-minted-key`) rather than reading a sealed
-/// secret. The minted token becomes the executor's API key, so a run succeeds only
-/// if the OAuth materialize path actually ran the helper. `AWAKEN_MODEL_MODE=
+/// `CredentialKind::Oauth`; publication freezes only its reference, and worker
+/// materialization runs its `oauth_command` helper (`printf oauth-minted-key`).
+/// The minted token becomes the executor's API key, so a run succeeds only if the
+/// worker realization path actually ran the helper. `AWAKEN_MODEL_MODE=
 /// oauth-resolved` with a fake upstream that authenticates exactly that token.
 pub async fn build_oauth_resolved_router() -> Router {
-    use std::collections::HashMap;
-
-    use awaken_config_resolver::resolve_inference;
+    use awaken_config_store::ModelSelection;
+    use awaken_credential_vault::repo::{CredentialRepo, InMemoryCredentialRepo};
     use awaken_credential_vault::{
-        CredentialBinding, CredentialKind, CredentialSource, CredentialSourceId, CredentialStatus,
-        InMemorySecretStore,
+        CredentialKind, CredentialSource, CredentialSourceId, CredentialStatus, InMemorySecretStore,
     };
     use awaken_model_catalog::repo::{CatalogRepo, InMemoryCatalogRepo};
     use awaken_model_catalog::{
@@ -1113,7 +1142,7 @@ pub async fn build_oauth_resolved_router() -> Router {
     let model =
         std::env::var("ANTHROPIC_MODEL").unwrap_or_else(|_| "claude-3-5-haiku-latest".to_string());
 
-    let catalog_repo = InMemoryCatalogRepo::new();
+    let catalog_repo = Arc::new(InMemoryCatalogRepo::new());
     catalog_repo
         .put_provider(Provider {
             id: ProviderId::new("anthropic"),
@@ -1158,23 +1187,32 @@ pub async fn build_oauth_resolved_router() -> Router {
         status: CredentialStatus::Active,
         version: 1,
     };
-    let secrets = InMemorySecretStore::new();
-    let catalog = catalog_repo.snapshot().await.expect("catalog snapshot");
-    let mut sources: HashMap<String, CredentialSource> = HashMap::new();
-    sources.insert(source.id.0.clone(), source.clone());
-    let inference = resolve_inference(
-        &catalog,
-        &model,
-        &CredentialBinding::Exact {
-            credential_source_id: source.id.clone(),
-        },
-        &sources,
-        &secrets,
+    let secrets = Arc::new(InMemorySecretStore::new());
+    let cred_repo = Arc::new(InMemoryCredentialRepo::new());
+    cred_repo
+        .put(source)
+        .await
+        .expect("persist OAuth credential");
+    let resolver = awaken_server::model_resolver::CatalogModelPublicationResolver::from_repo(
+        catalog_repo,
+        cred_repo.clone(),
+    );
+    let published = awaken_session_executor::ModelPublicationResolver::resolve_models(
+        &resolver,
+        "ws",
+        &ModelSelection::Pinned(ModelBinding::new("anthropic", &model, "genai")),
+        &[],
     )
     .await
-    .expect("resolve inference (OAuth materialize)");
-    let executor = executor_from_resolved(&inference).expect("build executor from resolved");
-    build_router(executor, inference.triple.model_id.clone())
+    .expect("publish OAuth model candidate");
+    let materializer = awaken_server::inference_materializer::CredentialInferenceMaterializer::new(
+        cred_repo, secrets,
+    );
+    let executor = materializer
+        .materialize_candidate(&published.primary)
+        .await
+        .expect("materialize published OAuth candidate");
+    build_router(executor, published.primary.binding.model_ref)
 }
 
 /// Build the server router offering `skills` on every thread (ADR-0036): the whole
@@ -1703,9 +1741,11 @@ pub async fn build_config_router() -> Router {
         .expect("put offering");
     // The service is scope-free (ADR-0051); `ConfigPlane` is the scope edge that binds
     // the request scope (a `ScopedConfig` registry + the scope's tool catalog) onto it.
-    let service = Arc::new(ConfigService::new().with_model_resolver(Arc::new(
-        awaken_server::model_resolver::CatalogModelResolver::from_repo(catalog_repo.clone()),
-    )));
+    let service = Arc::new(
+        ConfigService::new().with_model_publication_resolver(Arc::new(ScenarioHostModelResolver {
+            catalog: catalog_repo.clone(),
+        })),
+    );
     let plane = awaken_session_executor::ConfigPlane::new(service.clone(), store, tools);
     // The management tool executables, backed by real ports (D3/D4): the capability
     // reader reads the shared catalog + advertised tools; the validator runs the same

@@ -97,12 +97,7 @@ fn child_dispatch_request(
         .with_traceparent(awaken_observability::current_traceparent());
     if let Some(resources) = session_resources {
         let placement = crate::host::remote_worker_placement(
-            request
-                .activation
-                .snapshot
-                .metadata
-                .inference_access
-                .as_ref(),
+            &request.activation.snapshot.resolved_spec,
             Some(&resources),
             false,
         );
@@ -692,21 +687,24 @@ mod tests {
     use awaken_agent_contract::agent::awaiting::ResumeTicket;
     use awaken_agent_contract::agent::content::ContentBlock;
     use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-    use awaken_runtime_contract::InferenceAccess;
     use awaken_runtime_contract::llm::{
         AssistantOutput, ChatRequest, ChatResponse, Result as LlmResult,
     };
-    use awaken_runtime_contract::resolved::ModelBinding;
+    use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate};
     use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 
-    fn exact_access(credential: &str, provider: &str, route: &str) -> InferenceAccess {
-        InferenceAccess {
-            scheme: "credential-source/v1".into(),
-            reference: credential.into(),
-            provider_ref: Some(provider.into()),
-            route_ref: Some(route.into()),
-            scope_id: None,
-            credential_access: Some(awaken_runtime_contract::CredentialAccess {
+    fn published_model(
+        model: &str,
+        credential: &str,
+        provider: &str,
+        route: &str,
+    ) -> ResolvedModelCandidate {
+        ResolvedModelCandidate::provider(
+            ModelBinding::new(provider, model, "native"),
+            provider,
+            route,
+            "workspace-a",
+            Some(awaken_runtime_contract::CredentialAccess {
                 credential: awaken_runtime_contract::CredentialRef {
                     id: credential.into(),
                     revision: 0,
@@ -714,9 +712,12 @@ mod tests {
                 injection: awaken_runtime_contract::CredentialInjectionKind::Reference,
                 usage: awaken_runtime_contract::CredentialUsage::ProviderAdapter,
             }),
-            endpoint: None,
-            candidates: Vec::new(),
-        }
+            awaken_runtime_contract::InferenceEndpoint {
+                adapter_kind: "test".into(),
+                base_url: "https://example.invalid".into(),
+                upstream_model: model.into(),
+            },
+        )
     }
 
     /// A model that replies with the leading system instruction it was given, so a
@@ -831,20 +832,12 @@ mod tests {
     }
 
     #[test]
-    fn child_dispatch_reuses_publication_pinned_inference_access() {
+    fn child_dispatch_reuses_publication_pinned_model_candidates() {
         let mut config = agent("child", "child");
-        let expected = InferenceAccess::candidate_set([
-            (
-                "primary".to_string(),
-                exact_access("cred-a", "provider-a@1", "route-a@1"),
-            ),
-            (
-                "fallback".to_string(),
-                exact_access("cred-b", "provider-b@2", "route-b@3"),
-            ),
-        ])
-        .expect("candidate access");
-        config.metadata.inference_access = Some(expected.clone());
+        let primary = published_model("primary", "cred-a", "provider-a@1", "route-a@1");
+        let fallback = published_model("fallback", "cred-b", "provider-b@2", "route-b@3");
+        config.resolved_spec.model_binding = primary.clone();
+        config.resolved_spec.model_candidates = vec![fallback.clone()];
         let runtime = awaken_runtime::Runtime::new();
         let (_, activation) = runtime.prepare(
             &config,
@@ -871,8 +864,12 @@ mod tests {
         .expect("build child dispatch");
 
         assert_eq!(
-            request.activation.snapshot.metadata.inference_access,
-            Some(expected)
+            request.activation.snapshot.resolved_spec.model_binding,
+            primary
+        );
+        assert_eq!(
+            request.activation.snapshot.resolved_spec.model_candidates,
+            vec![fallback]
         );
         assert_eq!(request.session_thread_id.unwrap().0, "parent-thread");
         let carried = crate::provisioning::decode_session_resource_envelope(
