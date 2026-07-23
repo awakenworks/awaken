@@ -3,7 +3,9 @@
 use awaken_config_store::{AgentConfig, AgentConfigRevision, ModelSelection};
 use awaken_runtime_contract::ResolutionManifest;
 
-use crate::binding_resolver::{ModelPublicationResolver, ResolvedPublicationModels};
+use crate::binding_resolver::{
+    ModelPublicationResolver, PublicationResolutionError, ResolvedPublicationModels,
+};
 use crate::compaction::apply_compaction;
 
 /// A publish failure, split so the edge can map it to an HTTP status.
@@ -45,7 +47,7 @@ pub(crate) struct AgentPublicationDraft {
 /// Runtime and worker paths receive only the resulting immutable snapshot.
 pub(crate) async fn prepare_agent_publication(
     model_resolver: &dyn ModelPublicationResolver,
-    workspace: &str,
+    workspace: &awaken_tenancy::ScopeId,
     source: AgentConfigRevision,
 ) -> Result<AgentPublicationDraft, PublishError> {
     let source_revision = source.revision;
@@ -53,7 +55,15 @@ pub(crate) async fn prepare_agent_publication(
     let models = model_resolver
         .resolve_models(workspace, &config.model_binding, &config.model_candidates)
         .await
-        .map_err(PublishError::Unresolvable)?;
+        .map_err(|error| PublishError::Unresolvable(error.to_string()))?;
+    let mut bindings = std::collections::BTreeSet::new();
+    for candidate in std::iter::once(&models.primary).chain(models.candidates.iter()) {
+        if !bindings.insert(candidate.binding.clone()) {
+            return Err(PublishError::Unresolvable(
+                PublicationResolutionError::DuplicateBinding(candidate.binding.clone()).to_string(),
+            ));
+        }
+    }
     if let Some(authored) = config.model_binding.resolved()
         && models.primary.binding != *authored
     {
@@ -160,12 +170,12 @@ mod tests {
     impl ModelPublicationResolver for FixedResolver {
         async fn resolve_models(
             &self,
-            workspace: &str,
+            workspace: &awaken_tenancy::ScopeId,
             _selection: &ModelSelection,
             _candidates: &[ModelBinding],
-        ) -> Result<ResolvedPublicationModels, String> {
-            if workspace != self.expected_workspace {
-                return Err(format!("unexpected Workspace {workspace}"));
+        ) -> Result<ResolvedPublicationModels, PublicationResolutionError> {
+            if workspace.as_str() != self.expected_workspace {
+                return Err(format!("unexpected Workspace {workspace}").into());
             }
             Ok(self.output.clone())
         }
@@ -186,7 +196,7 @@ mod tests {
         };
         let draft = prepare_agent_publication(
             &resolver,
-            "workspace-real",
+            &awaken_tenancy::ScopeId::from("workspace-real"),
             revision(ModelSelection::Auto, Vec::new()),
         )
         .await
@@ -206,11 +216,30 @@ mod tests {
         };
         let error = prepare_agent_publication(
             &resolver,
-            "workspace-a",
+            &awaken_tenancy::ScopeId::from("workspace-a"),
             revision(ModelSelection::Pinned(primary), vec![fallback]),
         )
         .await
         .unwrap_err();
         assert!(error.to_string().contains("fallback candidates"));
+    }
+
+    #[tokio::test]
+    async fn duplicate_complete_bindings_reject_the_entire_publication() {
+        let binding = ModelBinding::new("provider", "model", "genai");
+        let resolver = FixedResolver {
+            expected_workspace: "workspace-a",
+            output: ResolvedPublicationModels::host(binding.clone(), vec![binding], None, None),
+        };
+
+        let error = prepare_agent_publication(
+            &resolver,
+            &awaken_tenancy::ScopeId::from("workspace-a"),
+            revision(ModelSelection::Auto, Vec::new()),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("duplicate model candidate"));
     }
 }

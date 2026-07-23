@@ -2,7 +2,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_config_service::{
-    ConfigService, ModelPublicationResolver, ResolvedPublicationModels, StaticToolCatalog,
+    ConfigService, ModelPublicationResolver, PublicationResolutionError, ResolvedPublicationModels,
+    StaticToolCatalog,
 };
 use awaken_config_store::{ModelSelection, SqliteConfigStore};
 use awaken_runtime_contract::resolved::ModelBinding;
@@ -20,10 +21,10 @@ struct TestModelResolver;
 impl ModelPublicationResolver for TestModelResolver {
     async fn resolve_models(
         &self,
-        _workspace: &str,
+        _workspace: &ScopeId,
         selection: &ModelSelection,
         candidates: &[ModelBinding],
-    ) -> Result<ResolvedPublicationModels, String> {
+    ) -> Result<ResolvedPublicationModels, PublicationResolutionError> {
         let primary = selection
             .resolved()
             .cloned()

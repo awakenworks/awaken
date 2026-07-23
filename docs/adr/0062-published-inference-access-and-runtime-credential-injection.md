@@ -202,3 +202,27 @@ part of the resulting domain language.
   materialize a stale pin.
 - TypeScript E2E exercises the serialized snapshot through registered Worker
   claim/commit transport; anonymous claimed-commit remains an exact `401` check.
+
+## Amendment: hosted composition and model-level override (2026-07-23)
+
+The earlier removal note for
+`run_with_inference_materializer_and_upstream` applied to an unused overload.
+A hosted composition now has a concrete consumer and uses the deliberately named
+`run_with_upstream_and_inference_materializer` entrypoint. It accepts one already
+configured `WorkerUpstream`; registration and every later Worker transport clone
+retain that client's mTLS/security properties and logical Worker identity. This
+does not add a second execution path: both convenience and hosted entrypoints
+delegate to the same private `run_configured` lifecycle.
+
+An explicit `model_ref_override` remains a model selector rather than a Provider
+account selector. Selection now retains every complete published binding for that
+model in publication order, allowing clean fallback between pinned accounts/routes
+without admitting another model. An override with no published match still fails
+before inference. Full `ModelBinding` equality is the shared deduplication and
+lookup identity; publication rejects an exact duplicate.
+
+Worker realization capabilities remain an open string vocabulary, but their
+canonical constants live in `awaken-worker-contract`. Coordinator placement and
+installed materializers consume those constants rather than maintaining parallel
+string literals. The strings describe Worker capability, not a snapshot wire
+scheme.

@@ -596,10 +596,11 @@ mod tests {
     impl ModelPublicationResolver for FirstOfferingResolver {
         async fn resolve_models(
             &self,
-            _workspace: &str,
+            _workspace: &awaken_tenancy::ScopeId,
             selection: &ModelSelection,
             fallbacks: &[ModelBinding],
-        ) -> Result<ResolvedPublicationModels, String> {
+        ) -> Result<ResolvedPublicationModels, awaken_config_service::PublicationResolutionError>
+        {
             let (primary, fallbacks) = if let Some(primary) = selection.resolved() {
                 (primary.clone(), fallbacks.to_vec())
             } else {
@@ -608,7 +609,7 @@ mod tests {
                 });
                 let primary = offerings
                     .next()
-                    .ok_or_else(|| "no provider-backed model in the catalog".to_string())?;
+                    .ok_or(awaken_config_service::PublicationResolutionError::MissingPrimary)?;
                 let binding = |offering: &Offering| {
                     ModelBinding::new(&offering.provider_id.0, &offering.model_id, "genai")
                 };

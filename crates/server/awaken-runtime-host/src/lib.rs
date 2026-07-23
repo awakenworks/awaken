@@ -116,7 +116,7 @@ pub use crate::acp_provision::PublishedAcpLaunchResolver;
 pub use crate::acp_serve::{AcpServeHost, AcpStop, AcpTurn};
 pub use crate::binding_resolver::{
     AssistantBindingReconciler, ConfigServiceReconciler, ModelPublicationResolver,
-    ResolvedPublicationModels,
+    PublicationResolutionError, ResolvedPublicationModels,
 };
 pub use crate::capabilities::capabilities_router;
 pub use crate::config::{
@@ -152,7 +152,10 @@ pub use crate::durable_ops::durable_ops_router;
 pub use awaken_env_store::{PostgresEnvRegistry, SqliteEnvRegistry};
 // The durable session-repository backends now live in `awaken-session-store` (a
 // stores/ leaf); re-exported so composition roots keep their import paths.
-pub use awaken_run_ingress::{HttpDispatchQueue, worker_dispatch_store};
+pub use awaken_run_ingress::{
+    HOST_EXECUTOR_CAPABILITY, HttpDispatchQueue, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY,
+    worker_dispatch_store,
+};
 pub use awaken_session_store::{PostgresManagedSessionRepository, SqliteManagedSessionRepository};
 
 /// Select the local Managed Session repository from the runtime durability root.

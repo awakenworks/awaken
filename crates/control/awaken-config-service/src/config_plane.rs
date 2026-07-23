@@ -114,7 +114,7 @@ impl ConfigService {
     /// the edge resolves the catalog for the request scope).
     pub async fn validate(
         &self,
-        workspace: &str,
+        workspace: &ScopeId,
         config: &AgentConfig,
         catalog: &[ToolDescriptor],
     ) -> Result<(), ValidationIssue> {
@@ -234,7 +234,7 @@ impl ConfigService {
     /// its `Auto` selection persists so the reconciler can re-resolve it later.
     pub async fn publish(
         &self,
-        workspace: &str,
+        workspace: &ScopeId,
         registry: &dyn ConfigRegistry,
         id: &str,
         catalog: &[ToolDescriptor],
@@ -272,7 +272,7 @@ impl ConfigService {
             return Err(PublishError::StaleRevision(current_revision));
         }
         self.installed
-            .install(workspace, id, source_revision, snapshot);
+            .install(workspace.as_str(), id, source_revision, snapshot);
         Ok(publication)
     }
 
@@ -284,7 +284,7 @@ impl ConfigService {
     /// drives from the catalog write path.
     pub async fn reconcile(
         &self,
-        workspace: &str,
+        workspace: &ScopeId,
         registry: &dyn ConfigRegistry,
         id: &str,
         catalog: &[ToolDescriptor],
@@ -369,7 +369,11 @@ impl ConfigPlane {
         config: &AgentConfig,
     ) -> Result<(), ValidationIssue> {
         self.service
-            .validate(execution_workspace, config, &self.catalog_for(scope))
+            .validate(
+                &ScopeId::from(execution_workspace),
+                config,
+                &self.catalog_for(scope),
+            )
             .await
     }
 
@@ -525,7 +529,7 @@ impl ConfigPlane {
     ) -> Result<StoredPublication, PublishError> {
         self.service
             .publish(
-                execution_workspace,
+                &ScopeId::from(execution_workspace),
                 &self.registry_for(configuration_scope),
                 id,
                 &self.catalog_for(configuration_scope),
@@ -556,7 +560,7 @@ impl ConfigPlane {
     ) -> Result<bool, String> {
         self.service
             .reconcile(
-                execution_workspace,
+                &ScopeId::from(execution_workspace),
                 &self.registry_for(configuration_scope),
                 id,
                 &self.catalog_for(configuration_scope),
@@ -796,9 +800,15 @@ mod resource_prompt_tests {
     use awaken_config_store::{ConfigStoreError, ModelSelection, SqliteConfigStore};
     use awaken_runtime_contract::resolved::ContextPolicy;
 
-    use crate::binding_resolver::{ModelPublicationResolver, ResolvedPublicationModels};
+    use crate::binding_resolver::{
+        ModelPublicationResolver, PublicationResolutionError, ResolvedPublicationModels,
+    };
     use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate};
     use awaken_tenancy::WorkspaceScope;
+
+    fn scope(id: &str) -> ScopeId {
+        ScopeId::from(id)
+    }
 
     fn agent_config(id: &str) -> AgentConfig {
         AgentConfig {
@@ -826,7 +836,7 @@ mod resource_prompt_tests {
     async fn resolve_config(service: &ConfigService, config: AgentConfig) -> AgentConfig {
         prepare_agent_publication(
             service.model_publication_resolver.as_ref(),
-            DEFAULT_SCOPE,
+            &scope(DEFAULT_SCOPE),
             AgentConfigRevision {
                 config,
                 revision: 1,
@@ -842,10 +852,10 @@ mod resource_prompt_tests {
     impl ModelPublicationResolver for FakeResolver {
         async fn resolve_models(
             &self,
-            _workspace: &str,
+            _workspace: &ScopeId,
             selection: &ModelSelection,
             candidates: &[ModelBinding],
-        ) -> Result<ResolvedPublicationModels, String> {
+        ) -> Result<ResolvedPublicationModels, PublicationResolutionError> {
             let (primary, candidates) = selection.resolved().map_or_else(
                 || {
                     (
@@ -871,10 +881,10 @@ mod resource_prompt_tests {
     impl ModelPublicationResolver for FakeProviderResolver {
         async fn resolve_models(
             &self,
-            workspace: &str,
+            workspace: &ScopeId,
             selection: &ModelSelection,
             candidates: &[ModelBinding],
-        ) -> Result<ResolvedPublicationModels, String> {
+        ) -> Result<ResolvedPublicationModels, PublicationResolutionError> {
             let primary = selection
                 .resolved()
                 .cloned()
@@ -884,7 +894,7 @@ mod resource_prompt_tests {
                     binding.clone(),
                     "provider@2",
                     "endpoint@4",
-                    workspace,
+                    workspace.clone(),
                     Some(awaken_runtime_contract::CredentialAccess {
                         credential: awaken_runtime_contract::CredentialRef {
                             id: format!("credential-{workspace}"),
@@ -1144,7 +1154,7 @@ mod resource_prompt_tests {
     #[tokio::test]
     async fn publish_maps_a_registry_read_failure_to_store() {
         let err = test_service()
-            .publish(DEFAULT_SCOPE, &FailingRegistry, "a", &[])
+            .publish(&scope(DEFAULT_SCOPE), &FailingRegistry, "a", &[])
             .await
             .unwrap_err();
         assert!(matches!(err, PublishError::Store(_)), "got {err:?}");
@@ -1154,7 +1164,7 @@ mod resource_prompt_tests {
     #[tokio::test]
     async fn publish_maps_a_publication_persist_failure_to_store() {
         let err = test_service()
-            .publish(DEFAULT_SCOPE, &PublishFailRegistry, "a", &[])
+            .publish(&scope(DEFAULT_SCOPE), &PublishFailRegistry, "a", &[])
             .await
             .unwrap_err();
         assert!(matches!(err, PublishError::Store(_)), "got {err:?}");
@@ -1164,7 +1174,7 @@ mod resource_prompt_tests {
     async fn publish_never_installs_an_artifact_from_a_stale_source_revision() {
         let service = test_service();
         let err = service
-            .publish(DEFAULT_SCOPE, &StalePublishRegistry, "a", &[])
+            .publish(&scope(DEFAULT_SCOPE), &StalePublishRegistry, "a", &[])
             .await
             .unwrap_err();
 
@@ -1180,7 +1190,7 @@ mod resource_prompt_tests {
     async fn reconcile_propagates_a_registry_read_failure() {
         assert!(
             test_service()
-                .reconcile(DEFAULT_SCOPE, &FailingRegistry, "a", &[])
+                .reconcile(&scope(DEFAULT_SCOPE), &FailingRegistry, "a", &[])
                 .await
                 .is_err()
         );
@@ -1219,10 +1229,10 @@ mod resource_prompt_tests {
         impl ModelPublicationResolver for WindowResolver {
             async fn resolve_models(
                 &self,
-                _workspace: &str,
+                _workspace: &ScopeId,
                 selection: &ModelSelection,
                 candidates: &[ModelBinding],
-            ) -> Result<ResolvedPublicationModels, String> {
+            ) -> Result<ResolvedPublicationModels, PublicationResolutionError> {
                 Ok(ResolvedPublicationModels::host(
                     selection
                         .resolved()
@@ -1301,15 +1311,16 @@ mod resource_prompt_tests {
         impl ModelPublicationResolver for WindowResolver {
             async fn resolve_models(
                 &self,
-                _workspace: &str,
+                _workspace: &ScopeId,
                 selection: &ModelSelection,
                 candidates: &[ModelBinding],
-            ) -> Result<ResolvedPublicationModels, String> {
+            ) -> Result<ResolvedPublicationModels, PublicationResolutionError> {
                 Ok(ResolvedPublicationModels::host(
-                    selection
-                        .resolved()
-                        .cloned()
-                        .ok_or_else(|| "test requires a pinned model".to_string())?,
+                    selection.resolved().cloned().ok_or_else(|| {
+                        PublicationResolutionError::Invalid(
+                            "test requires a pinned model".to_string(),
+                        )
+                    })?,
                     candidates.to_vec(),
                     Some(200_000),
                     None,
@@ -1560,10 +1571,10 @@ mod resource_prompt_tests {
     impl ModelPublicationResolver for ErrResolver {
         async fn resolve_models(
             &self,
-            _workspace: &str,
+            _workspace: &ScopeId,
             _selection: &ModelSelection,
             _candidates: &[ModelBinding],
-        ) -> Result<ResolvedPublicationModels, String> {
+        ) -> Result<ResolvedPublicationModels, PublicationResolutionError> {
             Err("no provider-backed model in the catalog".into())
         }
     }
@@ -1864,7 +1875,7 @@ mod resource_prompt_tests {
         a.instructions = "workspace A".into();
         ConfigRegistry::put_config(&registry_a, &a).await.unwrap();
         service
-            .publish("wrkspc_a", &registry_a, &a.id, &[])
+            .publish(&scope("wrkspc_a"), &registry_a, &a.id, &[])
             .await
             .unwrap();
 
@@ -1872,7 +1883,7 @@ mod resource_prompt_tests {
         b.instructions = "workspace B".into();
         ConfigRegistry::put_config(&registry_b, &b).await.unwrap();
         service
-            .publish("wrkspc_b", &registry_b, &b.id, &[])
+            .publish(&scope("wrkspc_b"), &registry_b, &b.id, &[])
             .await
             .unwrap();
 

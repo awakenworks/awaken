@@ -4,11 +4,14 @@ pub use awaken_runtime_host::ConfigPlane
 pub use awaken_runtime_host::ConfigService
 pub use awaken_runtime_host::ConfigServiceAgentSource
 pub use awaken_runtime_host::ConfigServiceReconciler
+pub use awaken_runtime_host::HOST_EXECUTOR_CAPABILITY
 pub use awaken_runtime_host::HttpDispatchQueue
 pub use awaken_runtime_host::ModelPublicationResolver
+pub use awaken_runtime_host::PROVIDER_CREDENTIAL_SOURCE_CAPABILITY
 pub use awaken_runtime_host::PostgresEnvRegistry
 pub use awaken_runtime_host::PostgresManagedSessionRepository
 pub use awaken_runtime_host::PostgresWorkQueue
+pub use awaken_runtime_host::PublicationResolutionError
 pub use awaken_runtime_host::PublishError
 pub use awaken_runtime_host::RESERVED_ADMIN_SCOPE
 pub use awaken_runtime_host::ResolvedPublicationModels

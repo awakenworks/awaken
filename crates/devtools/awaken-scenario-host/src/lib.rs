@@ -32,22 +32,23 @@ struct ScenarioHostModelResolver {
 impl awaken_runtime_host::ModelPublicationResolver for ScenarioHostModelResolver {
     async fn resolve_models(
         &self,
-        _workspace: &str,
+        _workspace: &awaken_tenancy::ScopeId,
         selection: &awaken_config_store::ModelSelection,
         fallbacks: &[ModelBinding],
-    ) -> Result<awaken_runtime_host::ResolvedPublicationModels, String> {
-        let catalog = self
-            .catalog
-            .snapshot()
-            .await
-            .map_err(|error| error.to_string())?;
+    ) -> Result<
+        awaken_runtime_host::ResolvedPublicationModels,
+        awaken_runtime_host::PublicationResolutionError,
+    > {
+        let catalog = self.catalog.snapshot().await.map_err(|error| {
+            awaken_runtime_host::PublicationResolutionError::CatalogUnavailable(error.to_string())
+        })?;
         let (primary, fallbacks) = if let Some(primary) = selection.resolved() {
             (primary.clone(), fallbacks.to_vec())
         } else {
             let mut offerings = catalog.offerings.iter();
             let primary = offerings
                 .next()
-                .ok_or_else(|| "scenario catalog has no model offering".to_string())?;
+                .ok_or(awaken_runtime_host::PublicationResolutionError::MissingPrimary)?;
             let binding = |offering: &awaken_model_catalog::Offering| {
                 ModelBinding::new(&offering.provider_id.0, &offering.model_id, "genai")
             };
@@ -397,7 +398,7 @@ pub async fn run_echo_worker(upstream: &str) -> Result<(), Box<dyn std::error::E
 
     impl InferenceExecutorMaterializer for EchoWorkerProvider {
         fn supported_access_schemes(&self) -> &'static [&'static str] {
-            &["host-executor/v1"]
+            &[awaken_runtime_host::HOST_EXECUTOR_CAPABILITY]
         }
 
         fn materialize_pinned(
@@ -1104,7 +1105,7 @@ pub async fn build_resolved_real_router() -> Router {
     );
     let published = awaken_runtime_host::ModelPublicationResolver::resolve_models(
         &resolver,
-        "ws",
+        &awaken_tenancy::ScopeId::from("ws"),
         &ModelSelection::Pinned(ModelBinding::new("anthropic", &model, "genai")),
         &[],
     )
@@ -1203,7 +1204,7 @@ pub async fn build_oauth_resolved_router() -> Router {
     );
     let published = awaken_runtime_host::ModelPublicationResolver::resolve_models(
         &resolver,
-        "ws",
+        &awaken_tenancy::ScopeId::from("ws"),
         &ModelSelection::Pinned(ModelBinding::new("anthropic", &model, "genai")),
         &[],
     )

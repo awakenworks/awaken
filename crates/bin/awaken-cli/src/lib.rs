@@ -145,17 +145,21 @@ struct ExactHostModelPublicationResolver {
 impl awaken_runtime_host::ModelPublicationResolver for ExactHostModelPublicationResolver {
     async fn resolve_models(
         &self,
-        _workspace: &str,
+        _workspace: &awaken_tenancy::ScopeId,
         selection: &awaken_config_store::ModelSelection,
         candidates: &[awaken_runtime_contract::resolved::ModelBinding],
-    ) -> Result<awaken_runtime_host::ResolvedPublicationModels, String> {
+    ) -> Result<
+        awaken_runtime_host::ResolvedPublicationModels,
+        awaken_runtime_host::PublicationResolutionError,
+    > {
         if let Some(authored) = selection.resolved()
             && authored != &self.binding
         {
             return Err(format!(
                 "scenario host executor `{}` cannot publish model `{}`",
                 self.binding.model_ref, authored.model_ref
-            ));
+            )
+            .into());
         }
         if !candidates.is_empty() {
             return Err("a single host executor cannot publish fallback candidates".into());

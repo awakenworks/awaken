@@ -1,4 +1,17 @@
 pub mod awaken_config_service
+pub enum awaken_config_service::PublicationResolutionError
+pub awaken_config_service::PublicationResolutionError::CandidateUnavailable
+pub awaken_config_service::PublicationResolutionError::CandidateUnavailable::binding: awaken_runtime_contract::resolved::ModelBinding
+pub awaken_config_service::PublicationResolutionError::CandidateUnavailable::reason: alloc::string::String
+pub awaken_config_service::PublicationResolutionError::CatalogUnavailable(alloc::string::String)
+pub awaken_config_service::PublicationResolutionError::CredentialInventoryUnavailable(alloc::string::String)
+pub awaken_config_service::PublicationResolutionError::DuplicateBinding(awaken_runtime_contract::resolved::ModelBinding)
+pub awaken_config_service::PublicationResolutionError::Invalid(alloc::string::String)
+pub awaken_config_service::PublicationResolutionError::MissingPrimary
+impl core::convert::From<&str> for awaken_config_service::PublicationResolutionError
+pub fn awaken_config_service::PublicationResolutionError::from(&str) -> Self
+impl core::convert::From<alloc::string::String> for awaken_config_service::PublicationResolutionError
+pub fn awaken_config_service::PublicationResolutionError::from(alloc::string::String) -> Self
 pub enum awaken_config_service::PublishError
 pub awaken_config_service::PublishError::Archived(alloc::string::String)
 pub awaken_config_service::PublishError::Compile(alloc::string::String)
@@ -44,11 +57,11 @@ pub fn awaken_config_service::ConfigService::installed_in(&self, &str, &str) -> 
 pub async fn awaken_config_service::ConfigService::list(&self, &dyn awaken_config_store::store::ConfigRegistry) -> core::result::Result<alloc::vec::Vec<awaken_config_store::config::AgentConfig>, alloc::string::String>
 pub async fn awaken_config_service::ConfigService::list_revisions(&self, &dyn awaken_config_store::store::ConfigRegistry, &str) -> core::result::Result<alloc::vec::Vec<awaken_config_store::store::AgentConfigRevision>, alloc::string::String>
 pub fn awaken_config_service::ConfigService::new(alloc::sync::Arc<dyn awaken_config_service::ModelPublicationResolver>) -> Self
-pub async fn awaken_config_service::ConfigService::publish(&self, &str, &dyn awaken_config_store::store::ConfigRegistry, &str, &[awaken_runtime_contract::resolved::ToolDescriptor]) -> core::result::Result<awaken_config_store::store::StoredPublication, awaken_config_service::PublishError>
+pub async fn awaken_config_service::ConfigService::publish(&self, &awaken_tenancy::ScopeId, &dyn awaken_config_store::store::ConfigRegistry, &str, &[awaken_runtime_contract::resolved::ToolDescriptor]) -> core::result::Result<awaken_config_store::store::StoredPublication, awaken_config_service::PublishError>
 pub async fn awaken_config_service::ConfigService::put(&self, &dyn awaken_config_store::store::ConfigRegistry, &awaken_config_store::config::AgentConfig) -> core::result::Result<(), alloc::string::String>
 pub async fn awaken_config_service::ConfigService::put_if_revision(&self, &dyn awaken_config_store::store::ConfigRegistry, &awaken_config_store::config::AgentConfig, u64) -> core::result::Result<awaken_config_store::store::ConfigWrite, alloc::string::String>
-pub async fn awaken_config_service::ConfigService::reconcile(&self, &str, &dyn awaken_config_store::store::ConfigRegistry, &str, &[awaken_runtime_contract::resolved::ToolDescriptor]) -> core::result::Result<bool, alloc::string::String>
-pub async fn awaken_config_service::ConfigService::validate(&self, &str, &awaken_config_store::config::AgentConfig, &[awaken_runtime_contract::resolved::ToolDescriptor]) -> core::result::Result<(), awaken_config_service::ValidationIssue>
+pub async fn awaken_config_service::ConfigService::reconcile(&self, &awaken_tenancy::ScopeId, &dyn awaken_config_store::store::ConfigRegistry, &str, &[awaken_runtime_contract::resolved::ToolDescriptor]) -> core::result::Result<bool, alloc::string::String>
+pub async fn awaken_config_service::ConfigService::validate(&self, &awaken_tenancy::ScopeId, &awaken_config_store::config::AgentConfig, &[awaken_runtime_contract::resolved::ToolDescriptor]) -> core::result::Result<(), awaken_config_service::ValidationIssue>
 pub fn awaken_config_service::ConfigService::with_resources(self, alloc::sync::Arc<dyn awaken_config_resolver::stores::AgentInputBindingRepository>) -> Self
 impl awaken_config_service::ConfigService
 pub async fn awaken_config_service::ConfigService::warm_install(&self, &dyn awaken_config_store::store::ScopedConfigRegistry, &awaken_tenancy::ScopeId) -> usize
@@ -86,7 +99,7 @@ pub fn awaken_config_service::AssistantBindingReconciler::reconcile<'life0, 'asy
 impl awaken_config_service::AssistantBindingReconciler for awaken_config_service::ConfigServiceReconciler
 pub fn awaken_config_service::ConfigServiceReconciler::reconcile<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_config_service::ModelPublicationResolver: core::marker::Send + core::marker::Sync
-pub fn awaken_config_service::ModelPublicationResolver::resolve_models<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 awaken_config_store::config::ModelSelection, &'life3 [awaken_runtime_contract::resolved::ModelBinding]) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_config_service::ResolvedPublicationModels, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
+pub fn awaken_config_service::ModelPublicationResolver::resolve_models<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId, &'life2 awaken_config_store::config::ModelSelection, &'life3 [awaken_runtime_contract::resolved::ModelBinding]) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_config_service::ResolvedPublicationModels, awaken_config_service::PublicationResolutionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub trait awaken_config_service::ToolCatalogSource: core::marker::Send + core::marker::Sync
 pub fn awaken_config_service::ToolCatalogSource::catalog_for(&self, &awaken_tenancy::ScopeId) -> alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
 impl awaken_config_service::ToolCatalogSource for awaken_config_service::ScopedToolCatalog

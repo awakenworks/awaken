@@ -2,15 +2,19 @@
 //! and the [`CompletionRegistry`] event-wakeup machinery.
 
 use super::*;
-use awaken_run_ingress::PlacementRequirements;
+use awaken_run_ingress::{
+    HOST_EXECUTOR_CAPABILITY, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY, PlacementRequirements,
+};
 use awaken_runtime_contract::CredentialInjectionKind;
 use std::collections::{BTreeSet, HashMap};
 
-fn model_realization_capability(
+pub(crate) fn model_realization_capability(
     candidate: &awaken_runtime_contract::resolved::ResolvedModelCandidate,
 ) -> &'static str {
     match &candidate.provisioning {
-        awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor => "host-executor/v1",
+        awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor => {
+            HOST_EXECUTOR_CAPABILITY
+        }
         awaken_runtime_contract::resolved::ModelProvisioning::Provider {
             credential: Some(credential),
             ..
@@ -18,7 +22,7 @@ fn model_realization_capability(
             awaken_run_ingress::WORKER_LOCAL_CREDENTIALS_CAPABILITY
         }
         awaken_runtime_contract::resolved::ModelProvisioning::Provider { .. } => {
-            "credential-source/v1"
+            PROVIDER_CREDENTIAL_SOURCE_CAPABILITY
         }
     }
 }
@@ -289,7 +293,10 @@ impl CompletionSink for CompletionRegistry {
 
 #[cfg(test)]
 mod completion_tests {
-    use super::{CompletionRegistry, RunId, remote_worker_placement};
+    use super::{
+        CompletionRegistry, HOST_EXECUTOR_CAPABILITY, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY, RunId,
+        remote_worker_placement,
+    };
     use awaken_agent_contract::agent::run::RunState;
     use awaken_run_ingress::CompletionSink;
     use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate};
@@ -353,9 +360,13 @@ mod completion_tests {
         assert!(
             placement
                 .required_capabilities
-                .contains("credential-source/v1")
+                .contains(PROVIDER_CREDENTIAL_SOURCE_CAPABILITY)
         );
-        assert!(placement.required_capabilities.contains("host-executor/v1"));
+        assert!(
+            placement
+                .required_capabilities
+                .contains(HOST_EXECUTOR_CAPABILITY)
+        );
     }
 
     #[test]

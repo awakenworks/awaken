@@ -154,7 +154,7 @@ impl LlmExecutor for PinnedCandidateExecutor {
 
 impl InferenceExecutorMaterializer for CredentialInferenceMaterializer {
     fn supported_access_schemes(&self) -> &'static [&'static str] {
-        &["credential-source/v1"]
+        &[awaken_runtime_host::PROVIDER_CREDENTIAL_SOURCE_CAPABILITY]
     }
 
     fn materialize(
@@ -329,7 +329,7 @@ mod tests {
     async fn resolve_activation(
         resolver: &CatalogModelPublicationResolver,
         activation: &RunActivation,
-    ) -> Result<ResolvedPublicationModels, String> {
+    ) -> Result<ResolvedPublicationModels, awaken_runtime_host::PublicationResolutionError> {
         let (primary, fallbacks) = if let Some(model_ref) = activation.model_ref_override.as_ref() {
             (
                 activation
@@ -337,7 +337,9 @@ mod tests {
                     .resolved_spec
                     .candidate_for_model(model_ref)
                     .ok_or_else(|| {
-                        format!("model {model_ref} is outside the published candidate set")
+                        awaken_runtime_host::PublicationResolutionError::Invalid(format!(
+                            "model {model_ref} is outside the published candidate set"
+                        ))
                     })?
                     .binding
                     .clone(),
@@ -361,7 +363,11 @@ mod tests {
             )
         };
         resolver
-            .resolve_models("ws", &ModelSelection::Pinned(primary), &fallbacks)
+            .resolve_models(
+                &awaken_tenancy::ScopeId::from("ws"),
+                &ModelSelection::Pinned(primary),
+                &fallbacks,
+            )
             .await
     }
 
@@ -388,7 +394,7 @@ mod tests {
         .await
         .expect_err("a partial candidate pool must not be published");
 
-        assert!(error.contains("missing-fallback"));
+        assert!(error.to_string().contains("missing-fallback"));
     }
 
     #[tokio::test]
@@ -522,7 +528,11 @@ mod tests {
         let model = ModelBinding::new("anthropic", "claude-x", "genai");
         let resolved = p
             .resolver
-            .resolve_models("workspace-b", &ModelSelection::Pinned(model), &[])
+            .resolve_models(
+                &awaken_tenancy::ScopeId::from("workspace-b"),
+                &ModelSelection::Pinned(model),
+                &[],
+            )
             .await
             .unwrap();
         let ModelProvisioning::Provider {
@@ -559,7 +569,7 @@ mod tests {
         let mut resolved = p
             .resolver
             .resolve_models(
-                "ws",
+                &awaken_tenancy::ScopeId::from("ws"),
                 &ModelSelection::Pinned(ModelBinding::new("anthropic", "claude-x", "genai")),
                 &[],
             )

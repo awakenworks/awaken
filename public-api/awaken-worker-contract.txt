@@ -165,6 +165,8 @@ pub fn awaken_worker_contract::WorkerSnapshot::accepts(&self, &awaken_worker_con
 impl core::convert::From<&awaken_worker_contract::WorkerSnapshot> for awaken_worker_contract::WorkerAssignment
 pub fn awaken_worker_contract::WorkerAssignment::from(&awaken_worker_contract::WorkerSnapshot) -> Self
 pub const awaken_worker_contract::CURRENT_CONTRACT_VERSION: u32
+pub const awaken_worker_contract::HOST_EXECUTOR_CAPABILITY: &str
+pub const awaken_worker_contract::PROVIDER_CREDENTIAL_SOURCE_CAPABILITY: &str
 pub const awaken_worker_contract::REPOSITORY_CREDENTIALS_CAPABILITY: &str
 pub const awaken_worker_contract::SESSION_RESOURCES_CAPABILITY: &str
 pub const awaken_worker_contract::WORKER_LOCAL_CREDENTIALS_CAPABILITY: &str

@@ -2,7 +2,9 @@ pub mod awaken_run_ingress_contract
 pub use awaken_run_ingress_contract::AssignmentRejection
 pub use awaken_run_ingress_contract::ExecutionLocation
 pub use awaken_run_ingress_contract::ExecutionScopeRef
+pub use awaken_run_ingress_contract::HOST_EXECUTOR_CAPABILITY
 pub use awaken_run_ingress_contract::LeastLoadedPolicy
+pub use awaken_run_ingress_contract::PROVIDER_CREDENTIAL_SOURCE_CAPABILITY
 pub use awaken_run_ingress_contract::PlacementContext
 pub use awaken_run_ingress_contract::PlacementError
 pub use awaken_run_ingress_contract::PlacementPolicy

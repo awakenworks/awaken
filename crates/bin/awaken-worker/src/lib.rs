@@ -140,14 +140,21 @@ pub async fn run_with_inference_materializer(
     upstream: &str,
     materializer: Arc<dyn InferenceExecutorMaterializer>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    run_with_upstream_and_inference_materializer(WorkerUpstream::new(upstream), materializer).await
+}
+
+/// Run a secretless Worker over one caller-configured control transport.
+///
+/// Managed compositions use this entrypoint so the same [`WorkerUpstream`]
+/// (including its mTLS client and logical Worker id) is cloned through
+/// registration, claim/renew/settle, claimed commit, and ordinary commit. This
+/// function never reconstructs the transport from its URL.
+pub async fn run_with_upstream_and_inference_materializer(
+    upstream: WorkerUpstream,
+    materializer: Arc<dyn InferenceExecutorMaterializer>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let resources = shared_resource_wiring(None).await?;
-    run_configured(
-        WorkerUpstream::new(upstream),
-        Some(materializer),
-        None,
-        resources,
-    )
-    .await
+    run_configured(upstream, Some(materializer), None, resources).await
 }
 
 async fn run_configured(

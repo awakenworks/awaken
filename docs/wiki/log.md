@@ -1,5 +1,8 @@
 # Wiki Update Log
 
+- **Update**: Amended ADR-0062 with the hosted configured-upstream composition,
+  same-model complete-binding fallback semantics, and canonical Worker realization
+  capability vocabulary.
 - **Update**: Accepted ADR-0062: inference access is resolved once by Workspace at publication, fingerprinted in the executable snapshot, and only its published credential-injection contract reaches Runtime/Worker.
 
 ## 2026-07-20

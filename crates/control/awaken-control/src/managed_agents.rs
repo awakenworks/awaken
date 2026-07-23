@@ -445,10 +445,11 @@ mod tests {
     impl ModelPublicationResolver for TestModelResolver {
         async fn resolve_models(
             &self,
-            _workspace: &str,
+            _workspace: &awaken_tenancy::ScopeId,
             selection: &ModelSelection,
             candidates: &[ModelBinding],
-        ) -> Result<ResolvedPublicationModels, String> {
+        ) -> Result<ResolvedPublicationModels, awaken_config_service::PublicationResolutionError>
+        {
             let primary = selection
                 .resolved()
                 .cloned()
