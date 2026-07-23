@@ -94,7 +94,7 @@ mod worker_control_client;
 pub use crate::commit_backend::init_shared_postgres_commit;
 pub use crate::credential_materializer::PinnedCredentialMaterializer;
 pub use crate::dispatch_backend::{ensure_durable_backend, init_shared_postgres_dispatch};
-pub use crate::host::{HostResume, ResourcePlanePorts, SharedHost};
+pub use crate::host::{AttemptExecutorDecorator, HostResume, ResourcePlanePorts, SharedHost};
 pub use crate::postgres_migration_lock::PostgresMigrationLock;
 pub use crate::worker_control_client::WorkerControlClient;
 // The sandboxed ACP channel source (bwrap-confined agent launch) and the shared

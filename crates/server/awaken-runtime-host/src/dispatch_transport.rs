@@ -238,6 +238,10 @@ pub fn dispatch_transport_router_with_service(service: Arc<WorkerDispatchService
         .route("/v1/worker/dispatch/renew", post(renew))
         .route("/v1/worker/dispatch/renew_owned", post(renew_owned))
         .route("/v1/worker/dispatch/bind_sandbox", post(bind_sandbox))
+        .route(
+            "/v1/worker/dispatch/claim_is_current",
+            post(claim_is_current),
+        )
         .route("/v1/worker/dispatch/settle", post(settle))
         .route("/v1/worker/register", post(register_worker))
         .route("/v1/worker/heartbeat", post(heartbeat_worker))
@@ -298,6 +302,30 @@ struct RecoveryReq {
     claim: RunClaim,
     #[serde(default)]
     identity: Option<WorkerIdentity>,
+}
+
+async fn claim_is_current(
+    State(service): State<Arc<WorkerDispatchService>>,
+    Extension(worker): Extension<VerifiedWorkerContext>,
+    Json(request): Json<RecoveryReq>,
+) -> (StatusCode, Json<Value>) {
+    let result = async {
+        let authority =
+            claim_authority(&service, &worker, request.identity.as_ref(), false).await?;
+        if authority.owner != request.claim.owner {
+            return Err(HostError::bad_request(
+                "authenticated worker does not own the claim",
+            ));
+        }
+        let current = service
+            .dispatch
+            .claim_is_current(&request.claim, authority.now_ms)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?;
+        Ok(json!({ "current": current }))
+    }
+    .await;
+    respond(result)
 }
 
 async fn recovery_snapshot(

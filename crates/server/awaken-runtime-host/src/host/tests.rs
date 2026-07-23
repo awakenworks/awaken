@@ -530,7 +530,7 @@ async fn bound_executor_is_the_ordinary_run_execution_boundary() {
 }
 
 #[tokio::test]
-async fn host_attempt_executor_override_is_the_complete_session_boundary() {
+async fn host_application_decorator_wraps_the_complete_session_boundary() {
     use crate::run_exec::BoundRunExecutor;
     use awaken_runtime_contract::execution::{
         Result as ExecutionResult, RunAttemptExecutor, RunExecutor,
@@ -538,35 +538,54 @@ async fn host_attempt_executor_override_is_the_complete_session_boundary() {
     use awaken_runtime_contract::resume::ResumeCommand;
     use std::sync::atomic::Ordering;
 
-    struct InjectedAttemptExecutor(AtomicUsize);
+    struct ObservingAttemptExecutor {
+        calls: Arc<AtomicUsize>,
+        inner: Arc<dyn RunAttemptExecutor>,
+    }
 
     #[async_trait::async_trait]
-    impl RunExecutor for InjectedAttemptExecutor {
+    impl RunExecutor for ObservingAttemptExecutor {
         async fn execute(
             &self,
-            _activation: RunActivation,
-            _context: RuntimeRunContext,
+            activation: RunActivation,
+            context: RuntimeRunContext,
         ) -> ExecutionResult<RunState> {
-            self.0.fetch_add(1, Ordering::SeqCst);
-            Ok(RunState::Ended(EndCause::Stopped("injected".into())))
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.inner.execute(activation, context).await
         }
     }
 
     #[async_trait::async_trait]
-    impl RunAttemptExecutor for InjectedAttemptExecutor {
+    impl RunAttemptExecutor for ObservingAttemptExecutor {
         async fn resume(
             &self,
             activation: RunActivation,
-            _command: ResumeCommand,
+            command: ResumeCommand,
             context: RuntimeRunContext,
         ) -> ExecutionResult<RunState> {
-            self.execute(activation, context).await
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.inner.resume(activation, command, context).await
+        }
+
+        async fn cancel(
+            &self,
+            activation: RunActivation,
+            context: RuntimeRunContext,
+        ) -> ExecutionResult<()> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.inner.cancel(activation, context).await
         }
     }
 
-    let injected = Arc::new(InjectedAttemptExecutor(AtomicUsize::new(0)));
-    let host =
-        SharedHost::new(Arc::new(MemoryHostModel), "stub").with_attempt_executor(injected.clone());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let decorator_calls = calls.clone();
+    let host = SharedHost::new(Arc::new(MemoryHostModel), "stub")
+        .with_application_attempt_decorator(Arc::new(move |inner| {
+            Arc::new(ObservingAttemptExecutor {
+                calls: decorator_calls.clone(),
+                inner,
+            })
+        }));
     let ctx = host.ctx_for("injected-attempt", None).await.unwrap();
     let activation = RunActivation::new(
         RunId("injected-attempt-run".into()),
@@ -579,8 +598,8 @@ async fn host_attempt_executor_override_is_the_complete_session_boundary() {
         .await
         .unwrap();
 
-    assert_eq!(state, RunState::Ended(EndCause::Stopped("injected".into())));
-    assert_eq!(injected.0.load(Ordering::SeqCst), 1);
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

@@ -186,7 +186,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
 
     let authorizer = Arc::new(
         SignedWorkerRequestAuthorizer::new(credential)
-            .with_clock(clock)
+            .with_clock(clock.clone())
             .with_assertion_ttl_ms(10_000),
     );
     let bootstrap = WorkerUpstream::new(format!("http://{address}"))
@@ -245,5 +245,32 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     assert_eq!(
         claimed.lease.owner,
         registered.snapshot.identity.lease_owner()
+    );
+    let claim = awaken_run_ingress::RunClaim::from(&claimed.lease);
+    assert!(
+        queue
+            .claim_is_current(&claim, 10_000)
+            .await
+            .expect("signed exact-claim verification")
+    );
+    clock.set(20_000);
+    WorkerControlClient::new(upstream)
+        .heartbeat(
+            &registered.snapshot.identity,
+            WorkerHeartbeat {
+                sequence: 2,
+                ready: true,
+                in_flight: 1,
+                available_credentials: Default::default(),
+            },
+        )
+        .await
+        .expect("registry lease remains live while the dispatch lease expires");
+    clock.set(claimed.lease.expires_ms + 1);
+    assert!(
+        !queue
+            .claim_is_current(&claim, claimed.lease.expires_ms + 1)
+            .await
+            .expect("signed expired-claim verification")
     );
 }

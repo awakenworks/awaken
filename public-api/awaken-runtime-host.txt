@@ -298,7 +298,7 @@ pub fn awaken_runtime_host::SharedHost::thread_egress(&self) -> awaken_runtime_h
 pub fn awaken_runtime_host::SharedHost::thread_sandbox(&self) -> awaken_runtime_host::ThreadSandbox
 pub fn awaken_runtime_host::SharedHost::with_admin_tools(self, alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_agent_publications(self, alloc::sync::Arc<dyn awaken_runtime_contract::resolver::PublishedAgentSnapshotSource>) -> Self
-pub fn awaken_runtime_host::SharedHost::with_attempt_executor(self, alloc::sync::Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>) -> Self
+pub fn awaken_runtime_host::SharedHost::with_application_attempt_decorator(self, awaken_runtime_host::AttemptExecutorDecorator) -> Self
 pub fn awaken_runtime_host::SharedHost::with_capture_sink(self, alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::CaptureSink>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_client_tools(self, std::collections::hash::set::HashSet<alloc::string::String>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_compaction(self, usize, usize) -> Self
@@ -428,7 +428,9 @@ impl core::fmt::Debug for awaken_runtime_host::WorkerSigningCredential
 pub fn awaken_runtime_host::WorkerSigningCredential::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct awaken_runtime_host::WorkerUpstream
 impl awaken_runtime_host::WorkerUpstream
+pub fn awaken_runtime_host::WorkerUpstream::authorize_request(&self, &str, &str, reqwest::async_impl::request::RequestBuilder) -> core::result::Result<reqwest::async_impl::request::RequestBuilder, alloc::string::String>
 pub fn awaken_runtime_host::WorkerUpstream::base_url(&self) -> &str
+pub fn awaken_runtime_host::WorkerUpstream::http_client(&self) -> reqwest::async_impl::client::Client
 pub fn awaken_runtime_host::WorkerUpstream::new(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_runtime_host::WorkerUpstream::with_client(self, reqwest::async_impl::client::Client) -> Self
 pub fn awaken_runtime_host::WorkerUpstream::with_request_authorizer(self, alloc::sync::Arc<dyn awaken_run_ingress::transport_client::WorkerRequestAuthorizer>) -> Self
@@ -482,3 +484,4 @@ pub fn awaken_runtime_host::registered_worker_transport_router(alloc::sync::Arc<
 pub async fn awaken_runtime_host::resolve_sandbox_tier(awaken_runtime_host::SandboxTier, bool, &std::path::Path) -> core::result::Result<awaken_runtime_host::SandboxTier, alloc::string::String>
 pub fn awaken_runtime_host::skills_router(core::option::Option<alloc::sync::Arc<dyn awaken_resource_contract::SkillStore>>, alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourcePurgeScheduler>) -> axum::routing::Router
 pub fn awaken_runtime_host::worker_dispatch_store_with_upstream(&awaken_runtime_host::WorkerUpstream, awaken_worker_contract::WorkerIdentity) -> alloc::sync::Arc<awaken_run_ingress::any::AnyDispatchStore>
+pub type awaken_runtime_host::AttemptExecutorDecorator = alloc::sync::Arc<(dyn core::ops::function::Fn(alloc::sync::Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>) -> alloc::sync::Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor> + core::marker::Send + core::marker::Sync)>

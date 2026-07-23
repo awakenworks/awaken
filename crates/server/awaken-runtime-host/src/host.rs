@@ -66,6 +66,16 @@ use awaken_ext_goal::grader::{DEFAULT_JUDGE_INSTRUCTIONS, default_judge_agent};
 
 pub(crate) static BASE_SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// Application wrapper applied to each Session's authoritative
+/// Native/ACP/A2A attempt router.
+pub type AttemptExecutorDecorator = Arc<
+    dyn Fn(
+            Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>,
+        ) -> Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>
+        + Send
+        + Sync,
+>;
+
 /// A unique temp-dir base for a sub-agent sandbox provider. `kind` tags the use
 /// (e.g. `judge`, `deleg`); empty for the host's own provider.
 fn sub_base(kind: &str) -> PathBuf {
@@ -134,11 +144,9 @@ pub struct SharedHost {
     /// owns only the `RunAttemptExecutor` port and never names the A2A protocol.
     pub(crate) remote_attempt_executor:
         Option<Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>>,
-    /// Optional composition-root replacement for the complete attempt boundary.
-    /// Worker embedders use this to install one application-decorated executor;
-    /// ordinary hosts leave it empty and use the built-in Native/ACP/A2A router.
-    pub(crate) attempt_executor_override:
-        Option<Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>>,
+    /// Optional application wrapper around the complete per-Session attempt
+    /// router. It cannot replace or bypass the built-in backend registry.
+    pub(crate) application_attempt_decorator: Option<AttemptExecutorDecorator>,
     pub(crate) provider: LocalProvider,
     /// Provider for the Session-owned environment shared by Native/ACP/children.
     /// Kept separate from deliberately-fresh housekeeping sandboxes.

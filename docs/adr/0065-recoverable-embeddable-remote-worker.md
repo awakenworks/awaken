@@ -103,9 +103,19 @@ that service and does not manufacture a private `SharedHost` commit path.
 
 A public `WorkerNodeBuilder` assembles registration, heartbeat, claim, recovery,
 lease renewal, commit, settle/abandon, drain, quiesce, and deregistration. The
-application injects a neutral `RunAttemptExecutor` or decorator. Product
-envelopes, MCP capability tokens, resource ACLs, and business outcome mapping
-remain application-owned decorators and do not enter the Worker protocol.
+application supplies one registration-time decorator factory. After the Control
+Node allocates the exact Worker incarnation, the factory receives an immutable
+`RegisteredWorkerContext` carrying that registration and the same
+identity-bound transport used by Worker control. Its decorator wraps each
+Session's built-in Native/ACP/A2A `RunAttemptExecutor` router; it cannot replace
+the router through a second Worker assembly path.
+
+Run ingress captures the exact claim behind the neutral
+`AttemptOwnershipVerifier` installed in `RuntimeRunContext`. Application code can
+therefore fail closed immediately before an external side effect without
+receiving dispatch, Worker, HTTP, or database types. Product envelopes, MCP
+capability tokens, resource ACLs, and business outcome mapping remain
+application-owned decorators and do not enter the Worker protocol.
 
 ### D5: Extensibility and active-active operation are phased
 
@@ -113,8 +123,9 @@ P0 closes recovery correctness, commit idempotency, dependency injection,
 public Worker assembly, invalid-topology rejection, conformance tests, and a
 bounded formal model.
 
-P1 adds a public exact-match `AttemptExecutorRegistry`, registry-derived Worker
-capabilities, production Worker identity, and durable lifecycle feeds split
+P1 adds a public exact-match `AttemptExecutorRegistry` used by the authoritative
+Session router, production Worker identity, registered application decoration,
+neutral current-attempt ownership checks, and durable lifecycle feeds split
 between committed Run truth and dispatch operations.
 
 P2 permits PostgreSQL active-active Control Nodes and makes their asynchronous
@@ -145,8 +156,9 @@ to weaken or redefine the P0 protocol invariants.
 
 P0 and P1 are implemented by the public recovery projection, durable operation
 receipts, injectable claimed-commit service, `WorkerNodeBuilder`, exact executor
-registry, registered Worker identity, and the separated lifecycle/dispatch
-feeds described in the detailed design.
+registry inside the Session router, registered Worker context/decorator factory,
+claim-bound neutral ownership verification, and the separated
+lifecycle/dispatch feeds described in the detailed design.
 
 The P2 active-active boundary is covered by a real PostgreSQL test that launches
 two independent Control processes over one schema and deliberately routes

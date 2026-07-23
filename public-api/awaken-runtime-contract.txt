@@ -877,6 +877,9 @@ impl awaken_runtime_contract::resume::ResumeCommand
 pub fn awaken_runtime_contract::resume::ResumeCommand::from_ticket(&awaken_agent_contract::agent::awaiting::ResumeTicket, awaken_runtime_contract::resume::ResumeResult, u64) -> Self
 pub fn awaken_runtime_contract::resume::validate_resume(&awaken_agent_contract::agent::awaiting::ResumeTicket, &awaken_runtime_contract::resume::ResumeCommand) -> core::result::Result<(), awaken_runtime_contract::resume::ResumeError>
 pub mod awaken_runtime_contract::runtime_context
+pub enum awaken_runtime_contract::runtime_context::AttemptOwnershipError
+pub awaken_runtime_contract::runtime_context::AttemptOwnershipError::Lost
+pub awaken_runtime_contract::runtime_context::AttemptOwnershipError::Unavailable(alloc::string::String)
 pub struct awaken_runtime_contract::runtime_context::CaptureContext
 pub awaken_runtime_contract::runtime_context::CaptureContext::decision: awaken_runtime_contract::capture::CaptureDecision
 pub awaken_runtime_contract::runtime_context::CaptureContext::sink: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::CaptureSink>>
@@ -887,6 +890,7 @@ pub awaken_runtime_contract::runtime_context::RuntimeRunContext::capture: awaken
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::commit: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::thread::commit::coordinator::Coordinator>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::live_inbox: core::option::Option<awaken_runtime_contract::live_inbox::LiveInbox>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::model_executor: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>
+pub awaken_runtime_contract::runtime_context::RuntimeRunContext::ownership: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::pause: core::option::Option<awaken_runtime_contract::pause::PauseSignal>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::reader: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::thread::read::thread_reader::ThreadReader>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::reschedules: core::option::Option<alloc::sync::Arc<core::sync::atomic::AtomicU32>>
@@ -907,6 +911,7 @@ pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_capture
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_commit(self, alloc::sync::Arc<dyn awaken_agent_contract::thread::commit::coordinator::Coordinator>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_live_inbox(self, awaken_runtime_contract::live_inbox::LiveInbox) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_model_executor(self, alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>) -> Self
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_ownership(self, alloc::sync::Arc<dyn awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_pause(self, awaken_runtime_contract::pause::PauseSignal) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_reader(self, alloc::sync::Arc<dyn awaken_agent_contract::thread::read::thread_reader::ThreadReader>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_reschedules(self, alloc::sync::Arc<core::sync::atomic::AtomicU32>) -> Self
@@ -915,6 +920,8 @@ pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_stream_
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_terminal_observer(self, alloc::sync::Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_tool_executor(self, alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolExecutor>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_tool_permission_policy(self, alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy>) -> Self
+pub trait awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier::verify_current<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_runtime_contract::runtime_context::AttemptOwnershipError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub mod awaken_runtime_contract::snapshot
 pub enum awaken_runtime_contract::snapshot::AgentSnapshotInput
 pub awaken_runtime_contract::snapshot::AgentSnapshotInput::ById(awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId)
@@ -1096,6 +1103,9 @@ pub awaken_runtime_contract::tool_batch::ToolWait::kind: awaken_runtime_contract
 pub enum awaken_runtime_contract::AttemptExecutorRegistryError
 pub awaken_runtime_contract::AttemptExecutorRegistryError::DuplicateBackend(alloc::string::String)
 pub awaken_runtime_contract::AttemptExecutorRegistryError::InvalidBackendRef(alloc::string::String)
+pub enum awaken_runtime_contract::AttemptOwnershipError
+pub awaken_runtime_contract::AttemptOwnershipError::Lost
+pub awaken_runtime_contract::AttemptOwnershipError::Unavailable(alloc::string::String)
 pub enum awaken_runtime_contract::BoundaryOutcome
 pub awaken_runtime_contract::BoundaryOutcome::Await
 pub awaken_runtime_contract::BoundaryOutcome::Await::fold: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
@@ -1566,6 +1576,7 @@ pub awaken_runtime_contract::RuntimeRunContext::capture: awaken_runtime_contract
 pub awaken_runtime_contract::RuntimeRunContext::commit: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::thread::commit::coordinator::Coordinator>>
 pub awaken_runtime_contract::RuntimeRunContext::live_inbox: core::option::Option<awaken_runtime_contract::live_inbox::LiveInbox>
 pub awaken_runtime_contract::RuntimeRunContext::model_executor: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>
+pub awaken_runtime_contract::RuntimeRunContext::ownership: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier>>
 pub awaken_runtime_contract::RuntimeRunContext::pause: core::option::Option<awaken_runtime_contract::pause::PauseSignal>
 pub awaken_runtime_contract::RuntimeRunContext::reader: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::thread::read::thread_reader::ThreadReader>>
 pub awaken_runtime_contract::RuntimeRunContext::reschedules: core::option::Option<alloc::sync::Arc<core::sync::atomic::AtomicU32>>
@@ -1586,6 +1597,7 @@ pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_capture
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_commit(self, alloc::sync::Arc<dyn awaken_agent_contract::thread::commit::coordinator::Coordinator>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_live_inbox(self, awaken_runtime_contract::live_inbox::LiveInbox) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_model_executor(self, alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>) -> Self
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_ownership(self, alloc::sync::Arc<dyn awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_pause(self, awaken_runtime_contract::pause::PauseSignal) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_reader(self, alloc::sync::Arc<dyn awaken_agent_contract::thread::read::thread_reader::ThreadReader>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_reschedules(self, alloc::sync::Arc<core::sync::atomic::AtomicU32>) -> Self
@@ -1648,6 +1660,8 @@ pub awaken_runtime_contract::ToolWait::kind: awaken_runtime_contract::tool_batch
 pub const awaken_runtime_contract::NATIVE_RUNTIME_CAPABILITY: &str
 pub trait awaken_runtime_contract::AgentSnapshotResolver
 pub fn awaken_runtime_contract::AgentSnapshotResolver::get_snapshot(&self, &awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId) -> core::result::Result<core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>, awaken_runtime_contract::resolver::Error>
+pub trait awaken_runtime_contract::AttemptOwnershipVerifier: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::AttemptOwnershipVerifier::verify_current<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_runtime_contract::runtime_context::AttemptOwnershipError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_runtime_contract::CaptureSink: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::CaptureSink::record<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId, awaken_runtime_contract::data_subject::Purpose, awaken_runtime_contract::capture::ContentKind, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub trait awaken_runtime_contract::ContentEraser: core::marker::Send + core::marker::Sync
