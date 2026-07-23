@@ -185,8 +185,7 @@ async fn registered_worker_commits_one_idempotent_versioned_operation() {
         claim: RunClaim::from(&claimed.lease),
         operation,
     };
-    let remote =
-        RemoteClaimedRunCommit::new(format!("http://{address}")).with_worker_identity(identity);
+    let remote = RemoteClaimedRunCommit::new(format!("http://{address}"), identity);
     let first = remote.commit_operation(command.clone()).await.unwrap();
     let duplicate = remote.commit_operation(command).await.unwrap();
 

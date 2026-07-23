@@ -2,8 +2,8 @@
 //!
 //! A peer of the control plane (`awaken-control`) and the data plane
 //! (`awaken-server`). It owns no Run, Session, or authoring store: it drains runs
-//! from a cell server over the dispatch transport (claim / settle) and pushes
-//! committed facts back over the commit ingest (`with_upstream`). A resource-capable
+//! from a Control Node over the typed dispatch transport and sends claim-fenced
+//! commit operations back through the same Worker boundary. A resource-capable
 //! worker may open shared data-plane and Resource Catalog validation ports; those
 //! remain platform truth, not worker-owned state.
 //!
@@ -301,9 +301,8 @@ impl WorkerLifecycle {
 
 /// Run this process as a database-less **worker** of the cell server at `upstream`.
 ///
-/// 1. Route the dispatch pool's claim/settle over HTTP to `upstream`
-///    (`worker_dispatch_store`), so the worker drains the server's queue instead of a
-///    local one.
+/// 1. Inject the registered identity-bearing HTTP dispatch transport, so the
+///    Worker drains the Control queue instead of a local one.
 /// 2. Open the shared credential vault + secret store
 ///    the same way the Serve composition does — durable under `AWAKEN_MGMT_DIR`
 ///    (Option A shared-DB) or in-memory.
