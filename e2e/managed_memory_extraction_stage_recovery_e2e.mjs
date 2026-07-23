@@ -248,7 +248,22 @@ async function main() {
       receipt: null,
       extractor: {
         ...source.extractor,
-        model_ref: 'unavailable-extractor-model',
+        model: {
+          ...source.extractor.model,
+          model_ref: 'unavailable-extractor-model',
+          provisioning: {
+            type: 'provider',
+            provider_ref: 'unavailable-provider',
+            route_ref: 'unavailable-route',
+            scope_id: source.workspace_id,
+            credential: null,
+            endpoint: {
+              adapter_kind: 'open_ai_chat',
+              base_url: 'https://unavailable-extractor.invalid/v1',
+              upstream_model: 'unavailable-extractor-model',
+            },
+          },
+        },
       },
     };
     persistIntent(database, unavailableExtractor, true);
@@ -273,7 +288,10 @@ async function main() {
     assert.match(rows.get(conflict.intent_id).last_error, /changed after extraction planning/u);
     assert.equal(rows.get(unavailableExtractor.intent_id).status, 'terminal_failed');
     assert.equal(rows.get(unavailableExtractor.intent_id).attempts, 5);
-    assert.match(rows.get(unavailableExtractor.intent_id).last_error, /pinned inference access/u);
+    assert.match(
+      rows.get(unavailableExtractor.intent_id).last_error,
+      /requires an installed credential materializer/u,
+    );
 
     // The durable repository validates the whole staged aggregate on every
     // recoverable read. Inject malformed lifecycle combinations through SQLite
@@ -298,7 +316,13 @@ async function main() {
       { ...cleanPending, terminal_commit_id: ' ' },
       { ...cleanPending, memory_store_id: ' ' },
       { ...cleanPending, extractor: { ...cleanPending.extractor, agent_id: ' ' } },
-      { ...cleanPending, extractor: { ...cleanPending.extractor, model_ref: ' ' } },
+      {
+        ...cleanPending,
+        extractor: {
+          ...cleanPending.extractor,
+          model: { ...cleanPending.extractor.model, model_ref: ' ' },
+        },
+      },
       { ...cleanPending, memory_config_version: 0 },
       { ...cleanPending, mutations: [validMutation] },
       { ...cleanPending, status: 'extracted', mutations: [validMutation], receipt: validReceipt },
