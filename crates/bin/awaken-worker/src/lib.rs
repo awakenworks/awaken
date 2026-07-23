@@ -371,6 +371,37 @@ where
         .await
 }
 
+/// Run a supervised application Worker over credential stores supplied by an
+/// embedding composition root. Native inference, ACP launch credentials and
+/// credentialed Resource delivery all use these same authoritative stores.
+pub async fn run_with_application_credential_stores_until<F>(
+    upstream: WorkerUpstream,
+    credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
+    secrets: Arc<dyn awaken_credential_vault::SecretStore>,
+    application_capabilities: std::collections::BTreeSet<String>,
+    factory: RegisteredDecoratorFactory,
+    shutdown: F,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+where
+    F: std::future::Future<
+            Output = Result<WorkerShutdown, Box<dyn std::error::Error + Send + Sync>>,
+        >,
+{
+    build_worker_with_materialization_stores(
+        upstream,
+        awaken_control::InferenceMaterializationStores {
+            credentials,
+            secrets,
+        },
+        true,
+        application_capabilities,
+        Some(factory),
+    )
+    .await?
+    .run_until(shutdown)
+    .await
+}
+
 async fn run_with_standard_environment(
     upstream: WorkerUpstream,
     application_capabilities: std::collections::BTreeSet<String>,
@@ -388,9 +419,26 @@ async fn build_standard_worker(
     application: Option<RegisteredDecoratorFactory>,
 ) -> Result<WorkerNode, Box<dyn std::error::Error + Send + Sync>> {
     let stores = awaken_control::open_inference_materialization_stores_from_env().await;
-    let resource_credentials =
-        shared_credential_backend(std::env::var("AWAKEN_CREDENTIAL_DB").ok().as_deref())
-            .then(|| stores.clone());
+    let repository_credentials =
+        shared_credential_backend(std::env::var("AWAKEN_CREDENTIAL_DB").ok().as_deref());
+    build_worker_with_materialization_stores(
+        upstream,
+        stores,
+        repository_credentials,
+        application_capabilities,
+        application,
+    )
+    .await
+}
+
+async fn build_worker_with_materialization_stores(
+    upstream: WorkerUpstream,
+    stores: awaken_control::InferenceMaterializationStores,
+    repository_credentials: bool,
+    application_capabilities: std::collections::BTreeSet<String>,
+    application: Option<RegisteredDecoratorFactory>,
+) -> Result<WorkerNode, Box<dyn std::error::Error + Send + Sync>> {
+    let resource_credentials = repository_credentials.then(|| stores.clone());
     let resources = shared_resource_wiring(resource_credentials).await?;
     let materializer =
         CredentialInferenceMaterializer::new(stores.credentials.clone(), stores.secrets.clone());
