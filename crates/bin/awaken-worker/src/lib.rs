@@ -350,11 +350,43 @@ pub async fn run_with_application_decorator(
     run_with_standard_environment(upstream, application_capabilities, Some(factory)).await
 }
 
+/// Run the same fully assembled Worker lifecycle with a supervisor-provided
+/// shutdown source. Embedded applications use this to retain an explicit stop
+/// handle while reusing the standard registration, routing, heartbeat, drain,
+/// quiesce, and deregistration path.
+pub async fn run_with_application_decorator_until<F>(
+    upstream: WorkerUpstream,
+    application_capabilities: std::collections::BTreeSet<String>,
+    factory: RegisteredDecoratorFactory,
+    shutdown: F,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+where
+    F: std::future::Future<
+            Output = Result<WorkerShutdown, Box<dyn std::error::Error + Send + Sync>>,
+        >,
+{
+    build_standard_worker(upstream, application_capabilities, Some(factory))
+        .await?
+        .run_until(shutdown)
+        .await
+}
+
 async fn run_with_standard_environment(
     upstream: WorkerUpstream,
     application_capabilities: std::collections::BTreeSet<String>,
     application: Option<RegisteredDecoratorFactory>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    build_standard_worker(upstream, application_capabilities, application)
+        .await?
+        .run_until_shutdown()
+        .await
+}
+
+async fn build_standard_worker(
+    upstream: WorkerUpstream,
+    application_capabilities: std::collections::BTreeSet<String>,
+    application: Option<RegisteredDecoratorFactory>,
+) -> Result<WorkerNode, Box<dyn std::error::Error + Send + Sync>> {
     let stores = awaken_control::open_inference_materialization_stores_from_env().await;
     let resource_credentials =
         shared_credential_backend(std::env::var("AWAKEN_CREDENTIAL_DB").ok().as_deref())
@@ -371,7 +403,7 @@ async fn run_with_standard_environment(
             .is_some_and(WorkerResourcePlane::supports_repository_credentials),
         application_capabilities,
     );
-    run_configured_worker(
+    build_configured_worker(
         upstream,
         manifest,
         materializer,
@@ -382,7 +414,6 @@ async fn run_with_standard_environment(
         resources,
         application,
     )
-    .await
 }
 
 /// Run a genuinely secretless worker with a deployment-provided materializer.
@@ -431,25 +462,26 @@ pub async fn run_with_upstream_application_and_inference_materializer(
         false,
         application_capabilities,
     );
-    run_configured_worker(
+    build_configured_worker(
         upstream,
         manifest,
         materializer,
         None,
         resources,
         application,
-    )
+    )?
+    .run_until_shutdown()
     .await
 }
 
-async fn run_configured_worker(
+fn build_configured_worker(
     upstream: WorkerUpstream,
     manifest: WorkerManifest,
     materializer: Arc<dyn InferenceExecutorMaterializer>,
     acp_credentials: Option<awaken_runtime_host::PinnedCredentialMaterializer>,
     resources: Option<WorkerResourcePlane>,
     application: Option<RegisteredDecoratorFactory>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<WorkerNode, Box<dyn std::error::Error + Send + Sync>> {
     let mut builder = WorkerNodeBuilder::new(upstream)
         .with_manifest(manifest)
         .with_inference_materializer(materializer)
@@ -461,7 +493,7 @@ async fn run_configured_worker(
     if let Some(factory) = application {
         builder = builder.with_application_decorator_factory(factory);
     }
-    builder.build()?.run_until_shutdown().await
+    Ok(builder.build()?)
 }
 
 fn configured_admin_listen() -> String {
