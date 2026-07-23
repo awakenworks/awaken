@@ -5,6 +5,7 @@
 //! is idempotent (at-least-once → exactly-once effect).
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId};
@@ -36,8 +37,10 @@ use awaken_runtime_host::{
 };
 use awaken_store_inmem::MemoryCommitCoordinator;
 use axum::body::Body;
-use axum::http::{Request, StatusCode};
-use serde_json::json;
+use axum::extract::State;
+use axum::http::{HeaderMap, Request, StatusCode};
+use axum::response::{IntoResponse, Response};
+use serde_json::{Value, json};
 use tower::ServiceExt;
 
 struct CurrentWorkerDirectory(RegisteredWorker);
@@ -109,6 +112,36 @@ impl LlmExecutor for OkModel {
             stop_reason: None,
         })
     }
+}
+
+struct LostReceiptProxy {
+    upstream: String,
+    attempts: AtomicUsize,
+}
+
+async fn lose_first_commit_receipt(
+    State(state): State<Arc<LostReceiptProxy>>,
+    headers: HeaderMap,
+    axum::Json(body): axum::Json<Value>,
+) -> Response {
+    let mut request = reqwest::Client::new()
+        .post(format!("{}/v1/worker/commit-claimed", state.upstream))
+        .json(&body);
+    if let Some(worker_id) = headers.get("x-awaken-worker-id") {
+        request = request.header("x-awaken-worker-id", worker_id);
+    }
+    let upstream = request.send().await.unwrap();
+    let status = StatusCode::from_u16(upstream.status().as_u16()).unwrap();
+    let bytes = upstream.bytes().await.unwrap();
+    if state.attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+        return (StatusCode::OK, [("content-type", "application/json")], "{").into_response();
+    }
+    (
+        status,
+        [("content-type", "application/json")],
+        bytes.to_vec(),
+    )
+        .into_response()
 }
 
 fn thread_commit() -> ThreadCommit {
@@ -642,4 +675,73 @@ async fn claimed_commit_receipt_survives_response_loss_retry_and_fences_stale_co
         .expect("refreshed Thread version commits");
     assert_eq!(terminal_receipt.thread_version, 2);
     assert_eq!(host.committed_messages("receipt-thread").await.len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn remote_claimed_commit_retries_a_lost_receipt_with_the_same_operation() {
+    let dispatch = Arc::new(MemoryDispatchStore::new());
+    dispatch
+        .enqueue(RunDispatch::new(activation(
+            "lost-receipt-run",
+            "lost-receipt-thread",
+        )))
+        .await
+        .unwrap();
+    let claimed = dispatch
+        .claim("worker-a", 30_000, 0)
+        .await
+        .unwrap()
+        .expect("claim");
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let control = claimed_commit_ingest_router(
+        host.clone(),
+        dispatch as Arc<dyn DispatchQueue>,
+        Arc::new(HeaderWorkerAuthenticator),
+    );
+    let control_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let control_address = control_listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(control_listener, control).await.unwrap();
+    });
+
+    let proxy_state = Arc::new(LostReceiptProxy {
+        upstream: format!("http://{control_address}"),
+        attempts: AtomicUsize::new(0),
+    });
+    let proxy = axum::Router::new()
+        .route(
+            "/v1/worker/commit-claimed",
+            axum::routing::post(lose_first_commit_receipt),
+        )
+        .with_state(proxy_state.clone());
+    let proxy_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_address = proxy_listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(proxy_listener, proxy).await.unwrap();
+    });
+
+    let commit = claimed_commit(
+        "lost-receipt-run",
+        "lost-receipt-thread",
+        "one logical effect",
+    );
+    let operation = CommitOperation {
+        operation_id: CommitOperationId::new(RunId("lost-receipt-run".into()), 0),
+        expected_thread_version: 0,
+        payload_hash: commit_payload_hash(&commit).unwrap(),
+        commit,
+    };
+    let receipt = RemoteClaimedRunCommit::new(format!("http://{proxy_address}"))
+        .commit_operation(ClaimedCommitCommand {
+            claim: RunClaim::from(&claimed.lease),
+            operation,
+        })
+        .await
+        .expect("ambiguous transport result is retried");
+
+    assert!(receipt.duplicate, "the retry returned the durable receipt");
+    assert_eq!(proxy_state.attempts.load(Ordering::SeqCst), 2);
+    let messages = host.committed_messages("lost-receipt-thread").await;
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].text_content(), "one logical effect");
 }

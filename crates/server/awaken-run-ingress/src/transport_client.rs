@@ -271,11 +271,15 @@ impl DispatchQueue for HttpDispatchQueue {
         claim: &RunClaim,
     ) -> Result<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot, DispatchError>
     {
+        let authenticated_worker = self
+            .worker_identity
+            .as_ref()
+            .map_or(claim.owner.as_str(), |_| self.default_worker_id.as_str());
         let value = self
             .post(
                 "/v1/worker/recovery/snapshot",
                 json!({ "claim": claim, "identity": self.worker_identity }),
-                &claim.owner,
+                authenticated_worker,
             )
             .await?;
         serde_json::from_value(value.get("snapshot").cloned().unwrap_or_default())

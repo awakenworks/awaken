@@ -30,6 +30,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MINIMUM = 0.95;
 const scenarios: Scenario[] = [
   { id: 'worker_transport', file: 'e2e/worker_transport_e2e.mjs' },
+  { id: 'remote_worker_recovery', file: 'e2e/remote_worker_recovery_e2e.ts' },
   { id: 'pg_guard', file: 'e2e/postgres_claimed_commit_guard_e2e.ts', postgres: true },
   { id: 'pg_history', file: 'e2e/durable_pg_commit_e2e.mjs', postgres: true },
   { id: 'pg_wake', file: 'e2e/durable_pg_wake_e2e.mjs', postgres: true },
@@ -82,6 +83,10 @@ const obligations: Obligation[] = [
   { id: 'D0-02', stage: '0 durable dispatch seam', behavior: 'at-least-once commit redelivery has one effect', scenario: 'worker_transport' },
   { id: 'D0-03', stage: '0 durable dispatch seam', behavior: 'enqueue → claim → settle crosses the real HTTP/store boundary', scenario: 'worker_transport' },
   { id: 'D0-04', stage: '0 durable dispatch seam', behavior: 'a final claim epoch settles at most once', scenario: 'worker_transport' },
+  { id: 'D0-05', stage: '0 durable dispatch seam', behavior: 'a real Worker retries an already-applied commit after losing its receipt with the same logical operation', scenario: 'remote_worker_recovery' },
+  { id: 'D0-06', stage: '0 durable dispatch seam', behavior: 'a replacement Worker reclaims a crashed Awaiting attempt from the committed recovery snapshot', scenario: 'remote_worker_recovery' },
+  { id: 'D0-07', stage: '0 durable dispatch seam', behavior: 'the replacement resumes the exact remote context and commits one terminal effect', scenario: 'remote_worker_recovery' },
+  { id: 'D0-08', stage: '0 durable dispatch seam', behavior: 'the superseded Worker epoch cannot replay its delayed claimed commit', scenario: 'remote_worker_recovery' },
 
   { id: 'D1-01', stage: '1 backend conformance', behavior: 'SQLite durable authority serves queue semantics', scenario: 'worker_transport' },
   { id: 'D1-02', stage: '1 backend conformance', behavior: 'HTTP transport preserves the queue contract', scenario: 'worker_transport' },

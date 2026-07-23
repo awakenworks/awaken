@@ -365,6 +365,24 @@ P0 is done only when:
 6. In-memory, SQLite, and PostgreSQL adapters pass the same remote Worker
    transport/store conformance suite.
 
+Implementation evidence as of 2026-07-23:
+
+- `remote_worker_recovery_e2e.ts` runs one real Control process and two real
+  database-less Worker processes. It loses a receipt after durable apply, proves
+  the same operation is retried, kills Worker A before Awaiting settlement,
+  expires its lease, and proves Worker B reclaims and resumes from the committed
+  A2A context without resending the initial message.
+- The same scenario replays Worker A's delayed claimed commit after Worker B has
+  advanced the epoch and verifies rejection, one terminal transcript effect,
+  and terminal settlement.
+- `commit_ingest_http.rs` independently injects a malformed/lost first receipt
+  after apply and verifies that `RemoteClaimedRunCommit` obtains the durable
+  duplicate receipt without duplicating history.
+- The production composition preserves the recovery port through
+  `AnyDispatchStore` and authenticates registered recovery reads with the
+  logical Worker id while authorizing them with the incarnation-bound lease
+  owner and epoch.
+
 ## 5. Dynamic Behavior View
 
 ### 5.1 Normal and resumed execution

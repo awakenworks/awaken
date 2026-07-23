@@ -167,6 +167,14 @@ impl DispatchQueue for AnyDispatchStore {
         delegate!(self, delete_stream_checkpoint(claim))
     }
 
+    async fn load_recovery_snapshot(
+        &self,
+        claim: &RunClaim,
+    ) -> Result<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot, DispatchError>
+    {
+        delegate!(self, load_recovery_snapshot(claim))
+    }
+
     async fn enqueue_with(
         &self,
         request: RunDispatch,

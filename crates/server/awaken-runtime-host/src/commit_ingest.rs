@@ -388,6 +388,9 @@ pub struct RemoteClaimedRunCommit {
     request_authorizer: Option<Arc<dyn WorkerRequestAuthorizer>>,
 }
 
+const CLAIMED_COMMIT_TRANSPORT_ATTEMPTS: usize = 3;
+const CLAIMED_COMMIT_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(25);
+
 impl RemoteClaimedRunCommit {
     pub fn new(base_url: impl Into<String>) -> Self {
         Self {
@@ -481,27 +484,50 @@ impl ClaimedRunCommit for RemoteClaimedRunCommit {
                 identity.worker_id.as_str()
             });
         let path = "/v1/worker/commit-claimed";
-        let request = self.client.post(format!("{}{path}", self.base_url));
-        let response = self
-            .authorize(path, authenticated_worker, request)?
-            .json(&json!({
-                "claim": command.claim,
-                "operation": command.operation,
-                "identity": self.identity
-            }))
-            .send()
-            .await
-            .map_err(|error| CommitError::Rejected(format!("claimed commit transport: {error}")))?;
-        if !response.status().is_success() {
-            return Err(CommitError::Rejected(format!(
-                "claimed commit server returned {}",
-                response.status()
-            )));
+        let body = json!({
+            "claim": command.claim,
+            "operation": command.operation,
+            "identity": self.identity
+        });
+        let mut last_transport_error = None;
+        for attempt in 1..=CLAIMED_COMMIT_TRANSPORT_ATTEMPTS {
+            let request = self.client.post(format!("{}{path}", self.base_url));
+            let response = match self
+                .authorize(path, authenticated_worker, request)?
+                .json(&body)
+                .send()
+                .await
+            {
+                Ok(response) => response,
+                Err(error) => {
+                    last_transport_error = Some(format!("claimed commit transport: {error}"));
+                    if attempt < CLAIMED_COMMIT_TRANSPORT_ATTEMPTS {
+                        tokio::time::sleep(CLAIMED_COMMIT_RETRY_DELAY).await;
+                        continue;
+                    }
+                    break;
+                }
+            };
+            if !response.status().is_success() {
+                return Err(CommitError::Rejected(format!(
+                    "claimed commit server returned {}",
+                    response.status()
+                )));
+            }
+            match response.json().await {
+                Ok(receipt) => return Ok(receipt),
+                Err(error) => {
+                    last_transport_error =
+                        Some(format!("commit receipt transport/decode: {error}"));
+                    if attempt < CLAIMED_COMMIT_TRANSPORT_ATTEMPTS {
+                        tokio::time::sleep(CLAIMED_COMMIT_RETRY_DELAY).await;
+                    }
+                }
+            }
         }
-        response
-            .json()
-            .await
-            .map_err(|error| CommitError::Rejected(format!("commit receipt decode: {error}")))
+        Err(CommitError::Rejected(last_transport_error.unwrap_or_else(
+            || "claimed commit transport exhausted without a response".to_string(),
+        )))
     }
 }
 
