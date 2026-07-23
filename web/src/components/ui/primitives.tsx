@@ -1,5 +1,4 @@
-// Small stateless display primitives shared across surfaces: source badges,
-// used-by lists, sparklines, stat cards, a JSON inspector, empty states, skeletons.
+// Small stateless display primitives used across Awaken surfaces.
 
 import { useState, type ReactNode } from "react";
 import {
@@ -49,84 +48,6 @@ export function UsageBadges({
         </span>
       )}
     </span>
-  );
-}
-
-// ---- source-state badge (builtin / customized / user-defined) ----
-export type SourceState = "builtin" | "customized" | "user-defined";
-export function SourceBadge({ source }: { source: SourceState }) {
-  const app = useApp();
-  const label: Record<SourceState, [string, string]> = {
-    builtin: ["built-in", "内置"],
-    customized: ["customized", "已定制"],
-    "user-defined": ["user-defined", "自定义"],
-  };
-  const cls = source === "builtin" ? "neutral" : source === "customized" ? "warn" : "agent";
-  return <span className={`pill ${cls}`}>{app.t(...label[source])}</span>;
-}
-
-// ---- used-by list (who references this resource) ----
-export function UsedByList({
-  items,
-  onOpen,
-}: {
-  items: { id: string; label?: string }[];
-  onOpen?: (id: string) => void;
-}) {
-  const app = useApp();
-  if (items.length === 0) return <span className="mut">{app.t("Used by nothing.", "无引用。")}</span>;
-  return (
-    <div className="chain">
-      <span className="mut">{app.t("Used by", "被引用")}</span>
-      {items.map((it) => (
-        <button
-          key={it.id}
-          className="chip"
-          style={{ cursor: onOpen ? "pointer" : "default" }}
-          onClick={() => onOpen?.(it.id)}
-        >
-          <span className="mono">{it.label ?? it.id}</span>
-        </button>
-      ))}
-    </div>
-  );
-}
-
-// ---- sparkline (tiny inline trend) ----
-export function Sparkline({ values, width = 96, height = 22 }: { values: number[]; width?: number; height?: number }) {
-  if (values.length < 2) return <span className="mut">—</span>;
-  const max = Math.max(...values, 1);
-  const min = Math.min(...values, 0);
-  const span = max - min || 1;
-  const step = width / (values.length - 1);
-  const pts = values
-    .map((v, i) => `${(i * step).toFixed(1)},${(height - ((v - min) / span) * height).toFixed(1)}`)
-    .join(" ");
-  return (
-    <svg width={width} height={height} style={{ display: "block" }} aria-hidden>
-      <polyline points={pts} fill="none" stroke="var(--accent)" strokeWidth={1.5} strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-// ---- stat card ----
-export function StatCard({
-  label,
-  value,
-  hint,
-  onClick,
-}: {
-  label: string;
-  value: ReactNode;
-  hint?: ReactNode;
-  onClick?: () => void;
-}) {
-  return (
-    <button className="kpi" onClick={onClick} style={{ cursor: onClick ? "pointer" : "default" }}>
-      <span className="val">{value}</span>
-      <span className="label">{label}</span>
-      {hint != null && <span className="mut" style={{ fontSize: 11 }}>{hint}</span>}
-    </button>
   );
 }
 
