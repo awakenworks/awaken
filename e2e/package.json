@@ -16,6 +16,7 @@
     "test:resource-scope": "node resource_scope_boundary_e2e.mjs",
     "test:resource-plane-postgres": "node resource_plane_postgres_e2e.ts",
     "test:worker-resources": "node worker_resource_manifest_e2e.ts",
+    "test:inference-truth": "node management_admin_e2e.mjs && node managed_config_e2e.mjs && node awaken_cli_e2e.mjs && node credential_materialization_worker_e2e.ts && node credential_reference_worker_e2e.ts",
     "test:runtime-stages": "node stage_change_coverage_e2e.ts",
     "test:public-benchmark": "node public_benchmark_eval_e2e.ts",
     "test:coverage-gaps": "node acp_managed_mcp_e2e.mjs && node awaken_durability_e2e.mjs && node awaken_per_component_db_e2e.mjs && node deployment_config_e2e.mjs && node durable_pool_e2e.mjs && node managed_compaction_tokens_e2e.mjs && node managed_live_previews_e2e.mjs && node managed_session_dispose_e2e.mjs && node management_seal_key_required_e2e.mjs && node management_session_axis_independent_e2e.mjs && node managed_outcome_runtime_matrix_e2e.ts && node managed_outcome_recovery_e2e.ts",

@@ -14,6 +14,42 @@ use awaken_config_store::ModelSelection;
 use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate};
 use awaken_tenancy::ScopeId;
 
+/// Stable failure vocabulary for publication-time model resolution.
+///
+/// Adapters keep database/provider error details behind these categories so the
+/// application edge can map failures without parsing strings. Runtime never sees
+/// this type because publication either produces a complete snapshot or fails.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum PublicationResolutionError {
+    #[error("model catalog is unavailable: {0}")]
+    CatalogUnavailable(String),
+    #[error("credential inventory is unavailable: {0}")]
+    CredentialInventoryUnavailable(String),
+    #[error("no active model candidate is available for publication")]
+    MissingPrimary,
+    #[error("model candidate `{binding:?}` cannot be published: {reason}")]
+    CandidateUnavailable {
+        binding: ModelBinding,
+        reason: String,
+    },
+    #[error("duplicate model candidate `{0:?}`")]
+    DuplicateBinding(ModelBinding),
+    #[error("invalid model publication: {0}")]
+    Invalid(String),
+}
+
+impl From<String> for PublicationResolutionError {
+    fn from(reason: String) -> Self {
+        Self::Invalid(reason)
+    }
+}
+
+impl From<&str> for PublicationResolutionError {
+    fn from(reason: &str) -> Self {
+        Self::Invalid(reason.to_owned())
+    }
+}
+
 /// Complete, secret-free output of one model-publication resolution.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedPublicationModels {
@@ -54,10 +90,10 @@ impl ResolvedPublicationModels {
 pub trait ModelPublicationResolver: Send + Sync {
     async fn resolve_models(
         &self,
-        workspace: &str,
+        workspace: &ScopeId,
         selection: &ModelSelection,
         candidates: &[ModelBinding],
-    ) -> Result<ResolvedPublicationModels, String>;
+    ) -> Result<ResolvedPublicationModels, PublicationResolutionError>;
 }
 
 /// The freshness seam (ADR-0052 D5): the model-catalog write path calls this after a

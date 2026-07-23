@@ -407,7 +407,11 @@ async fn management_plane_agent_mcp_config_takes_effect_without_inline_servers()
         "/v1/config/agents/calc-agent",
         Some(json!({
             "name": "Calculator",
-            "model": "management",
+            "model": {
+                "provider_identity_ref": "default",
+                "model_ref": "management",
+                "backend_ref": "default"
+            },
             "system": "Use the calculator tool and report its result.",
             "mcp_servers": [{ "name": "calc", "url": url }]
         })),

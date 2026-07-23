@@ -17,7 +17,10 @@ use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate};
 use awaken_runtime_contract::{
     CredentialAccess, CredentialInjectionKind, CredentialRef, CredentialUsage, InferenceEndpoint,
 };
-use awaken_session_executor::{ModelPublicationResolver, ResolvedPublicationModels};
+use awaken_session_executor::{
+    ModelPublicationResolver, PublicationResolutionError, ResolvedPublicationModels,
+};
+use awaken_tenancy::ScopeId;
 
 #[derive(Clone)]
 enum CatalogSource {
@@ -26,13 +29,12 @@ enum CatalogSource {
 }
 
 /// Configuration-plane adapter that freezes model, route and credential facts
-/// into a publication. A host fallback is explicit composition configuration;
-/// it never masks a catalog or credential failure for a published offering.
+/// into a publication. Every candidate must exist in the catalog; explicit
+/// in-process scenario executors use their own composition resolver.
 #[derive(Clone)]
 pub struct CatalogModelPublicationResolver {
     source: CatalogSource,
     credentials: Arc<dyn CredentialRepo>,
-    fallback_model_ref: Option<String>,
 }
 
 impl CatalogModelPublicationResolver {
@@ -43,7 +45,6 @@ impl CatalogModelPublicationResolver {
         Self {
             source: CatalogSource::Static(catalog),
             credentials,
-            fallback_model_ref: None,
         }
     }
 
@@ -53,22 +54,16 @@ impl CatalogModelPublicationResolver {
         Self {
             source: CatalogSource::Live(repo),
             credentials,
-            fallback_model_ref: None,
         }
     }
 
-    /// Declare one host-installed model that may be published without a catalog
-    /// offering. Runtime installation of that executor remains a separate concern.
-    #[must_use]
-    pub fn with_fallback_model(mut self, model_ref: impl Into<String>) -> Self {
-        self.fallback_model_ref = Some(model_ref.into());
-        self
-    }
-
-    async fn snapshot(&self) -> Result<ProviderCatalog, String> {
+    async fn snapshot(&self) -> Result<ProviderCatalog, PublicationResolutionError> {
         match &self.source {
             CatalogSource::Static(catalog) => Ok(catalog.clone()),
-            CatalogSource::Live(repo) => repo.snapshot().await.map_err(|error| error.to_string()),
+            CatalogSource::Live(repo) => repo
+                .snapshot()
+                .await
+                .map_err(|error| PublicationResolutionError::CatalogUnavailable(error.to_string())),
         }
     }
 
@@ -80,7 +75,7 @@ impl CatalogModelPublicationResolver {
         catalog: &ProviderCatalog,
         selection: &ModelSelection,
         fallbacks: &[ModelBinding],
-    ) -> Result<(ModelBinding, Vec<ModelBinding>), String> {
+    ) -> Result<(ModelBinding, Vec<ModelBinding>), PublicationResolutionError> {
         if let Some(primary) = selection.resolved() {
             return Ok((primary.clone(), fallbacks.to_vec()));
         }
@@ -88,10 +83,9 @@ impl CatalogModelPublicationResolver {
             .offerings
             .iter()
             .filter(|offering| offering.status == awaken_model_catalog::OfferingStatus::Active);
-        let primary = offerings.next().ok_or_else(|| {
-            "no provider-backed model in the catalog; configure and publish a model first"
-                .to_string()
-        })?;
+        let primary = offerings
+            .next()
+            .ok_or(PublicationResolutionError::MissingPrimary)?;
         Ok((
             Self::binding_of(primary),
             offerings.map(Self::binding_of).collect(),
@@ -125,40 +119,48 @@ impl CatalogModelPublicationResolver {
     fn provider_candidate(
         catalog: &ProviderCatalog,
         sources: &[CredentialSource],
-        workspace: &str,
+        workspace: &ScopeId,
         binding: ModelBinding,
         offering: &Offering,
-    ) -> Result<ResolvedModelCandidate, String> {
+    ) -> Result<ResolvedModelCandidate, PublicationResolutionError> {
+        let unavailable = |reason| PublicationResolutionError::CandidateUnavailable {
+            binding: binding.clone(),
+            reason,
+        };
         let provider = catalog
             .providers
             .get(offering.provider_id.as_str())
-            .ok_or_else(|| format!("offering provider {} is missing", offering.provider_id))?;
+            .ok_or_else(|| unavailable(format!("provider {} is missing", offering.provider_id)))?;
         let endpoint = catalog
             .endpoints
             .get(offering.protocol_endpoint_id.as_str())
             .ok_or_else(|| {
-                format!(
-                    "offering endpoint {} is missing",
+                unavailable(format!(
+                    "endpoint {} is missing",
                     offering.protocol_endpoint_id
-                )
+                ))
             })?;
         let credential = Self::credential_for(sources, offering).ok_or_else(|| {
-            format!(
+            unavailable(format!(
                 "no active persisted credential can consume model {} in Workspace {workspace}",
                 binding.model_ref
-            )
+            ))
         })?;
-        let revision = u64::try_from(credential.version)
-            .map_err(|_| format!("credential {} has a negative version", credential.id.0))?;
+        let revision = u64::try_from(credential.version).map_err(|_| {
+            unavailable(format!(
+                "credential {} has a negative version",
+                credential.id.0
+            ))
+        })?;
         let base_url = endpoint
             .base_url
             .clone()
-            .ok_or_else(|| format!("endpoint {} has no base URL", endpoint.id.0))?;
+            .ok_or_else(|| unavailable(format!("endpoint {} has no base URL", endpoint.id.0)))?;
         Ok(ResolvedModelCandidate::provider(
             binding,
             format!("{}@{}", offering.provider_id.0, provider.version),
             format!("{}@{}", offering.protocol_endpoint_id.0, endpoint.version),
-            workspace,
+            workspace.clone(),
             Some(CredentialAccess {
                 credential: CredentialRef {
                     id: credential.id.0.clone(),
@@ -188,17 +190,16 @@ impl CatalogModelPublicationResolver {
         &self,
         catalog: &ProviderCatalog,
         sources: &[CredentialSource],
-        workspace: &str,
+        workspace: &ScopeId,
         binding: ModelBinding,
-    ) -> Result<ResolvedModelCandidate, String> {
+    ) -> Result<ResolvedModelCandidate, PublicationResolutionError> {
         if let Some(offering) = Self::offering_for(catalog, &binding) {
             return Self::provider_candidate(catalog, sources, workspace, binding, offering);
         }
-        self.fallback_model_ref
-            .as_deref()
-            .is_some_and(|fallback| fallback == binding.model_ref)
-            .then(|| ResolvedModelCandidate::host(binding.clone()))
-            .ok_or_else(|| format!("model offering {} is not published", binding.model_ref))
+        Err(PublicationResolutionError::CandidateUnavailable {
+            reason: format!("model offering {} is not published", binding.model_ref),
+            binding,
+        })
     }
 }
 
@@ -206,10 +207,10 @@ impl CatalogModelPublicationResolver {
 impl ModelPublicationResolver for CatalogModelPublicationResolver {
     async fn resolve_models(
         &self,
-        workspace: &str,
+        workspace: &ScopeId,
         selection: &ModelSelection,
         fallbacks: &[ModelBinding],
-    ) -> Result<ResolvedPublicationModels, String> {
+    ) -> Result<ResolvedPublicationModels, PublicationResolutionError> {
         let catalog = self.snapshot().await?;
         let (primary_binding, fallback_bindings) =
             Self::selected_bindings(&catalog, selection, fallbacks)?;
@@ -221,9 +222,11 @@ impl ModelPublicationResolver for CatalogModelPublicationResolver {
             .any(|binding| Self::offering_for(&catalog, binding).is_some());
         let sources = if needs_credentials {
             self.credentials
-                .list(workspace)
+                .list(workspace.as_str())
                 .await
-                .map_err(|error| error.to_string())?
+                .map_err(|error| {
+                    PublicationResolutionError::CredentialInventoryUnavailable(error.to_string())
+                })?
         } else {
             Vec::new()
         };
@@ -317,7 +320,7 @@ mod tests {
     async fn auto_publication_returns_complete_ordered_candidates() {
         let resolver = resolver(&["m-first", "m-second", "m-third"]).await;
         let resolved = resolver
-            .resolve_models("workspace-a", &ModelSelection::Auto, &[])
+            .resolve_models(&ScopeId::from("workspace-a"), &ModelSelection::Auto, &[])
             .await
             .unwrap();
         assert_eq!(
@@ -345,7 +348,7 @@ mod tests {
         let fallback = ModelBinding::new("other-authored-provider", "fallback", "native");
         let resolved = resolver
             .resolve_models(
-                "workspace-a",
+                &ScopeId::from("workspace-a"),
                 &ModelSelection::Pinned(primary.clone()),
                 std::slice::from_ref(&fallback),
             )
@@ -360,13 +363,13 @@ mod tests {
         let resolver = resolver(&["primary"]).await;
         let error = resolver
             .resolve_models(
-                "workspace-a",
+                &ScopeId::from("workspace-a"),
                 &ModelSelection::Pinned(ModelBinding::new("p", "primary", "b")),
                 &[ModelBinding::new("p", "missing", "b")],
             )
             .await
             .unwrap_err();
-        assert!(error.contains("missing"));
+        assert!(error.to_string().contains("missing"));
     }
 
     #[tokio::test]
@@ -382,7 +385,7 @@ mod tests {
         let credentials = resolver(&["unused"]).await.credentials;
         let resolver = CatalogModelPublicationResolver::new(catalog, credentials);
         let resolved = resolver
-            .resolve_models("workspace-a", &ModelSelection::Auto, &[])
+            .resolve_models(&ScopeId::from("workspace-a"), &ModelSelection::Auto, &[])
             .await
             .unwrap();
         assert_eq!(resolved.context_window, Some(200_000));
@@ -392,33 +395,22 @@ mod tests {
     #[tokio::test]
     async fn empty_catalog_and_cross_workspace_credentials_fail_closed() {
         let empty_resolver = resolver(&[]).await;
-        assert!(
+        assert!(matches!(
             empty_resolver
-                .resolve_models("workspace-a", &ModelSelection::Auto, &[])
-                .await
-                .unwrap_err()
-                .contains("no provider-backed model")
-        );
+                .resolve_models(&ScopeId::from("workspace-a"), &ModelSelection::Auto, &[],)
+                .await,
+            Err(PublicationResolutionError::MissingPrimary)
+        ));
 
         let resolver = resolver(&["primary"]).await;
         assert!(
             resolver
-                .resolve_models("workspace-b", &ModelSelection::Auto, &[])
+                .resolve_models(&ScopeId::from("workspace-b"), &ModelSelection::Auto, &[],)
                 .await
                 .unwrap_err()
+                .to_string()
                 .contains("Workspace workspace-b")
         );
-    }
-
-    #[tokio::test]
-    async fn explicit_host_fallback_is_the_only_catalog_bypass() {
-        let resolver = resolver(&[]).await.with_fallback_model("embedded-model");
-        let binding = ModelBinding::new("host", "embedded-model", "native");
-        let resolved = resolver
-            .resolve_models("workspace-a", &ModelSelection::Pinned(binding.clone()), &[])
-            .await
-            .unwrap();
-        assert_eq!(resolved.primary, ResolvedModelCandidate::host(binding));
     }
 
     #[tokio::test]
@@ -440,7 +432,7 @@ mod tests {
         .unwrap();
         let resolver = CatalogModelPublicationResolver::new(catalog(&["primary"]), credentials);
         let resolved = resolver
-            .resolve_models("workspace-a", &ModelSelection::Auto, &[])
+            .resolve_models(&ScopeId::from("workspace-a"), &ModelSelection::Auto, &[])
             .await
             .unwrap();
         let ModelProvisioning::Provider {

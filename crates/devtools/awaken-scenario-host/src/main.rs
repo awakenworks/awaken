@@ -85,11 +85,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok("statemachine-rich") => awaken_scenario_host::build_statemachine_rich_router(),
         Ok("config") => awaken_scenario_host::build_config_router().await,
         // The management scenario drives the REAL management router but with the
-        // deterministic MCP scenario model as the pre-published fallback (production
-        // uses the provider-free NoModelConfiguredExecutor); env-driven store
-        // selection + IAM are identical to production.
+        // deterministic MCP scenario model as an explicit HostExecutor composition;
+        // env-driven store selection + IAM are identical to production.
         Ok("management") => {
-            awaken_cli::build_management_router_with_fallback(
+            awaken_cli::build_management_router_with_scenario_model(
                 std::sync::Arc::new(awaken_scenario_host::McpToolModel),
                 "management".to_string(),
             )
@@ -99,7 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // resource PEP) with only its deterministic fallback model replaced. Used
         // by the Skill pin/restart e2e; resource repositories remain auth-agnostic.
         Ok("management-skills") => {
-            awaken_cli::build_management_router_with_fallback(
+            awaken_cli::build_management_router_with_scenario_model(
                 std::sync::Arc::new(awaken_scenario_host::SkillDrivingModel),
                 "management-skills".to_string(),
             )
