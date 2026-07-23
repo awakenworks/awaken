@@ -63,6 +63,7 @@ impl ConfigServiceAgentSource {
                 })
                 .collect(),
             skill_ids: bindings.skill_ids,
+            delegate_ids: bindings.delegate_ids,
             resources,
         })
     }

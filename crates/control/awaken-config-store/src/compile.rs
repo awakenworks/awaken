@@ -247,23 +247,6 @@ fn compile_with_models(
         });
     }
 
-    if !metadata.is_legacy_default() {
-        let mut inputs = std::mem::take(&mut metadata.resolution.inputs);
-        inputs.extend(
-            descriptors
-                .iter()
-                .map(|tool| awaken_runtime_contract::ResolvedInputRef {
-                    kind: "tool".into(),
-                    id: tool.id.clone(),
-                    version: awaken_runtime_contract::ResolvedInputVersion::ContentHash(
-                        tool.content_hash.clone(),
-                    ),
-                }),
-        );
-        metadata.resolution = awaken_runtime_contract::ResolutionManifest::new(inputs)
-            .map_err(|error| CompileError::InvalidResolution(error.to_string()))?;
-    }
-
     // Capability gate (ADR-0057 D2): the execution kind — derived from the now-concrete
     // `backend_ref` — must be able to honor the declared capabilities. A remote (a2a)
     // agent runs everything on the far side, so local skills/MCP would be a silent
@@ -285,11 +268,29 @@ fn compile_with_models(
         }
     }
 
+    let bindings = normalize_agent_bindings(config)?;
+
+    if !metadata.is_legacy_default() {
+        let mut inputs = std::mem::take(&mut metadata.resolution.inputs);
+        inputs.extend(
+            descriptors
+                .iter()
+                .map(|tool| awaken_runtime_contract::ResolvedInputRef {
+                    kind: "tool".into(),
+                    id: tool.id.clone(),
+                    version: awaken_runtime_contract::ResolvedInputVersion::ContentHash(
+                        tool.content_hash.clone(),
+                    ),
+                }),
+        );
+        metadata.resolution = awaken_runtime_contract::ResolutionManifest::new(inputs)
+            .map_err(|error| CompileError::InvalidResolution(error.to_string()))?;
+    }
+
     // Normalize the flexible Managed-Agents integration unions into the small
     // published runtime contract. This is intentionally stamped even when empty:
     // an empty selection means this Agent gets no global skills, while an older
     // publication without the section retains the legacy global catalog behavior.
-    let bindings = normalize_agent_bindings(config)?;
     let mut plugin_config = config.plugin_config.clone();
     bindings.insert_into(&mut plugin_config);
 
@@ -352,9 +353,38 @@ fn normalize_agent_bindings(config: &AgentConfig) -> Result<AgentBindings, Compi
             return Err(invalid("skills", format!("skill id {id:?} is duplicated")));
         }
     }
+    let mut seen_delegates = std::collections::BTreeSet::new();
+    if let Some(multiagent) = &config.multiagent {
+        for (index, id) in multiagent.agent_ids.iter().enumerate() {
+            let id = id.trim();
+            if id.is_empty() {
+                return Err(invalid(
+                    "multiagent",
+                    format!("entry {index} must be a non-empty Agent id"),
+                ));
+            }
+            if id == config.id {
+                return Err(invalid(
+                    "multiagent",
+                    "an Agent cannot delegate to itself".to_string(),
+                ));
+            }
+            if !seen_delegates.insert(id.to_string()) {
+                return Err(invalid(
+                    "multiagent",
+                    format!("Agent id {id:?} is duplicated"),
+                ));
+            }
+        }
+    }
     Ok(AgentBindings {
         mcp_servers: config.mcp_servers.clone(),
         skill_ids: config.skill_ids.clone(),
+        delegate_ids: config
+            .multiagent
+            .as_ref()
+            .map(|multiagent| multiagent.agent_ids.clone())
+            .unwrap_or_default(),
     })
 }
 
@@ -964,11 +994,15 @@ mod tests {
         let mut cfg = config(&[]);
         cfg.mcp_servers = vec![mcp("docs", "https://mcp.example.test")];
         cfg.skill_ids = vec!["skill_docs".into(), "skill_release".into()];
+        cfg.multiagent = Some(crate::config::MultiagentConfig {
+            agent_ids: vec!["researcher".into(), "reviewer".into()],
+        });
         let snapshot = compile(&cfg, &[]).expect("valid integrations compile");
         let bindings = AgentBindings::from_config(&snapshot.resolved_spec.plugin_config)
             .expect("new publications always carry the binding section");
         assert_eq!(bindings.mcp_servers[0].name, "docs");
         assert_eq!(bindings.skill_ids, vec!["skill_docs", "skill_release"]);
+        assert_eq!(bindings.delegate_ids, vec!["researcher", "reviewer"]);
     }
 
     #[test]
@@ -991,6 +1025,19 @@ mod tests {
         assert!(matches!(
             error,
             CompileError::InvalidBinding { axis: "skills", .. }
+        ));
+
+        cfg.skill_ids.clear();
+        cfg.multiagent = Some(crate::config::MultiagentConfig {
+            agent_ids: vec!["agent-1".into()],
+        });
+        let error = compile(&cfg, &[]).unwrap_err();
+        assert!(matches!(
+            error,
+            CompileError::InvalidBinding {
+                axis: "multiagent",
+                ..
+            }
         ));
     }
 

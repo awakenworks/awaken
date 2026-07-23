@@ -153,12 +153,18 @@ pub fn agent_skills(caps: &AgentCapabilities) -> Vec<serde_json::Value> {
 /// Project the agent's delegate roster onto the public `agent.multiagent` coordinator
 /// object, or `None` when the agent delegates to no one.
 pub fn agent_multiagent(caps: &AgentCapabilities) -> Option<serde_json::Value> {
-    if caps.delegates.is_empty() {
+    agent_multiagent_ids(&caps.delegates)
+}
+
+/// Project an already-resolved published roster. Session creation uses this
+/// before runtime preparation, while later reads use [`agent_multiagent`].
+pub fn agent_multiagent_ids(delegate_ids: &[String]) -> Option<serde_json::Value> {
+    if delegate_ids.is_empty() {
         return None;
     }
     Some(serde_json::json!({
         "type": "coordinator",
-        "agents": caps.delegates,
+        "agents": delegate_ids,
     }))
 }
 
