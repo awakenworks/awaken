@@ -18,12 +18,12 @@
 //! `method_not_found` — tool execution is the hand's job, never proxied over ACP.
 
 use agent_client_protocol::{
-    AGENT_METHOD_NAMES, CLIENT_METHOD_NAMES, ClientCapabilities, ContentBlock, InitializeRequest,
-    InitializeResponse, LoadSessionRequest, LoadSessionResponse, NewSessionRequest,
-    NewSessionResponse, PermissionOptionKind, PromptRequest, PromptResponse, ProtocolVersion,
-    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SelectedPermissionOutcome, SessionId, SessionModeId, SessionModeState, SessionNotification,
-    SetSessionModeRequest,
+    AGENT_METHOD_NAMES, AuthenticateRequest, AuthenticateResponse, CLIENT_METHOD_NAMES,
+    ClientCapabilities, ContentBlock, InitializeRequest, InitializeResponse, LoadSessionRequest,
+    LoadSessionResponse, NewSessionRequest, NewSessionResponse, PermissionOptionKind,
+    PromptRequest, PromptResponse, ProtocolVersion, RequestPermissionOutcome,
+    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome, SessionId,
+    SessionModeId, SessionModeState, SessionNotification, SetSessionModeRequest,
 };
 use awaken_agent_channel::AgentChannel;
 use serde::Serialize;
@@ -79,6 +79,8 @@ const ID_PROMPT: u64 = 3;
 /// `session/set_mode` (only sent when a mode is pinned) — a distinct correlation
 /// id; JSON-RPC ids need only be unique, not ordered.
 const ID_SET_MODE: u64 = 4;
+/// Adapter-selected authentication, after initialize and before opening a Session.
+const ID_AUTHENTICATE: u64 = 5;
 /// JSON-RPC "method not found" (the reply to any capability we do not advertise).
 const METHOD_NOT_FOUND: i64 = -32601;
 
@@ -254,6 +256,25 @@ pub async fn run_turn_with_config(
     let init: InitializeResponse =
         parse(pump_to_response(&mut wire, ID_INITIALIZE, sink, &mut seq, resolver).await?)?;
     let can_load = init.agent_capabilities.load_session;
+    if let Some(method_id) = config.auth_method_id.as_deref() {
+        if !init
+            .auth_methods
+            .iter()
+            .any(|method| method.id().0.as_ref() == method_id)
+        {
+            return Err(AcpError::Frame(format!(
+                "configured ACP authentication method `{method_id}` was not advertised"
+            )));
+        }
+        wire.send_request(
+            ID_AUTHENTICATE,
+            AGENT_METHOD_NAMES.authenticate,
+            AuthenticateRequest::new(method_id.to_string()),
+        )
+        .await?;
+        let _: AuthenticateResponse =
+            parse(pump_to_response(&mut wire, ID_AUTHENTICATE, sink, &mut seq, resolver).await?)?;
+    }
 
     // 2. session/load (resume the CLI's own session across the relaunch) when we
     //    hold a prior id and the agent supports it; else session/new. Fail-safe:
@@ -731,9 +752,70 @@ mod tests {
         }
     }
 
+    async fn authenticated_agent(side: DuplexStream) {
+        let mut io = AgentIo::new(side);
+        let initialize = io.read().await.expect("initialize");
+        assert_eq!(initialize["method"], AGENT_METHOD_NAMES.initialize);
+        io.write_line(
+            r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{},"authMethods":[{"id":"api-key","name":"API key"}]}}"#,
+        )
+        .await;
+
+        let authenticate = io.read().await.expect("authenticate");
+        assert_eq!(authenticate["id"], ID_AUTHENTICATE);
+        assert_eq!(authenticate["method"], AGENT_METHOD_NAMES.authenticate);
+        assert_eq!(authenticate["params"]["methodId"], "api-key");
+        io.write_line(r#"{"jsonrpc":"2.0","id":5,"result":{}}"#)
+            .await;
+
+        let new_session = io.read().await.expect("session/new");
+        assert_eq!(new_session["method"], AGENT_METHOD_NAMES.session_new);
+        io.write_line(r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"authenticated"}}"#)
+            .await;
+
+        let prompt = io.read().await.expect("session/prompt");
+        assert_eq!(prompt["method"], AGENT_METHOD_NAMES.session_prompt);
+        io.write_line(r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}"#)
+            .await;
+    }
+
     fn channel() -> (Box<dyn AgentChannel>, DuplexStream) {
         let (ours, theirs) = tokio::io::duplex(8192);
         (Box::new(ours), theirs)
+    }
+
+    #[tokio::test]
+    async fn selects_the_catalog_auth_method_before_opening_a_session() {
+        let (mut ours, theirs) = channel();
+        let agent = tokio::spawn(authenticated_agent(theirs));
+        let mut sink = RecordingSink::default();
+        let mut config = TurnConfig::new(&AllowAll);
+        config.auth_method_id = Some("api-key".to_string());
+
+        let reason = run_turn_with_config(ours.as_mut(), "do it", &mut sink, &mut config, None)
+            .await
+            .unwrap();
+        assert_eq!(reason, TerminationReason::NaturalEnd);
+        agent.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn configured_auth_method_must_be_advertised() {
+        let (mut ours, theirs) = channel();
+        let agent = tokio::spawn(scripted_agent(theirs, Vec::new(), "end_turn"));
+        let mut sink = RecordingSink::default();
+        let mut config = TurnConfig::new(&AllowAll);
+        config.auth_method_id = Some("api-key".to_string());
+
+        let error = run_turn_with_config(ours.as_mut(), "do it", &mut sink, &mut config, None)
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("authentication method `api-key` was not advertised")
+        );
+        agent.abort();
     }
 
     #[tokio::test]

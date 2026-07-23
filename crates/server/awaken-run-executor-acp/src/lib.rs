@@ -606,6 +606,12 @@ impl AcpRunExecutor {
             config.session_id = acp_session_id.take();
             config.session_mode = self.session_mode.clone();
             config.session_cwd = session.workspace_cwd.clone();
+            config.auth_method_id = match Backend::from_ref(&backend_ref) {
+                Backend::Acp { cli } => acp_cli(&cli)
+                    .and_then(|row| row.auth_method_id)
+                    .map(str::to_string),
+                _ => None,
+            };
             let mut outcome = Supervisor::supervise_with_config(
                 session.channel.as_mut(),
                 process.as_ref(),

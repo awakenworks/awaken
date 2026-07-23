@@ -24,25 +24,10 @@ import crypto from 'node:crypto';
 import Anthropic from '@anthropic-ai/sdk';
 import { withServer, pass } from './harness.mjs';
 import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
+import { loadKimiConfig } from './kimi_config.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const CALC_TOKEN = 'calc-bearer-token-e2e'; // awaken-allow: secret
-
-// The KIMI (Anthropic-dialect) config the user keeps in ~/.bashrc, commented out.
-function kimiFromBashrc() {
-  let text = '';
-  try {
-    text = fs.readFileSync(path.join(os.homedir(), '.bashrc'), 'utf8');
-  } catch {
-    return null;
-  }
-  const key = text.match(/ANTHROPIC_API_KEY=(sk-kimi-[^\s"']+)/)?.[1];
-  const base = text.match(/ANTHROPIC_BASE_URL=(https:\/\/api\.kimi\.com[^\s"']*)/)?.[1];
-  if (!key || !base) return null;
-  // The claude ACP adapter (Claude Code) appends `/v1/messages` itself, so
-  // ANTHROPIC_BASE_URL is the ROOT (no `/v1`) — the raw ~/.bashrc value.
-  return { key, base, model: 'kimi-for-coding' };
-}
 
 async function listEvents(client, id) {
   const out = [];
@@ -51,7 +36,7 @@ async function listEvents(client, id) {
 }
 
 async function main() {
-  const kimi = kimiFromBashrc();
+  const kimi = loadKimiConfig();
   if (!kimi) {
     console.log('SKIP: no KIMI ANTHROPIC_API_KEY/BASE_URL found in ~/.bashrc');
     return;
@@ -64,7 +49,7 @@ async function main() {
   const realHome = os.homedir();
   const runtime = process.env.ACP_RUNTIME ?? 'claude';
   const noMcp = process.env.ACP_NO_MCP === '1';
-  const supported = new Set(['claude', 'kimi', 'opencode', 'hermes']);
+  const supported = new Set(['claude', 'kimi', 'opencode', 'hermes', 'codex']);
   assert.ok(supported.has(runtime), `ACP_RUNTIME must be one of ${[...supported].join(', ')}`);
   const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-acp-home-'));
   const storageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-acp-store-'));
@@ -74,43 +59,46 @@ async function main() {
     RUSTUP_HOME: process.env.RUSTUP_HOME ?? path.join(realHome, '.rustup'),
     HOME: sandboxHome,
     AWAKEN_STORAGE_DIR: storageDir,
-    ANTHROPIC_BASE_URL: kimi.base,
-    ANTHROPIC_API_KEY: kimi.key,
-    ANTHROPIC_MODEL: kimi.model,
+    ANTHROPIC_BASE_URL: kimi.anthropicBase,
+    ANTHROPIC_API_KEY: kimi.anthropicKey ?? kimi.key,
+    ANTHROPIC_MODEL: kimi.anthropicModel,
     AWAKEN_ACP_CLI: runtime,
-    AWAKEN_MODEL: kimi.model,
+    AWAKEN_MODEL: runtime === 'claude' ? kimi.anthropicModel : kimi.openaiModel,
   });
   if (runtime === 'kimi') {
     Object.assign(process.env, {
-      KIMI_MODEL_BASE_URL: `${kimi.base.replace(/\/+$/, '')}/v1`,
+      KIMI_MODEL_BASE_URL: kimi.openaiBase,
       KIMI_MODEL_API_KEY: kimi.key,
-      KIMI_MODEL_NAME: kimi.model,
+      KIMI_MODEL_NAME: kimi.openaiModel,
     });
-  } else if (runtime === 'opencode') {
-    const baseURL = `${kimi.base.replace(/\/+$/, '')}/v1`;
+  } else if (runtime === 'opencode' || runtime === 'codex') {
     Object.assign(process.env, {
-      OPENAI_BASE_URL: baseURL,
+      OPENAI_BASE_URL: kimi.openaiBase,
       OPENAI_API_KEY: kimi.key,
-      OPENAI_MODEL: kimi.model,
+      OPENAI_MODEL: kimi.openaiModel,
+    });
+    if (runtime === 'opencode') {
+      Object.assign(process.env, {
       OPENCODE_CONFIG_CONTENT: JSON.stringify({
-        model: `awaken-kimi/${kimi.model}`,
-        small_model: `awaken-kimi/${kimi.model}`,
+        model: `awaken-kimi/${kimi.openaiModel}`,
+        small_model: `awaken-kimi/${kimi.openaiModel}`,
         enabled_providers: ['awaken-kimi'],
         provider: {
           'awaken-kimi': {
             npm: '@ai-sdk/openai-compatible',
             name: 'Awaken Kimi Code',
-            options: { baseURL, apiKey: '{env:OPENAI_API_KEY}' }, // awaken-allow: secret
-            models: { [kimi.model]: { name: kimi.model } },
+            options: { baseURL: kimi.openaiBase, apiKey: '{env:OPENAI_API_KEY}' }, // awaken-allow: secret
+            models: { [kimi.openaiModel]: { name: kimi.openaiModel } },
           },
         },
       }),
-    });
+      });
+    }
   } else if (runtime === 'hermes') {
     Object.assign(process.env, {
-      KIMI_BASE_URL: `${kimi.base.replace(/\/+$/, '')}/v1`,
+      KIMI_BASE_URL: kimi.openaiBase,
       KIMI_API_KEY: kimi.key,
-      HERMES_MODEL: kimi.model,
+      HERMES_MODEL: kimi.openaiModel,
     });
   }
 
@@ -135,7 +123,7 @@ async function main() {
         agent: 'assistant',
         // The ACP adapter is handed this as its ANTHROPIC_MODEL (the ACP model-delivery
         // path resolves the run's model_ref), so it must be the real KIMI model name.
-        model: kimi.model,
+        model: runtime === 'claude' ? kimi.anthropicModel : kimi.openaiModel,
         metadata: { 'awaken.runtime': `acp:${runtime}` },
         mcp_servers: noMcp ? [] : [{ name: 'calc', type: 'url', url: fixture.url }],
         vault_ids: noMcp ? [] : [vault.id],

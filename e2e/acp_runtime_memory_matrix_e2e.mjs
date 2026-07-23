@@ -19,6 +19,7 @@ import os from 'node:os';
 import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
 import { withServer, pass } from './harness.mjs';
+import { loadKimiConfig } from './kimi_config.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const RUNTIMES = (process.env.ACP_RUNTIMES ?? 'kimi,opencode,claude,hermes')
@@ -26,18 +27,6 @@ const RUNTIMES = (process.env.ACP_RUNTIMES ?? 'kimi,opencode,claude,hermes')
   .map((runtime) => runtime.trim())
   .filter(Boolean);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-function kimiFromBashrc() {
-  let text = '';
-  try {
-    text = fs.readFileSync(path.join(os.homedir(), '.bashrc'), 'utf8');
-  } catch {
-    return null;
-  }
-  const key = text.match(/ANTHROPIC_API_KEY=(sk-kimi-[^\s"']+)/)?.[1];
-  const base = text.match(/ANTHROPIC_BASE_URL=(https:\/\/api\.kimi\.com[^\s"']*)/)?.[1];
-  return key && base ? { key, base, model: 'kimi-for-coding' } : null;
-}
 
 async function listEvents(client, sessionId) {
   const events = [];
@@ -112,50 +101,53 @@ async function memoryContent(client, storeId) {
 }
 
 function configureRuntime(runtime, kimi) {
-  const baseURL = `${kimi.base.replace(/\/+$/, '')}/v1`;
   Object.assign(process.env, {
     AWAKEN_ACP_CLI: runtime,
-    AWAKEN_MODEL: kimi.model,
-    ANTHROPIC_BASE_URL: kimi.base,
-    ANTHROPIC_API_KEY: kimi.key,
-    ANTHROPIC_MODEL: kimi.model,
+    AWAKEN_MODEL: runtime === 'claude' ? kimi.anthropicModel : kimi.openaiModel,
+    ANTHROPIC_BASE_URL: kimi.anthropicBase,
+    ANTHROPIC_API_KEY: kimi.anthropicKey ?? kimi.key,
+    ANTHROPIC_MODEL: kimi.anthropicModel,
   });
   if (runtime === 'kimi') {
     Object.assign(process.env, {
-      KIMI_MODEL_BASE_URL: baseURL,
+      KIMI_MODEL_BASE_URL: kimi.openaiBase,
       KIMI_MODEL_API_KEY: kimi.key,
-      KIMI_MODEL_NAME: kimi.model,
+      KIMI_MODEL_NAME: kimi.openaiModel,
     });
-  } else if (runtime === 'opencode') {
+  } else if (runtime === 'opencode' || runtime === 'codex') {
     Object.assign(process.env, {
-      OPENAI_BASE_URL: baseURL,
+      OPENAI_BASE_URL: kimi.openaiBase,
       OPENAI_API_KEY: kimi.key,
-      OPENAI_MODEL: kimi.model,
+      OPENAI_MODEL: kimi.openaiModel,
+    });
+    if (runtime === 'opencode') {
+      Object.assign(process.env, {
       OPENCODE_CONFIG_CONTENT: JSON.stringify({
-        model: `awaken-kimi/${kimi.model}`,
-        small_model: `awaken-kimi/${kimi.model}`,
+        model: `awaken-kimi/${kimi.openaiModel}`,
+        small_model: `awaken-kimi/${kimi.openaiModel}`,
         enabled_providers: ['awaken-kimi'],
         provider: {
           'awaken-kimi': {
             npm: '@ai-sdk/openai-compatible',
             name: 'Awaken Kimi Code',
-            options: { baseURL, apiKey: '{env:OPENAI_API_KEY}' }, // awaken-allow: secret
-            models: { [kimi.model]: { name: kimi.model } },
+            options: { baseURL: kimi.openaiBase, apiKey: '{env:OPENAI_API_KEY}' }, // awaken-allow: secret
+            models: { [kimi.openaiModel]: { name: kimi.openaiModel } },
           },
         },
       }),
-    });
+      });
+    }
   } else if (runtime === 'hermes') {
     Object.assign(process.env, {
-      KIMI_BASE_URL: baseURL,
+      KIMI_BASE_URL: kimi.openaiBase,
       KIMI_API_KEY: kimi.key,
-      HERMES_MODEL: kimi.model,
+      HERMES_MODEL: kimi.openaiModel,
     });
   }
 }
 
 async function main() {
-  const kimi = kimiFromBashrc();
+  const kimi = loadKimiConfig();
   if (!kimi) {
     console.log('SKIP: no KIMI configuration found in ~/.bashrc');
     return;
@@ -200,7 +192,7 @@ async function main() {
 
         const createSession = () => client.beta.sessions.create({
             agent: 'assistant',
-            model: kimi.model,
+            model: runtime === 'claude' ? kimi.anthropicModel : kimi.openaiModel,
             metadata: { 'awaken.runtime': `acp:${runtime}` },
             resources: [{
               type: 'memory_store',
@@ -312,7 +304,7 @@ async function main() {
         for (let attempt = 1; attempt <= 3; attempt += 1) {
           session = await client.beta.sessions.create({
             agent: 'assistant',
-            model: kimi.model,
+            model: runtime === 'claude' ? kimi.anthropicModel : kimi.openaiModel,
             metadata: { 'awaken.runtime': `acp:${runtime}` },
             resources: [{
               type: 'memory_store',
