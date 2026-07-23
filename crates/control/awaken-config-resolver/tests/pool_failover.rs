@@ -64,6 +64,8 @@ async fn catalog() -> ProviderCatalog {
         protocol_endpoint_id: ProtocolEndpointId::new("ep1"),
         dialect: ApiDialect::AnthropicMessages,
         upstream_model: None,
+        source: Default::default(),
+        status: Default::default(),
     })
     .await
     .unwrap();
@@ -236,6 +238,8 @@ async fn dual_endpoint_catalog() -> ProviderCatalog {
             protocol_endpoint_id: ProtocolEndpointId::new(ep),
             dialect: ApiDialect::AnthropicMessages,
             upstream_model: None,
+            source: Default::default(),
+            status: Default::default(),
         })
         .await
         .unwrap();
@@ -364,6 +368,8 @@ async fn two_model_catalog() -> ProviderCatalog {
             protocol_endpoint_id: ProtocolEndpointId::new("ep1"),
             dialect: ApiDialect::AnthropicMessages,
             upstream_model: None,
+            source: Default::default(),
+            status: Default::default(),
         })
         .await
         .unwrap();

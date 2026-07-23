@@ -55,6 +55,8 @@ async fn seed_catalog(base_url: &str, model_id: &str) -> InMemoryCatalogRepo {
         protocol_endpoint_id: ProtocolEndpointId::new("ep1"),
         dialect: ApiDialect::AnthropicMessages,
         upstream_model: None,
+        source: Default::default(),
+        status: Default::default(),
     })
     .await
     .unwrap();

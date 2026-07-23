@@ -303,6 +303,10 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     },
     "awaken-runtime-contract": {
         "awaken-agent-contract",
+        # ADR-0062's published provider candidate carries one opaque owner pin
+        # for credential integrity checks. This is data only: runtime receives
+        # no WorkspaceScope, scope graph, repository selection, or IAM ability.
+        "awaken-tenancy",
         "serde",
         "serde_json",
         "sha2",
@@ -582,14 +586,16 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "thiserror",
     },
     # Provider adapter: the only crate allowed to name the model SDK. It also
-    # consumes the SDK's async response stream, so `futures` (StreamExt) is
-    # permitted here and nowhere else.
+    # consumes the SDK's async response stream and implements provider HTTP
+    # model-directory discovery, so `futures` and `reqwest` stay at this wire
+    # adapter boundary rather than leaking into catalog/application code.
     "awaken-provider-genai": {
         "awaken-agent-contract",
         "awaken-runtime-contract",
         "genai",
         "async-trait",
         "futures",
+        "reqwest",
         "tokio",
         "serde",
         "serde_json",

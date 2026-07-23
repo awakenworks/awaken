@@ -4,12 +4,10 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { api } from "../lib/api/client";
+import { api, ws } from "../lib/api/client";
 import type { CredentialSource, CredentialValidation } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
 import { Button, Card, Pill, SecretField, TextField } from "../components/ui";
-
-const WORKSPACE = "wrkspc_default";
 
 function SourceRow({ source }: { source: CredentialSource }) {
   const app = useApp();
@@ -17,13 +15,13 @@ function SourceRow({ source }: { source: CredentialSource }) {
   const [model, setModel] = useState("claude-sonnet-4-5");
   const validate = useMutation({
     mutationFn: () =>
-      api.post<CredentialValidation>(`/v1/config/credentials/${source.id}/validate`, {
-        workspace_id: WORKSPACE,
+      api.post<CredentialValidation>(ws(`/v1/config/credentials/${source.id}/validate`), {
+        workspace_id: source.workspace_id,
         model_id: model,
       }),
   });
   const archive = useMutation({
-    mutationFn: () => api.post(`/v1/config/credentials/${source.id}/archive`),
+    mutationFn: () => api.post(ws(`/v1/config/credentials/${source.id}/archive`)),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["credentials"] }),
   });
   const statusTone = source.status === "active" ? "ok" : "neutral";
@@ -78,17 +76,18 @@ function SourceRow({ source }: { source: CredentialSource }) {
 
 export default function CredentialsSurface() {
   const app = useApp();
+  const workspace = app.workspaceId;
   const qc = useQueryClient();
   const sources = useQuery({
-    queryKey: ["credentials"],
-    queryFn: () => api.get<CredentialSource[]>(`/v1/config/credentials?workspace_id=${WORKSPACE}`),
+    queryKey: ["credentials", workspace],
+    queryFn: () => api.get<CredentialSource[]>(ws(`/v1/config/credentials?workspace_id=${workspace}`)),
   });
   const [entering, setEntering] = useState(false);
   const [form, setForm] = useState({ kind: "vault", provider: "anthropic", secret: "", oauthHelper: "gcloud" });
   const enter = useMutation({
     mutationFn: () =>
-      api.post<CredentialSource>("/v1/config/credentials", {
-        workspace_id: WORKSPACE,
+      api.post<CredentialSource>(ws("/v1/config/credentials"), {
+        workspace_id: workspace,
         kind: form.kind,
         provider_id: form.provider || undefined,
         secret: form.kind === "vault" ? form.secret : undefined,

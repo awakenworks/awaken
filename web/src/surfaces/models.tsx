@@ -6,10 +6,15 @@ import { useEffect, useRef, useState } from "react";
 import Transcript from "../components/session/Transcript";
 import { Button, Card, Modal, Pill, SelectField, Skeleton, TextField, UsageBadges } from "../components/ui";
 import { api, ws } from "../lib/api/client";
-import type { EnvironmentProviderProposal, ProviderCatalog, ResolvedInferenceView, Session } from "../lib/api/types";
+import type {
+  CatalogSyncResult,
+  CredentialSource,
+  EnvironmentProviderProposal,
+  ProviderCatalog,
+  ResolvedInferenceView,
+  Session,
+} from "../lib/api/types";
 import { useApp } from "../lib/app-state";
-
-const WORKSPACE = "wrkspc_default";
 
 /** Compact a token count for the catalog list: 200000 → "200k", 1_000_000 → "1M". */
 function fmtTokens(n: number): string {
@@ -84,14 +89,19 @@ function ResolveChain({ view }: { view: ResolvedInferenceView }) {
 
 export default function ModelsSurface() {
   const app = useApp();
+  const workspace = app.workspaceId;
   const qc = useQueryClient();
   const catalog = useQuery({
     queryKey: ["catalog"],
-    queryFn: () => api.get<ProviderCatalog>("/v1/config/catalog"),
+    queryFn: () => api.get<ProviderCatalog>(ws("/v1/config/catalog")),
   });
   const proposals = useQuery({
     queryKey: ["provider-proposals"],
-    queryFn: () => api.get<EnvironmentProviderProposal[]>("/v1/config/provider-proposals"),
+    queryFn: () => api.get<EnvironmentProviderProposal[]>(ws("/v1/config/provider-proposals")),
+  });
+  const credentials = useQuery({
+    queryKey: ["credentials", workspace],
+    queryFn: () => api.get<CredentialSource[]>(ws(`/v1/config/credentials?workspace_id=${workspace}`)),
   });
   const [draft, setDraft] = useState({
     provider: "anthropic",
@@ -103,13 +113,13 @@ export default function ModelsSurface() {
   });
   const upsert = useMutation({
     mutationFn: async () => {
-      await api.put(`/v1/config/providers/${draft.provider}`, {
+      await api.put(ws(`/v1/config/providers/${draft.provider}`), {
         id: draft.provider,
         slug: draft.provider,
         display_name: draft.provider,
         version: 1,
       });
-      await api.put(`/v1/config/endpoints/${draft.endpoint}`, {
+      await api.put(ws(`/v1/config/endpoints/${draft.endpoint}`), {
         id: draft.endpoint,
         provider_id: draft.provider,
         dialect: draft.dialect,
@@ -118,7 +128,7 @@ export default function ModelsSurface() {
         display_name: draft.endpoint,
         version: 1,
       });
-      await api.post("/v1/config/offerings", {
+      await api.post(ws("/v1/config/offerings"), {
         model_id: draft.model,
         provider_id: draft.provider,
         protocol_endpoint_id: draft.endpoint,
@@ -129,9 +139,18 @@ export default function ModelsSurface() {
       // the compaction token budget. Publish it only when the operator entered one.
       const ctx = Number(draft.contextWindow);
       if (draft.contextWindow.trim() && Number.isFinite(ctx) && ctx > 0) {
-        await api.put(`/v1/config/model-attributes/${draft.model}`, { context_window: Math.round(ctx) });
+        await api.put(ws(`/v1/config/model-attributes/${draft.model}`), { context_window: Math.round(ctx) });
       }
     },
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["catalog"] }),
+  });
+  const [syncCredential, setSyncCredential] = useState("");
+  const syncModels = useMutation({
+    mutationFn: () =>
+      api.post<CatalogSyncResult>(ws(`/v1/config/endpoints/${draft.endpoint}/discover-models`), {
+        workspace_id: workspace,
+        credential_source_id: syncCredential,
+      }),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["catalog"] }),
   });
   const [testModel, setTestModel] = useState<string | null>(null);
@@ -139,8 +158,8 @@ export default function ModelsSurface() {
   const [resolveBinding, setResolveBinding] = useState("");
   const resolve = useMutation({
     mutationFn: () =>
-      api.post<ResolvedInferenceView>("/v1/config/inference/resolve", {
-        workspace_id: WORKSPACE,
+      api.post<ResolvedInferenceView>(ws("/v1/config/inference/resolve"), {
+        workspace_id: workspace,
         model_id: resolveModel,
         binding: resolveBinding
           ? { type: "exact", credential_source_id: resolveBinding }
@@ -167,6 +186,7 @@ export default function ModelsSurface() {
               <th>Provider</th>
               <th>Endpoint</th>
               <th>Dialect</th>
+              <th>Status</th>
               <th>{app.t("Context", "上下文")}</th>
               <th style={{ textAlign: "right" }}></th>
             </tr>
@@ -179,6 +199,11 @@ export default function ModelsSurface() {
                 <td className="mono mut">{o.protocol_endpoint_id}</td>
                 <td>
                   <Pill tone="neutral">{o.dialect}</Pill>
+                </td>
+                <td>
+                  <Pill tone={(o.status ?? "active") === "active" ? "agent" : "neutral"}>
+                    {o.status ?? "active"} · {o.source ?? "manual"}
+                  </Pill>
                 </td>
                 <td className="mut">
                   {c?.model_attributes?.[o.model_id]?.context_window
@@ -194,7 +219,7 @@ export default function ModelsSurface() {
             ))}
             {(c?.offerings ?? []).length === 0 && (
               <tr>
-                <td colSpan={5} className="mut">
+                <td colSpan={7} className="mut">
                   {app.t("Empty catalog — author one below.", "目录为空——在下方作者化。")}
                 </td>
               </tr>
@@ -263,6 +288,40 @@ export default function ModelsSurface() {
           </Button>
         </div>
         {upsert.error instanceof Error && <div className="err">{upsert.error.message}</div>}
+        <div className="row" style={{ marginTop: 12 }}>
+          <SelectField
+            label={app.t("Credential for provider discovery", "用于供应商发现的凭证")}
+            value={syncCredential}
+            onChange={(event) => setSyncCredential(event.target.value)}
+          >
+            <option value="">{app.t("Choose credential", "选择凭证")}</option>
+            {(credentials.data ?? [])
+              .filter(
+                (credential) =>
+                  credential.status === "active" &&
+                  (credential.provider_id == null || credential.provider_id === draft.provider),
+              )
+              .map((credential) => (
+                <option key={credential.id} value={credential.id}>
+                  {credential.id} · {credential.kind}
+                </option>
+              ))}
+          </SelectField>
+          <Button
+            style={{ alignSelf: "flex-end" }}
+            disabled={!syncCredential || !draft.endpoint || syncModels.isPending}
+            onClick={() => syncModels.mutate()}
+          >
+            {app.t("Discover models", "发现模型")}
+          </Button>
+          {syncModels.data && (
+            <span className="mut" style={{ alignSelf: "flex-end" }}>
+              {syncModels.data.discovered} discovered · {syncModels.data.activated} activated ·{" "}
+              {syncModels.data.marked_unavailable} unavailable
+            </span>
+          )}
+        </div>
+        {syncModels.error instanceof Error && <div className="err">{syncModels.error.message}</div>}
       </Card>
 
       <Card>

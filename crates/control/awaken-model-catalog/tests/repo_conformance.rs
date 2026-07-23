@@ -4,8 +4,9 @@
 
 use awaken_model_catalog::repo::{CatalogRepo, InMemoryCatalogRepo, RepoError};
 use awaken_model_catalog::{
-    ApiDialect, CatalogError, ModelAttributes, Offering, ProtocolEndpoint, ProtocolEndpointId,
-    Provider, ProviderCatalog, ProviderId, ValidCatalog,
+    ApiDialect, CatalogError, DiscoveredModel, ModelAttributes, Offering, OfferingSource,
+    OfferingStatus, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderCatalog, ProviderId,
+    ValidCatalog,
 };
 
 fn provider(id: &str) -> Provider {
@@ -36,6 +37,8 @@ fn offering(model: &str, ep: &str, dialect: ApiDialect) -> Offering {
         protocol_endpoint_id: ProtocolEndpointId::new(ep),
         dialect,
         upstream_model: None,
+        source: Default::default(),
+        status: Default::default(),
     }
 }
 
@@ -183,6 +186,20 @@ async fn offering_put_is_upsert(repo: &dyn CatalogRepo) {
     assert_eq!(repo.snapshot().await.unwrap().offerings.len(), 2);
 }
 
+async fn explicit_offering_authoring_owns_provenance(repo: &dyn CatalogRepo) {
+    repo.put_provider(provider("anthropic")).await.unwrap();
+    repo.put_endpoint(endpoint("ep1", "anthropic", ApiDialect::AnthropicMessages))
+        .await
+        .unwrap();
+    let mut forged = offering("manual", "ep1", ApiDialect::AnthropicMessages);
+    forged.source = OfferingSource::ProviderApi;
+    forged.status = OfferingStatus::Unavailable;
+    repo.put_offering(forged).await.unwrap();
+    let snapshot = repo.snapshot().await.unwrap();
+    assert_eq!(snapshot.offerings[0].source, OfferingSource::Manual);
+    assert_eq!(snapshot.offerings[0].status, OfferingStatus::Active);
+}
+
 /// Model attributes publish independently of any offering (they carry no
 /// provider/endpoint reference), upsert on `model_id`, and round-trip through the
 /// snapshot on EVERY backend. Previously only the in-mem and sqlite unit tests
@@ -268,6 +285,116 @@ async fn resolve_first_match_follows_stored_order_deterministically(repo: &dyn C
     );
 }
 
+async fn provider_discovery_reconciles_without_deleting_manual_truth(repo: &dyn CatalogRepo) {
+    repo.put_provider(provider("anthropic")).await.unwrap();
+    repo.put_endpoint(endpoint("ep1", "anthropic", ApiDialect::AnthropicMessages))
+        .await
+        .unwrap();
+    repo.put_offering(offering(
+        "manual-model",
+        "ep1",
+        ApiDialect::AnthropicMessages,
+    ))
+    .await
+    .unwrap();
+
+    let first = repo
+        .reconcile_discovered_models(
+            &ProtocolEndpointId::new("ep1"),
+            vec![
+                DiscoveredModel {
+                    model_id: "provider-a".into(),
+                    upstream_model: None,
+                },
+                DiscoveredModel {
+                    model_id: "provider-b".into(),
+                    upstream_model: Some("upstream-b".into()),
+                },
+            ],
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.discovered, 2);
+    assert_eq!(first.activated, 2);
+    assert_eq!(first.marked_unavailable, 0);
+
+    let second = repo
+        .reconcile_discovered_models(
+            &ProtocolEndpointId::new("ep1"),
+            vec![
+                DiscoveredModel {
+                    model_id: "provider-b".into(),
+                    upstream_model: Some("upstream-b2".into()),
+                },
+                DiscoveredModel {
+                    model_id: "provider-c".into(),
+                    upstream_model: None,
+                },
+            ],
+        )
+        .await
+        .unwrap();
+    assert_eq!(second.discovered, 2);
+    assert_eq!(second.activated, 1);
+    assert_eq!(second.marked_unavailable, 1);
+
+    let snapshot = repo.snapshot().await.unwrap();
+    let manual = snapshot
+        .offerings
+        .iter()
+        .find(|offering| offering.model_id == "manual-model")
+        .unwrap();
+    assert_eq!(manual.source, OfferingSource::Manual);
+    assert_eq!(manual.status, OfferingStatus::Active);
+    let unavailable = snapshot
+        .offerings
+        .iter()
+        .find(|offering| offering.model_id == "provider-a")
+        .unwrap();
+    assert_eq!(unavailable.status, OfferingStatus::Unavailable);
+    assert!(
+        snapshot
+            .resolve_offering("provider-a", ApiDialect::AnthropicMessages)
+            .is_none(),
+        "an unavailable discovery row cannot enter a new publication"
+    );
+    let refreshed = snapshot
+        .resolve_offering("provider-b", ApiDialect::AnthropicMessages)
+        .unwrap();
+    assert_eq!(refreshed.upstream_model.as_deref(), Some("upstream-b2"));
+}
+
+async fn rejected_discovery_is_atomic(repo: &dyn CatalogRepo) {
+    repo.put_provider(provider("anthropic")).await.unwrap();
+    repo.put_endpoint(endpoint("ep1", "anthropic", ApiDialect::AnthropicMessages))
+        .await
+        .unwrap();
+    repo.reconcile_discovered_models(
+        &ProtocolEndpointId::new("ep1"),
+        vec![DiscoveredModel {
+            model_id: "sound".into(),
+            upstream_model: None,
+        }],
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        repo.reconcile_discovered_models(
+            &ProtocolEndpointId::new("ep1"),
+            vec![DiscoveredModel {
+                model_id: "  ".into(),
+                upstream_model: None,
+            }],
+        )
+        .await,
+        Err(RepoError::Invariant(CatalogError::EmptyDiscoveredModelId))
+    ));
+    let snapshot = repo.snapshot().await.unwrap();
+    assert_eq!(snapshot.offerings.len(), 1);
+    assert_eq!(snapshot.offerings[0].model_id, "sound");
+    assert_eq!(snapshot.offerings[0].status, OfferingStatus::Active);
+}
+
 /// Run every suite, each on a fresh repo from `make`.
 async fn run_all(make: impl Fn() -> Box<dyn CatalogRepo>) {
     crud_round_trip_and_snapshot(&*make()).await;
@@ -277,8 +404,11 @@ async fn run_all(make: impl Fn() -> Box<dyn CatalogRepo>) {
     rejected_offering_leaves_no_trace(&*make()).await;
     put_is_upsert(&*make()).await;
     offering_put_is_upsert(&*make()).await;
+    explicit_offering_authoring_owns_provenance(&*make()).await;
     put_model_attributes_round_trips(&*make()).await;
     resolve_first_match_follows_stored_order_deterministically(&*make()).await;
+    provider_discovery_reconciles_without_deleting_manual_truth(&*make()).await;
+    rejected_discovery_is_atomic(&*make()).await;
 }
 
 /// Reload-time integrity guard, at the pure `ValidCatalog::parse` boundary: the

@@ -5,10 +5,9 @@
 // fail at run time for want of a key.
 
 import { useQuery } from "@tanstack/react-query";
-import { api } from "./api/client";
+import { api, ws } from "./api/client";
 import type { CredentialSource, ProviderCatalog } from "./api/types";
-
-const WORKSPACE = "wrkspc_default";
+import { useApp } from "./app-state";
 
 export interface Models {
   /** Model ids whose provider has an active credential — safe to pick. */
@@ -20,16 +19,19 @@ export interface Models {
 }
 
 export function useModels(): Models {
+  const workspace = useApp().workspaceId;
   const catalog = useQuery({
     queryKey: ["catalog"],
-    queryFn: () => api.get<ProviderCatalog>("/v1/config/catalog"),
+    queryFn: () => api.get<ProviderCatalog>(ws("/v1/config/catalog")),
   });
   const credentials = useQuery({
-    queryKey: ["credentials", WORKSPACE],
-    queryFn: () => api.get<CredentialSource[]>(`/v1/config/credentials?workspace_id=${WORKSPACE}`),
+    queryKey: ["credentials", workspace],
+    queryFn: () => api.get<CredentialSource[]>(ws(`/v1/config/credentials?workspace_id=${workspace}`)),
   });
 
-  const offerings = catalog.data?.offerings ?? [];
+  const offerings = (catalog.data?.offerings ?? []).filter(
+    (offering) => (offering.status ?? "active") === "active",
+  );
   const creds = credentials.data ?? [];
   // can_consume (ADR-0118): an unscoped credential (provider_id null) serves any
   // provider; a scoped one serves only its provider. Only active credentials count.

@@ -61,6 +61,60 @@ impl awaken_admin_config_api::CredentialProbe for GenaiProbe {
     }
 }
 
+/// Provisioning-side model directory adapter. It receives an exact authored
+/// credential row, materializes it at this seam, calls the configured provider
+/// endpoint, and returns only normalized ids. It never selects a credential and
+/// never mutates the catalog itself.
+struct GenaiModelDiscovery {
+    secrets: Arc<dyn awaken_credential_vault::SecretStore>,
+}
+
+#[async_trait::async_trait]
+impl awaken_admin_config_api::ModelCatalogDiscovery for GenaiModelDiscovery {
+    async fn discover(
+        &self,
+        endpoint: &awaken_model_catalog::ProtocolEndpoint,
+        credential: &awaken_credential_vault::CredentialSource,
+    ) -> Result<
+        Vec<awaken_model_catalog::DiscoveredModel>,
+        awaken_admin_config_api::ModelCatalogDiscoveryError,
+    > {
+        use awaken_model_catalog::ApiDialect;
+        use awaken_provider_genai::AdapterKind;
+
+        let adapter = match endpoint.dialect {
+            ApiDialect::AnthropicMessages => AdapterKind::Anthropic,
+            ApiDialect::OpenAiChat => AdapterKind::OpenAI,
+            ApiDialect::Gemini => AdapterKind::Gemini,
+            ApiDialect::VertexGemini => AdapterKind::Vertex,
+        };
+        let secret = awaken_credential_vault::materialize(credential, self.secrets.as_ref())
+            .await
+            .map_err(|error| {
+                awaken_admin_config_api::ModelCatalogDiscoveryError::CredentialUnavailable(
+                    error.to_string(),
+                )
+            })?;
+        awaken_provider_genai::discover_model_ids(
+            adapter,
+            endpoint.base_url.as_deref(),
+            secret.expose_secret(),
+        )
+        .await
+        .map(|ids| {
+            ids.into_iter()
+                .map(|model_id| awaken_model_catalog::DiscoveredModel {
+                    model_id,
+                    upstream_model: None,
+                })
+                .collect()
+        })
+        .map_err(|error| {
+            awaken_admin_config_api::ModelCatalogDiscoveryError::Provider(error.to_string())
+        })
+    }
+}
+
 /// The store set the management plane runs over — one instance of each port,
 /// shared by the authoring router, the vault front door, and session prepare.
 struct ManagementStores {
@@ -1035,6 +1089,9 @@ async fn management_router_over(
         sessions: sessions.clone(),
         resource_store: resource_store.clone(),
         probe: Arc::new(GenaiProbe),
+        model_discovery: Arc::new(GenaiModelDiscovery {
+            secrets: secrets.clone(),
+        }),
         vault_state: vault_state.clone(),
         env_state: env_state.clone(),
         deployment_state: deployment_state.clone(),

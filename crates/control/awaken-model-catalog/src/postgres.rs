@@ -15,8 +15,8 @@ use sqlx::types::Json;
 use crate::repo::{CatalogRepo, RepoError};
 use crate::schema::catalog_bundle;
 use crate::{
-    CatalogError, ModelAttributes, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider,
-    ProviderCatalog, ProviderId, ValidCatalog,
+    CatalogError, CatalogSyncResult, DiscoveredModel, ModelAttributes, Offering, ProtocolEndpoint,
+    ProtocolEndpointId, Provider, ProviderCatalog, ProviderId, ValidCatalog,
 };
 
 /// The catalog component's table namespace (its bundle prefix).
@@ -163,7 +163,9 @@ impl CatalogRepo for PostgresCatalogRepo {
         Ok(())
     }
 
-    async fn put_offering(&self, offering: Offering) -> Result<(), RepoError> {
+    async fn put_offering(&self, mut offering: Offering) -> Result<(), RepoError> {
+        offering.source = crate::OfferingSource::Manual;
+        offering.status = crate::OfferingStatus::Active;
         let p = NS;
         // Insert + whole-catalog re-validation in one transaction (fail-closed): a
         // rejected offering rolls back and leaves no trace — same no-trace semantics
@@ -196,6 +198,46 @@ impl CatalogRepo for PostgresCatalogRepo {
         ValidCatalog::parse(load_catalog(&mut tx, p).await?)?; // Transaction derefs to PgConnection
         tx.commit().await.map_err(storage)?;
         Ok(())
+    }
+
+    async fn reconcile_discovered_models(
+        &self,
+        endpoint_id: &ProtocolEndpointId,
+        models: Vec<DiscoveredModel>,
+    ) -> Result<CatalogSyncResult, RepoError> {
+        let p = NS;
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        if !row_exists(
+            &mut *tx,
+            &format!("{p}_protocol_endpoint"),
+            endpoint_id.as_str(),
+        )
+        .await?
+        {
+            return Err(RepoError::EndpointNotFound(endpoint_id.0.clone()));
+        }
+        let mut catalog = load_catalog(&mut tx, p).await?;
+        let result = catalog.reconcile_discovered_models(endpoint_id, models)?;
+        for offering in catalog
+            .offerings
+            .iter()
+            .filter(|offering| offering.protocol_endpoint_id == *endpoint_id)
+        {
+            sqlx::query(&format!(
+                "INSERT INTO {p}_offering (model_id, protocol_endpoint_id, data) \
+                 VALUES ($1, $2, $3) ON CONFLICT (model_id, protocol_endpoint_id) \
+                 DO UPDATE SET data = excluded.data"
+            ))
+            .bind(&offering.model_id)
+            .bind(endpoint_id.as_str())
+            .bind(Json(offering))
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
+        }
+        ValidCatalog::parse(load_catalog(&mut tx, p).await?)?;
+        tx.commit().await.map_err(storage)?;
+        Ok(result)
     }
 
     async fn put_model_attributes(

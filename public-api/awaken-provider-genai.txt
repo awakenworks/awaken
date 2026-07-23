@@ -4,6 +4,13 @@ pub enum awaken_provider_genai::CredentialProbe
 pub awaken_provider_genai::CredentialProbe::Invalid
 pub awaken_provider_genai::CredentialProbe::Unknown
 pub awaken_provider_genai::CredentialProbe::Valid
+pub enum awaken_provider_genai::ModelDiscoveryError
+pub awaken_provider_genai::ModelDiscoveryError::Http
+pub awaken_provider_genai::ModelDiscoveryError::Http::status: u16
+pub awaken_provider_genai::ModelDiscoveryError::InvalidEndpoint(alloc::string::String)
+pub awaken_provider_genai::ModelDiscoveryError::InvalidResponse(alloc::string::String)
+pub awaken_provider_genai::ModelDiscoveryError::Transport(alloc::string::String)
+pub awaken_provider_genai::ModelDiscoveryError::Unsupported(genai::adapter::adapter_kind::AdapterKind)
 pub struct awaken_provider_genai::GenaiExecutor
 impl awaken_provider_genai::GenaiExecutor
 pub fn awaken_provider_genai::GenaiExecutor::anthropic_compatible(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
@@ -16,6 +23,7 @@ impl awaken_runtime_contract::llm::LlmExecutor for awaken_provider_genai::GenaiE
 pub fn awaken_provider_genai::GenaiExecutor::infer<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_provider_genai::GenaiExecutor::infer_streaming<'life0, 'life1, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest, &'life1 dyn awaken_runtime_contract::llm::DeltaSink) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_provider_genai::classify_error(&str) -> awaken_runtime_contract::llm::Error
+pub async fn awaken_provider_genai::discover_model_ids(genai::adapter::adapter_kind::AdapterKind, core::option::Option<&str>, &str) -> core::result::Result<alloc::vec::Vec<alloc::string::String>, awaken_provider_genai::ModelDiscoveryError>
 pub fn awaken_provider_genai::from_genai_response(genai::chat::chat_response::ChatResponse) -> awaken_runtime_contract::llm::ChatResponse
 pub fn awaken_provider_genai::from_genai_tool_call(&genai::chat::tool::tool_call::ToolCall) -> awaken_runtime_contract::llm::ToolCall
 pub fn awaken_provider_genai::map_assistant_output(&genai::chat::message_content::MessageContent) -> awaken_runtime_contract::llm::AssistantOutput
