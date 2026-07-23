@@ -746,6 +746,39 @@ impl AcpRunExecutor {
                     return Ok(state);
                 }
             };
+
+            // Some opaque adapters collapse an upstream provider failure into a
+            // clean ACP end_turn with no projected output. Accepting that as a
+            // NaturalEnd silently turns quota/auth/provider failures into an empty
+            // assistant response. A conversational turn must produce at least one
+            // text or tool fact before it can end naturally.
+            if matches!(reason, TerminationReason::NaturalEnd) && appender.messages.is_empty() {
+                let failure = classify_error(
+                    Stage::Prompt,
+                    &RawAcpError::message("ACP agent ended naturally without producing output"),
+                );
+                committed.push(Message::text(
+                    MessageId(format!("acp-err-{}", committed.len() + 1)),
+                    Role::Assistant,
+                    failure.prompt(),
+                ));
+                let disposition = RunDisposition::ended(run_id.clone(), failure_cause(&failure));
+                let state = disposition.state();
+                commit(
+                    &context,
+                    &activation.thread_id,
+                    disposition,
+                    committed,
+                    run_state(
+                        &run_usage,
+                        &model_ref,
+                        &backend_ref,
+                        acp_session_id.as_deref(),
+                    ),
+                )
+                .await?;
+                return Ok(state);
+            }
             committed.extend(appender.messages);
 
             // The safe boundary, shared with the native engine: fold queued live
