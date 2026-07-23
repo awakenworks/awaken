@@ -8,9 +8,9 @@
 //! protocol can be resumed or observed through another on the *same thread*.
 //!
 //! This crate is the DATA PLANE: the session surface + protocol adapters
-//! ([`mount`] / [`mount_with_managed`]), the resolved-inference executor seam
-//! ([`executor_from_resolved`]), inference access resolution/materialization, the model
-//! resolver, the no-model fallback, workspace path addressing, and the Worker
+//! ([`mount`] / [`mount_with_managed`]), exact published-model credential
+//! materialization, the model publication resolver, the no-model fallback,
+//! workspace path addressing, and the Worker
 //! role helper (the hand is now the separate `awaken-sandbox` execution-plane
 //! binary). Its sibling **authoring / authz plane** lives in
 //! `awaken-control`; neither depends on the other, and `awaken-cli` is the
@@ -34,7 +34,6 @@ pub mod workspace_path;
 
 use std::sync::Arc;
 
-use awaken_config_resolver::ResolvedInference;
 use awaken_protocol_managed::{ManagedState, router};
 use awaken_protocol_transport::ProtocolRuntime;
 use awaken_provider_genai::GenaiExecutor;
@@ -475,8 +474,8 @@ pub fn data_subject_plane() -> (
     }
 }
 
-/// The composition seam refuses to build an executor from an incomplete or
-/// unservable [`ResolvedInference`] (ADR-0043, fail-closed).
+/// The worker composition seam refuses incomplete or unsupported materialized
+/// provider access (ADR-0043, fail-closed).
 #[derive(Debug, thiserror::Error)]
 pub enum ResolvedExecutorError {
     #[error("resolved inference has no base_url for adapter `{0}`")]
@@ -487,27 +486,9 @@ pub enum ResolvedExecutorError {
     UnsupportedAdapter(String),
 }
 
-/// Build the run-loop's model executor from a management-plane [`ResolvedInference`]
-/// (ADR-0043). The resolver already produced the execution triple's adapter kind,
-/// endpoint base URL, and the *resolved* credential value; this composition seam is
-/// the only place that turns that into the concrete provider executor the host
-/// drives. The runtime never sees the credential binding — only the already-resolved
-/// [`RedactedString`](awaken_agent_contract::RedactedString) crosses in here (D6/D9),
-/// and it is exposed exactly once to construct the client. Fail-closed on a missing
-/// base URL/credential or an adapter this build cannot serve.
-pub fn executor_from_resolved(
-    inference: &ResolvedInference,
-) -> Result<Arc<dyn LlmExecutor>, ResolvedExecutorError> {
-    executor_from_materialized_access(
-        inference.adapter_kind,
-        inference.base_url.as_deref(),
-        inference.credential.as_ref(),
-    )
-}
-
 /// Construct a provider executor from publication-pinned endpoint facts and
-/// request-time credential material. This is the runtime half of resolution: it
-/// does not consult a catalog, select a route, or select a credential.
+/// worker-materialized credential material. It does not consult a catalog, select
+/// a route, select a credential, or accept a management-plane preview result.
 pub fn executor_from_materialized_access(
     adapter_kind: &str,
     base_url: Option<&str>,
@@ -550,29 +531,7 @@ fn genai_adapter(adapter_kind: &str) -> Option<awaken_provider_genai::AdapterKin
 mod executor_seam_tests {
     use super::*;
     use awaken_agent_contract::RedactedString;
-    use awaken_config_resolver::{InferenceTriple, ResolvedInference};
-    use awaken_model_catalog::ApiDialect;
     use awaken_provider_genai::AdapterKind;
-
-    /// Build a hermetic `ResolvedInference` — the resolver's output the composition
-    /// seam turns into an executor — with a chosen adapter/base_url/credential.
-    fn inference(
-        adapter: &'static str,
-        base_url: Option<&str>,
-        credential: Option<&str>,
-    ) -> ResolvedInference {
-        ResolvedInference {
-            triple: InferenceTriple {
-                model_id: "m".into(),
-                provider_id: "p".into(),
-                protocol_endpoint_id: "ep".into(),
-                dialect: ApiDialect::AnthropicMessages,
-            },
-            adapter_kind: adapter,
-            base_url: base_url.map(str::to_string),
-            credential: credential.map(RedactedString::new),
-        }
-    }
 
     /// The one place a supported provider wire is named maps exactly the three the
     /// build serves, and returns `None` (→ `UnsupportedAdapter`) for everything else,
@@ -593,10 +552,12 @@ mod executor_seam_tests {
     /// whose `adapter_kind` no provider in this build serves is refused, naming the
     /// adapter — never silently built into some default executor.
     #[test]
-    fn executor_from_resolved_fails_closed_on_an_unsupported_adapter() {
-        let inf = inference("cohere", Some("https://gw/"), Some("sk-secret"));
+    fn materialized_access_fails_closed_on_an_unsupported_adapter() {
+        let credential = RedactedString::new("sk-secret");
         // `Ok` carries an `Arc<dyn LlmExecutor>` (not `Debug`), so map to the error first.
-        match executor_from_resolved(&inf).err() {
+        match executor_from_materialized_access("cohere", Some("https://gw/"), Some(&credential))
+            .err()
+        {
             Some(ResolvedExecutorError::UnsupportedAdapter(a)) => assert_eq!(a, "cohere"),
             other => panic!("expected UnsupportedAdapter, got {other:?}"),
         }
@@ -609,8 +570,8 @@ mod executor_seam_tests {
     #[test]
     fn missing_base_url_is_refused_by_the_seam() {
         // A supported adapter + a credential but NO base URL fails closed.
-        let inf = inference("anthropic", None, Some("sk-secret"));
-        match executor_from_resolved(&inf).err() {
+        let credential = RedactedString::new("sk-secret");
+        match executor_from_materialized_access("anthropic", None, Some(&credential)).err() {
             Some(ResolvedExecutorError::MissingBaseUrl(a)) => assert_eq!(a, "anthropic"),
             other => panic!("expected MissingBaseUrl, got {other:?}"),
         }
@@ -625,15 +586,18 @@ mod executor_seam_tests {
     /// A supported adapter with both a base URL and a credential builds an executor
     /// (the happy path the three fail-closed arms bracket).
     #[test]
-    fn executor_from_resolved_builds_for_a_supported_adapter_with_a_credential() {
+    fn materialized_access_builds_supported_adapters_with_a_credential() {
+        let credential = RedactedString::new("k");
         assert!(
-            executor_from_resolved(&inference("openai", Some("https://gw/"), Some("k"))).is_ok()
+            executor_from_materialized_access("openai", Some("https://gw/"), Some(&credential))
+                .is_ok()
         );
         assert!(
-            executor_from_resolved(&inference("gemini", Some("https://gw/"), Some("k"))).is_ok()
+            executor_from_materialized_access("gemini", Some("https://gw/"), Some(&credential))
+                .is_ok()
         );
         assert!(
-            executor_from_resolved(&inference("vertex", Some("https://gw/"), Some("oauth")))
+            executor_from_materialized_access("vertex", Some("https://gw/"), Some(&credential))
                 .is_ok()
         );
     }

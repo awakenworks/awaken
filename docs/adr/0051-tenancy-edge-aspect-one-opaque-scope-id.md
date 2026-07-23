@@ -181,7 +181,8 @@ the neutral core contracts stay tenancy-free and the snapshot the runtime consum
 is a pre-authorized, tenancy-free artifact (the ADR-0043 seam, extended).
 
 **Amended by ADR-0062:** no ambient request/authorization scope was added to
-`RunActivation`, but fingerprinted `InferenceAccess` may carry the owning
+`RunActivation`, but fingerprinted provider provisioning in a
+`ResolvedModelCandidate` may carry the owning
 Workspace id as a secret-free integrity pin. The host compares that pin with the
 credential row and fails closed; it is not authority, does not invoke IAM, and
 cannot select another tenant. This narrow owner pin supersedes the absolute “no

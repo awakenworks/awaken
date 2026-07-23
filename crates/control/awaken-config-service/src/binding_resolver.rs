@@ -1,11 +1,9 @@
-//! Model auto-binding (ADR-0052 D5).
+//! Model publication resolution (ADR-0052 D5 / ADR-0062).
 //!
-//! A [`ModelSelection::Auto`] config must become a concrete binding before it can
-//! compile (compile is pure and cannot reach the provider catalog). The
-//! [`ModelResolver`] port answers "what is the first provider-backed offering" — the
-//! host implements it over the shared model catalog — and [`ConfigService`] calls it
-//! in `publish`, *before* `compile`, so the stored `ExecutableAgentSnapshot` is self-contained,
-//! content-addressed, and reproducible. `Pinned` selections skip the resolver.
+//! One port turns authored model selection into complete, ordered snapshot
+//! candidates. It owns both auto-selection and provider/credential pinning, so
+//! publication cannot combine a binding from one catalog read with access facts
+//! from another. Compilation remains pure and runtime only consumes the result.
 //!
 //! Freshness (an `Auto` binding can go stale when the catalog changes) is recovered
 //! by one explicit seam — [`AssistantBindingReconciler`] — the catalog write path
@@ -13,40 +11,53 @@
 //! `Pinned` ones; re-publish is idempotent by content address, so a retry is safe.
 
 use awaken_config_store::ModelSelection;
-use awaken_runtime_contract::resolved::ModelBinding;
+use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate};
 use awaken_tenancy::ScopeId;
 
-/// A resolved `Auto` selection: the first provider-backed offering as the primary
-/// binding, the remaining offerings as ordered pool candidates (which feed the
-/// engine's existing pool-failover at run time).
+/// Complete, secret-free output of one model-publication resolution.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResolvedModel {
-    pub primary: ModelBinding,
-    pub candidates: Vec<ModelBinding>,
+pub struct ResolvedPublicationModels {
+    pub primary: ResolvedModelCandidate,
+    pub candidates: Vec<ResolvedModelCandidate>,
+    /// Primary model attributes used to derive compaction before compilation.
+    pub context_window: Option<u32>,
+    pub max_output_tokens: Option<u32>,
 }
 
-/// Resolve an `Auto` model selection to a concrete binding (ADR-0052 D5). The host
-/// implements this over the org-shared provider catalog.
-pub trait ModelResolver: Send + Sync {
-    /// The first provider-backed offering as primary, the rest as candidates.
-    /// `Err` when the catalog has no provider-backed model ("configure and publish a
-    /// model first") — surfaced by `publish` as a 409.
-    fn resolve_auto(&self) -> Result<ResolvedModel, String>;
-
-    /// The published context window (max tokens) of a resolved model, when the catalog
-    /// carries it — the source `resolve_agent_config` derives an agent's compaction
-    /// window from. Defaults to `None` (a resolver with no catalog attributes), so the
-    /// compaction window stays whatever the agent authored.
-    fn context_window(&self, _model_id: &str) -> Option<u32> {
-        None
+impl ResolvedPublicationModels {
+    /// Explicit host-executor composition for embedded/dev adapters. Provider
+    /// catalog adapters return `Provider` candidates through the same port.
+    #[must_use]
+    pub fn host(
+        primary: ModelBinding,
+        candidates: Vec<ModelBinding>,
+        context_window: Option<u32>,
+        max_output_tokens: Option<u32>,
+    ) -> Self {
+        Self {
+            primary: ResolvedModelCandidate::host(primary),
+            candidates: candidates
+                .into_iter()
+                .map(ResolvedModelCandidate::host)
+                .collect(),
+            context_window,
+            max_output_tokens,
+        }
     }
+}
 
-    /// The published output-token ceiling of a resolved model, when the catalog carries it —
-    /// the headroom `resolve_agent_config` reserves when deriving the compaction window. `None`
-    /// (no attribute) simply omits the headroom (window derives from `context_window` alone).
-    fn max_output_tokens(&self, _model_id: &str) -> Option<u32> {
-        None
-    }
+/// Resolve authored selection and ordered fallbacks into one immutable model
+/// publication. Implementations may read catalogs and credential inventories,
+/// but must return one complete candidate per selected binding or fail the whole
+/// operation. The trusted execution Workspace is an input, never ambient state.
+#[async_trait::async_trait]
+pub trait ModelPublicationResolver: Send + Sync {
+    async fn resolve_models(
+        &self,
+        workspace: &str,
+        selection: &ModelSelection,
+        candidates: &[ModelBinding],
+    ) -> Result<ResolvedPublicationModels, String>;
 }
 
 /// The freshness seam (ADR-0052 D5): the model-catalog write path calls this after a
@@ -61,13 +72,6 @@ pub trait AssistantBindingReconciler: Send + Sync {
     /// actually re-published (a `Pinned` one is skipped, an already-current `Auto` is
     /// a no-op by content address).
     async fn reconcile(&self) -> Result<usize, String>;
-}
-
-/// Whether a selection needs the resolver. `Pinned` passes through; `Auto` must be
-/// resolved. Kept here so `publish` and the reconciler share one predicate.
-#[must_use]
-pub fn needs_resolution(selection: &ModelSelection) -> bool {
-    selection.is_auto()
 }
 
 /// The concrete reconciler the host wires: it re-publishes a fixed set of agent ids

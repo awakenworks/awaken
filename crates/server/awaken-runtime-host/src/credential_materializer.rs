@@ -1,8 +1,8 @@
 //! Exact credential realization for publication-pinned runtime access.
 //!
 //! This host adapter owns no selection policy and cannot enumerate credentials. It
-//! accepts one immutable [`InferenceAccess`], verifies its Workspace/revision/usage
-//! pins against the persisted row, then materializes that exact secret. Native
+//! accepts one immutable [`ResolvedModelCandidate`], verifies its
+//! Workspace/revision/usage pins against the persisted row, then materializes that exact secret. Native
 //! provider execution and ACP provisioning share this adapter so they cannot drift.
 
 use std::sync::Arc;

@@ -21,8 +21,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_run_ingress::{
-    DispatchError, DispatchOutcome, DispatchQueue, HttpDispatchQueue, Inbox, InferenceAccess,
-    MemoryDispatchStore, Outbox, PendingInput, RunClaim, RunDispatch, SettleOutcome, SubmitOptions,
+    DispatchError, DispatchOutcome, DispatchQueue, HttpDispatchQueue, Inbox, MemoryDispatchStore,
+    Outbox, PendingInput, RunClaim, RunDispatch, SettleOutcome, SubmitOptions,
 };
 use awaken_runtime_contract::resume::ResumeResult;
 use axum::extract::State;
@@ -33,17 +33,28 @@ use serde_json::{Value, json};
 
 use harness::activation;
 
-fn opaque_access(scheme: &str, reference: &str) -> InferenceAccess {
-    InferenceAccess {
-        scheme: scheme.into(),
-        reference: reference.into(),
-        provider_ref: None,
-        route_ref: None,
-        scope_id: None,
-        credential_access: None,
-        endpoint: None,
-        candidates: Vec::new(),
-    }
+fn provider_candidate(
+    reference: &str,
+) -> awaken_runtime_contract::resolved::ResolvedModelCandidate {
+    awaken_runtime_contract::resolved::ResolvedModelCandidate::provider(
+        awaken_runtime_contract::ModelBinding::new("provider@1", "gateway-model", "genai"),
+        "provider@1",
+        "route@1",
+        "workspace-a",
+        Some(awaken_runtime_contract::CredentialAccess {
+            credential: awaken_runtime_contract::CredentialRef {
+                id: reference.into(),
+                revision: 1,
+            },
+            injection: awaken_runtime_contract::CredentialInjectionKind::Reference,
+            usage: awaken_runtime_contract::CredentialUsage::ProviderAdapter,
+        }),
+        awaken_runtime_contract::InferenceEndpoint {
+            adapter_kind: "openai".into(),
+            base_url: "https://gateway.invalid/v1".into(),
+            upstream_model: "gateway-model".into(),
+        },
+    )
 }
 
 /// Stand up a live server mirroring a cell server's `dispatch_transport_router`
@@ -237,9 +248,9 @@ async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
     let run = RunId("run-1".into());
 
     // Enqueue a run over the wire; the server-side store records it.
+    let candidate = provider_candidate("grant-http");
     let mut activation = activation("run-1");
-    activation.snapshot.metadata.inference_access =
-        Some(opaque_access("credential-reference/v1", "grant-http"));
+    activation.snapshot.resolved_spec.model_binding = candidate.clone();
     queue
         .enqueue(RunDispatch::new(activation))
         .await
@@ -260,14 +271,14 @@ async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
         .expect("a runnable dispatch");
     assert_eq!(claimed.request.run_id(), &run);
     assert_eq!(
-        claimed
+        &claimed
             .request
             .activation
             .snapshot
-            .metadata
-            .inference_access,
-        Some(opaque_access("credential-reference/v1", "grant-http")),
-        "the opaque grant survives the worker HTTP boundary"
+            .resolved_spec
+            .model_binding,
+        &candidate,
+        "the complete model candidate survives the worker HTTP boundary"
     );
     assert_eq!(claimed.lease.owner, "worker-A");
     assert_eq!(claimed.lease.epoch, 1);

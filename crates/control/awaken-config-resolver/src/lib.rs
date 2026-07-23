@@ -1,8 +1,8 @@
 //! Config resolver (ADR-0043) — the management plane's *read/resolution face*.
 //! It owns **no aggregate**; it reads the config stores (`awaken-model-catalog`,
-//! `awaken-credential-vault`, and — in the assembly — agent config). Publication
-//! freezes runtime access through [`InferenceAccessPublisher`]; the concrete
-//! [`ResolvedInference`] path remains for management preview/probe operations.
+//! `awaken-credential-vault`, and — in the assembly — agent config). Agent
+//! publication owns the separate secret-free model-candidate resolver; the
+//! concrete [`ResolvedInference`] path remains for management preview/probe operations.
 //!
 //! This is the crate formerly mislabeled "inference": it *resolves* config into
 //! an executable binding; it does **not** run inference (that is
@@ -22,24 +22,6 @@ use awaken_model_catalog::{ApiDialect, ProviderCatalog};
 pub use awaken_resource_contract::{
     BindingId, FileId, InputBinding, InputResourceId, MemoryStoreId, RepositoryId, ResourceAccess,
 };
-
-/// Configuration-plane port that freezes inference access for one scope and one
-/// ordered model set. Implementations may read catalogs and credential inventories;
-/// runtime and admission code may not repeat that selection.
-pub trait InferenceAccessPublisher: Send + Sync {
-    fn resolve_access<'a>(
-        &'a self,
-        scope: &'a str,
-        models: &'a [awaken_runtime_contract::ModelBinding],
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<
-                    Output = Result<awaken_runtime_contract::InferenceAccess, String>,
-                > + Send
-                + 'a,
-        >,
-    >;
-}
 
 /// Read ports for the authored aggregates (`McpStore`, `InferenceProfileStore`,
 /// `AgentInputBindingRepository`) + in-memory reference impls. They live on the
@@ -68,7 +50,7 @@ pub struct InferenceTriple {
 
 /// What the resolver hands the run loop: the concrete target + wire + an
 /// already-resolved secret for management preview/probe. Production publication
-/// emits secret-free `InferenceAccess`; runtime never consumes this preview type.
+/// emits complete secret-free model candidates; runtime never consumes this preview type.
 #[derive(Debug)]
 pub struct ResolvedInference {
     pub triple: InferenceTriple,

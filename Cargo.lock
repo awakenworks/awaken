@@ -1729,7 +1729,6 @@ dependencies = [
  "awaken-agent-contract",
  "awaken-control",
  "awaken-credential-vault",
- "awaken-model-catalog",
  "awaken-observability",
  "awaken-provisioning-contract",
  "awaken-runtime-contract",

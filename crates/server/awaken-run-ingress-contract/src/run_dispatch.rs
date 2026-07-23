@@ -142,36 +142,25 @@ impl RunDispatch {
 mod tests {
     use super::*;
     use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-    use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
+    use awaken_runtime_contract::resolved::{
+        CatalogFingerprint, ModelBinding, ModelProvisioning, ResolvedSpec,
+    };
     use awaken_runtime_contract::snapshot::{
         AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
     };
 
-    fn opaque_access(scheme: &str, reference: &str) -> awaken_runtime_contract::InferenceAccess {
-        awaken_runtime_contract::InferenceAccess {
-            scheme: scheme.into(),
-            reference: reference.into(),
-            provider_ref: None,
-            route_ref: None,
-            scope_id: None,
-            credential_access: None,
-            endpoint: None,
-            candidates: Vec::new(),
-        }
-    }
-
-    fn exact_access(
+    fn provider_candidate(
+        model: &str,
         credential: &str,
         provider: &str,
         route: &str,
-    ) -> awaken_runtime_contract::InferenceAccess {
-        awaken_runtime_contract::InferenceAccess {
-            scheme: "credential-source/v1".into(),
-            reference: credential.into(),
-            provider_ref: Some(provider.into()),
-            route_ref: Some(route.into()),
-            scope_id: None,
-            credential_access: Some(awaken_runtime_contract::CredentialAccess {
+    ) -> awaken_runtime_contract::resolved::ResolvedModelCandidate {
+        awaken_runtime_contract::resolved::ResolvedModelCandidate::provider(
+            ModelBinding::new(provider, model, "genai"),
+            provider,
+            route,
+            "workspace-a",
+            Some(awaken_runtime_contract::CredentialAccess {
                 credential: awaken_runtime_contract::CredentialRef {
                     id: credential.into(),
                     revision: 0,
@@ -179,9 +168,12 @@ mod tests {
                 injection: awaken_runtime_contract::CredentialInjectionKind::Reference,
                 usage: awaken_runtime_contract::CredentialUsage::ProviderAdapter,
             }),
-            endpoint: None,
-            candidates: Vec::new(),
-        }
+            awaken_runtime_contract::InferenceEndpoint {
+                adapter_kind: "openai".into(),
+                base_url: "https://provider.invalid/v1".into(),
+                upstream_model: model.into(),
+            },
+        )
     }
 
     fn activation() -> RunActivation {
@@ -369,14 +361,15 @@ mod tests {
             .verify_execution_scope(&claimed)
             .expect("scope belongs to authority");
         let mut activation = activation();
-        activation.snapshot.metadata.inference_access =
-            Some(opaque_access("credential-reference/v1", "grant-17"));
+        activation.snapshot.resolved_spec.model_binding =
+            provider_candidate("model", "grant-17", "provider@1", "route@1");
         let request = RunDispatch::new(activation).with_execution_scope(verified.into_ref());
         let wire = serde_json::to_value(&request).expect("serializes");
         assert_eq!(wire["execution_scope"], "workspace-a");
         assert_eq!(
-            wire["activation"]["snapshot"]["metadata"]["inference_access"]["scheme"],
-            "credential-reference/v1"
+            wire["activation"]["snapshot"]["resolved_spec"]["model_binding"]["provisioning"]["credential"]
+                ["credential"]["id"],
+            "grant-17"
         );
         assert!(!wire.to_string().contains("provider-key"));
         let restored: RunDispatch = serde_json::from_value(wire).expect("deserializes");
@@ -384,47 +377,58 @@ mod tests {
     }
 
     #[test]
-    fn candidate_access_is_ordered_pinned_and_model_scoped() {
-        let access = awaken_runtime_contract::InferenceAccess::candidate_set([
-            (
-                "primary".to_string(),
-                exact_access("cred-a", "provider-a@1", "route-a@2"),
-            ),
-            (
-                "fallback".to_string(),
-                exact_access("cred-b", "provider-b@4", "route-b@3"),
-            ),
-        ])
-        .unwrap();
+    fn candidate_pool_is_ordered_pinned_and_model_scoped() {
+        let mut activation = activation();
+        activation.snapshot.resolved_spec.model_binding =
+            provider_candidate("primary", "cred-a", "provider-a@1", "route-a@2");
+        activation.snapshot.resolved_spec.model_candidates = vec![provider_candidate(
+            "fallback",
+            "cred-b",
+            "provider-b@4",
+            "route-b@3",
+        )];
+        let spec = &activation.snapshot.resolved_spec;
         assert_eq!(
-            access
-                .candidates
-                .iter()
-                .map(|candidate| candidate.model_ref.as_str())
+            std::iter::once(&spec.model_binding)
+                .chain(spec.model_candidates.iter())
+                .map(|candidate| candidate.binding.model_ref.as_str())
                 .collect::<Vec<_>>(),
             vec!["primary", "fallback"]
         );
-        let fallback = access.for_model("fallback").unwrap();
-        assert_eq!(fallback.reference, "cred-b");
-        assert_eq!(fallback.provider_ref.as_deref(), Some("provider-b@4"));
-        assert!(fallback.candidates.is_empty());
-        assert!(access.for_model("not-authored").is_none());
-        let wire = serde_json::to_string(&access).unwrap();
+        let ModelProvisioning::Provider {
+            provider_ref,
+            credential: Some(credential),
+            ..
+        } = &spec.model_candidates[0].provisioning
+        else {
+            panic!("fallback is provider-backed")
+        };
+        assert_eq!(credential.credential.id, "cred-b");
+        assert_eq!(provider_ref, "provider-b@4");
+        assert!(spec.candidate_for_model("not-authored").is_none());
+        let wire = serde_json::to_string(&activation).unwrap();
         assert!(!wire.contains("secret"));
         assert_eq!(
-            serde_json::from_str::<awaken_runtime_contract::InferenceAccess>(&wire).unwrap(),
-            access
+            serde_json::from_str::<RunActivation>(&wire).unwrap(),
+            activation
         );
     }
 
     #[test]
-    fn host_executor_access_is_exact_and_non_secret() {
-        let access = awaken_runtime_contract::InferenceAccess::host_executor("embedded-model");
-        assert!(access.is_host_executor_for("embedded-model"));
-        assert!(!access.is_host_executor_for("another-model"));
-        assert!(access.provider_ref.is_none());
-        assert!(access.route_ref.is_none());
-        assert!(!serde_json::to_string(&access).unwrap().contains("secret"));
+    fn host_executor_candidate_is_exact_and_non_secret() {
+        let candidate = awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+            ModelBinding::new("host", "embedded-model", "native"),
+        );
+        assert_eq!(candidate.binding.model_ref, "embedded-model");
+        assert!(matches!(
+            candidate.provisioning,
+            ModelProvisioning::HostExecutor
+        ));
+        assert!(
+            !serde_json::to_string(&candidate)
+                .unwrap()
+                .contains("secret")
+        );
     }
 
     #[test]

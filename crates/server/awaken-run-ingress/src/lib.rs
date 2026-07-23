@@ -46,7 +46,6 @@ pub use awaken_run_ingress_contract::{
     WorkerManifest, WorkerRecoveryMode, WorkerRegistration, WorkerSnapshot, WorkerState,
     can_assign, can_claim, place_assignment,
 };
-pub use awaken_runtime_contract::{InferenceAccess, InferenceAccessCandidate};
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use commit_fence::{ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit};
 pub use dispatch::{

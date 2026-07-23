@@ -10,7 +10,6 @@ pub mod credential;
 pub mod data_subject;
 pub mod delegation;
 pub mod execution;
-pub mod inference_access;
 pub mod live_inbox;
 pub mod llm;
 pub mod metrics;
@@ -30,6 +29,7 @@ pub mod tool;
 pub mod tool_batch;
 
 pub use activation::RunActivation;
+pub use awaken_inference_contract::InferenceEndpoint;
 pub use boundary::{BoundaryOutcome, evaluate_boundary};
 pub use capture::{CaptureDecision, ContentCapture, ContentKind, ContentRedactor, NoopRedactor};
 pub use control::LiveRunControl;
@@ -45,7 +45,6 @@ pub use delegation::{
     RunDelegationService, RunDelegations,
 };
 pub use execution::{Cancellation, ExecutorCapabilities, RunExecutor, Wait};
-pub use inference_access::{InferenceAccess, InferenceAccessCandidate, InferenceEndpoint};
 pub use live_inbox::{LiveInbox, LiveInboxMessage, LiveInboxMessageId};
 pub use llm::{ChatRequest, ChatResponse, LlmExecutor};
 pub use pause::PauseSignal;

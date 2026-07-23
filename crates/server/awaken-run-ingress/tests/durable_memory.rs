@@ -16,8 +16,8 @@ use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_ext_builtin_tools::MessageSender;
 use awaken_run_ingress::{
-    DispatchOutcome, DispatchQueue, DispatchWorker, DurableRunIngress, Inbox, InferenceAccess,
-    MemoryDispatchStore, OutboxMessageSender, PendingInput, RunDispatch, RunIngressCapabilities,
+    DispatchOutcome, DispatchQueue, DispatchWorker, DurableRunIngress, Inbox, MemoryDispatchStore,
+    OutboxMessageSender, PendingInput, RunDispatch, RunIngressCapabilities,
 };
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime::{DirectRunIngress, RunIngress, RunService};
@@ -98,17 +98,28 @@ impl RunAttemptExecutor for RecordingAttemptExecutor {
     }
 }
 
-fn opaque_access(scheme: &str, reference: &str) -> InferenceAccess {
-    InferenceAccess {
-        scheme: scheme.into(),
-        reference: reference.into(),
-        provider_ref: None,
-        route_ref: None,
-        scope_id: None,
-        credential_access: None,
-        endpoint: None,
-        candidates: Vec::new(),
-    }
+fn provider_candidate(
+    reference: &str,
+) -> awaken_runtime_contract::resolved::ResolvedModelCandidate {
+    awaken_runtime_contract::resolved::ResolvedModelCandidate::provider(
+        awaken_runtime_contract::ModelBinding::new("provider@1", "gateway-model", "genai"),
+        "provider@1",
+        "route@1",
+        "workspace-a",
+        Some(awaken_runtime_contract::CredentialAccess {
+            credential: awaken_runtime_contract::CredentialRef {
+                id: reference.into(),
+                revision: 1,
+            },
+            injection: awaken_runtime_contract::CredentialInjectionKind::Reference,
+            usage: awaken_runtime_contract::CredentialUsage::ProviderAdapter,
+        }),
+        awaken_runtime_contract::InferenceEndpoint {
+            adapter_kind: "openai".into(),
+            base_url: "https://gateway.invalid/v1".into(),
+            upstream_model: "gateway-model".into(),
+        },
+    )
 }
 
 fn allow_command() -> ResumeCommand {
@@ -285,7 +296,7 @@ async fn a_secretless_worker_reads_the_snapshot_pinned_access() {
     let capture = seen.clone();
     let resolver: awaken_run_ingress::InferenceMaterializerFn = Arc::new(move |activation| {
         *capture.lock().expect("grant capture mutex") =
-            activation.snapshot.metadata.inference_access.clone();
+            Some(activation.snapshot.resolved_spec.model_binding.clone());
         Some(Arc::new(Gateway) as Arc<dyn LlmExecutor>)
     });
     let store = Arc::new(MemoryDispatchStore::new());
@@ -298,9 +309,9 @@ async fn a_secretless_worker_reads_the_snapshot_pinned_access() {
         None,
         Some(resolver),
     );
-    let access = opaque_access("credential-reference/v1", "grant-17");
+    let candidate = provider_candidate("grant-17");
     let mut activation = activation("run-gateway");
-    activation.snapshot.metadata.inference_access = Some(access.clone());
+    activation.snapshot.resolved_spec.model_binding = candidate.clone();
     let request = RunDispatch::new(activation);
     let (_, state) = ingress
         .worker()
@@ -310,7 +321,7 @@ async fn a_secretless_worker_reads_the_snapshot_pinned_access() {
         .expect("new run is claimed");
 
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
-    assert_eq!(*seen.lock().expect("grant capture mutex"), Some(access));
+    assert_eq!(*seen.lock().expect("grant capture mutex"), Some(candidate));
     assert_eq!(
         commit
             .committed()

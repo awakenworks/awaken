@@ -50,7 +50,8 @@ difference — matching the existing D6/D9 boundary (`awaken-ext-mcp::Credential
 takes already-resolved values; resolution stays in the host).
 
 **Amended by ADR-0062:** the durable snapshot now carries secret-free,
-fingerprinted `InferenceAccess`/`CredentialAccess`, not a `RedactedString`.
+fingerprinted `ResolvedModelCandidate` values whose provider provisioning composes
+the existing `CredentialAccess`, not a `RedactedString`.
 Configuration publication selects the exact reference once; the host execution
 adapter materializes it immediately before constructing/calling the provider
 executor. Runtime core still links no vault/catalog and never performs selection.

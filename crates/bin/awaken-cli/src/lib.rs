@@ -895,8 +895,8 @@ async fn management_router_over(
 
     // The server's default model for the window before a publish.
     let (model, model_ref) = (fallback_model, fallback_model_ref);
-    let inference_access_publisher = Arc::new(
-        awaken_server::inference_materializer::CatalogInferenceAccessPublisher::new(
+    let model_publication_resolver = Arc::new(
+        awaken_server::model_resolver::CatalogModelPublicationResolver::from_repo(
             catalog.clone(),
             credentials.clone(),
         )
@@ -921,10 +921,7 @@ async fn management_router_over(
             // model an operator adds AFTER startup is visible when we re-publish the
             // reserved-scope assistant. `catalog` is still in scope here (moved into the
             // control router below); clone the Arc for the resolver.
-            .with_model_resolver(Arc::new(
-                awaken_server::model_resolver::CatalogModelResolver::from_repo(catalog.clone()),
-            ))
-            .with_inference_access_publisher(inference_access_publisher)
+            .with_model_publication_resolver(model_publication_resolver)
             .with_resources(resource_store.clone()),
     );
     // Warm-load the installed catalog from the durable config store BEFORE the plane

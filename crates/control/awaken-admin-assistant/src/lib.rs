@@ -195,9 +195,10 @@ pub trait ResourceInventory: Send + Sync {
 /// Validate a drafted [`AgentConfig`] exactly as `/v1/config/agents/validate` does —
 /// a compile dry-run against the target scope's tool catalog (fail-closed on an
 /// unknown tool). The host implements it over its `ConfigService`.
+#[async_trait]
 pub trait DraftValidator: Send + Sync {
     /// `Ok(())` if the draft compiles; `Err(message)` with the compile error.
-    fn validate(&self, draft: &AgentConfig) -> Result<(), String>;
+    async fn validate(&self, draft: &AgentConfig) -> Result<(), String>;
 }
 
 /// Neutral assistant-tool DTO for one Agent input. The host ACL maps this leaf
@@ -717,7 +718,7 @@ async fn validate_persist_emit(
     audit: &AdminAuditEvent,
     resources: Option<Vec<InputSpec>>,
 ) -> Result<ToolOutput, ToolError> {
-    if let Err(error) = validator.validate(&config) {
+    if let Err(error) = validator.validate(&config).await {
         return Ok(ToolOutput::error(
             call_id,
             format!("draft does not validate, not saved: {error}"),
@@ -1129,7 +1130,7 @@ impl RawTool for ValidateAgent {
                 ));
             }
         };
-        let result = match self.validator.validate(&draft) {
+        let result = match self.validator.validate(&draft).await {
             Ok(()) => serde_json::json!({ "valid": true }),
             Err(error) => serde_json::json!({ "valid": false, "error": error }),
         };

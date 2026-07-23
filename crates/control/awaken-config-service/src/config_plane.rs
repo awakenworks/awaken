@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use awaken_config_resolver::{AgentInputBindingRepository, InferenceAccessPublisher};
+use awaken_config_resolver::AgentInputBindingRepository;
 use awaken_config_store::{
     AgentConfig, AgentConfigRevision, AuditedConfigWrite, ConfigRegistry, ConfigWrite,
     DEFAULT_SCOPE, ExecutableAgentSnapshot, ManagementAuditEntry, ManagementAuditRecord,
@@ -25,12 +25,11 @@ use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use serde_json::{Value, json};
 
-use crate::binding_resolver::ModelResolver;
+use crate::binding_resolver::ModelPublicationResolver;
 use crate::installed_catalog::InstalledAgentCatalog;
 use crate::managed_agent::{agent_config_from_managed, managed_from_agent_config};
 use crate::publication::{
-    PublishError, ValidationIssue, prepare_agent_publication, resolve_publication_models,
-    snapshot_metadata,
+    PublishError, ValidationIssue, prepare_agent_publication, snapshot_metadata,
 };
 use crate::tool_catalog::RESERVED_ADMIN_SCOPE;
 use crate::tool_catalog::ToolCatalogSource;
@@ -54,13 +53,10 @@ pub struct ConfigService {
     /// prompt fragments are appended to its effective system prompt at compile (A3a).
     /// `None` → compilation is byte-identical to an unbound agent.
     pub(crate) resources: Option<Arc<dyn AgentInputBindingRepository>>,
-    /// Resolves an `Auto` model selection to a concrete binding at publish (ADR-0052
-    /// D5). `None` → an `Auto` config cannot publish (fail-closed); a `Pinned` config
-    /// is unaffected.
-    model_resolver: Option<Arc<dyn ModelResolver>>,
-    /// Resolves provider access once at publication. Kept as an inward port so the
-    /// config domain does not depend on vault/catalog adapters.
-    inference_access_publisher: Option<Arc<dyn InferenceAccessPublisher>>,
+    /// Resolves authored selection into complete ordered model candidates in one
+    /// publication read. `None` permits explicit host-executor bindings only;
+    /// `Auto` remains fail-closed.
+    model_publication_resolver: Option<Arc<dyn ModelPublicationResolver>>,
 }
 
 impl ConfigService {
@@ -72,20 +68,13 @@ impl ConfigService {
         Self::default()
     }
 
-    /// Wire the model resolver so an `Auto`-bound config resolves to a first-offering
-    /// at publish (ADR-0052 D5).
+    /// Wire the single model-publication resolver (ADR-0052 D5 / ADR-0062).
     #[must_use]
-    pub fn with_model_resolver(mut self, resolver: Arc<dyn ModelResolver>) -> Self {
-        self.model_resolver = Some(resolver);
-        self
-    }
-
-    #[must_use]
-    pub fn with_inference_access_publisher(
+    pub fn with_model_publication_resolver(
         mut self,
-        publisher: Arc<dyn InferenceAccessPublisher>,
+        resolver: Arc<dyn ModelPublicationResolver>,
     ) -> Self {
-        self.inference_access_publisher = Some(publisher);
+        self.model_publication_resolver = Some(resolver);
         self
     }
 
@@ -130,9 +119,9 @@ impl ConfigService {
     /// resolved first (D5) so a draft with the default binding validates, and a config
     /// naming a tool absent from that catalog fails closed with `UnknownTool` (D3 —
     /// the edge resolves the catalog for the request scope).
-    pub fn validate(
+    pub async fn validate(
         &self,
-        _workspace: &str,
+        workspace: &str,
         config: &AgentConfig,
         catalog: &[ToolDescriptor],
     ) -> Result<(), ValidationIssue> {
@@ -141,20 +130,24 @@ impl ConfigService {
         // instead of parsing a free-text string. An auto-model that can't resolve is a
         // `model` issue; a compile failure carries its own field.
         let resolved = prepare_agent_publication(
-            self.model_resolver.as_deref(),
+            self.model_publication_resolver.as_deref(),
+            workspace,
             AgentConfigRevision {
                 config: config.clone(),
                 revision: 0,
             },
         )
+        .await
         .map_err(|e| ValidationIssue {
             path: "model".to_string(),
             message: e.to_string(),
         })?;
-        awaken_config_store::compile_resolved(
+        awaken_config_store::compile_published(
             &resolved.config,
             catalog,
             snapshot_metadata(&resolved),
+            resolved.models.primary,
+            resolved.models.candidates,
         )
         .map(|_| ())
         .map_err(|e| ValidationIssue {
@@ -262,24 +255,18 @@ impl ConfigService {
             return Err(PublishError::Archived(id.to_string()));
         }
         let source_revision = versioned.revision;
-        let mut resolved = prepare_agent_publication(self.model_resolver.as_deref(), versioned)?;
-        resolved.models = Some(
-            resolve_publication_models(
-                self.inference_access_publisher.as_deref(),
-                workspace,
-                &resolved,
-            )
-            .await?,
-        );
-        let models = resolved.models.take().ok_or_else(|| {
-            PublishError::Unresolvable("publication did not resolve model candidates".into())
-        })?;
+        let resolved = prepare_agent_publication(
+            self.model_publication_resolver.as_deref(),
+            workspace,
+            versioned,
+        )
+        .await?;
         let snapshot = awaken_config_store::compile_published(
             &resolved.config,
             catalog,
             snapshot_metadata(&resolved),
-            models.primary,
-            models.candidates,
+            resolved.models.primary,
+            resolved.models.candidates,
         )
         .map_err(|e| PublishError::Compile(e.to_string()))?;
         let publication =
@@ -370,9 +357,27 @@ impl ConfigPlane {
     }
 
     /// Validate a config in `scope` (compile dry-run against the scope's catalog).
-    pub fn validate(&self, scope: &ScopeId, config: &AgentConfig) -> Result<(), ValidationIssue> {
+    pub async fn validate(
+        &self,
+        scope: &ScopeId,
+        config: &AgentConfig,
+    ) -> Result<(), ValidationIssue> {
+        self.validate_for_execution_workspace(scope, scope.as_str(), config)
+            .await
+    }
+
+    /// Validate authoring in `scope` using the real Workspace whose catalog and
+    /// credential facts publication would freeze. Reserved configuration scopes
+    /// must never be reused as resource/credential owners.
+    pub async fn validate_for_execution_workspace(
+        &self,
+        scope: &ScopeId,
+        execution_workspace: &str,
+        config: &AgentConfig,
+    ) -> Result<(), ValidationIssue> {
         self.service
-            .validate(scope.as_str(), config, &self.catalog_for(scope))
+            .validate(execution_workspace, config, &self.catalog_for(scope))
+            .await
     }
 
     /// Store a config draft owned by `scope`.
@@ -658,6 +663,7 @@ async fn get_config(
 async fn validate(
     State(plane): State<ConfigPlane>,
     scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
+    execution: Option<Extension<ExecutionWorkspace>>,
     Path(id): Path<String>,
     Json(body): Json<Value>,
 ) -> (StatusCode, Json<Value>) {
@@ -678,7 +684,19 @@ async fn validate(
     // both outcomes are 200 with `{ valid, issues }`. Structured, field-routed issues
     // (ADR-0053): the UI highlights the section, never re-derives the rule. Compile fails
     // fast, so there is at most one issue today.
-    match plane.validate(&request_scope(scope), &config) {
+    let scope = request_scope(scope);
+    let result = match publication_workspace(&scope, execution.as_ref()) {
+        Some(workspace) => {
+            plane
+                .validate_for_execution_workspace(&scope, workspace, &config)
+                .await
+        }
+        None => Err(ValidationIssue {
+            path: "model".into(),
+            message: PublishError::ExecutionWorkspaceRequired.to_string(),
+        }),
+    };
+    match result {
         Ok(()) => (StatusCode::OK, Json(json!({ "valid": true, "issues": [] }))),
         Err(issue) => (
             StatusCode::OK,
@@ -785,9 +803,8 @@ mod resource_prompt_tests {
     use awaken_config_store::{ConfigStoreError, ModelSelection, SqliteConfigStore};
     use awaken_runtime_contract::resolved::ContextPolicy;
 
-    use crate::binding_resolver::{ModelResolver, ResolvedModel};
-    use awaken_runtime_contract::InferenceAccess;
-    use awaken_runtime_contract::resolved::ModelBinding;
+    use crate::binding_resolver::{ModelPublicationResolver, ResolvedPublicationModels};
+    use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate};
     use awaken_tenancy::WorkspaceScope;
 
     fn agent_config(id: &str) -> AgentConfig {
@@ -813,52 +830,84 @@ mod resource_prompt_tests {
         cfg
     }
 
-    fn resolve_config(service: &ConfigService, config: AgentConfig) -> AgentConfig {
+    async fn resolve_config(service: &ConfigService, config: AgentConfig) -> AgentConfig {
         prepare_agent_publication(
-            service.model_resolver.as_deref(),
+            service.model_publication_resolver.as_deref(),
+            DEFAULT_SCOPE,
             AgentConfigRevision {
                 config,
                 revision: 1,
             },
         )
+        .await
         .unwrap()
         .config
     }
 
     struct FakeResolver;
-    impl ModelResolver for FakeResolver {
-        fn resolve_auto(&self) -> Result<ResolvedModel, String> {
-            Ok(ResolvedModel {
-                primary: ModelBinding::new("openai", "m-first", "genai"),
-                candidates: vec![ModelBinding::new("openai", "m-second", "genai")],
-            })
+    #[async_trait::async_trait]
+    impl ModelPublicationResolver for FakeResolver {
+        async fn resolve_models(
+            &self,
+            _workspace: &str,
+            selection: &ModelSelection,
+            candidates: &[ModelBinding],
+        ) -> Result<ResolvedPublicationModels, String> {
+            let (primary, candidates) = selection.resolved().map_or_else(
+                || {
+                    (
+                        ModelBinding::new("openai", "m-first", "genai"),
+                        vec![ModelBinding::new("openai", "m-second", "genai")],
+                    )
+                },
+                |primary| (primary.clone(), candidates.to_vec()),
+            );
+            Ok(ResolvedPublicationModels::host(
+                primary, candidates, None, None,
+            ))
         }
     }
 
-    struct FakeAccessPublisher;
+    struct FakeProviderResolver;
 
-    impl InferenceAccessPublisher for FakeAccessPublisher {
-        fn resolve_access<'a>(
-            &'a self,
-            scope: &'a str,
-            models: &'a [ModelBinding],
-        ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Result<InferenceAccess, String>> + Send + 'a>,
-        > {
-            Box::pin(async move {
-                let model = models.first().ok_or_else(|| "missing model".to_string())?;
-                Ok(InferenceAccess::resolved_credential(
-                    format!("credential-{scope}"),
-                    3,
-                    scope,
+    #[async_trait::async_trait]
+    impl ModelPublicationResolver for FakeProviderResolver {
+        async fn resolve_models(
+            &self,
+            workspace: &str,
+            selection: &ModelSelection,
+            candidates: &[ModelBinding],
+        ) -> Result<ResolvedPublicationModels, String> {
+            let primary = selection
+                .resolved()
+                .cloned()
+                .ok_or_else(|| "test requires a pinned model".to_string())?;
+            let candidate = |binding: ModelBinding| {
+                ResolvedModelCandidate::provider(
+                    binding.clone(),
                     "provider@2",
                     "endpoint@4",
+                    workspace,
+                    Some(awaken_runtime_contract::CredentialAccess {
+                        credential: awaken_runtime_contract::CredentialRef {
+                            id: format!("credential-{workspace}"),
+                            revision: 3,
+                        },
+                        injection: awaken_runtime_contract::CredentialInjectionKind::Reference,
+                        usage: awaken_runtime_contract::CredentialUsage::ProviderAdapter,
+                    }),
                     awaken_runtime_contract::InferenceEndpoint {
                         adapter_kind: "openai".into(),
                         base_url: "https://example.invalid/v1".into(),
-                        upstream_model: model.model_ref.clone(),
+                        upstream_model: binding.model_ref,
                     },
-                ))
+                )
+            };
+            Ok(ResolvedPublicationModels {
+                primary: candidate(primary),
+                candidates: candidates.iter().cloned().map(candidate).collect(),
+                context_window: None,
+                max_output_tokens: None,
             })
         }
     }
@@ -867,13 +916,13 @@ mod resource_prompt_tests {
     /// resolver, an optional resource store, and the given tool catalog.
     fn plane_with(
         tools: Arc<dyn ToolCatalogSource>,
-        resolver: Option<Arc<dyn ModelResolver>>,
+        resolver: Option<Arc<dyn ModelPublicationResolver>>,
         resources: Option<Arc<dyn AgentInputBindingRepository>>,
     ) -> ConfigPlane {
         let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
         let mut service = ConfigService::new();
         if let Some(resolver) = resolver {
-            service = service.with_model_resolver(resolver);
+            service = service.with_model_publication_resolver(resolver);
         }
         if let Some(resources) = resources {
             service = service.with_resources(resources);
@@ -885,7 +934,7 @@ mod resource_prompt_tests {
     async fn publish_resolves_scope_access_once_into_the_persisted_snapshot() {
         let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
         let service = Arc::new(
-            ConfigService::new().with_inference_access_publisher(Arc::new(FakeAccessPublisher)),
+            ConfigService::new().with_model_publication_resolver(Arc::new(FakeProviderResolver)),
         );
         let plane = ConfigPlane::new(
             service,
@@ -906,7 +955,6 @@ mod resource_prompt_tests {
         };
         assert_eq!(scope_id, "workspace-a");
         assert_eq!(credential.credential.id, "credential-workspace-a");
-        assert!(publication.snapshot.metadata.inference_access.is_none());
         assert_eq!(publication.fingerprint, publication.snapshot.fingerprint.0);
     }
 
@@ -932,7 +980,7 @@ mod resource_prompt_tests {
         ));
     }
 
-    fn static_plane(resolver: Option<Arc<dyn ModelResolver>>) -> ConfigPlane {
+    fn static_plane(resolver: Option<Arc<dyn ModelPublicationResolver>>) -> ConfigPlane {
         plane_with(
             Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
             resolver,
@@ -1172,24 +1220,30 @@ mod resource_prompt_tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
-    #[test]
-    fn resolve_agent_config_derives_the_effective_compaction_window_for_both_realizations() {
+    #[tokio::test]
+    async fn resolve_agent_config_derives_the_effective_compaction_window_for_both_realizations() {
         struct WindowResolver;
-        impl ModelResolver for WindowResolver {
-            fn resolve_auto(&self) -> Result<ResolvedModel, String> {
-                Ok(ResolvedModel {
-                    primary: ModelBinding::new("p", "m-x", "b"),
-                    candidates: vec![],
-                })
-            }
-            fn context_window(&self, model_id: &str) -> Option<u32> {
-                (model_id == "m-x").then_some(200_000)
-            }
-            fn max_output_tokens(&self, model_id: &str) -> Option<u32> {
-                (model_id == "m-x").then_some(40_000)
+        #[async_trait::async_trait]
+        impl ModelPublicationResolver for WindowResolver {
+            async fn resolve_models(
+                &self,
+                _workspace: &str,
+                selection: &ModelSelection,
+                candidates: &[ModelBinding],
+            ) -> Result<ResolvedPublicationModels, String> {
+                Ok(ResolvedPublicationModels::host(
+                    selection
+                        .resolved()
+                        .cloned()
+                        .unwrap_or_else(|| ModelBinding::new("p", "m-x", "b")),
+                    candidates.to_vec(),
+                    Some(200_000),
+                    Some(40_000),
+                ))
             }
         }
-        let service = ConfigService::new().with_model_resolver(Arc::new(WindowResolver));
+        let service =
+            ConfigService::new().with_model_publication_resolver(Arc::new(WindowResolver));
         let pin = || ModelSelection::Pinned(ModelBinding::new("p", "m-x", "b"));
         // Usable budget = context_window − max_output_tokens = 200k − 40k = 160k;
         // default trigger = 3/4 × 160k = 120k.
@@ -1200,7 +1254,7 @@ mod resource_prompt_tests {
         cfg.model_binding = pin();
         cfg.plugin_config
             .insert("compact".into(), serde_json::json!({ "keep_last": 4 }));
-        let out = resolve_config(&service, cfg);
+        let out = resolve_config(&service, cfg).await;
         assert_eq!(out.plugin_config["compact"]["max_tokens"], 120_000);
         assert_eq!(out.plugin_config["compact"]["trigger_ratio"], 1.0);
 
@@ -1210,7 +1264,7 @@ mod resource_prompt_tests {
         cfg_acp
             .plugin_config
             .insert("acp".into(), serde_json::json!({}));
-        let out_acp = resolve_config(&service, cfg_acp);
+        let out_acp = resolve_config(&service, cfg_acp).await;
         assert_eq!(out_acp.plugin_config["acp"]["compact_window"], 120_000);
 
         // Agent OVERRIDE (under budget) is honored verbatim, in BOTH realizations.
@@ -1224,7 +1278,7 @@ mod resource_prompt_tests {
             .insert("compact".into(), serde_json::json!({}));
         cfg2.plugin_config
             .insert("acp".into(), serde_json::json!({}));
-        let out2 = resolve_config(&service, cfg2);
+        let out2 = resolve_config(&service, cfg2).await;
         assert_eq!(out2.plugin_config["compact"]["max_tokens"], 90_000);
         assert_eq!(out2.plugin_config["acp"]["compact_window"], 90_000);
 
@@ -1234,14 +1288,14 @@ mod resource_prompt_tests {
         cfg3.plugin_config
             .insert("compact".into(), serde_json::json!({ "max_tokens": 50 }));
         assert_eq!(
-            resolve_config(&service, cfg3).plugin_config["compact"]["max_tokens"],
+            resolve_config(&service, cfg3).await.plugin_config["compact"]["max_tokens"],
             50
         );
 
         // No compact/acp section → untouched (neither realization was opted into).
         let mut cfg4 = agent_config("a4");
         cfg4.model_binding = pin();
-        let out4 = resolve_config(&service, cfg4);
+        let out4 = resolve_config(&service, cfg4).await;
         assert!(!out4.plugin_config.contains_key("compact"));
         assert!(!out4.plugin_config.contains_key("acp"));
     }
@@ -1249,23 +1303,35 @@ mod resource_prompt_tests {
     // CEG F11d: a `compact` value that is present but NOT a JSON object (here a
     // bare string) is a no-op — `apply_compaction` only reaches into an object, so a
     // malformed section is left byte-identical and no window injected.
-    #[test]
-    fn resolve_agent_config_leaves_a_non_object_compact_untouched() {
+    #[tokio::test]
+    async fn resolve_agent_config_leaves_a_non_object_compact_untouched() {
         struct WindowResolver;
-        impl ModelResolver for WindowResolver {
-            fn resolve_auto(&self) -> Result<ResolvedModel, String> {
-                Err("unused".into())
-            }
-            fn context_window(&self, _model_id: &str) -> Option<u32> {
-                Some(200_000)
+        #[async_trait::async_trait]
+        impl ModelPublicationResolver for WindowResolver {
+            async fn resolve_models(
+                &self,
+                _workspace: &str,
+                selection: &ModelSelection,
+                candidates: &[ModelBinding],
+            ) -> Result<ResolvedPublicationModels, String> {
+                Ok(ResolvedPublicationModels::host(
+                    selection
+                        .resolved()
+                        .cloned()
+                        .ok_or_else(|| "test requires a pinned model".to_string())?,
+                    candidates.to_vec(),
+                    Some(200_000),
+                    None,
+                ))
             }
         }
-        let service = ConfigService::new().with_model_resolver(Arc::new(WindowResolver));
+        let service =
+            ConfigService::new().with_model_publication_resolver(Arc::new(WindowResolver));
         let mut cfg = agent_config("a4");
         cfg.model_binding = ModelSelection::Pinned(ModelBinding::new("p", "m-x", "b"));
         cfg.plugin_config
             .insert("compact".into(), serde_json::json!("not-an-object"));
-        let out = resolve_config(&service, cfg);
+        let out = resolve_config(&service, cfg).await;
         assert_eq!(
             out.plugin_config["compact"],
             serde_json::json!("not-an-object")
@@ -1471,6 +1537,7 @@ mod resource_prompt_tests {
         assert!(
             plane
                 .validate(&ScopeId::from(RESERVED_ADMIN_SCOPE), &cfg)
+                .await
                 .is_ok(),
             "admin tool must resolve in the reserved scope"
         );
@@ -1479,6 +1546,7 @@ mod resource_prompt_tests {
         // so the same config hits UnknownTool at compile.
         let err = plane
             .validate(&ScopeId::from("wrkspc_acme"), &cfg)
+            .await
             .unwrap_err();
         assert_eq!(err.path, "tools", "an unknown tool is a `tools` issue");
         assert!(
@@ -1507,8 +1575,14 @@ mod resource_prompt_tests {
     /// A resolver whose catalog has no provider-backed model (P4): `resolve_auto`
     /// fails, so an `Auto` publish is `Unresolvable`.
     struct ErrResolver;
-    impl ModelResolver for ErrResolver {
-        fn resolve_auto(&self) -> Result<ResolvedModel, String> {
+    #[async_trait::async_trait]
+    impl ModelPublicationResolver for ErrResolver {
+        async fn resolve_models(
+            &self,
+            _workspace: &str,
+            _selection: &ModelSelection,
+            _candidates: &[ModelBinding],
+        ) -> Result<ResolvedPublicationModels, String> {
             Err("no provider-backed model in the catalog".into())
         }
     }
@@ -1556,6 +1630,7 @@ mod resource_prompt_tests {
         let plane = static_plane(None);
         let issue = plane
             .validate(&ScopeId::from(DEFAULT_SCOPE), &auto_config("mgmt"))
+            .await
             .unwrap_err();
         assert_eq!(issue.path, "model");
     }
@@ -1608,6 +1683,7 @@ mod resource_prompt_tests {
         let (status, Json(body)) = super::validate(
             State(plane),
             None,
+            None,
             Path("mgmt".to_string()),
             Json(json!({ "context_policy": 123 })),
         )
@@ -1622,6 +1698,7 @@ mod resource_prompt_tests {
         let plane = static_plane(None);
         let (status, Json(body)) = super::validate(
             State(plane),
+            None,
             None,
             Path("mgmt".to_string()),
             Json(json!({ "model": { "id": "m" } })),
@@ -1638,6 +1715,7 @@ mod resource_prompt_tests {
         let plane = static_plane(None);
         let (status, Json(body)) = super::validate(
             State(plane),
+            None,
             None,
             Path("mgmt".to_string()),
             Json(json!({ "model": { "id": "m" }, "tools": ["ghost"] })),

@@ -23,8 +23,8 @@ mod warm_install;
 
 pub use agent_projection::ConfigServiceAgentSource;
 pub use binding_resolver::{
-    AssistantBindingReconciler, ConfigServiceReconciler, ModelResolver, ResolvedModel,
-    needs_resolution,
+    AssistantBindingReconciler, ConfigServiceReconciler, ModelPublicationResolver,
+    ResolvedPublicationModels,
 };
 pub use capabilities::{capabilities_router, runtime_catalog, sandbox_capability};
 pub use config_plane::{ConfigPlane, ConfigService, config_router};

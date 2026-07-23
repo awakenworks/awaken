@@ -11,10 +11,10 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::run::RunState;
 use awaken_run_ingress::{
-    AnyDispatchStore, DispatchOutcome, DispatchQueue, DurableRunIngress, Inbox, InferenceAccess,
-    LeastLoadedPolicy, MemoryDispatchStore, PlacementContext, PlacementError, PlacementPolicy,
-    PlacementRequirements, RankedWorker, RunDispatch, SubmitOptions, WorkerIdentity,
-    WorkerManifest, WorkerSnapshot, WorkerState,
+    AnyDispatchStore, DispatchOutcome, DispatchQueue, DurableRunIngress, Inbox, LeastLoadedPolicy,
+    MemoryDispatchStore, PlacementContext, PlacementError, PlacementPolicy, PlacementRequirements,
+    RankedWorker, RunDispatch, SubmitOptions, WorkerIdentity, WorkerManifest, WorkerSnapshot,
+    WorkerState,
 };
 use awaken_run_ingress::{RunClaim, SettleOutcome, WorkerRecoveryMode};
 use awaken_runtime::RunIngress;
@@ -27,14 +27,18 @@ fn any_in_memory() -> AnyDispatchStore {
     AnyDispatchStore::open_sqlite_in_memory().expect("open in-memory sqlite backend")
 }
 
-fn exact_access(credential: &str, provider: &str, route: &str) -> InferenceAccess {
-    InferenceAccess {
-        scheme: "credential-source/v1".into(),
-        reference: credential.into(),
-        provider_ref: Some(provider.into()),
-        route_ref: Some(route.into()),
-        scope_id: None,
-        credential_access: Some(awaken_runtime_contract::CredentialAccess {
+fn candidate(
+    model: &str,
+    credential: &str,
+    provider: &str,
+    route: &str,
+) -> awaken_runtime_contract::resolved::ResolvedModelCandidate {
+    awaken_runtime_contract::resolved::ResolvedModelCandidate::provider(
+        awaken_runtime_contract::ModelBinding::new(provider, model, "genai"),
+        provider,
+        route,
+        "workspace-a",
+        Some(awaken_runtime_contract::CredentialAccess {
             credential: awaken_runtime_contract::CredentialRef {
                 id: credential.into(),
                 revision: 0,
@@ -42,9 +46,12 @@ fn exact_access(credential: &str, provider: &str, route: &str) -> InferenceAcces
             injection: awaken_runtime_contract::CredentialInjectionKind::Reference,
             usage: awaken_runtime_contract::CredentialUsage::ProviderAdapter,
         }),
-        endpoint: None,
-        candidates: Vec::new(),
-    }
+        awaken_runtime_contract::InferenceEndpoint {
+            adapter_kind: "openai".into(),
+            base_url: "https://provider.invalid/v1".into(),
+            upstream_model: model.into(),
+        },
+    )
 }
 
 #[tokio::test]
@@ -337,31 +344,22 @@ async fn any_delegates_enqueue_claim_and_owner_scoped_lease() {
 #[tokio::test]
 async fn reclaim_preserves_the_dispatch_pinned_model_candidate_set() {
     let store = any_in_memory();
-    let expected = InferenceAccess::candidate_set([
-        (
-            "primary".to_string(),
-            exact_access("cred-a", "provider-a@1", "route-a@2"),
-        ),
-        (
-            "fallback".to_string(),
-            exact_access("cred-b", "provider-b@3", "route-b@4"),
-        ),
-    ])
-    .expect("candidate set");
+    let primary = candidate("primary", "cred-a", "provider-a@1", "route-a@2");
+    let fallback = candidate("fallback", "cred-b", "provider-b@3", "route-b@4");
     let mut activation = activation("binding-retry");
-    activation.snapshot.metadata.inference_access = Some(expected.clone());
+    activation.snapshot.resolved_spec.model_binding = primary.clone();
+    activation.snapshot.resolved_spec.model_candidates = vec![fallback.clone()];
     store.enqueue(RunDispatch::new(activation)).await.unwrap();
 
     let first = store.claim("worker-a", 10, 0).await.unwrap().unwrap();
     assert_eq!(
-        first
+        &first
             .request
             .activation
             .snapshot
-            .metadata
-            .inference_access
-            .as_ref(),
-        Some(&expected)
+            .resolved_spec
+            .model_binding,
+        &primary
     );
     let recovered = store.claim("worker-b", 10, 11).await.unwrap().unwrap();
 
@@ -371,9 +369,9 @@ async fn reclaim_preserves_the_dispatch_pinned_model_candidate_set() {
             .request
             .activation
             .snapshot
-            .metadata
-            .inference_access,
-        Some(expected)
+            .resolved_spec
+            .model_candidates,
+        vec![fallback]
     );
     assert_eq!(recovered.request.run_id(), first.request.run_id());
 }
