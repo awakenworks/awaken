@@ -114,28 +114,43 @@ impl ManagedState {
         // Session-inline bindings override the Agent defaults by name or URL. The
         // effective set is used for preparation, persistence, and wire projection,
         // so the UI shows what the runtime will actually connect.
-        let mut effective_mcp_servers = req.mcp_servers.clone();
+        let mut effective_mcp_servers: Vec<(McpServer, Option<(String, u64)>)> = req
+            .mcp_servers
+            .iter()
+            .cloned()
+            .map(|server| (server, None))
+            .collect();
         if let Some(view) = &config_view {
             for server in &view.mcp_servers {
                 if effective_mcp_servers
                     .iter()
-                    .any(|current| current.name == server.name || current.url == server.url)
+                    .any(|(current, _)| current.name == server.name || current.url == server.url)
                 {
                     continue;
                 }
-                effective_mcp_servers.push(McpServer {
-                    name: server.name.clone(),
-                    url: server.url.clone(),
-                });
+                effective_mcp_servers.push((
+                    McpServer {
+                        name: server.name.clone(),
+                        url: server.url.clone(),
+                    },
+                    server
+                        .credential_source_id
+                        .clone()
+                        .zip(server.credential_revision),
+                ));
             }
         }
         let bindings: Vec<McpServerBinding> = effective_mcp_servers
             .iter()
-            .map(|server| {
-                let credential_source_id = self
-                    .vaults
+            .map(|(server, published_credential)| {
+                let credential_source_id = published_credential
                     .as_ref()
-                    .and_then(|v| v.mcp_credential_source_for_url(&req.vault_ids, &server.url));
+                    .map(|(id, _)| awaken_credential_vault::CredentialSourceId(id.clone()))
+                    .or_else(|| {
+                        self.vaults.as_ref().and_then(|vaults| {
+                            vaults.mcp_credential_source_for_url(&req.vault_ids, &server.url)
+                        })
+                    });
                 // The matched credential's stored refresh configuration rides
                 // along, so the host can keep the connection alive past the
                 // access token's expiry.
@@ -149,6 +164,9 @@ impl ManagedState {
                     // Store the neutral row id string on the binding; the typed lookup
                     // above stays local to this vault-aware assembly.
                     credential_source_id: credential_source_id.map(|id| id.0),
+                    credential_revision: published_credential
+                        .as_ref()
+                        .map(|(_, revision)| *revision),
                     refresh,
                 }
             })
@@ -319,7 +337,9 @@ impl ManagedState {
             },
             mcp_servers: effective_mcp_servers
                 .iter()
-                .map(|server| serde_json::to_value(server).expect("mcp server wire serializes"))
+                .map(|(server, _)| {
+                    serde_json::to_value(server).expect("mcp server wire serializes")
+                })
                 .collect(),
             resources: durable_resources,
             status: "preparing".to_string(),
@@ -385,7 +405,9 @@ impl ManagedState {
                 // Echo the accepted servers in the SDK's `{name, type:"url", url}` shape.
                 mcp_servers: effective_mcp_servers
                     .iter()
-                    .map(|s| serde_json::to_value(s).expect("mcp server wire serializes"))
+                    .map(|(server, _)| {
+                        serde_json::to_value(server).expect("mcp server wire serializes")
+                    })
                     .collect(),
                 skills: config_view.as_ref().map_or_else(
                     || project::agent_skills(&caps),
