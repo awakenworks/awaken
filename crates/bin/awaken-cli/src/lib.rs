@@ -152,14 +152,19 @@ impl awaken_runtime_host::ModelPublicationResolver for ExactHostModelPublication
         awaken_runtime_host::ResolvedPublicationModels,
         awaken_runtime_host::PublicationResolutionError,
     > {
-        if let Some(authored) = selection.resolved()
-            && authored != &self.binding
-        {
-            return Err(format!(
-                "scenario host executor `{}` cannot publish model `{}`",
-                self.binding.model_ref, authored.model_ref
-            )
-            .into());
+        if let Some(authored) = selection.resolved() {
+            let matches_host = authored.model_ref == self.binding.model_ref
+                && (authored.provider_identity_ref.is_empty()
+                    || authored.provider_identity_ref == self.binding.provider_identity_ref)
+                && (authored.backend_ref.is_empty()
+                    || authored.backend_ref == self.binding.backend_ref);
+            if !matches_host {
+                return Err(format!(
+                    "scenario host executor `{}` cannot publish model `{}`",
+                    self.binding.model_ref, authored.model_ref
+                )
+                .into());
+            }
         }
         if !candidates.is_empty() {
             return Err("a single host executor cannot publish fallback candidates".into());
@@ -1366,6 +1371,7 @@ fn local_org_id() -> String {
 mod runtime_session_store_tests {
     use super::*;
     use awaken_protocol_managed::PersistedSession;
+    use awaken_runtime_host::ModelPublicationResolver;
 
     fn session(id: &str) -> PersistedSession {
         PersistedSession {
@@ -1409,5 +1415,51 @@ mod runtime_session_store_tests {
                 .model,
             "test-model"
         );
+    }
+
+    #[tokio::test]
+    async fn scenario_host_resolves_model_only_authoring_to_its_exact_binding() {
+        let binding =
+            awaken_runtime_contract::resolved::ModelBinding::new("default", "scenario", "default");
+        let resolver = ExactHostModelPublicationResolver {
+            binding: binding.clone(),
+        };
+
+        let resolved = resolver
+            .resolve_models(
+                &awaken_tenancy::ScopeId::from("workspace-a"),
+                &awaken_config_store::ModelSelection::Pinned(
+                    awaken_runtime_contract::resolved::ModelBinding::new("", "scenario", ""),
+                ),
+                &[],
+            )
+            .await
+            .expect("model-only SDK/UI selection resolves through the host adapter");
+
+        assert_eq!(resolved.primary.binding, binding);
+    }
+
+    #[tokio::test]
+    async fn scenario_host_rejects_a_conflicting_provider_qualified_binding() {
+        let resolver = ExactHostModelPublicationResolver {
+            binding: awaken_runtime_contract::resolved::ModelBinding::new(
+                "default", "scenario", "default",
+            ),
+        };
+
+        let error = resolver
+            .resolve_models(
+                &awaken_tenancy::ScopeId::from("workspace-a"),
+                &awaken_config_store::ModelSelection::Pinned(
+                    awaken_runtime_contract::resolved::ModelBinding::new(
+                        "other", "scenario", "default",
+                    ),
+                ),
+                &[],
+            )
+            .await
+            .expect_err("an exact provider selection cannot drift to the host executor");
+
+        assert!(error.to_string().contains("cannot publish model"));
     }
 }
