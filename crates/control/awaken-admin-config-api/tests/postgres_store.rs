@@ -1,6 +1,5 @@
-//! Live Postgres admin-store conformance (feature `postgres`): the same three sync
-//! store ports the sqlite backend serves — [`InferenceProfileStore`], [`McpStore`],
-//! [`AgentInputBindingRepository`] — exercised against a real Postgres.
+//! Live Postgres admin-store conformance (feature `postgres`): the same sync
+//! store ports the sqlite backend serves, exercised against a real Postgres.
 //! Isolated in its own schema (baked into the connection URL's `search_path`), so
 //! it coexists with any other schema in the test database. Skips when no Postgres
 //! is reachable (`AWAKEN_TEST_DATABASE_URL`).
@@ -8,9 +7,8 @@
 
 use awaken_admin_config_api::PostgresAdminStore;
 use awaken_config_resolver::{
-    AgentInputBindingRepository, AgentInputConfig, AgentMcpConfig, BindingId, InferenceProfile,
-    InferenceProfileStore, InputBinding, InputResourceId, McpServerDef, McpServerId, McpStore,
-    MemoryStoreId, ResourceAccess,
+    AgentInputBindingRepository, AgentInputConfig, BindingId, InferenceProfile,
+    InferenceProfileStore, InputBinding, InputResourceId, MemoryStoreId, ResourceAccess,
 };
 use awaken_credential_vault::CredentialBinding;
 use awaken_resource_contract::{
@@ -61,17 +59,6 @@ fn profile(model: &str) -> InferenceProfile {
         model_fallbacks: Vec::new(),
         credential_binding: CredentialBinding::None,
         disabled_endpoint_ids: vec![],
-    }
-}
-
-fn server(id: &str) -> McpServerDef {
-    McpServerDef {
-        workspace_id: "ws".into(),
-        id: McpServerId(id.to_string()),
-        display_name: id.to_string(),
-        url: format!("http://{id}.example/"),
-        credential_binding: CredentialBinding::None,
-        version: 1,
     }
 }
 
@@ -149,38 +136,6 @@ async fn postgres_admin_store_serves_every_port() {
             .model_id,
         "m2"
     );
-
-    // McpStore: round-trip, sorted list, agent binding.
-    store.put_server(server("zeta")).unwrap();
-    store.put_server(server("alpha")).unwrap();
-    assert_eq!(
-        store.get_server("zeta").unwrap().unwrap().url,
-        "http://zeta.example/"
-    );
-    assert!(store.get_server("missing").unwrap().is_none());
-    let ids: Vec<String> = store
-        .list_servers()
-        .unwrap()
-        .into_iter()
-        .map(|s| s.id.0)
-        .collect();
-    assert_eq!(ids, vec!["alpha".to_string(), "zeta".to_string()]);
-    let cfg = AgentMcpConfig {
-        workspace_id: "ws".into(),
-        agent_id: "agent-1".into(),
-        mcp_server_ids: vec![McpServerId("alpha".into())],
-        version: 1,
-    };
-    store.put_agent_config(cfg.clone()).unwrap();
-    assert_eq!(
-        store
-            .get_agent_config("agent-1")
-            .unwrap()
-            .unwrap()
-            .mcp_server_ids,
-        cfg.mcp_server_ids
-    );
-    assert!(store.get_agent_config("agent-2").unwrap().is_none());
 
     // AgentInputBindingRepository: Workspace-scoped round-trip + overwrite.
     assert!(store.get_agent_inputs("ws", "agent-1").unwrap().is_none());
@@ -281,7 +236,6 @@ async fn postgres_admin_rows_survive_a_reconnect() {
             .await
             .unwrap();
         InferenceProfileStore::put(&store, "p1".into(), profile("m1")).unwrap();
-        store.put_server(server("calc")).unwrap();
         let (definition, initial) = memory();
         store.create_memory_store(definition, initial).unwrap();
     }
@@ -295,7 +249,6 @@ async fn postgres_admin_rows_survive_a_reconnect() {
             .model_id,
         "m1"
     );
-    assert_eq!(store.list_servers().unwrap().len(), 1);
     assert_eq!(
         store
             .resolve_memory_store("ws", "memory-1")

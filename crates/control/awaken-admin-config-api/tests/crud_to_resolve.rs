@@ -37,7 +37,6 @@ fn harness() -> Harness {
         credentials: credentials.clone(),
         secrets: secrets.clone(),
         profiles: Arc::new(awaken_admin_config_api::InMemoryProfileStore::new()),
-        mcp: Arc::new(awaken_admin_config_api::InMemoryMcpStore::new()),
         resources: Arc::new(awaken_admin_config_api::InMemoryAgentInputBindingRepository::new()),
         probe: None,
         model_discovery: None,

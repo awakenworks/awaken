@@ -48,7 +48,7 @@ pub use crate::worker_stores::{
 };
 
 use awaken_admin_config_api::{
-    AdminState, CredentialProbe, InferenceProfileStore, McpStore, WebhookStore, admin_router,
+    AdminState, CredentialProbe, InferenceProfileStore, WebhookStore, admin_router,
 };
 use awaken_config_resolver::AgentInputBindingRepository;
 use awaken_config_service::{ConfigPlane, capabilities_router, config_router};
@@ -169,8 +169,6 @@ pub struct ControlRouterInput {
     pub secrets: Arc<dyn SecretStore>,
     /// Authored inference profiles (admin aggregate).
     pub profiles: Arc<dyn InferenceProfileStore>,
-    /// Authored MCP server definitions (admin aggregate).
-    pub mcp_store: Arc<dyn McpStore>,
     /// Authored webhook endpoints (admin aggregate); the sink is returned for the data plane.
     pub webhook_store: Arc<dyn WebhookStore>,
     /// Session aggregate plus lifecycle transactional outbox, shared with the data plane.
@@ -213,7 +211,6 @@ pub fn control_router(input: ControlRouterInput) -> (Router, Arc<WebhookLifecycl
         credentials,
         secrets,
         profiles,
-        mcp_store,
         webhook_store,
         sessions,
         resource_store,
@@ -229,16 +226,11 @@ pub fn control_router(input: ControlRouterInput) -> (Router, Arc<WebhookLifecycl
         remote_iam,
     } = input;
 
-    // ONE MCP store across the admin router and the ManagedHost, and ONE
-    // credential repo + secret store across admin, vaults, and sessions: a
-    // credential or MCP config entered through any surface is the same row a
-    // session's prepare reads (ADR-0043 Phase 3).
     let admin = admin_router(AdminState {
         catalog,
         credentials: credentials.clone(),
         secrets: secrets.clone(),
         profiles,
-        mcp: mcp_store.clone(),
         // Per-agent resource bindings (ADR-0038).
         resources: resource_store.clone(),
         // The live credential probe is backed by provider-genai in the composition

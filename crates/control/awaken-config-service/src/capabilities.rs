@@ -7,9 +7,9 @@
 //! uniform even though the data is scope-invariant).
 //!
 //! Everything *scoped* the editor needs — models (`/v1/config/catalog`), skills
-//! (`/v1/skills`), delegate agents (`/v1/config/agents`), MCP servers
-//! (`/v1/config/mcp-servers`) — already has its own endpoint; this router
-//! deliberately does not duplicate them.
+//! (`/v1/skills`) and Agent definitions (`/v1/config/agents`, including their
+//! typed MCP bindings and delegate rosters) — already has its own endpoint; this
+//! router deliberately does not duplicate them.
 
 use std::sync::Arc;
 

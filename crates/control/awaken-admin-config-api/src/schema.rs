@@ -1,7 +1,7 @@
 //! The admin-config schema (ADR-0043). One portable [`MigrationBundle`] under
 //! the `admin` namespace with its own ledger, covering the aggregates the admin
-//! plane itself authors (inference profiles, MCP server defs, agent↔MCP
-//! bindings, webhook endpoints) — the catalog/credential domains keep their own
+//! plane itself authors (inference profiles, webhook endpoints, and resource
+//! configuration) — the catalog/credential domains keep their own
 //! bundles. All rows are **secret-free** (an MCP def carries a credential
 //! *binding by reference*, a webhook row a `secret_ref`, never material). Its own
 //! bundle prefix is what lets the admin plane be split into its own
@@ -54,6 +54,10 @@ const FILES: &[(&str, &str)] = &[
     (
         "V0008__resource_catalog.sql",
         include_str!("migrations/V0008__resource_catalog.sql"),
+    ),
+    (
+        "V0009__retire_legacy_mcp_config.sql",
+        include_str!("migrations/V0009__retire_legacy_mcp_config.sql"),
     ),
 ];
 
@@ -109,6 +113,6 @@ mod tests {
     fn versions_parse_contiguously_from_file_names() {
         let bundle = admin_bundle().expect("bundle builds");
         let versions: Vec<i64> = bundle.migrations().iter().map(|m| m.version()).collect();
-        assert_eq!(versions, (1..=8).collect::<Vec<_>>());
+        assert_eq!(versions, (1..=9).collect::<Vec<_>>());
     }
 }

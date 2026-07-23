@@ -15,7 +15,7 @@ use awaken_admin_assistant::{
 };
 use awaken_config_resolver::{
     AgentInputBindingRepository, AgentInputConfig, BindingId, FileId, InputBinding,
-    InputResourceId, McpStore, MemoryStoreId, RepositoryId, ResourceAccess,
+    InputResourceId, MemoryStoreId, RepositoryId, ResourceAccess,
 };
 use awaken_config_service::{ConfigPlane, RESERVED_ADMIN_SCOPE};
 use awaken_config_store::{AgentConfig, ManagementEffect};
@@ -42,7 +42,7 @@ pub async fn seed_admin_assistant(
 }
 
 /// Reads the redacted, org-shared capability snapshot (D4) LIVE: models + providers
-/// from the live catalog repo, MCP servers from the live MCP store, existing agent ids
+/// from the live catalog repo, MCP servers from Agent authoring, existing agent ids
 /// from the config plane, and memory-stores + skills from a data-plane resource
 /// inventory (when the composition root can reach it). The advertised (global) tool ids
 /// and installable plugins are static (they do not change at run time). Carries only
@@ -55,8 +55,6 @@ pub struct CatalogCapabilityReader {
     tools: Vec<String>,
     /// Installable plugins with their config schemas — static.
     plugins: Vec<PluginInfo>,
-    /// The live authored MCP servers.
-    mcp: Arc<dyn McpStore>,
     /// The config-authoring plane, used to list existing agent ids in the scope.
     plane: ConfigPlane,
     /// The scope whose agents are listed (the tenant/default scope).
@@ -71,7 +69,6 @@ impl CatalogCapabilityReader {
         catalog: Arc<dyn CatalogRepo>,
         global_tools: &[ToolDescriptor],
         plugins: &[PluginCapability],
-        mcp: Arc<dyn McpStore>,
         plane: ConfigPlane,
         workspace: impl Into<ScopeId>,
         inventory: Option<Arc<dyn ResourceInventory>>,
@@ -89,7 +86,6 @@ impl CatalogCapabilityReader {
                     config_schema: p.config_schema.clone(),
                 })
                 .collect(),
-            mcp,
             plane,
             scope: workspace.into(),
             inventory,
@@ -116,22 +112,26 @@ impl CapabilityReader for CatalogCapabilityReader {
             }
             Err(_) => (Vec::new(), Vec::new()),
         };
-        // LIVE authored MCP servers (sorted ids from the store).
-        let mcp_servers = self
-            .mcp
-            .list_servers()
-            .unwrap_or_default()
-            .into_iter()
-            .map(|s| s.id.0)
-            .collect();
-        // LIVE existing agents in the scope, minus the reserved admin assistant itself.
-        let agents = match self.plane.list(&self.scope).await {
-            Ok(configs) => configs
-                .into_iter()
-                .map(|c| c.id)
-                .filter(|id| id != ADMIN_ASSISTANT_AGENT_ID)
-                .collect(),
-            Err(_) => Vec::new(),
+        // AgentConfig is the sole MCP authoring truth. Derive the capability
+        // inventory from the same typed bindings instead of a parallel MCP catalog.
+        let (agents, mcp_servers) = match self.plane.list(&self.scope).await {
+            Ok(configs) => {
+                let mut mcp_servers = Vec::new();
+                let agents = configs
+                    .into_iter()
+                    .filter(|config| config.id != ADMIN_ASSISTANT_AGENT_ID)
+                    .map(|config| {
+                        for server in config.mcp_servers {
+                            if !mcp_servers.contains(&server.name) {
+                                mcp_servers.push(server.name);
+                            }
+                        }
+                        config.id
+                    })
+                    .collect();
+                (agents, mcp_servers)
+            }
+            Err(_) => (Vec::new(), Vec::new()),
         };
         // Data-plane inventory (memory stores + skills) when reachable; else empty.
         let (memory_stores, skills) = match &self.inventory {
@@ -530,15 +530,12 @@ impl DraftStore for ConfigServiceDraftStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_config_resolver::{
-        InMemoryAgentInputBindingRepository, InMemoryMcpStore, McpServerDef, McpServerId,
-    };
+    use awaken_config_resolver::InMemoryAgentInputBindingRepository;
     use awaken_config_service::{
         ConfigPlane, ConfigService, ModelPublicationResolver, ResolvedPublicationModels,
         ScopedToolCatalog, StaticToolCatalog,
     };
     use awaken_config_store::{DEFAULT_SCOPE, ModelSelection, SqliteConfigStore};
-    use awaken_credential_vault::CredentialBinding;
     use awaken_model_catalog::repo::{CatalogRepo, InMemoryCatalogRepo};
     use awaken_model_catalog::{
         ApiDialect, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderCatalog,
@@ -726,28 +723,28 @@ mod tests {
 
     #[tokio::test]
     async fn capability_reader_reports_live_ids_no_secrets() {
-        // A live MCP store with one authored server.
-        let mcp = Arc::new(InMemoryMcpStore::new());
-        mcp.put_server(McpServerDef {
-            workspace_id: DEFAULT_SCOPE.into(),
-            id: McpServerId("github".into()),
-            display_name: "GitHub".into(),
-            url: "https://mcp.example".into(),
-            credential_binding: CredentialBinding::None,
-            version: 1,
-        })
-        .unwrap();
-        // A config plane over an empty store → no existing agents.
+        // The Agent aggregate is the live MCP authoring truth.
         let plane = ConfigPlane::new(
             Arc::new(test_config_service()),
             Arc::new(SqliteConfigStore::open_in_memory().unwrap()),
             Arc::new(StaticToolCatalog(vec![tool("read")])),
         );
+        let mut support = admin_assistant_config();
+        support.id = "support".into();
+        support.mcp_servers = vec![
+            awaken_runtime_contract::agent_bindings::AgentMcpServerBinding {
+                name: "github".into(),
+                url: "https://mcp.example".into(),
+            },
+        ];
+        plane
+            .put(&ScopeId::from(DEFAULT_SCOPE), &support)
+            .await
+            .unwrap();
         let reader = CatalogCapabilityReader::new(
             repo("m-1").await,
             &[tool("read")],
             &[],
-            mcp,
             plane,
             DEFAULT_SCOPE,
             None,
@@ -757,7 +754,7 @@ mod tests {
         assert_eq!(caps.models, vec!["m-1"]);
         assert_eq!(caps.tools, vec!["read"]);
         assert_eq!(caps.providers, vec!["anthropic"]);
-        // LIVE MCP servers.
+        // LIVE MCP servers derived from AgentConfig.
         assert_eq!(caps.mcp_servers, vec!["github"]);
         // No inventory wired → memory stores empty.
         assert!(caps.memory_stores.is_empty());
@@ -863,7 +860,6 @@ mod tests {
             repo("m-1").await,
             &[tool("read")],
             &[],
-            Arc::new(InMemoryMcpStore::new()),
             plane,
             DEFAULT_SCOPE,
             None,
@@ -898,7 +894,6 @@ mod tests {
             repo("m-1").await,
             &[tool("read")],
             &[],
-            Arc::new(InMemoryMcpStore::new()),
             plane,
             "workspace-local",
             None,
