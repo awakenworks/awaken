@@ -134,8 +134,7 @@ constraint, not a copywriting omission.
 
 ## Installation claim
 
-The current `awaken` binary serves the aggregated backend but does not embed the built
-console. Until packaging serves both resources from one command, the installation
-story must show the binary plus the console server and must not claim that starting one
-binary is sufficient. A one-command installation video becomes release-ready only when
-its checkpoint opens the console from a fresh install without a separate Vite process.
+The `awaken` binary embeds the production console at compile time. The installation
+story may claim one-binary startup through `awaken start` only when its checkpoint
+copies the release binary into a clean directory, starts it without Node.js or external
+web assets, and opens the console from the binary's HTTP listener.

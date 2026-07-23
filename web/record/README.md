@@ -76,11 +76,11 @@ Release gates are intentionally strict:
 - Dashboard, Eval, Datasets, and Audit remain outside the product series while their
   UI routes are gated. A diagnostic failure artifact is not a release video.
 
-The current repository's `awaken` binary starts the aggregated API/control/runtime
-server. It does not embed the Vite console assets, so “run one binary and open the UI”
-is not yet an honest installation claim. Record an installation video only after the
-release package either embeds the built console or ships a launcher that starts both;
-until then, development requires `awaken` plus the console dev/build server.
+The `awaken` binary embeds the production Vite console at compile time.
+`awaken start` serves the aggregated API/control/runtime server and the console from
+one process and one port, without a web directory, Node.js, or a separate Vite process
+at runtime. An installation video may claim one-binary startup when its checkpoint
+runs a release binary from a clean directory and opens the console successfully.
 
 The harness preflights `BACKEND_URL` (default `http://127.0.0.1:38080`) before
 opening the browser, so a stale frontend proxy cannot produce a polished-looking

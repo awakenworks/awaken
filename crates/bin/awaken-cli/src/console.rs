@@ -1,5 +1,11 @@
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use axum::Router;
+use axum::body::Body;
+use axum::extract::Path;
+use axum::http::{StatusCode, header};
+use axum::response::Response;
+use axum::routing::get;
+
+include!(concat!(env!("OUT_DIR"), "/embedded_console.rs"));
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Mode {
@@ -26,89 +32,71 @@ pub(crate) fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Mode,
 
 pub(crate) fn print_help() {
     println!(
-        "Awaken\n\nUSAGE:\n    awaken          Start the API server\n    awaken start    Build and start the API plus web console\n\nENVIRONMENT:\n    AWAKEN_HTTP_ADDR   Listen address (default 127.0.0.1:8080)\n    AWAKEN_WEB_DIST    Prebuilt console dist directory"
+        "Awaken\n\nUSAGE:\n    awaken          Start the API server\n    awaken start    Start the API plus embedded web console\n\nENVIRONMENT:\n    AWAKEN_HTTP_ADDR   Listen address (default 127.0.0.1:8080)"
     );
 }
 
-pub(crate) fn prepare_dist() -> Result<PathBuf, String> {
-    if let Some(dist) = std::env::var_os("AWAKEN_WEB_DIST").map(PathBuf::from) {
-        return validate_dist(dist);
-    }
-    let web = find_web_dir().ok_or_else(|| {
-        "could not locate web/package.json; set AWAKEN_WEB_DIST to a built console directory"
-            .to_string()
-    })?;
-    let dist = web.join("dist");
-    if !dist.join("index.html").is_file() {
-        build_console(&web)?;
-    }
-    validate_dist(dist)
+pub(crate) fn mount(app: Router) -> Router {
+    Router::new()
+        .route("/", get(index))
+        .route("/w/{*path}", get(index))
+        .route("/assets/{*path}", get(asset))
+        .fallback_service(app)
 }
 
-fn validate_dist(dist: PathBuf) -> Result<PathBuf, String> {
-    if dist.join("index.html").is_file() {
-        dist.canonicalize()
-            .map_err(|error| format!("resolve console dist {}: {error}", dist.display()))
+async fn index() -> Response {
+    response("index.html", false)
+}
+
+async fn asset(Path(path): Path<String>) -> Response {
+    response(&format!("assets/{path}"), true)
+}
+
+fn response(path: &str, immutable: bool) -> Response {
+    let Some(bytes) = embedded_asset(path) else {
+        return Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(Body::empty())
+            .expect("valid not-found response");
+    };
+    let cache_control = if immutable {
+        "public, max-age=31536000, immutable"
     } else {
-        Err(format!(
-            "console dist {} does not contain index.html",
-            dist.display()
-        ))
-    }
+        "no-cache"
+    };
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, content_type(path))
+        .header(header::CACHE_CONTROL, cache_control)
+        .body(Body::from(bytes))
+        .expect("valid embedded asset response")
 }
 
-fn find_web_dir() -> Option<PathBuf> {
-    let mut starts = Vec::new();
-    if let Ok(current) = std::env::current_dir() {
-        starts.push(current);
-    }
-    starts.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
-    if let Ok(executable) = std::env::current_exe()
-        && let Some(parent) = executable.parent()
-    {
-        starts.push(parent.to_path_buf());
-    }
-    starts.into_iter().find_map(|start| {
-        start.ancestors().find_map(|ancestor| {
-            let candidate = ancestor.join("web");
-            candidate
-                .join("package.json")
-                .is_file()
-                .then_some(candidate)
-        })
-    })
-}
-
-fn build_console(web: &Path) -> Result<(), String> {
-    let package_manager = if cfg!(windows) { "pnpm.cmd" } else { "pnpm" };
-    if !web.join("node_modules").is_dir() {
-        run_pnpm(package_manager, web, &["install", "--frozen-lockfile"])?;
-    }
-    run_pnpm(package_manager, web, &["build"])
-}
-
-fn run_pnpm(package_manager: &str, web: &Path, args: &[&str]) -> Result<(), String> {
-    eprintln!(
-        "awaken console: running {package_manager} {}",
-        args.join(" ")
-    );
-    let status = Command::new(package_manager)
-        .current_dir(web)
-        .args(args)
-        .status()
-        .map_err(|error| format!("start {package_manager}: {error}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "{package_manager} {} exited with {status}",
-            args.join(" ")
-        ))
+fn content_type(path: &str) -> &'static str {
+    match path.rsplit_once('.').map(|(_, extension)| extension) {
+        Some("css") => "text/css; charset=utf-8",
+        Some("js") | Some("mjs") => "text/javascript; charset=utf-8",
+        Some("html") => "text/html; charset=utf-8",
+        Some("json") | Some("map") => "application/json",
+        Some("svg") => "image/svg+xml",
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("webp") => "image/webp",
+        Some("ico") => "image/x-icon",
+        Some("woff") => "font/woff",
+        Some("woff2") => "font/woff2",
+        _ => "application/octet-stream",
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use axum::body::Body;
+    use axum::http::{Method, Request, StatusCode};
+    use axum::routing::put;
+    use http_body_util::BodyExt as _;
+    use tower::ServiceExt as _;
+
     use super::*;
 
     #[test]
@@ -119,11 +107,37 @@ mod tests {
         assert!(parse_args(["serve".into()]).is_err());
     }
 
-    #[test]
-    fn a_dist_requires_an_index() {
-        let temp = tempfile::tempdir().unwrap();
-        assert!(validate_dist(temp.path().to_path_buf()).is_err());
-        std::fs::write(temp.path().join("index.html"), "ready").unwrap();
-        assert!(validate_dist(temp.path().to_path_buf()).is_ok());
+    #[tokio::test]
+    async fn embedded_console_serves_the_spa_and_preserves_the_api() {
+        let api = Router::new().route("/v1/probe", put(|| async { StatusCode::CREATED }));
+        let app = mount(api);
+
+        let index = app
+            .clone()
+            .oneshot(Request::get("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(index.status(), StatusCode::OK);
+        assert_eq!(
+            index.headers().get(header::CONTENT_TYPE).unwrap(),
+            "text/html; charset=utf-8"
+        );
+        let body = index.into_body().collect().await.unwrap().to_bytes();
+        assert!(
+            body.windows(b"Awaken Console".len())
+                .any(|window| { window == b"Awaken Console" })
+        );
+
+        let api = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::PUT)
+                    .uri("/v1/probe")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(api.status(), StatusCode::CREATED);
     }
 }
