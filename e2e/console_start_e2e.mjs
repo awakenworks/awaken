@@ -84,7 +84,7 @@ async function main() {
   fs.writeFileSync(path.join(dist, 'index.html'), '<!doctype html><title>Awaken Console E2E</title>');
   fs.writeFileSync(path.join(dist, 'assets', 'probe.txt'), 'console-asset');
 
-  const server = spawn(bin, ['start'], {
+  let server = spawn(bin, ['start'], {
     env: {
       ...process.env,
       AWAKEN_HTTP_ADDR: `127.0.0.1:${PORT}`,
@@ -129,6 +129,34 @@ async function main() {
     console.log(
       'CONSOLE START TS E2E PASS: command modes fail closed and one process serves the SPA plus the unchanged management API fallback.',
     );
+
+    await stop();
+
+    // Without an explicit dist override, the command searches from its working
+    // directory. Keep this hermetic by providing a tiny project-shaped tree
+    // instead of relying on a previously built repository `web/dist`.
+    const autoRoot = path.join(temp, 'auto-project');
+    const autoWeb = path.join(autoRoot, 'web');
+    const autoDist = path.join(autoWeb, 'dist');
+    fs.mkdirSync(path.join(autoDist, 'assets'), { recursive: true });
+    fs.writeFileSync(path.join(autoWeb, 'package.json'), '{"private":true}');
+    fs.writeFileSync(path.join(autoDist, 'index.html'), '<title>Auto Located Console</title>');
+    const autoPort = PORT + 1;
+    const inherited = { ...process.env };
+    delete inherited.AWAKEN_WEB_DIST;
+    server = spawn(bin, ['start'], {
+      cwd: autoRoot,
+      env: {
+        ...inherited,
+        AWAKEN_HTTP_ADDR: `127.0.0.1:${autoPort}`,
+        AWAKEN_LOCAL_WORKSPACE_ID: `workspace_console_auto_${process.pid}`,
+      },
+      stdio: ['ignore', 'inherit', 'inherit'],
+    });
+    await waitForPort(autoPort);
+    response = await fetch(`http://127.0.0.1:${autoPort}/w/default/overview`);
+    assert.equal(response.status, 200);
+    assert.match(await response.text(), /Auto Located Console/);
   } finally {
     await stop();
     fs.rmSync(temp, { recursive: true, force: true });
