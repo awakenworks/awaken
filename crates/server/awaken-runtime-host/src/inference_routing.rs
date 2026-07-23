@@ -44,12 +44,18 @@ pub trait InferenceExecutorMaterializer: Send + Sync {
     ) -> Option<Arc<dyn LlmExecutor>>;
 
     /// Materialize exactly the pinned access for this activation. Returning
-    /// `None` rejects the run; it never falls back to a different route.
+    /// `None` rejects the run; it never falls back to a different route. The
+    /// default is deliberately single-candidate only: adapters that support an
+    /// ordered pool of complete bindings for one model must override this method
+    /// and preserve exact-binding selection in the returned executor.
     fn materialize(&self, activation: &RunActivation) -> Option<Arc<dyn LlmExecutor>> {
-        let exact = activation
-            .snapshot
-            .resolved_spec
-            .candidate_for_model(activation.effective_model_ref())?;
+        let mut matching = std::iter::once(&activation.snapshot.resolved_spec.model_binding)
+            .chain(activation.snapshot.resolved_spec.model_candidates.iter())
+            .filter(|candidate| candidate.binding.model_ref == activation.effective_model_ref());
+        let exact = matching.next()?;
+        if matching.next().is_some() {
+            return None;
+        }
         self.materialize_pinned(exact)
     }
 }
@@ -251,6 +257,30 @@ mod tests {
                 .unwrap(),
             &fast
         ));
+    }
+
+    #[test]
+    fn default_materializer_rejects_ambiguous_same_model_bindings() {
+        let executor: Arc<dyn LlmExecutor> = Arc::new(LabeledModel("smart"));
+        let mut map: HashMap<String, Arc<dyn LlmExecutor>> = HashMap::new();
+        map.insert("smart-model".into(), executor);
+        let mut routing = routing();
+        routing.set_materializer(Arc::new(MapProvider(map)));
+
+        let mut activation = activation("smart-model");
+        activation.snapshot.resolved_spec.model_candidates.push(
+            awaken_runtime_contract::resolved::ResolvedModelCandidate::host(ModelBinding::new(
+                "provider-b",
+                "smart-model",
+                "backend",
+            )),
+        );
+
+        let error = match routing.executor_for_activation(&activation) {
+            Ok(_) => panic!("ambiguous same-model bindings must require a pool-aware materializer"),
+            Err(error) => error,
+        };
+        assert!(error.contains("cannot materialize model `smart-model`"));
     }
 
     #[test]

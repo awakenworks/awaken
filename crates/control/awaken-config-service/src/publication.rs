@@ -2,6 +2,7 @@
 
 use awaken_config_store::{AgentConfig, AgentConfigRevision, ModelSelection};
 use awaken_runtime_contract::ResolutionManifest;
+use awaken_runtime_contract::resolved::ModelProvisioning;
 
 use crate::binding_resolver::{
     ModelPublicationResolver, PublicationResolutionError, ResolvedPublicationModels,
@@ -58,6 +59,19 @@ pub(crate) async fn prepare_agent_publication(
         .map_err(|error| PublishError::Unresolvable(error.to_string()))?;
     let mut bindings = std::collections::BTreeSet::new();
     for candidate in std::iter::once(&models.primary).chain(models.candidates.iter()) {
+        if let ModelProvisioning::Provider { scope_id, .. } = &candidate.provisioning
+            && scope_id != workspace
+        {
+            return Err(PublishError::Unresolvable(
+                PublicationResolutionError::CandidateUnavailable {
+                    binding: candidate.binding.clone(),
+                    reason: format!(
+                        "resolved candidate belongs to Workspace {scope_id}, not trusted execution Workspace {workspace}"
+                    ),
+                }
+                .to_string(),
+            ));
+        }
         if !bindings.insert(candidate.binding.clone()) {
             return Err(PublishError::Unresolvable(
                 PublicationResolutionError::DuplicateBinding(candidate.binding.clone()).to_string(),
@@ -157,7 +171,8 @@ pub(crate) fn snapshot_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_runtime_contract::resolved::ModelBinding;
+    use awaken_runtime_contract::InferenceEndpoint;
+    use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate};
 
     fn revision(selection: ModelSelection, fallbacks: Vec<ModelBinding>) -> AgentConfigRevision {
         AgentConfigRevision {
@@ -272,5 +287,41 @@ mod tests {
         .unwrap_err();
 
         assert!(error.to_string().contains("duplicate model candidate"));
+    }
+
+    #[tokio::test]
+    async fn resolver_cannot_publish_a_provider_candidate_from_another_workspace() {
+        let binding = ModelBinding::new("provider-account", "model", "genai");
+        let resolver = FixedResolver {
+            expected_workspace: "workspace-a",
+            output: ResolvedPublicationModels {
+                primary: ResolvedModelCandidate::provider(
+                    binding,
+                    "provider@1",
+                    "route@1",
+                    "workspace-b",
+                    None,
+                    InferenceEndpoint {
+                        adapter_kind: "openai".into(),
+                        base_url: "https://gateway.internal/v1".into(),
+                        upstream_model: "provider-model".into(),
+                    },
+                ),
+                candidates: Vec::new(),
+                context_window: None,
+                max_output_tokens: None,
+            },
+        };
+
+        let error = prepare_agent_publication(
+            &resolver,
+            &awaken_tenancy::ScopeId::from("workspace-a"),
+            revision(ModelSelection::Auto, Vec::new()),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("Workspace workspace-b"));
+        assert!(error.to_string().contains("Workspace workspace-a"));
     }
 }

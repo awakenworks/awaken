@@ -240,3 +240,20 @@ After that boundary, only the complete `ModelBinding` and
 `ResolvedModelCandidate` exist. They are the shared identity for publication
 deduplication, override filtering, fallback order, fingerprinting and runtime
 materialization. Runtime never repeats the model-only lookup.
+
+## Amendment: port-boundary validation and pool-aware materialization (2026-07-24)
+
+Configuration publication treats a `ModelPublicationResolver` implementation as
+an adapter, not as an authority. After resolution, the publication service
+independently verifies that every Provider candidate carries the trusted
+execution Workspace supplied to the port. A cross-Workspace candidate rejects
+the whole publication before compilation or persistence, even if a faulty
+adapter returned it successfully.
+
+The default `InferenceExecutorMaterializer::materialize` is intentionally valid
+only when the effective model identifies exactly one complete published
+candidate. If multiple Provider identities publish the same model ref, the
+default fails closed instead of selecting the first. A pool-capable adapter must
+override `materialize` and return an executor that exact-matches each runtime
+`ChatRequest.model_binding` against the ordered published pool. This keeps the
+convenience default safe without removing same-model, cross-account fallback.
