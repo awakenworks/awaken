@@ -617,12 +617,45 @@ pub async fn awaken_agent_contract::thread::commit::commit_run(&dyn awaken_agent
 pub mod awaken_agent_contract::thread::read
 pub mod awaken_agent_contract::thread::read::checkpoint
 pub enum awaken_agent_contract::thread::read::checkpoint::EventScope
+pub awaken_agent_contract::thread::read::checkpoint::EventScope::All
 pub awaken_agent_contract::thread::read::checkpoint::EventScope::Run(awaken_agent_contract::agent::run::Id)
 pub awaken_agent_contract::thread::read::checkpoint::EventScope::Thread(awaken_agent_contract::agent::thread::Id)
 pub trait awaken_agent_contract::thread::read::checkpoint::CheckpointReader: awaken_agent_contract::thread::read::thread_reader::ThreadReader
 pub fn awaken_agent_contract::thread::read::checkpoint::CheckpointReader::latest_run(&self, &awaken_agent_contract::agent::thread::Id) -> core::option::Option<awaken_agent_contract::agent::run::Record>
 pub fn awaken_agent_contract::thread::read::checkpoint::CheckpointReader::list_events(&self, &awaken_agent_contract::thread::read::checkpoint::EventScope, core::option::Option<u64>, usize) -> alloc::vec::Vec<awaken_agent_contract::audit::record::Record>
 pub fn awaken_agent_contract::thread::read::checkpoint::CheckpointReader::run(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::run::Record>
+pub mod awaken_agent_contract::thread::read::lifecycle
+pub enum awaken_agent_contract::thread::read::lifecycle::RunLifecycleFeedError
+pub awaken_agent_contract::thread::read::lifecycle::RunLifecycleFeedError::InvalidState
+pub awaken_agent_contract::thread::read::lifecycle::RunLifecycleFeedError::InvalidState::sequence: u64
+pub awaken_agent_contract::thread::read::lifecycle::RunLifecycleFeedError::UnknownRun
+pub awaken_agent_contract::thread::read::lifecycle::RunLifecycleFeedError::UnknownRun::sequence: u64
+pub enum awaken_agent_contract::thread::read::lifecycle::RunLifecycleKind
+pub awaken_agent_contract::thread::read::lifecycle::RunLifecycleKind::Awaiting
+pub awaken_agent_contract::thread::read::lifecycle::RunLifecycleKind::Cancelled
+pub awaken_agent_contract::thread::read::lifecycle::RunLifecycleKind::Completed
+pub awaken_agent_contract::thread::read::lifecycle::RunLifecycleKind::Failed
+pub awaken_agent_contract::thread::read::lifecycle::RunLifecycleKind::Resumed
+pub awaken_agent_contract::thread::read::lifecycle::RunLifecycleKind::Running
+pub struct awaken_agent_contract::thread::read::lifecycle::CheckpointRunLifecycleFeed
+impl awaken_agent_contract::thread::read::lifecycle::CheckpointRunLifecycleFeed
+pub fn awaken_agent_contract::thread::read::lifecycle::CheckpointRunLifecycleFeed::new(alloc::sync::Arc<dyn awaken_agent_contract::thread::read::checkpoint::CheckpointReader>) -> Self
+impl awaken_agent_contract::thread::read::lifecycle::RunLifecycleFeed for awaken_agent_contract::thread::read::lifecycle::CheckpointRunLifecycleFeed
+pub fn awaken_agent_contract::thread::read::lifecycle::CheckpointRunLifecycleFeed::events_after<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::thread::read::lifecycle::LifecycleCursor, usize) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::read::lifecycle::LifecyclePage, awaken_agent_contract::thread::read::lifecycle::RunLifecycleFeedError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub struct awaken_agent_contract::thread::read::lifecycle::LifecycleCursor(pub u64)
+pub struct awaken_agent_contract::thread::read::lifecycle::LifecyclePage
+pub awaken_agent_contract::thread::read::lifecycle::LifecyclePage::events: alloc::vec::Vec<awaken_agent_contract::thread::read::lifecycle::RunLifecycleEvent>
+pub awaken_agent_contract::thread::read::lifecycle::LifecyclePage::next_cursor: awaken_agent_contract::thread::read::lifecycle::LifecycleCursor
+pub struct awaken_agent_contract::thread::read::lifecycle::RunLifecycleEvent
+pub awaken_agent_contract::thread::read::lifecycle::RunLifecycleEvent::cursor: awaken_agent_contract::thread::read::lifecycle::LifecycleCursor
+pub awaken_agent_contract::thread::read::lifecycle::RunLifecycleEvent::kind: awaken_agent_contract::thread::read::lifecycle::RunLifecycleKind
+pub awaken_agent_contract::thread::read::lifecycle::RunLifecycleEvent::run_id: awaken_agent_contract::agent::run::Id
+pub awaken_agent_contract::thread::read::lifecycle::RunLifecycleEvent::state: awaken_agent_contract::agent::run::RunState
+pub awaken_agent_contract::thread::read::lifecycle::RunLifecycleEvent::thread_id: awaken_agent_contract::agent::thread::Id
+pub trait awaken_agent_contract::thread::read::lifecycle::RunLifecycleFeed: core::marker::Send + core::marker::Sync
+pub fn awaken_agent_contract::thread::read::lifecycle::RunLifecycleFeed::events_after<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::thread::read::lifecycle::LifecycleCursor, usize) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::read::lifecycle::LifecyclePage, awaken_agent_contract::thread::read::lifecycle::RunLifecycleFeedError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+impl awaken_agent_contract::thread::read::lifecycle::RunLifecycleFeed for awaken_agent_contract::thread::read::lifecycle::CheckpointRunLifecycleFeed
+pub fn awaken_agent_contract::thread::read::lifecycle::CheckpointRunLifecycleFeed::events_after<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::thread::read::lifecycle::LifecycleCursor, usize) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::read::lifecycle::LifecyclePage, awaken_agent_contract::thread::read::lifecycle::RunLifecycleFeedError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub mod awaken_agent_contract::thread::read::recovery
 pub enum awaken_agent_contract::thread::read::recovery::RecoveryError
 pub awaken_agent_contract::thread::read::recovery::RecoveryError::Rejected(alloc::string::String)
@@ -658,8 +691,26 @@ impl awaken_agent_contract::event::agent::AgentEvent
 pub fn awaken_agent_contract::event::agent::AgentEvent::delta(awaken_agent_contract::event::agent::Delta) -> Self
 pub fn awaken_agent_contract::event::agent::AgentEvent::fact(awaken_agent_contract::event::agent::Fact) -> Self
 pub enum awaken_agent_contract::EventScope
+pub awaken_agent_contract::EventScope::All
 pub awaken_agent_contract::EventScope::Run(awaken_agent_contract::agent::run::Id)
 pub awaken_agent_contract::EventScope::Thread(awaken_agent_contract::agent::thread::Id)
+pub enum awaken_agent_contract::RunLifecycleFeedError
+pub awaken_agent_contract::RunLifecycleFeedError::InvalidState
+pub awaken_agent_contract::RunLifecycleFeedError::InvalidState::sequence: u64
+pub awaken_agent_contract::RunLifecycleFeedError::UnknownRun
+pub awaken_agent_contract::RunLifecycleFeedError::UnknownRun::sequence: u64
+pub enum awaken_agent_contract::RunLifecycleKind
+pub awaken_agent_contract::RunLifecycleKind::Awaiting
+pub awaken_agent_contract::RunLifecycleKind::Cancelled
+pub awaken_agent_contract::RunLifecycleKind::Completed
+pub awaken_agent_contract::RunLifecycleKind::Failed
+pub awaken_agent_contract::RunLifecycleKind::Resumed
+pub awaken_agent_contract::RunLifecycleKind::Running
+pub struct awaken_agent_contract::CheckpointRunLifecycleFeed
+impl awaken_agent_contract::thread::read::lifecycle::CheckpointRunLifecycleFeed
+pub fn awaken_agent_contract::thread::read::lifecycle::CheckpointRunLifecycleFeed::new(alloc::sync::Arc<dyn awaken_agent_contract::thread::read::checkpoint::CheckpointReader>) -> Self
+impl awaken_agent_contract::thread::read::lifecycle::RunLifecycleFeed for awaken_agent_contract::thread::read::lifecycle::CheckpointRunLifecycleFeed
+pub fn awaken_agent_contract::thread::read::lifecycle::CheckpointRunLifecycleFeed::events_after<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::thread::read::lifecycle::LifecycleCursor, usize) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::read::lifecycle::LifecyclePage, awaken_agent_contract::thread::read::lifecycle::RunLifecycleFeedError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub struct awaken_agent_contract::DelegationId(pub alloc::string::String)
 impl awaken_agent_contract::agent::delegation::DelegationId
 pub fn awaken_agent_contract::agent::delegation::DelegationId::child_run_id(&self) -> awaken_agent_contract::agent::run::Id
@@ -681,6 +732,10 @@ pub awaken_agent_contract::EventRecord::kind: awaken_agent_contract::audit::kind
 pub awaken_agent_contract::EventRecord::payload: serde_json::value::Value
 pub awaken_agent_contract::EventRecord::run_id: awaken_agent_contract::agent::run::Id
 pub awaken_agent_contract::EventRecord::sequence: u64
+pub struct awaken_agent_contract::LifecycleCursor(pub u64)
+pub struct awaken_agent_contract::LifecyclePage
+pub awaken_agent_contract::LifecyclePage::events: alloc::vec::Vec<awaken_agent_contract::thread::read::lifecycle::RunLifecycleEvent>
+pub awaken_agent_contract::LifecyclePage::next_cursor: awaken_agent_contract::thread::read::lifecycle::LifecycleCursor
 pub struct awaken_agent_contract::Message
 pub awaken_agent_contract::Message::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
 pub awaken_agent_contract::Message::id: awaken_agent_contract::agent::message::Id
@@ -717,6 +772,12 @@ pub struct awaken_agent_contract::RunFact
 pub awaken_agent_contract::RunFact::run_id: awaken_agent_contract::agent::run::Id
 pub awaken_agent_contract::RunFact::state: awaken_agent_contract::agent::run::RunState
 pub struct awaken_agent_contract::RunId(pub alloc::string::String)
+pub struct awaken_agent_contract::RunLifecycleEvent
+pub awaken_agent_contract::RunLifecycleEvent::cursor: awaken_agent_contract::thread::read::lifecycle::LifecycleCursor
+pub awaken_agent_contract::RunLifecycleEvent::kind: awaken_agent_contract::thread::read::lifecycle::RunLifecycleKind
+pub awaken_agent_contract::RunLifecycleEvent::run_id: awaken_agent_contract::agent::run::Id
+pub awaken_agent_contract::RunLifecycleEvent::state: awaken_agent_contract::agent::run::RunState
+pub awaken_agent_contract::RunLifecycleEvent::thread_id: awaken_agent_contract::agent::thread::Id
 pub struct awaken_agent_contract::RunRecord
 pub awaken_agent_contract::RunRecord::id: awaken_agent_contract::agent::run::Id
 pub awaken_agent_contract::RunRecord::state: awaken_agent_contract::agent::run::RunState
@@ -749,5 +810,9 @@ pub fn awaken_agent_contract::CheckpointReader::list_events(&self, &awaken_agent
 pub fn awaken_agent_contract::CheckpointReader::run(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::run::Record>
 pub trait awaken_agent_contract::CommitCoordinator: core::marker::Send + core::marker::Sync
 pub fn awaken_agent_contract::CommitCoordinator::commit<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::thread::commit::staged::ThreadCommit) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::commit::staged::CommitRecord, awaken_agent_contract::thread::commit::coordinator::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub trait awaken_agent_contract::RunLifecycleFeed: core::marker::Send + core::marker::Sync
+pub fn awaken_agent_contract::RunLifecycleFeed::events_after<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::thread::read::lifecycle::LifecycleCursor, usize) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::read::lifecycle::LifecyclePage, awaken_agent_contract::thread::read::lifecycle::RunLifecycleFeedError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+impl awaken_agent_contract::thread::read::lifecycle::RunLifecycleFeed for awaken_agent_contract::thread::read::lifecycle::CheckpointRunLifecycleFeed
+pub fn awaken_agent_contract::thread::read::lifecycle::CheckpointRunLifecycleFeed::events_after<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::thread::read::lifecycle::LifecycleCursor, usize) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::read::lifecycle::LifecyclePage, awaken_agent_contract::thread::read::lifecycle::RunLifecycleFeedError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_agent_contract::StreamSink: core::marker::Send + core::marker::Sync
 pub fn awaken_agent_contract::StreamSink::send<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::stream::event::Event) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_agent_contract::stream::sink::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait

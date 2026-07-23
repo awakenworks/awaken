@@ -619,6 +619,7 @@ impl CheckpointReader for PostgresCommitCoordinator {
             .iter()
             .filter(|event| event.sequence > after)
             .filter(|event| match scope {
+                EventScope::All => true,
                 EventScope::Run(run_id) => &event.run_id == run_id,
                 EventScope::Thread(thread_id) => projection
                     .run_records

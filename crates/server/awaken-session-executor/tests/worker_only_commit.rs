@@ -10,6 +10,7 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+use awaken_agent_contract::{LifecycleCursor, RunLifecycleFeed, RunLifecycleKind};
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult,
 };
@@ -64,11 +65,27 @@ async fn a_db_less_worker_runs_and_commits_its_facts_to_the_server() {
             .any(|m| m.text_content().contains("db-less worker")),
         "the worker's turn committed on the server: {committed:?}"
     );
+    let lifecycle = server
+        .run_lifecycle_feed("t1")
+        .await
+        .expect("Control exposes committed lifecycle");
+    let page = lifecycle
+        .events_after(LifecycleCursor(0), 10)
+        .await
+        .expect("lifecycle backfill");
+    assert_eq!(
+        page.events.last().map(|event| event.kind),
+        Some(RunLifecycleKind::Completed)
+    );
 
     // The worker holds nothing — its own view of the thread is empty (no store).
     let worker_view = worker.committed_messages("t1").await;
     assert!(
         worker_view.is_empty(),
         "the db-less worker keeps no committed truth locally: {worker_view:?}"
+    );
+    assert!(
+        worker.run_lifecycle_feed("t1").await.is_err(),
+        "a Worker recovery cache is never promoted to a lifecycle authority"
     );
 }

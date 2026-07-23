@@ -392,6 +392,12 @@ impl CheckpointReader for MemoryCommitCoordinator {
             Err(_) => return Vec::new(),
         };
         let mut events: Vec<EventRecord> = match scope {
+            EventScope::All => state
+                .order
+                .iter()
+                .filter_map(|tid| state.threads.get(tid))
+                .flat_map(|thread| thread.events.iter().cloned())
+                .collect(),
             EventScope::Run(run_id) => state
                 .order
                 .iter()

@@ -1,6 +1,9 @@
 //! SQLite passes the shared store conformance suite, and a fresh instance over
 //! the same database file resumes from committed facts (ADR-0039 2.5 / D4).
 
+use std::sync::Arc;
+
+use awaken_agent_contract::agent::awaiting::{AwaitReason, ResumeTicket};
 use awaken_agent_contract::agent::message::{Id as MsgId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
@@ -10,6 +13,9 @@ use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator;
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
+use awaken_agent_contract::thread::read::lifecycle::{
+    CheckpointRunLifecycleFeed, LifecycleCursor, RunLifecycleFeed, RunLifecycleKind,
+};
 use awaken_store_sqlite::SqliteCommitCoordinator;
 
 #[tokio::test]
@@ -201,5 +207,74 @@ async fn reopen_file_replays_committed_state() {
         commands,
         "committed state replays from durable truth after a reopen"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn lifecycle_feed_backfills_exclusively_after_reopen() {
+    let dir = std::env::temp_dir().join(format!(
+        "awaken_store_sqlite_lifecycle_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let path = dir.join("commit.db");
+    let path = path.to_str().expect("utf8 path");
+    let thread = ThreadId("lifecycle-thread".into());
+    let run = RunId("lifecycle-run".into());
+    {
+        let store = SqliteCommitCoordinator::open(path).expect("open");
+        for disposition in [
+            RunDisposition::running(run.clone()),
+            RunDisposition::awaiting(ResumeTicket {
+                correlation_id: "lifecycle-correlation".into(),
+                run_id: run.clone(),
+                thread_id: thread.clone(),
+                snapshot_id: "snapshot".into(),
+                catalog_fingerprint: "catalog".into(),
+                delegation_origin: None,
+                reason: AwaitReason::UserInput,
+                call_id: None,
+                pending_tool: None,
+                deadline_ms: None,
+            }),
+            RunDisposition::running(run.clone()),
+            RunDisposition::ended(run.clone(), EndCause::NaturalEnd),
+        ] {
+            store
+                .commit(ThreadCommit::assemble(
+                    thread.clone(),
+                    disposition,
+                    true,
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                ))
+                .await
+                .expect("lifecycle commit");
+        }
+    }
+
+    let reopened = Arc::new(SqliteCommitCoordinator::open(path).expect("reopen"));
+    let feed = CheckpointRunLifecycleFeed::new(reopened);
+    let first = feed.events_after(LifecycleCursor(0), 2).await.unwrap();
+    assert_eq!(
+        first
+            .events
+            .iter()
+            .map(|event| event.kind)
+            .collect::<Vec<_>>(),
+        vec![RunLifecycleKind::Running, RunLifecycleKind::Awaiting]
+    );
+    let second = feed.events_after(first.next_cursor, 10).await.unwrap();
+    assert_eq!(
+        second
+            .events
+            .iter()
+            .map(|event| event.kind)
+            .collect::<Vec<_>>(),
+        vec![RunLifecycleKind::Resumed, RunLifecycleKind::Completed]
+    );
+    assert!(second.next_cursor > first.next_cursor);
     let _ = std::fs::remove_dir_all(&dir);
 }
