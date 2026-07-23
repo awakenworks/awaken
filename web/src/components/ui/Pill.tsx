@@ -1,27 +1,34 @@
-// Pill / Badge primitives: a tone-keyed status label and a count badge. Both are
-// thin native-attr wrappers over the `.pill` / `.nav-badge` classes.
-
-import type { HTMLAttributes, ReactNode } from "react";
+import {
+  Badge as SharedBadge,
+  StatusPill,
+  type UiTone,
+} from "@awaken/ui";
+import type { HTMLAttributes } from "react";
 import { cx, type Tone } from "./cx";
 
+const TONE: Record<Tone, UiTone> = {
+  ok: "success",
+  warn: "warning",
+  danger: "danger",
+  agent: "agent",
+  neutral: "neutral",
+  info: "info",
+};
+
 export interface PillProps extends HTMLAttributes<HTMLSpanElement> {
-  tone?: Tone;
-  dot?: boolean;
+  readonly tone?: Tone;
+  readonly dot?: boolean;
 }
 
 export function Pill({ tone = "neutral", dot, className, children, ...props }: PillProps) {
   return (
-    <span className={cx("pill", tone, className)} {...props}>
-      {dot && <span className="dot" />}
+    <StatusPill {...props} tone={TONE[tone]} className={cx("pill", tone, className)}>
+      {dot ? <span className="dot" /> : null}
       {children}
-    </span>
+    </StatusPill>
   );
 }
 
-export function Badge({ children, className, ...props }: HTMLAttributes<HTMLSpanElement>) {
-  return (
-    <span className={cx("nav-badge", className)} {...props}>
-      {children as ReactNode}
-    </span>
-  );
+export function Badge({ className, ...props }: HTMLAttributes<HTMLSpanElement>) {
+  return <SharedBadge {...props} className={cx("nav-badge", className)} />;
 }

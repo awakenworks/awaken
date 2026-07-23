@@ -9,6 +9,9 @@ const BACKEND = process.env.AWAKEN_HTTP_URL ?? "http://127.0.0.1:38080";
 
 export default defineConfig({
   plugins: [react()],
+  resolve: {
+    dedupe: ["react", "react-dom"],
+  },
   server: {
     host: "127.0.0.1",
     port: 3002,
