@@ -5,8 +5,8 @@
 //!   (`MINIMAX_BASE_URL`, default `https://api.minimaxi.com/anthropic`).
 //! - `KIMI_API_KEY` → Kimi Code's OpenAI-compatible endpoint
 //!   (`KIMI_BASE_URL`, default `https://api.kimi.com/coding/v1`).
-//! - otherwise `genai`'s default client (standard `OPENAI_API_KEY` /
-//!   `ANTHROPIC_API_KEY` from the environment).
+//! - `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` → an explicitly selected native
+//!   adapter. Missing credentials fail closed; the SDK ambient default is unused.
 
 use std::sync::Arc;
 
@@ -24,8 +24,12 @@ pub fn build_executor() -> anyhow::Result<Arc<dyn LlmExecutor>> {
         let base = std::env::var("KIMI_BASE_URL")
             .unwrap_or_else(|_| "https://api.kimi.com/coding/v1".to_string());
         GenaiExecutor::with_client(custom_client(key, base, AdapterKind::OpenAI)?)
+    } else if let Some(key) = env_nonempty("OPENAI_API_KEY") {
+        GenaiExecutor::from_resolved(AdapterKind::OpenAI, None, key)
+    } else if let Some(key) = env_nonempty("ANTHROPIC_API_KEY") {
+        GenaiExecutor::from_resolved(AdapterKind::Anthropic, None, key)
     } else {
-        GenaiExecutor::new()
+        anyhow::bail!("set an explicit provider credential for the coding-agent example")
     };
     Ok(Arc::new(NonStreaming(genai)))
 }

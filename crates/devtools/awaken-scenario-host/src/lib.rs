@@ -13,7 +13,7 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Role;
 use awaken_protocol_managed::ManagedState;
-use awaken_provider_genai::GenaiExecutor;
+use awaken_provider_genai::{AdapterKind, GenaiExecutor};
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
 };
@@ -929,17 +929,18 @@ pub fn scenario_model(
                 model,
             )
         }
-        // A live Gemini via the genai default client's AI-Studio adapter, keyed by
-        // `GEMINI_API_KEY`/`GOOGLE_API_KEY` in the environment. Same host-config seam
-        // as `http`, but the model calls cross the real Gemini wire — used where a
-        // real LLM is needed but only a Google key is available (KIMI creds dead).
+        // A dev-only live Gemini fixture. Even here the key is read explicitly and
+        // injected into a fixed adapter; no SDK ambient-default path is exercised.
         Ok("gemini") => {
-            std::env::var("GEMINI_API_KEY")
+            let key = std::env::var("GEMINI_API_KEY")
                 .or_else(|_| std::env::var("GOOGLE_API_KEY"))
                 .expect("AWAKEN_MODEL_SOURCE=gemini requires GEMINI_API_KEY/GOOGLE_API_KEY");
             let model =
                 std::env::var("GEMINI_MODEL").unwrap_or_else(|_| "gemini-2.5-flash".to_string());
-            (Arc::new(GenaiExecutor::new()), model)
+            (
+                Arc::new(GenaiExecutor::from_resolved(AdapterKind::Gemini, None, key)),
+                model,
+            )
         }
         _ => (in_process, default_ref.to_string()),
     }

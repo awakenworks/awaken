@@ -18,6 +18,10 @@ PROVIDER_ENV_READ = re.compile(
     r")"
 )
 
+AMBIENT_SDK_CONSTRUCTOR = re.compile(
+    r"(?:GenaiExecutor::(?:new|default)|genai::Client::default)\s*\("
+)
+
 
 def check_all(repo_root: Path, crates: Path) -> list[str]:
     """Reject direct provider-environment reads in shipped Rust code.
@@ -36,5 +40,10 @@ def check_all(repo_root: Path, crates: Path) -> list[str]:
                 f"{path.relative_to(repo_root)}: provider execution configuration "
                 "must come from persisted catalog/credential publication; environment "
                 "variables are proposal inputs only"
+            )
+        if AMBIENT_SDK_CONSTRUCTOR.search(path.read_text(encoding="utf-8")):
+            errors.append(
+                f"{path.relative_to(repo_root)}: ambient provider SDK defaults are "
+                "forbidden; construct the adapter from published endpoint and credential facts"
             )
     return errors

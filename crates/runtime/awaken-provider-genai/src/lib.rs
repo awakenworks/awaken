@@ -36,26 +36,16 @@ pub struct GenaiExecutor {
     idle_timeout: Duration,
 }
 
-impl Default for GenaiExecutor {
-    fn default() -> Self {
-        Self {
-            client: Client::default(),
-            timeout: DEFAULT_TIMEOUT,
-            idle_timeout: DEFAULT_IDLE_TIMEOUT,
-        }
-    }
-}
-
 impl GenaiExecutor {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Use a pre-configured client (custom auth, endpoints, adapters).
+    /// Use an explicitly configured client. Product composition must prefer
+    /// [`Self::from_resolved`]; this constructor exists for adapters/tests with
+    /// another explicit `ServiceTargetResolver`. There is intentionally no
+    /// `Default`/`new` path because the SDK default reads ambient provider env.
     pub fn with_client(client: Client) -> Self {
         Self {
             client,
-            ..Self::default()
+            timeout: DEFAULT_TIMEOUT,
+            idle_timeout: DEFAULT_IDLE_TIMEOUT,
         }
     }
 
