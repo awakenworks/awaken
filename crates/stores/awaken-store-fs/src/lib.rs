@@ -27,6 +27,9 @@ use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpoi
 use awaken_agent_contract::thread::commit::coordinator::{Coordinator, Error};
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
+use awaken_agent_contract::thread::read::recovery::{
+    RecoveryError, RunRecoverySnapshot, RunRecoverySource,
+};
 use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_store_inmem::MemoryCommitCoordinator;
@@ -178,6 +181,19 @@ impl CheckpointReader for FsCommitCoordinator {
 
     fn list_events(&self, scope: &EventScope, from: Option<u64>, limit: usize) -> Vec<EventRecord> {
         self.inner.list_events(scope, from, limit)
+    }
+}
+
+#[async_trait]
+impl RunRecoverySource for FsCommitCoordinator {
+    async fn recovery_snapshot(
+        &self,
+        thread_id: &ThreadId,
+        claimed_run_id: &RunId,
+    ) -> Result<RunRecoverySnapshot, RecoveryError> {
+        self.inner
+            .recovery_snapshot(thread_id, claimed_run_id)
+            .await
     }
 }
 

@@ -32,11 +32,11 @@ impl SharedHost {
                     .upstream
                     .as_ref()
                     .expect("remote commit plan has an upstream");
-                Ok(HostCommit::Remote(
+                Ok(HostCommit::Remote(crate::store::RemoteHostCommit::new(
                     crate::commit_ingest::RemoteCoordinator::new(url)
                         .with_client(upstream.client().clone())
                         .with_worker_id(upstream.worker_id()),
-                ))
+                )))
             }
             // Shared Postgres commit backend (ADR-0022 D6): one coordinator keyed by
             // thread, connected once at startup (the non-Send sqlx connect stays out of
@@ -138,6 +138,7 @@ impl SharedHost {
         // (R1). `None` when no provider is installed — the worker stays on the host
         // default.
         let inference_materializer = self.worker_inference_materializer();
+        let recovery_projection = commit.recovery_projection();
         // The recovered dispatch a crash left mid-flight is re-executed by this
         // worker; giving it the same checkpoint store lets that re-execution resume
         // the interrupted step from its flushed partial (Phase 3 cross-process).
@@ -162,6 +163,9 @@ impl SharedHost {
                 commit = commit.with_worker_identity(identity.clone());
             }
             ingress = ingress.with_claimed_commit(Arc::new(commit));
+        }
+        if let Some(projection) = recovery_projection {
+            ingress = ingress.with_recovery_projection(projection);
         }
         let ingress = Arc::new(ingress);
         // No per-session recovery sweep here: this session's worker shares one queue

@@ -72,3 +72,9 @@ async fn two_threads_in_one_store_are_isolated() {
     awaken_store_conformance::two_threads_in_one_store_are_isolated(&MemoryCommitCoordinator::new())
         .await;
 }
+
+#[tokio::test]
+async fn recovery_snapshot_is_consistent() {
+    awaken_store_conformance::recovery_snapshot_is_consistent(&MemoryCommitCoordinator::new())
+        .await;
+}

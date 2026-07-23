@@ -13,6 +13,7 @@ use awaken_agent_contract::audit::kind::Kind as EventKind;
 use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator;
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
+use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
 use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_store_sqlite::SqliteCommitCoordinator;
@@ -166,6 +167,19 @@ async fn projection_rehydrates_from_a_file_after_reopen() {
         ThreadReader::resume_ticket(&restarted, &RunId("run-1".to_string())).is_some(),
         "the active ticket rehydrated"
     );
+    let snapshot = restarted
+        .recovery_snapshot(
+            &ThreadId("thread-1".to_string()),
+            &RunId("run-1".to_string()),
+        )
+        .await
+        .expect("recovery snapshot");
+    assert_eq!(snapshot.thread_version, 1);
+    assert_eq!(snapshot.store_cursor, 1);
+    assert_eq!(snapshot.next_commit_ordinal, 1);
+    assert_eq!(snapshot.messages.len(), 1);
+    assert_eq!(snapshot.runs.len(), 1);
+    assert_eq!(snapshot.resume_tickets.len(), 1);
 
     let _ = std::fs::remove_file(&path);
 }

@@ -691,6 +691,7 @@ impl SharedHost {
         }
         let remote_agents = self.remote_agents.clone();
         let scheduler = if self.deployment.durable {
+            let recovery_projection = commit.recovery_projection();
             Some(crate::agent_runner::RunScheduler {
                 store: crate::dispatch_backend::shared_durable_store(self.store_dir.as_deref())?,
                 commit: commit.clone(),
@@ -705,6 +706,7 @@ impl SharedHost {
                     }
                     Arc::new(commit) as Arc<dyn awaken_run_ingress::ClaimedRunCommit>
                 }),
+                recovery_projection,
                 session_resources: self.thread_resource_manifest(thread),
             })
         } else {

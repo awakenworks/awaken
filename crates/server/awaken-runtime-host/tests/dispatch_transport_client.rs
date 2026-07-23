@@ -6,12 +6,16 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::Id as RunId;
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::thread::commit::RunDisposition;
+use awaken_agent_contract::thread::commit::coordinator::Coordinator;
+use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_run_ingress::{
-    DispatchOutcome, DispatchQueue, MemoryDispatchStore, PendingInput, RunDispatch,
+    DispatchOutcome, DispatchQueue, MemoryDispatchStore, PendingInput, RunClaim, RunDispatch,
 };
 use awaken_run_ingress_testkit::{ConformanceCapabilities, assert_dispatch_conformance_with_clock};
+use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
 use awaken_runtime_contract::resume::ResumeResult;
@@ -55,13 +59,31 @@ fn activation(run: &str, thread: &str) -> RunActivation {
 #[tokio::test(flavor = "multi_thread")]
 async fn db_less_worker_drives_runs_over_real_http() {
     let mem = Arc::new(MemoryDispatchStore::new());
+    let recovery = Arc::new(MemoryCommitCoordinator::new());
+    recovery
+        .commit(ThreadCommit {
+            thread_id: ThreadId("t1".into()),
+            run: RunDisposition::ended(RunId("run-A".into()), EndCause::NaturalEnd),
+            messages: vec![Message::text(
+                MessageId("committed-1".into()),
+                Role::Assistant,
+                "recover me",
+            )],
+            state: Vec::new(),
+            events: Vec::new(),
+        })
+        .await
+        .expect("seed committed recovery truth");
     let clock = Arc::new(ManualWorkerClock::new(0));
-    let service = Arc::new(WorkerDispatchService::new(
-        mem.clone() as Arc<dyn DispatchQueue>,
-        Arc::new(HeaderWorkerAuthenticator),
-        clock.clone(),
-        Arc::new(FixedWorkerLeasePolicy::new(1_000)),
-    ));
+    let service = Arc::new(
+        WorkerDispatchService::new(
+            mem.clone() as Arc<dyn DispatchQueue>,
+            Arc::new(HeaderWorkerAuthenticator),
+            clock.clone(),
+            Arc::new(FixedWorkerLeasePolicy::new(1_000)),
+        )
+        .with_recovery_source(recovery),
+    );
     let router = dispatch_transport_router_with_service(service);
 
     // Serve the transport on an ephemeral localhost port.
@@ -86,6 +108,24 @@ async fn db_less_worker_drives_runs_over_real_http() {
         .expect("a run is claimable");
     assert_eq!(claimed.request.activation.run_id.0, "run-A");
     assert_eq!(claimed.lease.owner, "worker-1");
+    let original_claim = RunClaim::from(&claimed.lease);
+    let snapshot = queue
+        .load_recovery_snapshot(&original_claim)
+        .await
+        .expect("load claim-fenced recovery snapshot over http");
+    assert_eq!(snapshot.thread_id.0, "t1");
+    assert_eq!(snapshot.claimed_run_id.0, "run-A");
+    assert_eq!(snapshot.latest_run_id, Some(RunId("run-A".into())));
+    assert_eq!(
+        snapshot.messages,
+        vec![Message::text(
+            MessageId("committed-1".into()),
+            Role::Assistant,
+            "recover me",
+        )]
+    );
+    assert_eq!(snapshot.thread_version, 1);
+    assert_eq!(snapshot.next_commit_ordinal, 1);
 
     clock.set(1_000);
     assert!(
@@ -108,6 +148,10 @@ async fn db_less_worker_drives_runs_over_real_http() {
     assert!(
         reclaimed.lease.epoch > claimed.lease.epoch,
         "the recovery re-claim bumped the fence epoch"
+    );
+    assert!(
+        queue.load_recovery_snapshot(&original_claim).await.is_err(),
+        "a stale claim cannot read recovery truth after a re-claim"
     );
     assert_eq!(
         queue

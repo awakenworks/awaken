@@ -144,6 +144,7 @@ pub struct RunRecoverySnapshot {
     pub thread_id: ThreadId,
     pub claimed_run_id: RunId,
     pub runs: Vec<RunRecord>,
+    pub latest_run_id: Option<RunId>,
     pub messages: Vec<Message>,
     pub state: Vec<StateCommand>,
     pub resume_tickets: Vec<RunResumeTicket>,
@@ -154,6 +155,8 @@ pub struct RunRecoverySnapshot {
 ```
 
 - `thread_version` is per thread and is used for optimistic concurrency.
+- `latest_run_id` preserves the existing `RunStore::latest_run` semantics
+  without requiring the Worker to infer ordering from backend-specific records.
 - `store_cursor` identifies the source-store prefix for diagnostics, feed
   backfill, and future delta reads.
 - `next_commit_ordinal` is derived from committed truth. If a commit was applied

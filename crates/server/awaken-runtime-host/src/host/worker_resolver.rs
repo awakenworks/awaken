@@ -80,6 +80,7 @@ impl HostWorkerResolver {
                 .await
                 .map_err(|error| Self::execution_error(error.to_string()))?,
         );
+        let recovery_projection = commit.recovery_projection();
         let store = crate::dispatch_backend::shared_durable_store(host.store_dir.as_deref())
             .map_err(|error| Self::execution_error(error.to_string()))?;
         let mut worker = awaken_run_ingress::DispatchWorker::new(
@@ -122,6 +123,9 @@ impl HostWorkerResolver {
                 remote = remote.with_worker_identity(identity.clone());
             }
             worker = worker.with_claimed_commit(Arc::new(remote));
+        }
+        if let Some(projection) = recovery_projection {
+            worker = worker.with_recovery_projection(projection);
         }
         Ok(Arc::new(worker))
     }

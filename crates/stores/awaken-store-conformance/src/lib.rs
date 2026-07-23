@@ -22,6 +22,7 @@ use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator;
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
+use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
 use awaken_agent_contract::thread::read::transcript::{
     TranscriptError, TranscriptRange, TranscriptSliceSpec, TranscriptView,
 };
@@ -394,6 +395,48 @@ pub async fn two_threads_in_one_store_are_isolated<S: Coordinator + CheckpointRe
         "thread A's latest run is its own, not B's"
     );
     assert_eq!(store.latest_run(&tb).map(|record| record.id), Some(rb));
+}
+
+/// A recovery read returns exactly one committed Thread prefix. Its per-Thread
+/// version excludes unrelated commits while the backend cursor includes them,
+/// and the claimed Run ordinal counts only that Run's commits.
+pub async fn recovery_snapshot_is_consistent<S: Coordinator + RunRecoverySource>(store: &S) {
+    let thread = ThreadId("conf-recovery".to_string());
+    let awaiting_run = RunId("conf-recovery-awaiting".to_string());
+    let claimed_run = RunId("conf-recovery-claimed".to_string());
+    let other_thread = ThreadId("conf-recovery-other".to_string());
+    let other_run = RunId("conf-recovery-other-run".to_string());
+
+    store
+        .commit(awaiting_checkpoint(&thread, &awaiting_run))
+        .await
+        .expect("awaiting commit");
+    store
+        .commit(running_checkpoint(&thread, &claimed_run, "claimed"))
+        .await
+        .expect("claimed run commit");
+    store
+        .commit(running_checkpoint(&other_thread, &other_run, "other"))
+        .await
+        .expect("other thread commit");
+
+    let snapshot = store
+        .recovery_snapshot(&thread, &claimed_run)
+        .await
+        .expect("recovery snapshot");
+    assert_eq!(snapshot.thread_id, thread);
+    assert_eq!(snapshot.claimed_run_id, claimed_run);
+    assert_eq!(snapshot.runs.len(), 2, "latest record for both Thread Runs");
+    assert_eq!(
+        snapshot.messages.len(),
+        1,
+        "other Thread transcript excluded"
+    );
+    assert_eq!(snapshot.resume_tickets.len(), 1, "active ticket retained");
+    assert_eq!(snapshot.resume_tickets[0].run_id, awaiting_run);
+    assert_eq!(snapshot.thread_version, 2, "per-Thread version");
+    assert_eq!(snapshot.store_cursor, 3, "backend-wide prefix cursor");
+    assert_eq!(snapshot.next_commit_ordinal, 1, "claimed Run ordinal");
 }
 
 /// Empty-store reads: before any commit, every read port is absent — no messages,

@@ -64,6 +64,12 @@ async fn conformance_two_threads_in_one_store_are_isolated() {
 }
 
 #[tokio::test]
+async fn conformance_recovery_snapshot_is_consistent() {
+    let store = SqliteCommitCoordinator::open_in_memory().expect("open");
+    awaken_store_conformance::recovery_snapshot_is_consistent(&store).await;
+}
+
+#[tokio::test]
 async fn conformance_empty_store_reads_are_absent() {
     let store = SqliteCommitCoordinator::open_in_memory().expect("open");
     awaken_store_conformance::empty_store_reads_are_absent(&store).await;

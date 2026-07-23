@@ -166,6 +166,16 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
         self
     }
 
+    /// Install the remote committed-read projection before the worker is shared.
+    #[must_use]
+    pub fn with_recovery_projection(mut self, projection: Arc<crate::RecoveryProjection>) -> Self {
+        let worker = Arc::into_inner(self.worker)
+            .expect("recovery projection must be configured before sharing the worker")
+            .with_recovery_projection(projection);
+        self.worker = Arc::new(worker);
+        self
+    }
+
     /// A fail-closed live-control service over this ingress's worker (G18): cancel
     /// a live/queued/awaiting run, or pause/wake a live one, by correlation id (ADR-0018).
     /// Shares the same worker/store/runtime, so it owns no second commit boundary.

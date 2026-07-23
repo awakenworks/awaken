@@ -219,6 +219,22 @@ impl DispatchQueue for HttpDispatchQueue {
         )
     }
 
+    async fn load_recovery_snapshot(
+        &self,
+        claim: &RunClaim,
+    ) -> Result<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot, DispatchError>
+    {
+        let value = self
+            .post(
+                "/v1/worker/recovery/snapshot",
+                json!({ "claim": claim, "identity": self.worker_identity }),
+                &claim.owner,
+            )
+            .await?;
+        serde_json::from_value(value.get("snapshot").cloned().unwrap_or_default())
+            .map_err(|error| DispatchError::Rejected(format!("decode recovery snapshot: {error}")))
+    }
+
     async fn bind_sandbox(
         &self,
         claim: &RunClaim,

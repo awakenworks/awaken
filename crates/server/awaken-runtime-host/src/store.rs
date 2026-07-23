@@ -16,6 +16,9 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::coordinator::{Coordinator, Error};
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::checkpoint::CheckpointReader;
+use awaken_agent_contract::thread::read::recovery::{
+    RecoveryError, RunRecoverySnapshot, RunRecoverySource,
+};
 use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use std::sync::Arc;
@@ -27,28 +30,45 @@ use awaken_store_sqlite::SqliteCommitCoordinator;
 
 /// One thread's commit boundary: either a `Local` read+write store (an
 /// interchangeable memory/sqlite/fs/postgres backend behind `Arc<dyn HostStore>`,
-/// chosen at the composition root) or the write-only `Remote` worker boundary. The
-/// four local backends are polymorphic — the enum only discriminates the one real
-/// distinction (locally readable vs remote write-only), not the backend.
+/// chosen at the composition root) or the `Remote` Worker boundary backed by a
+/// non-authoritative recovery projection. The four local backends are polymorphic
+/// — the enum only discriminates local authoritative reads from projected remote
+/// reads, not the backend.
 pub(crate) enum HostCommit {
     /// One of the interchangeable local backends (memory / sqlite / fs / postgres):
     /// polymorphic implementations of the same read+write store, chosen once at the
     /// composition root behind a trait object — no per-backend dispatch here.
     Local(Arc<dyn HostStore>),
-    /// The database-less worker's boundary: `commit` posts facts to the cell server
-    /// (the single writer) over HTTP. It is **write-only** — the worker holds no
-    /// store, so it is deliberately NOT a [`HostStore`] and has no reads. Correct
-    /// for a fresh, self-contained run (the activation carries its input); a resume
-    /// needing remote reads is a separate async-reader redesign.
-    Remote(crate::commit_ingest::RemoteCoordinator),
+    /// The database-independent Worker's boundary: `commit` posts facts to the
+    /// Control Node over HTTP while committed reads come from the claim-fenced
+    /// [`awaken_run_ingress::RecoveryProjection`]. It deliberately is not a
+    /// [`HostStore`]: the projection is an execution cache, never authoritative
+    /// storage or an alternate commit path.
+    Remote(RemoteHostCommit),
+}
+
+pub(crate) struct RemoteHostCommit {
+    coordinator: crate::commit_ingest::RemoteCoordinator,
+    projection: Arc<awaken_run_ingress::RecoveryProjection>,
+}
+
+impl RemoteHostCommit {
+    pub(crate) fn new(coordinator: crate::commit_ingest::RemoteCoordinator) -> Self {
+        Self {
+            coordinator,
+            projection: Arc::new(awaken_run_ingress::RecoveryProjection::new()),
+        }
+    }
 }
 
 /// The host's read+write store over one interchangeable local backend: the commit
 /// boundary plus the fact-derived reads the session substrate needs after a
 /// restart. The four backends implement it; the composition root picks one as
-/// `Arc<dyn HostStore>`. The remote worker boundary is write-only and is not a
+/// `Arc<dyn HostStore>`. The remote Worker boundary is projected and is not a
 /// `HostStore`.
-pub(crate) trait HostStore: Coordinator + ThreadReader + RunStore + Send + Sync {
+pub(crate) trait HostStore:
+    Coordinator + ThreadReader + RunStore + RunRecoverySource + Send + Sync
+{
     /// Latest committed run on `thread`, used by after-commit outbox recovery.
     fn latest_run(&self, thread: &ThreadId) -> Option<RunRecord>;
     /// The awaiting run on `thread`, if any, recovered from committed truth.
@@ -106,12 +126,16 @@ impl HostStore for PostgresCommitCoordinator {
 }
 
 impl HostCommit {
-    /// Latest committed run on a locally readable thread. Remote worker commits
-    /// are write-only and therefore have no local recovery projection.
+    /// Latest committed run from authoritative local storage or the remote
+    /// Worker's non-authoritative recovery projection.
     pub(crate) fn latest_run(&self, thread: &ThreadId) -> Option<RunRecord> {
         match self {
             HostCommit::Local(store) => store.latest_run(thread),
-            HostCommit::Remote(_) => None,
+            HostCommit::Remote(remote) => remote.projection.current().and_then(|snapshot| {
+                snapshot
+                    .latest_run_id
+                    .and_then(|latest| snapshot.runs.into_iter().find(|run| run.id == latest))
+            }),
         }
     }
 
@@ -121,7 +145,22 @@ impl HostCommit {
     pub(crate) fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, ResumeTicket)> {
         match self {
             HostCommit::Local(store) => store.open_wait_for_thread(thread),
-            HostCommit::Remote(_) => None,
+            HostCommit::Remote(remote) => remote.projection.current().and_then(|snapshot| {
+                snapshot
+                    .resume_tickets
+                    .into_iter()
+                    .find(|entry| entry.ticket.thread_id == *thread)
+                    .map(|entry| (entry.run_id, entry.ticket))
+            }),
+        }
+    }
+
+    pub(crate) fn recovery_projection(
+        &self,
+    ) -> Option<Arc<awaken_run_ingress::RecoveryProjection>> {
+        match self {
+            HostCommit::Local(_) => None,
+            HostCommit::Remote(remote) => Some(remote.projection.clone()),
         }
     }
 }
@@ -131,7 +170,19 @@ impl Coordinator for HostCommit {
     async fn commit(&self, commit: ThreadCommit) -> Result<CommitRecord, Error> {
         match self {
             HostCommit::Local(store) => store.commit(commit).await,
-            HostCommit::Remote(remote) => remote.commit(commit).await,
+            HostCommit::Remote(remote) => {
+                let projected = commit.clone();
+                let record = remote.coordinator.commit(commit).await?;
+                // Legacy direct remote commits have no dispatch claim and therefore
+                // no recovery cache to advance. A claimed Worker installs its
+                // snapshot before executor entry; only that path projects the
+                // acknowledged delta. The non-authoritative cache must never turn
+                // an already-successful Control commit into a reported failure.
+                if remote.projection.current().is_some() {
+                    remote.projection.apply_committed(projected, &record)?;
+                }
+                Ok(record)
+            }
         }
     }
 }
@@ -140,21 +191,21 @@ impl ThreadReader for HostCommit {
     fn committed_messages(&self, thread_id: &ThreadId) -> Vec<Message> {
         match self {
             HostCommit::Local(store) => store.committed_messages(thread_id),
-            HostCommit::Remote(_) => Vec::new(),
+            HostCommit::Remote(remote) => remote.projection.committed_messages(thread_id),
         }
     }
 
     fn resume_ticket(&self, run_id: &RunId) -> Option<ResumeTicket> {
         match self {
             HostCommit::Local(store) => store.resume_ticket(run_id),
-            HostCommit::Remote(_) => None,
+            HostCommit::Remote(remote) => remote.projection.resume_ticket(run_id),
         }
     }
 
     fn run_state(&self, run_id: &RunId) -> Option<RunState> {
         match self {
             HostCommit::Local(store) => store.run_state(run_id),
-            HostCommit::Remote(_) => None,
+            HostCommit::Remote(remote) => remote.projection.run_state(run_id),
         }
     }
 
@@ -164,7 +215,7 @@ impl ThreadReader for HostCommit {
     ) -> Vec<awaken_agent_contract::agent::state::Command> {
         match self {
             HostCommit::Local(store) => store.committed_state(thread_id),
-            HostCommit::Remote(_) => Vec::new(),
+            HostCommit::Remote(remote) => remote.projection.committed_state(thread_id),
         }
     }
 }
@@ -173,7 +224,31 @@ impl RunStore for HostCommit {
     fn get(&self, id: &RunId) -> Option<RunRecord> {
         match self {
             HostCommit::Local(store) => store.get(id),
-            HostCommit::Remote(_) => None,
+            HostCommit::Remote(remote) => remote.projection.get(id),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl RunRecoverySource for HostCommit {
+    async fn recovery_snapshot(
+        &self,
+        thread_id: &ThreadId,
+        claimed_run_id: &RunId,
+    ) -> Result<RunRecoverySnapshot, RecoveryError> {
+        match self {
+            HostCommit::Local(store) => store.recovery_snapshot(thread_id, claimed_run_id).await,
+            HostCommit::Remote(remote) => remote
+                .projection
+                .current()
+                .filter(|snapshot| {
+                    &snapshot.thread_id == thread_id && &snapshot.claimed_run_id == claimed_run_id
+                })
+                .ok_or_else(|| {
+                    RecoveryError::Rejected(
+                        "remote recovery projection is not loaded for this claim".to_string(),
+                    )
+                }),
         }
     }
 }

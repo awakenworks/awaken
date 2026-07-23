@@ -82,6 +82,7 @@ pub(crate) struct RunScheduler {
     pub(crate) reader: Arc<dyn ThreadReader>,
     pub(crate) owner: String,
     pub(crate) claimed_commit: Option<Arc<dyn ClaimedRunCommit>>,
+    pub(crate) recovery_projection: Option<Arc<awaken_run_ingress::RecoveryProjection>>,
     /// Parent Session resource authority inherited by a child dispatch. The child
     /// keeps its own Run/thread lifecycle while executing in the parent's Session
     /// environment, so a replacement worker must install the same frozen manifest.
@@ -330,6 +331,9 @@ pub(crate) async fn run_configured_agent_until_boundary(
         .with_context(context.clone());
         if let Some(claimed_commit) = scheduler.claimed_commit {
             worker = worker.with_claimed_commit(claimed_commit);
+        }
+        if let Some(projection) = scheduler.recovery_projection {
+            worker = worker.with_recovery_projection(projection);
         }
         match operation {
             (Some(activation), None) => {
@@ -1180,6 +1184,7 @@ mod tests {
             reader: commit.clone(),
             owner: "replacement-worker".to_string(),
             claimed_commit: None,
+            recovery_projection: None,
             session_resources: None,
         };
         let context = || {
@@ -1236,6 +1241,7 @@ mod tests {
             reader: commit.clone(),
             owner: "replacement-worker-2".to_string(),
             claimed_commit: None,
+            recovery_projection: None,
             session_resources: None,
         };
 
@@ -1299,6 +1305,7 @@ mod tests {
                 reader: commit.clone(),
                 owner: "replacement-worker-3".to_string(),
                 claimed_commit: None,
+                recovery_projection: None,
                 session_resources: None,
             }),
             AgentRunSandbox::SharedLocal(&sandbox),

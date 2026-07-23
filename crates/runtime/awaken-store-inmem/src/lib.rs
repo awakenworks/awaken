@@ -23,6 +23,9 @@ use awaken_agent_contract::thread::commit::RunFact;
 use awaken_agent_contract::thread::commit::coordinator::{Coordinator as CommitCoordinator, Error};
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
+use awaken_agent_contract::thread::read::recovery::{
+    RecoveryError, RunRecoverySnapshot, RunRecoverySource, RunResumeTicket,
+};
 use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 
@@ -316,6 +319,77 @@ impl CheckpointReader for MemoryCommitCoordinator {
             .filter(|event| event.sequence > after)
             .take(limit)
             .collect()
+    }
+}
+
+#[async_trait]
+impl RunRecoverySource for MemoryCommitCoordinator {
+    async fn recovery_snapshot(
+        &self,
+        thread_id: &ThreadId,
+        claimed_run_id: &RunId,
+    ) -> Result<RunRecoverySnapshot, RecoveryError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| RecoveryError::Rejected("commit store poisoned".to_string()))?;
+        let thread = state.threads.get(thread_id);
+        let mut runs: Vec<RunRecord> = Vec::new();
+        if let Some(thread) = thread {
+            for fact in &thread.run_facts {
+                let record = RunRecord {
+                    id: fact.run_id.clone(),
+                    thread_id: thread_id.clone(),
+                    state: fact.state.clone(),
+                };
+                if let Some(existing) = runs.iter_mut().find(|run| run.id == fact.run_id) {
+                    *existing = record;
+                } else {
+                    runs.push(record);
+                }
+            }
+        }
+        let messages = thread
+            .map(|thread| thread.messages.clone())
+            .unwrap_or_default();
+        let committed_state = thread
+            .map(|thread| thread.state.clone())
+            .unwrap_or_default();
+        let thread_version = thread
+            .map(|thread| thread.run_facts.len() as u64)
+            .unwrap_or(0);
+        let next_commit_ordinal = thread
+            .map(|thread| {
+                thread
+                    .run_facts
+                    .iter()
+                    .filter(|fact| &fact.run_id == claimed_run_id)
+                    .count() as u64
+            })
+            .unwrap_or(0);
+        let mut resume_tickets: Vec<RunResumeTicket> = state
+            .resume_tickets
+            .iter()
+            .filter(|(_, ticket)| &ticket.thread_id == thread_id)
+            .map(|(run_id, ticket)| RunResumeTicket {
+                run_id: run_id.clone(),
+                ticket: ticket.clone(),
+            })
+            .collect();
+        resume_tickets.sort_by(|left, right| left.run_id.0.cmp(&right.run_id.0));
+        Ok(RunRecoverySnapshot {
+            thread_id: thread_id.clone(),
+            claimed_run_id: claimed_run_id.clone(),
+            runs,
+            latest_run_id: thread
+                .and_then(|thread| thread.latest_run.as_ref().map(|run| run.id.clone())),
+            messages,
+            state: committed_state,
+            resume_tickets,
+            thread_version,
+            store_cursor: state.sequence,
+            next_commit_ordinal,
+        })
     }
 }
 

@@ -192,6 +192,14 @@ async fn conformance_two_threads_in_one_store_are_isolated() {
 }
 
 #[tokio::test]
+async fn conformance_recovery_snapshot_is_consistent() {
+    let Some(store) = conformance_store("t_c_recovery").await else {
+        return;
+    };
+    awaken_store_conformance::recovery_snapshot_is_consistent(&store).await;
+}
+
+#[tokio::test]
 async fn conformance_empty_store_reads_are_absent() {
     let Some(store) = conformance_store("t_c_empty").await else {
         return;

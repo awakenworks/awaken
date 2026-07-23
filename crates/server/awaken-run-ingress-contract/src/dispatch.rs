@@ -165,14 +165,24 @@ pub struct DispatchCompletion {
 /// lifetime, never the backend-specific value.
 pub struct CommitEpochGuard {
     _held: Box<dyn Send>,
+    request: RunDispatch,
 }
 
 impl CommitEpochGuard {
     #[must_use]
-    pub fn new(held: impl Send + 'static) -> Self {
+    pub fn new(held: impl Send + 'static, request: RunDispatch) -> Self {
         Self {
             _held: Box::new(held),
+            request,
         }
+    }
+
+    /// The authoritative dispatch payload protected by this exact claim guard.
+    /// Recovery uses it to select the Thread without trusting a caller-supplied
+    /// Thread id.
+    #[must_use]
+    pub fn request(&self) -> &RunDispatch {
+        &self.request
     }
 }
 
@@ -496,6 +506,19 @@ pub trait DispatchQueue: Send + Sync {
     ) -> Result<SettleOutcome, DispatchError> {
         Err(DispatchError::Rejected(
             "claimed checkpoint transport is unavailable".to_string(),
+        ))
+    }
+
+    /// Load one claim-authorized, internally consistent committed recovery
+    /// prefix. Remote transports override this; local workers already share the
+    /// commit reader and fail closed if they accidentally call it.
+    async fn load_recovery_snapshot(
+        &self,
+        _claim: &RunClaim,
+    ) -> Result<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot, DispatchError>
+    {
+        Err(DispatchError::Rejected(
+            "claimed recovery transport is unavailable".to_string(),
         ))
     }
 

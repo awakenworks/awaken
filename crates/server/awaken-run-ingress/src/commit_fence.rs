@@ -14,6 +14,7 @@ use awaken_agent_contract::thread::commit::coordinator::{
 };
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 
+use crate::RecoveryProjection;
 use crate::dispatch::{DispatchQueue, RunClaim};
 
 /// Atomically apply a [`ThreadCommit`] under one durable [`RunClaim`].
@@ -55,6 +56,36 @@ impl ClaimedRunCommit for GuardedRunCommit {
         };
         // `_guard` intentionally remains alive across the await.
         self.inner.commit(commit).await
+    }
+}
+
+/// Decorates a remote claimed-commit service with the Worker-local read-cache
+/// advancement that follows a successful authoritative commit.
+pub(crate) struct ProjectingClaimedRunCommit {
+    inner: Arc<dyn ClaimedRunCommit>,
+    projection: Arc<RecoveryProjection>,
+}
+
+impl ProjectingClaimedRunCommit {
+    pub(crate) fn new(
+        inner: Arc<dyn ClaimedRunCommit>,
+        projection: Arc<RecoveryProjection>,
+    ) -> Self {
+        Self { inner, projection }
+    }
+}
+
+#[async_trait]
+impl ClaimedRunCommit for ProjectingClaimedRunCommit {
+    async fn commit(
+        &self,
+        claim: &RunClaim,
+        commit: ThreadCommit,
+    ) -> Result<CommitRecord, CommitError> {
+        let projected = commit.clone();
+        let record = self.inner.commit(claim, commit).await?;
+        self.projection.apply_committed(projected, &record)?;
+        Ok(record)
     }
 }
 

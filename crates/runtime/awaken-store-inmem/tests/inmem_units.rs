@@ -22,6 +22,7 @@ use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::{Coordinator, Error};
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
+use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
 use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_store_inmem::{
@@ -80,6 +81,62 @@ fn ticket(correlation: &str, run: &str, thread: &str) -> ResumeTicket {
         pending_tool: None,
         deadline_ms: None,
     }
+}
+
+#[tokio::test]
+async fn recovery_snapshot_is_one_thread_prefix_with_distinct_versions() {
+    let store = MemoryCommitCoordinator::new();
+    store
+        .commit(commit_with(
+            "target",
+            "run-a",
+            "a1",
+            RunState::Awaiting,
+            vec![],
+            vec![],
+            Some(ticket("corr-a", "run-a", "target")),
+        ))
+        .await
+        .expect("await commit");
+    store
+        .commit(commit_with(
+            "target",
+            "run-b",
+            "b1",
+            RunState::Running,
+            vec![],
+            vec![],
+            None,
+        ))
+        .await
+        .expect("running commit");
+    store
+        .commit(commit_with(
+            "other",
+            "run-other",
+            "other",
+            RunState::Running,
+            vec![],
+            vec![],
+            None,
+        ))
+        .await
+        .expect("unrelated commit");
+
+    let snapshot = store
+        .recovery_snapshot(&ThreadId("target".into()), &RunId("run-b".into()))
+        .await
+        .expect("snapshot");
+
+    assert_eq!(snapshot.thread_id, ThreadId("target".into()));
+    assert_eq!(snapshot.claimed_run_id, RunId("run-b".into()));
+    assert_eq!(snapshot.messages.len(), 2, "other Thread is excluded");
+    assert_eq!(snapshot.runs.len(), 2);
+    assert_eq!(snapshot.resume_tickets.len(), 1);
+    assert_eq!(snapshot.resume_tickets[0].run_id, RunId("run-a".into()));
+    assert_eq!(snapshot.thread_version, 2, "per-Thread commit count");
+    assert_eq!(snapshot.store_cursor, 3, "backend-wide commit cursor");
+    assert_eq!(snapshot.next_commit_ordinal, 1, "claimed Run commit count");
 }
 
 // ---- commit: validation rejection (decision-table rows R5/R6/R7) ----------

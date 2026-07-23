@@ -26,6 +26,7 @@ mod live_control;
 pub mod memory;
 mod pool;
 mod postgres;
+mod recovery_projection;
 mod send_message;
 mod service;
 mod sqlite;
@@ -64,6 +65,7 @@ pub use pool::{CompletionSink, DispatchPool, WorkerResolver};
 pub use postgres::{
     PostgresDispatchStore, PostgresStreamCheckpointStore, StoreError as PostgresStoreError,
 };
+pub use recovery_projection::{RecoveryProjection, RecoveryProjectionError};
 pub use send_message::OutboxMessageSender;
 pub use service::{DispatchService, DispatchServiceConfig};
 pub use sqlite::{SqliteDispatchStore, StoreError as SqliteStoreError};

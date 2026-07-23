@@ -29,6 +29,9 @@ use awaken_agent_contract::audit::record::Record as EventRecord;
 use awaken_agent_contract::thread::commit::coordinator::{Coordinator as CommitCoordinator, Error};
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
+use awaken_agent_contract::thread::read::recovery::{
+    RecoveryError, RunRecoverySnapshot, RunRecoverySource, RunResumeTicket,
+};
 use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use rusqlite::{Connection, TransactionBehavior, params};
@@ -52,6 +55,8 @@ pub enum StoreError {
 #[derive(Debug, Default)]
 struct Projection {
     sequence: u64,
+    thread_versions: HashMap<ThreadId, u64>,
+    run_commit_counts: HashMap<RunId, u64>,
     messages: Vec<(ThreadId, Message)>,
     /// Committed state commands per thread, in commit order (for `committed_state`).
     /// A resumed run rebuilds its materialized state from these durable rows.
@@ -226,6 +231,14 @@ impl CommitCoordinator for SqliteCommitCoordinator {
 
         let mut projection = lock(&self.projection)?;
         projection.sequence = next;
+        *projection
+            .thread_versions
+            .entry(thread_id.clone())
+            .or_default() += 1;
+        *projection
+            .run_commit_counts
+            .entry(run_id.clone())
+            .or_default() += 1;
         for message in commit.messages {
             projection.messages.push((thread_id.clone(), message));
         }
@@ -326,6 +339,70 @@ impl CheckpointReader for SqliteCommitCoordinator {
             .take(limit)
             .cloned()
             .collect()
+    }
+}
+
+#[async_trait]
+impl RunRecoverySource for SqliteCommitCoordinator {
+    async fn recovery_snapshot(
+        &self,
+        thread_id: &ThreadId,
+        claimed_run_id: &RunId,
+    ) -> Result<RunRecoverySnapshot, RecoveryError> {
+        let projection = self
+            .projection
+            .lock()
+            .map_err(|_| RecoveryError::Rejected("commit projection poisoned".to_string()))?;
+        let mut runs: Vec<RunRecord> = projection
+            .run_records
+            .values()
+            .filter(|record| &record.thread_id == thread_id)
+            .cloned()
+            .collect();
+        runs.sort_by(|left, right| left.id.0.cmp(&right.id.0));
+        let mut resume_tickets: Vec<RunResumeTicket> = projection
+            .resume_tickets
+            .iter()
+            .filter(|(_, ticket)| &ticket.thread_id == thread_id)
+            .map(|(run_id, ticket)| RunResumeTicket {
+                run_id: run_id.clone(),
+                ticket: ticket.clone(),
+            })
+            .collect();
+        resume_tickets.sort_by(|left, right| left.run_id.0.cmp(&right.run_id.0));
+        Ok(RunRecoverySnapshot {
+            thread_id: thread_id.clone(),
+            claimed_run_id: claimed_run_id.clone(),
+            runs,
+            latest_run_id: projection
+                .latest_by_thread
+                .get(thread_id)
+                .map(|run| run.id.clone()),
+            messages: projection
+                .messages
+                .iter()
+                .filter(|(id, _)| id == thread_id)
+                .map(|(_, message)| message.clone())
+                .collect(),
+            state: projection
+                .state
+                .iter()
+                .filter(|(id, _)| id == thread_id)
+                .map(|(_, command)| command.clone())
+                .collect(),
+            resume_tickets,
+            thread_version: projection
+                .thread_versions
+                .get(thread_id)
+                .copied()
+                .unwrap_or(0),
+            store_cursor: projection.sequence,
+            next_commit_ordinal: projection
+                .run_commit_counts
+                .get(claimed_run_id)
+                .copied()
+                .unwrap_or(0),
+        })
     }
 }
 
@@ -483,6 +560,14 @@ fn hydrate(conn: &Connection) -> Result<Projection, rusqlite::Error> {
     for row in rows {
         let (run_id, thread_id, state_json) = row?;
         if let Ok(state) = serde_json::from_str::<RunState>(&state_json) {
+            *projection
+                .thread_versions
+                .entry(ThreadId(thread_id.clone()))
+                .or_default() += 1;
+            *projection
+                .run_commit_counts
+                .entry(RunId(run_id.clone()))
+                .or_default() += 1;
             let record = RunRecord {
                 id: RunId(run_id.clone()),
                 thread_id: ThreadId(thread_id.clone()),
