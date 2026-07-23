@@ -72,7 +72,7 @@ pub use recovery_projection::{RecoveryProjection, RecoveryProjectionError};
 pub use send_message::OutboxMessageSender;
 pub use service::{DispatchService, DispatchServiceConfig};
 pub use sqlite::{SqliteDispatchStore, StoreError as SqliteStoreError};
-pub use transport_client::{HttpDispatchQueue, worker_dispatch_store};
+pub use transport_client::{HttpDispatchQueue, WorkerRequestAuthorizer, worker_dispatch_store};
 #[cfg(feature = "nats")]
 pub use wake::NatsWakeSignal;
 pub use wake::{LocalWakeSignal, PgNotifyWake, WakeSignal};

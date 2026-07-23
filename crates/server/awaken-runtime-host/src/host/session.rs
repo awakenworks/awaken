@@ -35,7 +35,8 @@ impl SharedHost {
                 Ok(HostCommit::Remote(crate::store::RemoteHostCommit::new(
                     crate::commit_ingest::RemoteCoordinator::new(url)
                         .with_client(upstream.client().clone())
-                        .with_worker_id(upstream.worker_id()),
+                        .with_worker_id(upstream.worker_id())
+                        .with_request_authorizer(upstream.request_authorizer()),
                 )))
             }
             // Shared Postgres commit backend (ADR-0022 D6): one coordinator keyed by
@@ -158,7 +159,8 @@ impl SharedHost {
         ingress.install_attempt_executor(attempt_executor);
         if let Some(upstream) = &self.upstream {
             let mut commit = crate::commit_ingest::RemoteClaimedRunCommit::new(upstream.base_url())
-                .with_client(upstream.client().clone());
+                .with_client(upstream.client().clone())
+                .with_request_authorizer(upstream.request_authorizer());
             if let Some(identity) = upstream.worker_identity() {
                 commit = commit.with_worker_identity(identity.clone());
             }

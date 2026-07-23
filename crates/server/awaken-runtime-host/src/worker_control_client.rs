@@ -7,7 +7,7 @@ use awaken_run_ingress::{
 };
 use serde_json::{Value, json};
 
-use crate::worker_security::{WORKER_ID_HEADER, WorkerUpstream};
+use crate::worker_security::WorkerUpstream;
 
 #[derive(Clone)]
 pub struct WorkerControlClient {
@@ -21,11 +21,13 @@ impl WorkerControlClient {
     }
 
     async fn post(&self, path: &str, body: Value) -> Result<Value, String> {
-        let response = self
+        let request = self
             .upstream
             .client()
-            .post(format!("{}{}", self.upstream.base_url(), path))
-            .header(WORKER_ID_HEADER, self.upstream.worker_id())
+            .post(format!("{}{}", self.upstream.base_url(), path));
+        let response = self
+            .upstream
+            .authorize("POST", path, request)?
             .json(&body)
             .send()
             .await

@@ -73,6 +73,7 @@ axum = { version = "0.8", features = ["multipart"] }
 # refresh grant to the credential's token endpoint.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 base64 = "0.22"
+hmac = "0.12"
 form_urlencoded = "1"
 # Content SHA-256 for the memory_stores memories/versions API (`content_sha256`).
 sha2 = "0.10"

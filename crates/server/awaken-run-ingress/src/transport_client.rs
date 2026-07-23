@@ -28,6 +28,29 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpoint;
 use awaken_runtime_contract::resume::ResumeResult;
 
+/// Client-side counterpart of the Control Node's worker authenticator.
+///
+/// One implementation decorates every lifecycle, dispatch, recovery, and commit
+/// request. The path is the absolute HTTP path (without origin or query) so
+/// production implementations can bind a signed assertion to the exact route.
+pub trait WorkerRequestAuthorizer: Send + Sync {
+    fn authorize(
+        &self,
+        method: &str,
+        path: &str,
+        worker_id: &str,
+        request: reqwest::RequestBuilder,
+    ) -> Result<reqwest::RequestBuilder, String>;
+
+    /// Return an authorizer bound to the durable identity allocated by
+    /// registration. Bootstrap credentials may be worker-id-only; all later
+    /// requests can then bind the incarnation and generation as well.
+    fn bind_worker_identity(
+        &self,
+        identity: &WorkerIdentity,
+    ) -> std::sync::Arc<dyn WorkerRequestAuthorizer>;
+}
+
 /// Build a worker's process dispatch store: an [`HttpDispatchQueue`] pointed at the
 /// cell server, wrapped as the injectable `AnyDispatchStore` the pool drains. Pass
 /// it to `init_shared_dispatch_store` so `ensure_dispatch_pool` claims/settles over
@@ -47,6 +70,7 @@ pub struct HttpDispatchQueue {
     client: reqwest::Client,
     default_worker_id: String,
     worker_identity: Option<WorkerIdentity>,
+    request_authorizer: Option<std::sync::Arc<dyn WorkerRequestAuthorizer>>,
     legacy_claimed_owners: std::sync::Mutex<std::collections::HashMap<String, String>>,
 }
 
@@ -62,6 +86,7 @@ impl HttpDispatchQueue {
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or_else(|| "awaken-worker".to_string()),
             worker_identity: None,
+            request_authorizer: None,
             legacy_claimed_owners: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
@@ -80,7 +105,24 @@ impl HttpDispatchQueue {
     #[must_use]
     pub fn with_worker_identity(mut self, identity: WorkerIdentity) -> Self {
         self.default_worker_id = identity.worker_id.clone();
+        if let Some(authorizer) = &self.request_authorizer {
+            self.request_authorizer = Some(authorizer.bind_worker_identity(&identity));
+        }
         self.worker_identity = Some(identity);
+        self
+    }
+
+    /// Decorate every request with the same logical Worker credential used by
+    /// lifecycle and claimed-commit clients.
+    #[must_use]
+    pub fn with_request_authorizer(
+        mut self,
+        authorizer: std::sync::Arc<dyn WorkerRequestAuthorizer>,
+    ) -> Self {
+        self.request_authorizer = Some(match &self.worker_identity {
+            Some(identity) => authorizer.bind_worker_identity(identity),
+            None => authorizer,
+        });
         self
     }
 
@@ -98,10 +140,15 @@ impl HttpDispatchQueue {
         body: serde_json::Value,
         worker_id: &str,
     ) -> Result<serde_json::Value, DispatchError> {
-        let resp = self
-            .client
-            .post(format!("{}{}", self.base_url, path))
-            .header("x-awaken-worker-id", worker_id)
+        let request = self.client.post(format!("{}{}", self.base_url, path));
+        let request = if let Some(authorizer) = &self.request_authorizer {
+            authorizer
+                .authorize("POST", path, worker_id, request)
+                .map_err(DispatchError::Rejected)?
+        } else {
+            request.header("x-awaken-worker-id", worker_id)
+        };
+        let resp = request
             .json(&body)
             .send()
             .await

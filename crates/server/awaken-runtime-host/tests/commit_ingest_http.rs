@@ -30,7 +30,8 @@ use awaken_runtime_contract::snapshot::{
 };
 use awaken_runtime_host::{
     ClaimedCommitService, HeaderWorkerAuthenticator, RemoteClaimedRunCommit, RemoteCoordinator,
-    SharedHost, claimed_commit_ingest_router, claimed_commit_ingest_router_with_directory,
+    SharedHost, SignedWorkerAuthenticator, SignedWorkerRequestAuthorizer, WorkerSigningCredential,
+    claimed_commit_ingest_router, claimed_commit_ingest_router_with_directory,
     claimed_commit_router, commit_ingest_router,
 };
 use awaken_store_inmem::MemoryCommitCoordinator;
@@ -457,6 +458,81 @@ async fn injectable_claimed_commit_service_uses_the_exact_coordinator() {
         ThreadReader::committed_messages(&*coordinator, &ThreadId("injected-thread".into()));
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].text_content(), "injected");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn signed_identity_is_wired_through_atomic_claimed_commit() {
+    let manifest = WorkerManifest::default();
+    let identity = WorkerIdentity::new("worker-signed-commit", "boot-signed-commit", 1);
+    let directory = Arc::new(CurrentWorkerDirectory(RegisteredWorker {
+        snapshot: WorkerSnapshot {
+            identity: identity.clone(),
+            state: WorkerState::Ready,
+            capability_fingerprint: manifest.fingerprint().unwrap(),
+            manifest,
+            in_flight: 0,
+            available_credentials: Default::default(),
+            expires_at_ms: u64::MAX,
+        },
+        heartbeat_sequence: 0,
+        registered_at_ms: 0,
+        heartbeat_at_ms: 0,
+        drain_deadline_ms: None,
+    }));
+    let dispatch = Arc::new(MemoryDispatchStore::new());
+    dispatch
+        .enqueue(RunDispatch::new(activation(
+            "signed-commit-run",
+            "signed-commit-thread",
+        )))
+        .await
+        .unwrap();
+    let claimed = dispatch
+        .claim(&identity.lease_owner(), 30_000, 0)
+        .await
+        .unwrap()
+        .expect("claim");
+    let coordinator = Arc::new(MemoryCommitCoordinator::new());
+    let credential = WorkerSigningCredential::new(
+        identity.worker_id.clone(),
+        "signed-commit-key",
+        "signed-commit-credential",
+        b"signed-commit-secret".to_vec(),
+    )
+    .unwrap();
+    let service = Arc::new(ClaimedCommitService::new(
+        dispatch,
+        coordinator.clone(),
+        directory,
+        Arc::new(SignedWorkerAuthenticator::new(credential.clone())),
+    ));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, claimed_commit_router(service))
+            .await
+            .unwrap()
+    });
+    let commit = claimed_commit("signed-commit-run", "signed-commit-thread", "signed commit");
+    let operation = CommitOperation {
+        operation_id: CommitOperationId::new(RunId("signed-commit-run".into()), 0),
+        expected_thread_version: 0,
+        payload_hash: commit_payload_hash(&commit).unwrap(),
+        commit,
+    };
+    RemoteClaimedRunCommit::new(format!("http://{address}"))
+        .with_request_authorizer(Arc::new(SignedWorkerRequestAuthorizer::new(credential)))
+        .with_worker_identity(identity)
+        .commit_operation(ClaimedCommitCommand {
+            claim: RunClaim::from(&claimed.lease),
+            operation,
+        })
+        .await
+        .expect("signed claimed commit");
+
+    let messages =
+        ThreadReader::committed_messages(&*coordinator, &ThreadId("signed-commit-thread".into()));
+    assert_eq!(messages[0].text_content(), "signed commit");
 }
 
 #[tokio::test(flavor = "multi_thread")]

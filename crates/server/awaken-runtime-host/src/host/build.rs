@@ -714,7 +714,8 @@ impl SharedHost {
                 claimed_commit: self.upstream.as_ref().map(|upstream| {
                     let mut commit =
                         crate::commit_ingest::RemoteClaimedRunCommit::new(upstream.base_url())
-                            .with_client(upstream.client().clone());
+                            .with_client(upstream.client().clone())
+                            .with_request_authorizer(upstream.request_authorizer());
                     if let Some(identity) = upstream.worker_identity() {
                         commit = commit.with_worker_identity(identity.clone());
                     }

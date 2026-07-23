@@ -1326,6 +1326,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "sqlx",
         "tempfile",
         "base64",
+        "hmac",  # HMAC-SHA256 Worker request assertions.
         "form_urlencoded",
         "reqwest",
         "serde_json",

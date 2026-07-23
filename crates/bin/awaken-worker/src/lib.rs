@@ -436,12 +436,13 @@ impl WorkerNode {
     {
         let upstream_url = self.upstream.base_url().to_string();
         let upstream = self.upstream;
-        let control = WorkerControlClient::new(upstream.clone());
-        let registration = control
+        let bootstrap_control = WorkerControlClient::new(upstream.clone());
+        let registration = bootstrap_control
             .register(new_incarnation_id()?, self.manifest)
             .await
             .map_err(std::io::Error::other)?;
         let upstream = upstream.with_worker_identity(registration.snapshot.identity.clone());
+        let control = WorkerControlClient::new(upstream.clone());
         // Route the dispatch pool's claim/settle over HTTP to the cell server.
         awaken_runtime_host::init_shared_dispatch_store(
             awaken_runtime_host::worker_dispatch_store_with_upstream(

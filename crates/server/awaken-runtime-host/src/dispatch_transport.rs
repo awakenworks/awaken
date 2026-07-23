@@ -44,6 +44,7 @@ pub fn worker_dispatch_store_with_upstream(
         HttpDispatchQueue::new(upstream.base_url())
             .with_client(upstream.client().clone())
             .with_worker_id(upstream.worker_id())
+            .with_request_authorizer(upstream.request_authorizer())
             .with_worker_identity(identity),
     ) as Arc<dyn Dispatch>))
 }
@@ -153,7 +154,7 @@ async fn claim_authority(
     let identity = identity.ok_or_else(|| {
         HostError::bad_request("registered worker identity is required for dispatch authority")
     })?;
-    verify_worker_id(worker, &identity.worker_id)?;
+    verify_worker_identity(worker, identity)?;
     let record = directory
         .current(&identity.worker_id)
         .await
@@ -501,6 +502,19 @@ fn verify_worker_id(worker: &VerifiedWorkerContext, worker_id: &str) -> Result<(
     Ok(())
 }
 
+fn verify_worker_identity(
+    worker: &VerifiedWorkerContext,
+    identity: &WorkerIdentity,
+) -> Result<(), HostError> {
+    verify_worker_id(worker, &identity.worker_id)?;
+    if worker.credential_id().is_some() && worker.identity() != Some(identity) {
+        return Err(HostError::bad_request(
+            "authenticated worker incarnation does not match request identity",
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Deserialize)]
 struct RegisterWorkerReq {
     registration: WorkerRegistration,
@@ -513,6 +527,11 @@ async fn register_worker(
 ) -> (StatusCode, Json<Value>) {
     let result = async {
         verify_worker_id(&worker, &request.registration.worker_id)?;
+        if worker.identity().is_some() {
+            return Err(HostError::bad_request(
+                "worker registration requires a bootstrap credential",
+            ));
+        }
         let record = directory(&service)?
             .register(
                 request.registration,
@@ -539,7 +558,7 @@ async fn heartbeat_worker(
     Json(request): Json<HeartbeatWorkerReq>,
 ) -> (StatusCode, Json<Value>) {
     let result = async {
-        verify_worker_id(&worker, &request.identity.worker_id)?;
+        verify_worker_identity(&worker, &request.identity)?;
         let mutation = directory(&service)?
             .heartbeat(
                 &request.identity,
@@ -568,7 +587,7 @@ async fn drain_worker(
     Json(request): Json<WorkerIdentityReq>,
 ) -> (StatusCode, Json<Value>) {
     let result = async {
-        verify_worker_id(&worker, &request.identity.worker_id)?;
+        verify_worker_identity(&worker, &request.identity)?;
         let deadline = request.deadline_ms.unwrap_or_else(|| {
             service
                 .clock
@@ -591,7 +610,7 @@ async fn quiesce_worker(
     Json(request): Json<WorkerIdentityReq>,
 ) -> (StatusCode, Json<Value>) {
     let result = async {
-        verify_worker_id(&worker, &request.identity.worker_id)?;
+        verify_worker_identity(&worker, &request.identity)?;
         let mutation = directory(&service)?
             .mark_quiesced(&request.identity)
             .await
@@ -608,7 +627,7 @@ async fn deregister_worker(
     Json(request): Json<WorkerIdentityReq>,
 ) -> (StatusCode, Json<Value>) {
     let result = async {
-        verify_worker_id(&worker, &request.identity.worker_id)?;
+        verify_worker_identity(&worker, &request.identity)?;
         let mutation = directory(&service)?
             .deregister(&request.identity)
             .await

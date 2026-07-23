@@ -23,6 +23,7 @@ pub use awaken_runtime_host::SqliteManagedSessionRepository
 pub use awaken_runtime_host::SqliteWorkQueue
 pub use awaken_runtime_host::StaticToolCatalog
 pub use awaken_runtime_host::ToolCatalogSource
+pub use awaken_runtime_host::WorkerRequestAuthorizer
 pub use awaken_runtime_host::capabilities_router
 pub use awaken_runtime_host::config_router
 pub use awaken_runtime_host::content_fingerprint
@@ -73,6 +74,9 @@ pub awaken_runtime_host::Wake::PgNotify
 pub enum awaken_runtime_host::WorkerAuthError
 pub awaken_runtime_host::WorkerAuthError::Invalid(alloc::string::String)
 pub awaken_runtime_host::WorkerAuthError::Missing
+pub enum awaken_runtime_host::WorkerCredentialError
+pub awaken_runtime_host::WorkerCredentialError::Encode
+pub awaken_runtime_host::WorkerCredentialError::Invalid
 pub struct awaken_runtime_host::AcpSandboxBindings
 impl awaken_runtime_host::AcpSandboxBindings
 pub fn awaken_runtime_host::AcpSandboxBindings::new(awaken_runtime_host::ThreadEgress, awaken_runtime_host::ThreadResources, awaken_runtime_host::ThreadSandbox) -> Self
@@ -167,6 +171,14 @@ pub fn awaken_runtime_host::ManualWorkerClock::new(u64) -> Self
 pub fn awaken_runtime_host::ManualWorkerClock::set(&self, u64)
 impl awaken_runtime_host::WorkerClock for awaken_runtime_host::ManualWorkerClock
 pub fn awaken_runtime_host::ManualWorkerClock::now_ms(&self) -> u64
+pub struct awaken_runtime_host::MtlsWorkerAuthenticator
+impl awaken_runtime_host::WorkerRequestAuthenticator for awaken_runtime_host::MtlsWorkerAuthenticator
+pub fn awaken_runtime_host::MtlsWorkerAuthenticator::authenticate<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 http::request::Parts) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_host::VerifiedWorkerContext, awaken_runtime_host::WorkerAuthError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub struct awaken_runtime_host::MtlsWorkerPrincipal
+impl awaken_runtime_host::MtlsWorkerPrincipal
+pub fn awaken_runtime_host::MtlsWorkerPrincipal::bootstrap(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, awaken_runtime_host::WorkerCredentialError>
+pub fn awaken_runtime_host::MtlsWorkerPrincipal::certificate_sha256(&self) -> &str
+pub fn awaken_runtime_host::MtlsWorkerPrincipal::registered(awaken_worker_contract::WorkerIdentity, impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, awaken_runtime_host::WorkerCredentialError>
 pub struct awaken_runtime_host::PiiRedactor
 impl awaken_runtime_host::PiiRedactor
 pub fn awaken_runtime_host::PiiRedactor::new() -> Self
@@ -211,6 +223,7 @@ pub struct awaken_runtime_host::RemoteClaimedRunCommit
 impl awaken_runtime_host::RemoteClaimedRunCommit
 pub fn awaken_runtime_host::RemoteClaimedRunCommit::new(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_runtime_host::RemoteClaimedRunCommit::with_client(self, reqwest::async_impl::client::Client) -> Self
+pub fn awaken_runtime_host::RemoteClaimedRunCommit::with_request_authorizer(self, alloc::sync::Arc<dyn awaken_run_ingress::transport_client::WorkerRequestAuthorizer>) -> Self
 pub fn awaken_runtime_host::RemoteClaimedRunCommit::with_worker_identity(self, awaken_worker_contract::WorkerIdentity) -> Self
 impl awaken_run_ingress::commit_fence::ClaimedRunCommit for awaken_runtime_host::RemoteClaimedRunCommit
 pub fn awaken_runtime_host::RemoteClaimedRunCommit::commit<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_run_ingress_contract::dispatch::RunClaim, awaken_agent_contract::thread::commit::staged::ThreadCommit) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::commit::staged::CommitRecord, awaken_agent_contract::thread::commit::coordinator::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
@@ -219,6 +232,7 @@ pub struct awaken_runtime_host::RemoteCoordinator
 impl awaken_runtime_host::RemoteCoordinator
 pub fn awaken_runtime_host::RemoteCoordinator::new(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_runtime_host::RemoteCoordinator::with_client(self, reqwest::async_impl::client::Client) -> Self
+pub fn awaken_runtime_host::RemoteCoordinator::with_request_authorizer(self, alloc::sync::Arc<dyn awaken_run_ingress::transport_client::WorkerRequestAuthorizer>) -> Self
 pub fn awaken_runtime_host::RemoteCoordinator::with_worker_id(self, impl core::convert::Into<alloc::string::String>) -> Self
 impl awaken_agent_contract::thread::commit::coordinator::Coordinator for awaken_runtime_host::RemoteCoordinator
 pub fn awaken_runtime_host::RemoteCoordinator::commit<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::thread::commit::staged::ThreadCommit) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::commit::staged::CommitRecord, awaken_agent_contract::thread::commit::coordinator::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
@@ -346,6 +360,24 @@ impl awaken_runtime_host::SharedHost
 pub async fn awaken_runtime_host::SharedHost::remote_agent_card(&self, &str) -> core::result::Result<serde_json::value::Value, awaken_runtime_host::host::types::HostError>
 impl awaken_resource_contract::lifecycle::ResourcePurgeScheduler for awaken_runtime_host::SharedHost
 pub fn awaken_runtime_host::SharedHost::schedule_purge<'life0, 'async_trait>(&'life0 self, awaken_resource_contract::lifecycle::ResourceTarget, core::option::Option<u64>, u64, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::lifecycle::PutResourcePurgeOutcome, awaken_resource_contract::lifecycle::ResourcePurgeError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub struct awaken_runtime_host::SignedWorkerAuthenticator
+impl awaken_runtime_host::SignedWorkerAuthenticator
+pub fn awaken_runtime_host::SignedWorkerAuthenticator::enroll(&self, awaken_runtime_host::WorkerSigningCredential)
+pub fn awaken_runtime_host::SignedWorkerAuthenticator::new(awaken_runtime_host::WorkerSigningCredential) -> Self
+pub fn awaken_runtime_host::SignedWorkerAuthenticator::remove_key(&self, &str)
+pub fn awaken_runtime_host::SignedWorkerAuthenticator::revoke_credential(&self, impl core::convert::Into<alloc::string::String>)
+pub fn awaken_runtime_host::SignedWorkerAuthenticator::with_clock(self, alloc::sync::Arc<dyn awaken_runtime_host::WorkerClock>) -> Self
+pub fn awaken_runtime_host::SignedWorkerAuthenticator::with_time_policy(self, u64, u64) -> Self
+impl awaken_runtime_host::WorkerRequestAuthenticator for awaken_runtime_host::SignedWorkerAuthenticator
+pub fn awaken_runtime_host::SignedWorkerAuthenticator::authenticate<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 http::request::Parts) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_host::VerifiedWorkerContext, awaken_runtime_host::WorkerAuthError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub struct awaken_runtime_host::SignedWorkerRequestAuthorizer
+impl awaken_runtime_host::SignedWorkerRequestAuthorizer
+pub fn awaken_runtime_host::SignedWorkerRequestAuthorizer::new(awaken_runtime_host::WorkerSigningCredential) -> Self
+pub fn awaken_runtime_host::SignedWorkerRequestAuthorizer::with_assertion_ttl_ms(self, u64) -> Self
+pub fn awaken_runtime_host::SignedWorkerRequestAuthorizer::with_clock(self, alloc::sync::Arc<dyn awaken_runtime_host::WorkerClock>) -> Self
+impl awaken_run_ingress::transport_client::WorkerRequestAuthorizer for awaken_runtime_host::SignedWorkerRequestAuthorizer
+pub fn awaken_runtime_host::SignedWorkerRequestAuthorizer::authorize(&self, &str, &str, &str, reqwest::async_impl::request::RequestBuilder) -> core::result::Result<reqwest::async_impl::request::RequestBuilder, alloc::string::String>
+pub fn awaken_runtime_host::SignedWorkerRequestAuthorizer::bind_worker_identity(&self, &awaken_worker_contract::WorkerIdentity) -> alloc::sync::Arc<dyn awaken_run_ingress::transport_client::WorkerRequestAuthorizer>
 pub struct awaken_runtime_host::SystemWorkerClock
 impl awaken_runtime_host::WorkerClock for awaken_runtime_host::SystemWorkerClock
 pub fn awaken_runtime_host::SystemWorkerClock::now_ms(&self) -> u64
@@ -373,6 +405,8 @@ pub fn awaken_runtime_host::VaultRefresher::refresh<'life0, 'life1, 'async_trait
 pub struct awaken_runtime_host::VerifiedWorkerContext
 impl awaken_runtime_host::VerifiedWorkerContext
 pub fn awaken_runtime_host::VerifiedWorkerContext::authenticated(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_runtime_host::VerifiedWorkerContext::credential_id(&self) -> core::option::Option<&str>
+pub fn awaken_runtime_host::VerifiedWorkerContext::identity(&self) -> core::option::Option<&awaken_worker_contract::WorkerIdentity>
 pub fn awaken_runtime_host::VerifiedWorkerContext::worker_id(&self) -> &str
 pub struct awaken_runtime_host::WorkerControlClient
 impl awaken_runtime_host::WorkerControlClient
@@ -390,13 +424,23 @@ pub fn awaken_runtime_host::WorkerDispatchService::with_checkpoint_store(self, a
 pub fn awaken_runtime_host::WorkerDispatchService::with_placement_policy(self, alloc::sync::Arc<dyn awaken_worker_contract::PlacementPolicy>) -> Self
 pub fn awaken_runtime_host::WorkerDispatchService::with_recovery_source(self, alloc::sync::Arc<dyn awaken_agent_contract::thread::read::recovery::RunRecoverySource>) -> Self
 pub fn awaken_runtime_host::WorkerDispatchService::with_worker_directory(self, alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>, u64) -> Self
+pub struct awaken_runtime_host::WorkerSigningCredential
+impl awaken_runtime_host::WorkerSigningCredential
+pub fn awaken_runtime_host::WorkerSigningCredential::credential_id(&self) -> &str
+pub fn awaken_runtime_host::WorkerSigningCredential::key_id(&self) -> &str
+pub fn awaken_runtime_host::WorkerSigningCredential::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::vec::Vec<u8>>) -> core::result::Result<Self, awaken_runtime_host::WorkerCredentialError>
+pub fn awaken_runtime_host::WorkerSigningCredential::worker_id(&self) -> &str
+impl core::fmt::Debug for awaken_runtime_host::WorkerSigningCredential
+pub fn awaken_runtime_host::WorkerSigningCredential::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct awaken_runtime_host::WorkerUpstream
 impl awaken_runtime_host::WorkerUpstream
 pub fn awaken_runtime_host::WorkerUpstream::base_url(&self) -> &str
 pub fn awaken_runtime_host::WorkerUpstream::new(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_runtime_host::WorkerUpstream::with_client(self, reqwest::async_impl::client::Client) -> Self
+pub fn awaken_runtime_host::WorkerUpstream::with_request_authorizer(self, alloc::sync::Arc<dyn awaken_run_ingress::transport_client::WorkerRequestAuthorizer>) -> Self
 pub fn awaken_runtime_host::WorkerUpstream::with_worker_id(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_runtime_host::WorkerUpstream::with_worker_identity(self, awaken_worker_contract::WorkerIdentity) -> Self
+pub const awaken_runtime_host::SIGNED_WORKER_SCHEME: &str
 pub const awaken_runtime_host::WORKER_ID_HEADER: &str
 pub trait awaken_runtime_host::HandExecutorFactory: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_host::HandExecutorFactory::bind(&self, alloc::boxed::Box<dyn awaken_agent_channel::AgentChannel>, &str) -> alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolExecutor>
@@ -419,6 +463,10 @@ pub trait awaken_runtime_host::WorkerRequestAuthenticator: core::marker::Send + 
 pub fn awaken_runtime_host::WorkerRequestAuthenticator::authenticate<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 http::request::Parts) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_host::VerifiedWorkerContext, awaken_runtime_host::WorkerAuthError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 impl awaken_runtime_host::WorkerRequestAuthenticator for awaken_runtime_host::HeaderWorkerAuthenticator
 pub fn awaken_runtime_host::HeaderWorkerAuthenticator::authenticate<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 http::request::Parts) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_host::VerifiedWorkerContext, awaken_runtime_host::WorkerAuthError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl awaken_runtime_host::WorkerRequestAuthenticator for awaken_runtime_host::MtlsWorkerAuthenticator
+pub fn awaken_runtime_host::MtlsWorkerAuthenticator::authenticate<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 http::request::Parts) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_host::VerifiedWorkerContext, awaken_runtime_host::WorkerAuthError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl awaken_runtime_host::WorkerRequestAuthenticator for awaken_runtime_host::SignedWorkerAuthenticator
+pub fn awaken_runtime_host::SignedWorkerAuthenticator::authenticate<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 http::request::Parts) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_host::VerifiedWorkerContext, awaken_runtime_host::WorkerAuthError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_host::advertised_tools(&std::collections::hash::set::HashSet<alloc::string::String>, &std::collections::hash::set::HashSet<alloc::string::String>, &[awaken_runtime_contract::resolved::ToolDescriptor]) -> alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
 pub fn awaken_runtime_host::authorable_config_sections() -> alloc::vec::Vec<awaken_runtime_contract::capability::PluginCapability>
 pub fn awaken_runtime_host::block_text(&[awaken_agent_contract::agent::content::ContentBlock]) -> alloc::string::String

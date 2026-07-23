@@ -24,7 +24,7 @@ use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_run_ingress::{
     ClaimedCommitCommand, ClaimedRunCommit, DispatchQueue, RunClaim, WorkerDirectory,
-    WorkerIdentity, WorkerState, commit_payload_hash,
+    WorkerIdentity, WorkerRequestAuthorizer, WorkerState, commit_payload_hash,
 };
 
 use crate::host::{HostError, SharedHost};
@@ -270,6 +270,11 @@ async fn commit_claimed(
         if worker.worker_id() != identity.worker_id {
             return unauthorized("authenticated worker identity does not match".to_string());
         }
+        if worker.credential_id().is_some() && worker.identity() != Some(identity) {
+            return unauthorized(
+                "authenticated worker incarnation does not match request identity".to_string(),
+            );
+        }
         let current = match directory.current(&identity.worker_id).await {
             Ok(current) => current,
             Err(error) => return unauthorized(error.to_string()),
@@ -371,6 +376,7 @@ pub struct RemoteCoordinator {
     base_url: String,
     client: reqwest::Client,
     worker_id: String,
+    request_authorizer: Option<Arc<dyn WorkerRequestAuthorizer>>,
 }
 
 /// Atomic claimed-run commit used by a database-less worker. Unlike
@@ -379,6 +385,7 @@ pub struct RemoteClaimedRunCommit {
     base_url: String,
     client: reqwest::Client,
     identity: Option<WorkerIdentity>,
+    request_authorizer: Option<Arc<dyn WorkerRequestAuthorizer>>,
 }
 
 impl RemoteClaimedRunCommit {
@@ -387,6 +394,7 @@ impl RemoteClaimedRunCommit {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             client: reqwest::Client::new(),
             identity: None,
+            request_authorizer: None,
         }
     }
 
@@ -400,8 +408,34 @@ impl RemoteClaimedRunCommit {
 
     #[must_use]
     pub fn with_worker_identity(mut self, identity: WorkerIdentity) -> Self {
+        if let Some(authorizer) = &self.request_authorizer {
+            self.request_authorizer = Some(authorizer.bind_worker_identity(&identity));
+        }
         self.identity = Some(identity);
         self
+    }
+
+    #[must_use]
+    pub fn with_request_authorizer(mut self, authorizer: Arc<dyn WorkerRequestAuthorizer>) -> Self {
+        self.request_authorizer = Some(match &self.identity {
+            Some(identity) => authorizer.bind_worker_identity(identity),
+            None => authorizer,
+        });
+        self
+    }
+
+    fn authorize(
+        &self,
+        path: &str,
+        worker_id: &str,
+        request: reqwest::RequestBuilder,
+    ) -> Result<reqwest::RequestBuilder, CommitError> {
+        match &self.request_authorizer {
+            Some(authorizer) => authorizer
+                .authorize("POST", path, worker_id, request)
+                .map_err(CommitError::Rejected),
+            None => Ok(request.header(WORKER_ID_HEADER, worker_id)),
+        }
     }
 }
 
@@ -416,10 +450,10 @@ impl ClaimedRunCommit for RemoteClaimedRunCommit {
             .identity
             .as_ref()
             .map_or(claim.owner.as_str(), |identity| identity.worker_id.as_str());
+        let path = "/v1/worker/commit-claimed";
+        let request = self.client.post(format!("{}{path}", self.base_url));
         let response = self
-            .client
-            .post(format!("{}/v1/worker/commit-claimed", self.base_url))
-            .header(WORKER_ID_HEADER, authenticated_worker)
+            .authorize(path, authenticated_worker, request)?
             .json(&json!({ "claim": claim, "commit": commit, "identity": self.identity }))
             .send()
             .await
@@ -446,10 +480,10 @@ impl ClaimedRunCommit for RemoteClaimedRunCommit {
             .map_or(command.claim.owner.as_str(), |identity| {
                 identity.worker_id.as_str()
             });
+        let path = "/v1/worker/commit-claimed";
+        let request = self.client.post(format!("{}{path}", self.base_url));
         let response = self
-            .client
-            .post(format!("{}/v1/worker/commit-claimed", self.base_url))
-            .header(WORKER_ID_HEADER, authenticated_worker)
+            .authorize(path, authenticated_worker, request)?
             .json(&json!({
                 "claim": command.claim,
                 "operation": command.operation,
@@ -484,6 +518,7 @@ impl RemoteCoordinator {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             client: reqwest::Client::new(),
             worker_id: "awaken-worker".to_string(),
+            request_authorizer: None,
         }
     }
 
@@ -500,15 +535,26 @@ impl RemoteCoordinator {
         self.client = client;
         self
     }
+
+    #[must_use]
+    pub fn with_request_authorizer(mut self, authorizer: Arc<dyn WorkerRequestAuthorizer>) -> Self {
+        self.request_authorizer = Some(authorizer);
+        self
+    }
 }
 
 #[async_trait::async_trait]
 impl Coordinator for RemoteCoordinator {
     async fn commit(&self, commit: ThreadCommit) -> Result<CommitRecord, CommitError> {
-        let resp = self
-            .client
-            .post(format!("{}/v1/worker/commit", self.base_url))
-            .header(WORKER_ID_HEADER, &self.worker_id)
+        let path = "/v1/worker/commit";
+        let request = self.client.post(format!("{}{path}", self.base_url));
+        let request = match &self.request_authorizer {
+            Some(authorizer) => authorizer
+                .authorize("POST", path, &self.worker_id, request)
+                .map_err(CommitError::Rejected)?,
+            None => request.header(WORKER_ID_HEADER, &self.worker_id),
+        };
+        let resp = request
             .json(&commit)
             .send()
             .await

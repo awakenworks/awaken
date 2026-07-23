@@ -455,11 +455,40 @@ unknown refs, or an empty explicit registry fail closed.
 The header-only worker id remains local/test configuration. Production adapters
 provide:
 
-- mTLS identity bound to `worker_id` and incarnation;
-- short-lived signed Worker leases or registration credentials;
-- bootstrap, rotation, revocation, and expiry;
-- one client/server identity configuration object;
-- redacted audit fields and replay protection.
+- `MtlsWorkerAuthenticator`, which consumes a verified
+  `MtlsWorkerPrincipal` request extension supplied by the TLS acceptor and binds
+  it to `worker_id` plus the registered incarnation;
+- `WorkerSigningCredential`, the shared provisioning object for one Worker,
+  rotation key, credential id, and redacted HMAC secret;
+- `SignedWorkerRequestAuthorizer`, which creates a fresh short-lived assertion
+  for every request and, after registration, binds it to the allocated
+  `WorkerIdentity`;
+- `SignedWorkerAuthenticator`, which supports overlapping credentials for key
+  rotation, immediate credential/key revocation, expiry/skew policy, route and
+  method binding, constant-time HMAC verification, and request-id replay
+  rejection;
+- the client-side `WorkerRequestAuthorizer` port, carried by `WorkerUpstream`
+  through registration, dispatch/recovery/checkpoint, and claimed commit.
+
+The signed flow is:
+
+```text
+bootstrap WorkerUpstream
+  -> signed register assertion(worker_id only)
+  -> RegisteredWorker(identity)
+  -> bind the same request authorizer to identity
+  -> fresh signed assertion(method, path, identity, issued/expiry, request_id)
+     on every heartbeat / claim / renew / recovery / commit / settle
+  -> authenticator verifies signature + time + route + replay
+  -> handler independently verifies directory identity + claim/epoch
+```
+
+An mTLS deployment configures the same `WorkerUpstream` with a client
+certificate and configures its server TLS acceptor to publish
+`MtlsWorkerPrincipal`; it does not trust a proxy-supplied certificate header.
+Signed assertions must still travel over TLS. They can be layered over mTLS when
+both proof-of-possession at the transport edge and application-level replay
+fencing are required.
 
 Authentication does not replace claim authorization: every state-changing
 request still validates owner, epoch, and operation semantics.

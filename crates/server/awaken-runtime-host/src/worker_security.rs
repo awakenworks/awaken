@@ -5,15 +5,484 @@
 //! and test compositions behind a trusted network. Managed deployments replace it
 //! with WorkerLease/mTLS verification without changing dispatch semantics.
 
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use awaken_run_ingress::WorkerIdentity;
+use awaken_run_ingress::{WorkerIdentity, WorkerRequestAuthorizer};
 use axum::http::request::Parts;
+use base64::Engine as _;
+use hmac::{Hmac, Mac};
+use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 
 /// Compatibility identity header used by the local HTTP client and authenticator.
 pub const WORKER_ID_HEADER: &str = "x-awaken-worker-id";
+/// Authorization scheme carrying a signed, short-lived Worker request assertion.
+pub const SIGNED_WORKER_SCHEME: &str = "AwakenWorker";
+
+type HmacSha256 = Hmac<Sha256>;
+
+/// Shared provisioning material for one logical Worker credential.
+///
+/// The same value configures the client request authorizer and is enrolled in
+/// the server authenticator. Its `Debug` output is deliberately redacted.
+#[derive(Clone)]
+pub struct WorkerSigningCredential {
+    worker_id: String,
+    key_id: String,
+    credential_id: String,
+    secret: Arc<[u8]>,
+}
+
+impl std::fmt::Debug for WorkerSigningCredential {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("WorkerSigningCredential")
+            .field("worker_id", &self.worker_id)
+            .field("key_id", &self.key_id)
+            .field("credential_id", &self.credential_id)
+            .field("secret", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl WorkerSigningCredential {
+    pub fn new(
+        worker_id: impl Into<String>,
+        key_id: impl Into<String>,
+        credential_id: impl Into<String>,
+        secret: impl Into<Vec<u8>>,
+    ) -> Result<Self, WorkerCredentialError> {
+        let credential = Self {
+            worker_id: worker_id.into(),
+            key_id: key_id.into(),
+            credential_id: credential_id.into(),
+            secret: Arc::from(secret.into()),
+        };
+        if credential.worker_id.trim().is_empty()
+            || credential.key_id.trim().is_empty()
+            || credential.credential_id.trim().is_empty()
+            || credential.secret.is_empty()
+        {
+            return Err(WorkerCredentialError::Invalid);
+        }
+        Ok(credential)
+    }
+
+    #[must_use]
+    pub fn worker_id(&self) -> &str {
+        &self.worker_id
+    }
+
+    #[must_use]
+    pub fn key_id(&self) -> &str {
+        &self.key_id
+    }
+
+    #[must_use]
+    pub fn credential_id(&self) -> &str {
+        &self.credential_id
+    }
+}
+
+#[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
+pub enum WorkerCredentialError {
+    #[error("worker signing credential fields and secret must not be empty")]
+    Invalid,
+    #[error("worker request assertion could not be encoded")]
+    Encode,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct WorkerRequestAssertion {
+    version: u32,
+    worker_id: String,
+    key_id: String,
+    credential_id: String,
+    identity: Option<WorkerIdentity>,
+    method: String,
+    path: String,
+    request_id: String,
+    issued_at_ms: u64,
+    expires_at_ms: u64,
+}
+
+fn assertion_signature(secret: &[u8], payload: &str) -> Vec<u8> {
+    let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC accepts any key length");
+    mac.update(payload.as_bytes());
+    mac.finalize().into_bytes().to_vec()
+}
+
+fn encode_assertion(
+    assertion: &WorkerRequestAssertion,
+    secret: &[u8],
+) -> Result<String, WorkerCredentialError> {
+    let payload = serde_json::to_vec(assertion).map_err(|_| WorkerCredentialError::Encode)?;
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload);
+    let signature = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(assertion_signature(secret, &payload));
+    Ok(format!("{payload}.{signature}"))
+}
+
+/// Client-side production authorizer. Every request receives a fresh,
+/// route-bound, short-lived assertion; after registration the same authorizer is
+/// rebound to the allocated incarnation and generation.
+pub struct SignedWorkerRequestAuthorizer {
+    credential: WorkerSigningCredential,
+    identity: Option<WorkerIdentity>,
+    clock: Arc<dyn WorkerClock>,
+    assertion_ttl_ms: u64,
+}
+
+impl SignedWorkerRequestAuthorizer {
+    #[must_use]
+    pub fn new(credential: WorkerSigningCredential) -> Self {
+        Self {
+            credential,
+            identity: None,
+            clock: Arc::new(SystemWorkerClock),
+            assertion_ttl_ms: 30_000,
+        }
+    }
+
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn WorkerClock>) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    #[must_use]
+    pub fn with_assertion_ttl_ms(mut self, assertion_ttl_ms: u64) -> Self {
+        self.assertion_ttl_ms = assertion_ttl_ms.max(1);
+        self
+    }
+
+    fn request_id() -> Result<String, WorkerCredentialError> {
+        static REQUEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+        Ok(format!(
+            "{}-{}",
+            REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed),
+            SystemWorkerClock.now_ms()
+        ))
+    }
+}
+
+impl WorkerRequestAuthorizer for SignedWorkerRequestAuthorizer {
+    fn authorize(
+        &self,
+        method: &str,
+        path: &str,
+        worker_id: &str,
+        request: reqwest::RequestBuilder,
+    ) -> Result<reqwest::RequestBuilder, String> {
+        if worker_id != self.credential.worker_id {
+            return Err("request worker id does not match signing credential".to_string());
+        }
+        let issued_at_ms = self.clock.now_ms();
+        let assertion = WorkerRequestAssertion {
+            version: 1,
+            worker_id: worker_id.to_string(),
+            key_id: self.credential.key_id.clone(),
+            credential_id: self.credential.credential_id.clone(),
+            identity: self.identity.clone(),
+            method: method.to_ascii_uppercase(),
+            path: path.to_string(),
+            request_id: Self::request_id().map_err(|error| error.to_string())?,
+            issued_at_ms,
+            expires_at_ms: issued_at_ms.saturating_add(self.assertion_ttl_ms),
+        };
+        let token = encode_assertion(&assertion, &self.credential.secret)
+            .map_err(|error| error.to_string())?;
+        Ok(request.header(WORKER_ID_HEADER, worker_id).header(
+            axum::http::header::AUTHORIZATION,
+            format!("{SIGNED_WORKER_SCHEME} {token}"),
+        ))
+    }
+
+    fn bind_worker_identity(&self, identity: &WorkerIdentity) -> Arc<dyn WorkerRequestAuthorizer> {
+        Arc::new(Self {
+            credential: self.credential.clone(),
+            identity: Some(identity.clone()),
+            clock: self.clock.clone(),
+            assertion_ttl_ms: self.assertion_ttl_ms,
+        })
+    }
+}
+
+#[derive(Clone)]
+struct EnrolledWorkerCredential {
+    worker_id: String,
+    secret: Arc<[u8]>,
+}
+
+/// Production authenticator for signed Worker request assertions.
+///
+/// Credentials can overlap during rotation. Removing a key or revoking one
+/// credential takes effect immediately. A successfully verified request id is
+/// remembered until assertion expiry so an exact captured request cannot replay.
+pub struct SignedWorkerAuthenticator {
+    credentials: RwLock<BTreeMap<(String, String), EnrolledWorkerCredential>>,
+    revoked_credentials: RwLock<HashSet<String>>,
+    seen_requests: Mutex<HashMap<(String, String), u64>>,
+    clock: Arc<dyn WorkerClock>,
+    max_assertion_ttl_ms: u64,
+    clock_skew_ms: u64,
+}
+
+impl SignedWorkerAuthenticator {
+    #[must_use]
+    pub fn new(credential: WorkerSigningCredential) -> Self {
+        let authenticator = Self {
+            credentials: RwLock::new(BTreeMap::new()),
+            revoked_credentials: RwLock::new(HashSet::new()),
+            seen_requests: Mutex::new(HashMap::new()),
+            clock: Arc::new(SystemWorkerClock),
+            max_assertion_ttl_ms: 60_000,
+            clock_skew_ms: 5_000,
+        };
+        authenticator.enroll(credential);
+        authenticator
+    }
+
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn WorkerClock>) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    #[must_use]
+    pub fn with_time_policy(mut self, max_assertion_ttl_ms: u64, clock_skew_ms: u64) -> Self {
+        self.max_assertion_ttl_ms = max_assertion_ttl_ms.max(1);
+        self.clock_skew_ms = clock_skew_ms;
+        self
+    }
+
+    /// Add a new key/credential while old credentials remain valid for overlap.
+    pub fn enroll(&self, credential: WorkerSigningCredential) {
+        self.credentials
+            .write()
+            .expect("worker credential registry lock")
+            .insert(
+                (credential.key_id.clone(), credential.credential_id.clone()),
+                EnrolledWorkerCredential {
+                    worker_id: credential.worker_id,
+                    secret: credential.secret,
+                },
+            );
+    }
+
+    /// Revoke one provisioned credential without removing other credentials
+    /// under the same rotation key.
+    pub fn revoke_credential(&self, credential_id: impl Into<String>) {
+        self.revoked_credentials
+            .write()
+            .expect("worker credential revocation lock")
+            .insert(credential_id.into());
+    }
+
+    /// Retire every credential signed under one rotation key.
+    pub fn remove_key(&self, key_id: &str) {
+        self.credentials
+            .write()
+            .expect("worker credential registry lock")
+            .retain(|(candidate, _), _| candidate != key_id);
+    }
+
+    fn verify(&self, parts: &Parts) -> Result<VerifiedWorkerContext, WorkerAuthError> {
+        let header_worker = parts
+            .headers
+            .get(WORKER_ID_HEADER)
+            .ok_or(WorkerAuthError::Missing)?
+            .to_str()
+            .map_err(|_| WorkerAuthError::Invalid("identity header is not ASCII".to_string()))?;
+        let authorization = parts
+            .headers
+            .get(axum::http::header::AUTHORIZATION)
+            .ok_or(WorkerAuthError::Missing)?
+            .to_str()
+            .map_err(|_| WorkerAuthError::Invalid("authorization is not ASCII".to_string()))?;
+        let token = authorization
+            .strip_prefix(SIGNED_WORKER_SCHEME)
+            .and_then(|value| value.strip_prefix(' '))
+            .ok_or_else(|| WorkerAuthError::Invalid("unsupported authorization scheme".into()))?;
+        let (payload, signature) = token
+            .split_once('.')
+            .ok_or_else(|| WorkerAuthError::Invalid("malformed worker assertion".into()))?;
+        let payload_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(payload)
+            .map_err(|_| WorkerAuthError::Invalid("malformed worker assertion".into()))?;
+        let assertion: WorkerRequestAssertion = serde_json::from_slice(&payload_bytes)
+            .map_err(|_| WorkerAuthError::Invalid("malformed worker assertion".into()))?;
+        let signature = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(signature)
+            .map_err(|_| WorkerAuthError::Invalid("malformed worker assertion".into()))?;
+        let credential = self
+            .credentials
+            .read()
+            .expect("worker credential registry lock")
+            .get(&(assertion.key_id.clone(), assertion.credential_id.clone()))
+            .cloned()
+            .ok_or_else(|| WorkerAuthError::Invalid("unknown worker credential".into()))?;
+        if self
+            .revoked_credentials
+            .read()
+            .expect("worker credential revocation lock")
+            .contains(&assertion.credential_id)
+        {
+            return Err(WorkerAuthError::Invalid(
+                "worker credential is revoked".into(),
+            ));
+        }
+        let mut mac =
+            HmacSha256::new_from_slice(&credential.secret).expect("HMAC accepts any key length");
+        mac.update(payload.as_bytes());
+        mac.verify_slice(&signature).map_err(|_| {
+            WorkerAuthError::Invalid("worker assertion signature is invalid".into())
+        })?;
+        let now_ms = self.clock.now_ms();
+        if assertion.version != 1
+            || assertion.worker_id != credential.worker_id
+            || assertion.worker_id != header_worker
+            || assertion.method != parts.method.as_str().to_ascii_uppercase()
+            || assertion.path != parts.uri.path()
+            || assertion.issued_at_ms > now_ms.saturating_add(self.clock_skew_ms)
+            || assertion.expires_at_ms.saturating_add(self.clock_skew_ms) < now_ms
+            || assertion.expires_at_ms < assertion.issued_at_ms
+            || assertion
+                .expires_at_ms
+                .saturating_sub(assertion.issued_at_ms)
+                > self.max_assertion_ttl_ms
+        {
+            return Err(WorkerAuthError::Invalid(
+                "worker assertion claims are invalid".into(),
+            ));
+        }
+        if assertion.identity.as_ref().is_some_and(|identity| {
+            identity.worker_id != assertion.worker_id
+                || identity.incarnation_id.is_empty()
+                || identity.generation == 0
+        }) {
+            return Err(WorkerAuthError::Invalid(
+                "worker incarnation binding is invalid".into(),
+            ));
+        }
+        let mut seen = self
+            .seen_requests
+            .lock()
+            .expect("worker request replay lock");
+        seen.retain(|_, expires_at_ms| expires_at_ms.saturating_add(self.clock_skew_ms) >= now_ms);
+        let replay_key = (
+            assertion.credential_id.clone(),
+            assertion.request_id.clone(),
+        );
+        if seen.insert(replay_key, assertion.expires_at_ms).is_some() {
+            return Err(WorkerAuthError::Invalid(
+                "worker request assertion was replayed".into(),
+            ));
+        }
+        Ok(VerifiedWorkerContext::signed(
+            assertion.worker_id,
+            assertion.identity,
+            assertion.credential_id,
+        ))
+    }
+}
+
+#[async_trait]
+impl WorkerRequestAuthenticator for SignedWorkerAuthenticator {
+    async fn authenticate(&self, parts: &Parts) -> Result<VerifiedWorkerContext, WorkerAuthError> {
+        self.verify(parts)
+    }
+}
+
+/// Identity extracted from a mutually authenticated TLS peer certificate by the
+/// server's TLS acceptor. Certificate parsing stays at the TLS boundary; no
+/// forwarded HTTP header is trusted as an mTLS identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MtlsWorkerPrincipal {
+    worker_id: String,
+    identity: Option<WorkerIdentity>,
+    certificate_sha256: String,
+}
+
+impl MtlsWorkerPrincipal {
+    pub fn bootstrap(
+        worker_id: impl Into<String>,
+        certificate_sha256: impl Into<String>,
+    ) -> Result<Self, WorkerCredentialError> {
+        Self::new(worker_id.into(), None, certificate_sha256.into())
+    }
+
+    pub fn registered(
+        identity: WorkerIdentity,
+        certificate_sha256: impl Into<String>,
+    ) -> Result<Self, WorkerCredentialError> {
+        Self::new(
+            identity.worker_id.clone(),
+            Some(identity),
+            certificate_sha256.into(),
+        )
+    }
+
+    fn new(
+        worker_id: String,
+        identity: Option<WorkerIdentity>,
+        certificate_sha256: String,
+    ) -> Result<Self, WorkerCredentialError> {
+        if worker_id.trim().is_empty()
+            || certificate_sha256.trim().is_empty()
+            || identity
+                .as_ref()
+                .is_some_and(|identity| identity.worker_id != worker_id)
+        {
+            return Err(WorkerCredentialError::Invalid);
+        }
+        Ok(Self {
+            worker_id,
+            identity,
+            certificate_sha256,
+        })
+    }
+
+    #[must_use]
+    pub fn certificate_sha256(&self) -> &str {
+        &self.certificate_sha256
+    }
+}
+
+/// Authenticator for TLS stacks that publish a verified
+/// [`MtlsWorkerPrincipal`] request extension.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MtlsWorkerAuthenticator;
+
+#[async_trait]
+impl WorkerRequestAuthenticator for MtlsWorkerAuthenticator {
+    async fn authenticate(&self, parts: &Parts) -> Result<VerifiedWorkerContext, WorkerAuthError> {
+        let principal = parts
+            .extensions
+            .get::<MtlsWorkerPrincipal>()
+            .ok_or(WorkerAuthError::Missing)?;
+        let header_worker = parts
+            .headers
+            .get(WORKER_ID_HEADER)
+            .ok_or(WorkerAuthError::Missing)?
+            .to_str()
+            .map_err(|_| WorkerAuthError::Invalid("identity header is not ASCII".to_string()))?;
+        if header_worker != principal.worker_id {
+            return Err(WorkerAuthError::Invalid(
+                "mTLS principal does not match worker header".into(),
+            ));
+        }
+        Ok(VerifiedWorkerContext {
+            worker_id: principal.worker_id.clone(),
+            identity: principal.identity.clone(),
+            credential_id: Some(format!("mtls:{}", principal.certificate_sha256)),
+        })
+    }
+}
 
 /// Client-side worker transport configuration. A managed composition injects a
 /// TLS-configured client and the identity bound to its WorkerLease; the same
@@ -24,18 +493,21 @@ pub struct WorkerUpstream {
     client: reqwest::Client,
     worker_id: String,
     worker_identity: Option<WorkerIdentity>,
+    request_authorizer: Arc<dyn WorkerRequestAuthorizer>,
 }
 
 impl WorkerUpstream {
     #[must_use]
     pub fn new(base_url: impl Into<String>) -> Self {
+        let worker_id = std::env::var("AWAKEN_WORKER_ID")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "awaken-worker".to_string());
         Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             client: reqwest::Client::new(),
-            worker_id: std::env::var("AWAKEN_WORKER_ID")
-                .ok()
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or_else(|| "awaken-worker".to_string()),
+            request_authorizer: Arc::new(HeaderWorkerRequestAuthorizer),
+            worker_id,
             worker_identity: None,
         }
     }
@@ -55,7 +527,17 @@ impl WorkerUpstream {
     #[must_use]
     pub fn with_worker_identity(mut self, identity: WorkerIdentity) -> Self {
         self.worker_id = identity.worker_id.clone();
+        self.request_authorizer = self.request_authorizer.bind_worker_identity(&identity);
         self.worker_identity = Some(identity);
+        self
+    }
+
+    #[must_use]
+    pub fn with_request_authorizer(mut self, authorizer: Arc<dyn WorkerRequestAuthorizer>) -> Self {
+        self.request_authorizer = match &self.worker_identity {
+            Some(identity) => authorizer.bind_worker_identity(identity),
+            None => authorizer,
+        };
         self
     }
 
@@ -75,12 +557,47 @@ impl WorkerUpstream {
     pub(crate) fn worker_identity(&self) -> Option<&WorkerIdentity> {
         self.worker_identity.as_ref()
     }
+
+    pub(crate) fn authorize(
+        &self,
+        method: &str,
+        path: &str,
+        request: reqwest::RequestBuilder,
+    ) -> Result<reqwest::RequestBuilder, String> {
+        self.request_authorizer
+            .authorize(method, path, &self.worker_id, request)
+    }
+
+    pub(crate) fn request_authorizer(&self) -> Arc<dyn WorkerRequestAuthorizer> {
+        self.request_authorizer.clone()
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct HeaderWorkerRequestAuthorizer;
+
+impl WorkerRequestAuthorizer for HeaderWorkerRequestAuthorizer {
+    fn authorize(
+        &self,
+        _method: &str,
+        _path: &str,
+        worker_id: &str,
+        request: reqwest::RequestBuilder,
+    ) -> Result<reqwest::RequestBuilder, String> {
+        Ok(request.header(WORKER_ID_HEADER, worker_id))
+    }
+
+    fn bind_worker_identity(&self, _identity: &WorkerIdentity) -> Arc<dyn WorkerRequestAuthorizer> {
+        Arc::new(*self)
+    }
 }
 
 /// Process-local proof that a worker request passed the configured authenticator.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedWorkerContext {
     worker_id: String,
+    identity: Option<WorkerIdentity>,
+    credential_id: Option<String>,
 }
 
 impl VerifiedWorkerContext {
@@ -93,12 +610,32 @@ impl VerifiedWorkerContext {
     pub fn authenticated(worker_id: impl Into<String>) -> Self {
         Self {
             worker_id: worker_id.into(),
+            identity: None,
+            credential_id: None,
+        }
+    }
+
+    fn signed(worker_id: String, identity: Option<WorkerIdentity>, credential_id: String) -> Self {
+        Self {
+            worker_id,
+            identity,
+            credential_id: Some(credential_id),
         }
     }
 
     #[must_use]
     pub fn worker_id(&self) -> &str {
         &self.worker_id
+    }
+
+    #[must_use]
+    pub fn identity(&self) -> Option<&WorkerIdentity> {
+        self.identity.as_ref()
+    }
+
+    #[must_use]
+    pub fn credential_id(&self) -> Option<&str> {
+        self.credential_id.as_deref()
     }
 }
 
@@ -203,5 +740,176 @@ impl Default for FixedWorkerLeasePolicy {
 impl WorkerLeasePolicy for FixedWorkerLeasePolicy {
     fn lease_ms(&self, _worker: &VerifiedWorkerContext) -> u64 {
         self.lease_ms
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn credential(id: &str) -> WorkerSigningCredential {
+        WorkerSigningCredential::new(
+            "worker-signed",
+            format!("key-{id}"),
+            format!("credential-{id}"),
+            format!("secret-{id}").into_bytes(),
+        )
+        .unwrap()
+    }
+
+    fn signed_parts(
+        authorizer: &dyn WorkerRequestAuthorizer,
+        method: &str,
+        signed_path: &str,
+        request_path: &str,
+    ) -> Parts {
+        let request = authorizer
+            .authorize(
+                method,
+                signed_path,
+                "worker-signed",
+                reqwest::Client::new().post("http://control.invalid"),
+            )
+            .unwrap()
+            .build()
+            .unwrap();
+        let mut builder = axum::http::Request::builder()
+            .method(method)
+            .uri(request_path);
+        for (name, value) in request.headers() {
+            builder = builder.header(name, value);
+        }
+        builder.body(()).unwrap().into_parts().0
+    }
+
+    #[tokio::test]
+    async fn signed_assertion_binds_route_incarnation_and_rejects_replay() {
+        let clock = Arc::new(ManualWorkerClock::new(10_000));
+        let credential = credential("primary");
+        let authorizer = SignedWorkerRequestAuthorizer::new(credential.clone())
+            .with_clock(clock.clone())
+            .with_assertion_ttl_ms(1_000);
+        let identity = WorkerIdentity::new("worker-signed", "boot-a", 7);
+        let authorizer = authorizer.bind_worker_identity(&identity);
+        let authenticator = SignedWorkerAuthenticator::new(credential)
+            .with_clock(clock)
+            .with_time_policy(2_000, 0);
+        let parts = signed_parts(
+            authorizer.as_ref(),
+            "POST",
+            "/v1/worker/heartbeat",
+            "/v1/worker/heartbeat",
+        );
+
+        let verified = authenticator.authenticate(&parts).await.unwrap();
+        assert_eq!(verified.worker_id(), "worker-signed");
+        assert_eq!(verified.identity(), Some(&identity));
+        assert_eq!(verified.credential_id(), Some("credential-primary"));
+        assert!(matches!(
+            authenticator.authenticate(&parts).await,
+            Err(WorkerAuthError::Invalid(message)) if message.contains("replayed")
+        ));
+    }
+
+    #[tokio::test]
+    async fn signed_assertion_rejects_route_tampering_expiry_and_revocation() {
+        let clock = Arc::new(ManualWorkerClock::new(20_000));
+        let credential = credential("rotation-a");
+        let authorizer = SignedWorkerRequestAuthorizer::new(credential.clone())
+            .with_clock(clock.clone())
+            .with_assertion_ttl_ms(500);
+        let authenticator = SignedWorkerAuthenticator::new(credential.clone())
+            .with_clock(clock.clone())
+            .with_time_policy(1_000, 0);
+
+        let tampered = signed_parts(
+            &authorizer,
+            "POST",
+            "/v1/worker/heartbeat",
+            "/v1/worker/drain",
+        );
+        assert!(authenticator.authenticate(&tampered).await.is_err());
+
+        let expired = signed_parts(
+            &authorizer,
+            "POST",
+            "/v1/worker/heartbeat",
+            "/v1/worker/heartbeat",
+        );
+        clock.set(20_501);
+        assert!(authenticator.authenticate(&expired).await.is_err());
+
+        clock.set(21_000);
+        let revoked = signed_parts(
+            &authorizer,
+            "POST",
+            "/v1/worker/heartbeat",
+            "/v1/worker/heartbeat",
+        );
+        authenticator.revoke_credential(credential.credential_id());
+        assert!(authenticator.authenticate(&revoked).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn credential_rotation_overlaps_then_old_key_is_retired() {
+        let clock = Arc::new(ManualWorkerClock::new(30_000));
+        let old = credential("old");
+        let new = credential("new");
+        let old_authorizer =
+            SignedWorkerRequestAuthorizer::new(old.clone()).with_clock(clock.clone());
+        let new_authorizer =
+            SignedWorkerRequestAuthorizer::new(new.clone()).with_clock(clock.clone());
+        let authenticator = SignedWorkerAuthenticator::new(old.clone()).with_clock(clock.clone());
+        authenticator.enroll(new);
+
+        let old_request = signed_parts(
+            &old_authorizer,
+            "POST",
+            "/v1/worker/register",
+            "/v1/worker/register",
+        );
+        let new_request = signed_parts(
+            &new_authorizer,
+            "POST",
+            "/v1/worker/register",
+            "/v1/worker/register",
+        );
+        assert!(authenticator.authenticate(&old_request).await.is_ok());
+        assert!(authenticator.authenticate(&new_request).await.is_ok());
+
+        authenticator.remove_key(old.key_id());
+        let retired = signed_parts(
+            &old_authorizer,
+            "POST",
+            "/v1/worker/register",
+            "/v1/worker/register",
+        );
+        assert!(authenticator.authenticate(&retired).await.is_err());
+    }
+
+    #[test]
+    fn signing_credential_debug_redacts_secret() {
+        let debug = format!("{:?}", credential("debug"));
+        assert!(debug.contains("[REDACTED]"));
+        assert!(!debug.contains("secret-debug"));
+    }
+
+    #[tokio::test]
+    async fn mtls_authenticator_uses_verified_extension_and_binds_incarnation() {
+        let identity = WorkerIdentity::new("worker-signed", "boot-mtls", 9);
+        let principal =
+            MtlsWorkerPrincipal::registered(identity.clone(), "sha256:certificate").unwrap();
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/v1/worker/heartbeat")
+            .header(WORKER_ID_HEADER, "worker-signed")
+            .extension(principal)
+            .body(())
+            .unwrap();
+        let parts = request.into_parts().0;
+
+        let verified = MtlsWorkerAuthenticator.authenticate(&parts).await.unwrap();
+        assert_eq!(verified.identity(), Some(&identity));
+        assert_eq!(verified.credential_id(), Some("mtls:sha256:certificate"));
     }
 }
