@@ -151,6 +151,14 @@ async fn conformance_commits_accumulate() {
 }
 
 #[tokio::test]
+async fn conformance_transcript_snapshots_freeze_append_only_prefix() {
+    let Some(store) = conformance_store("t_c_transcript").await else {
+        return;
+    };
+    awaken_store_conformance::transcript_snapshots_freeze_append_only_prefix(&store).await;
+}
+
+#[tokio::test]
 async fn conformance_terminal_run_is_fenced() {
     let Some(store) = conformance_store("t_c_fence").await else {
         return;

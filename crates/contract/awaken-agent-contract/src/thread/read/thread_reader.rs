@@ -9,6 +9,10 @@ use crate::agent::message::Message;
 use crate::agent::run::{Id as RunId, RunState};
 use crate::agent::state::Command as StateCommand;
 use crate::agent::thread::Id as ThreadId;
+use crate::thread::read::transcript::{
+    TranscriptError, TranscriptSlice, TranscriptSliceSpec, TranscriptSnapshot,
+    TranscriptSnapshotRef, TranscriptView,
+};
 
 pub trait ThreadReader: Send + Sync {
     /// Committed messages for a thread, in commit order.
@@ -31,5 +35,54 @@ pub trait ThreadReader: Send + Sync {
     /// execution (G1/G13); the default is empty for readers that hold no state.
     fn committed_state(&self, _thread_id: &ThreadId) -> Vec<StateCommand> {
         Vec::new()
+    }
+
+    /// Freeze the latest committed transcript as an immutable, content-addressed
+    /// snapshot. The default implementation deliberately builds on the existing
+    /// after-commit read so every store gains the neutral snapshot contract before
+    /// storage-specific range/index optimizations are introduced.
+    fn transcript_snapshot(
+        &self,
+        thread_id: &ThreadId,
+        view: TranscriptView,
+    ) -> TranscriptSnapshot {
+        TranscriptSnapshot::new(thread_id.clone(), view, self.committed_messages(thread_id))
+    }
+
+    /// Reconstruct a previously frozen append-only prefix and select ranges from
+    /// it. A later append is harmless: `end_seq` freezes the old prefix and the
+    /// snapshot identity rejects a reference for another thread or view.
+    fn transcript_slice(
+        &self,
+        spec: &TranscriptSliceSpec,
+    ) -> Result<TranscriptSlice, TranscriptError> {
+        let committed = self.committed_messages(&spec.snapshot.thread_id);
+        let end = usize::try_from(spec.snapshot.end_seq)
+            .map_err(|_| TranscriptError::SequenceOverflow)?;
+        if committed.len() < end {
+            return Err(TranscriptError::SnapshotUnavailable {
+                requested_end: spec.snapshot.end_seq,
+                available_end: u64::try_from(committed.len()).unwrap_or(u64::MAX),
+            });
+        }
+        let snapshot = TranscriptSnapshot::new(
+            spec.snapshot.thread_id.clone(),
+            spec.snapshot.view,
+            committed[..end].to_vec(),
+        );
+        snapshot.verify(&spec.snapshot)?;
+        snapshot.slice(spec)
+    }
+
+    /// Validate that a frozen reference still names the same append-only prefix.
+    fn verify_transcript_snapshot(
+        &self,
+        snapshot: &TranscriptSnapshotRef,
+    ) -> Result<(), TranscriptError> {
+        self.transcript_slice(&TranscriptSliceSpec {
+            snapshot: snapshot.clone(),
+            ranges: Vec::new(),
+        })
+        .map(|_| ())
     }
 }
