@@ -132,6 +132,33 @@ impl HttpDispatchQueue {
 
 #[async_trait]
 impl DispatchQueue for HttpDispatchQueue {
+    async fn claim_is_current(
+        &self,
+        claim: &RunClaim,
+        _now_ms: u64,
+    ) -> Result<bool, DispatchError> {
+        let value = self
+            .post(
+                "/v1/worker/dispatch/claim_is_current",
+                json!({ "claim": claim, "identity": &self.worker_identity }),
+                self.worker_id(),
+            )
+            .await?;
+        Ok(value
+            .get("current")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false))
+    }
+
+    async fn worker_owns_run(
+        &self,
+        _identity: &crate::WorkerIdentity,
+        _run_id: &RunId,
+        _now_ms: u64,
+    ) -> Result<bool, DispatchError> {
+        Self::server_local("worker_owns_run")
+    }
+
     async fn lock_commit_epoch(
         &self,
         _claim: &RunClaim,

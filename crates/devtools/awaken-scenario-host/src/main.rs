@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Install the tracing subscriber + optional OTLP / AWAKEN_TRACE_FILE span export
     // and the W3C traceparent propagator before any request is served, so every
     // `#[instrument]` span in the request path is captured on one trace.

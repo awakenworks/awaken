@@ -76,10 +76,17 @@ impl SharedHost {
         Self::build(llm, model_ref.into(), None)
     }
 
-    /// Install the exact dispatch transport owned by this host composition.
+    /// Install the exact durable dispatch transport owned by this host composition.
+    ///
+    /// An explicitly assembled queue is already the authority for ingress, so it
+    /// also enables this host's dispatch pool. Embedders do not need to mutate the
+    /// process-global `AWAKEN_INGRESS` environment variable to activate a transport
+    /// they supplied directly.
     #[must_use]
     pub fn with_dispatch_store(mut self, store: Arc<awaken_dispatch::AnyDispatchStore>) -> Self {
         self.dispatch_store_override = Some(store);
+        self.deployment.durable = true;
+        self.deployment.disable_local_pool = false;
         self
     }
 
@@ -189,7 +196,7 @@ impl SharedHost {
             ),
             acp: None,
             remote_attempt_executor: None,
-            attempt_executor_override: None,
+            application_attempt_decorator: None,
             provider: LocalProvider::new(sandbox_root.clone()),
             session_provider: crate::session_environment::SessionEnvironmentProvider::workdir(
                 sandbox_root.clone(),
@@ -252,16 +259,17 @@ impl SharedHost {
         self
     }
 
-    /// Replace the complete per-Session attempt boundary.
+    /// Wrap the complete per-Session Native/ACP/A2A attempt boundary.
     ///
-    /// This is the embedding seam for a Worker-supplied executor or decorator.
-    /// When absent, the host constructs its built-in Native/ACP/A2A router.
+    /// The Host always constructs the authoritative backend router first. The
+    /// application can adapt envelopes, capabilities, and business results
+    /// around it, but cannot replace backend selection.
     #[must_use]
-    pub fn with_attempt_executor(
+    pub fn with_application_attempt_decorator(
         mut self,
-        executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>,
+        decorator: super::AttemptExecutorDecorator,
     ) -> Self {
-        self.attempt_executor_override = Some(executor);
+        self.application_attempt_decorator = Some(decorator);
         self
     }
 

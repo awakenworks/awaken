@@ -23,19 +23,60 @@ use std::sync::Arc;
 
 mod admin;
 
-use awaken_runtime_contract::execution::{
-    AttemptExecutorRegistry, NATIVE_RUNTIME_CAPABILITY, RunAttemptExecutor,
-};
-use awaken_runtime_contract::resolved::Backend;
-use awaken_session_executor::WorkerControlClient;
-use awaken_session_executor::WorkerUpstream;
+use awaken_runtime_contract::execution::NATIVE_RUNTIME_CAPABILITY;
+use awaken_session_executor::{AttemptExecutorDecorator, WorkerControlClient, WorkerUpstream};
 use awaken_server::inference_materializer::CredentialInferenceMaterializer;
 use awaken_server::no_model::NoModelConfiguredExecutor;
 use awaken_server::{InferenceExecutorMaterializer, SharedHost};
 use awaken_worker_contract::{
-    REPOSITORY_CREDENTIALS_CAPABILITY, RegistryMutation, SESSION_RESOURCES_CAPABILITY,
-    VersionRange, WorkerCapacity, WorkerHeartbeat, WorkerIdentity, WorkerManifest,
+    REPOSITORY_CREDENTIALS_CAPABILITY, RegisteredWorker, RegistryMutation,
+    SESSION_RESOURCES_CAPABILITY, VersionRange, WorkerCapacity, WorkerHeartbeat, WorkerIdentity,
+    WorkerManifest, WorkerSnapshot,
 };
+
+/// Immutable application assembly context created only after the Control Node
+/// allocates this process's Worker identity.
+#[derive(Clone)]
+pub struct RegisteredWorkerContext {
+    registration: RegisteredWorker,
+    upstream: WorkerUpstream,
+}
+
+impl RegisteredWorkerContext {
+    fn new(registration: RegisteredWorker, upstream: WorkerUpstream) -> Self {
+        Self {
+            registration,
+            upstream,
+        }
+    }
+
+    #[must_use]
+    pub fn registration(&self) -> &RegisteredWorker {
+        &self.registration
+    }
+
+    #[must_use]
+    pub fn snapshot(&self) -> &WorkerSnapshot {
+        &self.registration.snapshot
+    }
+
+    #[must_use]
+    pub fn identity(&self) -> &WorkerIdentity {
+        &self.registration.snapshot.identity
+    }
+
+    /// The identity-bound transport shared by dispatch, claimed commit, and
+    /// application-owned control requests.
+    #[must_use]
+    pub fn upstream(&self) -> &WorkerUpstream {
+        &self.upstream
+    }
+}
+
+/// Registration-time application factory. The returned decorator is applied to
+/// every Session's authoritative Native/ACP/A2A attempt router.
+pub type RegisteredDecoratorFactory =
+    Arc<dyn Fn(&RegisteredWorkerContext) -> Result<AttemptExecutorDecorator, String> + Send + Sync>;
 
 /// Explicit resource-plane wiring for a database-less Worker.
 ///
@@ -75,7 +116,7 @@ impl WorkerResourcePlane {
 
 async fn shared_resource_wiring(
     credentials: Option<awaken_control::InferenceMaterializationStores>,
-) -> Result<Option<WorkerResourcePlane>, Box<dyn std::error::Error>> {
+) -> Result<Option<WorkerResourcePlane>, Box<dyn std::error::Error + Send + Sync>> {
     let ports = awaken_server::shared_worker_resource_plane_from_env().await?;
     let validator = awaken_control::open_shared_resource_validator_from_env().await?;
     match (ports, validator) {
@@ -119,8 +160,7 @@ impl std::error::Error for WorkerNodeBuildError {}
 pub struct WorkerNodeBuilder {
     upstream: WorkerUpstream,
     manifest: Option<WorkerManifest>,
-    attempt_executor: Option<Arc<dyn RunAttemptExecutor>>,
-    registry_capabilities: Option<std::collections::BTreeSet<String>>,
+    application_decorator_factory: Option<RegisteredDecoratorFactory>,
     materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,
     acp_credentials: Option<awaken_session_executor::PinnedCredentialMaterializer>,
     resources: Option<WorkerResourcePlane>,
@@ -133,8 +173,7 @@ impl WorkerNodeBuilder {
         Self {
             upstream,
             manifest: None,
-            attempt_executor: None,
-            registry_capabilities: None,
+            application_decorator_factory: None,
             materializer: None,
             acp_credentials: None,
             resources: None,
@@ -148,20 +187,14 @@ impl WorkerNodeBuilder {
         self
     }
 
-    /// Install the complete attempt boundary. An application decorator can wrap
-    /// its backend router before passing it here.
+    /// Install the only application execution extension: a factory evaluated
+    /// after registration whose decorator wraps the built-in Session router.
     #[must_use]
-    pub fn with_attempt_executor(mut self, executor: Arc<dyn RunAttemptExecutor>) -> Self {
-        self.attempt_executor = Some(executor);
-        self.registry_capabilities = None;
-        self
-    }
-
-    /// Install an exact backend registry and derive its manifest capabilities.
-    #[must_use]
-    pub fn with_attempt_executor_registry(mut self, registry: AttemptExecutorRegistry) -> Self {
-        self.registry_capabilities = Some(registry.manifest_capabilities());
-        self.attempt_executor = Some(Arc::new(registry));
+    pub fn with_application_decorator_factory(
+        mut self,
+        factory: RegisteredDecoratorFactory,
+    ) -> Self {
+        self.application_decorator_factory = Some(factory);
         self
     }
 
@@ -207,20 +240,9 @@ impl WorkerNodeBuilder {
                 "Worker upstream URL must not be empty".to_string(),
             ));
         }
-        let mut manifest = self.manifest.ok_or_else(|| {
+        let manifest = self.manifest.ok_or_else(|| {
             WorkerNodeBuildError("Worker manifest must be supplied explicitly".to_string())
         })?;
-        if let Some(capabilities) = self.registry_capabilities {
-            if capabilities.is_empty() {
-                return Err(WorkerNodeBuildError(
-                    "attempt executor registry must not be empty".to_string(),
-                ));
-            }
-            manifest
-                .capabilities
-                .retain(|capability| !is_executor_capability(capability));
-            manifest.capabilities.extend(capabilities);
-        }
         if manifest.build_digest.trim().is_empty() {
             return Err(WorkerNodeBuildError(
                 "Worker manifest build_digest must not be empty".to_string(),
@@ -242,21 +264,14 @@ impl WorkerNodeBuilder {
         Ok(WorkerNode {
             upstream: self.upstream,
             manifest,
-            attempt_executor: self.attempt_executor,
+            application_decorator_factory: self.application_decorator_factory,
+            application_gate: None,
             materializer: self.materializer,
             acp_credentials: self.acp_credentials,
             resources: self.resources,
             admin_listen: self.admin_listen,
         })
     }
-}
-
-fn is_executor_capability(capability: &str) -> bool {
-    capability == NATIVE_RUNTIME_CAPABILITY
-        || matches!(
-            Backend::from_ref(capability),
-            Backend::Acp { .. } | Backend::Remote { .. }
-        )
 }
 
 /// Why the Worker lifecycle is stopping.
@@ -273,7 +288,8 @@ pub enum WorkerShutdown {
 pub struct WorkerNode {
     upstream: WorkerUpstream,
     manifest: WorkerManifest,
-    attempt_executor: Option<Arc<dyn RunAttemptExecutor>>,
+    application_decorator_factory: Option<RegisteredDecoratorFactory>,
+    application_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
     materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,
     acp_credentials: Option<awaken_session_executor::PinnedCredentialMaterializer>,
     resources: Option<WorkerResourcePlane>,
@@ -316,13 +332,119 @@ impl WorkerLifecycle {
 ///    never falls back to the inert executor.
 /// 6. Start the dispatch pool and drain in the background until SIGINT / SIGTERM.
 ///
-/// Requires `AWAKEN_INGRESS=durable` (the pool's enable gate); the injected remote
-/// store routes the drain over HTTP instead of a local queue.
-pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error>> {
+/// The injected remote dispatch store is the durable-ingress authority and enables
+/// the pool directly; embedding does not require `AWAKEN_INGRESS=durable`.
+pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    run_with_standard_environment(WorkerUpstream::new(upstream), Default::default(), None).await
+}
+
+/// Run the standard database-less Worker with one registered application
+/// decorator around its authoritative Session attempt router.
+///
+/// Credential, resource-plane, ACP, manifest, and lifecycle assembly remain
+/// identical to [`run`]; the application contributes only the post-registration
+/// wrapper.
+pub async fn run_with_application_decorator(
+    upstream: WorkerUpstream,
+    application_capabilities: std::collections::BTreeSet<String>,
+    factory: RegisteredDecoratorFactory,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    run_with_standard_environment(upstream, application_capabilities, Some(factory)).await
+}
+
+/// Run the same fully assembled Worker lifecycle with a supervisor-provided
+/// shutdown source. Embedded applications use this to retain an explicit stop
+/// handle while reusing the standard registration, routing, heartbeat, drain,
+/// quiesce, and deregistration path.
+pub async fn run_with_application_decorator_until<F>(
+    upstream: WorkerUpstream,
+    application_capabilities: std::collections::BTreeSet<String>,
+    factory: RegisteredDecoratorFactory,
+    shutdown: F,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+where
+    F: std::future::Future<
+            Output = Result<WorkerShutdown, Box<dyn std::error::Error + Send + Sync>>,
+        >,
+{
+    build_standard_worker(upstream, application_capabilities, Some(factory))
+        .await?
+        .run_until(shutdown)
+        .await
+}
+
+/// Run a supervised application Worker over credential stores supplied by an
+/// embedding composition root. Native inference, ACP launch credentials and
+/// credentialed Resource delivery all use these same authoritative stores.
+pub async fn run_with_application_credential_stores_until<F>(
+    upstream: WorkerUpstream,
+    credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
+    secrets: Arc<dyn awaken_credential_vault::SecretStore>,
+    application_capabilities: std::collections::BTreeSet<String>,
+    factory: RegisteredDecoratorFactory,
+    gate: Arc<dyn awaken_runtime_contract::permission::ToolGateHook>,
+    shutdown: F,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+where
+    F: std::future::Future<
+            Output = Result<WorkerShutdown, Box<dyn std::error::Error + Send + Sync>>,
+        >,
+{
+    build_worker_with_materialization_stores(
+        upstream,
+        awaken_control::InferenceMaterializationStores {
+            credentials,
+            secrets,
+        },
+        true,
+        application_capabilities,
+        Some(factory),
+        Some(gate),
+    )
+    .await?
+    .run_until(shutdown)
+    .await
+}
+
+async fn run_with_standard_environment(
+    upstream: WorkerUpstream,
+    application_capabilities: std::collections::BTreeSet<String>,
+    application: Option<RegisteredDecoratorFactory>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    build_standard_worker(upstream, application_capabilities, application)
+        .await?
+        .run_until_shutdown()
+        .await
+}
+
+async fn build_standard_worker(
+    upstream: WorkerUpstream,
+    application_capabilities: std::collections::BTreeSet<String>,
+    application: Option<RegisteredDecoratorFactory>,
+) -> Result<WorkerNode, Box<dyn std::error::Error + Send + Sync>> {
     let stores = awaken_control::open_inference_materialization_stores_from_env().await;
-    let resource_credentials =
-        shared_credential_backend(std::env::var("AWAKEN_CREDENTIAL_DB").ok().as_deref())
-            .then(|| stores.clone());
+    let repository_credentials =
+        shared_credential_backend(std::env::var("AWAKEN_CREDENTIAL_DB").ok().as_deref());
+    build_worker_with_materialization_stores(
+        upstream,
+        stores,
+        repository_credentials,
+        application_capabilities,
+        application,
+        None,
+    )
+    .await
+}
+
+async fn build_worker_with_materialization_stores(
+    upstream: WorkerUpstream,
+    stores: awaken_control::InferenceMaterializationStores,
+    repository_credentials: bool,
+    application_capabilities: std::collections::BTreeSet<String>,
+    application: Option<RegisteredDecoratorFactory>,
+    application_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
+) -> Result<WorkerNode, Box<dyn std::error::Error + Send + Sync>> {
+    let resource_credentials = repository_credentials.then(|| stores.clone());
     let resources = shared_resource_wiring(resource_credentials).await?;
     let materializer =
         CredentialInferenceMaterializer::new(stores.credentials.clone(), stores.secrets.clone());
@@ -333,19 +455,20 @@ pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error>> {
         resources
             .as_ref()
             .is_some_and(WorkerResourcePlane::supports_repository_credentials),
+        application_capabilities,
     );
-    WorkerNodeBuilder::new(WorkerUpstream::new(upstream))
-        .with_manifest(manifest)
-        .with_inference_materializer(materializer)
-        .with_acp_credentials(awaken_session_executor::PinnedCredentialMaterializer::new(
+    build_configured_worker(
+        upstream,
+        manifest,
+        materializer,
+        Some(awaken_session_executor::PinnedCredentialMaterializer::new(
             stores.credentials,
             stores.secrets,
-        ))
-        .with_optional_resource_plane(resources)
-        .with_admin_listen(configured_admin_listen())
-        .build()?
-        .run_until_shutdown()
-        .await
+        )),
+        resources,
+        application,
+        application_gate,
+    )
 }
 
 /// Run a genuinely secretless worker with a deployment-provided materializer.
@@ -355,7 +478,7 @@ pub async fn run(upstream: &str) -> Result<(), Box<dyn std::error::Error>> {
 pub async fn run_with_inference_materializer(
     upstream: &str,
     materializer: Arc<dyn InferenceExecutorMaterializer>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     run_with_upstream_and_inference_materializer(WorkerUpstream::new(upstream), materializer).await
 }
 
@@ -368,17 +491,112 @@ pub async fn run_with_inference_materializer(
 pub async fn run_with_upstream_and_inference_materializer(
     upstream: WorkerUpstream,
     materializer: Arc<dyn InferenceExecutorMaterializer>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    run_with_upstream_application_and_inference_materializer(
+        upstream,
+        materializer,
+        Default::default(),
+        None,
+    )
+    .await
+}
+
+/// Run a caller-materialized Worker with an optional registered application
+/// decorator. This is the secretless counterpart of
+/// [`run_with_application_decorator`].
+pub async fn run_with_upstream_application_and_inference_materializer(
+    upstream: WorkerUpstream,
+    materializer: Arc<dyn InferenceExecutorMaterializer>,
+    application_capabilities: std::collections::BTreeSet<String>,
+    application: Option<RegisteredDecoratorFactory>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    build_secretless_worker(
+        upstream,
+        materializer,
+        application_capabilities,
+        application,
+        None,
+    )
+    .await?
+    .run_until_shutdown()
+    .await
+}
+
+/// Supervised counterpart of
+/// [`run_with_upstream_application_and_inference_materializer`].
+pub async fn run_with_upstream_application_and_inference_materializer_until<F>(
+    upstream: WorkerUpstream,
+    materializer: Arc<dyn InferenceExecutorMaterializer>,
+    application_capabilities: std::collections::BTreeSet<String>,
+    application: Option<RegisteredDecoratorFactory>,
+    application_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
+    shutdown: F,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+where
+    F: std::future::Future<
+            Output = Result<WorkerShutdown, Box<dyn std::error::Error + Send + Sync>>,
+        >,
+{
+    build_secretless_worker(
+        upstream,
+        materializer,
+        application_capabilities,
+        application,
+        application_gate,
+    )
+    .await?
+    .run_until(shutdown)
+    .await
+}
+
+async fn build_secretless_worker(
+    upstream: WorkerUpstream,
+    materializer: Arc<dyn InferenceExecutorMaterializer>,
+    application_capabilities: std::collections::BTreeSet<String>,
+    application: Option<RegisteredDecoratorFactory>,
+    application_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
+) -> Result<WorkerNode, Box<dyn std::error::Error + Send + Sync>> {
     let resources = shared_resource_wiring(None).await?;
-    let manifest = worker_manifest(Some(materializer.as_ref()), resources.is_some(), false);
-    WorkerNodeBuilder::new(upstream)
+    let manifest = worker_manifest(
+        Some(materializer.as_ref()),
+        resources.is_some(),
+        false,
+        application_capabilities,
+    );
+    build_configured_worker(
+        upstream,
+        manifest,
+        materializer,
+        None,
+        resources,
+        application,
+        application_gate,
+    )
+}
+
+fn build_configured_worker(
+    upstream: WorkerUpstream,
+    manifest: WorkerManifest,
+    materializer: Arc<dyn InferenceExecutorMaterializer>,
+    acp_credentials: Option<awaken_session_executor::PinnedCredentialMaterializer>,
+    resources: Option<WorkerResourcePlane>,
+    application: Option<RegisteredDecoratorFactory>,
+    application_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
+) -> Result<WorkerNode, Box<dyn std::error::Error + Send + Sync>> {
+    let mut builder = WorkerNodeBuilder::new(upstream)
         .with_manifest(manifest)
         .with_inference_materializer(materializer)
         .with_optional_resource_plane(resources)
-        .with_admin_listen(configured_admin_listen())
-        .build()?
-        .run_until_shutdown()
-        .await
+        .with_admin_listen(configured_admin_listen());
+    if let Some(credentials) = acp_credentials {
+        builder = builder.with_acp_credentials(credentials);
+    }
+    if let Some(factory) = application {
+        builder = builder.with_application_decorator_factory(factory);
+    }
+    let mut worker = builder.build()?;
+    worker.application_gate = application_gate;
+    Ok(worker)
 }
 
 fn configured_admin_listen() -> String {
@@ -403,7 +621,7 @@ impl WorkerNode {
 
     /// Register, enter Ready, run until SIGINT/SIGTERM, then drain, quiesce, and
     /// deregister. Losing registry authority closes the local claim gate.
-    pub async fn run_until_shutdown(self) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn run_until_shutdown(self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         self.run_until(async {
             #[cfg(unix)]
             {
@@ -429,9 +647,14 @@ impl WorkerNode {
 
     /// Run the same lifecycle with an injected shutdown source. This keeps
     /// embedding tests and supervisors independent of process signals.
-    pub async fn run_until<F>(self, shutdown: F) -> Result<(), Box<dyn std::error::Error>>
+    pub async fn run_until<F>(
+        self,
+        shutdown: F,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
     where
-        F: std::future::Future<Output = Result<WorkerShutdown, Box<dyn std::error::Error>>>,
+        F: std::future::Future<
+                Output = Result<WorkerShutdown, Box<dyn std::error::Error + Send + Sync>>,
+            >,
     {
         let upstream_url = self.upstream.base_url().to_string();
         let upstream = self.upstream;
@@ -442,6 +665,22 @@ impl WorkerNode {
             .map_err(std::io::Error::other)?;
         let upstream = upstream.with_worker_identity(registration.snapshot.identity.clone());
         let control = WorkerControlClient::new(upstream.clone());
+        let application_decorator = match self.application_decorator_factory {
+            Some(factory) => match factory(&RegisteredWorkerContext::new(
+                registration.clone(),
+                upstream.clone(),
+            )) {
+                Ok(decorator) => Some(decorator),
+                Err(error) => {
+                    let _ = control.deregister(&registration.snapshot.identity).await;
+                    return Err(std::io::Error::other(format!(
+                        "application decorator factory failed: {error}"
+                    ))
+                    .into());
+                }
+            },
+            None => None,
+        };
         // Route the dispatch pool's claim/settle over HTTP to the cell server.
         let dispatch_store = awaken_session_executor::worker_dispatch_store_with_upstream(
             &upstream,
@@ -471,8 +710,11 @@ impl WorkerNode {
         if let Some(materializer) = &self.materializer {
             host = host.with_inference_materializer(materializer.clone());
         }
-        if let Some(executor) = self.attempt_executor {
-            host = host.with_attempt_executor(executor);
+        if let Some(decorator) = application_decorator {
+            host = host.with_application_attempt_decorator(decorator);
+        }
+        if let Some(gate) = self.application_gate {
+            host = host.with_gate_override(gate);
         }
         awaken_server::install_platform_memory_data_plane(&host);
 
@@ -610,6 +852,7 @@ fn worker_manifest(
     materializer: Option<&dyn InferenceExecutorMaterializer>,
     resource_support: bool,
     repository_credential_support: bool,
+    application_capabilities: std::collections::BTreeSet<String>,
 ) -> WorkerManifest {
     use awaken_provisioning_contract::{IsolationClass, SandboxCapabilities};
     let tier = std::env::var("AWAKEN_SANDBOX_TIER").unwrap_or_else(|_| "namespace".to_string());
@@ -642,8 +885,10 @@ fn worker_manifest(
             "namespace",
         ),
     };
-    let mut capabilities =
-        std::collections::BTreeSet::from([NATIVE_RUNTIME_CAPABILITY.to_string()]);
+    let mut capabilities = std::collections::BTreeSet::from([
+        NATIVE_RUNTIME_CAPABILITY.to_string(),
+        awaken_runtime_contract::A2A_RUNTIME_CAPABILITY.to_string(),
+    ]);
     capabilities.extend(
         materializer
             .into_iter()
@@ -656,6 +901,7 @@ fn worker_manifest(
             capabilities.insert(REPOSITORY_CREDENTIALS_CAPABILITY.to_string());
         }
     }
+    capabilities.extend(application_capabilities);
     if let Some(cli) = std::env::var("AWAKEN_ACP_CLI")
         .ok()
         .filter(|value| !value.trim().is_empty())
@@ -776,43 +1022,12 @@ fn grace_window(graceful: bool, configured_secs: Option<u64>) -> std::time::Dura
 mod grace_tests {
     use std::sync::Arc;
 
-    use awaken_runtime_contract::execution::{
-        AttemptExecutorRegistry, Result as ExecutionResult, RunAttemptExecutor, RunExecutor,
-    };
     use awaken_runtime_contract::llm::LlmExecutor;
-    use awaken_runtime_contract::resume::ResumeCommand;
-    use awaken_runtime_contract::{RunActivation, RunState, RuntimeRunContext};
-    use awaken_session_executor::WorkerUpstream;
 
     use super::{
         InferenceExecutorMaterializer, credential_observations, grace_window,
         shared_credential_backend, worker_manifest,
     };
-
-    struct NoopAttemptExecutor;
-
-    #[async_trait::async_trait]
-    impl RunExecutor for NoopAttemptExecutor {
-        async fn execute(
-            &self,
-            _activation: RunActivation,
-            _context: RuntimeRunContext,
-        ) -> ExecutionResult<RunState> {
-            unreachable!("assembly-only executor")
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl RunAttemptExecutor for NoopAttemptExecutor {
-        async fn resume(
-            &self,
-            _activation: RunActivation,
-            _command: ResumeCommand,
-            _context: RuntimeRunContext,
-        ) -> ExecutionResult<RunState> {
-            unreachable!("assembly-only executor")
-        }
-    }
 
     struct SchemeMaterializer;
 
@@ -841,9 +1056,14 @@ mod grace_tests {
     #[test]
     fn worker_manifest_derives_materialization_capabilities_from_the_adapter() {
         let materializer = SchemeMaterializer;
-        let manifest = worker_manifest(Some(&materializer), false, false);
+        let manifest = worker_manifest(Some(&materializer), false, false, Default::default());
 
         assert!(manifest.capabilities.contains("native-runtime"));
+        assert!(
+            manifest
+                .capabilities
+                .contains(awaken_runtime_contract::A2A_RUNTIME_CAPABILITY)
+        );
         assert!(manifest.capabilities.contains("test-access/v1"));
         assert_eq!(
             credential_observations(Some(&materializer)),
@@ -856,7 +1076,7 @@ mod grace_tests {
 
     #[test]
     fn worker_manifest_advertises_only_installed_resource_seams() {
-        let without = worker_manifest(None, false, false);
+        let without = worker_manifest(None, false, false, Default::default());
         assert!(
             !without
                 .capabilities
@@ -868,7 +1088,7 @@ mod grace_tests {
                 .contains(super::REPOSITORY_CREDENTIALS_CAPABILITY)
         );
 
-        let secretless = worker_manifest(None, true, false);
+        let secretless = worker_manifest(None, true, false, Default::default());
         assert!(
             secretless
                 .capabilities
@@ -880,7 +1100,7 @@ mod grace_tests {
                 .contains(super::REPOSITORY_CREDENTIALS_CAPABILITY)
         );
 
-        let credentialed = worker_manifest(None, true, true);
+        let credentialed = worker_manifest(None, true, true, Default::default());
         assert!(
             credentialed
                 .capabilities
@@ -889,34 +1109,23 @@ mod grace_tests {
     }
 
     #[test]
-    fn executor_registry_replaces_free_form_execution_capabilities() {
-        let mut manifest = worker_manifest(None, false, false);
-        manifest.capabilities.extend([
-            "acp:stale".to_string(),
-            "a2a:https://stale.example".to_string(),
-            "application-capability".to_string(),
-        ]);
-        let mut registry = AttemptExecutorRegistry::new();
-        registry
-            .register("acp:claude", Arc::new(NoopAttemptExecutor))
-            .unwrap();
-        registry
-            .register("acp:codex", Arc::new(NoopAttemptExecutor))
-            .unwrap();
-
-        let node = super::WorkerNodeBuilder::new(WorkerUpstream::new("http://control"))
-            .with_manifest(manifest)
-            .with_attempt_executor_registry(registry)
-            .build()
-            .unwrap();
-        assert_eq!(
-            node.manifest().capabilities,
+    fn worker_manifest_includes_explicit_application_capabilities() {
+        let manifest = worker_manifest(
+            None,
+            false,
+            false,
             std::collections::BTreeSet::from([
-                "acp:claude".to_string(),
-                "acp:codex".to_string(),
-                "application-capability".to_string(),
-            ])
+                "application:flow-envelope/v1".to_string(),
+                "application:flow-tools/v1".to_string(),
+            ]),
         );
+
+        assert!(
+            manifest
+                .capabilities
+                .contains("application:flow-envelope/v1")
+        );
+        assert!(manifest.capabilities.contains("application:flow-tools/v1"));
     }
 
     #[test]

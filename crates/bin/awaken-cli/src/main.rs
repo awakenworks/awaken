@@ -25,7 +25,7 @@
 mod console;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mode = match console::parse_args(std::env::args().skip(1))? {
         console::Mode::Help => {
             console::print_help();

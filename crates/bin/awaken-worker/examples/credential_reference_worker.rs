@@ -64,7 +64,7 @@ impl InferenceExecutorMaterializer for ReferenceMaterializer {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     awaken_observability::init();
     let upstream = std::env::var("AWAKEN_UPSTREAM_URL")?;
     let credential_id = std::env::var("AWAKEN_TEST_CREDENTIAL_ID")?;

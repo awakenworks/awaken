@@ -546,6 +546,24 @@ impl WorkerUpstream {
         &self.base_url
     }
 
+    /// Clone the HTTP client carrying this upstream's transport identity (for
+    /// example mTLS configuration) for an application request.
+    #[must_use]
+    pub fn http_client(&self) -> reqwest::Client {
+        self.client.clone()
+    }
+
+    /// Apply the same registered Worker request authorization used by dispatch
+    /// and claimed commit to an application-owned endpoint.
+    pub fn authorize_request(
+        &self,
+        method: &str,
+        path: &str,
+        request: reqwest::RequestBuilder,
+    ) -> Result<reqwest::RequestBuilder, String> {
+        self.authorize(method, path, request)
+    }
+
     pub(crate) fn client(&self) -> &reqwest::Client {
         &self.client
     }

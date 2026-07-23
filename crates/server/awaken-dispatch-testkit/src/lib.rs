@@ -560,8 +560,9 @@ async fn current_claim_guard_is_exact(
         .enqueue(dispatch(ns, "guard", "guard-thread"))
         .await
         .expect("enqueue guard run");
+    let identity = WorkerIdentity::new(format!("{ns}-guard-worker"), "boot", 1);
     let claimed = store
-        .claim_run(&run, "conformance-guard", LEASE_MS, 20_000)
+        .claim_run(&run, &identity.lease_owner(), LEASE_MS, 20_000)
         .await
         .expect("claim guard run")
         .expect("guard run is runnable");
@@ -578,6 +579,42 @@ async fn current_claim_guard_is_exact(
             .is_none(),
         "a stale epoch never acquires commit authority"
     );
+    assert!(
+        !store
+            .claim_is_current(&stale, 20_000)
+            .await
+            .expect("stale current-claim query"),
+        "a stale epoch is never current"
+    );
+    assert!(
+        store
+            .claim_is_current(&current, claimed.lease.expires_ms)
+            .await
+            .expect("exact-boundary current-claim query"),
+        "the exact lease expiry boundary remains current"
+    );
+    assert!(
+        !store
+            .claim_is_current(&current, claimed.lease.expires_ms + 1)
+            .await
+            .expect("expired current-claim query"),
+        "an expired claim is not current before it is reclaimed"
+    );
+    assert!(
+        store
+            .worker_owns_run(&identity, &run, claimed.lease.expires_ms)
+            .await
+            .expect("registered Worker ownership query"),
+        "the exact Worker incarnation owns the live run"
+    );
+    let stale_identity = WorkerIdentity::new(identity.worker_id.clone(), "replacement", 2);
+    assert!(
+        !store
+            .worker_owns_run(&stale_identity, &run, 20_000)
+            .await
+            .expect("stale Worker ownership query"),
+        "another incarnation never owns the run"
+    );
     let guard = store
         .lock_commit_epoch(&current)
         .await
@@ -590,6 +627,13 @@ async fn current_claim_guard_is_exact(
             .await
             .expect("settle guarded run"),
         SettleOutcome::Applied
+    );
+    assert!(
+        !store
+            .worker_owns_run(&identity, &run, 20_000)
+            .await
+            .expect("settled Worker ownership query"),
+        "settlement removes Worker ownership"
     );
 }
 

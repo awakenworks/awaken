@@ -353,22 +353,47 @@ fn claim_exact(
 
 #[async_trait]
 impl DispatchQueue for MemoryDispatchStore {
+    async fn worker_owns_run(
+        &self,
+        identity: &crate::WorkerIdentity,
+        run_id: &RunId,
+        now_ms: u64,
+    ) -> Result<bool, DispatchError> {
+        let owner = identity.lease_owner();
+        let state = lock(&self.state)?;
+        Ok(state.rows.get(run_id).is_some_and(|row| {
+            row.state == RowState::Leased
+                && row
+                    .lease
+                    .as_ref()
+                    .is_some_and(|lease| lease.owner == owner && lease.expires_ms >= now_ms)
+        }))
+    }
+
     async fn lock_commit_epoch(
         &self,
         claim: &RunClaim,
     ) -> Result<Option<CommitEpochGuard>, DispatchError> {
         let guard = self.authority.clone().lock_owned().await;
         let state = lock(&self.state)?;
-        let request = state.rows.get(&claim.run_id).and_then(|row| {
+        let guarded = state.rows.get(&claim.run_id).and_then(|row| {
             (row.lease_epoch == claim.epoch
                 && row
                     .lease
                     .as_ref()
                     .is_some_and(|lease| lease.owner == claim.owner))
-            .then(|| row.request.clone())
+            .then(|| {
+                (
+                    row.request.clone(),
+                    row.lease
+                        .as_ref()
+                        .expect("matched claim has a lease")
+                        .expires_ms,
+                )
+            })
         });
         drop(state);
-        Ok(request.map(|request| CommitEpochGuard::new(guard, request)))
+        Ok(guarded.map(|(request, expires_ms)| CommitEpochGuard::new(guard, request, expires_ms)))
     }
 
     async fn enqueue_with(

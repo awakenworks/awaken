@@ -27,6 +27,29 @@ use crate::pause::PauseSignal;
 use crate::permission::ToolPermissionPolicy;
 use crate::terminal::RunTerminalObserver;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
+use thiserror::Error;
+
+/// Why a live attempt may no longer proceed under its dispatch ownership.
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum AttemptOwnershipError {
+    /// The claim was settled, expired, or superseded by another attempt.
+    #[error("attempt ownership was lost")]
+    Lost,
+    /// The ownership authority could not be reached or evaluated. Callers must
+    /// fail closed rather than treating this as current ownership.
+    #[error("attempt ownership is unavailable: {0}")]
+    Unavailable(String),
+}
+
+/// Neutral live check that the current attempt still owns its execution slot.
+///
+/// Dispatch adapters capture their claim, clock, and transport behind this port;
+/// Runtime and application decorators therefore never receive a lease epoch,
+/// Worker registry, database, or HTTP type.
+#[async_trait::async_trait]
+pub trait AttemptOwnershipVerifier: Send + Sync {
+    async fn verify_current(&self) -> Result<(), AttemptOwnershipError>;
+}
 
 /// The content-capture wiring for one attempt (ADR-0050): the resolved decision
 /// (level + redactor) plus, when content persistence is on, the subject it is
@@ -103,6 +126,10 @@ pub struct RuntimeRunContext {
     /// observability). Absent means retries are not counted — optional wiring, like
     /// the stream sink; the retry behavior itself is unchanged either way.
     pub reschedules: Option<Arc<std::sync::atomic::AtomicU32>>,
+    /// Claim-bound live authority for this execution attempt. Application
+    /// decorators may recheck it immediately before an external side effect.
+    /// Absence means the ingress topology has no dispatch ownership concept.
+    pub ownership: Option<Arc<dyn AttemptOwnershipVerifier>>,
 }
 
 impl RuntimeRunContext {
@@ -135,6 +162,13 @@ impl RuntimeRunContext {
         child.pause = None;
         child.live_inbox = None;
         child
+    }
+
+    /// Bind a neutral current-attempt ownership check.
+    #[must_use]
+    pub fn with_ownership(mut self, ownership: Arc<dyn AttemptOwnershipVerifier>) -> Self {
+        self.ownership = Some(ownership);
+        self
     }
 
     #[must_use]

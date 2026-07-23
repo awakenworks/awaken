@@ -137,6 +137,19 @@ macro_rules! delegate {
 
 #[async_trait]
 impl DispatchQueue for AnyDispatchStore {
+    async fn worker_owns_run(
+        &self,
+        identity: &crate::WorkerIdentity,
+        run_id: &RunId,
+        now_ms: u64,
+    ) -> Result<bool, DispatchError> {
+        delegate!(self, worker_owns_run(identity, run_id, now_ms))
+    }
+
+    async fn claim_is_current(&self, claim: &RunClaim, now_ms: u64) -> Result<bool, DispatchError> {
+        delegate!(self, claim_is_current(claim, now_ms))
+    }
+
     async fn lock_commit_epoch(
         &self,
         claim: &RunClaim,
