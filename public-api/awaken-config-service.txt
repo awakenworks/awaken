@@ -43,13 +43,12 @@ pub async fn awaken_config_service::ConfigService::get_versioned(&self, &dyn awa
 pub fn awaken_config_service::ConfigService::installed_in(&self, &str, &str) -> core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>
 pub async fn awaken_config_service::ConfigService::list(&self, &dyn awaken_config_store::store::ConfigRegistry) -> core::result::Result<alloc::vec::Vec<awaken_config_store::config::AgentConfig>, alloc::string::String>
 pub async fn awaken_config_service::ConfigService::list_revisions(&self, &dyn awaken_config_store::store::ConfigRegistry, &str) -> core::result::Result<alloc::vec::Vec<awaken_config_store::store::AgentConfigRevision>, alloc::string::String>
-pub fn awaken_config_service::ConfigService::new() -> Self
+pub fn awaken_config_service::ConfigService::new(alloc::sync::Arc<dyn awaken_config_service::ModelPublicationResolver>) -> Self
 pub async fn awaken_config_service::ConfigService::publish(&self, &str, &dyn awaken_config_store::store::ConfigRegistry, &str, &[awaken_runtime_contract::resolved::ToolDescriptor]) -> core::result::Result<awaken_config_store::store::StoredPublication, awaken_config_service::PublishError>
 pub async fn awaken_config_service::ConfigService::put(&self, &dyn awaken_config_store::store::ConfigRegistry, &awaken_config_store::config::AgentConfig) -> core::result::Result<(), alloc::string::String>
 pub async fn awaken_config_service::ConfigService::put_if_revision(&self, &dyn awaken_config_store::store::ConfigRegistry, &awaken_config_store::config::AgentConfig, u64) -> core::result::Result<awaken_config_store::store::ConfigWrite, alloc::string::String>
 pub async fn awaken_config_service::ConfigService::reconcile(&self, &str, &dyn awaken_config_store::store::ConfigRegistry, &str, &[awaken_runtime_contract::resolved::ToolDescriptor]) -> core::result::Result<bool, alloc::string::String>
 pub async fn awaken_config_service::ConfigService::validate(&self, &str, &awaken_config_store::config::AgentConfig, &[awaken_runtime_contract::resolved::ToolDescriptor]) -> core::result::Result<(), awaken_config_service::ValidationIssue>
-pub fn awaken_config_service::ConfigService::with_model_publication_resolver(self, alloc::sync::Arc<dyn awaken_config_service::ModelPublicationResolver>) -> Self
 pub fn awaken_config_service::ConfigService::with_resources(self, alloc::sync::Arc<dyn awaken_config_resolver::stores::AgentInputBindingRepository>) -> Self
 impl awaken_config_service::ConfigService
 pub async fn awaken_config_service::ConfigService::warm_install(&self, &dyn awaken_config_store::store::ScopedConfigRegistry, &awaken_tenancy::ScopeId) -> usize

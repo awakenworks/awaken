@@ -1747,11 +1747,9 @@ pub async fn build_config_router() -> Router {
         .expect("put offering");
     // The service is scope-free (ADR-0051); `ConfigPlane` is the scope edge that binds
     // the request scope (a `ScopedConfig` registry + the scope's tool catalog) onto it.
-    let service = Arc::new(
-        ConfigService::new().with_model_publication_resolver(Arc::new(ScenarioHostModelResolver {
-            catalog: catalog_repo.clone(),
-        })),
-    );
+    let service = Arc::new(ConfigService::new(Arc::new(ScenarioHostModelResolver {
+        catalog: catalog_repo.clone(),
+    })));
     let plane = awaken_runtime_host::ConfigPlane::new(service.clone(), store, tools);
     // The management tool executables, backed by real ports (D3/D4): the capability
     // reader reads the shared catalog + advertised tools; the validator runs the same

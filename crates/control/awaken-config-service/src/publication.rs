@@ -44,24 +44,16 @@ pub(crate) struct AgentPublicationDraft {
 /// Read every authored configuration input once and prepare one publication.
 /// Runtime and worker paths receive only the resulting immutable snapshot.
 pub(crate) async fn prepare_agent_publication(
-    model_resolver: Option<&dyn ModelPublicationResolver>,
+    model_resolver: &dyn ModelPublicationResolver,
     workspace: &str,
     source: AgentConfigRevision,
 ) -> Result<AgentPublicationDraft, PublishError> {
     let source_revision = source.revision;
     let mut config = source.config;
-    let models = match model_resolver {
-        Some(resolver) => resolver
-            .resolve_models(workspace, &config.model_binding, &config.model_candidates)
-            .await
-            .map_err(PublishError::Unresolvable)?,
-        None => {
-            let primary = config.model_binding.resolved().cloned().ok_or_else(|| {
-                PublishError::Unresolvable("no model publication resolver wired".into())
-            })?;
-            ResolvedPublicationModels::host(primary, config.model_candidates.clone(), None, None)
-        }
-    };
+    let models = model_resolver
+        .resolve_models(workspace, &config.model_binding, &config.model_candidates)
+        .await
+        .map_err(PublishError::Unresolvable)?;
     if let Some(authored) = config.model_binding.resolved()
         && models.primary.binding != *authored
     {
@@ -180,36 +172,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn auto_requires_the_single_publication_resolver() {
-        let error = prepare_agent_publication(
-            None,
-            "workspace-a",
-            revision(ModelSelection::Auto, Vec::new()),
-        )
-        .await
-        .unwrap_err();
-        assert!(error.to_string().contains("no model publication resolver"));
-    }
-
-    #[tokio::test]
-    async fn explicit_embedded_composition_publishes_host_candidates_without_a_resolver() {
-        let primary = ModelBinding::new("host", "primary", "native");
-        let fallback = ModelBinding::new("host", "fallback", "native");
-        let draft = prepare_agent_publication(
-            None,
-            "workspace-a",
-            revision(
-                ModelSelection::Pinned(primary.clone()),
-                vec![fallback.clone()],
-            ),
-        )
-        .await
-        .unwrap();
-        assert_eq!(draft.models.primary.binding, primary);
-        assert_eq!(draft.models.candidates[0].binding, fallback);
-    }
-
-    #[tokio::test]
     async fn resolver_receives_execution_workspace_and_auto_output_becomes_authoring_projection() {
         let primary = ModelBinding::new("provider", "primary", "genai");
         let fallback = ModelBinding::new("provider", "fallback", "genai");
@@ -223,7 +185,7 @@ mod tests {
             ),
         };
         let draft = prepare_agent_publication(
-            Some(&resolver),
+            &resolver,
             "workspace-real",
             revision(ModelSelection::Auto, Vec::new()),
         )
@@ -243,7 +205,7 @@ mod tests {
             output: ResolvedPublicationModels::host(primary.clone(), vec![rewritten], None, None),
         };
         let error = prepare_agent_publication(
-            Some(&resolver),
+            &resolver,
             "workspace-a",
             revision(ModelSelection::Pinned(primary), vec![fallback]),
         )

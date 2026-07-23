@@ -17,7 +17,8 @@ path = "src/main.rs"
 # its activation snapshot) to the real DB-configured provider via
 # snapshot-pinned model candidates over the SAME credential store `awaken-cli`
 # opens — no catalog re-resolution and no mocks. `NoModelConfiguredExecutor` is
-# only the auxiliary fallback for a run whose model is not yet published. A worker
+# only an inert host-construction placeholder; installed materialization makes a
+# missing or stale publication pin fail closed before it can run. A worker
 # explicitly configured for shared resources additionally opens data-plane clients
 # plus the narrow ResourceBindingValidator; it still owns no authoring/Session store.
 [features]
@@ -32,7 +33,7 @@ container-k8s = ["awaken-server/container-k8s"]
 # The neutral host substrate: SharedHost, the dispatch pool, and the worker dispatch
 # store that routes the drain over HTTP to the cell server.
 awaken-runtime-host = { workspace = true }
-# The data plane: the production NoModelConfiguredExecutor fallback + the
+# The data plane: the inert NoModelConfiguredExecutor placeholder + the
 # CredentialInferenceMaterializer that opens a pinned credential for an executor.
 awaken-server = { workspace = true }
 # Reuse the composition's credential-vault + secret-store opening and seal-key

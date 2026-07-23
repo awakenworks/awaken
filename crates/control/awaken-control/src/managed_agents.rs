@@ -430,11 +430,37 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
 mod tests {
     use std::sync::Arc;
 
-    use awaken_config_service::{ConfigService, StaticToolCatalog};
-    use awaken_config_store::SqliteConfigStore;
+    use awaken_config_service::{
+        ConfigService, ModelPublicationResolver, ResolvedPublicationModels, StaticToolCatalog,
+    };
+    use awaken_config_store::{ModelSelection, SqliteConfigStore};
     use awaken_protocol_managed::types::agent::{AgentCreateParams, AgentUpdateParams, ModelInput};
+    use awaken_runtime_contract::resolved::ModelBinding;
 
     use super::*;
+
+    struct TestModelResolver;
+
+    #[async_trait::async_trait]
+    impl ModelPublicationResolver for TestModelResolver {
+        async fn resolve_models(
+            &self,
+            _workspace: &str,
+            selection: &ModelSelection,
+            candidates: &[ModelBinding],
+        ) -> Result<ResolvedPublicationModels, String> {
+            let primary = selection
+                .resolved()
+                .cloned()
+                .ok_or_else(|| "test requires a pinned model".to_string())?;
+            Ok(ResolvedPublicationModels::host(
+                primary,
+                candidates.to_vec(),
+                None,
+                None,
+            ))
+        }
+    }
 
     fn create_params(name: &str) -> AgentCreateParams {
         AgentCreateParams {
@@ -471,7 +497,7 @@ mod tests {
 
     fn plane(path: &str) -> ConfigPlane {
         ConfigPlane::new(
-            Arc::new(ConfigService::new()),
+            Arc::new(ConfigService::new(Arc::new(TestModelResolver))),
             Arc::new(SqliteConfigStore::open(path).expect("config store")),
             Arc::new(StaticToolCatalog(Vec::new())),
         )

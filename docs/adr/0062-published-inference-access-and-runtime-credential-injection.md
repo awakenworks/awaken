@@ -39,6 +39,10 @@ Runtime bounded context
 Forbidden runtime dependencies:
   Model Catalog, list credentials, default-model selection, route selection,
   configuration CRUD, Workspace constants
+
+Composition root (dev/test only)
+  explicit Host model -> exact Host publication resolver -> installed executor
+  (no Catalog resolver and no CredentialInferenceMaterializer in this mode)
 ```
 
 `ResolvedModelCandidate` is the immutable, secret-free published model value. Its
@@ -53,10 +57,12 @@ The concrete adapters are intentionally separate:
 
 - `CatalogModelPublicationResolver` belongs to configuration publication and
   depends on `CatalogRepo` plus credential inventory. It has no `SecretStore` or
-  executor dependency.
+  executor dependency and every candidate must have a persisted Catalog offering.
+- `ConfigService` requires exactly one `ModelPublicationResolver` at construction;
+  neither `Auto` nor `Pinned` authoring can bypass publication resolution.
 - `CredentialInferenceMaterializer` belongs to execution composition and depends
-  only on exact credential lookup, `SecretStore`, and an optional explicitly
-  installed host executor. It cannot enumerate or select configuration.
+  only on exact credential lookup and `SecretStore`. It accepts only published
+  `Provider` candidates and cannot enumerate or select configuration.
 - `PinnedCredentialMaterializer` is the shared worker/host adapter used by both
   native provider execution and ACP provisioning. It verifies the exact published
   Workspace/revision/provider/usage pin before opening persisted material. ACP CLI
@@ -69,6 +75,11 @@ may return a secret-free proposal (variable name/presence and non-secret coordin
 but a proposal is neither a catalog row nor executable access and is never auto-applied.
 Legacy `CredentialKind::Env` rows remain decodable for migration visibility but reject
 creation and materialization.
+
+Deterministic dev/test hosts are a separate, explicit composition: an exact Host
+publication resolver and its installed executor are wired together, while the
+provider credential materializer is absent. Host execution is therefore not a
+Catalog miss fallback and cannot mask an invalid provider publication.
 
 An externally hosted or secretless Worker may supply another implementation of
 the materialization port. That is an adapter choice, not an inference-executor
@@ -153,6 +164,12 @@ credential contract. The unused
 `CredentialInjectionPolicy`, `CredentialPolicyError`, and `InjectedCredential`
 types are deleted: execution receives one selected `CredentialInjectionKind`,
 not a fallback list it could reinterpret.
+
+The final fallback cleanup also removes optional construction of `ConfigService`,
+`CatalogModelPublicationResolver::with_fallback_model`,
+`CredentialInferenceMaterializer::with_fallback_executor`, and the management
+router's `build_management_router_with_fallback` seam. Production composition is
+Catalog-only; deterministic Host composition is exact and disjoint.
 
 The later single-truth-source cleanup also removes runtime
 `AWAKEN_MODEL_FALLBACKS`, production `AWAKEN_ACP_ARGV`, ambient ACP provider/gateway

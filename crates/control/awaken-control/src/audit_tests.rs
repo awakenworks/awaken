@@ -1,8 +1,11 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use awaken_config_service::{ConfigService, StaticToolCatalog};
-use awaken_config_store::SqliteConfigStore;
+use awaken_config_service::{
+    ConfigService, ModelPublicationResolver, ResolvedPublicationModels, StaticToolCatalog,
+};
+use awaken_config_store::{ModelSelection, SqliteConfigStore};
+use awaken_runtime_contract::resolved::ModelBinding;
 use awaken_tenancy::{ScopeId, WorkspaceScope};
 use axum::middleware::Next;
 use axum::routing::post;
@@ -11,9 +14,32 @@ use tower::ServiceExt as _;
 
 use super::*;
 
+struct TestModelResolver;
+
+#[async_trait::async_trait]
+impl ModelPublicationResolver for TestModelResolver {
+    async fn resolve_models(
+        &self,
+        _workspace: &str,
+        selection: &ModelSelection,
+        candidates: &[ModelBinding],
+    ) -> Result<ResolvedPublicationModels, String> {
+        let primary = selection
+            .resolved()
+            .cloned()
+            .ok_or_else(|| "test requires a pinned model".to_string())?;
+        Ok(ResolvedPublicationModels::host(
+            primary,
+            candidates.to_vec(),
+            None,
+            None,
+        ))
+    }
+}
+
 fn audit_plane() -> ConfigPlane {
     ConfigPlane::new(
-        Arc::new(ConfigService::new()),
+        Arc::new(ConfigService::new(Arc::new(TestModelResolver))),
         Arc::new(SqliteConfigStore::open_in_memory().unwrap()),
         Arc::new(StaticToolCatalog(vec![])),
     )

@@ -26,13 +26,12 @@ enum CatalogSource {
 }
 
 /// Configuration-plane adapter that freezes model, route and credential facts
-/// into a publication. A host fallback is explicit composition configuration;
-/// it never masks a catalog or credential failure for a published offering.
+/// into a publication. Every candidate must exist in the catalog; explicit
+/// in-process scenario executors use their own composition resolver.
 #[derive(Clone)]
 pub struct CatalogModelPublicationResolver {
     source: CatalogSource,
     credentials: Arc<dyn CredentialRepo>,
-    fallback_model_ref: Option<String>,
 }
 
 impl CatalogModelPublicationResolver {
@@ -43,7 +42,6 @@ impl CatalogModelPublicationResolver {
         Self {
             source: CatalogSource::Static(catalog),
             credentials,
-            fallback_model_ref: None,
         }
     }
 
@@ -53,16 +51,7 @@ impl CatalogModelPublicationResolver {
         Self {
             source: CatalogSource::Live(repo),
             credentials,
-            fallback_model_ref: None,
         }
-    }
-
-    /// Declare one host-installed model that may be published without a catalog
-    /// offering. Runtime installation of that executor remains a separate concern.
-    #[must_use]
-    pub fn with_fallback_model(mut self, model_ref: impl Into<String>) -> Self {
-        self.fallback_model_ref = Some(model_ref.into());
-        self
     }
 
     async fn snapshot(&self) -> Result<ProviderCatalog, String> {
@@ -194,11 +183,10 @@ impl CatalogModelPublicationResolver {
         if let Some(offering) = Self::offering_for(catalog, &binding) {
             return Self::provider_candidate(catalog, sources, workspace, binding, offering);
         }
-        self.fallback_model_ref
-            .as_deref()
-            .is_some_and(|fallback| fallback == binding.model_ref)
-            .then(|| ResolvedModelCandidate::host(binding.clone()))
-            .ok_or_else(|| format!("model offering {} is not published", binding.model_ref))
+        Err(format!(
+            "model offering {} is not published",
+            binding.model_ref
+        ))
     }
 }
 
@@ -408,17 +396,6 @@ mod tests {
                 .unwrap_err()
                 .contains("Workspace workspace-b")
         );
-    }
-
-    #[tokio::test]
-    async fn explicit_host_fallback_is_the_only_catalog_bypass() {
-        let resolver = resolver(&[]).await.with_fallback_model("embedded-model");
-        let binding = ModelBinding::new("host", "embedded-model", "native");
-        let resolved = resolver
-            .resolve_models("workspace-a", &ModelSelection::Pinned(binding.clone()), &[])
-            .await
-            .unwrap();
-        assert_eq!(resolved.primary, ResolvedModelCandidate::host(binding));
     }
 
     #[tokio::test]

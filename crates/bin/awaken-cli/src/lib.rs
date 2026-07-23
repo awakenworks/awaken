@@ -115,6 +115,60 @@ impl awaken_admin_config_api::ModelCatalogDiscovery for GenaiModelDiscovery {
     }
 }
 
+/// The two legal composition modes are deliberately disjoint: production
+/// publishes catalog-backed provider candidates and installs their credential
+/// materializer; deterministic scenarios publish one exact host executor and do
+/// not install a provider materializer.
+enum ManagementModelComposition {
+    PublishedProviders,
+    Host {
+        executor: Arc<dyn LlmExecutor>,
+        binding: awaken_runtime_contract::resolved::ModelBinding,
+    },
+}
+
+/// Concrete wiring produced by one legal composition mode. Keeping these four
+/// values together prevents a provider resolver from being paired with a host
+/// executor or a Host publication from receiving a credential materializer.
+struct ManagementModelWiring {
+    executor: Arc<dyn LlmExecutor>,
+    model_ref: String,
+    publication_resolver: Arc<dyn awaken_runtime_host::ModelPublicationResolver>,
+    materializer: Option<Arc<dyn awaken_runtime_host::InferenceExecutorMaterializer>>,
+}
+
+struct ExactHostModelPublicationResolver {
+    binding: awaken_runtime_contract::resolved::ModelBinding,
+}
+
+#[async_trait::async_trait]
+impl awaken_runtime_host::ModelPublicationResolver for ExactHostModelPublicationResolver {
+    async fn resolve_models(
+        &self,
+        _workspace: &str,
+        selection: &awaken_config_store::ModelSelection,
+        candidates: &[awaken_runtime_contract::resolved::ModelBinding],
+    ) -> Result<awaken_runtime_host::ResolvedPublicationModels, String> {
+        if let Some(authored) = selection.resolved()
+            && authored != &self.binding
+        {
+            return Err(format!(
+                "scenario host executor `{}` cannot publish model `{}`",
+                self.binding.model_ref, authored.model_ref
+            ));
+        }
+        if !candidates.is_empty() {
+            return Err("a single host executor cannot publish fallback candidates".into());
+        }
+        Ok(awaken_runtime_host::ResolvedPublicationModels::host(
+            self.binding.clone(),
+            Vec::new(),
+            None,
+            None,
+        ))
+    }
+}
+
 /// The store set the management plane runs over — one instance of each port,
 /// shared by the authoring router, the vault front door, and session prepare.
 struct ManagementStores {
@@ -615,21 +669,28 @@ fn deployment_data_dir_from_env() -> Option<String> {
 /// `AWAKEN_DEPLOYMENT_DATA_DIR` and panics with a clear message when it is missing. Unset — the
 /// default — is today's open behavior, byte-identical.
 pub async fn build_management_router() -> Router {
-    build_management_router_with_fallback(
-        Arc::new(awaken_server::no_model::NoModelConfiguredExecutor),
-        awaken_server::no_model::UNCONFIGURED_MODEL_REF.to_string(),
-    )
+    build_management_router_with_composition(ManagementModelComposition::PublishedProviders).await
+}
+
+/// Build the real env-selected management surface with one explicit in-process
+/// scenario executor. This is a dev/e2e composition, not a provider fallback:
+/// its exact host candidate is published by a dedicated resolver and no
+/// credential/provider materializer is installed.
+pub async fn build_management_router_with_scenario_model(
+    model: Arc<dyn LlmExecutor>,
+    model_ref: String,
+) -> Router {
+    build_management_router_with_composition(ManagementModelComposition::Host {
+        executor: model,
+        binding: awaken_runtime_contract::resolved::ModelBinding::new(
+            "default", model_ref, "default",
+        ),
+    })
     .await
 }
 
-/// [`build_management_router`] with the host default (pre-published) model injected —
-/// the env-driven store selection (durable/in-memory + IAM) is IDENTICAL to the
-/// production entry point, only the no-model fallback differs. Exposed so the e2e
-/// scenario host can drive the REAL management router with a deterministic model
-/// (e.g. the MCP scenario model) while keeping the production fallback provider-free.
-pub async fn build_management_router_with_fallback(
-    fallback_model: Arc<dyn LlmExecutor>,
-    fallback_model_ref: String,
+async fn build_management_router_with_composition(
+    model_composition: ManagementModelComposition,
 ) -> Router {
     let legacy_mode = std::env::var("AWAKEN_MGMT_IAM").ok();
     let identity_mode = std::env::var("AWAKEN_IDENTITY_MODE")
@@ -705,8 +766,7 @@ pub async fn build_management_router_with_fallback(
                     .await,
                 iam,
                 remote_iam,
-                fallback_model,
-                fallback_model_ref,
+                model_composition,
                 None,
             )
             .await
@@ -717,8 +777,7 @@ pub async fn build_management_router_with_fallback(
                 management_stores_for_runtime_storage(deployment.storage_dir.as_deref()),
                 iam,
                 remote_iam,
-                fallback_model,
-                fallback_model_ref,
+                model_composition,
                 None,
             )
             .await
@@ -761,8 +820,12 @@ pub async fn build_management_router_with_host_customizer(
         in_memory_management_stores(),
         None,
         None,
-        model,
-        model_ref.into(),
+        ManagementModelComposition::Host {
+            executor: model,
+            binding: awaken_runtime_contract::resolved::ModelBinding::new(
+                "default", model_ref, "default",
+            ),
+        },
         Some(Box::new(customize_host)),
     )
     .await
@@ -804,8 +867,12 @@ pub async fn build_management_router_with_model(
         in_memory_management_stores(),
         None,
         None,
-        model,
-        model_ref.into(),
+        ManagementModelComposition::Host {
+            executor: model,
+            binding: awaken_runtime_contract::resolved::ModelBinding::new(
+                "default", model_ref, "default",
+            ),
+        },
         None,
     )
     .await
@@ -821,8 +888,7 @@ pub async fn build_durable_management_router(dir: &std::path::Path, key: &[u8; 3
         durable_management_stores(dir, key),
         None,
         None,
-        Arc::new(awaken_server::no_model::NoModelConfiguredExecutor),
-        awaken_server::no_model::UNCONFIGURED_MODEL_REF.to_string(),
+        ManagementModelComposition::PublishedProviders,
         None,
     )
     .await
@@ -841,8 +907,7 @@ pub async fn build_secured_management_router(
         durable_management_stores(dir, key),
         Some(iam.clone()),
         None,
-        Arc::new(awaken_server::no_model::NoModelConfiguredExecutor),
-        awaken_server::no_model::UNCONFIGURED_MODEL_REF.to_string(),
+        ManagementModelComposition::PublishedProviders,
         None,
     )
     .await;
@@ -853,16 +918,12 @@ pub async fn build_secured_management_router(
 /// embedded IAM guard (`iam`). The authoring / authz half comes from
 /// [`awaken_control::control_router`] (guard wraps ONLY admin + vault); the data
 /// plane comes from [`awaken_server::mount_with_managed`]; this composition root
-/// weaves them and keeps the warm-load + no-model fallback wired here.
+/// weaves them and keeps the warm-load + inert no-model placeholder wired here.
 async fn management_router_over(
     stores: ManagementStores,
     iam: Option<Arc<ManagementAuthz>>,
     remote_iam: Option<Arc<RemoteManagementAuthz>>,
-    // The host default model for the window before an operator publishes one. In
-    // production this is the provider-free `NoModelConfiguredExecutor` (guidance,
-    // never a mock); a test may inject a deterministic model.
-    fallback_model: Arc<dyn LlmExecutor>,
-    fallback_model_ref: String,
+    model_composition: ManagementModelComposition,
     // An optional last-mile hook on the assembled data-plane host, applied before it is
     // shared. The composition root uses it to wire a runtime backend the management plane
     // does not assemble itself (e.g. an ACP executor for `acp:*` threads) without this
@@ -947,35 +1008,42 @@ async fn management_router_over(
     // resolves an environment's networking policy (egress on/off) at creation.
     let env_state = environments;
 
-    // The server's default model for the window before a publish.
-    let (model, model_ref) = (fallback_model, fallback_model_ref);
-    let model_publication_resolver = Arc::new(
-        awaken_server::model_resolver::CatalogModelPublicationResolver::from_repo(
-            catalog.clone(),
-            credentials.clone(),
-        )
-        .with_fallback_model(model_ref.clone()),
-    );
-    let inference_materializer = Arc::new(
-        awaken_server::inference_materializer::CredentialInferenceMaterializer::new(
-            credentials.clone(),
-            secrets.clone(),
-        )
-        .with_fallback_executor(model_ref.clone(), model.clone()),
-    );
+    let model_wiring = match model_composition {
+        ManagementModelComposition::PublishedProviders => ManagementModelWiring {
+            executor: Arc::new(awaken_server::no_model::NoModelConfiguredExecutor),
+            model_ref: awaken_server::no_model::UNCONFIGURED_MODEL_REF.to_string(),
+            publication_resolver: Arc::new(
+                awaken_server::model_resolver::CatalogModelPublicationResolver::from_repo(
+                    catalog.clone(),
+                    credentials.clone(),
+                ),
+            ),
+            materializer: Some(Arc::new(
+                awaken_server::inference_materializer::CredentialInferenceMaterializer::new(
+                    credentials.clone(),
+                    secrets.clone(),
+                ),
+            )),
+        },
+        ManagementModelComposition::Host { executor, binding } => ManagementModelWiring {
+            executor,
+            model_ref: binding.model_ref.clone(),
+            publication_resolver: Arc::new(ExactHostModelPublicationResolver { binding }),
+            materializer: None,
+        },
+    };
     let global = advertised_tools(&HashSet::new(), &HashSet::new(), &[]);
     let tool_catalog: Arc<dyn ToolCatalogSource> = Arc::new(ScopedToolCatalog::new(
         global.clone(),
         RESERVED_ADMIN_SCOPE,
         awaken_admin_assistant::admin_tool_descriptors(),
     ));
+    // Resolve `Auto` against the LIVE catalog repo (not the frozen seed), so a
+    // model an operator adds AFTER startup is visible when we re-publish the
+    // reserved-scope assistant. The resolver is mandatory: no config service can
+    // be constructed with an implicit model fallback.
     let config_service = Arc::new(
-        ConfigService::new()
-            // Resolve `Auto` against the LIVE catalog repo (not the frozen seed), so a
-            // model an operator adds AFTER startup is visible when we re-publish the
-            // reserved-scope assistant. `catalog` is still in scope here (moved into the
-            // control router below); clone the Arc for the resolver.
-            .with_model_publication_resolver(model_publication_resolver)
+        ConfigService::new(model_wiring.publication_resolver)
             .with_resources(resource_store.clone()),
     );
     // Warm-load the installed catalog from the durable config store BEFORE the plane
@@ -1114,14 +1182,18 @@ async fn management_router_over(
         skill_store,
         resource_lifecycle,
     );
-    let host_builder = SharedHost::new_with_resource_plane(model, model_ref, resource_ports)
-        .with_local_workspace(platform_workspace.clone())
-        .with_remote_attempt_executor(awaken_server::a2a_attempt_executor())
-        .with_config_service(config_service.clone())
-        .with_admin_tools(admin_execs)
-        // Resolve a session's model to a real executor from the config plane (M2):
-        // an unconfigured/unresolvable model falls back to the scenario model above.
-        .with_inference_materializer(inference_materializer);
+    let mut host_builder = SharedHost::new_with_resource_plane(
+        model_wiring.executor,
+        model_wiring.model_ref,
+        resource_ports,
+    )
+    .with_local_workspace(platform_workspace.clone())
+    .with_remote_attempt_executor(awaken_server::a2a_attempt_executor())
+    .with_config_service(config_service.clone())
+    .with_admin_tools(admin_execs);
+    if let Some(materializer) = model_wiring.materializer {
+        host_builder = host_builder.with_inference_materializer(materializer);
+    }
     host_builder.install_memory_extraction_repository(memory_extractions);
     awaken_server::install_platform_memory_data_plane(&host_builder);
     // Production ACP wiring (`acp:*` threads): the environment advertises only the
