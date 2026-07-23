@@ -59,6 +59,7 @@ consistent vocabulary. This affects the documentation layers differently:
 | `design/neutral-waist.md` | Runtime-owned | Runtime execution ports and extension points |
 | `design/tool-and-capability.md` | Runtime-owned | Capability segmentation, neutral ToolExecutor port, builtin-tools placement, unified delegation tool, and permission boundary |
 | `design/run-ingress-message-delivery.md` | Boundary-only | Dispatch/server boundary for run ingress, durable delivery, pending input, and message handoff |
+| `design/remote-worker-protocol.md` | Boundary-only | Proposed P0/P1/P2 contract for recoverable, database-independent, embeddable remote Workers; separates logical coordinator authority from physical topology |
 | `design/anthropic-alignment-and-sessions.md` | Product-owned | Downstream product adapter guidance |
 | `design/web-ui.md` | Product-owned | Web console blueprint: Oversight two-scope shell over the management plane, session surface, design tokens, contract-first frontend engineering plan |
 | `design/awaken-server-local-overview.md` | Product-owned | Single-machine assembly overview; navigation map linking component owners; sandbox/relay, managed adapter, and goal are to-build |
@@ -106,6 +107,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `design/neutral-waist.md` | Delegated boundary narrative | Delegated | [runtime-interface-boundaries.md](design/runtime-interface-boundaries.md#role-catalog) |
 | `design/tool-and-capability.md` | Role owner | Required | self |
 | `design/run-ingress-message-delivery.md` | Role owner | Required | self |
+| `design/remote-worker-protocol.md` | Role owner | Required | self |
 | `design/anthropic-alignment-and-sessions.md` | Product/downstream mapping | Not required | n/a |
 | `design/web-ui.md` | Product/downstream mapping | Not required | n/a |
 | `design/awaken-server-local-overview.md` | Product/downstream mapping | Not required | n/a |
@@ -183,6 +185,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0062-published-inference-access-and-runtime-credential-injection.md` | Decision record | Not required | n/a |
 | `adr/0063-resource-input-identity-configuration-pinning-and-lifecycle.md` | Decision record | Not required | n/a |
 | `adr/0064-runtime-owned-outcome-orchestration.md` | Decision record | Not required | n/a |
+| `adr/0065-recoverable-embeddable-remote-worker.md` | Decision record | Not required | n/a |
 
 ## Implementation Context
 

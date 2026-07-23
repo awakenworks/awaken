@@ -13,6 +13,7 @@ code or long-form design.
 - [Key design decisions](../design/key-design-decisions.md) - load-bearing architecture decisions
 - [Runtime behavior](../design/runtime-behavior.md) - run lifecycle, live state apply, durable commit, effects, and events
 - [Runtime scenario validation](../design/runtime-scenario-validation.md) - GWT scenario ids, test mapping, and scenario organization
+- [Recoverable remote Worker protocol](../design/remote-worker-protocol.md) - current gaps and the P0/P1/P2 coordinator, recovery, commit, Worker assembly, and active-active contract
 - [Invariants](../INVARIANTS.md) - enforceable guardrails
 
 ## Ownership
