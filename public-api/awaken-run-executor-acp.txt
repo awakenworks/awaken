@@ -43,10 +43,13 @@ pub awaken_run_executor_acp::SessionReuse::ForcedCold
 pub awaken_run_executor_acp::SessionReuse::Warm
 pub struct awaken_run_executor_acp::AcpCli
 pub awaken_run_executor_acp::AcpCli::args: &'static [&'static str]
+pub awaken_run_executor_acp::AcpCli::auth_method_id: core::option::Option<&'static str>
 pub awaken_run_executor_acp::AcpCli::command: &'static str
+pub awaken_run_executor_acp::AcpCli::config_home_aliases: &'static [&'static str]
 pub awaken_run_executor_acp::AcpCli::config_home_env: &'static str
 pub awaken_run_executor_acp::AcpCli::container_argv: &'static [&'static str]
 pub awaken_run_executor_acp::AcpCli::context_window_env: core::option::Option<&'static str>
+pub awaken_run_executor_acp::AcpCli::credential_file: core::option::Option<&'static str>
 pub awaken_run_executor_acp::AcpCli::env: &'static [(&'static str, &'static str)]
 pub awaken_run_executor_acp::AcpCli::id: &'static str
 pub awaken_run_executor_acp::AcpCli::mcp_interface: awaken_run_executor_acp::McpInterface
@@ -186,4 +189,5 @@ pub fn awaken_run_executor_acp::acp_cli(&str) -> core::option::Option<&'static a
 pub fn awaken_run_executor_acp::is_dynamic_install(&awaken_run_executor_acp::AcpCli) -> bool
 pub fn awaken_run_executor_acp::known_acp_clis() -> &'static [awaken_run_executor_acp::AcpCli]
 pub fn awaken_run_executor_acp::mcp_injection(&awaken_run_executor_acp::AcpCli, &alloc::collections::btree::map::BTreeMap<alloc::string::String, serde_json::value::Value>, bool) -> core::result::Result<awaken_run_executor_acp::McpInjection, awaken_run_executor_acp::OpenError>
+pub fn awaken_run_executor_acp::mcp_injection_from_servers(&awaken_run_executor_acp::AcpCli, &[awaken_run_executor_acp::McpServerConfig], bool) -> core::result::Result<awaken_run_executor_acp::McpInjection, awaken_run_executor_acp::OpenError>
 pub fn awaken_run_executor_acp::project_launch(&awaken_run_executor_acp::AcpCli, &dyn awaken_run_executor_acp::LaunchResolver, &awaken_runtime_contract::activation::RunActivation) -> core::result::Result<awaken_run_executor_acp::AcpLaunch, awaken_run_executor_acp::OpenError>

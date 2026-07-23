@@ -686,6 +686,50 @@ pub fn awaken_agent_contract::thread::read::thread_reader::ThreadReader::committ
 pub fn awaken_agent_contract::thread::read::thread_reader::ThreadReader::committed_state(&self, &awaken_agent_contract::agent::thread::Id) -> alloc::vec::Vec<awaken_agent_contract::agent::state::Command>
 pub fn awaken_agent_contract::thread::read::thread_reader::ThreadReader::resume_ticket(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::awaiting::ResumeTicket>
 pub fn awaken_agent_contract::thread::read::thread_reader::ThreadReader::run_state(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::run::RunState>
+pub fn awaken_agent_contract::thread::read::thread_reader::ThreadReader::transcript_slice(&self, &awaken_agent_contract::thread::read::transcript::TranscriptSliceSpec) -> core::result::Result<awaken_agent_contract::thread::read::transcript::TranscriptSlice, awaken_agent_contract::thread::read::transcript::TranscriptError>
+pub fn awaken_agent_contract::thread::read::thread_reader::ThreadReader::transcript_snapshot(&self, &awaken_agent_contract::agent::thread::Id, awaken_agent_contract::thread::read::transcript::TranscriptView) -> awaken_agent_contract::thread::read::transcript::TranscriptSnapshot
+pub fn awaken_agent_contract::thread::read::thread_reader::ThreadReader::verify_transcript_snapshot(&self, &awaken_agent_contract::thread::read::transcript::TranscriptSnapshotRef) -> core::result::Result<(), awaken_agent_contract::thread::read::transcript::TranscriptError>
+pub mod awaken_agent_contract::thread::read::transcript
+pub enum awaken_agent_contract::thread::read::transcript::TranscriptError
+pub awaken_agent_contract::thread::read::transcript::TranscriptError::InvalidRange
+pub awaken_agent_contract::thread::read::transcript::TranscriptError::InvalidRange::end: u64
+pub awaken_agent_contract::thread::read::transcript::TranscriptError::InvalidRange::snapshot_end: u64
+pub awaken_agent_contract::thread::read::transcript::TranscriptError::InvalidRange::start: u64
+pub awaken_agent_contract::thread::read::transcript::TranscriptError::OverlappingRanges
+pub awaken_agent_contract::thread::read::transcript::TranscriptError::SequenceOverflow
+pub awaken_agent_contract::thread::read::transcript::TranscriptError::SnapshotMismatch
+pub awaken_agent_contract::thread::read::transcript::TranscriptError::SnapshotUnavailable
+pub awaken_agent_contract::thread::read::transcript::TranscriptError::SnapshotUnavailable::available_end: u64
+pub awaken_agent_contract::thread::read::transcript::TranscriptError::SnapshotUnavailable::requested_end: u64
+pub enum awaken_agent_contract::thread::read::transcript::TranscriptView
+pub awaken_agent_contract::thread::read::transcript::TranscriptView::ContextEffective
+pub awaken_agent_contract::thread::read::transcript::TranscriptView::RawCommitted
+pub struct awaken_agent_contract::thread::read::transcript::TranscriptRange
+pub awaken_agent_contract::thread::read::transcript::TranscriptRange::end: u64
+pub awaken_agent_contract::thread::read::transcript::TranscriptRange::start: u64
+impl awaken_agent_contract::thread::read::transcript::TranscriptRange
+pub const fn awaken_agent_contract::thread::read::transcript::TranscriptRange::new(u64, u64) -> Self
+pub struct awaken_agent_contract::thread::read::transcript::TranscriptSlice
+pub awaken_agent_contract::thread::read::transcript::TranscriptSlice::messages: alloc::sync::Arc<[awaken_agent_contract::agent::message::Message]>
+pub awaken_agent_contract::thread::read::transcript::TranscriptSlice::ranges: alloc::vec::Vec<awaken_agent_contract::thread::read::transcript::TranscriptRange>
+pub awaken_agent_contract::thread::read::transcript::TranscriptSlice::snapshot: awaken_agent_contract::thread::read::transcript::TranscriptSnapshotRef
+pub struct awaken_agent_contract::thread::read::transcript::TranscriptSliceSpec
+pub awaken_agent_contract::thread::read::transcript::TranscriptSliceSpec::ranges: alloc::vec::Vec<awaken_agent_contract::thread::read::transcript::TranscriptRange>
+pub awaken_agent_contract::thread::read::transcript::TranscriptSliceSpec::snapshot: awaken_agent_contract::thread::read::transcript::TranscriptSnapshotRef
+impl awaken_agent_contract::thread::read::transcript::TranscriptSliceSpec
+pub fn awaken_agent_contract::thread::read::transcript::TranscriptSliceSpec::validate(&self) -> core::result::Result<(), awaken_agent_contract::thread::read::transcript::TranscriptError>
+pub struct awaken_agent_contract::thread::read::transcript::TranscriptSnapshot
+impl awaken_agent_contract::thread::read::transcript::TranscriptSnapshot
+pub fn awaken_agent_contract::thread::read::transcript::TranscriptSnapshot::messages(&self) -> &[awaken_agent_contract::agent::message::Message]
+pub fn awaken_agent_contract::thread::read::transcript::TranscriptSnapshot::new(awaken_agent_contract::agent::thread::Id, awaken_agent_contract::thread::read::transcript::TranscriptView, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> Self
+pub fn awaken_agent_contract::thread::read::transcript::TranscriptSnapshot::reference(&self) -> &awaken_agent_contract::thread::read::transcript::TranscriptSnapshotRef
+pub fn awaken_agent_contract::thread::read::transcript::TranscriptSnapshot::slice(&self, &awaken_agent_contract::thread::read::transcript::TranscriptSliceSpec) -> core::result::Result<awaken_agent_contract::thread::read::transcript::TranscriptSlice, awaken_agent_contract::thread::read::transcript::TranscriptError>
+pub fn awaken_agent_contract::thread::read::transcript::TranscriptSnapshot::verify(&self, &awaken_agent_contract::thread::read::transcript::TranscriptSnapshotRef) -> core::result::Result<(), awaken_agent_contract::thread::read::transcript::TranscriptError>
+pub struct awaken_agent_contract::thread::read::transcript::TranscriptSnapshotRef
+pub awaken_agent_contract::thread::read::transcript::TranscriptSnapshotRef::end_seq: u64
+pub awaken_agent_contract::thread::read::transcript::TranscriptSnapshotRef::thread_id: awaken_agent_contract::agent::thread::Id
+pub awaken_agent_contract::thread::read::transcript::TranscriptSnapshotRef::version: u64
+pub awaken_agent_contract::thread::read::transcript::TranscriptSnapshotRef::view: awaken_agent_contract::thread::read::transcript::TranscriptView
 pub enum awaken_agent_contract::AgentEvent
 pub awaken_agent_contract::AgentEvent::Delta(awaken_agent_contract::event::agent::Delta)
 pub awaken_agent_contract::AgentEvent::Fact(awaken_agent_contract::event::agent::Fact)
@@ -709,6 +753,20 @@ pub awaken_agent_contract::RunLifecycleKind::Completed
 pub awaken_agent_contract::RunLifecycleKind::Failed
 pub awaken_agent_contract::RunLifecycleKind::Resumed
 pub awaken_agent_contract::RunLifecycleKind::Running
+pub enum awaken_agent_contract::TranscriptError
+pub awaken_agent_contract::TranscriptError::InvalidRange
+pub awaken_agent_contract::TranscriptError::InvalidRange::end: u64
+pub awaken_agent_contract::TranscriptError::InvalidRange::snapshot_end: u64
+pub awaken_agent_contract::TranscriptError::InvalidRange::start: u64
+pub awaken_agent_contract::TranscriptError::OverlappingRanges
+pub awaken_agent_contract::TranscriptError::SequenceOverflow
+pub awaken_agent_contract::TranscriptError::SnapshotMismatch
+pub awaken_agent_contract::TranscriptError::SnapshotUnavailable
+pub awaken_agent_contract::TranscriptError::SnapshotUnavailable::available_end: u64
+pub awaken_agent_contract::TranscriptError::SnapshotUnavailable::requested_end: u64
+pub enum awaken_agent_contract::TranscriptView
+pub awaken_agent_contract::TranscriptView::ContextEffective
+pub awaken_agent_contract::TranscriptView::RawCommitted
 pub struct awaken_agent_contract::CheckpointRunLifecycleFeed
 impl awaken_agent_contract::thread::read::lifecycle::CheckpointRunLifecycleFeed
 pub fn awaken_agent_contract::thread::read::lifecycle::CheckpointRunLifecycleFeed::new(alloc::sync::Arc<dyn awaken_agent_contract::thread::read::checkpoint::CheckpointReader>) -> Self
@@ -807,6 +865,32 @@ pub fn awaken_agent_contract::thread::commit::staged::ThreadCommit::serialize<S:
 impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::thread::commit::staged::ThreadCommit
 pub fn awaken_agent_contract::thread::commit::staged::ThreadCommit::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 pub struct awaken_agent_contract::ThreadId(pub alloc::string::String)
+pub struct awaken_agent_contract::TranscriptRange
+pub awaken_agent_contract::TranscriptRange::end: u64
+pub awaken_agent_contract::TranscriptRange::start: u64
+impl awaken_agent_contract::thread::read::transcript::TranscriptRange
+pub const fn awaken_agent_contract::thread::read::transcript::TranscriptRange::new(u64, u64) -> Self
+pub struct awaken_agent_contract::TranscriptSlice
+pub awaken_agent_contract::TranscriptSlice::messages: alloc::sync::Arc<[awaken_agent_contract::agent::message::Message]>
+pub awaken_agent_contract::TranscriptSlice::ranges: alloc::vec::Vec<awaken_agent_contract::thread::read::transcript::TranscriptRange>
+pub awaken_agent_contract::TranscriptSlice::snapshot: awaken_agent_contract::thread::read::transcript::TranscriptSnapshotRef
+pub struct awaken_agent_contract::TranscriptSliceSpec
+pub awaken_agent_contract::TranscriptSliceSpec::ranges: alloc::vec::Vec<awaken_agent_contract::thread::read::transcript::TranscriptRange>
+pub awaken_agent_contract::TranscriptSliceSpec::snapshot: awaken_agent_contract::thread::read::transcript::TranscriptSnapshotRef
+impl awaken_agent_contract::thread::read::transcript::TranscriptSliceSpec
+pub fn awaken_agent_contract::thread::read::transcript::TranscriptSliceSpec::validate(&self) -> core::result::Result<(), awaken_agent_contract::thread::read::transcript::TranscriptError>
+pub struct awaken_agent_contract::TranscriptSnapshot
+impl awaken_agent_contract::thread::read::transcript::TranscriptSnapshot
+pub fn awaken_agent_contract::thread::read::transcript::TranscriptSnapshot::messages(&self) -> &[awaken_agent_contract::agent::message::Message]
+pub fn awaken_agent_contract::thread::read::transcript::TranscriptSnapshot::new(awaken_agent_contract::agent::thread::Id, awaken_agent_contract::thread::read::transcript::TranscriptView, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> Self
+pub fn awaken_agent_contract::thread::read::transcript::TranscriptSnapshot::reference(&self) -> &awaken_agent_contract::thread::read::transcript::TranscriptSnapshotRef
+pub fn awaken_agent_contract::thread::read::transcript::TranscriptSnapshot::slice(&self, &awaken_agent_contract::thread::read::transcript::TranscriptSliceSpec) -> core::result::Result<awaken_agent_contract::thread::read::transcript::TranscriptSlice, awaken_agent_contract::thread::read::transcript::TranscriptError>
+pub fn awaken_agent_contract::thread::read::transcript::TranscriptSnapshot::verify(&self, &awaken_agent_contract::thread::read::transcript::TranscriptSnapshotRef) -> core::result::Result<(), awaken_agent_contract::thread::read::transcript::TranscriptError>
+pub struct awaken_agent_contract::TranscriptSnapshotRef
+pub awaken_agent_contract::TranscriptSnapshotRef::end_seq: u64
+pub awaken_agent_contract::TranscriptSnapshotRef::thread_id: awaken_agent_contract::agent::thread::Id
+pub awaken_agent_contract::TranscriptSnapshotRef::version: u64
+pub awaken_agent_contract::TranscriptSnapshotRef::view: awaken_agent_contract::thread::read::transcript::TranscriptView
 pub trait awaken_agent_contract::CheckpointReader: awaken_agent_contract::thread::read::thread_reader::ThreadReader
 pub fn awaken_agent_contract::CheckpointReader::latest_run(&self, &awaken_agent_contract::agent::thread::Id) -> core::option::Option<awaken_agent_contract::agent::run::Record>
 pub fn awaken_agent_contract::CheckpointReader::list_events(&self, &awaken_agent_contract::thread::read::checkpoint::EventScope, core::option::Option<u64>, usize) -> alloc::vec::Vec<awaken_agent_contract::audit::record::Record>
