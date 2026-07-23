@@ -21,6 +21,9 @@ const STORAGE = path.join(TMP, 'storage');
 const IMAGE = `awaken-acp-projected-e2e:${process.pid}`;
 const BETAS = ['managed-agents-2026-04-01', 'files-api-2025-04-14'];
 const MCP_TOKEN = 'projected-container-mcp-token'; // awaken-allow: secret (fixture)
+const WORKSPACE = `workspace_acp_container_${process.pid}`;
+const SEAL_KEY = '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff';
+const AGENT = 'projected-container-agent';
 
 function dockerAvailable() {
   return spawnSync('docker', ['version'], { stdio: 'ignore' }).status === 0;
@@ -129,6 +132,59 @@ async function messages(client, sessionId) {
   return { events, texts };
 }
 
+async function request(base, method, route, body) {
+  const response = await fetch(`${base}${route}`, {
+    method,
+    headers: body === undefined ? {} : { 'content-type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const value = await response.json().catch(() => ({}));
+  assert.ok(
+    response.ok,
+    `${method} ${route}: ${response.status} ${JSON.stringify(value)}`,
+  );
+  return value;
+}
+
+async function publishAgent(base) {
+  await request(base, 'PUT', '/v1/config/providers/google', {
+    id: 'google',
+    slug: 'google',
+    display_name: 'Google',
+    version: 1,
+  });
+  await request(base, 'PUT', '/v1/config/endpoints/container-gemini-endpoint', {
+    id: 'container-gemini-endpoint',
+    provider_id: 'google',
+    dialect: 'open_ai_chat',
+    base_url: 'http://container-db.invalid/v1',
+    timeout_secs: 30,
+    display_name: 'Container Gemini',
+    version: 1,
+  });
+  await request(base, 'POST', '/v1/config/offerings', {
+    model_id: 'container-published',
+    provider_id: 'google',
+    protocol_endpoint_id: 'container-gemini-endpoint',
+    dialect: 'open_ai_chat',
+    upstream_model: 'container-upstream',
+  });
+  await request(base, 'POST', '/v1/config/credentials', {
+    workspace_id: WORKSPACE,
+    kind: 'vault',
+    provider_id: 'google',
+    env_key: 'GEMINI_API_KEY',
+    secret: 'persisted-container-key', // awaken-allow: secret (fixture)
+  });
+  await request(base, 'PUT', `/v1/config/agents/${AGENT}`, {
+    name: AGENT,
+    model: { id: 'container-published', provider_identity_ref: 'google' },
+    system: 'Exercise publication-pinned container ACP provisioning.',
+    tools: [],
+  });
+  await request(base, 'POST', `/v1/config/agents/${AGENT}/publish`);
+}
+
 async function main() {
   if (!dockerAvailable()) {
     console.log('E2E SKIP: no reachable Docker daemon.');
@@ -148,13 +204,17 @@ async function main() {
     env: {
       ...environment,
       AWAKEN_HTTP_ADDR: `127.0.0.1:${PORT}`,
-      AWAKEN_STORAGE_DIR: STORAGE,
+      AWAKEN_LOCAL_WORKSPACE_ID: WORKSPACE,
+      AWAKEN_DEPLOYMENT_DATA_DIR: STORAGE,
+      AWAKEN_CONTROL_SEAL_KEY: SEAL_KEY,
       AWAKEN_ACP_CLI: 'gemini',
       AWAKEN_SANDBOX_TIER: 'docker',
       AWAKEN_CONTAINER_IMAGE: IMAGE,
       AWAKEN_SANDBOX_REAP_INTERVAL: '3600',
-      GOOGLE_GEMINI_BASE_URL: 'http://container-gateway.invalid/v1',
-      GEMINI_API_KEY: 'lease-container-e2e', // awaken-allow: secret (fixture)
+      // Ambient values are discovery hints only. The published endpoint, model,
+      // and credential revision below must be the realized runtime inputs.
+      GOOGLE_GEMINI_BASE_URL: 'http://ambient-container.invalid/v1',
+      GEMINI_API_KEY: 'ambient-container-must-not-win', // awaken-allow: secret (fixture)
       GEMINI_MODEL: 'environment-fallback-must-not-win',
     },
     stdio: ['ignore', 'ignore', 'inherit'],
@@ -164,9 +224,11 @@ async function main() {
 
   try {
     await ready(server);
+    const base = `http://127.0.0.1:${PORT}`;
+    await publishAgent(base);
     client = new Anthropic({
       apiKey: 'e2e-dummy',
-      baseURL: `http://127.0.0.1:${PORT}`,
+      baseURL: base,
     });
     const environmentResource = await client.beta.environments.create({
       name: `projected-container-${process.pid}`,
@@ -196,7 +258,7 @@ async function main() {
       betas: BETAS,
     });
     session = await client.beta.sessions.create({
-      agent: 'assistant',
+      agent: AGENT,
       environment_id: environmentResource.id,
       metadata: { 'awaken.runtime': 'acp:gemini' },
       resources: [{
@@ -225,16 +287,17 @@ async function main() {
       reply,
       `the production projected container returned an ACP message: ${JSON.stringify(observed.events)}`,
     );
-    assert.match(reply, /base=http:\/\/container-gateway\.invalid\/v1/u);
-    assert.match(reply, /model=unconfigured/u, 'the frozen run model beats fallback env');
+    assert.match(reply, /base=http:\/\/container-db\.invalid\/v1/u);
+    assert.match(reply, /model=container-upstream/u, 'the published upstream model beats ambient env');
+    assert.ok(!reply.includes('ambient-container'));
     assert.ok(!reply.includes('environment-fallback-must-not-win'));
-    assert.match(reply, /key=lease-/u);
+    assert.match(reply, /key=persis/u);
     assert.match(reply, /file=yes/u, 'the File binding was materialized in the container');
     assert.match(reply, /mcp=yes/u, 'the ACP session received the frozen MCP server list');
     assert.match(reply, /home=\/acp-config/u);
 
     console.log(
-      'E2E PASS: production awaken projected model access, MCP, and File input into one Docker ACP run.',
+      'E2E PASS: production awaken projected publication-pinned model access, MCP, and File input into one Docker ACP run.',
     );
   } finally {
     // The production sandbox is Session-owned and deliberately survives server
