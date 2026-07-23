@@ -18,6 +18,7 @@ mod any;
 mod capability;
 mod clock;
 mod commit_fence;
+mod commit_operation;
 mod dispatch;
 mod dispatch_schema;
 mod durable;
@@ -26,6 +27,7 @@ mod live_control;
 pub mod memory;
 mod pool;
 mod postgres;
+mod recovery_projection;
 mod send_message;
 mod service;
 mod sqlite;
@@ -39,17 +41,19 @@ pub use capability::RunIngressCapabilities;
 // The database-less worker's HTTP dispatch client (drives claim/settle over the wire
 // to a cell server's dispatch_transport_router), extracted from awaken-session-executor.
 pub use awaken_dispatch_contract::{
-    AssignmentRejection, ExecutionLocation, ExecutionScopeRef, HOST_EXECUTOR_CAPABILITY,
-    LeastLoadedPolicy, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY, PlacementContext, PlacementError,
-    PlacementPolicy, PlacementRequirements, REPOSITORY_CREDENTIALS_CAPABILITY, RankedWorker,
-    RegisteredWorker, RegistryError, RegistryMutation, RunDispatch, SESSION_RESOURCES_CAPABILITY,
-    SessionResourceEnvelope, WORKER_LOCAL_CREDENTIALS_CAPABILITY, WorkerAssignment,
-    WorkerCredentialRevision, WorkerDirectory, WorkerHeartbeat, WorkerIdentity, WorkerManifest,
-    WorkerRecoveryMode, WorkerRegistration, WorkerSnapshot, WorkerState, can_assign, can_claim,
-    can_claim_locally, place_assignment,
+    AssignmentRejection, ClaimedCommitCommand, ExecutionLocation, ExecutionScopeRef,
+    HOST_EXECUTOR_CAPABILITY, LeastLoadedPolicy, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY,
+    PlacementContext, PlacementError, PlacementPolicy, PlacementRequirements,
+    REPOSITORY_CREDENTIALS_CAPABILITY, RankedWorker, RegisteredWorker, RegistryError,
+    RegistryMutation, RunDispatch, SESSION_RESOURCES_CAPABILITY, SessionResourceEnvelope,
+    WORKER_LOCAL_CREDENTIALS_CAPABILITY, WorkerAssignment, WorkerCredentialRevision,
+    WorkerDirectory, WorkerHeartbeat, WorkerIdentity, WorkerManifest, WorkerRecoveryMode,
+    WorkerRegistration, WorkerSnapshot, WorkerState, can_assign, can_claim, can_claim_locally,
+    place_assignment,
 };
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use commit_fence::{ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit};
+pub use commit_operation::{CommitHashError, commit_payload_hash};
 pub use dispatch::{
     CasOutcome, Claimed, CommitEpochGuard, Dispatch, DispatchCompletion, DispatchError,
     DispatchOutcome, DispatchQueue, DispatchState, DispatchSummary, Inbox, Lease, Outbox,
@@ -64,10 +68,11 @@ pub use pool::{CompletionSink, DispatchPool, WorkerResolver};
 pub use postgres::{
     PostgresDispatchStore, PostgresStreamCheckpointStore, StoreError as PostgresStoreError,
 };
+pub use recovery_projection::{RecoveryProjection, RecoveryProjectionError};
 pub use send_message::OutboxMessageSender;
 pub use service::{DispatchService, DispatchServiceConfig};
 pub use sqlite::{SqliteDispatchStore, StoreError as SqliteStoreError};
-pub use transport_client::{HttpDispatchQueue, worker_dispatch_store};
+pub use transport_client::{HttpDispatchQueue, WorkerRequestAuthorizer, worker_dispatch_store};
 #[cfg(feature = "nats")]
 pub use wake::NatsWakeSignal;
 pub use wake::{LocalWakeSignal, PgNotifyWake, WakeSignal};

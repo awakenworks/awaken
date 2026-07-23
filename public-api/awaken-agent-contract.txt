@@ -531,6 +531,28 @@ pub enum awaken_agent_contract::thread::commit::coordinator::Error
 pub awaken_agent_contract::thread::commit::coordinator::Error::Rejected(alloc::string::String)
 pub trait awaken_agent_contract::thread::commit::coordinator::Coordinator: core::marker::Send + core::marker::Sync
 pub fn awaken_agent_contract::thread::commit::coordinator::Coordinator::commit<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::thread::commit::staged::ThreadCommit) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::commit::staged::CommitRecord, awaken_agent_contract::thread::commit::coordinator::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub trait awaken_agent_contract::thread::commit::coordinator::OperationCoordinator: awaken_agent_contract::thread::commit::coordinator::Coordinator
+pub fn awaken_agent_contract::thread::commit::coordinator::OperationCoordinator::commit_operation<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::thread::commit::operation::CommitOperation) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::commit::operation::CommitReceipt, awaken_agent_contract::thread::commit::coordinator::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub mod awaken_agent_contract::thread::commit::operation
+pub struct awaken_agent_contract::thread::commit::operation::CommitOperation
+pub awaken_agent_contract::thread::commit::operation::CommitOperation::commit: awaken_agent_contract::thread::commit::staged::ThreadCommit
+pub awaken_agent_contract::thread::commit::operation::CommitOperation::expected_thread_version: u64
+pub awaken_agent_contract::thread::commit::operation::CommitOperation::operation_id: awaken_agent_contract::thread::commit::operation::CommitOperationId
+pub awaken_agent_contract::thread::commit::operation::CommitOperation::payload_hash: awaken_agent_contract::thread::commit::operation::CommitPayloadHash
+pub struct awaken_agent_contract::thread::commit::operation::CommitOperationId
+pub awaken_agent_contract::thread::commit::operation::CommitOperationId::ordinal: u64
+pub awaken_agent_contract::thread::commit::operation::CommitOperationId::run_id: awaken_agent_contract::agent::run::Id
+impl awaken_agent_contract::thread::commit::operation::CommitOperationId
+pub fn awaken_agent_contract::thread::commit::operation::CommitOperationId::new(awaken_agent_contract::agent::run::Id, u64) -> Self
+pub struct awaken_agent_contract::thread::commit::operation::CommitPayloadHash(pub alloc::string::String)
+pub struct awaken_agent_contract::thread::commit::operation::CommitReceipt
+pub awaken_agent_contract::thread::commit::operation::CommitReceipt::commit_sequence: u64
+pub awaken_agent_contract::thread::commit::operation::CommitReceipt::duplicate: bool
+pub awaken_agent_contract::thread::commit::operation::CommitReceipt::operation_id: awaken_agent_contract::thread::commit::operation::CommitOperationId
+pub awaken_agent_contract::thread::commit::operation::CommitReceipt::payload_hash: awaken_agent_contract::thread::commit::operation::CommitPayloadHash
+pub awaken_agent_contract::thread::commit::operation::CommitReceipt::thread_version: u64
+impl awaken_agent_contract::thread::commit::operation::CommitReceipt
+pub fn awaken_agent_contract::thread::commit::operation::CommitReceipt::commit_record(&self) -> awaken_agent_contract::thread::commit::staged::CommitRecord
 pub mod awaken_agent_contract::thread::commit::run
 pub async fn awaken_agent_contract::thread::commit::run::commit_run(&dyn awaken_agent_contract::thread::commit::coordinator::Coordinator, &awaken_agent_contract::agent::thread::Id, awaken_agent_contract::thread::commit::staged::RunDisposition, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, alloc::vec::Vec<awaken_agent_contract::agent::state::Command>) -> core::result::Result<awaken_agent_contract::thread::commit::staged::CommitRecord, awaken_agent_contract::thread::commit::coordinator::Error>
 pub mod awaken_agent_contract::thread::commit::run_fact
@@ -601,6 +623,25 @@ pub trait awaken_agent_contract::thread::read::checkpoint::CheckpointReader: awa
 pub fn awaken_agent_contract::thread::read::checkpoint::CheckpointReader::latest_run(&self, &awaken_agent_contract::agent::thread::Id) -> core::option::Option<awaken_agent_contract::agent::run::Record>
 pub fn awaken_agent_contract::thread::read::checkpoint::CheckpointReader::list_events(&self, &awaken_agent_contract::thread::read::checkpoint::EventScope, core::option::Option<u64>, usize) -> alloc::vec::Vec<awaken_agent_contract::audit::record::Record>
 pub fn awaken_agent_contract::thread::read::checkpoint::CheckpointReader::run(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::run::Record>
+pub mod awaken_agent_contract::thread::read::recovery
+pub enum awaken_agent_contract::thread::read::recovery::RecoveryError
+pub awaken_agent_contract::thread::read::recovery::RecoveryError::Rejected(alloc::string::String)
+pub struct awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot
+pub awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot::claimed_run_id: awaken_agent_contract::agent::run::Id
+pub awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot::latest_run_id: core::option::Option<awaken_agent_contract::agent::run::Id>
+pub awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot::messages: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
+pub awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot::next_commit_ordinal: u64
+pub awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot::resume_tickets: alloc::vec::Vec<awaken_agent_contract::thread::read::recovery::RunResumeTicket>
+pub awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot::runs: alloc::vec::Vec<awaken_agent_contract::agent::run::Record>
+pub awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot::state: alloc::vec::Vec<awaken_agent_contract::agent::state::Command>
+pub awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot::store_cursor: u64
+pub awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot::thread_id: awaken_agent_contract::agent::thread::Id
+pub awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot::thread_version: u64
+pub struct awaken_agent_contract::thread::read::recovery::RunResumeTicket
+pub awaken_agent_contract::thread::read::recovery::RunResumeTicket::run_id: awaken_agent_contract::agent::run::Id
+pub awaken_agent_contract::thread::read::recovery::RunResumeTicket::ticket: awaken_agent_contract::agent::awaiting::ResumeTicket
+pub trait awaken_agent_contract::thread::read::recovery::RunRecoverySource: core::marker::Send + core::marker::Sync
+pub fn awaken_agent_contract::thread::read::recovery::RunRecoverySource::recovery_snapshot<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::thread::Id, &'life2 awaken_agent_contract::agent::run::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot, awaken_agent_contract::thread::read::recovery::RecoveryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub mod awaken_agent_contract::thread::read::run_store
 pub trait awaken_agent_contract::thread::read::run_store::RunStore
 pub fn awaken_agent_contract::thread::read::run_store::RunStore::get(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::run::Record>

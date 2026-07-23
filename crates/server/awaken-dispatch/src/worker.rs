@@ -42,6 +42,7 @@ pub struct DispatchWorker<S> {
     exec: WorkerContext,
     reader: Arc<dyn ThreadReader>,
     claimed_commit: Arc<dyn ClaimedRunCommit>,
+    recovery_projection: Option<Arc<crate::RecoveryProjection>>,
     owner: String,
     lease_ms: u64,
     cancellation: Option<CancellationToken>,
@@ -97,6 +98,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             exec: WorkerContext::new(commit.clone()).with_reader(reader.clone()),
             reader,
             claimed_commit: Arc::new(GuardedRunCommit::new(commit, dispatch)),
+            recovery_projection: None,
             owner: owner.into(),
             lease_ms: DEFAULT_LEASE_MS,
             cancellation: None,
@@ -136,6 +138,14 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     #[must_use]
     pub fn with_claimed_commit(mut self, commit: Arc<dyn ClaimedRunCommit>) -> Self {
         self.claimed_commit = commit;
+        self
+    }
+
+    /// Install the non-authoritative read cache used by a database-independent
+    /// Worker. Every claimed drive must load it before executor entry.
+    #[must_use]
+    pub fn with_recovery_projection(mut self, projection: Arc<crate::RecoveryProjection>) -> Self {
+        self.recovery_projection = Some(projection);
         self
     }
 
@@ -227,10 +237,12 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         // The base commit boundary, wrapped per drive because the fence epoch is per
         // claim. `self.store` (the dispatch queue) reports the run's current epoch, so
         // a superseded owner's per-step commits are rejected.
-        let fenced: Arc<dyn CommitCoordinator> = Arc::new(ClaimedCommitCoordinator::new(
-            self.claimed_commit.clone(),
-            claim.clone(),
-        ));
+        let mut coordinator =
+            ClaimedCommitCoordinator::new(self.claimed_commit.clone(), claim.clone());
+        if let Some(projection) = &self.recovery_projection {
+            coordinator = coordinator.with_recovery_projection(projection.clone());
+        }
+        let fenced: Arc<dyn CommitCoordinator> = Arc::new(coordinator);
         let mut ctx = self.execution_context().with_commit(fenced);
         if let Some(checkpoint) = ctx.stream_checkpoint.clone() {
             let dispatch: Arc<dyn crate::DispatchQueue> = self.store.clone();
@@ -382,6 +394,12 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         // rejected and abandons instead of clobbering the reclaimer's dispatch.
         let lease_epoch = claimed.lease.epoch;
         let claim = RunClaim::from(&claimed.lease);
+        if let Some(projection) = &self.recovery_projection {
+            let snapshot = self.store.load_recovery_snapshot(&claim).await?;
+            projection.install(&run_id, snapshot).map_err(|error| {
+                crate::Error::Dispatch(crate::DispatchError::Rejected(error.to_string()))
+            })?;
+        }
         let mut all_pending: Vec<String> = claimed
             .pending
             .iter()

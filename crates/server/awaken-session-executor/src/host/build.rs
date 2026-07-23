@@ -173,6 +173,7 @@ impl SharedHost {
             ),
             acp: None,
             remote_attempt_executor: None,
+            attempt_executor_override: None,
             provider: LocalProvider::new(sandbox_root.clone()),
             session_provider: crate::session_environment::SessionEnvironmentProvider::workdir(
                 sandbox_root.clone(),
@@ -231,6 +232,19 @@ impl SharedHost {
         executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>,
     ) -> Self {
         self.remote_attempt_executor = Some(executor);
+        self
+    }
+
+    /// Replace the complete per-Session attempt boundary.
+    ///
+    /// This is the embedding seam for a Worker-supplied executor or decorator.
+    /// When absent, the host constructs its built-in Native/ACP/A2A router.
+    #[must_use]
+    pub fn with_attempt_executor(
+        mut self,
+        executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>,
+    ) -> Self {
+        self.attempt_executor_override = Some(executor);
         self
     }
 
@@ -691,6 +705,7 @@ impl SharedHost {
         }
         let remote_agents = self.remote_agents.clone();
         let scheduler = if self.deployment.durable {
+            let recovery_projection = commit.recovery_projection();
             Some(crate::agent_runner::RunScheduler {
                 store: crate::dispatch_backend::shared_durable_store(self.store_dir.as_deref())?,
                 commit: commit.clone(),
@@ -699,12 +714,14 @@ impl SharedHost {
                 claimed_commit: self.upstream.as_ref().map(|upstream| {
                     let mut commit =
                         crate::commit_ingest::RemoteClaimedRunCommit::new(upstream.base_url())
-                            .with_client(upstream.client().clone());
+                            .with_client(upstream.client().clone())
+                            .with_request_authorizer(upstream.request_authorizer());
                     if let Some(identity) = upstream.worker_identity() {
                         commit = commit.with_worker_identity(identity.clone());
                     }
                     Arc::new(commit) as Arc<dyn awaken_dispatch::ClaimedRunCommit>
                 }),
+                recovery_projection,
                 session_resources: self.thread_resource_manifest(thread),
             })
         } else {

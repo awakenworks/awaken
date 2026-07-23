@@ -324,15 +324,16 @@ impl DispatchQueue for MemoryDispatchStore {
     ) -> Result<Option<CommitEpochGuard>, DispatchError> {
         let guard = self.authority.clone().lock_owned().await;
         let state = lock(&self.state)?;
-        let matches = state.rows.get(&claim.run_id).is_some_and(|row| {
-            row.lease_epoch == claim.epoch
+        let request = state.rows.get(&claim.run_id).and_then(|row| {
+            (row.lease_epoch == claim.epoch
                 && row
                     .lease
                     .as_ref()
-                    .is_some_and(|lease| lease.owner == claim.owner)
+                    .is_some_and(|lease| lease.owner == claim.owner))
+            .then(|| row.request.clone())
         });
         drop(state);
-        Ok(matches.then(|| CommitEpochGuard::new(guard)))
+        Ok(request.map(|request| CommitEpochGuard::new(guard, request)))
     }
 
     async fn enqueue_with(

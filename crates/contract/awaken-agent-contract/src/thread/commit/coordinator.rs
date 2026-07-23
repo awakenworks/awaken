@@ -17,3 +17,15 @@ pub trait Coordinator: Send + Sync {
         commit: crate::thread::commit::staged::ThreadCommit,
     ) -> Result<crate::thread::commit::staged::CommitRecord, Error>;
 }
+
+/// Durable idempotent/CAS extension used by recoverable remote Workers.
+///
+/// Implementations must persist the commit and its receipt atomically. Returning
+/// success for a duplicate must not append facts or advance the Thread version.
+#[async_trait]
+pub trait OperationCoordinator: Coordinator {
+    async fn commit_operation(
+        &self,
+        operation: crate::thread::commit::operation::CommitOperation,
+    ) -> Result<crate::thread::commit::operation::CommitReceipt, Error>;
+}

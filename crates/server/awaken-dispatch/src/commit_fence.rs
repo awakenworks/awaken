@@ -12,9 +12,13 @@ use async_trait::async_trait;
 use awaken_agent_contract::thread::commit::coordinator::{
     Coordinator as CommitCoordinator, Error as CommitError,
 };
+use awaken_agent_contract::thread::commit::operation::{
+    CommitOperation, CommitOperationId, CommitReceipt,
+};
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 
-use crate::dispatch::{DispatchQueue, RunClaim};
+use crate::RecoveryProjection;
+use crate::dispatch::{ClaimedCommitCommand, DispatchQueue, RunClaim};
 
 /// Atomically apply a [`ThreadCommit`] under one durable [`RunClaim`].
 #[async_trait]
@@ -24,6 +28,27 @@ pub trait ClaimedRunCommit: Send + Sync {
         claim: &RunClaim,
         commit: ThreadCommit,
     ) -> Result<CommitRecord, CommitError>;
+
+    /// Retryable/CAS form used by a Worker with a recovery projection. Remote
+    /// implementations override this with the durable receipt endpoint.
+    async fn commit_operation(
+        &self,
+        command: ClaimedCommitCommand,
+    ) -> Result<CommitReceipt, CommitError> {
+        let operation = command.operation;
+        let thread_version = operation
+            .expected_thread_version
+            .checked_add(1)
+            .ok_or_else(|| CommitError::Rejected("Thread version overflow".to_string()))?;
+        let record = self.commit(&command.claim, operation.commit).await?;
+        Ok(CommitReceipt {
+            operation_id: operation.operation_id,
+            commit_sequence: record.sequence,
+            thread_version,
+            payload_hash: operation.payload_hash,
+            duplicate: false,
+        })
+    }
 }
 
 /// Local implementation: acquire the store's exact claim guard, keep it alive
@@ -63,18 +88,59 @@ impl ClaimedRunCommit for GuardedRunCommit {
 pub struct ClaimedCommitCoordinator {
     service: Arc<dyn ClaimedRunCommit>,
     claim: RunClaim,
+    projection: Option<Arc<RecoveryProjection>>,
 }
 
 impl ClaimedCommitCoordinator {
     pub fn new(service: Arc<dyn ClaimedRunCommit>, claim: RunClaim) -> Self {
-        Self { service, claim }
+        Self {
+            service,
+            claim,
+            projection: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_recovery_projection(mut self, projection: Arc<RecoveryProjection>) -> Self {
+        self.projection = Some(projection);
+        self
     }
 }
 
 #[async_trait]
 impl CommitCoordinator for ClaimedCommitCoordinator {
     async fn commit(&self, commit: ThreadCommit) -> Result<CommitRecord, CommitError> {
-        self.service.commit(&self.claim, commit).await
+        let Some(projection) = &self.projection else {
+            return self.service.commit(&self.claim, commit).await;
+        };
+        let snapshot = projection.current().ok_or_else(|| {
+            CommitError::Rejected("remote commit has no installed recovery snapshot".to_string())
+        })?;
+        if snapshot.thread_id != commit.thread_id || snapshot.claimed_run_id != *commit.run_id() {
+            return Err(CommitError::Rejected(
+                "remote commit does not match the installed recovery projection".to_string(),
+            ));
+        }
+        let payload_hash = crate::commit_payload_hash(&commit)
+            .map_err(|error| CommitError::Rejected(error.to_string()))?;
+        let operation = CommitOperation {
+            operation_id: CommitOperationId::new(
+                commit.run_id().clone(),
+                snapshot.next_commit_ordinal,
+            ),
+            expected_thread_version: snapshot.thread_version,
+            payload_hash,
+            commit,
+        };
+        let receipt = self
+            .service
+            .commit_operation(ClaimedCommitCommand {
+                claim: self.claim.clone(),
+                operation: operation.clone(),
+            })
+            .await?;
+        projection.apply_receipt(operation, &receipt)?;
+        Ok(receipt.commit_record())
     }
 }
 

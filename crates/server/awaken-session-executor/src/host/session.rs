@@ -32,11 +32,12 @@ impl SharedHost {
                     .upstream
                     .as_ref()
                     .expect("remote commit plan has an upstream");
-                Ok(HostCommit::Remote(
+                Ok(HostCommit::Remote(crate::store::RemoteHostCommit::new(
                     crate::commit_ingest::RemoteCoordinator::new(url)
                         .with_client(upstream.client().clone())
-                        .with_worker_id(upstream.worker_id()),
-                ))
+                        .with_worker_id(upstream.worker_id())
+                        .with_request_authorizer(upstream.request_authorizer()),
+                )))
             }
             // Shared Postgres commit backend (ADR-0022 D6): one coordinator keyed by
             // thread, connected once at startup (the non-Send sqlx connect stays out of
@@ -138,6 +139,7 @@ impl SharedHost {
         // (R1). `None` when no provider is installed — the worker stays on the host
         // default.
         let inference_materializer = self.worker_inference_materializer();
+        let recovery_projection = commit.recovery_projection();
         // The recovered dispatch a crash left mid-flight is re-executed by this
         // worker; giving it the same checkpoint store lets that re-execution resume
         // the interrupted step from its flushed partial (Phase 3 cross-process).
@@ -157,11 +159,15 @@ impl SharedHost {
         ingress.install_attempt_executor(attempt_executor);
         if let Some(upstream) = &self.upstream {
             let mut commit = crate::commit_ingest::RemoteClaimedRunCommit::new(upstream.base_url())
-                .with_client(upstream.client().clone());
+                .with_client(upstream.client().clone())
+                .with_request_authorizer(upstream.request_authorizer());
             if let Some(identity) = upstream.worker_identity() {
                 commit = commit.with_worker_identity(identity.clone());
             }
             ingress = ingress.with_claimed_commit(Arc::new(commit));
+        }
+        if let Some(projection) = recovery_projection {
+            ingress = ingress.with_recovery_projection(projection);
         }
         let ingress = Arc::new(ingress);
         // No per-session recovery sweep here: this session's worker shares one queue
@@ -625,12 +631,14 @@ impl SharedHost {
             )
         });
         let attempt_executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor> =
-            Arc::new(crate::run_exec::SessionAttemptExecutor::new(
-                runtime.clone(),
-                acp_executor,
-                self.remote_attempt_executor.clone(),
-                execution_backend,
-            ));
+            self.attempt_executor_override.clone().unwrap_or_else(|| {
+                Arc::new(crate::run_exec::SessionAttemptExecutor::new(
+                    runtime.clone(),
+                    acp_executor,
+                    self.remote_attempt_executor.clone(),
+                    &config.resolved_spec,
+                ))
+            });
         // The foreground delivery seam (slice C/D): a turn's execution goes through
         // `RunIngress` rather than calling `runtime.start_run` directly. Direct
         // ingress runs inline on the same `runtime`; durable ingress queues the run

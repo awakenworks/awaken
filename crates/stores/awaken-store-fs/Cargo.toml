@@ -8,7 +8,9 @@ license.workspace = true
 awaken-agent-contract.workspace = true
 awaken-store-inmem.workspace = true
 async-trait.workspace = true
+serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+tokio = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

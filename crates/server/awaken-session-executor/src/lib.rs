@@ -132,8 +132,8 @@ pub use crate::tool_catalog::{
 };
 // The per-plane resource routers the composition root merges over one host.
 pub use crate::commit_ingest::{
-    RemoteClaimedRunCommit, RemoteCoordinator, claimed_commit_ingest_router,
-    claimed_commit_ingest_router_with_directory, commit_ingest_router,
+    ClaimedCommitService, RemoteClaimedRunCommit, RemoteCoordinator, claimed_commit_ingest_router,
+    claimed_commit_ingest_router_with_directory, claimed_commit_router, commit_ingest_router,
 };
 pub use crate::deployment_config::{
     DeploymentConfig, DispatchBackend, SandboxTier, StoreKind, Wake,
@@ -144,9 +144,11 @@ pub use crate::dispatch_transport::{
     registered_worker_transport_router, worker_dispatch_store_with_upstream,
 };
 pub use crate::worker_security::{
-    FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, ManualWorkerClock, SystemWorkerClock,
-    VerifiedWorkerContext, WORKER_ID_HEADER, WorkerAuthError, WorkerClock, WorkerLeasePolicy,
-    WorkerRequestAuthenticator, WorkerUpstream,
+    FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, ManualWorkerClock, MtlsWorkerAuthenticator,
+    MtlsWorkerPrincipal, SIGNED_WORKER_SCHEME, SignedWorkerAuthenticator,
+    SignedWorkerRequestAuthorizer, SystemWorkerClock, VerifiedWorkerContext, WORKER_ID_HEADER,
+    WorkerAuthError, WorkerClock, WorkerCredentialError, WorkerLeasePolicy,
+    WorkerRequestAuthenticator, WorkerSigningCredential, WorkerUpstream,
 };
 // The worker HTTP dispatch client now lives in awaken-dispatch; re-exported so
 // composition roots keep using `awaken_session_executor::{HttpDispatchQueue, worker_dispatch_store}`.
@@ -156,7 +158,7 @@ pub use awaken_env_store::{PostgresEnvRegistry, SqliteEnvRegistry};
 // stores/ leaf); re-exported so composition roots keep their import paths.
 pub use awaken_dispatch::{
     HOST_EXECUTOR_CAPABILITY, HttpDispatchQueue, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY,
-    worker_dispatch_store,
+    WorkerRequestAuthorizer, worker_dispatch_store,
 };
 pub use awaken_session_store::{PostgresManagedSessionRepository, SqliteManagedSessionRepository};
 

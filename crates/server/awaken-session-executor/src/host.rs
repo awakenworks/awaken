@@ -134,6 +134,11 @@ pub struct SharedHost {
     /// owns only the `RunAttemptExecutor` port and never names the A2A protocol.
     pub(crate) remote_attempt_executor:
         Option<Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>>,
+    /// Optional composition-root replacement for the complete attempt boundary.
+    /// Worker embedders use this to install one application-decorated executor;
+    /// ordinary hosts leave it empty and use the built-in Native/ACP/A2A router.
+    pub(crate) attempt_executor_override:
+        Option<Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>>,
     pub(crate) provider: LocalProvider,
     /// Provider for the Session-owned environment shared by Native/ACP/children.
     /// Kept separate from deliberately-fresh housekeeping sandboxes.

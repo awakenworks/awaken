@@ -17,6 +17,9 @@ use serde_json::{Value, json};
 
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpointStore};
+use awaken_agent_contract::thread::read::recovery::{
+    RecoveryError, RunRecoverySnapshot, RunRecoverySource,
+};
 use awaken_dispatch::{
     AnyDispatchStore, Dispatch, DispatchOutcome, DispatchQueue, HttpDispatchQueue, PendingInput,
     PlacementPolicy, RunClaim, RunDispatch, SubmitOptions, WorkerDirectory, WorkerHeartbeat,
@@ -41,6 +44,7 @@ pub fn worker_dispatch_store_with_upstream(
         HttpDispatchQueue::new(upstream.base_url())
             .with_client(upstream.client().clone())
             .with_worker_id(upstream.worker_id())
+            .with_request_authorizer(upstream.request_authorizer())
             .with_worker_identity(identity),
     ) as Arc<dyn Dispatch>))
 }
@@ -55,6 +59,7 @@ pub struct WorkerDispatchService {
     placement_policy: Option<Arc<dyn PlacementPolicy>>,
     registry_ttl_ms: u64,
     checkpoint: Option<Arc<dyn StreamCheckpointStore>>,
+    recovery: Option<Arc<dyn RunRecoverySource>>,
 }
 
 impl WorkerDispatchService {
@@ -74,12 +79,19 @@ impl WorkerDispatchService {
             placement_policy: None,
             registry_ttl_ms: 30_000,
             checkpoint: None,
+            recovery: None,
         }
     }
 
     #[must_use]
     pub fn with_checkpoint_store(mut self, checkpoint: Arc<dyn StreamCheckpointStore>) -> Self {
         self.checkpoint = Some(checkpoint);
+        self
+    }
+
+    #[must_use]
+    pub fn with_recovery_source(mut self, recovery: Arc<dyn RunRecoverySource>) -> Self {
+        self.recovery = Some(recovery);
         self
     }
 
@@ -142,7 +154,7 @@ async fn claim_authority(
     let identity = identity.ok_or_else(|| {
         HostError::bad_request("registered worker identity is required for dispatch authority")
     })?;
-    verify_worker_id(worker, &identity.worker_id)?;
+    verify_worker_identity(worker, identity)?;
     let record = directory
         .current(&identity.worker_id)
         .await
@@ -202,11 +214,13 @@ pub fn dispatch_transport_router_with_directory_and_policy(
     } else {
         Arc::new(awaken_runtime::memory::MemoryStreamCheckpointStore::new())
     };
+    let recovery: Arc<dyn RunRecoverySource> = Arc::new(HostRunRecoverySource(host));
     dispatch_transport_router_with_service(Arc::new(
         WorkerDispatchService::local(dispatch)
             .with_worker_directory(directory, 30_000)
             .with_placement_policy(policy)
-            .with_checkpoint_store(checkpoint),
+            .with_checkpoint_store(checkpoint)
+            .with_recovery_source(recovery),
     ))
 }
 
@@ -257,11 +271,32 @@ pub fn dispatch_transport_router_with_service(service: Arc<WorkerDispatchService
         .route("/v1/worker/checkpoint/get", post(get_checkpoint))
         .route("/v1/worker/checkpoint/put", post(put_checkpoint))
         .route("/v1/worker/checkpoint/delete", post(delete_checkpoint))
+        .route("/v1/worker/recovery/snapshot", post(recovery_snapshot))
         .layer(axum::middleware::from_fn_with_state(
             service.clone(),
             authenticate_worker,
         ))
         .with_state(service)
+}
+
+struct HostRunRecoverySource(Arc<SharedHost>);
+
+#[async_trait::async_trait]
+impl RunRecoverySource for HostRunRecoverySource {
+    async fn recovery_snapshot(
+        &self,
+        thread_id: &awaken_agent_contract::agent::thread::Id,
+        claimed_run_id: &RunId,
+    ) -> Result<RunRecoverySnapshot, RecoveryError> {
+        let ctx = self
+            .0
+            .ctx_for(&thread_id.0, None)
+            .await
+            .map_err(|error| RecoveryError::Rejected(error.to_string()))?;
+        ctx.commit
+            .recovery_snapshot(thread_id, claimed_run_id)
+            .await
+    }
 }
 
 fn checkpoint_store(
@@ -280,6 +315,52 @@ struct CheckpointReq {
     identity: Option<WorkerIdentity>,
     #[serde(default)]
     checkpoint: Option<StreamCheckpoint>,
+}
+
+#[derive(Deserialize)]
+struct RecoveryReq {
+    claim: RunClaim,
+    #[serde(default)]
+    identity: Option<WorkerIdentity>,
+}
+
+async fn recovery_snapshot(
+    State(service): State<Arc<WorkerDispatchService>>,
+    Extension(worker): Extension<VerifiedWorkerContext>,
+    Json(request): Json<RecoveryReq>,
+) -> (StatusCode, Json<Value>) {
+    let result = async {
+        let authority =
+            claim_authority(&service, &worker, request.identity.as_ref(), false).await?;
+        if authority.owner != request.claim.owner {
+            return Err(HostError::bad_request(
+                "authenticated worker does not own the recovery claim",
+            ));
+        }
+        let guard = service
+            .dispatch
+            .lock_commit_epoch(&request.claim)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?
+            .ok_or_else(|| HostError::bad_request("run claim is stale"))?;
+        let dispatch = guard.request();
+        if dispatch.run_id() != &request.claim.run_id {
+            return Err(HostError::bad_request(
+                "guarded dispatch does not match the recovery claim",
+            ));
+        }
+        let source = service
+            .recovery
+            .as_ref()
+            .ok_or_else(|| HostError::internal("worker recovery source is not configured"))?;
+        let snapshot = source
+            .recovery_snapshot(dispatch.thread_id(), dispatch.run_id())
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?;
+        Ok(json!({ "snapshot": snapshot }))
+    }
+    .await;
+    respond(result)
 }
 
 #[derive(Deserialize)]
@@ -421,6 +502,19 @@ fn verify_worker_id(worker: &VerifiedWorkerContext, worker_id: &str) -> Result<(
     Ok(())
 }
 
+fn verify_worker_identity(
+    worker: &VerifiedWorkerContext,
+    identity: &WorkerIdentity,
+) -> Result<(), HostError> {
+    verify_worker_id(worker, &identity.worker_id)?;
+    if worker.credential_id().is_some() && worker.identity() != Some(identity) {
+        return Err(HostError::bad_request(
+            "authenticated worker incarnation does not match request identity",
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Deserialize)]
 struct RegisterWorkerReq {
     registration: WorkerRegistration,
@@ -433,6 +527,11 @@ async fn register_worker(
 ) -> (StatusCode, Json<Value>) {
     let result = async {
         verify_worker_id(&worker, &request.registration.worker_id)?;
+        if worker.identity().is_some() {
+            return Err(HostError::bad_request(
+                "worker registration requires a bootstrap credential",
+            ));
+        }
         let record = directory(&service)?
             .register(
                 request.registration,
@@ -459,7 +558,7 @@ async fn heartbeat_worker(
     Json(request): Json<HeartbeatWorkerReq>,
 ) -> (StatusCode, Json<Value>) {
     let result = async {
-        verify_worker_id(&worker, &request.identity.worker_id)?;
+        verify_worker_identity(&worker, &request.identity)?;
         let mutation = directory(&service)?
             .heartbeat(
                 &request.identity,
@@ -488,7 +587,7 @@ async fn drain_worker(
     Json(request): Json<WorkerIdentityReq>,
 ) -> (StatusCode, Json<Value>) {
     let result = async {
-        verify_worker_id(&worker, &request.identity.worker_id)?;
+        verify_worker_identity(&worker, &request.identity)?;
         let deadline = request.deadline_ms.unwrap_or_else(|| {
             service
                 .clock
@@ -511,7 +610,7 @@ async fn quiesce_worker(
     Json(request): Json<WorkerIdentityReq>,
 ) -> (StatusCode, Json<Value>) {
     let result = async {
-        verify_worker_id(&worker, &request.identity.worker_id)?;
+        verify_worker_identity(&worker, &request.identity)?;
         let mutation = directory(&service)?
             .mark_quiesced(&request.identity)
             .await
@@ -528,7 +627,7 @@ async fn deregister_worker(
     Json(request): Json<WorkerIdentityReq>,
 ) -> (StatusCode, Json<Value>) {
     let result = async {
-        verify_worker_id(&worker, &request.identity.worker_id)?;
+        verify_worker_identity(&worker, &request.identity)?;
         let mutation = directory(&service)?
             .deregister(&request.identity)
             .await
