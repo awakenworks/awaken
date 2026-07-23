@@ -556,6 +556,32 @@ async fn drives_a_turn_commits_messages_and_returns_natural_end() {
 }
 
 #[tokio::test]
+async fn an_empty_natural_end_is_a_provider_failure() {
+    let e = exec(vec![r#"{"type":"turn_end","reason":"natural_end"}"#.into()]);
+    let coord = Arc::new(RecordingCoordinator::default());
+    let state = e
+        .execute(
+            activation(),
+            RuntimeRunContext::new().with_commit(coord.clone()),
+        )
+        .await
+        .unwrap();
+
+    assert!(matches!(state, RunState::Ended(EndCause::Error(_))));
+    let commits = coord.commits.lock().unwrap();
+    assert_eq!(commits.len(), 1);
+    assert_eq!(
+        commits[0].messages.len(),
+        2,
+        "the input and an explanatory assistant failure are committed"
+    );
+    assert!(
+        !commits[0].messages[1].text_content().is_empty(),
+        "an empty opaque-provider turn must not remain an empty public response"
+    );
+}
+
+#[tokio::test]
 async fn acp_delivers_the_same_post_commit_terminal_extension_contract() {
     let e = exec(vec![
         r#"{"type":"message","text":"done"}"#.into(),
