@@ -36,6 +36,7 @@ fn session(id: &str, title: &str) -> PersistedSession {
                 credential_source_id: Some("cred-1".into()),
                 refresh: None,
             }],
+            delegate_ids: Some(vec!["researcher".into()]),
             runtime: Some("acp:custom".into()),
             deny_egress: true,
             sandbox: Some(json!({"isolation": "namespace"})),

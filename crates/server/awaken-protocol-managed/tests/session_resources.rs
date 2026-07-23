@@ -89,6 +89,7 @@ impl AgentConfigSource for AgentWithResources {
             tool_ids: Vec::new(),
             mcp_servers: Vec::new(),
             skill_ids: Vec::new(),
+            delegate_ids: Vec::new(),
             resources: vec![input(
                 "release-notes",
                 InputResourceId::File(FileId::from("file-release")),
@@ -112,6 +113,7 @@ impl AgentConfigSource for AgentWithIntegrations {
                 url: "https://mcp.example.test".into(),
             }],
             skill_ids: vec!["skill_release".into()],
+            delegate_ids: vec!["researcher".into()],
             resources: Vec::new(),
         })
     }
@@ -127,6 +129,7 @@ impl AgentConfigSource for AgentWithPlatformRepository {
             tool_ids: Vec::new(),
             mcp_servers: Vec::new(),
             skill_ids: Vec::new(),
+            delegate_ids: Vec::new(),
             resources: vec![input(
                 "platform-repository",
                 InputResourceId::Repository(RepositoryId::from("platform-repository")),
@@ -147,6 +150,7 @@ impl AgentConfigSource for WorkspaceScopedAgent {
             tool_ids: Vec::new(),
             mcp_servers: Vec::new(),
             skill_ids: Vec::new(),
+            delegate_ids: Vec::new(),
             resources: vec![
                 input(
                     "agent-memory",
@@ -170,6 +174,18 @@ impl SessionRuntime for AcceptingFake {
     async fn prepare_session(&self, _thread: &str, init: SessionInit) -> Result<(), RunError> {
         self.prepared.lock().unwrap().push(init);
         Ok(())
+    }
+    fn capabilities_for(&self, _thread: &str) -> awaken_protocol_managed::AgentCapabilities {
+        awaken_protocol_managed::AgentCapabilities {
+            delegates: self
+                .prepared
+                .lock()
+                .unwrap()
+                .last()
+                .and_then(|init| init.delegate_ids.clone())
+                .unwrap_or_default(),
+            ..Default::default()
+        }
     }
     async fn run(
         &self,
@@ -250,8 +266,10 @@ async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (St
 
 #[tokio::test]
 async fn session_inherits_published_agent_integrations_and_echoes_the_effective_set() {
-    let state = ManagedState::new(AcceptingFake::default())
-        .with_config_source(std::sync::Arc::new(AgentWithIntegrations));
+    let runtime = AcceptingFake::default();
+    let prepared = runtime.prepared.clone();
+    let state =
+        ManagedState::new(runtime).with_config_source(std::sync::Arc::new(AgentWithIntegrations));
     let app = router(std::sync::Arc::new(state));
     let (status, session) = call(
         &app,
@@ -263,6 +281,11 @@ async fn session_inherits_published_agent_integrations_and_echoes_the_effective_
     assert_eq!(status, StatusCode::OK);
     assert_eq!(session["agent"]["mcp_servers"][0]["name"], "docs");
     assert_eq!(session["agent"]["skills"][0]["id"], "skill_release");
+    assert_eq!(session["agent"]["multiagent"]["agents"][0], "researcher");
+    assert_eq!(
+        prepared.lock().unwrap()[0].delegate_ids,
+        Some(vec!["researcher".into()])
+    );
 }
 
 async fn app_with_session() -> (Router, String) {

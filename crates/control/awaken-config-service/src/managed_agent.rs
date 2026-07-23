@@ -4,7 +4,7 @@
 //! [`AgentConfig`]. Keeping it separate from CRUD/publication prevents protocol
 //! projection details from growing the config-plane orchestration module.
 
-use awaken_config_store::{AgentConfig, ModelSelection, ToolOverride};
+use awaken_config_store::{AgentConfig, ModelSelection, MultiagentConfig, ToolOverride};
 use awaken_runtime_contract::agent_bindings::AgentMcpServerBinding;
 use serde_json::{Value, json};
 
@@ -90,6 +90,13 @@ pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig
                 .ok_or_else(|| "Skill must be a non-empty id or object with `id`".to_string())
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let multiagent = body
+        .get("multiagent")
+        .filter(|value| !value.is_null())
+        .cloned()
+        .map(serde_json::from_value::<MultiagentConfig>)
+        .transpose()
+        .map_err(|error| format!("invalid multiagent roster: {error}"))?;
     Ok(AgentConfig {
         id,
         instructions: string("system").unwrap_or_default(),
@@ -119,7 +126,7 @@ pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig
         metadata,
         mcp_servers,
         skill_ids,
-        multiagent: body.get("multiagent").filter(|v| !v.is_null()).cloned(),
+        multiagent,
         archived_at: string("archived_at"),
         tool_overrides,
         recovery_policies: body

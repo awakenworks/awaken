@@ -8,7 +8,9 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use awaken_config_service::{ConfigPlane, RESERVED_ADMIN_SCOPE};
-use awaken_config_store::{AgentConfig, AgentConfigRevision, ConfigWrite, ModelSelection};
+use awaken_config_store::{
+    AgentConfig, AgentConfigRevision, ConfigWrite, ModelSelection, MultiagentConfig,
+};
 use awaken_protocol_managed::types::ModelConfig;
 use awaken_protocol_managed::types::agent::{Agent, AgentCreateParams, AgentUpdateParams};
 use awaken_protocol_managed::{ManagedAgentError, ManagedAgentRepository};
@@ -153,6 +155,11 @@ fn typed_skill_ids(values: Vec<Value>) -> Result<Vec<String>, ManagedAgentError>
         .collect()
 }
 
+fn typed_multiagent(value: Value) -> Result<MultiagentConfig, ManagedAgentError> {
+    serde_json::from_value(value)
+        .map_err(|error| ManagedAgentError::Invalid(format!("invalid multiagent roster: {error}")))
+}
+
 fn config_from_create(
     id: String,
     params: AgentCreateParams,
@@ -175,7 +182,7 @@ fn config_from_create(
         metadata: params.metadata,
         mcp_servers: typed_mcp_servers(params.mcp_servers)?,
         skill_ids: typed_skill_ids(params.skills)?,
-        multiagent: params.multiagent,
+        multiagent: params.multiagent.map(typed_multiagent).transpose()?,
         archived_at: None,
         tool_overrides: Vec::new(),
         recovery_policies: BTreeMap::new(),
@@ -219,7 +226,7 @@ fn project(revision: AgentConfigRevision) -> Agent {
             .map(|id| json!({"id": id}))
             .collect(),
         tools: wire_tools(&config.tool_ids),
-        multiagent: config.multiagent,
+        multiagent: config.multiagent.map(|value| json!(value)),
         version: revision.revision,
     }
 }
@@ -338,7 +345,7 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
             config.tool_ids = tools.iter().filter_map(tool_id).collect();
         }
         if let Some(multiagent) = params.multiagent {
-            config.multiagent = Some(multiagent);
+            config.multiagent = Some(typed_multiagent(multiagent)?);
         }
         match self
             .plane
